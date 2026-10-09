@@ -1,0 +1,7 @@
+{
+  "def": "DeclareTierRequest",
+  "reason": "tier is required (null clears it)",
+  "value": {
+    "volume_id": "vo_lab1"
+  }
+}

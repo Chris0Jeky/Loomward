@@ -1,0 +1,26 @@
+{
+  "def": "Capabilities",
+  "reason": "an effect capability must be the constant false",
+  "value": {
+    "observation": {
+      "metadata_scan": true,
+      "process_observation": true,
+      "gpu_observation": false,
+      "disk_io_observation": true,
+      "teacher_disclosure": true
+    },
+    "effects": {
+      "file_move": false,
+      "file_delete": true,
+      "file_rename": false,
+      "file_write": false,
+      "content_read": false,
+      "process_kill": false,
+      "process_suspend": false,
+      "process_priority": false,
+      "memory_trim": false,
+      "uninstall": false,
+      "elevation": false
+    }
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "dropped": 1024,
+  "resync": [
+    "jobs",
+    "tree"
+  ]
+}

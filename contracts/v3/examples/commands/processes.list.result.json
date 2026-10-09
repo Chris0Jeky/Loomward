@@ -1,0 +1,24 @@
+{
+  "sample_seq": 17,
+  "observed_at": "2026-10-09T12:00:00Z",
+  "rows": [
+    {
+      "process_ref": "pc_1a2b-3c4d",
+      "pid": 4242,
+      "name": "synthetic-app.exe",
+      "started_at": "2026-10-09T11:58:30Z",
+      "private_bytes": "734003200",
+      "working_set_bytes": "412316860",
+      "cpu_fraction": 0.12,
+      "io_read_bytes_per_s": 1048576.0,
+      "io_write_bytes_per_s": 0.0,
+      "gpu_dedicated_bytes": null,
+      "access": "full",
+      "loomward_owned": false
+    }
+  ],
+  "observed_count": 212,
+  "denied_count": 9,
+  "truncated": true,
+  "note": "Rows the account cannot open are counted, not shown."
+}

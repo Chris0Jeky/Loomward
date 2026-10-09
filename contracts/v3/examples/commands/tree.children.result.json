@@ -1,0 +1,43 @@
+{
+  "anchor": "nd_0002",
+  "generation": "12",
+  "items": [
+    {
+      "node_id": "nd_0002",
+      "kind": "dir",
+      "name": "Projects",
+      "extension": null,
+      "ext_family": null,
+      "logical_bytes": "470000000",
+      "allocated_bytes": "500000000",
+      "files": 800,
+      "dirs": 90,
+      "modified_at": "2026-10-09T11:58:30Z",
+      "attributes": [],
+      "flags": [],
+      "coverage": "complete",
+      "location_hint": null
+    },
+    {
+      "node_id": "nd_0020",
+      "kind": "file",
+      "name": "report_final.docx",
+      "extension": "docx",
+      "ext_family": "document",
+      "logical_bytes": "48213",
+      "allocated_bytes": "49152",
+      "files": null,
+      "dirs": null,
+      "modified_at": "2026-10-09T11:58:30Z",
+      "attributes": [
+        "archive"
+      ],
+      "flags": [],
+      "coverage": "complete",
+      "location_hint": null
+    }
+  ],
+  "next_cursor": "cur_AbC123-_",
+  "total": 812,
+  "budget_hit": false
+}

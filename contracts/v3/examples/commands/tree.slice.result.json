@@ -1,0 +1,131 @@
+{
+  "anchor_node_id": "nd_0001",
+  "basis": "allocated",
+  "root_generations": [
+    {
+      "root_id": "rt_synth1",
+      "generation": "12"
+    }
+  ],
+  "complete": false,
+  "live": false,
+  "ordering": "exact",
+  "truncated": true,
+  "nodes": [
+    {
+      "node_id": "nd_0001",
+      "parent": null,
+      "kind": "root",
+      "name": "S1",
+      "depth": 0,
+      "size_bytes": "789000192",
+      "size_unknown_files": 0,
+      "logical_bytes": "734003200",
+      "allocated_bytes": "789000192",
+      "files": 1200,
+      "dirs": 140,
+      "child_count": 3,
+      "folded_count": null,
+      "coverage": "complete",
+      "live": false,
+      "ext_family": null,
+      "modified_at": "2026-10-09T11:58:30Z",
+      "threads": {
+        "meaning": {
+          "state": "labelled",
+          "label": "Project",
+          "share": 1.0,
+          "source": "human",
+          "collection_ids": [
+            "co_proj1"
+          ]
+        },
+        "residency": {
+          "volume_id": "vo_lab1",
+          "tier": 1,
+          "tier_basis": "declared"
+        },
+        "permission": {
+          "state": "granted",
+          "reason": "metadata_grant_active"
+        }
+      }
+    },
+    {
+      "node_id": "nd_0002",
+      "parent": 0,
+      "kind": "dir",
+      "name": "Projects",
+      "depth": 1,
+      "size_bytes": "500000000",
+      "size_unknown_files": 0,
+      "logical_bytes": "470000000",
+      "allocated_bytes": "500000000",
+      "files": 800,
+      "dirs": 90,
+      "child_count": 12,
+      "folded_count": null,
+      "coverage": "complete",
+      "live": false,
+      "ext_family": null,
+      "modified_at": "2026-10-09T11:58:30Z",
+      "threads": {
+        "meaning": {
+          "state": "labelled",
+          "label": "Project",
+          "share": 1.0,
+          "source": "human",
+          "collection_ids": [
+            "co_proj1"
+          ]
+        },
+        "residency": {
+          "volume_id": "vo_lab1",
+          "tier": 1,
+          "tier_basis": "declared"
+        },
+        "permission": {
+          "state": "granted",
+          "reason": "metadata_grant_active"
+        }
+      }
+    },
+    {
+      "node_id": "nd_0003",
+      "parent": 0,
+      "kind": "other",
+      "name": "other",
+      "depth": 1,
+      "size_bytes": "12000000",
+      "size_unknown_files": 0,
+      "logical_bytes": "11000000",
+      "allocated_bytes": "12000000",
+      "files": 40,
+      "dirs": 0,
+      "child_count": null,
+      "folded_count": 17,
+      "coverage": "complete",
+      "live": false,
+      "ext_family": null,
+      "modified_at": null,
+      "threads": {
+        "meaning": {
+          "state": "none",
+          "label": null,
+          "share": null,
+          "source": null,
+          "collection_ids": []
+        },
+        "residency": {
+          "volume_id": null,
+          "tier": null,
+          "tier_basis": "unknown"
+        },
+        "permission": {
+          "state": "unknown",
+          "reason": "not_scanned"
+        }
+      }
+    }
+  ]
+}

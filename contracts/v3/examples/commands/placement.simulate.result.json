@@ -1,0 +1,58 @@
+{
+  "mode": "simulation",
+  "algorithm": "bounded_portfolio_search_v2",
+  "optimality_claim": false,
+  "optimality_scope": "Optimal only within the bounded search; the search was exhaustive over 1 eligible group.",
+  "shortfall_optimal": true,
+  "search": {
+    "complete": true,
+    "nodes_visited": 3,
+    "node_budget": 200000,
+    "reason": "exhausted",
+    "eligible_groups": 1,
+    "eligible_targets": 1,
+    "lower_bound_shortfall_bytes": "0"
+  },
+  "proposals": [
+    {
+      "group_id": "cg_0001",
+      "source_id": "vo_lab1",
+      "target_id": "vo_lab2",
+      "source_bytes_relieved": "500000000",
+      "destination_bytes_required": "470000000",
+      "transfer_bytes": "470000000",
+      "reason": "bounded_capacity_budget_allocation",
+      "requires_consent": true,
+      "executable": false
+    }
+  ],
+  "rejected": [
+    {
+      "group_id": "cg_0002",
+      "reason": "heat_unknown"
+    }
+  ],
+  "projected_free_bytes": {
+    "vo_lab1": "912316860416",
+    "vo_lab2": "3999000000000"
+  },
+  "target_free_bytes": "900000000000",
+  "shortfall_bytes": "0",
+  "satisfied": true,
+  "transfer_bytes": "470000000",
+  "filesystem_changed": false,
+  "baseline_shortfall_bytes": "487683139584",
+  "shortfall_improvement_bytes": "487683139584",
+  "assumption": "Heat is assumed cold for the listed groups; nothing was measured.",
+  "heat_policy": "assumed_only",
+  "assumptions": [
+    "cg_0001 heat assumed 0.0 by the owner"
+  ],
+  "root_generations": [
+    {
+      "root_id": "rt_synth1",
+      "generation": "12"
+    }
+  ],
+  "proposal_id": "pp_0001"
+}

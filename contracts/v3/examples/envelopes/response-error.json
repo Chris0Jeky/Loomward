@@ -1,0 +1,22 @@
+{
+  "def": "ResponseEnvelope",
+  "value": {
+    "protocol": "loomward/3",
+    "request_id": "r_000017",
+    "ok": false,
+    "error": {
+      "code": "stale_generation",
+      "message": "The root was rescanned; refetch the slice.",
+      "retryable": true,
+      "detail": {
+        "current_generation": "13"
+      }
+    },
+    "meta": {
+      "served_at": "2026-10-09T12:00:00Z",
+      "elapsed_ms": 1,
+      "dataset_class": "synthetic",
+      "budget_hit": false
+    }
+  }
+}

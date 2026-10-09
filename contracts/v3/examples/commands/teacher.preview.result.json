@@ -1,0 +1,34 @@
+{
+  "preview_id": "tp_0001",
+  "recipient": "codex_cli_gpt_6_1_sol",
+  "model": "gpt-6.1-sol",
+  "reasoning_effort": "medium",
+  "dataset_class": "synthetic",
+  "fields": [
+    "name",
+    "extension",
+    "context",
+    "size_bucket"
+  ],
+  "items": [
+    {
+      "handle": "i00",
+      "metadata": {
+        "name": "report_final.docx",
+        "extension": "docx",
+        "context": "Projects/Alpha",
+        "size_bucket": 7
+      }
+    }
+  ],
+  "excluded": [
+    {
+      "node_id": "nd_0021",
+      "reason": "sensitive_name"
+    }
+  ],
+  "taxonomy_version": 1,
+  "payload_bytes": 612,
+  "payload_digest": "sha256:cde4f746885bc8492e81ebae9b60f354e735f3e1e4a27fadc0983480a720c883",
+  "expires_at": "2026-10-09T12:10:00Z"
+}

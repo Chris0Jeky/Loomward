@@ -1,0 +1,14 @@
+{
+  "def": "SubtreeTotals",
+  "reason": "a byte quantity must be a decimal string, not a JSON number",
+  "value": {
+    "files": 1200,
+    "dirs": 140,
+    "logical_bytes": 734003200,
+    "allocated_bytes": "789000192",
+    "allocation_unknown_files": 0,
+    "skipped": 0,
+    "failed": 0,
+    "complete": true
+  }
+}

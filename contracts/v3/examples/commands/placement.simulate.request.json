@@ -1,0 +1,20 @@
+{
+  "source_volume_id": "vo_lab1",
+  "target_free_bytes": "900000000000",
+  "max_transfer_bytes": "2000000000",
+  "heat_policy": "assumed_only",
+  "candidate_basis": "root_children",
+  "max_groups": 50,
+  "overrides": [
+    {
+      "group_id": "cg_0001",
+      "heat": 0.0,
+      "pinned": false,
+      "active": false,
+      "protected": false,
+      "days_since_move": null
+    }
+  ],
+  "node_budget": 200000,
+  "save": true
+}

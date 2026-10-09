@@ -1,0 +1,10 @@
+{
+  "def": "TelemetrySnapshotRequest",
+  "reason": "channels must be unique",
+  "value": {
+    "channels": [
+      "system",
+      "system"
+    ]
+  }
+}

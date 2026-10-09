@@ -1,0 +1,18 @@
+{
+  "def": "TeacherLabel",
+  "reason": "a teacher label always requires review",
+  "value": {
+    "node_id": "nd_0020",
+    "label": "Project",
+    "abstain": false,
+    "reason": "Name and extension suggest a project document.",
+    "evidence": [
+      "name",
+      "extension"
+    ],
+    "data_class": "teacher",
+    "weight": 0.2,
+    "requires_review": false,
+    "autonomy_allowed": false
+  }
+}

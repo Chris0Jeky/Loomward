@@ -1,0 +1,11 @@
+{
+  "def": "EventEnvelope",
+  "reason": "event is outside the closed list",
+  "value": {
+    "protocol": "loomward/3",
+    "seq": 1,
+    "event": "scan.finished",
+    "at": "2026-10-09T12:00:00Z",
+    "data": {}
+  }
+}

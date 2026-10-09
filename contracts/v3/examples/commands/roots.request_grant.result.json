@@ -1,0 +1,34 @@
+{
+  "outcome": "granted",
+  "root": {
+    "root_id": "rt_synth1",
+    "display_path": {
+      "text": "Lab\\S1",
+      "truncated": false
+    },
+    "origin": "owner_granted",
+    "dataset_class": "personal",
+    "volume_id": "vo_lab1",
+    "granted_at": "2026-10-09T11:58:30Z",
+    "granted_via": "desktop_picker",
+    "grant_state": "active",
+    "scan": {
+      "state": "complete",
+      "last_job_id": "jb_0007",
+      "generation": "12",
+      "finished_at": "2026-10-09T12:00:00Z",
+      "coverage": "complete"
+    },
+    "totals": {
+      "files": 1200,
+      "dirs": 140,
+      "logical_bytes": "734003200",
+      "allocated_bytes": "789000192",
+      "allocation_unknown_files": 0,
+      "skipped": 0,
+      "failed": 0,
+      "complete": true
+    }
+  },
+  "refusal": null
+}

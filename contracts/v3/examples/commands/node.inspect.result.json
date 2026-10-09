@@ -1,0 +1,112 @@
+{
+  "row": {
+    "node_id": "nd_0020",
+    "kind": "file",
+    "name": "report_final.docx",
+    "extension": "docx",
+    "ext_family": "document",
+    "logical_bytes": "48213",
+    "allocated_bytes": "49152",
+    "files": null,
+    "dirs": null,
+    "modified_at": "2026-10-09T11:58:30Z",
+    "attributes": [
+      "archive"
+    ],
+    "flags": [],
+    "coverage": "complete",
+    "location_hint": null
+  },
+  "root_id": "rt_synth1",
+  "volume_id": "vo_lab1",
+  "display_path": {
+    "text": "Lab\\S1\\Projects\\Alpha\\report_final.docx",
+    "truncated": false
+  },
+  "identity": {
+    "quality": "native_file_id_128",
+    "volume_key": "v1",
+    "file_id_hex": "0000000000000000000300000000a1b2",
+    "observed_generation": "12",
+    "authorises_effects": false
+  },
+  "timestamps": {
+    "created_at": "2026-10-09T11:58:30Z",
+    "modified_at": "2026-10-09T11:58:30Z",
+    "changed_at": "2026-10-09T11:58:30Z",
+    "accessed_at": null,
+    "accessed_note": "Last-access times are often disabled by Windows and are not reported."
+  },
+  "subtree": null,
+  "threads": {
+    "meaning": {
+      "state": "labelled",
+      "label": "Project",
+      "share": 1.0,
+      "source": "human",
+      "collection_ids": [
+        "co_proj1"
+      ]
+    },
+    "residency": {
+      "volume_id": "vo_lab1",
+      "tier": 1,
+      "tier_basis": "declared"
+    },
+    "permission": {
+      "state": "granted",
+      "reason": "metadata_grant_active"
+    }
+  },
+  "exclusions": [],
+  "denied_capabilities": [
+    {
+      "capability": "file_delete",
+      "reason": "not_implemented_in_v03"
+    },
+    {
+      "capability": "content_read",
+      "reason": "no_grant"
+    }
+  ],
+  "memberships": [
+    {
+      "collection_id": "co_proj1",
+      "name": "Current projects"
+    }
+  ],
+  "suggestion": {
+    "node_id": "nd_0020",
+    "model_id": "md_0001",
+    "ranked": [
+      {
+        "label": "Project",
+        "score": 0.62
+      },
+      {
+        "label": "Archive",
+        "score": 0.21
+      }
+    ],
+    "abstain": false,
+    "reasons": [],
+    "feature_coverage": 0.8,
+    "review_priority": 0.4,
+    "calibrated": false,
+    "autonomy_allowed": false,
+    "teacher": {
+      "node_id": "nd_0020",
+      "label": "Project",
+      "abstain": false,
+      "reason": "Name and extension suggest a project document.",
+      "evidence": [
+        "name",
+        "extension"
+      ],
+      "data_class": "teacher",
+      "weight": 0.2,
+      "requires_review": true,
+      "autonomy_allowed": false
+    }
+  }
+}
