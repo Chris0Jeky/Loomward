@@ -47,8 +47,8 @@ a first measurement and must be reported as such. On Windows use `codex.cmd`, `n
 
 | You changed | Run |
 |---|---|
-| Python reference, schemas, JS boundary, fixtures | `py -3 scripts/verify.py` (185 tests with 1 symlink-privilege skip, 2 JS syntax, 9 JS boundary, 80 cross-language fixtures; it also runs the Rust gates when cargo is present) |
-| Rust workspace (`crates/`) | `cargo fmt --all --check`, `cargo test --workspace` (19 run on Windows, 20 written), `cargo clippy --workspace --all-targets -- -D warnings` |
+| Python reference, schemas, JS boundary, fixtures | `py -3 scripts/verify.py` (212 tests with 1 symlink-privilege skip, 2 JS syntax, 9 JS boundary, 80 cross-language fixtures; it also runs the Rust gates when cargo is present) |
+| Rust workspace (`crates/*`, glob) | `cargo fmt --all --check`, `cargo test --workspace` (54 on Windows: core 29, windows 10, telemetry 10, lab 5), `cargo clippy --workspace --all-targets -- -D warnings`; add `--all-features` for the `loomward-windows` fixture lab |
 | Browser UI | `py -3 scripts/test_ui.py` (14 Chromium checks; Playwright installed here) |
 | Everything above in one go | `py -3 scripts/verify.py --ui` |
 | Tauri shell (`native/`) | excluded from the root workspace; build it separately (never built yet) |
@@ -113,8 +113,8 @@ disable, skip or weaken a failing test to advance a milestone.
 
 ## Pitfalls
 
-- `LW-*` IDs are the bundle's local backlog (`backlog/issues.json`), not GitHub numbers. Mirror
-  them to GitHub issues with the `LW-` ID in the title before tracking work there.
+- `LW-*` IDs are the local backlog (`backlog/issues.json`, the source of truth), not GitHub numbers;
+  they are mirrored as issues #4-#105 (`backlog/github-issues.json` maps them). New IDs mint there first.
 - Taskdeck is proprietary: never copy its code into this MIT repository.
 - Public repo: synthetic fixtures only; no real filenames, inventories or training exports.
   Personal diagnostics and `.loomward/` state or database files never enter Git.
