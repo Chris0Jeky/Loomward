@@ -136,7 +136,7 @@ export interface EntryRow {
   coverage: CoverageState;
   location_hint: DisplayPath | null;
 }
-export interface EntryPage { anchor: string | null; generation: number | null; items: EntryRow[]; next_cursor: Cursor | null; total: number | null; budget_hit: boolean }
+export interface EntryPage { anchor: string | null; generation: string | null; items: EntryRow[]; next_cursor: Cursor | null; total: number | null; budget_hit: boolean }
 
 // Requests the shell and placeholder views send.
 export type Anchor = { kind: 'atlas' } | { kind: 'root'; root_id: RootId } | { kind: 'node'; node_id: NodeId };

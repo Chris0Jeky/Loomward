@@ -78,7 +78,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
   const page = (anchor: string | null, all: SynthNode[], offset: number, limit: number, hint: boolean): EntryPage => {
     const items = all.slice(offset, offset + limit).map((n) => entryRow(n, hint));
     const end = offset + items.length;
-    return { anchor, generation: 1, items, next_cursor: end < all.length ? cursorOf(end) : null, total: all.length, budget_hit: false };
+    return { anchor, generation: '1', items, next_cursor: end < all.length ? cursorOf(end) : null, total: all.length, budget_hit: false };
   };
 
   const slice = (p: TreeSliceRequest): TreeSlice => {
@@ -126,7 +126,12 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
   const search = (p: SearchRequest): EntryPage => {
     const text = str(p.text, 'text').toLowerCase();
     const limit = int(p.limit, 'limit', 1, 100);
-    const hits = tree.nodes.filter((n) => n.kind !== 'atlas' && n.kind !== 'root' && n.name.toLowerCase().includes(text) && (p.kind === 'any' || p.kind === (n.kind === 'file' ? 'file' : 'dir')));
+    const ext = typeof p.extension === 'string' ? p.extension.toLowerCase() : null;
+    const min = typeof p.min_bytes === 'string' && /^\d{1,19}$/.test(p.min_bytes) ? BigInt(p.min_bytes) : 0n;
+    const hits = tree.nodes.filter(
+      (n) => n.kind !== 'atlas' && n.kind !== 'root' && n.name.toLowerCase().includes(text) && (p.kind === 'any' || p.kind === (n.kind === 'file' ? 'file' : 'dir'))
+        && (ext === null || n.extension?.toLowerCase() === ext) && n.logical >= min,
+    );
     return page(null, hits, offsetOf(p.cursor), limit, true);
   };
 

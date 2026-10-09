@@ -225,7 +225,7 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
     add('loomward-mock.exe', 5200, 'full', 0.09, true);
     add('protected-service.exe', 4, 'denied', 0);
     add('security-agent.exe', 1888, 'denied', 0);
-    add('svchost​.exe', 6012, 'limited', 0.04); // a look-alike name: the hidden character is shown as a badge
+    add('svchost\u200B.exe', 6012, 'limited', 0.04); // a look-alike name: the hidden character is shown as a badge
     for (let i = 0; i < 52; i++) add(`${NAMES[i % NAMES.length]}${i < NAMES.length ? '' : '-' + i}.exe`, 7000 + i * 12, i % 11 === 5 ? 'limited' : 'full', 0.02 + rnd() * rnd() * 1.6);
     return rows;
   };
