@@ -69,7 +69,8 @@ class Store:
             raise ValueError('Invalid provenance')
         validate_labels([label])
         features = validate_features(features)
-        event_id = event_id or str(uuid.uuid4())
+        if event_id is None:
+            event_id = str(uuid.uuid4())
         if not isinstance(event_id, str) or not 1 <= len(event_id) <= 128:
             raise ValueError('Invalid event ID')
         base = {'scope': scope, 'item_id': item_id, 'features': features, 'label': label,
@@ -108,6 +109,7 @@ class Store:
 
     def audit(self, limit: int = 200) -> dict[str, Any]:
         with self._connect() as c:
+            if type(limit) is not int or not 1 <= limit <= 10000: raise ValueError('Invalid audit limit')
             total = c.execute('SELECT COUNT(*) FROM audit').fetchone()[0]
             rows = c.execute('SELECT seq,payload,prev_hash,hash FROM audit ORDER BY seq DESC LIMIT ?', (limit,)).fetchall()
         return {'total': total, 'has_more': total > len(rows),
