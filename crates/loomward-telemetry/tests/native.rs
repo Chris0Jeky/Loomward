@@ -94,11 +94,14 @@ fn windows_observations_and_rates_have_structural_truths() {
     assert!(own.working_set_bytes.unwrap() > 0);
     assert!(own.start_time_windows_100ns.is_some());
     assert!(own.rates.cpu_percent_of_machine.is_none());
+    // PID 4 (System): what is readable depends on the token (hosted CI runners are elevated). Either
+    // way an unread field is null with a recorded reason, never a silent zero.
     let system = first.processes.iter().find(|p| p.pid == 4).unwrap();
-    assert!(system.protected_or_unknown);
-    assert!(system.image_name.is_none());
-    assert!(system.working_set_bytes.is_none());
-    assert!(system.unknowns.iter().any(|u| u.windows_error == Some(5)));
+    if system.image_name.is_none() || system.working_set_bytes.is_none() {
+        assert!(system.protected_or_unknown);
+        assert!(!system.unknowns.is_empty());
+    }
+    assert_ne!(system.working_set_bytes, Some(0));
     std::thread::sleep(Duration::from_millis(100));
     let second = sampler.sample(1024);
     let own = second
