@@ -62,6 +62,7 @@ export interface Root {
   display_path: DisplayPath;
   origin: 'fixture' | 'lab_generated' | 'owner_granted';
   dataset_class: DatasetClass;
+  volume_id: string | null;
   granted_at: Timestamp;
   granted_via: 'desktop_picker' | 'cli_flag' | 'fixture';
   grant_state: 'active' | 'revoked' | 'identity_changed';
@@ -77,7 +78,7 @@ export interface GrantList { grants: Grant[] }
 
 export interface Health {
   observed_at: Timestamp;
-  engine: { private_bytes: NullableBytes; working_set_bytes: NullableBytes; cpu_seconds: number | null; threads: number | null };
+  engine: { private_commit_bytes: NullableBytes; working_set_bytes: NullableBytes; cpu_seconds: number | null; threads: number | null };
   catalog: { schema_version: number; db_bytes: NullableBytes; wal_bytes: NullableBytes; files: number; dirs: number; writer_queue_depth: number; writer_queue_capacity: number };
   jobs_running: number;
   last_error: ErrorBody | null;

@@ -91,7 +91,7 @@
   <h2 id="h-health">Loomward's own health</h2>
   {#if health}
     <dl class="kv">
-      <dt>Private memory</dt><dd class="num">{formatBytes(health.engine.private_bytes)}</dd>
+      <dt>Private commit</dt><dd class="num">{formatBytes(health.engine.private_commit_bytes)}</dd>
       <dt>Working set</dt><dd class="num">{formatBytes(health.engine.working_set_bytes)}</dd>
       <dt>Threads</dt><dd class="num">{formatCount(health.engine.threads)}</dd>
       <dt>Catalogue</dt><dd class="num">{formatCount(health.catalog.files)} files, {formatCount(health.catalog.dirs)} folders, schema v{health.catalog.schema_version}</dd>
