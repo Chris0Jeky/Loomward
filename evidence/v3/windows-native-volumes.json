@@ -1,0 +1,498 @@
+[
+  {
+    "volume_name": "\\\\?\\Volume{redacted-1}\\",
+    "mount_paths": {
+      "state": "known",
+      "value": []
+    },
+    "filesystem": {
+      "state": "known",
+      "value": {
+        "name": "FAT32",
+        "serial": "serial-1",
+        "flags": 131590,
+        "hard_links": false,
+        "alternate_streams": false,
+        "sparse": false,
+        "compression": false,
+        "case_sensitive_search": false,
+        "reparse_points": false,
+        "read_only": false
+      }
+    },
+    "capacity": {
+      "state": "known",
+      "value": {
+        "total_bytes": "100663296",
+        "free_bytes": "60779520",
+        "available_bytes": "60779520"
+      }
+    },
+    "drive_type": {
+      "state": "known",
+      "value": "fixed"
+    },
+    "bus_type": {
+      "state": "known",
+      "value": "nvme"
+    },
+    "removable_media": {
+      "state": "known",
+      "value": false
+    },
+    "incurs_seek_penalty": {
+      "state": "known",
+      "value": false
+    },
+    "trim_enabled": {
+      "state": "known",
+      "value": true
+    },
+    "availability": {
+      "state": "known",
+      "value": true
+    }
+  },
+  {
+    "volume_name": "\\\\?\\Volume{redacted-2}\\",
+    "mount_paths": {
+      "state": "known",
+      "value": [
+        "F:\\"
+      ]
+    },
+    "filesystem": {
+      "state": "known",
+      "value": {
+        "name": "NTFS",
+        "serial": "serial-2",
+        "flags": 65482495,
+        "hard_links": true,
+        "alternate_streams": true,
+        "sparse": true,
+        "compression": true,
+        "case_sensitive_search": true,
+        "reparse_points": true,
+        "read_only": false
+      }
+    },
+    "capacity": {
+      "state": "known",
+      "value": {
+        "total_bytes": "524283904",
+        "free_bytes": "487948288",
+        "available_bytes": "487948288"
+      }
+    },
+    "drive_type": {
+      "state": "known",
+      "value": "fixed"
+    },
+    "bus_type": {
+      "state": "known",
+      "value": "nvme"
+    },
+    "removable_media": {
+      "state": "known",
+      "value": false
+    },
+    "incurs_seek_penalty": {
+      "state": "known",
+      "value": false
+    },
+    "trim_enabled": {
+      "state": "known",
+      "value": true
+    },
+    "availability": {
+      "state": "known",
+      "value": true
+    }
+  },
+  {
+    "volume_name": "\\\\?\\Volume{redacted-3}\\",
+    "mount_paths": {
+      "state": "known",
+      "value": [
+        "G:\\"
+      ]
+    },
+    "filesystem": {
+      "state": "known",
+      "value": {
+        "name": "NTFS",
+        "serial": "serial-3",
+        "flags": 29830879,
+        "hard_links": true,
+        "alternate_streams": true,
+        "sparse": true,
+        "compression": true,
+        "case_sensitive_search": true,
+        "reparse_points": true,
+        "read_only": false
+      }
+    },
+    "capacity": {
+      "state": "known",
+      "value": {
+        "total_bytes": "998613946368",
+        "free_bytes": "219926507520",
+        "available_bytes": "219926507520"
+      }
+    },
+    "drive_type": {
+      "state": "known",
+      "value": "fixed"
+    },
+    "bus_type": {
+      "state": "known",
+      "value": "nvme"
+    },
+    "removable_media": {
+      "state": "known",
+      "value": false
+    },
+    "incurs_seek_penalty": {
+      "state": "known",
+      "value": false
+    },
+    "trim_enabled": {
+      "state": "known",
+      "value": true
+    },
+    "availability": {
+      "state": "known",
+      "value": true
+    }
+  },
+  {
+    "volume_name": "\\\\?\\Volume{redacted-4}\\",
+    "mount_paths": {
+      "state": "known",
+      "value": []
+    },
+    "filesystem": {
+      "state": "known",
+      "value": {
+        "name": "NTFS",
+        "serial": "serial-4",
+        "flags": 65482495,
+        "hard_links": true,
+        "alternate_streams": true,
+        "sparse": true,
+        "compression": true,
+        "case_sensitive_search": true,
+        "reparse_points": true,
+        "read_only": false
+      }
+    },
+    "capacity": {
+      "state": "known",
+      "value": {
+        "total_bytes": "567275520",
+        "free_bytes": "86945792",
+        "available_bytes": "86945792"
+      }
+    },
+    "drive_type": {
+      "state": "known",
+      "value": "fixed"
+    },
+    "bus_type": {
+      "state": "known",
+      "value": "nvme"
+    },
+    "removable_media": {
+      "state": "known",
+      "value": false
+    },
+    "incurs_seek_penalty": {
+      "state": "known",
+      "value": false
+    },
+    "trim_enabled": {
+      "state": "known",
+      "value": true
+    },
+    "availability": {
+      "state": "known",
+      "value": true
+    }
+  },
+  {
+    "volume_name": "\\\\?\\Volume{redacted-5}\\",
+    "mount_paths": {
+      "state": "known",
+      "value": [
+        "C:\\"
+      ]
+    },
+    "filesystem": {
+      "state": "known",
+      "value": {
+        "name": "NTFS",
+        "serial": "serial-5",
+        "flags": 29830879,
+        "hard_links": true,
+        "alternate_streams": true,
+        "sparse": true,
+        "compression": true,
+        "case_sensitive_search": true,
+        "reparse_points": true,
+        "read_only": false
+      }
+    },
+    "capacity": {
+      "state": "known",
+      "value": {
+        "total_bytes": "1999323557888",
+        "free_bytes": "130351624192",
+        "available_bytes": "130351624192"
+      }
+    },
+    "drive_type": {
+      "state": "known",
+      "value": "fixed"
+    },
+    "bus_type": {
+      "state": "known",
+      "value": "nvme"
+    },
+    "removable_media": {
+      "state": "known",
+      "value": false
+    },
+    "incurs_seek_penalty": {
+      "state": "known",
+      "value": false
+    },
+    "trim_enabled": {
+      "state": "known",
+      "value": true
+    },
+    "availability": {
+      "state": "known",
+      "value": true
+    }
+  },
+  {
+    "volume_name": "\\\\?\\Volume{redacted-6}\\",
+    "mount_paths": {
+      "state": "known",
+      "value": [
+        "D:\\"
+      ]
+    },
+    "filesystem": {
+      "state": "known",
+      "value": {
+        "name": "NTFS",
+        "serial": "serial-6",
+        "flags": 65482495,
+        "hard_links": true,
+        "alternate_streams": true,
+        "sparse": true,
+        "compression": true,
+        "case_sensitive_search": true,
+        "reparse_points": true,
+        "read_only": false
+      }
+    },
+    "capacity": {
+      "state": "known",
+      "value": {
+        "total_bytes": "524283904",
+        "free_bytes": "485605376",
+        "available_bytes": "485605376"
+      }
+    },
+    "drive_type": {
+      "state": "known",
+      "value": "fixed"
+    },
+    "bus_type": {
+      "state": "known",
+      "value": "sata"
+    },
+    "removable_media": {
+      "state": "known",
+      "value": false
+    },
+    "incurs_seek_penalty": {
+      "state": "known",
+      "value": true
+    },
+    "trim_enabled": {
+      "state": "known",
+      "value": false
+    },
+    "availability": {
+      "state": "known",
+      "value": true
+    }
+  },
+  {
+    "volume_name": "\\\\?\\Volume{redacted-7}\\",
+    "mount_paths": {
+      "state": "known",
+      "value": [
+        "E:\\"
+      ]
+    },
+    "filesystem": {
+      "state": "known",
+      "value": {
+        "name": "NTFS",
+        "serial": "serial-7",
+        "flags": 65482495,
+        "hard_links": true,
+        "alternate_streams": true,
+        "sparse": true,
+        "compression": true,
+        "case_sensitive_search": true,
+        "reparse_points": true,
+        "read_only": false
+      }
+    },
+    "capacity": {
+      "state": "known",
+      "value": {
+        "total_bytes": "1999373398016",
+        "free_bytes": "912848498688",
+        "available_bytes": "912848498688"
+      }
+    },
+    "drive_type": {
+      "state": "known",
+      "value": "fixed"
+    },
+    "bus_type": {
+      "state": "known",
+      "value": "sata"
+    },
+    "removable_media": {
+      "state": "known",
+      "value": false
+    },
+    "incurs_seek_penalty": {
+      "state": "known",
+      "value": true
+    },
+    "trim_enabled": {
+      "state": "known",
+      "value": false
+    },
+    "availability": {
+      "state": "known",
+      "value": true
+    }
+  },
+  {
+    "volume_name": "\\\\?\\Volume{redacted-8}\\",
+    "mount_paths": {
+      "state": "known",
+      "value": []
+    },
+    "filesystem": {
+      "state": "known",
+      "value": {
+        "name": "NTFS",
+        "serial": "serial-8",
+        "flags": 65482495,
+        "hard_links": true,
+        "alternate_streams": true,
+        "sparse": true,
+        "compression": true,
+        "case_sensitive_search": true,
+        "reparse_points": true,
+        "read_only": false
+      }
+    },
+    "capacity": {
+      "state": "known",
+      "value": {
+        "total_bytes": "497020928",
+        "free_bytes": "33746944",
+        "available_bytes": "33746944"
+      }
+    },
+    "drive_type": {
+      "state": "known",
+      "value": "fixed"
+    },
+    "bus_type": {
+      "state": "known",
+      "value": "sata"
+    },
+    "removable_media": {
+      "state": "known",
+      "value": false
+    },
+    "incurs_seek_penalty": {
+      "state": "known",
+      "value": true
+    },
+    "trim_enabled": {
+      "state": "known",
+      "value": false
+    },
+    "availability": {
+      "state": "known",
+      "value": true
+    }
+  },
+  {
+    "volume_name": "\\\\?\\Volume{redacted-9}\\",
+    "mount_paths": {
+      "state": "known",
+      "value": []
+    },
+    "filesystem": {
+      "state": "known",
+      "value": {
+        "name": "NTFS",
+        "serial": "serial-9",
+        "flags": 65482495,
+        "hard_links": true,
+        "alternate_streams": true,
+        "sparse": true,
+        "compression": true,
+        "case_sensitive_search": true,
+        "reparse_points": true,
+        "read_only": false
+      }
+    },
+    "capacity": {
+      "state": "known",
+      "value": {
+        "total_bytes": "950005760",
+        "free_bytes": "84369408",
+        "available_bytes": "84369408"
+      }
+    },
+    "drive_type": {
+      "state": "known",
+      "value": "fixed"
+    },
+    "bus_type": {
+      "state": "known",
+      "value": "nvme"
+    },
+    "removable_media": {
+      "state": "known",
+      "value": false
+    },
+    "incurs_seek_penalty": {
+      "state": "known",
+      "value": false
+    },
+    "trim_enabled": {
+      "state": "known",
+      "value": true
+    },
+    "availability": {
+      "state": "known",
+      "value": true
+    }
+  }
+]

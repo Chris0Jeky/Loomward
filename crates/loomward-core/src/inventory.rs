@@ -7,7 +7,20 @@ use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 fn hex(value: &str) -> String {
-    format!("{:x}", Sha256::digest(value.as_bytes()))
+    hex_bytes(value.as_bytes())
+}
+fn hex_bytes(value: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(value))
+}
+fn record_id_bytes(root_key: &str, rel: &std::ffi::OsStr) -> Vec<u8> {
+    // Raw bytes on Unix, WTF-8 on Windows (UTF-8 for any valid name), so existing IDs stay stable
+    // while distinct invalid names no longer collapse through to_string_lossy.
+    let raw = rel.as_encoded_bytes();
+    let mut out = Vec::with_capacity(root_key.len() + 1 + raw.len());
+    out.extend_from_slice(root_key.as_bytes());
+    out.push(0);
+    out.extend(raw.iter().map(|&b| if b == b'\\' { b'/' } else { b }));
+    out
 }
 fn unix_ns(t: std::io::Result<SystemTime>) -> Option<String> {
     t.ok()?
@@ -156,14 +169,17 @@ pub fn scan(root: &Path, max_entries: usize, max_depth: usize) -> Result<Value, 
                 skipped += 1;
                 continue;
             }
-            let rel = path
+            let rel_path = path
                 .strip_prefix(&root)
                 .map_err(|e| e.to_string())?
-                .to_string_lossy()
-                .replace('\\', "/");
+                .to_owned();
+            let rel = rel_path.to_string_lossy().replace('\\', "/");
             let allocated = allocation(&meta);
             let nlink = link_count(&meta);
             let mut flags = Vec::new();
+            if rel_path.as_os_str().to_str().is_none() {
+                flags.push("lossy_path");
+            }
             if sensitive(&name) {
                 flags.push("sensitive");
             }
@@ -191,7 +207,7 @@ pub fn scan(root: &Path, max_entries: usize, max_depth: usize) -> Result<Value, 
                 .extension()
                 .map(|s| format!(".{}", s.to_string_lossy().to_lowercase()))
                 .unwrap_or_default();
-            files.push(json!({"id":hex(&format!("{root_key}\0{rel}"))[..24],"name":name,"relative_path":rel,
+            files.push(json!({"id":hex_bytes(&record_id_bytes(&root_key, rel_path.as_os_str()))[..24],"name":name,"relative_path":rel,
                 "extension":ext,"size_bytes":meta.len(),"allocated_bytes":allocated,"mtime_ns":unix_ns(meta.modified()),
                 "ctime_ns":null,"nlink":nlink,"flags":flags,"identity_quality":"native_path_observation_not_execution_identity"}));
         }
@@ -256,5 +272,43 @@ mod tests {
         fs::write(o.path().join("secret"), b"secret").unwrap();
         symlink(o.path(), t.path().join("link")).unwrap();
         assert_eq!(scan(t.path(), 10, 64).unwrap()["summary"]["file_count"], 0);
+    }
+    #[cfg(target_os = "linux")] // APFS and NTFS refuse non-UTF-8 names
+    #[test]
+    fn distinct_non_utf8_names_have_distinct_ids() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let t = tempfile::tempdir().unwrap();
+        fs::write(t.path().join(OsStr::from_bytes(b"a_\xff")), b"x").unwrap();
+        fs::write(t.path().join(OsStr::from_bytes(b"a_\xfe")), b"y").unwrap();
+        let s = scan(t.path(), 100, 64).unwrap();
+        assert_eq!(s["summary"]["file_count"], 2);
+        let files = s["files"].as_array().unwrap();
+        assert_eq!(files.len(), 2);
+        assert_ne!(
+            files[0]["id"].as_str().unwrap(),
+            files[1]["id"].as_str().unwrap(),
+            "distinct non-UTF-8 names must not collapse to the same record ID"
+        );
+        for f in files {
+            let flags = f["flags"].as_array().unwrap();
+            assert!(flags.contains(&json!("lossy_path")));
+        }
+    }
+    #[test]
+    fn valid_name_id_is_unchanged_and_stable() {
+        let t = tempfile::tempdir().unwrap();
+        fs::write(t.path().join("hello.txt"), b"hello").unwrap();
+        let first = scan(t.path(), 100, 64).unwrap();
+        let second = scan(t.path(), 100, 64).unwrap();
+        let file = &first["files"][0];
+        assert_eq!(file["id"], second["files"][0]["id"]);
+        let flags = file["flags"].as_array().unwrap();
+        assert!(!flags.contains(&json!("lossy_path")));
+        // A valid name keeps the pre-fix ID on every platform.
+        let rel = file["relative_path"].as_str().unwrap();
+        let root_key = first["root_key"].as_str().unwrap();
+        let expected = hex(&format!("{root_key}\0{rel}"));
+        assert_eq!(&expected[..24], file["id"].as_str().unwrap());
     }
 }

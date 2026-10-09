@@ -3,5 +3,6 @@
 #![forbid(unsafe_code)]
 pub mod inventory;
 pub mod planner;
+pub mod planner_v2;
 pub mod policy;
 pub mod transaction;
