@@ -292,7 +292,7 @@ export function createWovenTreemap(canvas, options = {}) {
       // labels
       if (c.agg) {
         if (w > 70 && h > 22) labels.push({ c, x, y, w, h, kind: 'agg', name: `${c.agg.count.toLocaleString('en-GB')} smaller`, size: fmt(c.agg.size) });
-      } else if (!c.leaf && c.header) labels.push({ c, x, y, w, h, kind: c.depth === 0 ? 'head0' : 'head', name: n.name, size: fmt(sizeOf(n)), unm: n.unmeasured });
+      } else if (!c.leaf && c.header) labels.push({ c, x, y, w, h, kind: c.depth === 0 ? 'head0' : 'head', name: n.name, size: fmt(sizeOf(n)), unm: n.unmeasured, den: n.deniedBelow || 0 });
       else if (c.leaf && w > 54 && h > 26) labels.push({ c, x, y, w, h, kind: c.depth === 0 && w > 190 && h > 110 ? 'display' : 'leaf', name: n.kind === 'gap' ? n.name : n.name, size: fmt(sizeOf(n)) });
     }
     // pre-fit label text once per layout
@@ -304,7 +304,8 @@ export function createWovenTreemap(canvas, options = {}) {
       const sizeW = ctx.measureText(l.size).width;
       ctx.font = fontOf(l.kind);
       if (isHead) {
-        const suffix = l.unm ? ` · ${l.unm} unmeasured` : '';
+        const other = l.unm - l.den;
+        const suffix = (l.den ? ` · ${l.den} access denied` : '') + (other > 0 ? ` · ${other} unmeasured` : '');
         l.text = fit(ctx, l.name, room - sizeW - 10);
         l.sizeText = room - sizeW > 30 ? l.size + suffix : null;
         if (l.sizeText && suffix) { ctx.font = palette.fontMono; if (ctx.measureText(l.sizeText).width > room - (l.text ? ctx.measureText(l.text).width : 0) - 10) l.sizeText = l.size; }

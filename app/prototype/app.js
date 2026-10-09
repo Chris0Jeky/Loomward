@@ -29,6 +29,7 @@ function h(tag, props = {}, ...kids) {
 // ---------- data ----------
 const ws = createWorkspace();
 (function count(n) {
+  if (n.denied) { n.files = null; return 0; } // listing refused: count unknown, not zero
   if (!n.children) { n.files = n.kind === 'file' ? 1 : 0; return n.files; }
   n.files = n.children.reduce((s, c) => s + count(c), 0);
   return n.files;
@@ -79,7 +80,7 @@ const handlers = {
   onHover(node, cell, ev, fromKeys) {
     if (cell?.agg) { showTip(ev, `${cell.agg.count.toLocaleString('en-GB')} smaller items`, `${fmt(cell.agg.size)} · too small to draw here`); inspectAgg(cell.agg); return; }
     if (!node) { hideTip(); inspect(selected || current().focused, selected ? 'Selected' : 'Current view'); return; }
-    if (ev) showTip(ev, node.name, `${fmt(sizeOf(node))}${node.unmeasured ? ` · ${node.unmeasured} unmeasured` : ''}`); else hideTip();
+    if (ev) showTip(ev, node.name, `${fmt(sizeOf(node))}${unknownNote(node)}`); else hideTip();
     inspect(node, 'Hover preview');
     if (fromKeys) $('map-live').textContent = `${node.name}, ${fmt(sizeOf(node))}. ${node.children?.length ? 'Enter opens it.' : ''}`;
   },
@@ -95,6 +96,11 @@ const handlers = {
     const kids = (node.children || []).filter((c) => sizeOf(c) > 0).length;
     $('map-live').textContent = `Opened ${pathOf(node)}, ${fmt(sizeOf(node))}, ${kids} regions.`;
   },
+};
+const unknownNote = (n) => {
+  if (n.denied) return ' · access denied';
+  const den = n.deniedBelow || 0, other = (n.unmeasured || 0) - den;
+  return (den ? ` · ${den} access denied` : '') + (other > 0 ? ` · ${other} unmeasured` : '');
 };
 const isWithin = (n, anc) => { for (let p = n; p; p = p.parent) if (p === anc) return true; return false; };
 const atlas = createWovenTreemap(atlasCanvas, { ...handlers, maxDepth: 3 });
@@ -156,8 +162,9 @@ function inspect(n, state) {
   const v = volumeOf(n);
   const ref = n.parent && n.kind !== 'volume' ? n.parent : null;
   const share = ref && sizeOf(ref) && sizeOf(n) != null ? ` · ${(100 * sizeOf(n) / sizeOf(ref)).toFixed(1)}% of ${ref.name}` : ''; // unknown size: no share, never 0%
-  const kind = { workspace: 'Workspace', volume: 'Volume', dir: 'Folder', file: 'File', gap: 'Unattributed bytes' }[n.kind];
-  const items = n.children ? ` · ${n.files.toLocaleString('en-GB')} files` : '';
+  const kind = n.denied ? 'Folder' : { workspace: 'Workspace', volume: 'Volume', dir: 'Folder', file: 'File', gap: 'Unattributed bytes' }[n.kind];
+  const items = n.denied ? ' · access denied: contents and file count unknown'
+    : n.children ? ` · ${n.deniedBelow ? 'at least ' : ''}${n.files.toLocaleString('en-GB')} files${n.deniedBelow ? ` (${n.deniedBelow} folder${n.deniedBelow > 1 ? 's' : ''} denied access)` : ''}` : '';
   const max = Math.max(n.size || 0, n.alloc || 0) || 1;
   const sizeRow = (label, val) => h('div', { class: 'size-row' }, h('span', {}, label),
     h('div', { class: 'size-bar' }, h('span', { style: `transform:scaleX(${val == null ? 0 : (val / max).toFixed(4)})` })),
@@ -244,6 +251,21 @@ function renderThreads() {
 
 // ---------- review queue ----------
 const decisions = new Map();
+/** Re-render a region without losing the keyboard user's place: refocus the same control by
+ * data-key, else the first control in the same row, else the region's first control. */
+function keepFocus(region, render) {
+  const a = document.activeElement;
+  const had = a && region.contains(a);
+  const key = had ? a.dataset.key : null, row = had ? a.closest('[data-row]')?.dataset.row : null;
+  render();
+  if (!had) return;
+  const sel = 'button, select';
+  const next = (key && region.querySelector(`[data-key="${key}"]`))
+    || (row != null && region.querySelector(`[data-row="${row}"]`)?.querySelector(sel))
+    || region.querySelector(sel);
+  next?.focus();
+}
+
 function renderReview() {
   const abst = ws.review.filter((r) => !r.label).length;
   $('review-count').textContent = `${ws.review.length - abst} proposals · ${abst} abstentions · session only`;
@@ -254,24 +276,25 @@ function renderReview() {
         h('span', { class: 'rq-meter', 'aria-hidden': 'true' }, h('span', { style: `width:${Math.round(r.score * 100)}%` })),
         h('span', { class: 'score' }, `${r.score.toFixed(2)} rel.`))
       : h('div', { class: 'rq-prop' }, h('span', { class: 'rq-abstain' }, 'Abstains'));
-    const show = h('button', { class: 'btn quiet', type: 'button', onclick: () => reveal(r.node) }, 'Show in map');
+    const show = h('button', { class: 'btn quiet', type: 'button', onclick: () => reveal(r.node), 'data-key': `rq-${i}-show` }, 'Show in map');
     let actions;
-    if (d) actions = h('div', { class: 'rq-actions', role: 'status' }, d, ' ', h('button', { class: 'btn', type: 'button', onclick: () => { decisions.delete(i); renderReview(); } }, 'Undo'));
+    if (d) actions = h('div', { class: 'rq-actions', role: 'status' }, d, ' ', h('button', { class: 'btn', type: 'button', onclick: () => { decisions.delete(i); rerenderReview(); } , 'data-key': `rq-${i}-undo` }, 'Undo'));
     else {
-      const sel = h('select', { 'aria-label': `Choose a label for ${r.node.name}` },
+      const sel = h('select', { 'aria-label': `Choose a label for ${r.node.name}`, 'data-key': `rq-${i}-other` },
         h('option', { value: '' }, 'Other label…'), ...Object.entries(MEANINGS).map(([k, l]) => h('option', { value: k }, l)));
-      sel.addEventListener('change', () => { if (sel.value) { decisions.set(i, `Saved "${MEANINGS[sel.value]}" for this session. Nothing moved.`); renderReview(); } });
+      sel.addEventListener('change', () => { if (sel.value) { decisions.set(i, `Saved "${MEANINGS[sel.value]}" for this session. Nothing moved.`); rerenderReview(); } });
       actions = h('div', { class: 'rq-actions' },
-        r.label ? h('button', { class: 'btn primary', type: 'button', onclick: () => { decisions.set(i, `Saved "${MEANINGS[r.label]}" for this session. Nothing moved.`); renderReview(); } }, `Accept ${MEANINGS[r.label]}`) : null,
-        sel, h('button', { class: 'btn quiet', type: 'button', onclick: () => { decisions.set(i, 'Deferred. Not asked again this scan.'); renderReview(); } }, 'Not now'), show);
+        r.label ? h('button', { class: 'btn primary', type: 'button', onclick: () => { decisions.set(i, `Saved "${MEANINGS[r.label]}" for this session. Nothing moved.`); rerenderReview(); }, 'data-key': `rq-${i}-accept` }, `Accept ${MEANINGS[r.label]}`) : null,
+        sel, h('button', { class: 'btn quiet', type: 'button', onclick: () => { decisions.set(i, 'Deferred. Not asked again this scan.'); rerenderReview(); }, 'data-key': `rq-${i}-defer` }, 'Not now'), show);
     }
-    return h('li', { class: `rq${d ? ' done' : ''}` },
+    return h('li', { class: `rq${d ? ' done' : ''}`, 'data-row': String(i) },
       h('div', { class: 'rq-file' }, h('p', { class: 'rq-name', title: pathOf(r.node) }, r.node.name)), prop,
       h('p', { class: 'rq-why' }, r.why), actions);
   }));
 }
+const rerenderReview = () => keepFocus($('review-list'), renderReview);
 function reveal(n) {
-  const target = n.children?.length ? n.parent : n.parent;
+  const target = n.children?.length ? n : n.parent; // a folder opens itself; a file opens its folder
   current().focus(target || ws.root);
   selected = n;
   atlas.select(n);
@@ -305,7 +328,7 @@ function renderTiers() {
       h('span', { class: 'why' }, m.reason + '.'), h('span', { class: 'caveat' }, m.caveat + '.')))),
     h('p', { class: 'tier-kept' }, 'Left in place: ' + plan.kept.join('; ') + '.'),
     h('div', { class: 'tier-actions' },
-      h('button', { class: 'btn', type: 'button', 'aria-pressed': String(keepCurrent), onclick: () => { keepCurrent = !keepCurrent; renderTiers(); } }, keepCurrent ? 'Show the simulated plan' : 'Compare: keep everything where it is'),
+      h('button', { class: 'btn', type: 'button', 'aria-pressed': String(keepCurrent), onclick: () => { keepCurrent = !keepCurrent; keepFocus($('tier-body'), renderTiers); }, 'data-key': 'tier-toggle' }, keepCurrent ? 'Show the simulated plan' : 'Compare: keep everything where it is'),
       h('button', { class: 'btn', type: 'button', onclick: () => reveal(plan.moves[0].node) }, 'Show first group in map')),
   );
 }
@@ -369,7 +392,7 @@ function setMode(next, { transition = true } = {}) {
     palette = readPalette();
     atlas.setPalette(palette); orbit.setPalette(palette);
     if (prevFocus) current().focus(prevFocus, { animate: false });
-    if (mode === 'atlas') { atlas.resize(); atlas.reveal(); } else orbit.resize();
+    if (mode === 'atlas') atlas.resize(); else orbit.resize(); // the loom reveal plays on first load only
     renderThreads(); renderReview(); renderHelp();
     for (const k in sparks) sparks[k].spark.redraw();
     inspect(selected || current().focused, selected ? 'Selected' : 'Current view');
@@ -391,9 +414,15 @@ document.querySelectorAll('.basis button').forEach((b) => b.addEventListener('cl
 
 atlas.setRoot(ws.root);
 orbit.setRoot(ws.root);
+document.querySelector('.basis').addEventListener('keydown', (e) => {
+  if (!['ArrowRight', 'ArrowLeft', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
+  e.preventDefault();
+  const next = document.querySelector(`.basis button:not([aria-checked="true"])`);
+  next.click(); next.focus();
+});
 renderCoverage(); renderThreads(); renderReview(); renderTiers(); renderHelp();
 crumbs(ws.root); inspect(ws.root, 'Current view');
 atlas.reveal();
 
 // handle for the proving check and for poking at it from devtools
-window.loomward = { ws, atlas, orbit, setMode, get mode() { return mode; }, ready: true };
+window.loomward = { ws, atlas, orbit, setMode, inspect: (n) => inspect(n, 'Selected'), get mode() { return mode; }, ready: true };

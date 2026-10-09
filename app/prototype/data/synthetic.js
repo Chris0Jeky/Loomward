@@ -17,6 +17,7 @@
  *   residency 'c'|'g'|'e' (volume tier), 'cloud' (online-only placeholder) or null = unknown (weft)
  *   permission 'protected'|'pinned'|'none' or null = unknown, e.g. access denied (selvedge)
  *   unmeasured  count of descendants whose size is unknown
+ *   denied      true when listing was refused (size, alloc and file count unknown); deniedBelow counts them
  *   unknowns    human-readable list of what this node does not know
  *   children, parent, depth, collections, modifiedDays, accessed (always null: last-access not recorded)
  */
@@ -234,15 +235,17 @@ export function createWorkspace(seed = 0x10057) {
   // ---------- aggregate sizes bottom-up; unknown stays unknown ----------
   function total(n) {
     if (!n.children) return;
-    let s = 0, a = 0, unm = 0;
+    let s = 0, a = 0, unm = 0, den = 0;
     for (const c of n.children) {
       total(c);
+      den += (c.denied ? 1 : 0) + (c.deniedBelow || 0);
       if (c.size == null) unm += 1 + (c.unmeasured || 0);
       else { s += c.size; a += c.alloc ?? 0; unm += c.unmeasured; }
     }
     n.size = n.denied ? null : s;
     n.alloc = n.denied ? null : a;
     n.unmeasured = unm;
+    n.deniedBelow = den; // access-denied folders below this one (each also counted in unmeasured)
     if (unm && !n.denied) n.unknowns.push(`${unm} item${unm > 1 ? 's' : ''} below here have no measured size`);
     // a folder's meaning is the dominant meaning of its bytes when it has none of its own
     if (n.meaning == null && n.kind === 'dir' && n.children.length) {

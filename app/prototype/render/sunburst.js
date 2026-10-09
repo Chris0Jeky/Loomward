@@ -39,6 +39,7 @@ export function createSunburst(canvas, options = {}) {
 
   function partition() {
     part = new Map();
+    if (layer) layer.key = null; // the cached cloth belongs to the old partition
     (function walk(n, x0, x1) {
       part.set(n, [x0, x1]);
       if (!n.children) return;
@@ -275,7 +276,10 @@ export function createSunburst(canvas, options = {}) {
     ctx.fillText(name, cx, cy - 9);
     ctx.font = palette.fontMono; ctx.fillStyle = palette.labelDim;
     ctx.fillText(fmt(sizeOf(n)), cx, cy + 10);
-    if (n.parent) { ctx.font = palette.fontMonoSmall; ctx.fillText('centre: zoom out', cx, cy + 27); }
+    ctx.font = palette.fontMonoSmall;
+    let line = cy + 27;
+    if (n.deniedBelow) { ctx.fillStyle = palette.permission; ctx.fillText(`${n.deniedBelow} access denied`, cx, line); line += 14; ctx.fillStyle = palette.labelDim; }
+    if (n.parent && line < cy + r0 - 6) ctx.fillText('centre: zoom out', cx, line);
   }
 
   // ---------- loop ----------
