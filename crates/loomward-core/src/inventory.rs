@@ -273,7 +273,7 @@ mod tests {
         symlink(o.path(), t.path().join("link")).unwrap();
         assert_eq!(scan(t.path(), 10, 64).unwrap()["summary"]["file_count"], 0);
     }
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")] // APFS and NTFS refuse non-UTF-8 names
     #[test]
     fn distinct_non_utf8_names_have_distinct_ids() {
         use std::ffi::OsStr;
