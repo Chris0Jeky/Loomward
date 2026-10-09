@@ -45,4 +45,68 @@ describe('tauri transport', () => {
     const api: TauriApi = { invoke: async () => { throw 'boom'; }, Channel };
     await expect(new Client(await createTauriTransport(api)).call('roots.list', {})).rejects.toBeInstanceOf(TransportError);
   });
+  describe('liveness', () => {
+    const mk = (opts: { rejectEvents?: number } = {}) => {
+      const channels: FakeChannel<unknown>[] = [];
+      const lastSeqs: unknown[] = [];
+      let rejects = opts.rejectEvents ?? 0;
+      const api: TauriApi = {
+        invoke: async (cmd, args) => {
+          if (cmd !== 'lw_events') return null;
+          lastSeqs.push(args!.lastSeq);
+          if (rejects-- > 0) throw 'engine gone';
+          channels.push(args!.channel as FakeChannel<unknown>);
+          return null;
+        },
+        Channel,
+      };
+      return { api, channels, lastSeqs };
+    };
+    const until = async (cond: () => boolean) => { for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 5)); };
+
+    it('reports closed when the channel goes silent past the heartbeat window, then resubscribes from the last seq', async () => {
+      const { api, channels, lastSeqs } = mk();
+      const t = await createTauriTransport(api, { idleMs: 40, sleep: async () => {} });
+      const states: string[] = [];
+      const stop = t.subscribe(() => {}, (s) => states.push(s), null);
+      await until(() => channels.length === 1);
+      channels[0]!.onmessage(ev(9));
+      await until(() => channels.length === 2);
+      expect(states.slice(0, 3)).toEqual(['open', 'closed', 'open']);
+      expect(lastSeqs).toEqual([null, 9]);
+      channels[0]!.onmessage(ev(10)); // the dead channel is ignored
+      stop();
+    });
+
+    it('stays open while messages keep arriving', async () => {
+      const { api, channels } = mk();
+      const t = await createTauriTransport(api, { idleMs: 60, sleep: async () => {} });
+      const states: string[] = [];
+      const stop = t.subscribe(() => {}, (s) => states.push(s));
+      await until(() => channels.length === 1);
+      for (let i = 0; i < 10; i++) { channels[0]!.onmessage(ev(i)); await new Promise((r) => setTimeout(r, 20)); }
+      stop();
+      expect(states).toEqual(['open']);
+    });
+
+    it('reports closed when the subscribe call is refused, and retries', async () => {
+      const { api, channels } = mk({ rejectEvents: 2 });
+      const t = await createTauriTransport(api, { idleMs: 1000, sleep: async () => {} });
+      const states: string[] = [];
+      const stop = t.subscribe(() => {}, (s) => states.push(s));
+      await until(() => channels.length === 1);
+      stop();
+      expect(states.slice(0, 3)).toEqual(['closed', 'closed', 'open']);
+    });
+
+    it('stops everything on unsubscribe', async () => {
+      const { api, channels, lastSeqs } = mk();
+      const t = await createTauriTransport(api, { idleMs: 20, sleep: async () => {} });
+      const stop = t.subscribe(() => {}, () => {});
+      await until(() => channels.length === 1);
+      stop();
+      await new Promise((r) => setTimeout(r, 80));
+      expect(lastSeqs).toHaveLength(1);
+    });
+  });
 });
