@@ -2,7 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from loomward.inventory import scan
+from loomward.inventory import scan, signature
 
 class InventoryTests(unittest.TestCase):
     def test_metadata_counts(self):
@@ -13,6 +13,17 @@ class InventoryTests(unittest.TestCase):
             self.assertEqual(s['summary']['file_count'],2)
             self.assertTrue(s['coverage']['complete_under_policy'])
             self.assertEqual(sorted(x['relative_path'] for x in s['files']),['a.txt','d/b.bin'])
+    def test_identity_matches_fresh_stat_and_open_handle(self):
+        # Windows DirEntry.stat() reports st_ino/st_dev/st_nlink as 0 and fstat's st_ctime differs from stat's
+        with tempfile.TemporaryDirectory() as t:
+            p=Path(t)/'a.bin'; p.write_bytes(b'abc')
+            r=scan(t)['files'][0]
+            self.assertGreaterEqual(r['nlink'],1)
+            recorded=tuple(r[k] for k in ('device','inode','size_bytes','mtime_ns','ctime_ns'))
+            self.assertEqual(signature(os.lstat(p)),recorded)
+            fd=os.open(p,os.O_RDONLY|getattr(os,'O_BINARY',0))
+            try: self.assertEqual(signature(os.fstat(fd)),recorded)
+            finally: os.close(fd)
     def test_missing_root_rejected(self):
         with self.assertRaises(ValueError): scan('/this/path/does/not/exist/loomward')
     def test_regular_file_root_rejected(self):

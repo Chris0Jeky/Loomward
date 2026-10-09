@@ -49,8 +49,13 @@ def sensitive_name(name: str) -> bool:
     return n == '.env' or n.startswith('.env.') or n.startswith('id_rsa') or n.startswith('id_ed25519') or Path(n).suffix in SENSITIVE_SUFFIXES
 
 
+def change_ns(meta: os.stat_result) -> int:
+    # Windows 3.12+: stat() reports creation time as st_ctime but fstat() reports change time; birthtime agrees.
+    return getattr(meta, 'st_birthtime_ns', meta.st_ctime_ns) if os.name == 'nt' else meta.st_ctime_ns
+
+
 def signature(meta: os.stat_result) -> tuple[int, ...]:
-    return (meta.st_dev, meta.st_ino, meta.st_size, meta.st_mtime_ns, meta.st_ctime_ns)
+    return (meta.st_dev, meta.st_ino, meta.st_size, meta.st_mtime_ns, change_ns(meta))
 
 
 def scan(root: str | Path, *, max_entries: int = 50_000, max_depth: int = 64,
@@ -94,6 +99,8 @@ def scan(root: str | Path, *, max_entries: int = 50_000, max_depth: int = 64,
                     path = Path(entry.path)
                     try:
                         meta = entry.stat(follow_symlinks=False)
+                        if os.name == 'nt' and stat.S_ISREG(meta.st_mode):
+                            meta = os.lstat(path)  # Windows DirEntry.stat() leaves st_ino/st_dev/st_nlink at 0
                         if linklike(meta):
                             skip(path, 'link_reparse_or_cloud_placeholder')
                             continue
@@ -126,7 +133,7 @@ def scan(root: str | Path, *, max_entries: int = 50_000, max_depth: int = 64,
                             'id': hashlib.sha256((root_key + '\0' + rel).encode('utf-8', 'surrogatepass')).hexdigest()[:24],
                             'relative_path': rel, 'name': entry.name, 'extension': path.suffix.casefold(),
                             'size_bytes': meta.st_size, 'allocated_bytes': allocated,
-                            'mtime_ns': meta.st_mtime_ns, 'ctime_ns': meta.st_ctime_ns,
+                            'mtime_ns': meta.st_mtime_ns, 'ctime_ns': change_ns(meta),
                             'device': meta.st_dev, 'inode': meta.st_ino, 'nlink': meta.st_nlink,
                             'flags': flags, 'identity_quality': 'portable_stat_observation',
                         })
