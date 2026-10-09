@@ -11,6 +11,8 @@ class Telemetry:
 
     def snapshot(self, *, max_processes: int = 200) -> dict[str, Any]:
         try:
+            if type(max_processes) is not int or not 1 <= max_processes <= 10000:
+                raise ValueError('max_processes must be an integer in [1, 10000]')
             import psutil
         except ImportError:
             return {'status': 'unavailable', 'processes': [], 'note': 'Install the optional telemetry extra to inspect processes. No process controls are implemented.'}
