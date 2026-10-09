@@ -38,23 +38,24 @@
     <span class="mode-thumb" aria-hidden="true"></span>
   </div>
 
-  <p class="synthetic-flag" id="synthetic-flag"><span class="dot" aria-hidden="true"></span>Synthetic workspace<span class="long">&nbsp;· not your computer</span></p>
+  <p class="synthetic-flag" id="synthetic-flag"><span class="dot" aria-hidden="true"></span><span>Synthetic workspace<span class="long"> · not your computer</span></span></p>
 </header>
 
-<section class="coverage" aria-labelledby="coverage-h">
-  <h2 id="coverage-h" class="visually-hidden">Scan coverage</h2>
-  <ol class="volumes" id="volumes"></ol>
-  <div class="coverage-side">
-    <p class="unknowns" id="unknowns"></p>
-    <div class="basis" role="radiogroup" aria-label="Area represents">
-      <span class="basis-label" id="basis-label">Area</span>
-      <button type="button" role="radio" aria-checked="true" data-basis="size">Logical size</button>
-      <button type="button" role="radio" aria-checked="false" data-basis="alloc">Allocated on disk</button>
-    </div>
-  </div>
-</section>
 
 <main class="workspace" id="stage" tabindex="-1">
+  <section class="coverage" aria-labelledby="coverage-h">
+    <h2 id="coverage-h" class="visually-hidden">Scan coverage</h2>
+    <ol class="volumes" id="volumes"></ol>
+    <div class="coverage-side">
+      <p class="unknowns" id="unknowns"></p>
+      <div class="basis" role="radiogroup" aria-label="Area represents">
+        <span class="basis-label" id="basis-label">Area</span>
+        <button type="button" role="radio" aria-checked="true" data-basis="size">Logical size</button>
+        <button type="button" role="radio" aria-checked="false" data-basis="alloc">Allocated on disk</button>
+      </div>
+    </div>
+  </section>
+
   <section class="map" aria-labelledby="map-h">
     <div class="map-head">
       <h2 id="map-h" class="visually-hidden">Workspace map</h2>

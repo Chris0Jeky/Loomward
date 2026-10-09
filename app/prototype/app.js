@@ -291,8 +291,8 @@ function renderTiers() {
     return h('div', { class: 'tier-vol', style: `--weft: var(--residency-${v.residency})` },
       h('span', { class: 'l' }, v.name),
       h('div', { class: 'tier-track', role: 'img', 'aria-label': `${v.name} now ${fmt(v.used)}, simulated ${fmt(after)} of ${fmt(v.capacity)}` },
-        h('span', { class: 'now', style: `width:${(100 * v.used / v.capacity).toFixed(2)}%` }),
-        h('span', { class: 'after', style: `width:${(100 * after / v.capacity).toFixed(2)}%` }),
+        h('span', { class: 'now', style: `transform:scaleX(${(v.used / v.capacity).toFixed(4)})` }),
+        h('span', { class: 'after', style: `transform:scaleX(${(after / v.capacity).toFixed(4)})` }),
         h('span', { class: 'reserve', style: `left:${(100 * res).toFixed(1)}%`, title: `${plan.reservePct}% reserve` })),
       h('span', { class: 'tier-figs' }, h('b', {}, `${Math.round(100 * after / v.capacity)}%`), `${fmt(v.capacity - after)} free`));
   });
