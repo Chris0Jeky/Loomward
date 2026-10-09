@@ -119,7 +119,7 @@ export function createWorkspace(seed = 0x10057) {
 
   // ---------------- C: NVMe 1.86 TB ----------------
   const C = node(root, 'C:', 'volume', { residency: 'c', meaning: null, permission: 'none' });
-  Object.assign(C, { label: 'C: · System NVMe', media: 'NVMe SSD', capacity: 1.86 * TiB, used: 1.52 * TiB, coverage: 1, observedMin: 4, scanState: 'complete' });
+  Object.assign(C, { label: 'C: · System', media: 'NVMe SSD', capacity: 1.86 * TiB, used: 1.52 * TiB, coverage: 1, observedMin: 4, scanState: 'complete' });
   {
     const win = dir(C, 'Windows', { meaning: 'system', permission: 'protected' });
     files(dir(win, 'WinSxS'), 5200, 'component_', ['dll', 'manifest', 'mum', 'cat'], 1.6 * MiB, { spread: 1.5 });
@@ -190,7 +190,7 @@ export function createWorkspace(seed = 0x10057) {
 
   // ---------------- G: NVMe 930 GB ----------------
   const G = node(root, 'G:', 'volume', { residency: 'g', meaning: null, permission: 'none' });
-  Object.assign(G, { label: 'G: · Work NVMe', media: 'NVMe SSD', capacity: 930 * GiB, used: 287 * GiB, coverage: 1, observedMin: 11, scanState: 'complete' });
+  Object.assign(G, { label: 'G: · Work', media: 'NVMe SSD', capacity: 930 * GiB, used: 287 * GiB, coverage: 1, observedMin: 11, scanState: 'complete' });
   {
     const dev = dir(G, 'dev', { meaning: 'projects', permission: 'pinned', collections: ['Active work'] });
     for (const [n, s] of [['loomward', 2.2], ['estate-console', 1.4], ['agent-harness', 1.1], ['taskboard', 1.3], ['field-notes', 0.6]]) repo(dev, n, s);
@@ -211,7 +211,7 @@ export function createWorkspace(seed = 0x10057) {
 
   // ---------------- E: HDD 1.86 TB, partially scanned ----------------
   const E = node(root, 'E:', 'volume', { residency: 'e', meaning: null, permission: 'none' });
-  Object.assign(E, { label: 'E: · Archive HDD', media: '7200 rpm HDD', capacity: 1.86 * TiB, used: 1.51 * TiB, coverage: 0.72, observedMin: 47, scanState: 'paused' });
+  Object.assign(E, { label: 'E: · Archive', media: '7200 rpm HDD', capacity: 1.86 * TiB, used: 1.51 * TiB, coverage: 0.72, observedMin: 47, scanState: 'paused' });
   {
     const arch = dir(E, 'Archive', { meaning: 'archives' });
     for (const y of [2019, 2020, 2021, 2022, 2023]) {

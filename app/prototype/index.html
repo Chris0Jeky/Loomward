@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en-GB" data-mode="atlas">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'none'; font-src 'self'">
+<title>Loomward · Woven atlas prototype</title>
+<link rel="stylesheet" href="styles.css">
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<a class="skip" href="#stage">Skip to the map</a>
+
+<header class="masthead">
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+      <rect x="0.5" y="0.5" width="31" height="31" rx="2.5" class="bm-ground"/>
+      <g class="bm-weft"><path d="M4 10.5h24M4 21.5h24"/></g>
+      <path class="bm-w1" d="M10.5 4v24"/><path class="bm-w2" d="M16 4v24"/><path class="bm-w3" d="M21.5 4v24"/>
+      <g class="bm-weft"><path d="M8 21.5h5M19 21.5h5M13.5 10.5h5"/></g>
+      <path class="bm-selvedge" d="M2.5 2.5h27v27h-27z"/>
+    </svg>
+    <div>
+      <h1 class="wordmark">Loomward</h1>
+      <p class="tagline">Meaning, residency and permission, woven apart.</p>
+    </div>
+  </div>
+
+  <div class="mode-switch" role="radiogroup" aria-label="View mode">
+    <button type="button" role="radio" aria-checked="true" data-mode="atlas">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2h12v12H2zM2 8h12M8 2v12" /></svg>
+      Atlas
+    </button>
+    <button type="button" role="radio" aria-checked="false" data-mode="observatory">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="2.5"/><path d="M8 2v3.5M14 8h-3.5"/></svg>
+      Observatory
+    </button>
+    <span class="mode-thumb" aria-hidden="true"></span>
+  </div>
+
+  <p class="synthetic-flag" id="synthetic-flag"><span class="dot" aria-hidden="true"></span>Synthetic workspace<span class="long">&nbsp;· not your computer</span></p>
+</header>
+
+<section class="coverage" aria-labelledby="coverage-h">
+  <h2 id="coverage-h" class="visually-hidden">Scan coverage</h2>
+  <ol class="volumes" id="volumes"></ol>
+  <div class="coverage-side">
+    <p class="unknowns" id="unknowns"></p>
+    <div class="basis" role="radiogroup" aria-label="Area represents">
+      <span class="basis-label" id="basis-label">Area</span>
+      <button type="button" role="radio" aria-checked="true" data-basis="size">Logical size</button>
+      <button type="button" role="radio" aria-checked="false" data-basis="alloc">Allocated on disk</button>
+    </div>
+  </div>
+</section>
+
+<main class="workspace" id="stage" tabindex="-1">
+  <section class="map" aria-labelledby="map-h">
+    <div class="map-head">
+      <h2 id="map-h" class="visually-hidden">Workspace map</h2>
+      <nav class="crumbs" aria-label="Location"><ol id="crumbs"></ol></nav>
+      <p class="map-help" id="map-help"></p>
+    </div>
+    <div class="canvas-well">
+      <canvas id="atlas-canvas" class="map-canvas" tabindex="0" role="application" aria-roledescription="woven treemap" aria-label="Woven treemap of the synthetic workspace" aria-describedby="map-live"></canvas>
+      <canvas id="orbit-canvas" class="map-canvas" tabindex="0" role="application" aria-roledescription="sunburst" aria-label="Sunburst of the synthetic workspace" aria-describedby="map-live" hidden></canvas>
+      <div class="tip" id="tip" hidden></div>
+    </div>
+    <p class="visually-hidden" id="map-live" aria-live="polite"></p>
+  </section>
+
+  <aside class="inspector" aria-labelledby="insp-name" id="inspector"></aside>
+
+  <section class="threads" aria-labelledby="threads-h">
+    <h2 id="threads-h" class="section-h">Three threads, never one fill</h2>
+    <div class="thread-groups" id="threads"></div>
+  </section>
+
+  <section class="review" aria-labelledby="review-h">
+    <div class="section-top">
+      <h2 id="review-h" class="section-h">The model asks</h2>
+      <p class="section-note" id="review-count"></p>
+    </div>
+    <ol class="review-list" id="review-list"></ol>
+    <p class="fineprint">Scores are relative and uncalibrated, not probabilities. A saved label is a preference; nothing moves.</p>
+  </section>
+
+  <section class="tiers" aria-labelledby="tiers-h">
+    <div class="section-top">
+      <h2 id="tiers-h" class="section-h">Tier balance</h2>
+      <p class="badge-sim">Simulation · cannot run</p>
+    </div>
+    <div id="tier-body"></div>
+  </section>
+
+  <section class="resources" aria-labelledby="res-h">
+    <div class="section-top">
+      <h2 id="res-h" class="section-h">Resources</h2>
+      <p class="section-note"><span class="pulse" aria-hidden="true"></span><span id="episode">Synthetic telemetry</span></p>
+    </div>
+    <div class="gauges" id="gauges"></div>
+    <div class="io" id="io"></div>
+    <div id="memory"></div>
+    <p class="fineprint">Read-only. There is no memory cleaner, trim or kill control here, by design.</p>
+  </section>
+</main>
+
+<footer class="colophon">
+  <p><em>Intelligence proposes. You decide.</em> This build has no file or process effects.</p>
+  <p id="build-note">Design prototype · synthetic data</p>
+</footer>
+
+<div class="noscript" id="module-fallback">
+  <p>This prototype loads ES modules, which browsers block on <code>file://</code>. Serve the folder instead:</p>
+  <pre>py -3 -m http.server -d app/prototype 8040</pre>
+  <p>then open <code>http://127.0.0.1:8040/</code>.</p>
+</div>
+</body>
+</html>
