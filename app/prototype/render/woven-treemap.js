@@ -108,8 +108,8 @@ function weaveTile(dpr, warp, weft, weftMode, opts = {}) {
         g.lineWidth = Math.max(1, dpr * 0.8);
         g.strokeRect(x + 0.5 * g.lineWidth, y + p * 0.18, p - g.lineWidth, p * 0.64);
       } else if (weftMode === 'unknown') {
-        g.fillStyle = shade(opts.unknown, 0, 0.5);
-        g.fillRect(x + p * 0.4, y + p * 0.45, p * 0.2, p * 0.12);
+        g.fillStyle = shade(opts.unknown, 0, opts.weftOnly ? 0.9 : 0.5);
+        g.fillRect(x + p * 0.35, y + p * 0.42, p * 0.3, p * 0.16);
       }
     }
   }
@@ -248,6 +248,17 @@ export function createWovenTreemap(canvas, options = {}) {
     return tileFor(`w|${n.meaning}|${n.residency}|${warpOnly ? 1 : 0}`, () => weaveTile(dpr, warp, weft, mode, { ink: palette.ink, unknown: palette.unknown, warpOnly }));
   }
 
+  // Build every (warp, weft) tile while idle so the first zoom into new cloth never stalls a frame.
+  function prewarm() {
+    const run = () => {
+      for (const m of Object.keys(palette.meaning)) for (const r of ['c', 'g', 'e', 'cloud', null]) {
+        const n = { meaning: m === 'none' ? null : m, residency: r };
+        weavePattern(n, false); weavePattern(n, true);
+      }
+    };
+    (window.requestIdleCallback || ((f) => setTimeout(f, 200)))(run);
+  }
+
   function build(focus) {
     const t0 = performance.now();
     const cells = layout(focus, W, H, sizeOf, maxDepth);
@@ -354,7 +365,7 @@ export function createWovenTreemap(canvas, options = {}) {
     ctx.strokeStyle = palette.ink; ctx.globalAlpha = alpha * late * 0.7; ctx.lineWidth = 3 * lw; ctx.setLineDash([1.4 * lw, 2.6 * lw]); ctx.stroke(v.prot);
     ctx.globalAlpha = alpha * late;
     ctx.strokeStyle = palette.permission; ctx.lineWidth = 1.6 * lw; ctx.setLineDash([6 * lw, 4 * lw]); ctx.stroke(v.pin);
-    ctx.strokeStyle = palette.unknown; ctx.lineWidth = 1.2 * lw; ctx.setLineDash([1 * lw, 3 * lw]); ctx.stroke(v.unk);
+    ctx.strokeStyle = palette.unknown; ctx.lineWidth = 1.5 * lw; ctx.setLineDash([1.5 * lw, 2.5 * lw]); ctx.stroke(v.unk);
     ctx.setLineDash([]);
     // labels: care-label patches on the cloth
     ctx.textBaseline = 'alphabetic';
@@ -474,10 +485,10 @@ export function createWovenTreemap(canvas, options = {}) {
     const ndpr = Math.min(window.devicePixelRatio || 1, 3);
     const nw = Math.max(1, Math.round(r.width)), nh = Math.max(1, Math.round(r.height));
     if (nw === W && nh === H && ndpr === dpr && view) return;
-    if (ndpr !== dpr) tiles = new Map();
+    const dprChanged = ndpr !== dpr;
     dpr = ndpr; W = nw; H = nh;
     canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
-    tiles = new Map(); // patterns belong to this context's dpr
+    if (dprChanged) { tiles = new Map(); prewarm(); } // patterns are rasterised at the device pixel ratio
     if (focusNode) { view = build(focusNode); anim = null; schedule(); }
   }
   const ro = new ResizeObserver(() => resize());
@@ -579,6 +590,7 @@ export function createWovenTreemap(canvas, options = {}) {
   canvas.addEventListener('blur', () => { focusedByKeyboard = false; schedule(); });
 
   resize();
+  prewarm();
 
   return {
     setRoot(n) { root = n; focusNode = null; view = null; focus(n, { animate: false }); },
@@ -588,10 +600,12 @@ export function createWovenTreemap(canvas, options = {}) {
     get root() { return root; },
     select(n) { selected = n; schedule(); },
     setBasis(b) { if (b === basis) return; basis = b; if (focusNode) { view = build(focusNode); anim = null; schedule(); } },
-    setPalette(p) { palette = p; tiles = new Map(); if (focusNode) { view = build(focusNode); schedule(); } },
+    setPalette(p) { palette = p; tiles = new Map(); prewarm(); if (focusNode) { view = build(focusNode); schedule(); } },
     reveal() { if (reduced()) { revealT = 1; schedule(); return; } revealT = 0; revealStart = performance.now(); schedule(); },
     resize,
     get cellCount() { return view ? view.cells.length : 0; },
+    /** Paint the settled view synchronously (for measuring inside a rAF loop). */
+    renderFrame() { revealT = 1; anim = null; frame(performance.now()); },
     /** Synchronous frames with a forced GPU flush. opts.maxDepth temporarily deepens nesting. */
     benchmark(frames = 60, opts = {}) {
       const keepDepth = maxDepth;
@@ -639,6 +653,6 @@ export function drawSwatch(canvas, palette, { meaning = null, residency = null, 
   } else if (permission === 'pinned') {
     g.strokeStyle = palette.permission; g.lineWidth = 1.6; g.setLineDash([6, 4]); g.strokeRect(1.5, 1.5, w - 3, h - 3);
   } else if (permission == null) {
-    g.strokeStyle = palette.unknown; g.lineWidth = 1.2; g.setLineDash([1, 3]); g.strokeRect(1.5, 1.5, w - 3, h - 3);
+    g.strokeStyle = palette.unknown; g.lineWidth = 1.5; g.setLineDash([1.5, 2.5]); g.strokeRect(1.5, 1.5, w - 3, h - 3);
   }
 }

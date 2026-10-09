@@ -45,7 +45,9 @@ def run() -> int:
     failures: list[str] = []
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
+        # --gpu asks Chromium for the hardware rasterizer (Windows: D3D11); default headless is SwiftShader
+        gpu_args = ["--use-angle=d3d11", "--enable-gpu", "--ignore-gpu-blocklist", "--enable-gpu-rasterization"] if "--gpu" in sys.argv else []
+        browser = pw.chromium.launch(headless=True, args=gpu_args)
         for label, viewport, dpr in (("1440", {"width": 1440, "height": 900}, 1), ("390", {"width": 390, "height": 844}, 2)):
             # bypass_csp only lets Playwright evaluate its probes; the page CSP stays in force for users
             page = browser.new_page(viewport=viewport, device_scale_factor=dpr, bypass_csp=True)
@@ -95,6 +97,22 @@ def run() -> int:
             wait_idle(page)
 
             if label == "1440":
+                # Animated drill first, on a settled page: rAF intervals while the zoom runs.
+                anim = page.evaluate(
+                    """async () => {
+                      const lw = window.loomward, n = lw.ws.root.children[0];
+                      const d = []; let last = performance.now(), go = true;
+                      const tick = (t) => { d.push(t - last); last = t; if (go) requestAnimationFrame(tick); };
+                      requestAnimationFrame(tick);
+                      lw.atlas.focus(n);
+                      await new Promise(r => setTimeout(r, 700)); go = false;
+                      lw.atlas.focus(lw.ws.root, { animate: false });
+                      d.sort((a, b) => a - b);
+                      return { frames: d.length, median: d[d.length >> 1], p95: d[Math.floor(d.length * .95)], max: d[d.length - 1] };
+                    }"""
+                )
+                results["renderer"] = page.evaluate("""() => { const g = document.createElement('canvas').getContext('webgl');
+                    const d = g && g.getExtension('WEBGL_debug_renderer_info'); return d ? g.getParameter(d.UNMASKED_RENDERER_WEBGL) : 'unknown'; }""")
                 # Frame time on the full synthetic tree (every node reachable from the focus).
                 bench = page.evaluate("window.loomward.atlas.benchmark(120)")
                 bench["nodes"] = page.evaluate("window.loomward.ws.nodeCount")
@@ -120,21 +138,24 @@ def run() -> int:
                 for name, b in (("all depths", deep), ("50k siblings", flat)):
                     if b["p95"] > 16.7:
                         failures.append(f"treemap ({name}) p95 frame {b['p95']:.2f} ms exceeds 16.7 ms")
-                # Animated drill: rAF intervals while the zoom runs.
-                anim = page.evaluate(
-                    """async () => {
-                      const lw = window.loomward, n = lw.ws.root.children[0];
-                      const d = []; let last = performance.now(), go = true;
-                      const tick = (t) => { d.push(t - last); last = t; if (go) requestAnimationFrame(tick); };
-                      requestAnimationFrame(tick);
-                      lw.atlas.focus(n);
-                      await new Promise(r => setTimeout(r, 700)); go = false;
-                      lw.atlas.focus(lw.ws.root, { animate: false });
-                      d.sort((a, b) => a - b);
-                      return { frames: d.length, median: d[d.length >> 1], p95: d[Math.floor(d.length * .95)], max: d[d.length - 1] };
-                    }"""
-                )
                 results["treemap_benchmark"] = bench
+                # Live: repaint in every animation frame for 2 s; CPU time per paint and frame pacing.
+                live = """async (which) => {
+                  const lw = window.loomward, r = which === 'atlas' ? lw.atlas : lw.orbit;
+                  const cpu = [], gaps = []; let last = 0;
+                  await new Promise((done) => {
+                    const tick = (t) => {
+                      if (last) gaps.push(t - last); last = t;
+                      if (which === 'orbit') r.rotateBy(0.01);
+                      const s = performance.now(); r.renderFrame(); cpu.push(performance.now() - s);
+                      if (cpu.length < 120) requestAnimationFrame(tick); else done();
+                    };
+                    requestAnimationFrame(tick);
+                  });
+                  const q = (a, p) => [...a].sort((x, y) => x - y)[Math.floor(a.length * p)];
+                  return { cpu_mean: cpu.reduce((a, b) => a + b, 0) / cpu.length, cpu_p95: q(cpu, .95), frame_median: q(gaps, .5), frame_p95: q(gaps, .95), dropped: gaps.filter((g) => g > 20).length, frames: gaps.length };
+                }"""
+                results["treemap_live"] = page.evaluate(live, "atlas")
                 results["treemap_zoom_raf_ms"] = anim
                 if bench["p95"] > 16.7:
                     failures.append(f"treemap p95 frame {bench['p95']:.2f} ms exceeds 16.7 ms")
@@ -172,6 +193,8 @@ def run() -> int:
             shot("observatory-zoomed")
             if label == "1440":
                 results["sunburst_benchmark"] = page.evaluate("window.loomward.orbit.benchmark(60)")
+                results["sunburst_live_orbit"] = page.evaluate(live, "orbit")
+                results["sunburst_benchmark_rebuild"] = page.evaluate("window.loomward.orbit.benchmark(60, { rebuild: true })")
             page.locator('.mode-switch [data-mode="atlas"]').click()
             wait_idle(page, 600)
             assert page.evaluate("window.loomward.mode") == "atlas"
@@ -185,11 +208,29 @@ def run() -> int:
             if offhost:
                 failures.append(f"[{label}] off-host requests: {offhost}")
             page.close()
+        # prefers-reduced-motion: no reveal, no zoom tween; a drill lands at once
+        page = browser.new_page(viewport={"width": 1440, "height": 900}, reduced_motion="reduce", bypass_csp=True)
+        rm_errors: list[str] = []
+        page.on("pageerror", lambda e: rm_errors.append(str(e)))
+        page.goto(base)
+        page.wait_for_function("window.loomward && window.loomward.ready")
+        before = crumbs(page)
+        page.locator("#atlas-canvas").focus()
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(60)
+        if len(crumbs(page)) != len(before) + 1:
+            failures.append("[reduced motion] drill did not land immediately")
+        if page.evaluate("getComputedStyle(document.querySelector('.mode-thumb')).transitionDuration") not in ("0s",):
+            failures.append("[reduced motion] CSS transitions still run")
+        if rm_errors:
+            failures.append(f"[reduced motion] errors: {rm_errors}")
+        results["reduced_motion"] = "checked"
+        page.close()
         browser.close()
     server.shutdown()
 
     results["failures"] = failures
-    (OUT / "check-results.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
+    (OUT / ("check-results-gpu.json" if "--gpu" in sys.argv else "check-results.json")).write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
     b = results.get("treemap_benchmark", {})
     if b:
         print(f"treemap: {b['nodes']} nodes, {b['cells']} drawn cells, layout {b['layoutMs']:.1f} ms, frame mean {b['mean']:.2f} ms p95 {b['p95']:.2f} ms max {b['max']:.2f} ms")
@@ -202,9 +243,17 @@ def run() -> int:
         print(f"treemap zoom: {z['frames']} rAF frames, median {z['median']:.1f} ms, p95 {z['p95']:.1f} ms")
     if "sunburst_benchmark" in results:
         s = results["sunburst_benchmark"]
-        print(f"sunburst: {s['arcs']} arcs, frame mean {s['mean']:.2f} ms p95 {s['p95']:.2f} ms")
+        print(f"sunburst orbit: {s['arcs']} arcs, frame mean {s['mean']:.2f} ms p95 {s['p95']:.2f} ms")
+        s = results["sunburst_benchmark_rebuild"]
+        print(f"sunburst zoom (cloth rebuilt each frame): frame mean {s['mean']:.2f} ms p95 {s['p95']:.2f} ms")
     for s in results["screenshots"]:
         print("screenshot", s)
+    for key, name in (("treemap_live", "treemap live repaint"), ("sunburst_live_orbit", "sunburst live orbit")):
+        if key in results:
+            d = results[key]
+            print(f"{name}: cpu mean {d['cpu_mean']:.2f} ms p95 {d['cpu_p95']:.2f} ms, frame median {d['frame_median']:.1f} ms p95 {d['frame_p95']:.1f} ms, {d['dropped']}/{d['frames']} frames over 20 ms")
+    if "renderer" in results:
+        print("canvas renderer:", results["renderer"])
     for f in failures:
         print("FAIL", f)
     print("PASS" if not failures else "FAILED")

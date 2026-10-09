@@ -21,7 +21,7 @@ const MIN_SPAN = 0.0045; // radians: below this an arc is too fine to draw (the 
 const ease = (t) => (t >= 1 ? 1 : 1 - Math.pow(2, -10 * t));
 
 export function createSunburst(canvas, options = {}) {
-  const ctx = canvas.getContext('2d');
+  let ctx = canvas.getContext('2d');
   let palette = options.palette;
   let basis = options.basis || 'size';
   const RINGS = options.rings ?? 4;
@@ -51,7 +51,8 @@ export function createSunburst(canvas, options = {}) {
   }
 
   const ringR = (k) => r0 + k * T; // k rings out from the hole
-  const ang = (x) => theta - Math.PI / 2 + ((x - v.x0) / (v.x1 - v.x0)) * TAU;
+  let rot = 0; // rotation used by ang(): 0 while building the cached cloth layer, theta for overlays
+  const ang = (x) => rot - Math.PI / 2 + ((x - v.x0) / (v.x1 - v.x0)) * TAU;
 
   // ---------- render ----------
   function collect() {
@@ -76,17 +77,29 @@ export function createSunburst(canvas, options = {}) {
 
   const arcPath = (p, a) => { p.moveTo(cx + a.ri * Math.cos(a.a0), cy + a.ri * Math.sin(a.a0)); p.arc(cx, cy, a.ro, a.a0, a.a1); p.arc(cx, cy, a.ri, a.a1, a.a0, true); p.closePath(); };
 
-  function draw() {
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = palette.ink; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  // The cloth (fills, threads, selvedges) depends on the zoom window, not on the orbit angle, so it
+  // is rendered once into a layer at rotation 0 and blitted rotated: orbiting costs one drawImage.
+  let layer = null, benchMoving = false;
+  function clothLayer() {
+    // while a zoom is moving, the thread textures are skipped and settle in on the last frame
+    const moving = !!anim || benchMoving;
+    const key = `${v.x0}|${v.x1}|${v.d}|${W}x${H}@${dpr}|${palVersion}|${basis}|${moving}`;
+    if (layer?.key === key) return layer;
+    if (!layer) layer = { c: document.createElement('canvas') };
+    const c = layer.c;
+    if (c.width !== canvas.width || c.height !== canvas.height) { c.width = canvas.width; c.height = canvas.height; }
+    const main = ctx;
+    ctx = c.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, c.width, c.height);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    // instrument rings: tracks show where fine threads are too small to draw
-    ctx.lineWidth = 1;
-    for (let k = 1; k <= RINGS; k++) { ctx.strokeStyle = palette.track; ctx.beginPath(); ctx.arc(cx, cy, ringR(k) - 1, 0, TAU); ctx.stroke(); }
-    ctx.fillStyle = palette.trackFill;
-    ctx.beginPath(); ctx.arc(cx, cy, ringR(RINGS), 0, TAU); ctx.arc(cx, cy, r0, 0, TAU, true); ctx.fill();
+    rot = 0;
+    paintCloth(collect(), !moving);
+    ctx = main;
+    layer.key = key;
+    return layer;
+  }
 
-    const arcs = collect();
+  function paintCloth(arcs, threads = true) {
     const byMeaning = new Map(), byRes = new Map(), all = new Path2D(), gaps = new Path2D(), prot = new Path2D(), pin = new Path2D(), unk = new Path2D();
     for (const a of arcs) {
       if (a.n.kind === 'gap') { arcPath(gaps, a); continue; }
@@ -103,7 +116,7 @@ export function createSunburst(canvas, options = {}) {
       }
     }
     // warp: hue fill, luminous outward; then fine radial threads and concentric weft threads,
-    // pre-rendered once per size and drawn through the arc clip (cheap per frame)
+    // pre-rendered once per size and drawn through the arc clip
     const t = textures();
     for (const [m, path] of byMeaning) {
       const col = palette.meaning[m] || palette.meaning.none;
@@ -111,12 +124,14 @@ export function createSunburst(canvas, options = {}) {
       g.addColorStop(0, shade(col, -0.35, 0.95)); g.addColorStop(1, shade(col, 0.08, 0.95));
       ctx.fillStyle = g; ctx.fill(path);
     }
-    const stamp = (img, path, rot) => {
-      ctx.save(); ctx.clip(path); ctx.translate(cx, cy); if (rot) ctx.rotate(theta);
+    const stamp = (img, path) => {
+      ctx.save(); ctx.clip(path); ctx.translate(cx, cy);
       ctx.drawImage(img, -t.half, -t.half, t.half * 2, t.half * 2); ctx.restore();
     };
-    stamp(t.warp, all, true);
-    for (const [r, path] of byRes) stamp(t.weft(r), path, r === 'cloud');
+    if (threads) {
+      stamp(t.warp, all);
+      for (const [r, path] of byRes) stamp(t.weft(r), path);
+    }
     // unknown contents: hatched, no hue
     ctx.save(); ctx.clip(gaps);
     ctx.strokeStyle = palette.loose; ctx.lineWidth = 1; ctx.beginPath();
@@ -128,13 +143,29 @@ export function createSunburst(canvas, options = {}) {
     ctx.strokeStyle = palette.permission; ctx.lineWidth = 3; ctx.stroke(prot);
     ctx.strokeStyle = palette.ink; ctx.globalAlpha = 0.7; ctx.setLineDash([1.4, 2.6]); ctx.stroke(prot); ctx.globalAlpha = 1;
     ctx.strokeStyle = palette.permission; ctx.lineWidth = 1.6; ctx.setLineDash([6, 4]); ctx.stroke(pin);
-    ctx.strokeStyle = palette.unknown; ctx.lineWidth = 1.2; ctx.setLineDash([1, 3]); ctx.stroke(unk);
+    ctx.strokeStyle = palette.unknown; ctx.lineWidth = 1.5; ctx.setLineDash([1.5, 2.5]); ctx.stroke(unk);
     ctx.setLineDash([]);
-
-    drawScale();
-    // the instrument's bezel: one faint glowing ring
+    // the instrument's bezel: one faint glowing ring (cached here because blur is costly)
     ctx.save(); ctx.strokeStyle = palette.cursor; ctx.globalAlpha = 0.28; ctx.lineWidth = 1; ctx.shadowColor = palette.cursor; ctx.shadowBlur = 16;
     ctx.beginPath(); ctx.arc(cx, cy, ringR(RINGS) + 3, 0, TAU); ctx.stroke(); ctx.restore();
+  }
+
+  function draw() {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = palette.ink; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // instrument rings: tracks show where fine threads are too small to draw
+    ctx.lineWidth = 1;
+    for (let k = 1; k <= RINGS; k++) { ctx.strokeStyle = palette.track; ctx.beginPath(); ctx.arc(cx, cy, ringR(k) - 1, 0, TAU); ctx.stroke(); }
+    ctx.fillStyle = palette.trackFill;
+    ctx.beginPath(); ctx.arc(cx, cy, ringR(RINGS), 0, TAU); ctx.arc(cx, cy, r0, 0, TAU, true); ctx.fill();
+
+    const L = clothLayer();
+    ctx.save(); ctx.translate(cx, cy); ctx.rotate(theta); ctx.drawImage(L.c, -cx, -cy, W, H); ctx.restore();
+    rot = theta;
+    const arcs = collect();
+
+    drawScale();
     drawLabels(arcs);
     drawCentre();
     // hover / keyboard cursor glow
@@ -198,6 +229,7 @@ export function createSunburst(canvas, options = {}) {
     }
   }
 
+  let widths = new Map(); // label widths per node, reset with the palette (fonts live there)
   function drawLabels(arcs) {
     ctx.textBaseline = 'middle';
     for (const a of arcs) {
@@ -208,7 +240,8 @@ export function createSunburst(canvas, options = {}) {
       let text = a.n.name;
       const am = (a.a0 + a.a1) / 2;
       const norm = ((am % TAU) + TAU) % TAU;
-      let tw = ctx.measureText(text).width;
+      let tw = widths.get(a.n);
+      if (tw === undefined) { tw = ctx.measureText(text).width; widths.set(a.n, tw); }
       if (big && L > tw + 14) {
         // tangential, upright
         ctx.save(); ctx.translate(cx + rm * Math.cos(am), cy + rm * Math.sin(am));
@@ -365,13 +398,22 @@ export function createSunburst(canvas, options = {}) {
     focus, up() { if (focusNode?.parent) focus(focusNode.parent); },
     get focused() { return focusNode; },
     setBasis(b) { if (b === basis) return; basis = b; partition(); const p = part.get(focusNode); if (p) v = { x0: p[0], x1: p[1], d: focusNode.depth }; schedule(); },
-    setPalette(p) { palette = p; palVersion++; schedule(); },
+    setPalette(p) { palette = p; palVersion++; widths = new Map(); schedule(); },
     rotateBy(a) { theta += a; schedule(); },
+    /** Paint synchronously (for measuring inside a rAF loop). */
+    renderFrame() { return draw(); },
     resize,
-    benchmark(frames = 30) {
+    /** opts.rebuild re-renders the cloth layer every frame (zoom animation); otherwise frames are orbit frames. */
+    benchmark(frames = 30, opts = {}) {
       const ts = [];
       let arcs = 0;
-      for (let i = 0; i < frames; i++) { const s = performance.now(); arcs = draw(); ctx.getImageData(0, 0, 1, 1); ts.push(performance.now() - s); }
+      for (let i = 0; i < frames; i++) {
+        benchMoving = !!opts.rebuild;
+        if (opts.rebuild && layer) layer.key = null;
+        theta += 0.01;
+        const s = performance.now(); arcs = draw(); ctx.getImageData(0, 0, 1, 1); ts.push(performance.now() - s);
+      }
+      benchMoving = false; schedule();
       ts.sort((a, b) => a - b);
       return { mean: ts.reduce((a, b) => a + b, 0) / ts.length, p95: ts[Math.floor(ts.length * 0.95)], arcs };
     },
