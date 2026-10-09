@@ -155,7 +155,7 @@ function inspect(n, state) {
   const sw = h('canvas', { class: 'insp-swatch', width: 56, height: 56, 'aria-hidden': 'true' });
   const v = volumeOf(n);
   const ref = n.parent && n.kind !== 'volume' ? n.parent : null;
-  const share = ref && sizeOf(ref) ? ` · ${(100 * (sizeOf(n) || 0) / sizeOf(ref)).toFixed(1)}% of ${ref.name}` : '';
+  const share = ref && sizeOf(ref) && sizeOf(n) != null ? ` · ${(100 * sizeOf(n) / sizeOf(ref)).toFixed(1)}% of ${ref.name}` : ''; // unknown size: no share, never 0%
   const kind = { workspace: 'Workspace', volume: 'Volume', dir: 'Folder', file: 'File', gap: 'Unattributed bytes' }[n.kind];
   const items = n.children ? ` · ${n.files.toLocaleString('en-GB')} files` : '';
   const max = Math.max(n.size || 0, n.alloc || 0) || 1;
