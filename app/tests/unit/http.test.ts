@@ -98,4 +98,46 @@ describe('http transport', () => {
     stop();
     expect(states).toEqual(['closed', 'closed']);
   });
+  it('bounds a streamed response body: stops reading past the cap and cancels', async () => {
+    let pulls = 0;
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(c) { pulls++; c.enqueue(new Uint8Array(1024 * 1024)); },
+      cancel() { cancelled = true; },
+    });
+    const client = new Client(createHttpTransport({ base: 'http://x', token: 't', fetchImpl: asFetch(async () => new Response(body)) }));
+    await expect(client.call('roots.list', {})).rejects.toThrow(/too large/);
+    expect(cancelled).toBe(true);
+    expect(pulls).toBeLessThan(20); // 8 MiB cap, not an unbounded read
+  });
+
+  it('rejects an oversized Content-Length before reading the body', async () => {
+    let pulls = 0;
+    const body = new ReadableStream<Uint8Array>({ pull(c) { pulls++; c.enqueue(new Uint8Array(8)); } });
+    const res = new Response(body, { headers: { 'Content-Length': String(64 * 1024 * 1024) } });
+    const client = new Client(createHttpTransport({ base: 'http://x', token: 't', fetchImpl: asFetch(async () => res) }));
+    await expect(client.call('roots.list', {})).rejects.toThrow(/too large/);
+    expect(pulls).toBeLessThanOrEqual(1);
+  });
+
+  it('closes and reconnects when the event stream never ends a line', async () => {
+    const states: string[] = [];
+    let n = 0;
+    let release!: () => void;
+    const done = new Promise<void>((r) => (release = r));
+    const t = createHttpTransport({
+      base: 'http://x',
+      token: 't',
+      sleep: async () => {},
+      sseLimits: { maxLine: 256, maxEvent: 1024 },
+      fetchImpl: asFetch(async (_u, init) => {
+        if (++n > 2) return hang(init);
+        return new Response(new ReadableStream<Uint8Array>({ pull(c) { c.enqueue(new TextEncoder().encode('x'.repeat(100))); } }));
+      }),
+    });
+    const stop = t.subscribe(() => {}, (s) => { states.push(s); if (states.length >= 4) release(); });
+    await done;
+    stop();
+    expect(states.slice(0, 4)).toEqual(['open', 'closed', 'open', 'closed']);
+  });
 });

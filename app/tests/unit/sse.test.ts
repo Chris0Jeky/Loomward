@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SseParser } from '../../src/lib/transport/sse';
+import { SseOverflowError, SseParser } from '../../src/lib/transport/sse';
 
 const feed = (chunks: string[]) => {
   const p = new SseParser();
@@ -27,5 +27,23 @@ describe('SseParser', () => {
     const p = new SseParser();
     expect(p.push('data: x\n')).toEqual([]);
     expect(p.push('\n')).toHaveLength(1);
+  });
+});
+
+describe('SseParser bounds', () => {
+  it('throws on an endless line with no newline', () => {
+    const p = new SseParser({ maxLine: 64, maxEvent: 1024 });
+    expect(() => { for (let i = 0; i < 100; i++) p.push('x'.repeat(16)); }).toThrow(SseOverflowError);
+  });
+  it('throws on one over-long complete line', () => {
+    expect(() => new SseParser({ maxLine: 64, maxEvent: 1024 }).push('data: ' + 'x'.repeat(100) + '\n')).toThrow(SseOverflowError);
+  });
+  it('throws when data lines pile up without a blank line', () => {
+    const p = new SseParser({ maxLine: 64, maxEvent: 200 });
+    expect(() => { for (let i = 0; i < 100; i++) p.push('data: ' + 'y'.repeat(30) + '\n'); }).toThrow(SseOverflowError);
+  });
+  it('does not count comments or dispatched events against the cap', () => {
+    const p = new SseParser({ maxLine: 64, maxEvent: 200 });
+    for (let i = 0; i < 100; i++) expect(p.push(': hb\ndata: ' + 'z'.repeat(30) + '\n\n')).toHaveLength(1);
   });
 });
