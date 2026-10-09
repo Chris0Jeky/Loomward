@@ -1,0 +1,80 @@
+Windows 11; rustc 1.97.1; base 1ee166d; uncommitted Sol lane L
+
+COMMAND cargo fmt --all --check
+EXIT 0
+
+COMMAND cargo test --workspace
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src\main.rs (target\debug\deps\loomward_native-3fbb3d220c5a77b1.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\deps\loomward_core-d3ebfcd0aa1019b6.exe)
+
+running 19 tests
+test transaction::tests::cannot_skip_verification ... ok
+test planner::tests::duplicate_group_is_error ... ok
+test planner::tests::unknown_permission_fails_closed ... ok
+test planner::tests::destination_reserve_never_breached ... ok
+test policy::tests::even_all_grants_cannot_enable_mutations ... ok
+test planner::tests::transfer_budget_is_not_source_allocation ... ok
+test planner::tests::unknown_heat_is_not_cold ... ok
+test policy::tests::protected_placeholder_never_hashes ... ok
+test planner::tests::matches_python_golden_scenario ... ok
+test transaction::tests::failure_is_not_success_or_automatic_retry ... ok
+test planner::tests::all_offline_gives_shortfall ... ok
+test policy::tests::missing_grant_denies ... ok
+test policy::tests::model_confidence_is_not_a_policy_field ... ok
+test transaction::tests::source_retention_is_a_distinct_stage ... ok
+test policy::tests::explicit_scope_allows_metadata_without_reading_contents ... ok
+test inventory::tests::zero_budget_rejected ... ok
+test inventory::tests::file_is_not_root ... ok
+test inventory::tests::logical_count_is_correct ... ok
+test inventory::tests::no_implicit_content_reads ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\deps\loomward_lab-3ca64ff418782e55.exe)
+
+running 5 tests
+test tests::buffer_decoder_accepts_unicode_and_rejects_corruption ... ok
+test tests::buffer_decoder_follows_offsets_and_propagates_failure ... ok
+test tests::scope_rejects_escape_and_devices ... ok
+test tests::decoder_offsets_match_windows_abi ... ok
+test tests::deterministic_profiles_and_independent_small_oracle ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\main.rs (target\debug\deps\loomward_lab-7ab0a15a1075b269.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests loomward_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests loomward_lab
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+EXIT 0
+
+COMMAND cargo clippy --workspace --all-targets -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s
+EXIT 0
+
+COMMAND cargo check -p loomward-lab --tests --target x86_64-linux-android --offline
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.16s
+EXIT 0
+
+PASS required fmt/test/clippy gate: 19 core + 5 lab tests on Windows
+PASS 20 explicit Windows regression cases (enumeration-spike-checks.json)
+PASS non-Windows compile check; Ubuntu execution NOT RUN

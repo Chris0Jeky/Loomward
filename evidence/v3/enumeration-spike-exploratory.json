@@ -1,0 +1,749 @@
+{
+  "schema_version": 1,
+  "measured_at_utc": "2026-10-09T19:42:40Z",
+  "platform": "Windows-11-10.0.26300-SP0",
+  "python": "3.14.3",
+  "logical_processors": 20,
+  "volume": "G: NTFS, owner-described NVMe",
+  "source_base": "1ee166d597b61cf935a84499351009f0e316857a",
+  "build": "cargo build -p loomward-lab --release --offline",
+  "cold_cache": "NOT measured: generation and validation populate caches; no eviction/reboot/elevation",
+  "complete": false,
+  "trees": [
+    {
+      "root": "G:\\loomward-lab\\scale\\mixed-100000",
+      "schema_version": 1,
+      "complete": true,
+      "seed": 42,
+      "profile": "mixed",
+      "expected": {
+        "files": 100000,
+        "directories": 664,
+        "logical_bytes": 11969937673064,
+        "skipped_reparse": 0
+      },
+      "file_data_allocation_bytes": 733464,
+      "generation_seconds": 8.6306452,
+      "volume_free_before": 225899700224,
+      "volume_free_after": 225824772096
+    },
+    {
+      "root": "G:\\loomward-lab\\scale\\mixed-1000000",
+      "schema_version": 1,
+      "complete": true,
+      "seed": 42,
+      "profile": "mixed",
+      "expected": {
+        "files": 1000000,
+        "directories": 6325,
+        "logical_bytes": 121256337157388,
+        "skipped_reparse": 0
+      },
+      "file_data_allocation_bytes": 7246288,
+      "generation_seconds": 76.6328482,
+      "volume_free_before": 225848885248,
+      "volume_free_after": 224544808960
+    },
+    {
+      "root": "G:\\loomward-lab\\scale\\mixed-3000000",
+      "schema_version": 1,
+      "complete": true,
+      "seed": 42,
+      "profile": "mixed",
+      "expected": {
+        "files": 3000000,
+        "directories": 18895,
+        "logical_bytes": 362174108598017,
+        "skipped_reparse": 0
+      },
+      "file_data_allocation_bytes": 21684072,
+      "generation_seconds": 288.0934583,
+      "volume_free_before": 224558170112,
+      "volume_free_after": 219853639680
+    }
+  ],
+  "runs": [
+    {
+      "strategy": "std-single",
+      "root": "G:\\loomward-lab\\scale\\mixed-100000",
+      "threads": 1,
+      "buffer_kib": 64,
+      "cache_label": "post-generation-uncontrolled",
+      "wall_seconds": 4.4422102,
+      "files_per_second": 22511.316551386964,
+      "cpu_seconds": 4.28125,
+      "cpu_percent_one_core": 96.37657398562544,
+      "peak_rss_bytes": 4583424,
+      "expected": {
+        "files": 100000,
+        "directories": 664,
+        "logical_bytes": 11969937673064,
+        "skipped_reparse": 0
+      },
+      "observed": {
+        "files": 100000,
+        "directories": 664,
+        "logical_bytes": 11969937673064,
+        "skipped_reparse": 0
+      },
+      "exact": true,
+      "allocation_bytes": null,
+      "nonzero_file_ids": null,
+      "pass": 1
+    },
+    {
+      "strategy": "std-parallel",
+      "root": "G:\\loomward-lab\\scale\\mixed-100000",
+      "threads": 8,
+      "buffer_kib": 64,
+      "cache_label": "post-generation-uncontrolled",
+      "wall_seconds": 0.9589529,
+      "files_per_second": 104280.40834956545,
+      "cpu_seconds": 7.234375,
+      "cpu_percent_one_core": 754.4035791538876,
+      "peak_rss_bytes": 5812224,
+      "expected": {
+        "files": 100000,
+        "directories": 664,
+        "logical_bytes": 11969937673064,
+        "skipped_reparse": 0
+      },
+      "observed": {
+        "files": 100000,
+        "directories": 664,
+        "logical_bytes": 11969937673064,
+        "skipped_reparse": 0
+      },
+      "exact": true,
+      "allocation_bytes": null,
+      "nonzero_file_ids": null,
+      "pass": 1
+    },
+    {
+      "strategy": "find",
+      "root": "G:\\loomward-lab\\scale\\mixed-100000",
+      "threads": 8,
+      "buffer_kib": 64,
+      "cache_label": "post-generation-uncontrolled",
+      "wall_seconds": 0.0356456,
+      "files_per_second": 2805395.336310793,
+      "cpu_seconds": 0.234375,
+      "cpu_percent_one_core": 657.5145319478421,
+      "peak_rss_bytes": 6094848,
+      "expected": {
+        "files": 100000,
+        "directories": 664,
+        "logical_bytes": 11969937673064,
+        "skipped_reparse": 0
+      },
+      "observed": {
+        "files": 100000,
+        "directories": 664,
+        "logical_bytes": 11969937673064,
+        "skipped_reparse": 0
+      },
+      "exact": true,
+      "allocation_bytes": null,
+      "nonzero_file_ids": null,
+      "pass": 1
+    },
+    {
+      "strategy": "handle",
+      "root": "G:\\loomward-lab\\scale\\mixed-100000",
+      "threads": 8,
+      "buffer_kib": 64,
+      "cache_label": "post-generation-uncontrolled",
+      "wall_seconds": 0.025611,
+      "files_per_second": 3904572.2541095624,
+      "cpu_seconds": 0.078125,
+      "cpu_percent_one_core": 305.04470735230956,
+      "peak_rss_bytes": 5808128,
+      "expected": {
+        "files": 100000,
+        "directories": 664,
+        "logical_bytes": 11969937673064,
+        "skipped_reparse": 0
+      },
+      "observed": {
+        "files": 100000,
+        "directories": 664,
+        "logical_bytes": 11969937673064,
+        "skipped_reparse": 0
+      },
+      "exact": true,
+      "allocation_bytes": 733464,
+      "nonzero_file_ids": 100000,
+      "pass": 1
+    },
+    {
+      "strategy": "handle",
+      "root": "G:\\loomward-lab\\scale\\mixed-100000",
+      "threads": 8,
+      "buffer_kib": 64,
+      "cache_label": "warm-uncontrolled",
+      "wall_seconds": 0.0230013,
+      "files_per_second": 4347580.354153896,
+      "cpu_seconds": 0.0,
+      "cpu_percent_one_core": 0.0,
+      "peak_rss_bytes": 5435392,
+      "expected": {
+        "files": 100000,
+        "directories": 664,
+        "logical_bytes": 11969937673064,
+        "skipped_reparse": 0
+      },
+      "observed": {
+        "files": 100000,
+        "directories": 664,
+        "logical_bytes": 11969937673064,
+        "skipped_reparse": 0
+      },
+      "exact": true,
+      "allocation_bytes": 733464,
+      "nonzero_file_ids": 100000,
+      "pass": 2
+    },
+    {
+      "strategy": "find",
+      "root": "G:\\loomward-lab\\scale\\mixed-100000",
+      "threads": 8,
+      "buffer_kib": 64,
+      "cache_label": "warm-uncontrolled",
+      "wall_seconds": 0.0355816,
+      "files_per_second": 2810441.3517098725,
+      "cpu_seconds": 0.1875,
+      "cpu_percent_one_core": 526.957753445601,
+      "peak_rss_bytes": 5627904,
+      "expected": {
+        "files": 100000,
+        "directories": 664,
+        "logical_bytes": 11969937673064,
+        "skipped_reparse": 0
+      },
+      "observed": {
+        "files": 100000,
+        "directories": 664,
+        "logical_bytes": 11969937673064,
+        "skipped_reparse": 0
+      },
+      "exact": true,
+      "allocation_bytes": null,
+      "nonzero_file_ids": null,
+      "pass": 2
+    },
+    {
+      "strategy": "std-parallel",
+      "root": "G:\\loomward-lab\\scale\\mixed-100000",
+      "threads": 8,
+      "buffer_kib": 64,
+      "cache_label": "warm-uncontrolled",
+      "wall_seconds": 1.0648076,
+      "files_per_second": 93913.6798046896,
+      "cpu_seconds": 7.9375,
+      "cpu_percent_one_core": 745.4398334497238,
+      "peak_rss_bytes": 5853184,
+      "expected": {
+        "files": 100000,
+        "directories": 664,
+        "logical_bytes": 11969937673064,
+        "skipped_reparse": 0
+      },
+      "observed": {
+        "files": 100000,
+        "directories": 664,
+        "logical_bytes": 11969937673064,
+        "skipped_reparse": 0
+      },
+      "exact": true,
+      "allocation_bytes": null,
+      "nonzero_file_ids": null,
+      "pass": 2
+    },
+    {
+      "strategy": "std-single",
+      "root": "G:\\loomward-lab\\scale\\mixed-100000",
+      "threads": 1,
+      "buffer_kib": 64,
+      "cache_label": "warm-uncontrolled",
+      "wall_seconds": 7.2895634000000005,
+      "files_per_second": 13718.24271396007,
+      "cpu_seconds": 6.90625,
+      "cpu_percent_one_core": 94.74161374328673,
+      "peak_rss_bytes": 4575232,
+      "expected": {
+        "files": 100000,
+        "directories": 664,
+        "logical_bytes": 11969937673064,
+        "skipped_reparse": 0
+      },
+      "observed": {
+        "files": 100000,
+        "directories": 664,
+        "logical_bytes": 11969937673064,
+        "skipped_reparse": 0
+      },
+      "exact": true,
+      "allocation_bytes": null,
+      "nonzero_file_ids": null,
+      "pass": 2
+    },
+    {
+      "strategy": "python-reference",
+      "root": "G:\\loomward-lab\\scale\\mixed-100000",
+      "threads": 1,
+      "cache_label": "warm-uncontrolled",
+      "wall_seconds": 12.73273399999016,
+      "files_per_second": 7853.77280323906,
+      "cpu_seconds": 12.328125,
+      "cpu_percent_one_core": 96.82229283993154,
+      "peak_rss_bytes": 156094464,
+      "expected": {
+        "files": 100000,
+        "directories": 664,
+        "logical_bytes": 11969937673064,
+        "skipped_reparse": 0
+      },
+      "observed": {
+        "files": 100000,
+        "directories": 664,
+        "logical_bytes": 11969937673064,
+        "skipped_reparse": 0
+      },
+      "exact": true,
+      "coverage": {
+        "complete_under_policy": true,
+        "unqualified_complete": true,
+        "limit_hit": false,
+        "examined_entries": 100664,
+        "skipped_count": 0,
+        "error_count": 0,
+        "skipped": [],
+        "errors": [],
+        "max_entries": 200000,
+        "max_depth": 64
+      }
+    },
+    {
+      "strategy": "std-single",
+      "root": "G:\\loomward-lab\\scale\\mixed-1000000",
+      "threads": 1,
+      "buffer_kib": 64,
+      "cache_label": "post-generation-uncontrolled",
+      "wall_seconds": 49.7147366,
+      "files_per_second": 20114.760097109716,
+      "cpu_seconds": 48.546875,
+      "cpu_percent_one_core": 97.65087440893733,
+      "peak_rss_bytes": 6029312,
+      "expected": {
+        "files": 1000000,
+        "directories": 6325,
+        "logical_bytes": 121256337157388,
+        "skipped_reparse": 0
+      },
+      "observed": {
+        "files": 1000000,
+        "directories": 6325,
+        "logical_bytes": 121256337157388,
+        "skipped_reparse": 0
+      },
+      "exact": true,
+      "allocation_bytes": null,
+      "nonzero_file_ids": null,
+      "pass": 1
+    },
+    {
+      "strategy": "std-parallel",
+      "root": "G:\\loomward-lab\\scale\\mixed-1000000",
+      "threads": 8,
+      "buffer_kib": 64,
+      "cache_label": "post-generation-uncontrolled",
+      "wall_seconds": 11.1726316,
+      "files_per_second": 89504.42794515842,
+      "cpu_seconds": 85.0625,
+      "cpu_percent_one_core": 761.3470402085038,
+      "peak_rss_bytes": 7118848,
+      "expected": {
+        "files": 1000000,
+        "directories": 6325,
+        "logical_bytes": 121256337157388,
+        "skipped_reparse": 0
+      },
+      "observed": {
+        "files": 1000000,
+        "directories": 6325,
+        "logical_bytes": 121256337157388,
+        "skipped_reparse": 0
+      },
+      "exact": true,
+      "allocation_bytes": null,
+      "nonzero_file_ids": null,
+      "pass": 1
+    },
+    {
+      "strategy": "find",
+      "root": "G:\\loomward-lab\\scale\\mixed-1000000",
+      "threads": 8,
+      "buffer_kib": 64,
+      "cache_label": "post-generation-uncontrolled",
+      "wall_seconds": 0.4312195,
+      "files_per_second": 2319004.590469587,
+      "cpu_seconds": 2.28125,
+      "cpu_percent_one_core": 529.0229222008745,
+      "peak_rss_bytes": 7372800,
+      "expected": {
+        "files": 1000000,
+        "directories": 6325,
+        "logical_bytes": 121256337157388,
+        "skipped_reparse": 0
+      },
+      "observed": {
+        "files": 1000000,
+        "directories": 6325,
+        "logical_bytes": 121256337157388,
+        "skipped_reparse": 0
+      },
+      "exact": true,
+      "allocation_bytes": null,
+      "nonzero_file_ids": null,
+      "pass": 1
+    },
+    {
+      "strategy": "handle",
+      "root": "G:\\loomward-lab\\scale\\mixed-1000000",
+      "threads": 8,
+      "buffer_kib": 64,
+      "cache_label": "post-generation-uncontrolled",
+      "wall_seconds": 0.2561461,
+      "files_per_second": 3904021.962465952,
+      "cpu_seconds": 1.6875,
+      "cpu_percent_one_core": 658.8037061661295,
+      "peak_rss_bytes": 6864896,
+      "expected": {
+        "files": 1000000,
+        "directories": 6325,
+        "logical_bytes": 121256337157388,
+        "skipped_reparse": 0
+      },
+      "observed": {
+        "files": 1000000,
+        "directories": 6325,
+        "logical_bytes": 121256337157388,
+        "skipped_reparse": 0
+      },
+      "exact": true,
+      "allocation_bytes": 7246288,
+      "nonzero_file_ids": 1000000,
+      "pass": 1
+    },
+    {
+      "strategy": "handle",
+      "root": "G:\\loomward-lab\\scale\\mixed-1000000",
+      "threads": 8,
+      "buffer_kib": 64,
+      "cache_label": "warm-uncontrolled",
+      "wall_seconds": 0.2260009,
+      "files_per_second": 4424761.140331742,
+      "cpu_seconds": 1.5,
+      "cpu_percent_one_core": 663.7141710497614,
+      "peak_rss_bytes": 7180288,
+      "expected": {
+        "files": 1000000,
+        "directories": 6325,
+        "logical_bytes": 121256337157388,
+        "skipped_reparse": 0
+      },
+      "observed": {
+        "files": 1000000,
+        "directories": 6325,
+        "logical_bytes": 121256337157388,
+        "skipped_reparse": 0
+      },
+      "exact": true,
+      "allocation_bytes": 7246288,
+      "nonzero_file_ids": 1000000,
+      "pass": 2
+    },
+    {
+      "strategy": "find",
+      "root": "G:\\loomward-lab\\scale\\mixed-1000000",
+      "threads": 8,
+      "buffer_kib": 64,
+      "cache_label": "warm-uncontrolled",
+      "wall_seconds": 0.3146329,
+      "files_per_second": 3178307.1636818657,
+      "cpu_seconds": 1.703125,
+      "cpu_percent_one_core": 541.3054388145678,
+      "peak_rss_bytes": 7606272,
+      "expected": {
+        "files": 1000000,
+        "directories": 6325,
+        "logical_bytes": 121256337157388,
+        "skipped_reparse": 0
+      },
+      "observed": {
+        "files": 1000000,
+        "directories": 6325,
+        "logical_bytes": 121256337157388,
+        "skipped_reparse": 0
+      },
+      "exact": true,
+      "allocation_bytes": null,
+      "nonzero_file_ids": null,
+      "pass": 2
+    },
+    {
+      "strategy": "std-parallel",
+      "root": "G:\\loomward-lab\\scale\\mixed-1000000",
+      "threads": 8,
+      "buffer_kib": 64,
+      "cache_label": "warm-uncontrolled",
+      "wall_seconds": 10.4144812,
+      "files_per_second": 96020.14548741996,
+      "cpu_seconds": 78.484375,
+      "cpu_percent_one_core": 753.6081105989226,
+      "peak_rss_bytes": 6995968,
+      "expected": {
+        "files": 1000000,
+        "directories": 6325,
+        "logical_bytes": 121256337157388,
+        "skipped_reparse": 0
+      },
+      "observed": {
+        "files": 1000000,
+        "directories": 6325,
+        "logical_bytes": 121256337157388,
+        "skipped_reparse": 0
+      },
+      "exact": true,
+      "allocation_bytes": null,
+      "nonzero_file_ids": null,
+      "pass": 2
+    },
+    {
+      "strategy": "std-single",
+      "root": "G:\\loomward-lab\\scale\\mixed-1000000",
+      "threads": 1,
+      "buffer_kib": 64,
+      "cache_label": "warm-uncontrolled",
+      "wall_seconds": 49.994674,
+      "files_per_second": 20002.130626954382,
+      "cpu_seconds": 48.84375,
+      "cpu_percent_one_core": 97.69790678103031,
+      "peak_rss_bytes": 6074368,
+      "expected": {
+        "files": 1000000,
+        "directories": 6325,
+        "logical_bytes": 121256337157388,
+        "skipped_reparse": 0
+      },
+      "observed": {
+        "files": 1000000,
+        "directories": 6325,
+        "logical_bytes": 121256337157388,
+        "skipped_reparse": 0
+      },
+      "exact": true,
+      "allocation_bytes": null,
+      "nonzero_file_ids": null,
+      "pass": 2
+    },
+    {
+      "strategy": "std-single",
+      "root": "G:\\loomward-lab\\scale\\mixed-3000000",
+      "threads": 1,
+      "buffer_kib": 64,
+      "cache_label": "post-generation-uncontrolled",
+      "wall_seconds": 209.7101642,
+      "files_per_second": 14305.458256848762,
+      "cpu_seconds": 169.703125,
+      "cpu_percent_one_core": 80.9226990248096,
+      "peak_rss_bytes": 9355264,
+      "expected": {
+        "files": 3000000,
+        "directories": 18895,
+        "logical_bytes": 362174108598017,
+        "skipped_reparse": 0
+      },
+      "observed": {
+        "files": 3000000,
+        "directories": 18895,
+        "logical_bytes": 362174108598017,
+        "skipped_reparse": 0
+      },
+      "exact": true,
+      "allocation_bytes": null,
+      "nonzero_file_ids": null,
+      "pass": 1
+    },
+    {
+      "strategy": "std-parallel",
+      "root": "G:\\loomward-lab\\scale\\mixed-3000000",
+      "threads": 8,
+      "buffer_kib": 64,
+      "cache_label": "post-generation-uncontrolled",
+      "wall_seconds": 52.4189662,
+      "files_per_second": 57231.19354459913,
+      "cpu_seconds": 294.5,
+      "cpu_percent_one_core": 561.8195499628148,
+      "peak_rss_bytes": 9302016,
+      "expected": {
+        "files": 3000000,
+        "directories": 18895,
+        "logical_bytes": 362174108598017,
+        "skipped_reparse": 0
+      },
+      "observed": {
+        "files": 3000000,
+        "directories": 18895,
+        "logical_bytes": 362174108598017,
+        "skipped_reparse": 0
+      },
+      "exact": true,
+      "allocation_bytes": null,
+      "nonzero_file_ids": null,
+      "pass": 1
+    },
+    {
+      "strategy": "find",
+      "root": "G:\\loomward-lab\\scale\\mixed-3000000",
+      "threads": 8,
+      "buffer_kib": 64,
+      "cache_label": "post-generation-uncontrolled",
+      "wall_seconds": 1.5748872,
+      "files_per_second": 1904898.3317662368,
+      "cpu_seconds": 7.265625,
+      "cpu_percent_one_core": 461.34256472463545,
+      "peak_rss_bytes": 14966784,
+      "expected": {
+        "files": 3000000,
+        "directories": 18895,
+        "logical_bytes": 362174108598017,
+        "skipped_reparse": 0
+      },
+      "observed": {
+        "files": 3000000,
+        "directories": 18895,
+        "logical_bytes": 362174108598017,
+        "skipped_reparse": 0
+      },
+      "exact": true,
+      "allocation_bytes": null,
+      "nonzero_file_ids": null,
+      "pass": 1
+    },
+    {
+      "strategy": "handle",
+      "root": "G:\\loomward-lab\\scale\\mixed-3000000",
+      "threads": 8,
+      "buffer_kib": 64,
+      "cache_label": "post-generation-uncontrolled",
+      "wall_seconds": 0.8757459,
+      "files_per_second": 3425651.207730462,
+      "cpu_seconds": 5.625,
+      "cpu_percent_one_core": 642.3096014494615,
+      "peak_rss_bytes": 18890752,
+      "expected": {
+        "files": 3000000,
+        "directories": 18895,
+        "logical_bytes": 362174108598017,
+        "skipped_reparse": 0
+      },
+      "observed": {
+        "files": 3000000,
+        "directories": 18895,
+        "logical_bytes": 362174108598017,
+        "skipped_reparse": 0
+      },
+      "exact": true,
+      "allocation_bytes": 21684072,
+      "nonzero_file_ids": 3000000,
+      "pass": 1
+    },
+    {
+      "strategy": "handle",
+      "root": "G:\\loomward-lab\\scale\\mixed-3000000",
+      "threads": 8,
+      "buffer_kib": 64,
+      "cache_label": "warm-uncontrolled",
+      "wall_seconds": 0.7013012,
+      "files_per_second": 4277762.536268297,
+      "cpu_seconds": 5.078125,
+      "cpu_percent_one_core": 724.1004293162482,
+      "peak_rss_bytes": 16945152,
+      "expected": {
+        "files": 3000000,
+        "directories": 18895,
+        "logical_bytes": 362174108598017,
+        "skipped_reparse": 0
+      },
+      "observed": {
+        "files": 3000000,
+        "directories": 18895,
+        "logical_bytes": 362174108598017,
+        "skipped_reparse": 0
+      },
+      "exact": true,
+      "allocation_bytes": 21684072,
+      "nonzero_file_ids": 3000000,
+      "pass": 2
+    },
+    {
+      "strategy": "find",
+      "root": "G:\\loomward-lab\\scale\\mixed-3000000",
+      "threads": 8,
+      "buffer_kib": 64,
+      "cache_label": "warm-uncontrolled",
+      "wall_seconds": 0.9707459,
+      "files_per_second": 3090407.0776914945,
+      "cpu_seconds": 6.28125,
+      "cpu_percent_one_core": 647.0539818916567,
+      "peak_rss_bytes": 23666688,
+      "expected": {
+        "files": 3000000,
+        "directories": 18895,
+        "logical_bytes": 362174108598017,
+        "skipped_reparse": 0
+      },
+      "observed": {
+        "files": 3000000,
+        "directories": 18895,
+        "logical_bytes": 362174108598017,
+        "skipped_reparse": 0
+      },
+      "exact": true,
+      "allocation_bytes": null,
+      "nonzero_file_ids": null,
+      "pass": 2
+    },
+    {
+      "strategy": "std-parallel",
+      "root": "G:\\loomward-lab\\scale\\mixed-3000000",
+      "threads": 8,
+      "buffer_kib": 64,
+      "cache_label": "warm-uncontrolled",
+      "wall_seconds": 48.2667223,
+      "files_per_second": 62154.624491665556,
+      "cpu_seconds": 308.5625,
+      "cpu_percent_one_core": 639.2862106569851,
+      "peak_rss_bytes": 9310208,
+      "expected": {
+        "files": 3000000,
+        "directories": 18895,
+        "logical_bytes": 362174108598017,
+        "skipped_reparse": 0
+      },
+      "observed": {
+        "files": 3000000,
+        "directories": 18895,
+        "logical_bytes": 362174108598017,
+        "skipped_reparse": 0
+      },
+      "exact": true,
+      "allocation_bytes": null,
+      "nonzero_file_ids": null,
+      "pass": 2
+    }
+  ],
+  "status": "Exploratory pre-ancestor-pin build; intentionally interrupted before redundant final std-single repeat. Final source-hashed trials are in enumeration-spike.json.",
+  "generation_note": "Trees generated here. Final runner revalidates them; generator timing predates the ancestor-pin change and decimal 20 GB budget."
+}
