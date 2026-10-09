@@ -109,7 +109,7 @@ py -3 scripts/verify.py
 py -3 experiments/reference_smoke.py
 ```
 
-The final authored reference passed **89 Python tests** and **11 bridged Chromium UI checks** on Linux, with JavaScript syntax validation. See [evidence/verification.txt](evidence/verification.txt). Native source contains **20 unexecuted tests**. A missing Rust compiler is explicitly UNVERIFIED, not PASS. The Windows PowerShell bootstrap, Windows reference behavior, Tauri/WebView2, actual LLM output and hosted CI remain unverified.
+The gate measured on Windows 11 (9 October 2026, [evidence/v3](evidence/v3/README.md)) is **185 Python tests** (one symlink-privilege skip), both JavaScript syntax checks, 9 boundary assertions, 80 cross-language fixtures, rustfmt, **19 Rust tests** (20 written; one is Unix-only), clippy, and **14 bridged Chromium UI checks**: `py -3 scripts/verify.py --ui` runs them all. Hosted CI runs Python 3.11/3.13 and the native workspace on Ubuntu and Windows. A missing toolchain is reported UNVERIFIED, never PASS. Tauri/WebView2 and actual LLM output remain unverified.
 
 For UI checks, install Playwright and a compatible local Chromium under your own tooling policy, then run `python scripts/test_ui.py --browser PATH_TO_CHROMIUM`. The recorded test uses Chromium rendering with a Python bridge to the real reference API because direct browser navigation was blocked in the authoring environment. It is not a Windows-native or direct browser-network integration claim.
 
