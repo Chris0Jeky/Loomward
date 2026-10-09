@@ -1,0 +1,258 @@
+[
+  {
+    "id": "R01",
+    "title": "WinDirStat",
+    "url": "https://windirstat.net/",
+    "design_implication": "WinDirStat is already open source; use it as a comparator, not a proprietary straw man.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R02",
+    "title": "Czkawka source",
+    "url": "https://github.com/qarmin/czkawka",
+    "design_implication": "Reference an existing Rust duplicate-finding project; do not assume its benchmarks transfer to this prototype.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R03",
+    "title": "System Informer source",
+    "url": "https://github.com/winsiderss/systeminformer",
+    "design_implication": "Established process-inspection comparator; do not claim an equivalent Windows internals surface.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R04",
+    "title": "Everything documentation",
+    "url": "https://voidtools.com/support/everything/",
+    "design_implication": "Filename indexing and a storage adviser solve different problems. Compare index freshness and footprint separately.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R05",
+    "title": "Microsoft: change journals",
+    "url": "https://learn.microsoft.com/en-us/windows/win32/fileio/change-journals",
+    "design_implication": "Incremental NTFS change tracking can avoid repeated full enumeration.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R06",
+    "title": "Microsoft: change journal records",
+    "url": "https://learn.microsoft.com/en-us/windows/win32/fileio/change-journal-records",
+    "design_implication": "Records can be discarded or coalesced and cannot reconstruct file contents for undo.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R07",
+    "title": "Microsoft: ReadDirectoryChangesW",
+    "url": "https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-readdirectorychangesw",
+    "design_implication": "Zero bytes after buffer overflow requires re-enumeration, not a clean-index assertion.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R08",
+    "title": "Microsoft: FILE_ID_INFO",
+    "url": "https://learn.microsoft.com/en-us/windows/desktop/api/winbase/ns-winbase-file_id_info",
+    "design_implication": "Handle-derived volume and file identifiers are a stronger basis than path strings. Probe actual platform support.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R09",
+    "title": "Microsoft: reparse points",
+    "url": "https://learn.microsoft.com/en-us/windows/win32/fileio/reparse-points",
+    "design_implication": "A directory entry can redirect access; path-prefix checks alone are not a sufficient execution boundary.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R10",
+    "title": "Microsoft: hard links and junctions",
+    "url": "https://learn.microsoft.com/en-us/windows/win32/fileio/hard-links-and-junctions",
+    "design_implication": "Directory entries and underlying file objects are not one-to-one.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R11",
+    "title": "Microsoft: cloud placeholder attributes",
+    "url": "https://learn.microsoft.com/en-us/windows/win32/api/cfapi/nf-cfapi-cfgetplaceholderstatefromattributetag",
+    "design_implication": "Treat cloud placeholders as a separate capability; inspection must not silently hydrate them.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R12",
+    "title": "Microsoft: fsutil behavior",
+    "url": "https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/fsutil-behavior",
+    "design_implication": "Last-access behavior is configurable; timestamps do not establish reliable usage history.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R13",
+    "title": "Microsoft: CopyFile2",
+    "url": "https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-copyfile2",
+    "design_implication": "Use a supported copy primitive behind a verified transaction, not a promise of cross-volume atomic moves.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R14",
+    "title": "Microsoft: known folders",
+    "url": "https://learn.microsoft.com/en-us/windows/win32/shell/knownfolderid",
+    "design_implication": "Resolve supported Windows known folders instead of hardcoding an English Desktop path.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R15",
+    "title": "Microsoft: shell links",
+    "url": "https://learn.microsoft.com/en-us/windows/win32/shell/links",
+    "design_implication": "Shortcuts have structured state; a filename replacement is not complete shortcut management.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R16",
+    "title": "Microsoft: VSS overview",
+    "url": "https://learn.microsoft.com/en-us/windows/win32/vss/volume-shadow-copy-service-overview",
+    "design_implication": "Snapshot consistency and independent backup retention are distinct responsibilities.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R17",
+    "title": "Microsoft: job objects",
+    "url": "https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects",
+    "design_implication": "Jobs can manage related processes and limits. Begin with workloads launched by Loomward.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R18",
+    "title": "Microsoft: SetProcessInformation",
+    "url": "https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessinformation",
+    "design_implication": "Windows exposes process policy controls including power and memory priority; support and rights require probing.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R19",
+    "title": "Microsoft: working set sizing",
+    "url": "https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-setprocessworkingsetsize",
+    "design_implication": "Working-set manipulation is not equivalent to safely reducing committed application memory.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R20",
+    "title": "Microsoft: working set",
+    "url": "https://learn.microsoft.com/en-us/windows/win32/memory/working-set",
+    "design_implication": "Resident physical pages are one memory view, not the entire process-memory story.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R21",
+    "title": "Microsoft: Win32_Product",
+    "url": "https://learn.microsoft.com/en-us/previous-versions/windows/desktop/msiprov/win32-product",
+    "design_implication": "Avoid inventory that triggers MSI consistency/repair side effects.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R22",
+    "title": "SQLite WAL",
+    "url": "https://sqlite.org/wal.html",
+    "design_implication": "Keep the active catalogue local and account for WAL/checkpoint behavior; do not place it on a network share.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R23",
+    "title": "Tauri security",
+    "url": "https://v2.tauri.app/security/",
+    "design_implication": "Separate frontend trust from native powers. A Tauri label alone is not a security guarantee.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R24",
+    "title": "Tauri capabilities",
+    "url": "https://v2.tauri.app/security/capabilities/",
+    "design_implication": "Use explicit per-window capabilities rather than broad shell/filesystem grants.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R25",
+    "title": "Tauri prerequisites",
+    "url": "https://v2.tauri.app/start/prerequisites/",
+    "design_implication": "Windows development requires its native toolchain and WebView2-related prerequisites.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R26",
+    "title": "restic backup documentation",
+    "url": "https://restic.readthedocs.io/en/stable/040_backup.html",
+    "design_implication": "Candidate backup-provider integration; record actual provider results rather than infer protection.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R27",
+    "title": "restic repository operations",
+    "url": "https://restic.readthedocs.io/en/stable/045_working_with_repos.html",
+    "design_implication": "Repository checks and restore tests belong in protection health, separate from a successful backup invocation.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R28",
+    "title": "LM Studio structured output",
+    "url": "https://lmstudio.ai/docs/developer/openai-compat/structured-output",
+    "design_implication": "JSON-schema-constrained local teacher output is possible; still validate independently.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R29",
+    "title": "LM Studio TTL and eviction",
+    "url": "https://lmstudio.ai/docs/developer/core/ttl-and-auto-evict",
+    "design_implication": "Model lifecycle controls can reduce idle model residency; do not unload a shared session blindly.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R30",
+    "title": "Snorkel paper",
+    "url": "https://arxiv.org/abs/1711.10160",
+    "design_implication": "Weak supervision is a useful conceptual foundation for noisy teacher labels, not proof of their correctness.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R31",
+    "title": "Guo et al.: calibration",
+    "url": "https://proceedings.mlr.press/v70/guo17a.html",
+    "design_implication": "Predictive confidence requires evaluation/calibration. Safety authority remains a separate question.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  },
+  {
+    "id": "R32",
+    "title": "sysinfo 0.33.1 documentation",
+    "url": "https://docs.rs/sysinfo/0.33.1/sysinfo/",
+    "design_implication": "A possible portable native telemetry adapter; refresh/delta semantics and missing support must be explicit.",
+    "checked_on": "2026-10-09",
+    "source_class": "primary"
+  }
+]

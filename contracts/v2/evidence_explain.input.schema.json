@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "evidence_explain reference input",
+  "type": "object",
+  "properties": {
+    "item_ref": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    }
+  },
+  "required": [
+    "item_ref"
+  ],
+  "additionalProperties": false
+}

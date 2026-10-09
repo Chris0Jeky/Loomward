@@ -1,0 +1,1 @@
+PASS generated standalone preview renders seven pages with synthetic data and no JavaScript exceptions. Tested with Chromium set_content, not direct file:// navigation. No external assets or network connections are required.

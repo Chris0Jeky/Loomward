@@ -1,0 +1,87 @@
+{
+  "project": "Loomward",
+  "schema_version": 2,
+  "as_of": "2026-10-09",
+  "version": "0.2.0-reference",
+  "base_commit": "1e51c3b",
+  "branch": "expansion/interop-v2",
+  "phase": "expanded-reference-with-native-and-provider-gates-unverified",
+  "read_first": [
+    "AGENTS.md",
+    "handoff/START-HERE.md",
+    "docs/23-expansion-overview.md",
+    "docs/37-expansion-verification.md",
+    "docs/40-parallel-work-packs.md"
+  ],
+  "reference": {
+    "python_tests": 184,
+    "browser_checks": 14,
+    "js_boundary_assertions": 9,
+    "js_python_parity_cases": 80,
+    "runtime": "Linux / Python 3.13.5",
+    "actual_os_controls": false,
+    "user_file_mutations": false,
+    "catalog": "immutable in-memory scoped snapshot",
+    "lease_broker": "ephemeral local accounting, no authentication or OS enforcement",
+    "ui_pages": 10
+  },
+  "mcp": {
+    "transport": "stdio",
+    "protocol_eras": [
+      "2026-07-28",
+      "2025-11-25"
+    ],
+    "reference_tools": 4,
+    "default_advertised_tools": 2,
+    "actual_subprocess_tested": true,
+    "real_host_tested": false,
+    "official_sdk_used": false,
+    "remote_http": false,
+    "providers_connected": 0
+  },
+  "native": {
+    "rust_written_tests": 20,
+    "compiled": false,
+    "tauri": "uncompiled synthetic scaffold",
+    "planner": "v1 baseline, not ported"
+  },
+  "learning": {
+    "student": "weighted multinomial Naive Bayes reference, unchanged",
+    "teacher_mock_http_tested": true,
+    "actual_model_tested": false,
+    "personal_dataset_evaluated": false
+  },
+  "experiments": {
+    "tiny_allocation_cases": 51,
+    "baseline_missed_feasible": 9,
+    "v2_missed_feasible": 0,
+    "catalog_synthetic_rows": 50000,
+    "windows_performance_claim": false
+  },
+  "next_local_issues": [
+    "LW-001",
+    "LW-002",
+    "LW-064"
+  ],
+  "optional_independent_starts": [
+    "LW-065",
+    "LW-068"
+  ],
+  "backlog_count": 100,
+  "remote_publication": false,
+  "independent_subagents_used": false,
+  "hard_gates": [
+    "No user-file or process effects",
+    "No automatic installs, elevation, model downloads or account connections",
+    "No agent approval/apply authority",
+    "No private metadata or secrets in Git",
+    "No native/host/Windows success claim without a corresponding run"
+  ],
+  "evidence": [
+    "evidence/v2/final-suite.txt",
+    "evidence/v2/ui-final.txt",
+    "evidence/v2/standalone-checks.json",
+    "evidence/v2/benchmarks.json",
+    "evidence/v2/verification-summary.json"
+  ]
+}

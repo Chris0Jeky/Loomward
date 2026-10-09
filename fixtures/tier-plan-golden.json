@@ -1,0 +1,50 @@
+{
+  "mode": "simulation",
+  "algorithm": "constrained_greedy_v1",
+  "optimality_claim": false,
+  "proposals": [
+    {
+      "group_id": "completed-project",
+      "source_id": "fast",
+      "target_id": "archive",
+      "source_bytes_relieved": 38654705664,
+      "destination_bytes_required": 38654705664,
+      "transfer_bytes": 38654705664,
+      "reason": "cold_disjoint_group_within_capacity_and_budget",
+      "requires_consent": true,
+      "executable": false
+    },
+    {
+      "group_id": "previous-model",
+      "source_id": "fast",
+      "target_id": "archive",
+      "source_bytes_relieved": 15032385536,
+      "destination_bytes_required": 15032385536,
+      "transfer_bytes": 15032385536,
+      "reason": "cold_disjoint_group_within_capacity_and_budget",
+      "requires_consent": true,
+      "executable": false
+    }
+  ],
+  "rejected": [
+    {
+      "group_id": "current-model",
+      "reason": "pinned_active_protected_or_unspecified"
+    },
+    {
+      "group_id": "working-film",
+      "reason": "pinned_active_protected_or_unspecified"
+    }
+  ],
+  "projected_free_bytes": {
+    "fast": 100931731456,
+    "warm": 332859965440,
+    "archive": 891205713920
+  },
+  "target_free_bytes": 96636764160,
+  "shortfall_bytes": 0,
+  "satisfied": true,
+  "transfer_bytes": 53687091200,
+  "filesystem_changed": false,
+  "assumption": "Group allocations are user-supplied estimates; source, destination and transfer sizes are independent."
+}

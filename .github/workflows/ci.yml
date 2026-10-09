@@ -1,0 +1,39 @@
+name: reference-and-native
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  python:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.11', '3.13']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m unittest discover -s tests
+        env:
+          PYTHONPATH: python
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --check ui/app.js
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - run: cargo +stable fmt --all -- --check
+      - run: cargo +stable test --workspace
+      - run: cargo +stable clippy --workspace --all-targets -- -D warnings
+# This workflow was authored, not run on GitHub. Resolve/commit Cargo.lock and pin
+# actions to reviewed full commit SHAs before public-release automation.
+# Tauri/WebView2 packaging and browser QA are separate Windows validation gates.

@@ -1,0 +1,55 @@
+{
+  "project": "Loomward",
+  "schema_version": 1,
+  "as_of": "2026-10-09",
+  "phase": "reference-prototype-with-uncompiled-native-foundation",
+  "branch_or_commit": "See accompanying local Git bundle; no remote publication.",
+  "read_first": [
+    "AGENTS.md",
+    "handoff/START-HERE.md",
+    "docs/16-implementation-status.md",
+    "backlog/INDEX.md"
+  ],
+  "reference": {
+    "runtime": "Python >=3.11; authored/tests on Linux Python 3.13.5",
+    "python_test_count": 89,
+    "ui_check_count": 11,
+    "ui_method": "Chromium set_content with Python bridge to real loopback HTTP; not direct Windows browser networking",
+    "mutation_endpoints": false
+  },
+  "native": {
+    "rust_tests_written": 20,
+    "compiled": false,
+    "reason": "cargo/rustc unavailable; download failed",
+    "tauri": "separate synthetic-only scaffold, uncompiled",
+    "lockfiles_resolved": false
+  },
+  "teacher": {
+    "mock_http_tested": true,
+    "real_model_tested": false,
+    "automatic_requests": false
+  },
+  "remote": {
+    "repository_created": false,
+    "pull_requests_created": 0,
+    "issues_created": 0
+  },
+  "next_local_issues": [
+    "LW-001",
+    "LW-002",
+    "LW-064"
+  ],
+  "hard_gates": [
+    "No user-file mutation or process control",
+    "No automatic elevation/install/model download",
+    "No public publishing without explicit approval",
+    "Do not treat imported snapshots or teacher scores as execution authority"
+  ],
+  "evidence": [
+    "evidence/verification.txt",
+    "evidence/ui-checks.txt",
+    "evidence/synthetic-experiments.json",
+    "docs/16-implementation-status.md"
+  ],
+  "backlog_manifest": "backlog/issues.json"
+}

@@ -1,0 +1,95 @@
+test_depth_limit_is_visible (test_inventory.InventoryTests.test_depth_limit_is_visible) ... ERROR
+test_empty_root_is_complete (test_inventory.InventoryTests.test_empty_root_is_complete) ... ERROR
+test_entry_limit_is_visible (test_inventory.InventoryTests.test_entry_limit_is_visible) ... FAIL
+test_limits_validate (test_inventory.InventoryTests.test_limits_validate) ... FAIL
+test_metadata_counts (test_inventory.InventoryTests.test_metadata_counts) ... FAIL
+test_missing_root_rejected (test_inventory.InventoryTests.test_missing_root_rejected) ... FAIL
+test_regular_file_root_rejected (test_inventory.InventoryTests.test_regular_file_root_rejected) ... FAIL
+test_sensitive_metadata_flagged (test_inventory.InventoryTests.test_sensitive_metadata_flagged) ... ERROR
+test_symlink_not_followed (test_inventory.InventoryTests.test_symlink_not_followed) ... FAIL
+
+======================================================================
+ERROR: test_depth_limit_is_visible (test_inventory.InventoryTests.test_depth_limit_is_visible)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward/tests/test_inventory.py", line 33, in test_depth_limit_is_visible
+    self.assertGreater(s['coverage']['skipped_count'],0)
+                       ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+KeyError: 'skipped_count'
+
+======================================================================
+ERROR: test_empty_root_is_complete (test_inventory.InventoryTests.test_empty_root_is_complete)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward/tests/test_inventory.py", line 44, in test_empty_root_is_complete
+    s=scan(t); self.assertEqual(s['summary']['logical_bytes'],0); self.assertTrue(s['coverage']['complete_under_policy'])
+                                                                                  ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyError: 'complete_under_policy'
+
+======================================================================
+ERROR: test_sensitive_metadata_flagged (test_inventory.InventoryTests.test_sensitive_metadata_flagged)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward/tests/test_inventory.py", line 52, in test_sensitive_metadata_flagged
+    self.assertIn('sensitive',scan(t)['files'][0]['flags'])
+                              ~~~~~~~~~~~~~~~~^^^
+IndexError: list index out of range
+
+======================================================================
+FAIL: test_entry_limit_is_visible (test_inventory.InventoryTests.test_entry_limit_is_visible)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward/tests/test_inventory.py", line 25, in test_entry_limit_is_visible
+    self.assertEqual(s['summary']['file_count'],2)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 0 != 2
+
+======================================================================
+FAIL: test_limits_validate (test_inventory.InventoryTests.test_limits_validate)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward/tests/test_inventory.py", line 48, in test_limits_validate
+    with self.assertRaises(ValueError): scan(t,max_entries=v)
+         ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_metadata_counts (test_inventory.InventoryTests.test_metadata_counts)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward/tests/test_inventory.py", line 12, in test_metadata_counts
+    self.assertEqual(s['summary']['logical_bytes'],8)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 0 != 8
+
+======================================================================
+FAIL: test_missing_root_rejected (test_inventory.InventoryTests.test_missing_root_rejected)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward/tests/test_inventory.py", line 17, in test_missing_root_rejected
+    with self.assertRaises(ValueError): scan('/this/path/does/not/exist/loomward')
+         ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_regular_file_root_rejected (test_inventory.InventoryTests.test_regular_file_root_rejected)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward/tests/test_inventory.py", line 20, in test_regular_file_root_rejected
+    with self.assertRaises(ValueError): scan(f.name)
+         ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_symlink_not_followed (test_inventory.InventoryTests.test_symlink_not_followed)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward/tests/test_inventory.py", line 41, in test_symlink_not_followed
+    with self.assertRaises(ValueError): scan(Path(t)/'link')
+         ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+AssertionError: ValueError not raised
+
+----------------------------------------------------------------------
+Ran 9 tests in 0.007s
+
+FAILED (failures=6, errors=3)

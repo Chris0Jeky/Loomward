@@ -1,1 +1,23 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.loomward/
+*.db
+*.db-*
+*.sqlite*
+.env
+.env.*
+*.pem
+*.pfx
+*.key
+target/
+native/target/
+native/gen/
+node_modules/
+dist/
+.superpowers/
+
+# Gitignored ChatGPT deliverables in the primary checkout (only copy; never git clean -x)
 /Resources

@@ -1,0 +1,19 @@
+UNVERIFIED Rust: cargo is missing; no native success is claimed
+
+RUN Python suite
+........................................................................................................................................................................................
+----------------------------------------------------------------------
+Ran 184 tests in 13.863s
+
+OK
+PASS Python suite
+
+RUN JavaScript app syntax
+PASS JavaScript app syntax
+
+RUN JavaScript expansion syntax
+PASS JavaScript expansion syntax
+
+RUN JavaScript boundary and Python parity fixtures
+PASS 9 JS boundary assertions and 80 cross-language admission fixtures
+PASS JavaScript boundary and Python parity fixtures

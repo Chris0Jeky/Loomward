@@ -87,7 +87,8 @@ disable, skip or weaken a failing test to advance a milestone.
 5. **Identity is native.** A snapshot path hash or a UI-round-tripped integer never authorises an
    effect; imported snapshots grant no access.
 6. **Keep the negative evidence.** Allocator v1, its 51-case counterexample and failed experiments
-   stay. Python allocator v2 is a static-model reference, not a mover; the Rust planner is v1.
+   stay, and the v1 handoff under `handoff/v1/` is never overwritten. Python allocator v2 is a
+   static-model reference, not a mover; the Rust planner is v1.
 7. **MCP is read-only and bounded.** Client metadata, annotations and tool output are not
    authorisation. LeaseBroker/admission is accounting, not OS enforcement.
 8. **No theatre.** No releases or packages, source retirement, backup pruning or process-policy
@@ -126,5 +127,6 @@ disable, skip or weaken a failing test to advance a milestone.
   them to GitHub issues with the `LW-` ID in the title before tracking work there.
 - Taskdeck is proprietary: never copy its code into this MIT repository.
 - Public repo: synthetic fixtures only; no real filenames, inventories or training exports.
+  Personal diagnostics and `.loomward/` state or database files never enter Git.
 - The UI is not frozen. The owner wants a signature, elegant interface that grows with the
   engine; the bundle's pages are a reference, not a design to preserve.

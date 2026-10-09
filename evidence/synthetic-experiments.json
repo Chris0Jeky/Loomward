@@ -1,0 +1,32 @@
+{
+  "mode": "synthetic_experiment",
+  "platform": "Linux",
+  "python": "3.13.5",
+  "not_a_windows_or_competitor_benchmark": true,
+  "scan": {
+    "files": 5000,
+    "logical_bytes": 120000,
+    "repetitions": 3,
+    "seconds": [
+      1.0063083909999477,
+      0.8682976169998256,
+      0.32861300400008986
+    ],
+    "median_seconds": 0.8682976169998256,
+    "cache_conditions": "Immediately created tiny files on ephemeral container storage; no cold-cache control. No UI/index persistence/NTFS scan."
+  },
+  "tier_oracle": {
+    "seed": 20261009,
+    "cases": 51,
+    "case_units": "abstract byte units, not physical disk measurements",
+    "constraint_violations": 0,
+    "greedy_missed_feasible_target_cases": 9,
+    "cases_with_positive_shortfall_regret": 24,
+    "maximum_shortfall_regret": 68,
+    "explicit_counterexample": {
+      "greedy_shortfall": 10,
+      "oracle_shortfall": 0
+    },
+    "interpretation": "The greedy baseline preserves these tested constraints but is not a feasibility-complete or optimal allocator. This experiment does not model crash safety, groups changing, filesystem allocation or real usage heat."
+  }
+}

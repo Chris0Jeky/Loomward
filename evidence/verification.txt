@@ -1,0 +1,26 @@
+UNVERIFIED Rust: cargo is missing; no native success is claimed
+
+RUN Python suite
+.........................................................................................
+----------------------------------------------------------------------
+Ran 89 tests in 12.147s
+
+OK
+PASS Python suite
+
+RUN JavaScript syntax
+PASS JavaScript syntax
+
+RUN Chromium bridged-UI integration
+PASS live connection
+PASS refresh preserves runtime
+PASS persistent feedback and retraining
+PASS non-executable tier plan
+PASS search
+PASS duplicate review
+PASS all navigation pages
+PASS hostile import rejected
+PASS file names rendered as text
+PASS mobile viewport width
+PASS no browser exceptions
+PASS Chromium bridged-UI integration

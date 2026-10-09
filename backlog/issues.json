@@ -1,0 +1,1225 @@
+[
+  {
+    "id": "LW-001",
+    "title": "[LW-001] Verify the reference workbench on Windows",
+    "milestone": "M1",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [],
+    "body_file": "backlog/issues/LW-001.md"
+  },
+  {
+    "id": "LW-002",
+    "title": "[LW-002] Compile, format and lock the native Rust workspace",
+    "milestone": "M1",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-001"
+    ],
+    "body_file": "backlog/issues/LW-002.md"
+  },
+  {
+    "id": "LW-064",
+    "title": "[LW-064] Build a disposable Windows filesystem fixture laboratory",
+    "milestone": "M1",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-001",
+      "LW-002"
+    ],
+    "body_file": "backlog/issues/LW-064.md"
+  },
+  {
+    "id": "LW-003",
+    "title": "[LW-003] Implement handle-derived Windows object identity",
+    "milestone": "M1",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-002",
+      "LW-064"
+    ],
+    "body_file": "backlog/issues/LW-003.md"
+  },
+  {
+    "id": "LW-004",
+    "title": "[LW-004] Inventory volume identity and capabilities",
+    "milestone": "M1",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-002",
+      "LW-064"
+    ],
+    "body_file": "backlog/issues/LW-004.md"
+  },
+  {
+    "id": "LW-016",
+    "title": "[LW-016] Standardise the exact v2 wire protocol",
+    "milestone": "M1",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-001",
+      "LW-002"
+    ],
+    "body_file": "backlog/issues/LW-016.md"
+  },
+  {
+    "id": "LW-005",
+    "title": "[LW-005] Build the local native catalogue and migration harness",
+    "milestone": "M1",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-003",
+      "LW-004",
+      "LW-016"
+    ],
+    "body_file": "backlog/issues/LW-005.md"
+  },
+  {
+    "id": "LW-006",
+    "title": "[LW-006] Add bounded native scan jobs and cancellation",
+    "milestone": "M1",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-005"
+    ],
+    "body_file": "backlog/issues/LW-006.md"
+  },
+  {
+    "id": "LW-007",
+    "title": "[LW-007] Implement optional USN catch-up with gap recovery",
+    "milestone": "M1",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-006"
+    ],
+    "body_file": "backlog/issues/LW-007.md"
+  },
+  {
+    "id": "LW-008",
+    "title": "[LW-008] Implement watcher overflow reconciliation",
+    "milestone": "M1",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-006"
+    ],
+    "body_file": "backlog/issues/LW-008.md"
+  },
+  {
+    "id": "LW-009",
+    "title": "[LW-009] Separate logical, allocated and unique-object accounting",
+    "milestone": "M1",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-003",
+      "LW-004"
+    ],
+    "body_file": "backlog/issues/LW-009.md"
+  },
+  {
+    "id": "LW-010",
+    "title": "[LW-010] Detect project anchors and confirm atomic groups",
+    "milestone": "M2",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-006"
+    ],
+    "body_file": "backlog/issues/LW-010.md"
+  },
+  {
+    "id": "LW-011",
+    "title": "[LW-011] Implement paginated native queries and large explorer",
+    "milestone": "M1",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-005",
+      "LW-016"
+    ],
+    "body_file": "backlog/issues/LW-011.md"
+  },
+  {
+    "id": "LW-012",
+    "title": "[LW-012] Port duplicate inspection behind the native identity boundary",
+    "milestone": "M1",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-003",
+      "LW-006",
+      "LW-009"
+    ],
+    "body_file": "backlog/issues/LW-012.md"
+  },
+  {
+    "id": "LW-013",
+    "title": "[LW-013] Explain duplicate groups and reclaimability uncertainty",
+    "milestone": "M2",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-012",
+      "LW-010"
+    ],
+    "body_file": "backlog/issues/LW-013.md"
+  },
+  {
+    "id": "LW-014",
+    "title": "[LW-014] Build a sandboxed bounded extraction worker",
+    "milestone": "M2",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-003",
+      "LW-017"
+    ],
+    "body_file": "backlog/issues/LW-014.md"
+  },
+  {
+    "id": "LW-015",
+    "title": "[LW-015] Add safe previews without shell-handler loading",
+    "milestone": "M2",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-014",
+      "LW-018"
+    ],
+    "body_file": "backlog/issues/LW-015.md"
+  },
+  {
+    "id": "LW-017",
+    "title": "[LW-017] Implement authenticated per-user native IPC",
+    "milestone": "M1",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-003",
+      "LW-016"
+    ],
+    "body_file": "backlog/issues/LW-017.md"
+  },
+  {
+    "id": "LW-018",
+    "title": "[LW-018] Connect the Tauri shell to read-only native view models",
+    "milestone": "M1",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-011",
+      "LW-017"
+    ],
+    "body_file": "backlog/issues/LW-018.md"
+  },
+  {
+    "id": "LW-019",
+    "title": "[LW-019] Complete Windows accessibility and scaling QA",
+    "milestone": "M1",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-018"
+    ],
+    "body_file": "backlog/issues/LW-019.md"
+  },
+  {
+    "id": "LW-020",
+    "title": "[LW-020] Implement private state retention and export controls",
+    "milestone": "M2",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-005",
+      "LW-016"
+    ],
+    "body_file": "backlog/issues/LW-020.md"
+  },
+  {
+    "id": "LW-021",
+    "title": "[LW-021] Add feedback correction, retraction and bounded training windows",
+    "milestone": "M2",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-020"
+    ],
+    "body_file": "backlog/issues/LW-021.md"
+  },
+  {
+    "id": "LW-022",
+    "title": "[LW-022] Build a versioned user taxonomy editor",
+    "milestone": "M2",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-021"
+    ],
+    "body_file": "backlog/issues/LW-022.md"
+  },
+  {
+    "id": "LW-023",
+    "title": "[LW-023] Integrate the optional teacher into a review queue",
+    "milestone": "M2",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-021",
+      "LW-022"
+    ],
+    "body_file": "backlog/issues/LW-023.md"
+  },
+  {
+    "id": "LW-024",
+    "title": "[LW-024] Evaluate embeddings against the token student",
+    "milestone": "M2",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-021",
+      "LW-025"
+    ],
+    "body_file": "backlog/issues/LW-024.md"
+  },
+  {
+    "id": "LW-025",
+    "title": "[LW-025] Create grouped temporal ML evaluation and calibration reports",
+    "milestone": "M2",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-021"
+    ],
+    "body_file": "backlog/issues/LW-025.md"
+  },
+  {
+    "id": "LW-026",
+    "title": "[LW-026] Implement interruption budgets and active review selection",
+    "milestone": "M2",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-025"
+    ],
+    "body_file": "backlog/issues/LW-026.md"
+  },
+  {
+    "id": "LW-027",
+    "title": "[LW-027] Implement model promotion, drift and rollback",
+    "milestone": "M2",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-023",
+      "LW-025"
+    ],
+    "body_file": "backlog/issues/LW-027.md"
+  },
+  {
+    "id": "LW-028",
+    "title": "[LW-028] Add explicit usage observation with coverage semantics",
+    "milestone": "M2",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-003",
+      "LW-018",
+      "LW-050"
+    ],
+    "body_file": "backlog/issues/LW-028.md"
+  },
+  {
+    "id": "LW-029",
+    "title": "[LW-029] Train and evaluate a bounded access-heat model",
+    "milestone": "M4",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-025",
+      "LW-028"
+    ],
+    "body_file": "backlog/issues/LW-029.md"
+  },
+  {
+    "id": "LW-030",
+    "title": "[LW-030] Build the storage simulator and small exact oracle",
+    "milestone": "M2",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-002",
+      "LW-009"
+    ],
+    "body_file": "backlog/issues/LW-030.md"
+  },
+  {
+    "id": "LW-031",
+    "title": "[LW-031] Plan bidirectional tiering with hysteresis",
+    "milestone": "M4",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-029",
+      "LW-030",
+      "LW-033"
+    ],
+    "body_file": "backlog/issues/LW-031.md"
+  },
+  {
+    "id": "LW-032",
+    "title": "[LW-032] Schedule storage work under device and foreground budgets",
+    "milestone": "M4",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-004",
+      "LW-030",
+      "LW-050"
+    ],
+    "body_file": "backlog/issues/LW-032.md"
+  },
+  {
+    "id": "LW-033",
+    "title": "[LW-033] Define path continuity and provider relocation contracts",
+    "milestone": "M3",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-003",
+      "LW-010",
+      "LW-016"
+    ],
+    "body_file": "backlog/issues/LW-033.md"
+  },
+  {
+    "id": "LW-034",
+    "title": "[LW-034] Manage owned model leases and memory budgets",
+    "milestone": "M6",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-023",
+      "LW-050"
+    ],
+    "body_file": "backlog/issues/LW-034.md"
+  },
+  {
+    "id": "LW-035",
+    "title": "[LW-035] Implement a typed backup-provider adapter",
+    "milestone": "M3",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-003",
+      "LW-004",
+      "LW-017"
+    ],
+    "body_file": "backlog/issues/LW-035.md"
+  },
+  {
+    "id": "LW-036",
+    "title": "[LW-036] Verify backup restore and Windows metadata fidelity",
+    "milestone": "M3",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-035",
+      "LW-064"
+    ],
+    "body_file": "backlog/issues/LW-036.md"
+  },
+  {
+    "id": "LW-037",
+    "title": "[LW-037] Design explicit retention and source-retirement policies",
+    "milestone": "M3",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-036"
+    ],
+    "body_file": "backlog/issues/LW-037.md"
+  },
+  {
+    "id": "LW-038",
+    "title": "[LW-038] Bind consent to exact canonical plans",
+    "milestone": "M3",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-003",
+      "LW-016",
+      "LW-020",
+      "LW-033"
+    ],
+    "body_file": "backlog/issues/LW-038.md"
+  },
+  {
+    "id": "LW-039",
+    "title": "[LW-039] Implement the durable operation journal and recovery reader",
+    "milestone": "M3",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-005",
+      "LW-038"
+    ],
+    "body_file": "backlog/issues/LW-039.md"
+  },
+  {
+    "id": "LW-040",
+    "title": "[LW-040] Implement copy-only supported-file transactions",
+    "milestone": "M3",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-036",
+      "LW-039"
+    ],
+    "body_file": "backlog/issues/LW-040.md"
+  },
+  {
+    "id": "LW-041",
+    "title": "[LW-041] Run the Windows crash and fault-injection matrix",
+    "milestone": "M3",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-040",
+      "LW-064"
+    ],
+    "body_file": "backlog/issues/LW-041.md"
+  },
+  {
+    "id": "LW-042",
+    "title": "[LW-042] Gate the first narrowly supported approved move",
+    "milestone": "M4",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-037",
+      "LW-041"
+    ],
+    "body_file": "backlog/issues/LW-042.md"
+  },
+  {
+    "id": "LW-043",
+    "title": "[LW-043] Implement conflict-aware undo as a fresh plan",
+    "milestone": "M4",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-042"
+    ],
+    "body_file": "backlog/issues/LW-043.md"
+  },
+  {
+    "id": "LW-044",
+    "title": "[LW-044] Resolve known folders and desktop ownership",
+    "milestone": "M5",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-003",
+      "LW-017"
+    ],
+    "body_file": "backlog/issues/LW-044.md"
+  },
+  {
+    "id": "LW-045",
+    "title": "[LW-045] Inspect shortcut health without execution",
+    "milestone": "M5",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-014",
+      "LW-044"
+    ],
+    "body_file": "backlog/issues/LW-045.md"
+  },
+  {
+    "id": "LW-046",
+    "title": "[LW-046] Build virtual desktop workspaces and session views",
+    "milestone": "M5",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-018",
+      "LW-045"
+    ],
+    "body_file": "backlog/issues/LW-046.md"
+  },
+  {
+    "id": "LW-047",
+    "title": "[LW-047] Implement side-effect-free application inventory",
+    "milestone": "M5",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-017"
+    ],
+    "body_file": "backlog/issues/LW-047.md"
+  },
+  {
+    "id": "LW-048",
+    "title": "[LW-048] Offer usage-qualified application cleanup advice",
+    "milestone": "M5",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-028",
+      "LW-047"
+    ],
+    "body_file": "backlog/issues/LW-048.md"
+  },
+  {
+    "id": "LW-049",
+    "title": "[LW-049] Design a reviewed provider-specific uninstall handoff",
+    "milestone": "M5",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-038",
+      "LW-047",
+      "LW-054"
+    ],
+    "body_file": "backlog/issues/LW-049.md"
+  },
+  {
+    "id": "LW-050",
+    "title": "[LW-050] Implement native read-only process telemetry",
+    "milestone": "M6",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-003",
+      "LW-017"
+    ],
+    "body_file": "backlog/issues/LW-050.md"
+  },
+  {
+    "id": "LW-051",
+    "title": "[LW-051] Add resource trends and evidence-led explanations",
+    "milestone": "M6",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-050"
+    ],
+    "body_file": "backlog/issues/LW-051.md"
+  },
+  {
+    "id": "LW-052",
+    "title": "[LW-052] Budget Loomward-owned workers with Job Objects",
+    "milestone": "M6",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-050"
+    ],
+    "body_file": "backlog/issues/LW-052.md"
+  },
+  {
+    "id": "LW-053",
+    "title": "[LW-053] Add reversible process policies with expiry",
+    "milestone": "M6",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-052",
+      "LW-054"
+    ],
+    "body_file": "backlog/issues/LW-053.md"
+  },
+  {
+    "id": "LW-054",
+    "title": "[LW-054] Define process-control identity and protection gates",
+    "milestone": "M6",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-038",
+      "LW-050"
+    ],
+    "body_file": "backlog/issues/LW-054.md"
+  },
+  {
+    "id": "LW-055",
+    "title": "[LW-055] Create redacted diagnostic bundles",
+    "milestone": "M1",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-020"
+    ],
+    "body_file": "backlog/issues/LW-055.md"
+  },
+  {
+    "id": "LW-056",
+    "title": "[LW-056] Benchmark against current specialist tools fairly",
+    "milestone": "M1",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-001",
+      "LW-006",
+      "LW-011",
+      "LW-050"
+    ],
+    "body_file": "backlog/issues/LW-056.md"
+  },
+  {
+    "id": "LW-057",
+    "title": "[LW-057] Create reviewed Windows distributables and release provenance",
+    "milestone": "M1",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-002",
+      "LW-018",
+      "LW-055",
+      "LW-063"
+    ],
+    "body_file": "backlog/issues/LW-057.md"
+  },
+  {
+    "id": "LW-058",
+    "title": "[LW-058] Expose a read-only external-agent API",
+    "milestone": "M5",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-016",
+      "LW-017",
+      "LW-020"
+    ],
+    "body_file": "backlog/issues/LW-058.md"
+  },
+  {
+    "id": "LW-059",
+    "title": "[LW-059] Explore semantic and perceptual similarity safely",
+    "milestone": "M2",
+    "priority": "P2",
+    "status": "planned",
+    "depends_on": [
+      "LW-014",
+      "LW-024",
+      "LW-025"
+    ],
+    "body_file": "backlog/issues/LW-059.md"
+  },
+  {
+    "id": "LW-060",
+    "title": "[LW-060] Prototype capacity-growth and anomaly forecasts",
+    "milestone": "M2",
+    "priority": "P2",
+    "status": "planned",
+    "depends_on": [
+      "LW-005",
+      "LW-025",
+      "LW-028"
+    ],
+    "body_file": "backlog/issues/LW-060.md"
+  },
+  {
+    "id": "LW-061",
+    "title": "[LW-061] Add explicit developer-workspace providers",
+    "milestone": "M5",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-010",
+      "LW-033",
+      "LW-047"
+    ],
+    "body_file": "backlog/issues/LW-061.md"
+  },
+  {
+    "id": "LW-062",
+    "title": "[LW-062] Run an observation-only personal field trial",
+    "milestone": "M2",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-018",
+      "LW-027",
+      "LW-056"
+    ],
+    "body_file": "backlog/issues/LW-062.md"
+  },
+  {
+    "id": "LW-063",
+    "title": "[LW-063] Confirm name, licence and public repository governance",
+    "milestone": "M1",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-001"
+    ],
+    "body_file": "backlog/issues/LW-063.md"
+  },
+  {
+    "id": "LW-065",
+    "title": "[LW-065] Run a real-host dual-era MCP compatibility matrix",
+    "milestone": "M1I",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-058"
+    ],
+    "body_file": "backlog/issues/LW-065.md"
+  },
+  {
+    "id": "LW-066",
+    "title": "[LW-066] Adopt a production MCP SDK behind the bounded ToolService",
+    "milestone": "M1I",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-065",
+      "LW-067"
+    ],
+    "body_file": "backlog/issues/LW-066.md"
+  },
+  {
+    "id": "LW-067",
+    "title": "[LW-067] Persist and revoke per-client disclosure grants",
+    "milestone": "M1I",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-017",
+      "LW-020"
+    ],
+    "body_file": "backlog/issues/LW-067.md"
+  },
+  {
+    "id": "LW-068",
+    "title": "[LW-068] Replace full-state explorer loads with paged reference views",
+    "milestone": "M1I",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-011"
+    ],
+    "body_file": "backlog/issues/LW-068.md"
+  },
+  {
+    "id": "LW-069",
+    "title": "[LW-069] Port scoped catalogue projections to the native query layer",
+    "milestone": "M1I",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-005",
+      "LW-011",
+      "LW-067",
+      "LW-068"
+    ],
+    "body_file": "backlog/issues/LW-069.md"
+  },
+  {
+    "id": "LW-070",
+    "title": "[LW-070] Represent group lineage and evidence in relational projections",
+    "milestone": "M2I",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-005",
+      "LW-010",
+      "LW-016"
+    ],
+    "body_file": "backlog/issues/LW-070.md"
+  },
+  {
+    "id": "LW-071",
+    "title": "[LW-071] Build an opt-in provider registry and descriptor validator",
+    "milestone": "M1I",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-017",
+      "LW-067"
+    ],
+    "body_file": "backlog/issues/LW-071.md"
+  },
+  {
+    "id": "LW-072",
+    "title": "[LW-072] Implement transactional provider inbox and outbox",
+    "milestone": "M1I",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-005",
+      "LW-016",
+      "LW-071"
+    ],
+    "body_file": "backlog/issues/LW-072.md"
+  },
+  {
+    "id": "LW-073",
+    "title": "[LW-073] Create the provider replay and contract conformance kit",
+    "milestone": "M1I",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-071",
+      "LW-072"
+    ],
+    "body_file": "backlog/issues/LW-073.md"
+  },
+  {
+    "id": "LW-074",
+    "title": "[LW-074] Add a read-only Estate Console host-summary adapter",
+    "milestone": "M2I",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-067",
+      "LW-073"
+    ],
+    "body_file": "backlog/issues/LW-074.md"
+  },
+  {
+    "id": "LW-075",
+    "title": "[LW-075] Prepare Taskdeck review proposals without approval authority",
+    "milestone": "M2I",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-067",
+      "LW-073",
+      "LW-088"
+    ],
+    "body_file": "backlog/issues/LW-075.md"
+  },
+  {
+    "id": "LW-076",
+    "title": "[LW-076] Import Agent Harness activity and worktree-lease evidence",
+    "milestone": "M2I",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-067",
+      "LW-073"
+    ],
+    "body_file": "backlog/issues/LW-076.md"
+  },
+  {
+    "id": "LW-077",
+    "title": "[LW-077] Connect admission decisions to Loomward-owned worker launch",
+    "milestone": "M2I",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-032",
+      "LW-052",
+      "LW-078"
+    ],
+    "body_file": "backlog/issues/LW-077.md"
+  },
+  {
+    "id": "LW-078",
+    "title": "[LW-078] Move resource leases into one authenticated native authority",
+    "milestone": "M2I",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-017",
+      "LW-050",
+      "LW-067"
+    ],
+    "body_file": "backlog/issues/LW-078.md"
+  },
+  {
+    "id": "LW-079",
+    "title": "[LW-079] Measure demand estimates against actual owned-worker usage",
+    "milestone": "M2I",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-050",
+      "LW-077"
+    ],
+    "body_file": "backlog/issues/LW-079.md"
+  },
+  {
+    "id": "LW-080",
+    "title": "[LW-080] Port the v2 allocation portfolio and oracle fixtures to Rust",
+    "milestone": "M2I",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-002",
+      "LW-030"
+    ],
+    "body_file": "backlog/issues/LW-080.md"
+  },
+  {
+    "id": "LW-081",
+    "title": "[LW-081] Improve large-instance allocation under explicit search budgets",
+    "milestone": "M2I",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-080",
+      "LW-056"
+    ],
+    "body_file": "backlog/issues/LW-081.md"
+  },
+  {
+    "id": "LW-082",
+    "title": "[LW-082] Add recall reservations and explicit active-work windows",
+    "milestone": "M2I",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-031",
+      "LW-078"
+    ],
+    "body_file": "backlog/issues/LW-082.md"
+  },
+  {
+    "id": "LW-083",
+    "title": "[LW-083] Validate dependency groups before placement proposals",
+    "milestone": "M2I",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-010",
+      "LW-033",
+      "LW-070"
+    ],
+    "body_file": "backlog/issues/LW-083.md"
+  },
+  {
+    "id": "LW-084",
+    "title": "[LW-084] Normalise backup evidence without equating success to recovery",
+    "milestone": "M2I",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-035",
+      "LW-036",
+      "LW-073"
+    ],
+    "body_file": "backlog/issues/LW-084.md"
+  },
+  {
+    "id": "LW-085",
+    "title": "[LW-085] Add creative-source and derivative manifests",
+    "milestone": "M2I",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-061",
+      "LW-070",
+      "LW-073"
+    ],
+    "body_file": "backlog/issues/LW-085.md"
+  },
+  {
+    "id": "LW-086",
+    "title": "[LW-086] Add a cooperative model-host lifecycle provider",
+    "milestone": "M2I",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-034",
+      "LW-073",
+      "LW-078"
+    ],
+    "body_file": "backlog/issues/LW-086.md"
+  },
+  {
+    "id": "LW-087",
+    "title": "[LW-087] Estimate regeneration cost for explicit build-cache providers",
+    "milestone": "M2I",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-048",
+      "LW-061",
+      "LW-073"
+    ],
+    "body_file": "backlog/issues/LW-087.md"
+  },
+  {
+    "id": "LW-088",
+    "title": "[LW-088] Persist decision notes with evidence-bound review history",
+    "milestone": "M2I",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-020",
+      "LW-038",
+      "LW-070"
+    ],
+    "body_file": "backlog/issues/LW-088.md"
+  },
+  {
+    "id": "LW-089",
+    "title": "[LW-089] Expose bounded MCP proposal preparation without approve/apply",
+    "milestone": "M2I",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-066",
+      "LW-067",
+      "LW-088"
+    ],
+    "body_file": "backlog/issues/LW-089.md"
+  },
+  {
+    "id": "LW-090",
+    "title": "[LW-090] Evaluate a read-only MCP Apps evidence view",
+    "milestone": "MX",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-065",
+      "LW-088"
+    ],
+    "body_file": "backlog/issues/LW-090.md"
+  },
+  {
+    "id": "LW-091",
+    "title": "[LW-091] Threat-model optional remote MCP transport and authentication",
+    "milestone": "MX",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-066",
+      "LW-067",
+      "LW-095"
+    ],
+    "body_file": "backlog/issues/LW-091.md"
+  },
+  {
+    "id": "LW-092",
+    "title": "[LW-092] Prototype conflict-aware preference sync only",
+    "milestone": "MX",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-021",
+      "LW-067",
+      "LW-070"
+    ],
+    "body_file": "backlog/issues/LW-092.md"
+  },
+  {
+    "id": "LW-093",
+    "title": "[LW-093] Measure information-value question selection",
+    "milestone": "M2I",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-025",
+      "LW-026"
+    ],
+    "body_file": "backlog/issues/LW-093.md"
+  },
+  {
+    "id": "LW-094",
+    "title": "[LW-094] Propagate feedback retraction through derived model state",
+    "milestone": "M2I",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-021",
+      "LW-027",
+      "LW-070"
+    ],
+    "body_file": "backlog/issues/LW-094.md"
+  },
+  {
+    "id": "LW-095",
+    "title": "[LW-095] Exercise provider isolation and diagnostic privacy failures",
+    "milestone": "M1I",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-055",
+      "LW-067",
+      "LW-073"
+    ],
+    "body_file": "backlog/issues/LW-095.md"
+  },
+  {
+    "id": "LW-096",
+    "title": "[LW-096] Verify all workbench states with keyboard, zoom and large data",
+    "milestone": "M1I",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-019",
+      "LW-068",
+      "LW-088"
+    ],
+    "body_file": "backlog/issues/LW-096.md"
+  },
+  {
+    "id": "LW-097",
+    "title": "[LW-097] Benchmark end-to-end resource and energy effects",
+    "milestone": "M2I",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-056",
+      "LW-077",
+      "LW-079"
+    ],
+    "body_file": "backlog/issues/LW-097.md"
+  },
+  {
+    "id": "LW-098",
+    "title": "[LW-098] Preserve disclosure suppression across views and exports",
+    "milestone": "M1I",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-020",
+      "LW-067",
+      "LW-069"
+    ],
+    "body_file": "backlog/issues/LW-098.md"
+  },
+  {
+    "id": "LW-099",
+    "title": "[LW-099] Cache extraction results under bounded invalidation and budgets",
+    "milestone": "M2I",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-014",
+      "LW-072",
+      "LW-078",
+      "LW-094"
+    ],
+    "body_file": "backlog/issues/LW-099.md"
+  },
+  {
+    "id": "LW-100",
+    "title": "[LW-100] Gate release claims against executable capability evidence",
+    "milestone": "M2I",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-057",
+      "LW-063",
+      "LW-065",
+      "LW-096",
+      "LW-097"
+    ],
+    "body_file": "backlog/issues/LW-100.md"
+  }
+]

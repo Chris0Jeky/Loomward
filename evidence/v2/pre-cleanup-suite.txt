@@ -1,0 +1,22 @@
+UNVERIFIED Rust: cargo is missing; no native success is claimed
+
+RUN Python suite
+..................................................................................................................................................................................../opt/pyvenv/lib/python3.13/site-packages/attr/_make.py:226: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7fc37af6e980>
+  bytecode = compile(script, filename, "exec")
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+....
+----------------------------------------------------------------------
+Ran 184 tests in 13.979s
+
+OK
+PASS Python suite
+
+RUN JavaScript app syntax
+PASS JavaScript app syntax
+
+RUN JavaScript expansion syntax
+PASS JavaScript expansion syntax
+
+RUN JavaScript boundary and Python parity fixtures
+PASS 9 JS boundary assertions and 80 cross-language admission fixtures
+PASS JavaScript boundary and Python parity fixtures

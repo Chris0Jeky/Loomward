@@ -1,0 +1,41 @@
+F..FFF
+======================================================================
+FAIL: test_doctor_reports_no_mutations (test_cli.CliTests.test_doctor_reports_no_mutations)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward/tests/test_cli.py", line 15, in test_doctor_reports_no_mutations
+    code,out,_=self.run_cli('doctor');self.assertEqual(code,0);self.assertFalse(json.loads(out)['capabilities']['file_mutation'])
+                                      ~~~~~~~~~~~~~~~~^^^^^^^^
+AssertionError: 2 != 0
+
+======================================================================
+FAIL: test_scan_creates_valid_snapshot (test_cli.CliTests.test_scan_creates_valid_snapshot)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward/tests/test_cli.py", line 19, in test_scan_creates_valid_snapshot
+    code,_,_=self.run_cli('scan',str(root),'--output',str(dest));self.assertEqual(code,0)
+                                                                 ~~~~~~~~~~~~~~~~^^^^^^^^
+AssertionError: 2 != 0
+
+======================================================================
+FAIL: test_synthetic_training_requires_explicit_flag (test_cli.CliTests.test_synthetic_training_requires_explicit_flag)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward/tests/test_cli.py", line 34, in test_synthetic_training_requires_explicit_flag
+    code,out,_=self.run_cli('train',str(f),'--allow-synthetic');self.assertEqual(code,0)
+                                                                ~~~~~~~~~~~~~~~~^^^^^^^^
+AssertionError: 2 != 0
+
+======================================================================
+FAIL: test_teacher_request_is_offline (test_cli.CliTests.test_teacher_request_is_offline)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward/tests/test_cli.py", line 29, in test_teacher_request_is_offline
+    self.assertEqual(code,0);self.assertIn('json_schema',json.loads(out)['response_format'])
+    ~~~~~~~~~~~~~~~~^^^^^^^^
+AssertionError: 2 != 0
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.010s
+
+FAILED (failures=4)

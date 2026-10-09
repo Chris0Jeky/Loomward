@@ -1,0 +1,14 @@
+.F....
+======================================================================
+FAIL: test_connection_is_closed_after_context (test_store.StoreTests.test_connection_is_closed_after_context)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward/tests/test_store.py", line 39, in test_connection_is_closed_after_context
+    with self.assertRaises(sqlite3.ProgrammingError):
+         ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: ProgrammingError not raised
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.059s
+
+FAILED (failures=1)

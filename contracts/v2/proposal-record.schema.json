@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Draft non-executable review record",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "proposal_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "kind": {
+      "enum": [
+        "virtual_membership",
+        "placement_review",
+        "resource_review"
+      ]
+    },
+    "state": {
+      "enum": [
+        "draft",
+        "held",
+        "needs_evidence",
+        "dismissed"
+      ]
+    },
+    "evidence_refs": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "effect_summary": {
+      "type": "string",
+      "maxLength": 1024
+    },
+    "source_generation": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "executable": {
+      "const": false
+    },
+    "approval_grant": {
+      "type": "null"
+    }
+  },
+  "required": [
+    "schema_version",
+    "proposal_id",
+    "kind",
+    "state",
+    "evidence_refs",
+    "effect_summary",
+    "source_generation",
+    "executable",
+    "approval_grant"
+  ],
+  "additionalProperties": false
+}

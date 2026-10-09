@@ -1,0 +1,8 @@
+{
+  "python": "3.13.5",
+  "git": true,
+  "cargo": false,
+  "node": true
+}
+Run: python scripts/run.py demo --open
+Native path: install Rust MSVC and Microsoft C++ Build Tools through their official installers, then run cargo test --workspace.

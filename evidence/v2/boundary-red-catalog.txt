@@ -1,0 +1,14 @@
+F................
+======================================================================
+FAIL: test_unicode_flags_cannot_create_an_unpageable_first_row (test_catalog.CatalogBoundsRegressionTests.test_unicode_flags_cannot_create_an_unpageable_first_row)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward-v2/tests/test_catalog.py", line 133, in test_unicode_flags_cannot_create_an_unpageable_first_row
+    self.assertGreater(len(result['items']),0)
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 0 not greater than 0
+
+----------------------------------------------------------------------
+Ran 17 tests in 0.029s
+
+FAILED (failures=1)

@@ -1,0 +1,46 @@
+EEE.E.
+======================================================================
+ERROR: test_admission_matches_reference_without_state_mutation (test_expansion_api.ExpansionApiTests.test_admission_matches_reference_without_state_mutation)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward-v2/tests/test_expansion_api.py", line 23, in test_admission_matches_reference_without_state_mutation
+    self.assertEqual(self.app.post('/api/schedule',request),admit_workloads(request))
+                     ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/data/loomward-v2/python/loomward/server.py", line 143, in post
+    raise LookupError('Endpoint does not exist; file and process mutations are not implemented')
+LookupError: Endpoint does not exist; file and process mutations are not implemented
+
+======================================================================
+ERROR: test_admission_rejects_action_fields (test_expansion_api.ExpansionApiTests.test_admission_rejects_action_fields)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward-v2/tests/test_expansion_api.py", line 26, in test_admission_rejects_action_fields
+    with self.assertRaises(ValueError): self.app.post('/api/schedule',{'capacity':{},'jobs':[],'execute':True})
+                                        ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/data/loomward-v2/python/loomward/server.py", line 143, in post
+    raise LookupError('Endpoint does not exist; file and process mutations are not implemented')
+LookupError: Endpoint does not exist; file and process mutations are not implemented
+
+======================================================================
+ERROR: test_expansion_asset_is_explicit (test_expansion_api.ExpansionApiTests.test_expansion_asset_is_explicit)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward-v2/tests/test_expansion_api.py", line 34, in test_expansion_asset_is_explicit
+    self.assertEqual(ASSETS['/expansion.js'][0],'expansion.js')
+                     ~~~~~~^^^^^^^^^^^^^^^^^
+KeyError: '/expansion.js'
+
+======================================================================
+ERROR: test_plan_v2_is_a_separate_non_executing_endpoint (test_expansion_api.ExpansionApiTests.test_plan_v2_is_a_separate_non_executing_endpoint)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward-v2/tests/test_expansion_api.py", line 17, in test_plan_v2_is_a_separate_non_executing_endpoint
+    plan=self.app.post('/api/plan-v2',self.app.scenario)
+  File "/mnt/data/loomward-v2/python/loomward/server.py", line 143, in post
+    raise LookupError('Endpoint does not exist; file and process mutations are not implemented')
+LookupError: Endpoint does not exist; file and process mutations are not implemented
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.015s
+
+FAILED (errors=4)
