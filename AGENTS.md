@@ -16,8 +16,9 @@ optional LLM teacher as weak supervision), virtual organisation, disk-tier balan
 duplicate/unused-file inspection, backups, and understandable process/RAM control. Its core
 ruling: **meaning, residency and permission are separate systems.**
 
-Python reference app + browser UI (tested), Rust native workspace and Tauri shell (authored but
-never compiled before this repo), MCP read-only reference, 100-task `LW-*` backlog.
+Python reference app + browser UI (tested on Windows), Rust native workspace (first compiled and
+tested here on 2026-10-09; the Tauri shell is still unbuilt), MCP read-only reference, 100-task
+`LW-*` backlog.
 
 ## Where the ChatGPT material stands
 
@@ -28,28 +29,12 @@ local-agent prompts were written for a lone offline agent (the v2 prompt says no
 or create remote issues). The estate laws, `.agent-harness/tier.json` and this file supersede
 them. Keep `handoff/` as history; do not follow its process instructions.
 
-## Bootstrap state (delete this section once `main` carries the source)
+## The `Resources/` folder
 
-The product source is not on `main` yet. It lives in the gitignored `Resources/` folder of the
-primary checkout. That folder is the **only copy**: never run `git clean -x` there, never move
-it into a worktree that will be torn down, and copy anything out before deleting it.
-
-| File | What it is |
-|---|---|
-| `Loomward-v2-repository.bundle` | **Canonical source.** Branches `expansion/interop-v2` (head `f3b1093`) and `prototype/initial` (`1e51c3b`) |
-| `Loomward-v2-source-and-handoff.zip` | Same tree as an archive; `Loomward-v2-artifacts.json` holds the sha256 values |
-| `Loomward-v2-research-and-blueprint.{md,html}` | 300 KB reading copy of all design docs |
-| `Loomward-v2-preview.html` | Standalone UI preview on synthetic data |
-| `chat.txt` | The owner's original request and ChatGPT's two reports |
-| `Loomward-*` without `v2` | v0.1 deliverables, superseded; history only |
-
-Unbundle by merging, never by copying files over: verify the sha256 values, fetch the bundle's two
-branches and push both as they are. Then create an integration branch from `main`, run
-`git merge --allow-unrelated-histories expansion/interop-v2` on it locally (GitHub cannot do that
-join itself), resolve the conflicts, push it and open the PR. Expected add/add conflicts:
-`.gitignore` (union of both, keeping `/Resources`) and `AGENTS.md` (**keep this one**). Before resolving, diff the
-bundle's `AGENTS.md` against this file and fold in any product rule still missing. Then update
-the proving-check table with measured counts.
+The primary checkout keeps the owner's original ChatGPT deliverables in the gitignored
+`Resources/` folder. They are imported (the bundle is merged with its history; provenance and
+hashes in `evidence/v3/README.md`), but the folder is still the only copy of the downloads:
+never run `git clean -x` in the primary checkout, and never move it into a worktree.
 
 ## Toolchain (measured 2026-10-09, DESKTOP-IHKOOJS, Windows 11)
 
@@ -58,14 +43,15 @@ Python 3.14.3 (`py -3`), cargo/rustc 1.97.1, rustup 1.29.0, Node 24.13.1, npm 11
 a first measurement and must be reported as such. On Windows use `codex.cmd`, `npm.cmd` and
 `npx.cmd`; the unsigned `.ps1` shims are blocked by this machine's execution policy.
 
-## Proving checks by seam (from the bundle; re-measure after unbundling)
+## Proving checks by seam (measured on Windows 2026-10-09, `evidence/v3/`)
 
 | You changed | Run |
 |---|---|
-| Python reference, schemas, JS boundary, fixtures | `python scripts/verify.py` (authored: 184 tests, 2 JS syntax, 9 JS boundary, 80 cross-language fixtures) |
-| Rust workspace (`crates/`) | `cargo fmt --all --check`, `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings` |
-| Browser UI | `python scripts/test_ui.py` (needs Playwright + Chromium) |
-| Tauri shell (`native/`) | excluded from the root workspace; build it separately |
+| Python reference, schemas, JS boundary, fixtures | `py -3 scripts/verify.py` (185 tests with 1 symlink-privilege skip, 2 JS syntax, 9 JS boundary, 80 cross-language fixtures; it also runs the Rust gates when cargo is present) |
+| Rust workspace (`crates/`) | `cargo fmt --all --check`, `cargo test --workspace` (19 run on Windows, 20 written), `cargo clippy --workspace --all-targets -- -D warnings` |
+| Browser UI | `py -3 scripts/test_ui.py` (14 Chromium checks; Playwright installed here) |
+| Everything above in one go | `py -3 scripts/verify.py --ui` |
+| Tauri shell (`native/`) | excluded from the root workspace; build it separately (never built yet) |
 | Docs only | `git diff --check` plus the links you touched |
 
 Missing tooling is UNVERIFIED, never PASS. New behaviour lands with the test that pins it. Never
@@ -87,7 +73,8 @@ disable, skip or weaken a failing test to advance a milestone.
 5. **Identity is native.** A snapshot path hash or a UI-round-tripped integer never authorises an
    effect; imported snapshots grant no access.
 6. **Keep the negative evidence.** Allocator v1, its 51-case counterexample and failed experiments
-   stay. Python allocator v2 is a static-model reference, not a mover; the Rust planner is v1.
+   stay, and the v1 handoff under `handoff/v1/` is never overwritten. Python allocator v2 is a
+   static-model reference, not a mover; the Rust planner is v1.
 7. **MCP is read-only and bounded.** Client metadata, annotations and tool output are not
    authorisation. LeaseBroker/admission is accounting, not OS enforcement.
 8. **No theatre.** No releases or packages, source retirement, backup pruning or process-policy
@@ -126,5 +113,6 @@ disable, skip or weaken a failing test to advance a milestone.
   them to GitHub issues with the `LW-` ID in the title before tracking work there.
 - Taskdeck is proprietary: never copy its code into this MIT repository.
 - Public repo: synthetic fixtures only; no real filenames, inventories or training exports.
+  Personal diagnostics and `.loomward/` state or database files never enter Git.
 - The UI is not frozen. The owner wants a signature, elegant interface that grows with the
   engine; the bundle's pages are a reference, not a design to preserve.

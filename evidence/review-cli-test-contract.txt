@@ -1,0 +1,14 @@
+...E.....................................................................................
+======================================================================
+ERROR: test_scan_and_duplicate_inspection_preserve_source_contents (test_cli.CliTests.test_scan_and_duplicate_inspection_preserve_source_contents)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward/tests/test_cli.py", line 52, in test_scan_and_duplicate_inspection_preserve_source_contents
+    self.assertFalse(json.loads(out)['filesystem_changed'])
+                     ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+KeyError: 'filesystem_changed'
+
+----------------------------------------------------------------------
+Ran 89 tests in 12.400s
+
+FAILED (errors=1)

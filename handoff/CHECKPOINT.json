@@ -1,0 +1,99 @@
+{
+  "project": "Loomward",
+  "schema_version": 2,
+  "as_of": "2026-10-09",
+  "version": "0.3.0-dev",
+  "base_commit": "1e51c3b",
+  "branch": "main",
+  "phase": "reference-and-native-verified-on-windows-no-effects",
+  "read_first": [
+    "AGENTS.md",
+    "handoff/START-HERE.md",
+    "docs/23-expansion-overview.md",
+    "docs/37-expansion-verification.md",
+    "docs/40-parallel-work-packs.md"
+  ],
+  "reference": {
+    "python_tests": 185,
+    "browser_checks": 14,
+    "js_boundary_assertions": 9,
+    "js_python_parity_cases": 80,
+    "runtime": "Windows 11 / Python 3.14.3 (also authored on Linux / Python 3.13.5)",
+    "actual_os_controls": false,
+    "user_file_mutations": false,
+    "catalog": "immutable in-memory scoped snapshot",
+    "lease_broker": "ephemeral local accounting, no authentication or OS enforcement",
+    "ui_pages": 10,
+    "windows_verified": true
+  },
+  "mcp": {
+    "transport": "stdio",
+    "protocol_eras": [
+      "2026-07-28",
+      "2025-11-25"
+    ],
+    "reference_tools": 4,
+    "default_advertised_tools": 2,
+    "actual_subprocess_tested": true,
+    "real_host_tested": false,
+    "official_sdk_used": false,
+    "remote_http": false,
+    "providers_connected": 0
+  },
+  "native": {
+    "rust_written_tests": 20,
+    "rust_tests_run_on_windows": 19,
+    "compiled": true,
+    "toolchain": "rustc 1.97.1",
+    "fmt_clippy_clean": true,
+    "cargo_lock": "committed, 34 packages",
+    "tauri": "uncompiled synthetic scaffold",
+    "planner": "v1 baseline, not ported"
+  },
+  "learning": {
+    "student": "weighted multinomial Naive Bayes reference, unchanged",
+    "teacher_mock_http_tested": true,
+    "actual_model_tested": false,
+    "personal_dataset_evaluated": false
+  },
+  "experiments": {
+    "tiny_allocation_cases": 51,
+    "baseline_missed_feasible": 9,
+    "v2_missed_feasible": 0,
+    "catalog_synthetic_rows": 50000,
+    "windows_performance_claim": false
+  },
+  "next_local_issues": [
+    "LW-064",
+    "LW-003",
+    "LW-004"
+  ],
+  "optional_independent_starts": [
+    "LW-065",
+    "LW-068"
+  ],
+  "backlog_count": 100,
+  "remote_publication": true,
+  "independent_subagents_used": false,
+  "hard_gates": [
+    "No user-file or process effects",
+    "No automatic installs, elevation, model downloads or account connections",
+    "No agent approval/apply authority",
+    "No private metadata or secrets in Git",
+    "No native/host/Windows success claim without a corresponding run"
+  ],
+  "evidence": [
+    "evidence/v3/README.md",
+    "evidence/v3/windows-verify.txt",
+    "evidence/v2/final-suite.txt",
+    "evidence/v2/ui-final.txt",
+    "evidence/v2/standalone-checks.json",
+    "evidence/v2/benchmarks.json",
+    "evidence/v2/verification-summary.json"
+  ],
+  "estate": {
+    "repository": "Chris0Jeky/Loomward (public)",
+    "harness": "AGENTS.md is the single agent baseline; estate laws supersede handoff/ process rules",
+    "tier": "T1 sandbox (.agent-harness/tier.json)"
+  }
+}

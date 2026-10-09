@@ -1,0 +1,66 @@
+E.EEF...EF.E
+======================================================================
+ERROR: test_bounded_large_problem_uses_portfolio (test_planner_v2.PlacementV2Tests.test_bounded_large_problem_uses_portfolio)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward-v2/tests/test_planner_v2.py", line 115, in test_bounded_large_problem_uses_portfolio
+    self.assertEqual(r['search']['reason'], 'problem_size_limit')
+                     ~^^^^^^^^^^
+KeyError: 'search'
+
+======================================================================
+ERROR: test_cutoff_is_explicit_and_incumbent_not_worse (test_planner_v2.PlacementV2Tests.test_cutoff_is_explicit_and_incumbent_not_worse)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward-v2/tests/test_planner_v2.py", line 66, in test_cutoff_is_explicit_and_incumbent_not_worse
+    r = plan_tiers_v2(s, node_budget=0)
+TypeError: plan_tiers() got an unexpected keyword argument 'node_budget'
+
+======================================================================
+ERROR: test_exact_search_matches_independent_tiny_oracle (test_planner_v2.PlacementV2Tests.test_exact_search_matches_independent_tiny_oracle)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward-v2/tests/test_planner_v2.py", line 61, in test_exact_search_matches_independent_tiny_oracle
+    self.assertTrue(result['search']['complete'])
+                    ~~~~~~^^^^^^^^^^
+KeyError: 'search'
+
+======================================================================
+ERROR: test_positive_node_budget_is_respected (test_planner_v2.PlacementV2Tests.test_positive_node_budget_is_respected)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward-v2/tests/test_planner_v2.py", line 73, in test_positive_node_budget_is_respected
+    r = plan_tiers_v2(counterexample(), node_budget=1)
+TypeError: plan_tiers() got an unexpected keyword argument 'node_budget'
+
+======================================================================
+ERROR: test_validation_and_input_preservation (test_planner_v2.PlacementV2Tests.test_validation_and_input_preservation)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward-v2/tests/test_planner_v2.py", line 80, in test_validation_and_input_preservation
+    plan_tiers_v2(scenario(), node_budget=invalid)
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: plan_tiers() got an unexpected keyword argument 'node_budget'
+
+======================================================================
+FAIL: test_minimise_transfer_after_satisfying_goal (test_planner_v2.PlacementV2Tests.test_minimise_transfer_after_satisfying_goal)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward-v2/tests/test_planner_v2.py", line 108, in test_minimise_transfer_after_satisfying_goal
+    self.assertEqual(r['transfer_bytes'], 5)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 20 != 5
+
+======================================================================
+FAIL: test_preserved_greedy_counterexample (test_planner_v2.PlacementV2Tests.test_preserved_greedy_counterexample)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward-v2/tests/test_planner_v2.py", line 41, in test_preserved_greedy_counterexample
+    self.assertEqual(plan_tiers_v2(s)['shortfall_bytes'], 0)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 10 != 0
+
+----------------------------------------------------------------------
+Ran 12 tests in 0.002s
+
+FAILED (failures=2, errors=5)

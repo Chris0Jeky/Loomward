@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Loomward tier-scenario-v1",
+  "description": "Simulation only. Unique IDs, references, used-space totals, reserves and finite arithmetic are additionally checked by the runtime. Missing safety flags fail closed.",
+  "type": "object",
+  "required": [
+    "source_id",
+    "target_free_bytes",
+    "max_transfer_bytes",
+    "volumes",
+    "groups"
+  ],
+  "properties": {
+    "source_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "target_free_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "max_transfer_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "cooldown_days": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 36500
+    },
+    "volumes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "capacity_bytes",
+          "free_bytes",
+          "reserve_bytes",
+          "tier"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "capacity_bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "free_bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "reserve_bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "tier": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9
+          },
+          "online": {
+            "type": "boolean"
+          },
+          "writable": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "groups": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "volume_id",
+          "source_bytes",
+          "destination_bytes",
+          "transfer_bytes"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "volume_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "source_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "destination_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "transfer_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "heat": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 1
+          },
+          "days_since_move": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 36500
+          },
+          "pinned": {
+            "type": "boolean"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "protected": {
+            "type": "boolean"
+          }
+        }
+      }
+    }
+  }
+}

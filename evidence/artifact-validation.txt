@@ -1,0 +1,4 @@
+PASS all JSON documents parse
+PASS four JSON schemas are well formed; demo/live fixture inventory, feedback and tier fixtures validate
+PASS proposed catalogue DDL parses into 15 tables in disposable memory database; not a migration
+PASS 64 unique issue bodies and acyclic dependency graph

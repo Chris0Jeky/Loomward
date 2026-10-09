@@ -1,0 +1,14 @@
+.F.
+======================================================================
+FAIL: test_each_body_has_one_exact_durable_import_marker (test_backlog_integrity.BacklogIntegrityTests.test_each_body_has_one_exact_durable_import_marker)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward-v2/tests/test_backlog_integrity.py", line 17, in test_each_body_has_one_exact_durable_import_marker
+    self.assertEqual(path.read_text().count('<!-- loomward:'+item['id']+' -->'),1,item['id'])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 0 != 1 : LW-065
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.002s
+
+FAILED (failures=1)

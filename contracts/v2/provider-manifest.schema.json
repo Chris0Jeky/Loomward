@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Draft read/propose provider descriptor, not a grant",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "provider_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "requested_capabilities": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "observe.summary",
+          "observe.metadata",
+          "propose.organisation",
+          "propose.placement"
+        ]
+      }
+    },
+    "execution": {
+      "const": "unconfigured"
+    },
+    "installed": {
+      "const": false
+    },
+    "network": {
+      "enum": [
+        "none",
+        "owner_configured_only"
+      ]
+    },
+    "settings_schema_version": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "required": [
+    "schema_version",
+    "provider_id",
+    "display_name",
+    "version",
+    "requested_capabilities",
+    "execution",
+    "installed",
+    "network",
+    "settings_schema_version"
+  ],
+  "additionalProperties": false
+}

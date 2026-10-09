@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "placement_simulate reference input",
+  "type": "object",
+  "properties": {
+    "scenario": {
+      "type": "object",
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "target_free_bytes": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,15})$",
+          "description": "Exact decimal bytes; must be <=9007199254740991 in this reference planner."
+        },
+        "max_transfer_bytes": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,15})$",
+          "description": "Exact decimal bytes; must be <=9007199254740991 in this reference planner."
+        },
+        "cooldown_days": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 36500
+        },
+        "volumes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "capacity_bytes": {
+                "type": "string",
+                "pattern": "^(0|[1-9][0-9]{0,15})$",
+                "description": "Exact decimal bytes; must be <=9007199254740991 in this reference planner."
+              },
+              "free_bytes": {
+                "type": "string",
+                "pattern": "^(0|[1-9][0-9]{0,15})$",
+                "description": "Exact decimal bytes; must be <=9007199254740991 in this reference planner."
+              },
+              "reserve_bytes": {
+                "type": "string",
+                "pattern": "^(0|[1-9][0-9]{0,15})$",
+                "description": "Exact decimal bytes; must be <=9007199254740991 in this reference planner."
+              },
+              "tier": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9
+              },
+              "online": {
+                "type": "boolean"
+              },
+              "writable": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "capacity_bytes",
+              "free_bytes",
+              "reserve_bytes",
+              "tier",
+              "online",
+              "writable"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "groups": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "volume_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "source_bytes": {
+                "type": "string",
+                "pattern": "^(0|[1-9][0-9]{0,15})$",
+                "description": "Exact decimal bytes; must be <=9007199254740991 in this reference planner."
+              },
+              "destination_bytes": {
+                "type": "string",
+                "pattern": "^(0|[1-9][0-9]{0,15})$",
+                "description": "Exact decimal bytes; must be <=9007199254740991 in this reference planner."
+              },
+              "transfer_bytes": {
+                "type": "string",
+                "pattern": "^(0|[1-9][0-9]{0,15})$",
+                "description": "Exact decimal bytes; must be <=9007199254740991 in this reference planner."
+              },
+              "heat": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 1
+              },
+              "days_since_move": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 36500
+              },
+              "pinned": {
+                "type": "boolean"
+              },
+              "active": {
+                "type": "boolean"
+              },
+              "protected": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "volume_id",
+              "source_bytes",
+              "destination_bytes",
+              "transfer_bytes",
+              "heat",
+              "days_since_move",
+              "pinned",
+              "active",
+              "protected"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "source_id",
+        "target_free_bytes",
+        "max_transfer_bytes",
+        "volumes",
+        "groups"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "scenario"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,16 @@
+{
+  "specversion": "1.0",
+  "id": "event-demo-001",
+  "source": "urn:loomward:demo:catalog",
+  "type": "org.loomward.snapshot.ready",
+  "subject": "scope-demo",
+  "datacontenttype": "application/json",
+  "data": {
+    "schema_version": 2,
+    "producer_epoch": "demo-epoch",
+    "sequence": "1",
+    "scope_ref": "scope-demo",
+    "observation_kind": "snapshot_ready",
+    "origin": "synthetic_example"
+  }
+}

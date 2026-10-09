@@ -1,0 +1,12 @@
+test_byte_budget_never_exceeded (test_duplicates.DuplicateTests.test_byte_budget_never_exceeded) ... ok
+test_changed_file_is_rejected (test_duplicates.DuplicateTests.test_changed_file_is_rejected) ... ok
+test_empty_files_do_not_claim_savings (test_duplicates.DuplicateTests.test_empty_files_do_not_claim_savings) ... ok
+test_exact_duplicates_not_same_size_only (test_duplicates.DuplicateTests.test_exact_duplicates_not_same_size_only) ... ok
+test_hard_links_not_duplicates (test_duplicates.DuplicateTests.test_hard_links_not_duplicates) ... ok
+test_path_traversal_rejected (test_duplicates.DuplicateTests.test_path_traversal_rejected) ... ok
+test_wrong_root_rejected (test_duplicates.DuplicateTests.test_wrong_root_rejected) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 0.017s
+
+OK

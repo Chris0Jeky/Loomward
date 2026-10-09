@@ -1,0 +1,18 @@
+{
+  "dry_run": true,
+  "command": [
+    "gh",
+    "repo",
+    "create",
+    "example/loomward",
+    "--private",
+    "--source",
+    ".",
+    "--remote",
+    "origin",
+    "--push",
+    "--description",
+    "Local-first learned workspace, storage and resource companion. Observation-only research prototype."
+  ],
+  "repository": "example/loomward"
+}

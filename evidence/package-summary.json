@@ -1,0 +1,20 @@
+{
+  "project": "Loomward",
+  "as_of": "2026-10-09",
+  "sources": 32,
+  "backlog_issues": 64,
+  "numbered_design_documents": 23,
+  "documentation_words_including_backlog_and_handoff": 37800,
+  "python_tests_passed": 89,
+  "bridged_ui_checks_passed": 11,
+  "standalone_preview_navigation_checked": true,
+  "rust_tests_written_but_unexecuted": 20,
+  "rust_compiled": false,
+  "windows_tested": false,
+  "real_model_tested": false,
+  "github_published": false,
+  "python_version": "3.13.5",
+  "node_version": "v22.16.0",
+  "git_version": "git version 2.47.3",
+  "cargo_available": false
+}

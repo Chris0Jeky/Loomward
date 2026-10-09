@@ -1,0 +1,25 @@
+name: Reproducible bug
+description: Report a scoped failure without private file contents or credentials
+body:
+  - type: markdown
+    attributes:
+      value: 'Use synthetic reproductions. Do not paste tokens, real file inventories, model prompts, credentials or sensitive paths.'
+  - type: textarea
+    id: environment
+    attributes:
+      label: Build, OS and mode
+      description: 'Include exact version/commit, Windows build, standard/elevated rights, and demo/observed/imported mode.'
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction and expected result
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Actual result and redacted evidence
+    validations:
+      required: true

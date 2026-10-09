@@ -1,0 +1,13 @@
+{
+  "schema_version": 2,
+  "proposal_id": "review-demo-1",
+  "kind": "virtual_membership",
+  "state": "needs_evidence",
+  "evidence_refs": [
+    "observation-demo-1"
+  ],
+  "effect_summary": "Proposed collection membership; no physical move.",
+  "source_generation": "demo-generation",
+  "executable": false,
+  "approval_grant": null
+}

@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Draft CloudEvents-compatible observation envelope subset",
+  "type": "object",
+  "properties": {
+    "specversion": {
+      "const": "1.0"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "source": {
+      "type": "string",
+      "maxLength": 256
+    },
+    "type": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "subject": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "datacontenttype": {
+      "const": "application/json"
+    },
+    "data": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": 2
+        },
+        "producer_epoch": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "sequence": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$",
+          "maxLength": 20
+        },
+        "scope_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "observation_kind": {
+          "enum": [
+            "snapshot_ready",
+            "coverage_degraded",
+            "proposal_changed"
+          ]
+        },
+        "origin": {
+          "const": "synthetic_example"
+        }
+      },
+      "required": [
+        "schema_version",
+        "producer_epoch",
+        "sequence",
+        "scope_ref",
+        "observation_kind",
+        "origin"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "specversion",
+    "id",
+    "source",
+    "type",
+    "datacontenttype",
+    "data"
+  ],
+  "additionalProperties": false
+}

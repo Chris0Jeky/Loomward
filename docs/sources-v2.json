@@ -1,0 +1,170 @@
+[
+  {
+    "id": "V01",
+    "title": "MCP versioning",
+    "url": "https://modelcontextprotocol.io/specification/versioning",
+    "accessed": "2026-10-09",
+    "source_type": "primary",
+    "relevance": "Current protocol revision and per-request version declarations."
+  },
+  {
+    "id": "V02",
+    "title": "MCP versioning and compatibility",
+    "url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning",
+    "accessed": "2026-10-09",
+    "source_type": "primary",
+    "relevance": "Modern versus legacy lifecycle and dual-era compatibility."
+  },
+  {
+    "id": "V03",
+    "title": "MCP base protocol",
+    "url": "https://modelcontextprotocol.io/specification/2026-07-28/basic",
+    "accessed": "2026-10-09",
+    "source_type": "primary",
+    "relevance": "Request/result metadata and bounded protocol implementation decisions."
+  },
+  {
+    "id": "V04",
+    "title": "MCP server discovery",
+    "url": "https://modelcontextprotocol.io/specification/2026-07-28/server/discover",
+    "accessed": "2026-10-09",
+    "source_type": "primary",
+    "relevance": "Discovery method, supported versions and server metadata."
+  },
+  {
+    "id": "V05",
+    "title": "MCP tools",
+    "url": "https://modelcontextprotocol.io/specification/2026-07-28/server/tools",
+    "accessed": "2026-10-09",
+    "source_type": "primary",
+    "relevance": "Tool input/output schemas and untrusted tool annotations."
+  },
+  {
+    "id": "V06",
+    "title": "MCP resources",
+    "url": "https://modelcontextprotocol.io/specification/2026-07-28/server/resources",
+    "accessed": "2026-10-09",
+    "source_type": "primary",
+    "relevance": "Resource list/read representation; arbitrary filesystem URIs are not necessary."
+  },
+  {
+    "id": "V07",
+    "title": "MCP stdio transport",
+    "url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/stdio",
+    "accessed": "2026-10-09",
+    "source_type": "primary",
+    "relevance": "Newline-delimited UTF-8 JSON and stdout/stderr separation."
+  },
+  {
+    "id": "V08",
+    "title": "MCP authorization",
+    "url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization",
+    "accessed": "2026-10-09",
+    "source_type": "primary",
+    "relevance": "Future HTTP authorization boundary; not implemented by this stdio build."
+  },
+  {
+    "id": "V09",
+    "title": "Legacy MCP lifecycle",
+    "url": "https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle",
+    "accessed": "2026-10-09",
+    "source_type": "primary",
+    "relevance": "Initialization and initialized notification for the supported legacy revision."
+  },
+  {
+    "id": "V10",
+    "title": "SQLite query planning",
+    "url": "https://sqlite.org/queryplanner.html",
+    "accessed": "2026-10-09",
+    "source_type": "primary",
+    "relevance": "Compound indexes and query plans; does not establish Loomward speed."
+  },
+  {
+    "id": "V11",
+    "title": "SQLite WAL",
+    "url": "https://sqlite.org/wal.html",
+    "accessed": "2026-10-09",
+    "source_type": "primary",
+    "relevance": "Local concurrency and storage constraints; production database choices."
+  },
+  {
+    "id": "V12",
+    "title": "Windows quality of service",
+    "url": "https://learn.microsoft.com/en-us/windows/win32/procthread/quality-of-service",
+    "accessed": "2026-10-09",
+    "source_type": "primary",
+    "relevance": "Owned-worker scheduling options; native integration not tested."
+  },
+  {
+    "id": "V13",
+    "title": "ReadDirectoryChangesW",
+    "url": "https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-readdirectorychangesw",
+    "accessed": "2026-10-09",
+    "source_type": "primary",
+    "relevance": "Directory observation limitations and reconciliation needs."
+  },
+  {
+    "id": "V14",
+    "title": "Windows change journal records",
+    "url": "https://learn.microsoft.com/en-us/windows/win32/fileio/change-journal-records",
+    "accessed": "2026-10-09",
+    "source_type": "primary",
+    "relevance": "Journal coverage, coalescing and non-undo semantics."
+  },
+  {
+    "id": "V15",
+    "title": "CloudEvents project",
+    "url": "https://cloudevents.io/",
+    "accessed": "2026-10-09",
+    "source_type": "primary",
+    "relevance": "Interoperable event envelope, not delivery or authorization semantics."
+  },
+  {
+    "id": "V16",
+    "title": "OpenTelemetry error recording",
+    "url": "https://opentelemetry.io/docs/specs/semconv/general/recording-errors/",
+    "accessed": "2026-10-09",
+    "source_type": "primary",
+    "relevance": "Diagnostic error representation; proposed redacted instrumentation only."
+  },
+  {
+    "id": "V17",
+    "title": "On Calibration of Modern Neural Networks",
+    "url": "https://proceedings.mlr.press/v70/guo17a.html",
+    "accessed": "2026-10-09",
+    "source_type": "primary",
+    "relevance": "Calibration is distinct from raw prediction score; no Loomward calibration result is claimed."
+  },
+  {
+    "id": "V18",
+    "title": "Windows Job Objects",
+    "url": "https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects",
+    "accessed": "2026-10-09",
+    "source_type": "primary",
+    "relevance": "Grouped process management and constraints for future owned workers."
+  },
+  {
+    "id": "V19",
+    "title": "restic working with repositories",
+    "url": "https://restic.readthedocs.io/en/stable/045_working_with_repos.html",
+    "accessed": "2026-10-09",
+    "source_type": "primary",
+    "relevance": "Read-oriented repository/snapshot inspection; no restic process was invoked."
+  },
+  {
+    "id": "V20",
+    "title": "Everything SDK",
+    "url": "https://www.voidtools.com/support/everything/sdk/",
+    "accessed": "2026-10-09",
+    "source_type": "primary",
+    "relevance": "Optional existing index adapter feasibility, not bundled functionality."
+  },
+  {
+    "id": "V21",
+    "title": "JSON-RPC 2.0 specification",
+    "url": "https://www.jsonrpc.org/specification",
+    "accessed": "2026-10-09",
+    "source_type": "primary",
+    "relevance": "Base message and notification semantics; MCP revision-specific rules remain authoritative."
+  }
+]

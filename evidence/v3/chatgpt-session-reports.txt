@@ -1,0 +1,355 @@
+"I'm looking to create a VERY sophisticated and smart self-organising system for windows, primarily to organise files, folders, structures, backups, the main desktop view, shortcuts, etc
+
+I don't just want something with a bunch of IF statements, I want to bake machine learning into it, possibly using the reasoning of an LLM to basically do some controlled supervised learning where the LLM uses its ability to reason to decide where things need to go in what condition, and more
+
+And, along with this, I'd like a balancer that takes into consideration other disks and their speed tier, for moving things back and fourth, depending on their size and type of file, to clear the main disk's space when necessary
+
+Possibly with the ability to ask interactively, the user, for consent, ideas, giving options to work from, like options, recommendations, etc
+I'd be nice if this application could also work as a better windirstrat, as the current build of that doesn't work on my computer and I'd like an open-source version of it that is WAY MORE EFFICIENT and effective anyway
+
+And this could also have the ability to flag things, inspect unused files and apps, find ways to optimise storage, flag stuff for deletion, find duplicates, and more
+
+And it'd be nice to have it as a companion that keeps resources under control, especially processes, to be able to steer ram usage for example and function as a main interface with nice and easy-to-understand UI that allows for better control, as a replacement of powershell and other terminal based interactions with processes, and it should be very comprehensive, capable, optimised, and effective
+
+Likely written in Rust for its main abilities, python or similar is fine for the machine learning, though, if a better language or technology exists, then it's fine to use that
+
+So, can you work on this from start to finish (well, essentially to wherever it's possible for you to get to in this environment)?
+Start from research, thinking, brainstorming, considerations, then planning, strategising, architecting, setting goals and targets, specs, deciding on features, etc
+Then you could start the docs, scaffolding, structure, setting up environments, etc
+Then the first implementations, writing the issues, preparing all the deliverables to hand to a local LLM for it to unbundle and set everything up, from repo to final prototype
+
+I don't want any of these ideas and your work to be lost so, this pass will have to be incredibly comprehensive, it can be colossal. 
+Feel free to give me your additional considerations, additional scope, ideas, ways to make this even better, etc
+
+I plan to have this open source, so it'd be nice to have a nice name for it 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Worked for 82m 51s
+
+
+
+
+
+Loomward
+I built Loomward as a project package with a runnable reference application, a Rust foundation, research and architecture documents, implementation issues, and a local-agent handoff.
+It is a working observation-and-learning prototype, not yet a production Windows optimiser. The Python application and browser interface are tested. The Rust and Tauri sources are included but remain uncompiled. File moves, deletion, uninstall operations, and process-control actions are not enabled.
+Deliverables
+Download	Contents
+Loomward-source-and-handoff.zip	The main deliverable: source, tests, UI, research, specifications, schemas, experiments, 64 implementation issues, setup scripts, and continuation instructions.
+Loomward-preview.html	Open the downloaded HTML in a browser to explore the interface without installing dependencies. Uses synthetic data, not your computer’s files or processes.
+Loomward-research-and-blueprint.md	A consolidated reading copy of the architecture, subsystem designs, research, roadmap, limitations, and handoff.
+Loomward-repository.bundle	The same project preserved as a clonable Git repository, with initial commit 1e51c3b on prototype/initial. No GitHub remote has been created.
+
+
+The package contains 202 files, 23 numbered design documents, 32 primary-source research references, and 64 dependency-linked issue specifications. Documentation, issue bodies, and handoff material total approximately 37,800 words. Your original request is preserved alongside a requirements-to-deliverables map.
+Interface preview
+This is the implemented interface, displaying synthetic demonstration data:
+
+What works now
+The implementation goes beyond scaffolding, but the boundary between working features and future capabilities is explicit.
+Component	Implemented now
+File inventory	Scans an explicitly selected folder with entry/depth limits, exclusions, error reporting, logical sizes, allocation information where available, and visible coverage limitations.
+Storage exploration	Search, a proportional file-family map, file inspection, and snapshot import. Imported snapshots never grant access to the referenced files.
+Duplicate inspection	Explicitly authorised, budget-limited content reads using SHA-256 followed by byte comparison. Reports equality without authorising deletion or inventing reclaimable-space figures.
+Personal learning	A genuine supervised student model, persistent human feedback, weaker teacher-label provenance, retraining, retraction semantics, and abstention when evidence is insufficient.
+Optional LLM teacher	An offline request builder and a loopback-only structured-output client. It accepts bounded metadata and validates responses; it cannot issue filesystem or process commands.
+Disk-tier simulation	Capacity, reserve, transfer-budget, activity, pinning, cooldown, and coldness constraints. Produces reviewable, non-executable placement proposals.
+Process observation	Optional read-only process and memory information through psutil, with explicit metric limitations. No kill, suspend, priority, quota, or RAM-trimming actions.
+Application interface	Seven pages: overview, storage explorer, organisation and learning, disk tiers, processes, activity, and protection.
+
+
+The Rust foundation contains a metadata scanner, typed capability checks, a simulated operation state machine, a tier-planner implementation, and 20 written native tests. It is substantive source code, but I could not compile it here because the environment lacked Rust and the toolchain-fetch attempt failed.
+The Tauri project is currently a synthetic-preview shell, not a desktop application connected to the native engine.
+The central architectural decision
+Semantic organisation, physical placement, and permission to act must be separate systems.
+A file can belong to “Finance,” “Project Atlas,” and “Current work” conceptually without being moved. Separately, a placement policy can decide that the project belongs on fast storage. Neither decision should automatically grant permission to relocate it.
+The proposed system therefore has distinct components:
+Filesystem and process observations
+                  ↓
+      Catalogue and evidence
+                  ↓
+ Personal learning and recommendations
+                  ↓
+    Constrained, reviewable proposals
+                  ↓
+       Scoped user approval
+                  ↓
+ Native execution and recovery boundary
+
+The first four are represented in the prototype to different degrees. The approval and execution machinery is specified, but there is no user-file mutation executor.
+This separation also makes the product more useful before automation is ready. Virtual collections, better search, understandable storage pressure, and recommendations can deliver value without changing the filesystem.
+Why not build everything around an LLM?
+The LLM should help interpret ambiguous situations, suggest categories, explain alternatives, and identify informative questions. It should not become the always-running controller of every file event.
+My recommended direction is a small personal model handling ordinary cases, with the LLM invoked selectively for uncertainty, novel cases, or user-requested explanations. Deterministic constraints remain responsible for permissions, protected locations, capacity, and execution safety.
+That is not reducing the product to IF statements. It is putting learning where adaptation is useful and rules where invariants must hold.
+How the learning system is designed
+Your idea of an LLM supervising a smaller learner is workable, with one important distinction: an LLM-produced label is weak supervision, not established truth.
+The implemented baseline is a weighted multinomial Naive Bayes classifier over bounded filename, extension, context, and size features. Human examples have stronger influence than teacher examples. Human corrections take precedence, and retractions suppress the relevant training influence on refit.
+This provides a real learning loop now, rather than a classification function disguised as machine learning:
+Observed item
+    ↓
+Student prediction
+    ↓
+Acceptable evidence? ── No ──→ Abstain or request review
+    ↓                              ↓
+Reviewable suggestion        Human correction
+                                   ↓
+                          Persist feedback and refit
+
+The optional teacher adds another input to that loop, but its outputs remain separately attributed and reviewable. LM Studio documents JSON-schema-based structured output through its chat-completions endpoint, which is the interface used by the adapter. Actual support and quality still need testing with your selected model. LM Studio
+The blueprint then develops the more sophisticated stages: embeddings, project-aware grouping, personalised ranking, active question selection, temporal evaluation, drift detection, and model promotion or rollback.
+An intended interaction would be:
+“These appear to be invoices associated with this project. Should they remain grouped with the project, appear under Finance, or appear in both?”
+
+That is a proposed future interaction, not a claim that the current UI has a connected reasoning agent.
+I have deliberately not presented the model’s displayed scores as accuracy probabilities. Calibration needs measurement against held-out outcomes; the research literature treats that as a separate problem from classification performance. Proceedings of Machine Learning Research
+Disk balancing: the difficult parts are preserved
+The balancer must reason about more than “large and old.”
+The design considers activity, user pins, project boundaries, destination availability, path continuity, reserve capacity, transfer cost, recovery requirements, and the cost of repeatedly moving the same data.
+It also separates three quantities that are easy to conflate:
+Quantity	Why it matters
+Space eventually freed on the source	Determines whether the primary-disk pressure is actually relieved.
+Space required on the destination	Determines whether the target can safely accept the data.
+Bytes that must be transferred	Determines the I/O budget and estimated work.
+
+
+These need not be equal. The prototype already treats them independently.
+A useful negative experiment
+I compared the greedy planner against an exhaustive oracle on 51 tiny synthetic scenarios.
+It respected the checked transfer and destination-reserve constraints, but missed a feasible target in nine scenarios. In 24 scenarios, it left more unmet demand than the oracle.
+The simplest counterexample is instructive: the coldest group consumes the available transfer budget while freeing less space than another eligible group. “Coldest first” is therefore not enough.
+That experiment, its counterexample, and the expected improvement work are included. The current allocator is an explicit baseline, not presented as optimal or production-ready.
+Moving data back is a separate requirement
+The production design includes bidirectional placement, hysteresis, minimum residence time, active-project or model leases, and explicit recall behaviour. These are not implemented yet.
+The system also cannot treat an NTFS change journal as a complete usage history or an undo log. Microsoft documents that journal records can be discarded, repeated changes can be coalesced, and the journal does not contain enough information to reverse changes. The indexing and recovery designs account for those limitations. Microsoft Learn
+The quarantine problem
+One important finding is carried throughout the specifications:
+Keeping the original in quarantine on the source disk does not free that disk’s space.
+A product cannot promise both immediate space relief and indefinite retention of the same source bytes without explaining where the recovery copy resides. The design therefore separates verified copying, recovery evidence, source retirement, and actual capacity relief.
+The storage explorer should compete on evidence
+One correction from the research: WinDirStat is already open source. Its current site also describes multiple visualisations, duplicate-related features, snapshots, and filesystem monitoring. Loomward should differentiate through learning, project context, consent, recovery-aware planning, and resource coordination, rather than assuming those existing tools are merely static directory-size viewers. WinDirStat
+The proposed efficiency strategy is to avoid unnecessary work: maintain an incremental catalogue, defer content inspection until it is useful, bound extraction and hashing, page large queries, and keep the LLM out of routine background activity.
+I included performance targets and a fair-comparison protocol. No performance advantage over WinDirStat, Everything, Czkawka, or System Informer has been established.
+The recorded scan experiment processed 5,000 newly created tiny files with a median elapsed time of about 0.868 seconds in this Linux container. Cache conditions were uncontrolled. It is a reproducible smoke result, not a Windows benchmark.
+Resource control without “RAM cleaner” behaviour
+The resource companion should help you understand and control workloads, not simply lower a visible memory number.
+Working-set trimming removes resident pages and affects paging behaviour; it is not equivalent to making an application allocate less memory. Microsoft explicitly cautions that working-set manipulation must consider whole-system performance. Microsoft Learn
+The proposed control sequence starts with Loomward’s own scanning, hashing, extraction, and inference workers. It then adds cooperative application providers before narrowly scoped controls over other processes. Windows Job Objects provide a documented mechanism for managing groups of processes and applying limits, making them relevant to the owned-worker design. Microsoft Learn
+For your use case, that could eventually mean pausing an embedding job while a build runs, limiting background hashing on a busy disk, or releasing a model loaded specifically for Loomward. Those are planned capabilities, not actions the current prototype performs.
+Verification and limitations
+The final verification run produced:
+89 passing Python tests, 11 passing bridged Chromium UI checks, and passing JavaScript syntax validation. The standalone preview was also exercised through all seven pages.
+The source archive was then extracted into a separate temporary directory. Its checksums were verified, the 89 tests passed again from that relocated checkout, and the Git bundle was cloned and checked against the same source manifest.
+Loomward-artifact-verification.txt · Loomward-artifacts.json
+The remaining boundaries are important:
+- Windows and native execution: no Windows validation, Rust compilation, Tauri build, installer, signing, or hosted CI result.
+- Model evidence: the teacher was tested against a mock loopback HTTP server, not an actual model. There is no personal-dataset quality or calibration result.
+- Automation: no live disk relocation, backup execution, uninstall, shortcut editing, destructive cleanup, or process control.
+Browser testing used Chromium rendering with a Python bridge to the real reference API because direct browser navigation was blocked in this environment. It does not prove Windows/WebView2 or direct browser-network integration. The code review was a recorded self-review, not an independent security audit.
+Running it locally
+Extract the ZIP, enter its loomward directory, and use Python 3.11 or later:
+python scripts/run.py demo --open
+
+That starts the synthetic application. No model or package installation is required for the basic demo.
+To inspect a real scope, first create a disposable test folder and select it explicitly:
+python scripts/run.py serve --root "C:\LoomwardTest" --open
+
+Use a small, trusted folder initially and run non-elevated. Keep application state outside the scan scope. The prototype’s portable path checks are not a substitute for the planned native, handle-based Windows boundary.
+The README includes optional process-observation setup, scan and duplicate commands, training examples, teacher requests, and native-build instructions.
+For the Git-preserved version, clone the downloaded bundle instead of extracting the ZIP:
+git clone Loomward-repository.bundle loomward
+
+Handing it to a local coding agent
+The LOCAL-AGENT-PROMPT.md tells the next agent what already exists, what must not be regenerated, which evidence to reproduce, and which work to tackle first.
+The first pack is Windows reference validation, Rust compilation and testing, and a disposable Windows filesystem fixture laboratory. The subsequent issues cover native identity, volume capabilities, catalogue/indexing, typed IPC, the real desktop application, richer learning, and eventually controlled actions.
+GitHub status
+I inspected the connected GitHub account and naming availability, but the exposed connector did not include repository creation. Nothing was published to GitHub.
+The package includes dry-run-first repository and issue publishing helpers. They default to a private repository and the first eight critical-path issues, rather than silently publishing everything. Loomward remains a working name, not a trademark-cleared brand.
+The next engineering milestone is a verified native Windows observation workbench with persistent personal learning. The handoff is organised to reach that milestone before enabling unattended cleanup or relocation.
+
+Loomward-preview.htmlHTMLLoomward-research-and-blueprint.mdDocumentLoomward-artifact-verification.txtDocumentLoomward-artifacts.jsonCodeLOCAL-AGENT-PROMPT.mdDocument
+Show less
+
+
+
+
+
+
+
+
+
+
+
+
+
+Can you work more on this and expand its architecture, interface, thesis, interoperability, interconnectivity, MCP ideas, more use cases, more optimisation and efficiency improvements, etc?
+Feel free to use subagents and tackle even more of this
+Produce again all the deliverables you want, feel free to work on what was already produced if you can and want
+
+
+
+
+
+
+
+
+
+
+
+
+Worked for 81m 5s
+
+
+
+
+
+Loomward v0.2
+I extended the existing project rather than starting over. This pass adds a working scoped MCP reference, a bounded metadata catalogue, an improved allocation algorithm, resource-admission and lease accounting, three interface pages, and a substantially expanded architecture and research programme.
+The updated package contains 346 files, 41 numbered research/design chapters, and 100 dependency-linked implementation issues. The original implementation, Git history, first-pass handoff, and negative experiment are preserved.
+It remains a reference prototype, not a production Windows optimiser. The new Python and browser components are tested. Rust compilation, Windows validation, real MCP-host compatibility, and live provider integrations remain separate gates.
+Deliverables
+Deliverable	Contents
+Loomward-v2-source-and-handoff.zip	Everything needed to continue: source, tests, interface, contracts, research, experiments, issues, evidence, and local-agent instructions.
+Loomward-v2-research-and-blueprint.html	A self-contained, navigable reading copy combining the original blueprint and expansion. Includes the thesis, architecture, MCP specification, use cases, roadmap, and handoff.
+Loomward-v2-research-and-blueprint.md	The editable, agent-readable version of the consolidated book.
+Loomward-v2-preview.html	All ten interface pages, using synthetic data. No server, model, provider account, or installation is needed.
+Loomward-v2-repository.bundle	Preserves the original commit and the expansion branch, expansion/interop-v2, at commit f3b1093.
+Loomward-v2-LOCAL-AGENT-PROMPT.md	A continuation prompt with the current implementation boundaries, verification commands, first assignments, and parallel-work ownership rules.
+
+
+Loomward-v2-artifact-verification.txt · Loomward-v2-artifacts.json
+1. The architecture is now more explicit
+The central distinction is still meaning, physical location, and permission, but it is now developed into concrete domain and integration contracts.
+A file can belong to several useful collections without moving. A storage policy can recommend changing its residency without changing its meaning. Neither a classification nor a placement recommendation grants execution authority.
+The expanded target architecture separates five areas:
+Area	Responsibility
+Evidence	Observed identities, metadata, coverage, freshness, and provenance.
+Understanding	Personal preferences, logical groups, virtual collections, and forecasts.
+Decision	Alternatives, constraints, simulations, and review records.
+Coordination	Work requests, resource budgets, leases, and provider health.
+Effects	Future approved native operations, revalidation, recovery, and outcome receipts.
+
+
+The UI and MCP sit over these components. They do not become additional stores of authority.
+A modular native application, not premature microservices
+The recommended production shape is a Rust core, local relational catalogue, typed interfaces, and selectively isolated workers. Python remains appropriate for the executable reference, experiments, and optional learning components.
+I explicitly deferred a separate graph database, distributed catalogue, general-purpose message-broker infrastructure, and kernel driver. The design can represent relationships through typed relational entities and edges before adding another database.
+The native indexing plan also includes recovery from missed events, rather than assuming filesystem notifications are complete. Windows directory notifications can overflow, so the design uses dirty scopes and reconciliation to restore a known state. Microsoft Learn
+2. The interface now has ten pages
+I retained the existing visual direction and added three working pages.
+Decision desk
+This presents a proposed change alongside its evidence, unknowns, alternatives, and recovery considerations. Its interactions currently record session-only review dispositions, not approvals.
+That distinction is important: “hold this for review” and “I approve this exact native operation” must not become the same button behind different wording.
+Connections
+This shows the proposed integration boundaries for Loomward MCP, Estate Console, Taskdeck, Agent Harness, and backup providers.
+It also includes an MCP request laboratory. You can select a supported request, explicitly include a metadata-disclosure example, inspect the JSON, and export the draft. It does not send the request or connect a provider.
+Here is the implemented page, rendered with synthetic data:
+
+Resource budgets
+This lets you experiment with CPU slots, system memory, GPU memory, I/O capacity, observation age, and foreground/background profiles.
+The live reference uses the Python admission algorithm. The standalone preview uses a JavaScript implementation checked against shared Python-generated fixtures.
+It shows which workloads fit, which are deferred, and why. It does not launch workers or change OS limits.
+3. MCP is implemented as a bounded reference
+There is now a working stdin/stdout server, rather than only an MCP proposal.
+Its four tools are:
+Tool	Purpose
+workspace_summary	Return scoped counts, logical bytes, and evidence limitations.
+catalog_search	Search explicitly disclosed snapshot metadata using bounded pages.
+evidence_explain	Explain one reference within the same scoped snapshot.
+placement_simulate	Evaluate a supplied placement scenario without moving anything.
+
+
+Only summary and placement simulation are advertised by default. Names and relative paths require an explicit launch choice.
+The server cannot open arbitrary paths, scan another root, execute shell commands, approve a proposal, delete files, or control processes.
+Current and legacy protocol handling are separate
+The current MCP revision is 2026-07-28, which uses per-request version metadata. Earlier handshake-based revisions use a different lifecycle. I checked the current specification and implemented a separate 2025-11-25 legacy path, rather than treating one successful handshake as permission to omit modern request metadata. Model Context Protocol
+Both paths have actual subprocess tests. However, this is a narrow handwritten reference, not a certified or broadly validated MCP implementation. It has not been tested with an official SDK or a real desktop/CLI host. The backlog includes that compatibility matrix and a production SDK adapter.
+The project also keeps tool descriptions and annotations separate from enforcement. MCP provides tool schemas and metadata, but those are not a replacement for Loomward’s own scope and capability checks. Model Context Protocol
+Further MCP work is specified, not falsely advertised as available
+The expansion covers future proposal preparation, read-only embedded evidence views, long-running work, remote transport, and durable per-client grants.
+The intended progression is:
+Scoped reads → non-executable proposal preparation → human review outside the agent’s authority → separately gated native execution.
+There is no planned generic “run whatever the model says” escape hatch.
+4. Interoperability now has concrete boundaries
+I reviewed the existing estate READMEs through the GitHub connector and used that context to design optional adapters. No provider was connected and no sibling repository was modified.
+Estate Console is treated as a possible source of host-resource observations. Loomward should not create a second controller that fights its existing process-management decisions.
+Taskdeck is treated as a destination for reviewable work. A Loomward finding could become a capture or proposal with evidence attached, without giving an agent approval or apply authority.
+Agent Harness can contribute activity and cooperative lease evidence. An absent or expired lease must not be interpreted as proof that a worktree is disposable.
+Backup providers should contribute distinct evidence for snapshot existence, integrity checks, and successful restoration. A green backup-job status is not treated as equivalent to demonstrated recovery.
+The provider architecture now specifies configuration and health states, requested versus granted capabilities, bounded responses, versioned events, replay handling, duplicate suppression, reconciliation, and failure isolation.
+The provider, event, and proposal schemas in the package are explicitly marked design-only. The tool schemas are tied to executable reference code and checked for drift.
+5. The allocation algorithm now improves on the original result
+The first pass preserved a useful failure: its greedy planner missed feasible free-space targets in nine of 51 tiny scenarios.
+I kept that baseline and added a new allocator with several deterministic heuristics, followed by budgeted exact search for small problems. It prioritises unmet demand, then transfer cost, disruption, and heat, while retaining the hard constraints.
+The repeated experiment produced:
+Measure across the same 51 scenarios	Original planner	New planner
+Feasible targets missed	9	0
+Cases with more shortfall than the exhaustive oracle	24	0
+Checked transfer/reserve violations	0	0
+
+
+The new result also reports whether search completed, why it stopped, and the scope of any optimality claim.
+These are static synthetic allocation results, not evidence of safe live relocation. They do not model native identity, changing files, overlapping groups, metadata fidelity, recovery, or future demand. The Rust planner is still the original uncompiled baseline.
+Bounded catalogue queries are also implemented
+The new catalogue provides scope filtering before aggregation, keyset pagination, exact byte strings, query-work limits, bounded display fields, and per-view keyed identifiers.
+In the 50,000-record synthetic experiment, a 50-row page was approximately 12.2 KB, compared with approximately 6.78 MB for the complete input snapshot. That is a bounded projection, not compression of the same information.
+The indexing choices follow SQLite’s documented search and ordering behaviour, while the performance measurements remain limited to the actual experiment. SQLite
+An important remaining task is explicit: the older browser /api/state path still loads a whole snapshot. The new paged catalogue does not magically make every existing interface path scalable. Migrating that UI is a dedicated continuation issue.
+6. Resource control now starts with accounting
+The reference now implements admission across multiple resource dimensions and a thread-safe, temporary lease broker.
+It checks that simultaneous callers cannot each spend the same remaining capacity. Tests cover idempotent retries, expiry, conflicting request identities, release tokens, clock behaviour, unknown capacity, and mutable-input boundaries.
+In one concurrency test, 20 simultaneous requests for a single available slot result in one admitted lease.
+This is accounting, not enforcement. The broker is not exposed through MCP or HTTP, its owner identifiers are not authenticated, and its state is not durable.
+For production, the design first controls Loomward-owned workers, then explicitly cooperating applications. Windows Job Objects are a relevant native mechanism for grouping processes and applying limits, but their membership and lifecycle rules still require implementation and Windows tests. Microsoft Learn
+The desired outcome is not simply “less RAM shown.” It is a responsive foreground task, bounded background work, sensible model residency, and fewer competing scans, hashes, builds, and inference jobs.
+7. The thesis and use cases are substantially expanded
+The new thesis chapter includes six falsifiable hypotheses, comparison baselines, grouped temporal evaluation, cold-start behaviour, active-question selection, feedback retraction, and conditions under which the approach could fail.
+The learning programme now asks questions such as: does selective review reduce correction effort, do project-aware groups outperform independent file decisions, and does optional teacher use improve outcomes enough to justify its compute and disclosure cost?
+It also keeps calibration separate from raw confidence. Calibration research is a reason to measure whether scores correspond to outcomes, not a reason to assume Loomward’s current student or an LLM’s self-reported score is calibrated. Proceedings of Machine Learning Research
+The existing weighted Naive Bayes learner remains the implemented baseline. I did not add untested embeddings and call them an improvement.
+The use-case atlas now contains 26 scenarios, each with a trigger, intended response, boundary, dependencies, and outcome measure. Examples include:
+- Developer projects, build caches, worktrees, and competing agent workloads.
+- Model residency, scheduled recall, and resource-aware inference.
+- Creative sources, rigs, textures, derivatives, and editable asset lineage.
+- Photo duplicates, research datasets, invoices, and multi-membership collections.
+- Cloud placeholders, disconnected archives, NAS targets, virtual disks, and restore verification.
+For an avatar pipeline, for example, the proposed behaviour is to preserve the relationship between editable artwork, rigging sources, textures, and exports. A visually similar rendered animation must not become a reason to discard the editable source.
+For developer work, the proposed behaviour is to recognise active project intent, reserve resources for the build, and defer optional hashing or embedding work. That requires workload evidence and cooperative ownership, not merely an old modification timestamp.
+8. Verification and preservation
+The final gates passed:
+Gate	Result
+Python reference suite	184 tests passed, up from 89.
+JavaScript	Both syntax checks passed; 9 boundary assertions and 80 cross-language fixtures passed.
+Browser integration	14 checks passed against the real Python API through the Chromium bridge.
+Standalone preview	All 10 routes rendered; the three new pages were checked at 390, 768, and 1440-pixel widths.
+Reading book	All 44 sections rendered, with desktop and narrow-layout checks.
+Packaging	ZIP hashes verified; extracted checkout passed the suite; Git-bundle clone matched the archive and commit.
+
+
+The final review also corrected several concrete defects: an oversized Unicode row that could stall pagination, mutable lease capacity, Unicode release-token handling, a guessable public metadata fingerprint, and missing durable import markers on new issue bodies.
+The updated source is committed at f3b1093, and the working tree is clean. No GitHub repository, issues, PRs, or remote commits were created. Work and review were performed inline; no independent subagent review is claimed.
+Running and continuing it
+To preserve Git history, place the downloaded bundle in your working directory and run:
+git clone Loomward-v2-repository.bundle loomward
+cd loomward
+python scripts/run.py demo --open
+
+Alternatively, extract the ZIP, enter its loomward directory, and run the final command.
+For the synthetic MCP process:
+python scripts/run_mcp.py --demo
+
+That waits for an MCP client on stdin/stdout; it is not a web server.
+The handoff defines six ownership-separated local work packs covering native Windows foundations, catalogue/UI integration, MCP compatibility and grants, allocation/resource algorithms, providers, and learning evaluation.
+The next production milestone remains a verified native Windows observation workbench with persistent personal learning. The new architecture and tested reference modules provide a stronger route to that milestone without prematurely enabling unattended file or process changes."

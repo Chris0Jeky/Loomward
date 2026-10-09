@@ -1,0 +1,14 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Loomward Preview",
+  "version": "0.1.0",
+  "identifier": "dev.loomward.preview",
+  "build": {"frontendDist": "../ui"},
+  "app": {
+    "windows": [{"label":"main","title":"Loomward · Synthetic preview","width":1440,"height":1000,"minWidth":720,"minHeight":560}],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    }
+  },
+  "bundle": {"active":false}
+}
