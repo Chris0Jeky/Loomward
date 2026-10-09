@@ -70,7 +70,7 @@
     {#if src}
       <dl class="facts">
         <div><dt>Kind</dt><dd>{src.kind}{#if src.ext_family} · {src.ext_family}{/if}</dd></div>
-        <div><dt>Logical</dt><dd class="num">{formatBytes(src.logical_bytes)}</dd></div>
+        <div><dt>Logical</dt><dd class="num">{#if denied && src.logical_bytes === '0'}<span class="unknown">unknown</span>{:else}{formatBytes(src.logical_bytes)}{/if}</dd></div>
         <div><dt>Allocated</dt><dd class="num">{#if src.allocated_bytes === null}<span class="unknown">unknown</span>{:else}{formatBytes(src.allocated_bytes)}{/if}</dd></div>
         {#if src.kind !== 'file'}
           <div><dt>Contents</dt><dd class="num">{#if denied}<span class="unknown">access denied: unknown</span>{:else}{src.coverage === 'complete' ? '' : 'at least '}{formatCount(src.files)} files · {formatCount(src.dirs)} folders{/if}</dd></div>
