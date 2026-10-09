@@ -1,0 +1,73 @@
+{
+  "as_of": "2026-10-09",
+  "phase": "expanded_reference",
+  "python_tests": 184,
+  "python_failures": 0,
+  "python_skips": 0,
+  "browser_integration_checks": 14,
+  "browser_method": "Chromium set_content bridged to real loopback Python HTTP",
+  "js_boundary_assertions": 9,
+  "js_python_parity_cases": 80,
+  "standalone_routes": 10,
+  "standalone_new_page_widths": [
+    390,
+    768,
+    1440
+  ],
+  "contract_files": 14,
+  "numbered_chapters": 41,
+  "expansion_chapters": 18,
+  "local_backlog_items": 100,
+  "expansion_backlog_items": 36,
+  "expansion_primary_source_entries": 21,
+  "estate_readmes_reviewed": 3,
+  "rust_compiled": false,
+  "rust_toolchain_available": false,
+  "windows_tested": false,
+  "official_mcp_host_tested": false,
+  "real_model_tested": false,
+  "external_providers_connected": 0,
+  "independent_review": false,
+  "user_file_or_process_effects": false,
+  "remote_writes": 0,
+  "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+  "python": "3.13.5",
+  "allocator": {
+    "cases": 51,
+    "v1_missed_feasible": 9,
+    "v2_missed_feasible": 0,
+    "v1_positive_regret_cases": 24,
+    "v2_positive_regret_cases": 0,
+    "all_v2_searches_complete": true,
+    "constraint_violations_in_checked_cases": 0,
+    "median_v2_ms": 0.21903999959249632,
+    "maximum_v2_nodes": 352
+  },
+  "catalog": {
+    "rows": 50000,
+    "build_ms": 870.0280470002326,
+    "first_page_including_projection_and_cursor": {
+      "repetitions": 30,
+      "median_ms": 0.31155850001596264,
+      "p95_ms": 0.38871500009918236
+    },
+    "page_rows": 50,
+    "page_json_bytes": 12165,
+    "full_input_json_bytes": 6779920,
+    "sql_deep_page_keyset": {
+      "repetitions": 100,
+      "median_ms": 0.028633000056288438,
+      "p95_ms": 0.0393190002796473
+    },
+    "sql_deep_page_offset": {
+      "repetitions": 100,
+      "median_ms": 1.3836665002600057,
+      "p95_ms": 1.6601570000602806
+    },
+    "sql_rows_identical": true,
+    "query_plan": [
+      "SCAN catalog USING INDEX catalog_order"
+    ],
+    "limits": "Warm in-memory SQLite; no filesystem I/O. SQL microbenchmark excludes API serialization/cursor validation. Cursor position known in advance. Not a cold/native/end-to-end benchmark."
+  }
+}

@@ -6,6 +6,16 @@ Status: **research prototype**, not a production file manager or system optimise
 
 Loomward is a provisional name. Original project code is MIT licensed. No GitHub repository or remote issues were created during this authoring pass.
 
+## v0.2 expansion
+
+The existing project has been extended, not replaced. The Python reference now includes a scoped, bounded SQLite snapshot catalogue; an improved budgeted allocation search; multidimensional resource admission and ephemeral lease accounting; and a four-tool, two-resource MCP stdio reference. The UI has ten pages, including Decision desk, Connections and Resource budgets. All effects remain disabled.
+
+Read the [expanded thesis](docs/24-thesis-and-research-program.md), [control/evidence architecture](docs/25-control-evidence-architecture.md), [MCP support matrix](docs/28-mcp-specification.md), [26 use cases](docs/33-use-case-atlas.md), [operating guide](docs/38-reference-operating-guide.md), and [parallel work packs](docs/40-parallel-work-packs.md). New primary-source references are in [EXPANSION-SOURCES.md](docs/EXPANSION-SOURCES.md).
+
+The authored verification is 184 Python tests, 14 bridged Chromium checks, nine JavaScript boundary assertions and 80 Python/JavaScript parity cases. Rust, Windows, actual MCP hosts and real models remain unverified. The 51-case allocator comparison resolves the original nine missed feasible targets in its static synthetic model, not in a live filesystem. Full receipts and limitations are in [the current capability matrix](docs/37-expansion-verification.md).
+
+Start the scoped synthetic MCP process with `python scripts/run_mcp.py --demo`. This is a stdio process for a client, not a web page; it does not scan or disclose names by default. Protocol examples and labelled draft integration schemas are in [contracts/v2](contracts/v2/README.md). No external provider is connected by the Connections page.
+
 ## Start here
 
 From an extracted source checkout with Python 3.11 or later:
@@ -18,9 +28,11 @@ On Linux/macOS, substitute `python3` for `py -3`. This starts a loopback-only Py
 
 For a no-server visual preview, open `preview.html`. Its data and tier recommendations are synthetic. Feedback stays in page memory until exported. It cannot inspect your disk or processes and does not retrain the backend model.
 
-Read [the local-agent handoff](handoff/START-HERE.md), [exact implementation status](docs/16-implementation-status.md), and [the ordered backlog](backlog/INDEX.md) before extending the project.
+Read [the local-agent handoff](handoff/START-HERE.md), [current implementation status](docs/37-expansion-verification.md), and [the ordered backlog](backlog/INDEX.md) before extending the project.
 
-## What actually exists
+## Original reference foundation, retained
+
+This table describes the original modules. The v0.2 additions and precise limitations are listed above and in the current capability matrix.
 
 | Area | Current implementation | Not yet implemented |
 |---|---|---|

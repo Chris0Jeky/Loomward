@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Loomward reference result envelope",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "data",
+    "evidence",
+    "authority"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "data": {
+      "type": "object"
+    },
+    "evidence": {
+      "type": "object"
+    },
+    "authority": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false
+}

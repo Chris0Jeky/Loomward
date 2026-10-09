@@ -1,0 +1,506 @@
+{
+  "schema_version": 2,
+  "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+  "python": "3.13.5",
+  "seed": 20261009,
+  "scope": "Synthetic reference algorithms only",
+  "tier": {
+    "cases": 51,
+    "v1_missed_feasible": 9,
+    "v2_missed_feasible": 0,
+    "v1_positive_regret_cases": 24,
+    "v2_positive_regret_cases": 0,
+    "all_v2_searches_complete": true,
+    "constraint_violations_in_checked_cases": 0,
+    "median_v2_ms": 0.193842000044242,
+    "maximum_v2_nodes": 352,
+    "rows": [
+      {
+        "case": 0,
+        "v1_shortfall": 10,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 3,
+        "v2_ms": 0.1958539999122877
+      },
+      {
+        "case": 1,
+        "v1_shortfall": 81,
+        "v2_shortfall": 13,
+        "oracle_shortfall": 13,
+        "v2_search_complete": true,
+        "v2_nodes": 90,
+        "v2_ms": 0.2977479998662602
+      },
+      {
+        "case": 2,
+        "v1_shortfall": 38,
+        "v2_shortfall": 3,
+        "oracle_shortfall": 3,
+        "v2_search_complete": true,
+        "v2_nodes": 90,
+        "v2_ms": 0.22154299995236215
+      },
+      {
+        "case": 3,
+        "v1_shortfall": 7,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 126,
+        "v2_ms": 0.23254000007000286
+      },
+      {
+        "case": 4,
+        "v1_shortfall": 74,
+        "v2_shortfall": 51,
+        "oracle_shortfall": 51,
+        "v2_search_complete": true,
+        "v2_nodes": 95,
+        "v2_ms": 0.193842000044242
+      },
+      {
+        "case": 5,
+        "v1_shortfall": 12,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 136,
+        "v2_ms": 0.21685599995180382
+      },
+      {
+        "case": 6,
+        "v1_shortfall": 0,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 54,
+        "v2_ms": 0.21380199996201554
+      },
+      {
+        "case": 7,
+        "v1_shortfall": 0,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 46,
+        "v2_ms": 0.15560400015601772
+      },
+      {
+        "case": 8,
+        "v1_shortfall": 0,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 214,
+        "v2_ms": 0.36532000012812205
+      },
+      {
+        "case": 9,
+        "v1_shortfall": 39,
+        "v2_shortfall": 2,
+        "oracle_shortfall": 2,
+        "v2_search_complete": true,
+        "v2_nodes": 37,
+        "v2_ms": 0.2487439999185881
+      },
+      {
+        "case": 10,
+        "v1_shortfall": 35,
+        "v2_shortfall": 35,
+        "oracle_shortfall": 35,
+        "v2_search_complete": true,
+        "v2_nodes": 72,
+        "v2_ms": 0.13919900015935127
+      },
+      {
+        "case": 11,
+        "v1_shortfall": 71,
+        "v2_shortfall": 41,
+        "oracle_shortfall": 41,
+        "v2_search_complete": true,
+        "v2_nodes": 29,
+        "v2_ms": 0.17042600006789144
+      },
+      {
+        "case": 12,
+        "v1_shortfall": 0,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 48,
+        "v2_ms": 0.1322289999734494
+      },
+      {
+        "case": 13,
+        "v1_shortfall": 0,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 93,
+        "v2_ms": 0.18709100004343782
+      },
+      {
+        "case": 14,
+        "v1_shortfall": 0,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 124,
+        "v2_ms": 0.2994599999510683
+      },
+      {
+        "case": 15,
+        "v1_shortfall": 65,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 95,
+        "v2_ms": 0.36051199981557147
+      },
+      {
+        "case": 16,
+        "v1_shortfall": 41,
+        "v2_shortfall": 16,
+        "oracle_shortfall": 16,
+        "v2_search_complete": true,
+        "v2_nodes": 36,
+        "v2_ms": 0.19417199996496493
+      },
+      {
+        "case": 17,
+        "v1_shortfall": 11,
+        "v2_shortfall": 4,
+        "oracle_shortfall": 4,
+        "v2_search_complete": true,
+        "v2_nodes": 35,
+        "v2_ms": 0.12821199993595656
+      },
+      {
+        "case": 18,
+        "v1_shortfall": 0,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 96,
+        "v2_ms": 0.38291600003503845
+      },
+      {
+        "case": 19,
+        "v1_shortfall": 85,
+        "v2_shortfall": 85,
+        "oracle_shortfall": 85,
+        "v2_search_complete": true,
+        "v2_nodes": 12,
+        "v2_ms": 0.08950400001594971
+      },
+      {
+        "case": 20,
+        "v1_shortfall": 0,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 236,
+        "v2_ms": 0.4022350001378072
+      },
+      {
+        "case": 21,
+        "v1_shortfall": 56,
+        "v2_shortfall": 39,
+        "oracle_shortfall": 39,
+        "v2_search_complete": true,
+        "v2_nodes": 37,
+        "v2_ms": 0.1205009998557216
+      },
+      {
+        "case": 22,
+        "v1_shortfall": 0,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 63,
+        "v2_ms": 0.1328900000316935
+      },
+      {
+        "case": 23,
+        "v1_shortfall": 35,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 105,
+        "v2_ms": 0.6674539999949047
+      },
+      {
+        "case": 24,
+        "v1_shortfall": 0,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 102,
+        "v2_ms": 0.2712380000957637
+      },
+      {
+        "case": 25,
+        "v1_shortfall": 93,
+        "v2_shortfall": 46,
+        "oracle_shortfall": 46,
+        "v2_search_complete": true,
+        "v2_nodes": 52,
+        "v2_ms": 0.1499359998433647
+      },
+      {
+        "case": 26,
+        "v1_shortfall": 8,
+        "v2_shortfall": 6,
+        "oracle_shortfall": 6,
+        "v2_search_complete": true,
+        "v2_nodes": 142,
+        "v2_ms": 0.25335100008305744
+      },
+      {
+        "case": 27,
+        "v1_shortfall": 0,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 74,
+        "v2_ms": 0.1440569999431318
+      },
+      {
+        "case": 28,
+        "v1_shortfall": 0,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 72,
+        "v2_ms": 0.14112199983173923
+      },
+      {
+        "case": 29,
+        "v1_shortfall": 0,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 70,
+        "v2_ms": 0.35147900007359567
+      },
+      {
+        "case": 30,
+        "v1_shortfall": 57,
+        "v2_shortfall": 38,
+        "oracle_shortfall": 38,
+        "v2_search_complete": true,
+        "v2_nodes": 27,
+        "v2_ms": 0.13457299996844085
+      },
+      {
+        "case": 31,
+        "v1_shortfall": 44,
+        "v2_shortfall": 44,
+        "oracle_shortfall": 44,
+        "v2_search_complete": true,
+        "v2_nodes": 20,
+        "v2_ms": 0.08041099999900325
+      },
+      {
+        "case": 32,
+        "v1_shortfall": 0,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 66,
+        "v2_ms": 0.14354599989019334
+      },
+      {
+        "case": 33,
+        "v1_shortfall": 10,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 41,
+        "v2_ms": 0.16816300012578722
+      },
+      {
+        "case": 34,
+        "v1_shortfall": 0,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 91,
+        "v2_ms": 0.15516300004492223
+      },
+      {
+        "case": 35,
+        "v1_shortfall": 0,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 65,
+        "v2_ms": 0.19561399994927342
+      },
+      {
+        "case": 36,
+        "v1_shortfall": 56,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 45,
+        "v2_ms": 0.1940720001130103
+      },
+      {
+        "case": 37,
+        "v1_shortfall": 0,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 352,
+        "v2_ms": 0.49145999992106226
+      },
+      {
+        "case": 38,
+        "v1_shortfall": 107,
+        "v2_shortfall": 82,
+        "oracle_shortfall": 82,
+        "v2_search_complete": true,
+        "v2_nodes": 20,
+        "v2_ms": 0.08863400012160128
+      },
+      {
+        "case": 39,
+        "v1_shortfall": 0,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 41,
+        "v2_ms": 0.12897400006295356
+      },
+      {
+        "case": 40,
+        "v1_shortfall": 0,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 58,
+        "v2_ms": 0.20961499990335142
+      },
+      {
+        "case": 41,
+        "v1_shortfall": 25,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 93,
+        "v2_ms": 0.30158300000948657
+      },
+      {
+        "case": 42,
+        "v1_shortfall": 0,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 38,
+        "v2_ms": 0.13706599997931335
+      },
+      {
+        "case": 43,
+        "v1_shortfall": 8,
+        "v2_shortfall": 8,
+        "oracle_shortfall": 8,
+        "v2_search_complete": true,
+        "v2_nodes": 46,
+        "v2_ms": 0.12727099988296686
+      },
+      {
+        "case": 44,
+        "v1_shortfall": 42,
+        "v2_shortfall": 42,
+        "oracle_shortfall": 42,
+        "v2_search_complete": true,
+        "v2_nodes": 11,
+        "v2_ms": 0.08358499985661183
+      },
+      {
+        "case": 45,
+        "v1_shortfall": 34,
+        "v2_shortfall": 34,
+        "oracle_shortfall": 34,
+        "v2_search_complete": true,
+        "v2_nodes": 68,
+        "v2_ms": 0.14737099991180003
+      },
+      {
+        "case": 46,
+        "v1_shortfall": 0,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 181,
+        "v2_ms": 0.2515490000405407
+      },
+      {
+        "case": 47,
+        "v1_shortfall": 10,
+        "v2_shortfall": 1,
+        "oracle_shortfall": 1,
+        "v2_search_complete": true,
+        "v2_nodes": 32,
+        "v2_ms": 0.13688600006389606
+      },
+      {
+        "case": 48,
+        "v1_shortfall": 22,
+        "v2_shortfall": 1,
+        "oracle_shortfall": 1,
+        "v2_search_complete": true,
+        "v2_nodes": 93,
+        "v2_ms": 0.2458500000557251
+      },
+      {
+        "case": 49,
+        "v1_shortfall": 53,
+        "v2_shortfall": 10,
+        "oracle_shortfall": 10,
+        "v2_search_complete": true,
+        "v2_nodes": 87,
+        "v2_ms": 0.22011100008967333
+      },
+      {
+        "case": 50,
+        "v1_shortfall": 20,
+        "v2_shortfall": 0,
+        "oracle_shortfall": 0,
+        "v2_search_complete": true,
+        "v2_nodes": 21,
+        "v2_ms": 0.16317499989781936
+      }
+    ]
+  },
+  "catalog": {
+    "rows": 50000,
+    "build_ms": 788.2928919998449,
+    "first_page_including_projection_and_cursor": {
+      "repetitions": 30,
+      "median_ms": 0.3131565000558112,
+      "p95_ms": 0.4043579999688518
+    },
+    "page_rows": 50,
+    "page_json_bytes": 12165,
+    "full_input_json_bytes": 6779920,
+    "sql_deep_page_keyset": {
+      "repetitions": 100,
+      "median_ms": 0.029044000029898598,
+      "p95_ms": 0.040721000004850794
+    },
+    "sql_deep_page_offset": {
+      "repetitions": 100,
+      "median_ms": 1.3297049999891897,
+      "p95_ms": 1.5742979999231466
+    },
+    "sql_rows_identical": true,
+    "query_plan": [
+      "SCAN catalog USING INDEX catalog_order"
+    ],
+    "limits": "Warm in-memory SQLite; no filesystem I/O. SQL microbenchmark excludes API serialization/cursor validation. Cursor position known in advance. Not a cold/native/end-to-end benchmark."
+  }
+}

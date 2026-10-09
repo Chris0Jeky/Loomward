@@ -1,0 +1,27 @@
+{
+  "as_of": "2026-10-09",
+  "method": "GitHub connector read-only README inspection",
+  "implementation_verified": false,
+  "live_endpoints_called": false,
+  "remote_writes": 0,
+  "sources": [
+    {
+      "repository": "Chris0Jeky/estate-console",
+      "path": "README.md",
+      "blob_sha": "8ad31cb5d5f423c4a07bed5f6b40863bdfffa404",
+      "interpretation": "Read host summaries from the owning console; do not inherit process-control authority."
+    },
+    {
+      "repository": "Chris0Jeky/Taskdeck",
+      "path": "README.md",
+      "blob_sha": "ce94b2d3aad641c3be71e0c3d272df297f1cc667",
+      "interpretation": "Optional read/propose integration, no agent approve/apply; proprietary source not copied."
+    },
+    {
+      "repository": "Chris0Jeky/agent-harness",
+      "path": "README.md",
+      "blob_sha": "482d4d9a1d679e24152af1c149930a542b8e88ae",
+      "interpretation": "Activity and cooperative lease evidence are advisory; owning tool retains closeout checks."
+    }
+  ]
+}

@@ -10,7 +10,10 @@ def main():
     p=argparse.ArgumentParser();p.add_argument('--require-native',action='store_true');p.add_argument('--ui',action='store_true');p.add_argument('--browser');a=p.parse_args()
     env=dict(os.environ,PYTHONPATH=str(ROOT/'python'));failed=False
     commands=[('Python suite',[sys.executable,'-m','unittest','discover','-s','tests'])]
-    if shutil.which('node'):commands.append(('JavaScript syntax',['node','--check','ui/app.js']))
+    if shutil.which('node'):
+        commands.extend([('JavaScript app syntax',['node','--check','ui/app.js']),
+                         ('JavaScript expansion syntax',['node','--check','ui/expansion.js']),
+                         ('JavaScript boundary and Python parity fixtures',['node','tests/test_ui_logic.mjs'])])
     else:print('SKIP JavaScript syntax: Node is missing',flush=True)
     if shutil.which('cargo'):
         commands.extend([('Rust format',['cargo','fmt','--all','--','--check']),('Rust unit tests',['cargo','test','--workspace']),('Rust lint',['cargo','clippy','--workspace','--all-targets','--','-D','warnings'])])

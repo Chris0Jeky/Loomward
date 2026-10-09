@@ -1,0 +1,64 @@
+{
+  "all_pages_rendered": [
+    {
+      "page": "Overview",
+      "rendered": true,
+      "mode": "standalone_synthetic"
+    },
+    {
+      "page": "Storage explorer",
+      "rendered": true,
+      "mode": "standalone_synthetic"
+    },
+    {
+      "page": "Organise & learn",
+      "rendered": true,
+      "mode": "standalone_synthetic"
+    },
+    {
+      "page": "Disk tiers",
+      "rendered": true,
+      "mode": "standalone_synthetic"
+    },
+    {
+      "page": "Processes",
+      "rendered": true,
+      "mode": "standalone_synthetic"
+    },
+    {
+      "page": "Activity",
+      "rendered": true,
+      "mode": "standalone_synthetic"
+    },
+    {
+      "page": "Protection",
+      "rendered": true,
+      "mode": "standalone_synthetic"
+    },
+    {
+      "page": "Decision desk",
+      "rendered": true,
+      "mode": "standalone_synthetic"
+    },
+    {
+      "page": "Connections",
+      "rendered": true,
+      "mode": "standalone_synthetic"
+    },
+    {
+      "page": "Resource budgets",
+      "rendered": true,
+      "mode": "standalone_synthetic"
+    }
+  ],
+  "new_page_widths_checked": [
+    390,
+    768,
+    1440
+  ],
+  "simulation_checked": true,
+  "request_builder_checked": true,
+  "page_errors": [],
+  "method": "Chromium set_content; standalone synthetic HTML. No provider or local server connected.",
+  "windows_webview2_verified": false
+}

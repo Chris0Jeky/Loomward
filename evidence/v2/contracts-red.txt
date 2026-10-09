@@ -1,0 +1,82 @@
+FFFFFFF
+======================================================================
+FAIL: test_draft_manifests_do_not_contain_credentials (test_v2_contracts.ContractTests.test_draft_manifests_do_not_contain_credentials)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward-v2/tests/test_v2_contracts.py", line 47, in test_draft_manifests_do_not_contain_credentials
+    example = self.read_contract('provider-manifest.example.json')
+  File "/mnt/data/loomward-v2/tests/test_v2_contracts.py", line 13, in read_contract
+    self.assertTrue(path.is_file(), f'Missing versioned contract: {name}')
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true : Missing versioned contract: provider-manifest.example.json
+
+======================================================================
+FAIL: test_examples_are_current_and_explicitly_synthetic (test_v2_contracts.ContractTests.test_examples_are_current_and_explicitly_synthetic)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward-v2/tests/test_v2_contracts.py", line 34, in test_examples_are_current_and_explicitly_synthetic
+    modern = self.read_contract('modern-requests.json')
+  File "/mnt/data/loomward-v2/tests/test_v2_contracts.py", line 13, in read_contract
+    self.assertTrue(path.is_file(), f'Missing versioned contract: {name}')
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true : Missing versioned contract: modern-requests.json
+
+======================================================================
+FAIL: test_future_contracts_are_not_claimed_as_runtime (test_v2_contracts.ContractTests.test_future_contracts_are_not_claimed_as_runtime)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward-v2/tests/test_v2_contracts.py", line 42, in test_future_contracts_are_not_claimed_as_runtime
+    index = self.read_contract('INDEX.json')
+  File "/mnt/data/loomward-v2/tests/test_v2_contracts.py", line 13, in read_contract
+    self.assertTrue(path.is_file(), f'Missing versioned contract: {name}')
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true : Missing versioned contract: INDEX.json
+
+======================================================================
+FAIL: test_json_schema_examples_validate_when_validator_present (test_v2_contracts.ContractTests.test_json_schema_examples_validate_when_validator_present)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward-v2/tests/test_v2_contracts.py", line 57, in test_json_schema_examples_validate_when_validator_present
+    index = self.read_contract('INDEX.json')
+  File "/mnt/data/loomward-v2/tests/test_v2_contracts.py", line 13, in read_contract
+    self.assertTrue(path.is_file(), f'Missing versioned contract: {name}')
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true : Missing versioned contract: INDEX.json
+
+======================================================================
+FAIL: test_launch_profiles_do_not_advertise_extra_authority (test_v2_contracts.ContractTests.test_launch_profiles_do_not_advertise_extra_authority)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward-v2/tests/test_v2_contracts.py", line 25, in test_launch_profiles_do_not_advertise_extra_authority
+    manifest = self.read_contract('reference-capabilities.json')
+  File "/mnt/data/loomward-v2/tests/test_v2_contracts.py", line 13, in read_contract
+    self.assertTrue(path.is_file(), f'Missing versioned contract: {name}')
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true : Missing versioned contract: reference-capabilities.json
+
+======================================================================
+FAIL: test_output_contract_matches_runtime (test_v2_contracts.ContractTests.test_output_contract_matches_runtime)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward-v2/tests/test_v2_contracts.py", line 21, in test_output_contract_matches_runtime
+    exported = self.read_contract('tool-output.schema.json')
+  File "/mnt/data/loomward-v2/tests/test_v2_contracts.py", line 13, in read_contract
+    self.assertTrue(path.is_file(), f'Missing versioned contract: {name}')
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true : Missing versioned contract: tool-output.schema.json
+
+======================================================================
+FAIL: test_tool_inputs_match_runtime (test_v2_contracts.ContractTests.test_tool_inputs_match_runtime)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward-v2/tests/test_v2_contracts.py", line 17, in test_tool_inputs_match_runtime
+    exported = self.read_contract(name + '.input.schema.json')
+  File "/mnt/data/loomward-v2/tests/test_v2_contracts.py", line 13, in read_contract
+    self.assertTrue(path.is_file(), f'Missing versioned contract: {name}')
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true : Missing versioned contract: workspace_summary.input.schema.json
+
+----------------------------------------------------------------------
+Ran 7 tests in 0.763s
+
+FAILED (failures=7)

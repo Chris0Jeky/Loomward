@@ -1,3 +1,4 @@
+from contextlib import closing
 import sqlite3
 import tempfile
 import unittest
@@ -28,7 +29,8 @@ class StoreTests(unittest.TestCase):
     def test_tamper_detected(self):
         with tempfile.TemporaryDirectory() as t:
             p=Path(t)/'x.db'; s=Store(p); s.feedback('x','a',{'name':'x'},'Finance')
-            with sqlite3.connect(p) as c: c.execute("UPDATE audit SET payload='{}' WHERE seq=1")
+            with closing(sqlite3.connect(p)) as c:
+                with c: c.execute("UPDATE audit SET payload='{}' WHERE seq=1")
             self.assertFalse(s.verify_audit())
     def test_connection_is_closed_after_context(self):
         import sqlite3

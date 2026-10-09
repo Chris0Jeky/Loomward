@@ -1,0 +1,13 @@
+{
+  "schema_version": 2,
+  "provider_id": "example.estate-host",
+  "display_name": "Example host observation adapter",
+  "version": "0.0.0-design",
+  "requested_capabilities": [
+    "observe.summary"
+  ],
+  "execution": "unconfigured",
+  "installed": false,
+  "network": "owner_configured_only",
+  "settings_schema_version": 1
+}

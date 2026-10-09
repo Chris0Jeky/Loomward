@@ -1,0 +1,68 @@
+{
+  "schema_version": 2,
+  "contracts": {
+    "workspace_summary.input.schema.json": {
+      "status": "executable_reference",
+      "examples": []
+    },
+    "catalog_search.input.schema.json": {
+      "status": "executable_reference",
+      "examples": []
+    },
+    "evidence_explain.input.schema.json": {
+      "status": "executable_reference",
+      "examples": []
+    },
+    "placement_simulate.input.schema.json": {
+      "status": "executable_reference",
+      "examples": []
+    },
+    "tool-output.schema.json": {
+      "status": "executable_reference",
+      "examples": []
+    },
+    "provider-manifest.schema.json": {
+      "status": "design_only",
+      "examples": [
+        "provider-manifest.example.json"
+      ]
+    },
+    "provider-manifest.example.json": {
+      "status": "design_only",
+      "examples": []
+    },
+    "event-envelope.schema.json": {
+      "status": "design_only",
+      "examples": [
+        "event-envelope.example.json"
+      ]
+    },
+    "event-envelope.example.json": {
+      "status": "design_only",
+      "examples": []
+    },
+    "proposal-record.schema.json": {
+      "status": "design_only",
+      "examples": [
+        "proposal-record.example.json"
+      ]
+    },
+    "proposal-record.example.json": {
+      "status": "design_only",
+      "examples": []
+    },
+    "reference-capabilities.json": {
+      "status": "executable_reference",
+      "examples": []
+    },
+    "modern-requests.json": {
+      "status": "executable_reference",
+      "examples": []
+    },
+    "legacy-requests.json": {
+      "status": "executable_reference",
+      "examples": []
+    }
+  },
+  "note": "Descriptors request authority but never confer it. Example providers are not installed. Output data shape remains tool-specific."
+}

@@ -1,6 +1,6 @@
 # Agent operating contract
 
-Read `handoff/START-HERE.md`, `handoff/CHECKPOINT.json`, `docs/16-implementation-status.md`, the relevant spec and the assigned backlog issue before editing. The repository contains a working Python reference and **uncompiled native sources**. Never blur that distinction in reports.
+Read `handoff/START-HERE.md`, `handoff/CHECKPOINT.json`, `docs/37-expansion-verification.md`, `docs/23-expansion-overview.md`, the relevant spec and the assigned backlog issue before editing. The repository contains a working Python reference and **uncompiled native sources**. Never blur that distinction in reports.
 
 ## Non-negotiable invariants
 - No file/process mutations until an explicit later issue and Windows safety gate authorise implementing that capability. Do not add a general execute, shell, delete or kill endpoint.
@@ -20,3 +20,6 @@ Use disposable fixtures for native filesystem experiments. Keep personal diagnos
 
 ## Completion reporting
 State what changed, exact tests and platform, what remains unverified, and whether any external action occurred. Preserve failed experiments that explain a design ruling. No false claims of native compilation, backup verification, memory optimisation, learned heat, live disk balancing or safe deletion. Those are future work unless their specific gates have new evidence.
+
+## v0.2 continuation
+Use `docs/40-parallel-work-packs.md` for lane ownership. The native Rust foundation remains uncompiled and its planner is the v1 baseline. New snapshot/MCP/scheduler modules are reference implementations, not OS authority. New provider/event/proposal schemas are design-only where marked. Do not overwrite the historical handoff under `handoff/v1/`.

@@ -1,0 +1,14 @@
+.F.................
+======================================================================
+FAIL: test_generation_is_view_keyed_not_a_public_metadata_fingerprint (test_catalog.CatalogFingerprintPrivacyTests.test_generation_is_view_keyed_not_a_public_metadata_fingerprint)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward-v2/tests/test_catalog.py", line 141, in test_generation_is_view_keyed_not_a_public_metadata_fingerprint
+    self.assertNotEqual(a.summary()['snapshot_generation'], b.summary()['snapshot_generation'])
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: '987ef26f265be0aea81485bf3f06a4fa710f6f2f880c5cef80fee8a6c2fd420b' == '987ef26f265be0aea81485bf3f06a4fa710f6f2f880c5cef80fee8a6c2fd420b'
+
+----------------------------------------------------------------------
+Ran 19 tests in 0.043s
+
+FAILED (failures=1)

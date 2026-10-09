@@ -1,3 +1,5 @@
+> Historical v0.1 status. The current expansion matrix and test counts are in [37-expansion-verification.md](37-expansion-verification.md).
+
 # Implementation status: initial authoring pass
 
 Date: 9 October 2026. This is a **reference prototype plus native source foundation**, not a completed Windows application.

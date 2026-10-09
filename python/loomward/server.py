@@ -12,12 +12,14 @@ from .inventory import scan, features_for
 from .duplicates import find_duplicates
 from .learning import Student, DEFAULT_LABELS
 from .planner import plan_tiers
+from .planner_v2 import plan_tiers_v2
+from .scheduler import admit_workloads
 from .store import Store
 from .telemetry import Telemetry
 from .teacher import strict_json
 
 PROJECT = Path(__file__).resolve().parents[2]
-ASSETS = {'/': ('index.html', 'text/html; charset=utf-8'), '/app.js': ('app.js', 'text/javascript; charset=utf-8'),
+ASSETS = {'/expansion.js': ('expansion.js', 'text/javascript; charset=utf-8'), '/': ('index.html', 'text/html; charset=utf-8'), '/app.js': ('app.js', 'text/javascript; charset=utf-8'),
           '/styles.css': ('styles.css', 'text/css; charset=utf-8'), '/demo-data.js': ('demo-data.js', 'text/javascript; charset=utf-8')}
 MAX_BODY = 65536
 
@@ -129,6 +131,11 @@ class App:
                 else:
                     self.duplicates = find_duplicates(self.root, self.inventory, byte_budget=body.get('byte_budget', 256 * 1024**2))
                 return self.duplicates
+            if path == '/api/plan-v2':
+                self.last_plan = plan_tiers_v2(body, node_budget=5000)
+                return self.last_plan
+            if path == '/api/schedule':
+                return admit_workloads(body)
             if path == '/api/plan':
                 self.last_plan = plan_tiers(body)
                 return self.last_plan

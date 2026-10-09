@@ -1,0 +1,43 @@
+{
+  "schema_version": 2,
+  "status": "executable_reference_not_host_certified",
+  "transport": "stdio",
+  "versions": [
+    "2026-07-28",
+    "2025-11-25"
+  ],
+  "profiles": {
+    "summary": {
+      "tools": [
+        "workspace_summary",
+        "placement_simulate"
+      ],
+      "approve": false,
+      "execute": false
+    },
+    "names": {
+      "tools": [
+        "workspace_summary",
+        "catalog_search",
+        "evidence_explain",
+        "placement_simulate"
+      ],
+      "approve": false,
+      "execute": false
+    }
+  },
+  "resources": [
+    "loomward://reference/summary",
+    "loomward://reference/policy"
+  ],
+  "unsupported": [
+    "HTTP",
+    "sampling",
+    "elicitation",
+    "tasks",
+    "apps",
+    "scope_expansion",
+    "filesystem_content",
+    "provider_connection"
+  ]
+}

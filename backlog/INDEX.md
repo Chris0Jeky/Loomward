@@ -1,8 +1,8 @@
 # Implementation backlog
 
-64 import-ready, dependency-linked tasks. These are local LW identifiers, not existing GitHub issue numbers. All are planned continuation work; the current reference implementation is recorded separately. Read the linked issue for acceptance criteria and ownership.
+100 local, dependency-linked issue specifications: the original 64 plus 36 expansion tasks. These are **not remote GitHub issue numbers** and all remain planned production continuation. The runnable reference work is recorded separately in `docs/37-expansion-verification.md`.
 
-The first eight manifest entries follow the initial critical path: Windows reference validation, native build, fixture lab, object/volume identity, wire protocol, catalogue and bounded scanning. `scripts/publish_issues.py` is dry-run by default and imports at most eight unless explicitly asked for all.
+The first eight manifest entries preserve the original native critical path. Publishing helpers remain dry-run by default, at most eight unless explicitly expanded. `M1I` covers integration foundations, `M2I` advanced evidence/workload integration, and `MX` optional experiments; none bypass the original native safety milestones.
 
 | ID | Task | Milestone | Priority | Dependencies |
 |---|---|---|---|---|
@@ -70,3 +70,39 @@ The first eight manifest entries follow the initial critical path: Windows refer
 | [LW-061](issues/LW-061.md) | Add explicit developer-workspace providers | M5 | P1 | LW-010, LW-033, LW-047 |
 | [LW-062](issues/LW-062.md) | Run an observation-only personal field trial | M2 | P0 | LW-018, LW-027, LW-056 |
 | [LW-063](issues/LW-063.md) | Confirm name, licence and public repository governance | M1 | P0 | LW-001 |
+| [LW-065](issues/LW-065.md) | Run a real-host dual-era MCP compatibility matrix | M1I | P0 | LW-058 |
+| [LW-066](issues/LW-066.md) | Adopt a production MCP SDK behind the bounded ToolService | M1I | P1 | LW-065, LW-067 |
+| [LW-067](issues/LW-067.md) | Persist and revoke per-client disclosure grants | M1I | P0 | LW-017, LW-020 |
+| [LW-068](issues/LW-068.md) | Replace full-state explorer loads with paged reference views | M1I | P1 | LW-011 |
+| [LW-069](issues/LW-069.md) | Port scoped catalogue projections to the native query layer | M1I | P0 | LW-005, LW-011, LW-067, LW-068 |
+| [LW-070](issues/LW-070.md) | Represent group lineage and evidence in relational projections | M2I | P1 | LW-005, LW-010, LW-016 |
+| [LW-071](issues/LW-071.md) | Build an opt-in provider registry and descriptor validator | M1I | P0 | LW-017, LW-067 |
+| [LW-072](issues/LW-072.md) | Implement transactional provider inbox and outbox | M1I | P1 | LW-005, LW-016, LW-071 |
+| [LW-073](issues/LW-073.md) | Create the provider replay and contract conformance kit | M1I | P1 | LW-071, LW-072 |
+| [LW-074](issues/LW-074.md) | Add a read-only Estate Console host-summary adapter | M2I | P1 | LW-067, LW-073 |
+| [LW-075](issues/LW-075.md) | Prepare Taskdeck review proposals without approval authority | M2I | P1 | LW-067, LW-073, LW-088 |
+| [LW-076](issues/LW-076.md) | Import Agent Harness activity and worktree-lease evidence | M2I | P1 | LW-067, LW-073 |
+| [LW-077](issues/LW-077.md) | Connect admission decisions to Loomward-owned worker launch | M2I | P1 | LW-032, LW-052, LW-078 |
+| [LW-078](issues/LW-078.md) | Move resource leases into one authenticated native authority | M2I | P0 | LW-017, LW-050, LW-067 |
+| [LW-079](issues/LW-079.md) | Measure demand estimates against actual owned-worker usage | M2I | P1 | LW-050, LW-077 |
+| [LW-080](issues/LW-080.md) | Port the v2 allocation portfolio and oracle fixtures to Rust | M2I | P1 | LW-002, LW-030 |
+| [LW-081](issues/LW-081.md) | Improve large-instance allocation under explicit search budgets | M2I | P1 | LW-080, LW-056 |
+| [LW-082](issues/LW-082.md) | Add recall reservations and explicit active-work windows | M2I | P1 | LW-031, LW-078 |
+| [LW-083](issues/LW-083.md) | Validate dependency groups before placement proposals | M2I | P0 | LW-010, LW-033, LW-070 |
+| [LW-084](issues/LW-084.md) | Normalise backup evidence without equating success to recovery | M2I | P1 | LW-035, LW-036, LW-073 |
+| [LW-085](issues/LW-085.md) | Add creative-source and derivative manifests | M2I | P1 | LW-061, LW-070, LW-073 |
+| [LW-086](issues/LW-086.md) | Add a cooperative model-host lifecycle provider | M2I | P1 | LW-034, LW-073, LW-078 |
+| [LW-087](issues/LW-087.md) | Estimate regeneration cost for explicit build-cache providers | M2I | P1 | LW-048, LW-061, LW-073 |
+| [LW-088](issues/LW-088.md) | Persist decision notes with evidence-bound review history | M2I | P1 | LW-020, LW-038, LW-070 |
+| [LW-089](issues/LW-089.md) | Expose bounded MCP proposal preparation without approve/apply | M2I | P0 | LW-066, LW-067, LW-088 |
+| [LW-090](issues/LW-090.md) | Evaluate a read-only MCP Apps evidence view | MX | P1 | LW-065, LW-088 |
+| [LW-091](issues/LW-091.md) | Threat-model optional remote MCP transport and authentication | MX | P1 | LW-066, LW-067, LW-095 |
+| [LW-092](issues/LW-092.md) | Prototype conflict-aware preference sync only | MX | P1 | LW-021, LW-067, LW-070 |
+| [LW-093](issues/LW-093.md) | Measure information-value question selection | M2I | P1 | LW-025, LW-026 |
+| [LW-094](issues/LW-094.md) | Propagate feedback retraction through derived model state | M2I | P1 | LW-021, LW-027, LW-070 |
+| [LW-095](issues/LW-095.md) | Exercise provider isolation and diagnostic privacy failures | M1I | P0 | LW-055, LW-067, LW-073 |
+| [LW-096](issues/LW-096.md) | Verify all workbench states with keyboard, zoom and large data | M1I | P1 | LW-019, LW-068, LW-088 |
+| [LW-097](issues/LW-097.md) | Benchmark end-to-end resource and energy effects | M2I | P1 | LW-056, LW-077, LW-079 |
+| [LW-098](issues/LW-098.md) | Preserve disclosure suppression across views and exports | M1I | P0 | LW-020, LW-067, LW-069 |
+| [LW-099](issues/LW-099.md) | Cache extraction results under bounded invalidation and budgets | M2I | P1 | LW-014, LW-072, LW-078, LW-094 |
+| [LW-100](issues/LW-100.md) | Gate release claims against executable capability evidence | M2I | P0 | LW-057, LW-063, LW-065, LW-096, LW-097 |
