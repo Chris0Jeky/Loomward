@@ -126,6 +126,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "loomward-telemetry"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "windows-sys",
+]
+
+[[package]]
 name = "loomward-windows"
 version = "0.1.0"
 dependencies = [
