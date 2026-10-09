@@ -269,7 +269,9 @@ export function createSunburst(canvas, options = {}) {
     ctx.strokeStyle = palette.track; ctx.lineWidth = 1; ctx.stroke();
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.font = palette.fontCentre; ctx.fillStyle = palette.label;
-    let name = n.name; while (ctx.measureText(name).width > r0 * 1.6 && name.length > 3) name = name.slice(0, -2) + '…';
+    let name = n.kind === 'workspace' ? 'All volumes' : n.name;
+    if (ctx.measureText(name).width > r0 * 1.6) ctx.font = palette.fontLabel; // step down before truncating
+    while (ctx.measureText(name).width > r0 * 1.6 && name.length > 3) name = name.slice(0, -2) + '…';
     ctx.fillText(name, cx, cy - 9);
     ctx.font = palette.fontMono; ctx.fillStyle = palette.labelDim;
     ctx.fillText(fmt(sizeOf(n)), cx, cy + 10);

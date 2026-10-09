@@ -1,0 +1,77 @@
+{
+  "url_host": "127.0.0.1",
+  "screenshots": [
+    "evidence/v3/ui-prototype/atlas-1440.png",
+    "evidence/v3/ui-prototype/atlas-full-1440.png",
+    "evidence/v3/ui-prototype/atlas-drilled-1440.png",
+    "evidence/v3/ui-prototype/observatory-1440.png",
+    "evidence/v3/ui-prototype/observatory-zoomed-1440.png",
+    "evidence/v3/ui-prototype/atlas-390.png",
+    "evidence/v3/ui-prototype/atlas-drilled-390.png",
+    "evidence/v3/ui-prototype/observatory-390.png",
+    "evidence/v3/ui-prototype/observatory-zoomed-390.png"
+  ],
+  "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "treemap_benchmark_all_depths": {
+    "mean": 2.1341666666169963,
+    "p95": 2.5,
+    "max": 2.9000000059604645,
+    "cells": 1188,
+    "layoutMs": 3.2999999970197678,
+    "frames": 120,
+    "maxDepth": 99
+  },
+  "treemap_benchmark_50k_siblings": {
+    "mean": 4.685000000024835,
+    "p95": 5.200000002980232,
+    "max": 6,
+    "cells": 9901,
+    "layoutMs": 11.099999994039536,
+    "frames": 120,
+    "maxDepth": 3
+  },
+  "treemap_benchmark": {
+    "mean": 1.709999999900659,
+    "p95": 1.9000000059604645,
+    "max": 4.100000008940697,
+    "cells": 757,
+    "layoutMs": 3.2000000029802322,
+    "frames": 120,
+    "maxDepth": 3,
+    "nodes": 57529
+  },
+  "treemap_live": {
+    "cpu_mean": 0.43416666698952516,
+    "cpu_p95": 0.6000000089406967,
+    "frame_median": 16.69999999999891,
+    "frame_p95": 16.799999999999272,
+    "dropped": 0,
+    "frames": 119
+  },
+  "treemap_zoom_raf_ms": {
+    "frames": 43,
+    "median": 16.699999999999818,
+    "p95": 16.699999999999818,
+    "max": 16.799999999999272
+  },
+  "sunburst_benchmark": {
+    "mean": 8.326666666815678,
+    "p95": 9.300000011920929,
+    "arcs": 162
+  },
+  "sunburst_live_orbit": {
+    "cpu_mean": 0.9616666665921608,
+    "cpu_p95": 1.2000000029802322,
+    "frame_median": 16.700000000000728,
+    "frame_p95": 16.799999999999272,
+    "dropped": 0,
+    "frames": 119
+  },
+  "sunburst_benchmark_rebuild": {
+    "mean": 12.643333333233992,
+    "p95": 13.699999988079071,
+    "arcs": 162
+  },
+  "reduced_motion": "checked",
+  "failures": []
+}
