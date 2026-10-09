@@ -17,7 +17,7 @@ export interface Env {
   storedToken: string | null;
 }
 
-const LOOPBACK = /^http:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d{1,5})?$/;
+const LOOPBACK = /^http:\/\/(127\.0\.0\.1|localhost)(:\d{1,5})?$/;
 
 /** Token from `#token=...`, or null. The fragment never reaches a server. */
 export function tokenFromHash(hash: string): string | null {

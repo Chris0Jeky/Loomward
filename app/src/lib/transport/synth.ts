@@ -89,7 +89,7 @@ export function generateTree(count = 6000, seed = 1): SynthTree {
     if (nodes.length >= total) return;
     const dot = name.lastIndexOf('.');
     const ext = dot > 0 && name.length - dot <= 5 ? name.slice(dot + 1) : null;
-    add({ parent: alpha, kind: 'file', name: name.slice(0, 260), depth: 2, extension: ext, family: 'other', coverage: 'complete', modified: new Date(T0 + i * 86400000).toISOString() });
+    add({ parent: alpha, kind: 'file', name: name.slice(0, 260), depth: 2, extension: ext, family: 'other', logical: BigInt(900 + i * 37), allocated: 4096n, coverage: 'complete', modified: new Date(T0 + i * 86400000).toISOString() });
   });
 
   const queue: number[] = [...rootIndexes];
@@ -110,7 +110,7 @@ export function generateTree(count = 6000, seed = 1): SynthTree {
       } else {
         const [ext, family] = pick(EXTS);
         const logical = BigInt(Math.floor(10 ** (2 + rnd() * 7.3)));
-        const unknownAlloc = rnd() < 0.05;
+        const unknownAlloc = rnd() < 0.006;
         add({
           parent: dirIdx, kind: 'file', name: `${pick(WORDS)}-${nodes.length}.${ext}`, depth, extension: ext, family,
           logical, allocated: unknownAlloc ? null : ((logical + 4095n) / 4096n) * 4096n, coverage: 'complete', modified,

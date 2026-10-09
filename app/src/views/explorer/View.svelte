@@ -161,8 +161,8 @@
             <td>{r.kind}</td>
             <td class="r num">{formatBytes(r.logical_bytes)}</td>
             <td class="r num">{#if r.allocated_bytes === null}<span class="unknown">unknown</span>{:else}{formatBytes(r.allocated_bytes)}{/if}</td>
-            <td class="r num">{formatCount(r.files)}</td>
-            <td>{formatTime(r.modified_at)}</td>
+            <td class="r num">{r.kind === 'file' ? '–' : formatCount(r.files)}</td>
+            <td class="nowrap">{formatTime(r.modified_at)}</td>
             <td>
               {#if r.coverage !== 'complete'}<span class="tag warn">{r.coverage}</span>{/if}
               {#each r.flags as f (f)}<span class="tag">{f.replaceAll('_', ' ')}</span>{/each}

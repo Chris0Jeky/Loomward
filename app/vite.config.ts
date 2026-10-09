@@ -11,7 +11,7 @@ const csp = [
   "style-src 'self'",
   "img-src 'self' data:",
   "font-src 'self'",
-  "connect-src 'self' http://127.0.0.1:* http://localhost:* http://[::1]:* ipc: http://ipc.localhost",
+  "connect-src 'self' http://127.0.0.1:* http://localhost:* ipc: http://ipc.localhost",
   "base-uri 'none'",
   "form-action 'none'",
 ].join('; ');

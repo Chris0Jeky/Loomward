@@ -80,6 +80,8 @@ table.tbl { width: 100%; border-collapse: collapse; }
 .tbl th, .tbl td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
 .tbl th { color: var(--muted); font-weight: 600; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.06em; }
 .tbl td.r, .tbl th.r { text-align: right; }
+.tbl td.r, .tbl td.nowrap { white-space: nowrap; }
+.tbl td:first-child { min-width: 11rem; }
 .tbl bdi { overflow-wrap: anywhere; }
 
 .tag {
