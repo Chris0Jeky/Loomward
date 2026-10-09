@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/loomward-core", "crates/loomward-cli"]
+members = ["crates/*"]
 exclude = ["native"]
 resolver = "2"
 
