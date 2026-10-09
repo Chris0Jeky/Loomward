@@ -10,6 +10,8 @@ from .learning import validate_features, validate_labels
 
 MAX_RESPONSE_BYTES = 1024 * 1024
 
+MAX_NESTING_DEPTH = 32
+
 
 def validate_endpoint(endpoint: str) -> str:
     try:
@@ -88,14 +90,40 @@ def _unique_object(pairs):
     return result
 
 
+def _check_nesting_depth(value: Any) -> None:
+    stack = [(value, 0)]
+    while stack:
+        item, depth = stack.pop()
+        if isinstance(item, dict):
+            depth += 1
+            if depth > MAX_NESTING_DEPTH:
+                raise ValueError('Teacher response is too deeply nested')
+            stack.extend((child, depth) for child in item.values())
+        elif isinstance(item, list):
+            depth += 1
+            if depth > MAX_NESTING_DEPTH:
+                raise ValueError('Teacher response is too deeply nested')
+            stack.extend((child, depth) for child in item)
+
+
 def strict_json(text: str) -> Any:
     def reject_constant(value):
         raise ValueError(f'Non-finite JSON value: {value}')
-    return json.loads(text, object_pairs_hook=_unique_object, parse_constant=reject_constant)
+    try:
+        parsed = json.loads(text, object_pairs_hook=_unique_object, parse_constant=reject_constant)
+    except RecursionError as exc:
+        raise ValueError('Teacher response is too deeply nested') from exc
+    try:
+        _check_nesting_depth(parsed)
+    except RecursionError as exc:
+        raise ValueError('Teacher response is too deeply nested') from exc
+    return parsed
 
 
 def request_teacher(endpoint: str, model: str, item_id: str, features: dict[str, Any], labels: list[str],
                     *, consent_metadata: bool = False, timeout: float = 60) -> dict[str, Any]:
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0.1 <= timeout <= 120:
+        raise ValueError('timeout must be a number in [0.1, 120] seconds')
     if consent_metadata is not True:
         raise ValueError('Explicit metadata-sharing consent is required')
     endpoint = validate_endpoint(endpoint)
@@ -107,11 +135,17 @@ def request_teacher(endpoint: str, model: str, item_id: str, features: dict[str,
         raw = response.read(MAX_RESPONSE_BYTES + 1)
     if len(raw) > MAX_RESPONSE_BYTES:
         raise ValueError('Teacher response exceeded the response budget')
-    envelope = strict_json(raw.decode('utf-8'))
+    try:
+        envelope = strict_json(raw.decode('utf-8'))
+    except RecursionError as exc:
+        raise ValueError('Teacher response is too deeply nested') from exc
     try:
         content = envelope['choices'][0]['message']['content']
     except (KeyError, IndexError, TypeError) as exc:
         raise ValueError('Malformed teacher response envelope') from exc
     if not isinstance(content, str) or len(content) > 16_384:
         raise ValueError('Malformed teacher content')
-    return validate_teacher(strict_json(content), item_id, labels)
+    try:
+        return validate_teacher(strict_json(content), item_id, labels)
+    except RecursionError as exc:
+        raise ValueError('Teacher response is too deeply nested') from exc
