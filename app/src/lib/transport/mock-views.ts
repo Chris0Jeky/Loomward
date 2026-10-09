@@ -143,9 +143,12 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
         heat = Math.max(0, Math.min(1, 1 - age / 365)); basis = 'mtime_proxy';
       }
       if (basis === 'mtime_proxy' && !assumptions.some((a) => a.startsWith('mtime proxy'))) assumptions.push('mtime proxy: modification age stands in for heat. It is not access heat.');
-      const pinned = ov && ov.pinned !== undefined ? ov.pinned : g.pinned;
+      const pinned = ov?.pinned !== undefined ? ov.pinned : g.pinned;
+      const active = ov?.active !== undefined ? ov.active : g.active;
+      const prot = ov?.protected !== undefined ? ov.protected : g.protected;
+      if (ov && (ov.pinned !== undefined || ov.active !== undefined || ov.protected !== undefined)) assumptions.push(`${g.name}: pinned ${pinned}, active ${active}, protected ${prot} by the owner's assumption.`);
       let reason: RejectReason | null = null;
-      if (pinned !== false || g.active !== false || g.protected !== false) reason = 'pinned_active_protected_or_unspecified';
+      if (pinned !== false || active !== false || prot !== false) reason = 'pinned_active_protected_or_unspecified';
       else if (heat === null) reason = 'heat_unknown';
       else if (heat > 0.25) reason = 'not_cold';
       else if (g.days === null || g.days < 7) reason = 'cooldown_or_history_unknown';
