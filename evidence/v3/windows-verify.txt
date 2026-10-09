@@ -1,0 +1,71 @@
+# py -3 scripts/verify.py --ui
+# host: DESKTOP-IHKOOJS, Windows 11 Pro 10.0.26300, non-elevated
+# Python 3.14.3, v24.13.1, cargo 1.97.1 (c980f4866 2026-06-30), rustc 1.97.1 (8bab26f4f 2026-07-14)
+# head: 78def8c9f51d0cb1481fa9467da4a746a8ba22c6 (integrate/v2-bundle)
+# date: 2026-10-09T19:14:09Z
+
+
+RUN Python suite
+...............................................................s.........................................................................................................................
+----------------------------------------------------------------------
+Ran 185 tests in 18.870s
+
+OK (skipped=1)
+PASS Python suite
+
+RUN JavaScript app syntax
+PASS JavaScript app syntax
+
+RUN JavaScript expansion syntax
+PASS JavaScript expansion syntax
+
+RUN JavaScript boundary and Python parity fixtures
+PASS 9 JS boundary assertions and 80 cross-language admission fixtures
+PASS JavaScript boundary and Python parity fixtures
+
+RUN Rust format
+PASS Rust format
+
+RUN Rust unit tests
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src\main.rs (target\debug\deps\loomward_native-3fbb3d220c5a77b1.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\deps\loomward_core-f07b40a580443a51.exe)
+
+running 19 tests
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests loomward_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+PASS Rust unit tests
+
+RUN Rust lint
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.13s
+PASS Rust lint
+
+RUN Chromium bridged-UI integration
+PASS live connection
+PASS refresh preserves runtime
+PASS persistent feedback and retraining
+PASS non-executable tier plan
+PASS search
+PASS duplicate review
+PASS all navigation pages
+PASS decision choices are review notes, not approval
+PASS MCP request builder requires disclosure and sends nothing
+PASS live vector admission simulation and visible refusal
+PASS hostile import rejected
+PASS file names rendered as text
+PASS mobile viewport width
+PASS no browser exceptions
+PASS Chromium bridged-UI integration
+verify_exit=0

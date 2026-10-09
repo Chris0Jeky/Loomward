@@ -27,6 +27,10 @@ The MCP tests include actual stdin/stdout subprocess exchanges using both protoc
 
 Use `evidence/v2/final-suite.txt`, `ui-final.txt`, `standalone-checks.json`, `benchmarks.json` and `verification-summary.json` for final receipts. Earlier red/green logs remain so the test-first history and corrected defects are visible. A previous suite surfaced an unclosed SQLite connection in an original test fixture; the fixture now explicitly closes it. The application Store already closed its own connections.
 
+## Addendum: first Windows and native run (9 October 2026, post-import)
+
+The bundle was merged onto the public `main` and run on Windows 11 for the first time (`evidence/v3/`). The Python suite failed 3 of 184 tests: Windows `DirEntry.stat()` reports inode, device and link count as 0, so every scanned file looked hard-linked and duplicate inspection skipped it. The scanner now re-stats regular files on Windows and the stability signature uses birth time there. The Rust workspace compiled at the first attempt and 19 of its 20 written tests ran and passed (one is Unix-only); rustfmt and one clippy finding were fixed and `Cargo.lock` was committed. After the fixes: 185 Python tests (1 legitimate symlink-privilege skip), both JavaScript checks, 9 boundary assertions, 80 parity fixtures, rustfmt, 19 Rust tests, clippy and 14 bridged Chromium checks pass. This closes the reproduction half of LW-001 and the compile half of LW-002; WebView2, the Tauri shell and Windows CI remain open.
+
 ## Experiments
 
 The allocation experiment repeats the original seed and 51 tiny scenarios. The old baseline misses nine feasible targets and has positive shortfall regret in 24 cases. The new search has zero of each, all searches complete, and no checked transfer/reserve violations. The claim is scoped to the supplied disjoint-group model, not real filesystem safety or workload forecasting.
