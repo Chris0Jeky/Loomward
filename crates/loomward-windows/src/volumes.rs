@@ -99,8 +99,10 @@ mod native {
     struct Search(HANDLE);
     impl Drop for Search {
         fn drop(&mut self) {
-            unsafe {
-                FindVolumeClose(self.0);
+            if self.0 != INVALID_HANDLE_VALUE {
+                unsafe {
+                    FindVolumeClose(self.0);
+                }
             }
         }
     }

@@ -246,8 +246,10 @@ fn check_streams(path: &Path, listed: &HashSet<PathBuf>) -> io::Result<()> {
     struct Search(HANDLE);
     impl Drop for Search {
         fn drop(&mut self) {
-            unsafe {
-                FindClose(self.0);
+            if self.0 != INVALID_HANDLE_VALUE {
+                unsafe {
+                    FindClose(self.0);
+                }
             }
         }
     }
