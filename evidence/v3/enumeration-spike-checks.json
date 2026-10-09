@@ -1,0 +1,157 @@
+{
+  "platform": "Windows 11, NTFS, non-elevated",
+  "cases": [
+    {
+      "case": "dev-std-single",
+      "passed": true,
+      "observed": {
+        "files": 257,
+        "directories": 44,
+        "logical_bytes": 2081936,
+        "skipped_reparse": 0
+      }
+    },
+    {
+      "case": "dev-std-parallel",
+      "passed": true,
+      "observed": {
+        "files": 257,
+        "directories": 44,
+        "logical_bytes": 2081936,
+        "skipped_reparse": 0
+      }
+    },
+    {
+      "case": "dev-find",
+      "passed": true,
+      "observed": {
+        "files": 257,
+        "directories": 44,
+        "logical_bytes": 2081936,
+        "skipped_reparse": 0
+      }
+    },
+    {
+      "case": "dev-handle",
+      "passed": true,
+      "observed": {
+        "files": 257,
+        "directories": 44,
+        "logical_bytes": 2081936,
+        "skipped_reparse": 0
+      }
+    },
+    {
+      "case": "media-std-single",
+      "passed": true,
+      "observed": {
+        "files": 257,
+        "directories": 42,
+        "logical_bytes": 2200096997376,
+        "skipped_reparse": 0
+      }
+    },
+    {
+      "case": "media-std-parallel",
+      "passed": true,
+      "observed": {
+        "files": 257,
+        "directories": 42,
+        "logical_bytes": 2200096997376,
+        "skipped_reparse": 0
+      }
+    },
+    {
+      "case": "media-find",
+      "passed": true,
+      "observed": {
+        "files": 257,
+        "directories": 42,
+        "logical_bytes": 2200096997376,
+        "skipped_reparse": 0
+      }
+    },
+    {
+      "case": "media-handle",
+      "passed": true,
+      "observed": {
+        "files": 257,
+        "directories": 42,
+        "logical_bytes": 2200096997376,
+        "skipped_reparse": 0
+      }
+    },
+    {
+      "case": "mixed-std-single",
+      "passed": true,
+      "observed": {
+        "files": 257,
+        "directories": 41,
+        "logical_bytes": 19296309352,
+        "skipped_reparse": 0
+      }
+    },
+    {
+      "case": "mixed-std-parallel",
+      "passed": true,
+      "observed": {
+        "files": 257,
+        "directories": 41,
+        "logical_bytes": 19296309352,
+        "skipped_reparse": 0
+      }
+    },
+    {
+      "case": "mixed-find",
+      "passed": true,
+      "observed": {
+        "files": 257,
+        "directories": 41,
+        "logical_bytes": 19296309352,
+        "skipped_reparse": 0
+      }
+    },
+    {
+      "case": "mixed-handle",
+      "passed": true,
+      "observed": {
+        "files": 257,
+        "directories": 41,
+        "logical_bytes": 19296309352,
+        "skipped_reparse": 0
+      }
+    },
+    {
+      "case": "buffer-pagination-4KiB-workers-1-2-32",
+      "passed": true
+    },
+    {
+      "case": "foreign-marker-refused-without-deletion",
+      "passed": true
+    },
+    {
+      "case": "corrupted-manifest-refused",
+      "passed": true
+    },
+    {
+      "case": "all-walkers-skip-junction-cleanup-refuses-reparse",
+      "passed": true
+    },
+    {
+      "case": "reparse-root-refused",
+      "passed": true
+    },
+    {
+      "case": "missing-marker-refused",
+      "passed": true
+    },
+    {
+      "case": "out-of-scope-destroy-refused",
+      "passed": true
+    },
+    {
+      "case": "marked-long-path-cleanup-control",
+      "passed": true
+    }
+  ]
+}
