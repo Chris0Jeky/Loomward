@@ -7,6 +7,7 @@
 //! re-validates scope, grants and bounds.
 
 pub mod command;
+pub mod dto;
 pub mod envelope;
 pub mod error;
 pub mod event;
@@ -14,8 +15,10 @@ pub mod service;
 pub mod types;
 
 pub use command::Command;
+pub use dto::*;
 pub use envelope::{
-    Payload, RequestEnvelope, ResponseEnvelope, ResponseError, ResponseMeta, ResponseOk,
+    decode_exact, Payload, RequestEnvelope, ResponseEnvelope, ResponseError, ResponseMeta,
+    ResponseOk,
 };
 pub use error::{ErrorBody, ErrorCode};
 pub use event::{EventEnvelope, EventName};

@@ -46,11 +46,52 @@ impl RequestEnvelope {
         }
     }
 
-    /// Decodes the payload into the command's DTO. Unknown or malformed fields become an
-    /// `invalid_request` error body, ready to put in a response.
-    pub fn decode_payload<T: DeserializeOwned>(&self) -> Result<T, ErrorBody> {
-        serde_json::from_value(Value::Object(self.payload.clone()))
-            .map_err(|e| ErrorBody::invalid_request(&e.to_string()))
+    /// Decodes the payload into the command's DTO (strictly, see [`decode_exact`]). Unknown or
+    /// malformed fields become an `invalid_request` error body, ready to put in a response.
+    pub fn decode_payload<T: DeserializeOwned + Serialize>(&self) -> Result<T, ErrorBody> {
+        decode_exact(Value::Object(self.payload.clone()))
+    }
+
+    /// Parses the raw bytes of a call. Anything that is not exactly a request envelope is an
+    /// `invalid_request` error body.
+    pub fn from_slice(bytes: &[u8]) -> Result<Self, ErrorBody> {
+        let value: Value = serde_json::from_slice(bytes)
+            .map_err(|e| ErrorBody::invalid_request(&e.to_string()))?;
+        decode_exact(value)
+    }
+}
+
+/// Deserialises `value` as `T` and refuses anything the contract would not itself produce.
+///
+/// Serde-derived structs also accept a JSON array as a positional tuple, which the schema forbids;
+/// requiring the decoded value to serialise back to the input (numbers compared by value, so
+/// `1` and `1.0` agree) closes that and any similar leniency. Every adapter decodes through here.
+pub fn decode_exact<T: DeserializeOwned + Serialize>(value: Value) -> Result<T, ErrorBody> {
+    let decoded: T = serde_json::from_value(value.clone())
+        .map_err(|e| ErrorBody::invalid_request(&e.to_string()))?;
+    let canonical =
+        serde_json::to_value(&decoded).map_err(|e| ErrorBody::invalid_request(&e.to_string()))?;
+    if same_json(&canonical, &value) {
+        Ok(decoded)
+    } else {
+        Err(ErrorBody::invalid_request(
+            "value is not in the contract's canonical shape",
+        ))
+    }
+}
+
+fn same_json(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => x == y || x.as_f64() == y.as_f64(),
+        (Value::Array(x), Value::Array(y)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(p, q)| same_json(p, q))
+        }
+        (Value::Object(x), Value::Object(y)) => {
+            x.len() == y.len()
+                && x.iter()
+                    .all(|(k, v)| y.get(k).is_some_and(|w| same_json(v, w)))
+        }
+        _ => a == b,
     }
 }
 

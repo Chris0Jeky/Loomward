@@ -705,21 +705,21 @@ macro_rules! const_str {
         impl $name {
             pub const VALUE: &'static str = $lit;
         }
-        impl Serialize for $name {
-            fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        impl ::serde::Serialize for $name {
+            fn serialize<S: ::serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
                 s.serialize_str($lit)
             }
         }
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        impl<'de> ::serde::Deserialize<'de> for $name {
+            fn deserialize<D: ::serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
                 struct V;
-                impl Visitor<'_> for V {
+                impl ::serde::de::Visitor<'_> for V {
                     type Value = ();
-                    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    fn expecting(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
                         f.write_str(concat!("the constant \"", $lit, "\""))
                     }
-                    fn visit_str<E: de::Error>(self, v: &str) -> Result<(), E> {
-                        if v == $lit { Ok(()) } else { Err(E::invalid_value(de::Unexpected::Str(v), &self)) }
+                    fn visit_str<E: ::serde::de::Error>(self, v: &str) -> Result<(), E> {
+                        if v == $lit { Ok(()) } else { Err(E::invalid_value(::serde::de::Unexpected::Str(v), &self)) }
                     }
                 }
                 d.deserialize_str(V).map(|()| $name)
@@ -967,3 +967,8 @@ impl<'de, K: Ord + Deserialize<'de>, V: Deserialize<'de>, const MAX: usize> Dese
 
 /// A free-form JSON object with at most 16 properties (`ErrorBody.detail`).
 pub type Detail = BoundedMap<String, serde_json::Value, 16>;
+
+/// A type with no values: the element of an array that must stay empty
+/// (`ProcessExplanation.available_actions`, invariant 1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Never {}

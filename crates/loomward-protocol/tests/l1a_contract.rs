@@ -249,7 +249,7 @@ fn non_object_result_becomes_internal_error() {
 
 #[test]
 fn payload_decoding_reports_invalid_request() {
-    #[derive(Debug, serde::Deserialize)]
+    #[derive(Debug, serde::Deserialize, serde::Serialize)]
     #[serde(deny_unknown_fields)]
     struct One {
         #[allow(dead_code)]
@@ -333,4 +333,24 @@ fn trait_is_object_safe_and_usable() {
     let resp = svc.call(req, &CallContext::http());
     assert!(resp.is_ok());
     let _ = svc.subscribe(None);
+}
+
+#[test]
+fn strict_decode_refuses_positional_arrays_and_accepts_integral_floats() {
+    // serde would read this as a tuple struct; the contract only knows objects.
+    assert_eq!(
+        RequestEnvelope::from_slice(br#"["loomward/3","r_1","a.b",{}]"#)
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidRequest
+    );
+    let ok = RequestEnvelope::from_slice(br#"{"protocol":"loomward/3","request_id":"r_1","command":"tree.slice","payload":{"min_share":1}}"#).unwrap();
+    // `1` where the DTO holds an f64 re-serialises as 1.0: equal by value, so accepted.
+    let frac: Fraction = serde_json::from_value(json!(1)).unwrap();
+    assert_eq!(decode_exact::<Fraction>(json!(1)).unwrap(), frac);
+    assert_eq!(ok.command.as_str(), "tree.slice");
+    assert_eq!(
+        RequestEnvelope::from_slice(b"{not json").unwrap_err().code,
+        ErrorCode::InvalidRequest
+    );
 }
