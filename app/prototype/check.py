@@ -160,6 +160,87 @@ def run() -> int:
                 if bench["p95"] > 16.7:
                     failures.append(f"treemap p95 frame {bench['p95']:.2f} ms exceeds 16.7 ms")
 
+            # --- review fixes: denied folders, reveal target, focus restoration, basis keys ---
+            if label == "1440":
+                denied = page.evaluate("""() => {
+                  const lw = window.loomward, all = [...lw.ws.byId.values()];
+                  const d = all.find((n) => n.denied);
+                  lw.inspect(d); const own = document.getElementById('inspector').innerText;
+                  lw.inspect(d.parent); const parent = document.getElementById('inspector').innerText;
+                  lw.inspect(lw.ws.root);
+                  return { own, parent };
+                }""")
+                if "access denied" not in denied["own"] or " 0 files" in denied["own"]:
+                    failures.append(f"denied folder not shown as denied: {denied['own'][:200]!r}")
+                if "at least" not in denied["parent"] or "denied access" not in denied["parent"]:
+                    failures.append(f"parent of a denied folder claims an exact count: {denied['parent'][:200]!r}")
+                row = page.locator("#review-list li", has_text="render-farm-2023")
+                row.get_by_role("button", name="Show in map").click()
+                wait_idle(page)
+                if crumbs(page)[-1].strip() != "render-farm-2023":
+                    failures.append(f"Show in map on a folder landed on {crumbs(page)[-1]!r}")
+                page.locator("#crumbs button").first.click()
+                wait_idle(page)
+                accept = page.locator('#review-list [data-key="rq-0-accept"]')
+                accept.focus()
+                page.keyboard.press("Enter")
+                if page.evaluate("document.activeElement?.dataset.key") != "rq-0-undo":
+                    failures.append("focus lost after accepting a label")
+                page.keyboard.press("Enter")
+                if page.evaluate("document.activeElement?.closest('[data-row]')?.dataset.row") != "0":
+                    failures.append("focus lost after undo")
+                page.locator('[data-key="tier-toggle"]').focus()
+                page.keyboard.press("Enter")
+                if page.evaluate("document.activeElement?.dataset.key") != "tier-toggle":
+                    failures.append("focus lost after toggling the tier comparison")
+                page.keyboard.press("Enter")
+                page.locator('.basis [aria-checked="true"]').focus()
+                page.keyboard.press("ArrowRight")
+                if page.locator('.basis [aria-checked="true"]').get_attribute("data-basis") != "alloc":
+                    failures.append("basis radiogroup ignores arrow keys")
+                page.keyboard.press("ArrowLeft")
+
+                # --- hostile names render as text: no new elements, no errors ---
+                hostile = "<img src=x onerror=alert(1)>"
+                rtl = "\u202Eexe.gpj" + "\u05E9\u05DC\u05D5\u05DD\u200B\u200D" * 24 + "\u200F"
+                imgs_before = page.evaluate("document.querySelectorAll('img, script:not([src]), iframe').length")
+                page.evaluate("""([hostile, rtl]) => {
+                  const lw = window.loomward, C = lw.ws.root.children[0];
+                  const mk = (name, parent, size, dir) => ({ id: 'probe-' + name.length, name, kind: dir ? 'dir' : 'file', depth: parent.depth + 1, parent, size, alloc: size,
+                    meaning: 'downloads', residency: 'c', permission: 'none', children: dir ? [] : null, collections: [hostile], unknowns: [hostile], unmeasured: 0, deniedBelow: 0, files: dir ? 2 : 1 });
+                  const d = mk(hostile, C, 3e9, true);
+                  d.children.push(mk(hostile + '.txt', d, 2e9), mk(rtl, d, 1e9));
+                  C.children.push(d); window.__probe = d;
+                  lw.orbit.setRoot(lw.ws.root);
+                  lw.atlas.focus(d, { animate: false });
+                }""", [hostile, rtl])
+                wait_idle(page, 300)
+                page.locator("#atlas-canvas").focus()
+                page.keyboard.press("Home")
+                name1 = page.locator("#insp-name").text_content()
+                page.keyboard.press("ArrowRight")
+                name2 = page.locator("#insp-name").text_content()
+                cb = page.locator("#atlas-canvas").bounding_box()
+                page.mouse.move(cb["x"] + cb["width"] * 0.3, cb["y"] + cb["height"] * 0.5)
+                wait_idle(page, 200)
+                tip_text = page.locator("#tip").text_content()
+                last_crumb = crumbs(page)[-1].strip()
+                page.evaluate("() => { window.loomward.setMode('observatory', { transition: false }); window.loomward.orbit.focus(window.__probe); }")
+                wait_idle(page, 900)
+                page.evaluate("""() => {
+                  const lw = window.loomward, C = lw.ws.root.children[0];
+                  lw.setMode('atlas', { transition: false });
+                  C.children.splice(C.children.indexOf(window.__probe), 1); delete window.__probe;
+                  lw.orbit.setRoot(lw.ws.root); lw.atlas.focus(lw.ws.root, { animate: false });
+                }""")
+                wait_idle(page, 300)
+                imgs_after = page.evaluate("document.querySelectorAll('img, script:not([src]), iframe').length")
+                if imgs_after != imgs_before:
+                    failures.append(f"hostile name created elements: {imgs_before} -> {imgs_after}")
+                if name1 != hostile + ".txt" or name2 != rtl or hostile not in tip_text or last_crumb != hostile:
+                    failures.append(f"hostile names not rendered verbatim as text: {name1!r} {name2!r} {tip_text!r} {last_crumb!r}")
+                results["hostile_name_probe"] = "passed" if imgs_after == imgs_before else "failed"
+
             # --- observatory ---
             page.locator('.mode-switch [data-mode="observatory"]').click()
             wait_idle(page, 1200)
