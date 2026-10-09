@@ -187,7 +187,7 @@
 </section>
 
 <section class="panel" aria-labelledby="h-cand">
-  <h2 id="h-cand">Candidate groups{#if src} on <VisibleName name={src.display_name} />{/if}</h2>
+  <h2 id="h-cand">Candidate groups {#if src}on <VisibleName name={src.display_name} />{/if}</h2>
   {#if cands}
     <p class="muted small">{cands.note}</p>
     <div class="tbl-wrap">
@@ -311,7 +311,7 @@
     <h3>Projected free space</h3>
     <ul class="list">
       {#each Object.entries(p.projected_free_bytes) as [id, bytes] (id)}
-        <li><VisibleName name={vname(id)} />: <span class="num">{formatBytes(volume(id)?.free_bytes)}</span> now, <span class="num">{formatBytes(bytes)}</span> in this simulation</li>
+        <li><VisibleName name={vname(id)} /> · <span class="num">{formatBytes(volume(id)?.free_bytes)}</span> now, <span class="num">{formatBytes(bytes)}</span> in this simulation</li>
       {/each}
     </ul>
 
@@ -344,7 +344,7 @@
     {/if}
     {#if p.excluded_volumes.length}
       <h3>Left out of the plan</h3>
-      <ul class="list">{#each p.excluded_volumes as x (x.volume_id)}<li><VisibleName name={vname(x.volume_id)} />: {EXCLUDED[x.reason]}</li>{/each}</ul>
+      <ul class="list">{#each p.excluded_volumes as x (x.volume_id)}<li><VisibleName name={vname(x.volume_id)} /> · {EXCLUDED[x.reason]}</li>{/each}</ul>
     {/if}
     <h3>Assumptions</h3>
     <ul class="list">

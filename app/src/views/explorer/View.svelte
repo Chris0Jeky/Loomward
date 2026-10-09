@@ -167,7 +167,7 @@
     <label class="field"><span class="sr-only">Size</span>
       <select bind:value={minBytes}>{#each SIZES as [label, v] (label)}<option value={v}>{label}</option>{/each}</select>
     </label>
-    <button class="btn" type="submit" disabled={busy || (!query.trim() && !extension.trim())}>Search</button>
+    <button class="btn" type="submit" disabled={!query.trim() && !extension.trim()}>Search</button>
     {#if searching}<button class="btn" type="button" onclick={clearSearch}>Clear search</button>{/if}
   </form>
 
@@ -193,7 +193,7 @@
   {/if}
 
   {#if searching}
-    <p class="crumbs">Search results{#if query.trim()} for <q><VisibleName name={query.trim()} /></q>{/if}</p>
+    <p class="where">Search results {#if query.trim()}for <q><VisibleName name={query.trim()} /></q>{/if}</p>
   {:else}
     <nav class="crumbs" aria-label="Location">
       {#each trail as c, i (c.id)}
@@ -260,6 +260,7 @@
   .grow { flex: 1 1 14rem; }
   .grow input { width: 100%; }
   .starts { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .where { margin: 0 0 8px; }
   .crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 0 0 8px; }
   .crumb { font: inherit; color: var(--accent); background: none; border: 0; padding: 0 2px; cursor: pointer; text-align: left; overflow-wrap: anywhere; }
   .crumb[aria-current='location'] { color: var(--text); cursor: default; }
