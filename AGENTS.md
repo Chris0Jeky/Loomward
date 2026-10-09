@@ -96,6 +96,20 @@ disable, skip or weaken a failing test to advance a milestone.
    never claim native compilation, backup verification, memory optimisation, learned heat, live
    disk balancing or safe deletion without that capability's own gate evidence.
 
+## Working the product (after unbundling)
+
+- Before editing, read `handoff/START-HERE.md`, `handoff/CHECKPOINT.json`,
+  `docs/23-expansion-overview.md`, `docs/37-expansion-verification.md`, the relevant spec and the
+  assigned `LW-*` issue. Product facts there are current until live evidence says otherwise.
+- One bounded issue at a time: regression test first, then the change, then the full applicable
+  suite. Update the status and checkpoint files (`docs/16-implementation-status.md`,
+  `handoff/CHECKPOINT.json`) without erasing history.
+- Parallel lanes follow the ownership in `docs/40-parallel-work-packs.md`; shared schemas,
+  protocol, routes and dependencies have one named owner per wave. Provider, event and proposal
+  schemas marked design-only stay design-only until their issue lands.
+- First native host: review the generated `Cargo.lock` and establish Windows CI.
+- Reports name the exact tests, the platform, what stayed unverified, and any external action.
+
 ## Agent roles
 
 - The session driver plans, reviews and merges within the tier gate. Peer workers (Codex/Sol,
