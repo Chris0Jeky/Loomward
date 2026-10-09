@@ -37,7 +37,14 @@
       total = page.total;
       next = page.next_cursor;
     } catch (e) {
-      if (mine === ticket) error = session.handle(e);
+      if (mine !== ticket) return;
+      error = session.handle(e);
+      if (!append) {
+        // A failed refresh must not leave invalidated rows on screen as if they were current.
+        rows = [];
+        total = null;
+        next = null;
+      }
     } finally {
       if (mine === ticket) busy = false;
     }
