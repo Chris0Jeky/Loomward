@@ -141,7 +141,8 @@ export function createWovenTreemap(canvas, options) {
       const x = c.x + g, y = c.y + g, w = c.w - 2 * g, h = c.h - 2 * g;
       if (w <= 0.3 || h <= 0.3) continue;
       const v = c.node, src = v.src;
-      if (v.synthetic === 'fold') fold.rect(x, y, w, h);
+      const folded = v.synthetic === 'fold' || src?.kind === 'other'; // the client's fold and the engine's 'other' look alike
+      if (folded) fold.rect(x, y, w, h);
       else if (v.synthetic === 'remainder') rest.rect(x, y, w, h);
       else if (!c.leaf) {
         frames.rect(x, y, w, h);
@@ -179,7 +180,7 @@ export function createWovenTreemap(canvas, options) {
       }
       // labels
       const size = fmt(v.size);
-      if (v.synthetic === 'fold') {
+      if (folded) {
         if (w > 70 && h > 22) labels.push({ cell: c, x, y, w, h, kind: 'fold', name: `${v.folded.toLocaleString('en-GB')} smaller`, size, note: '', text: null, sizeText: null });
       } else if (v.synthetic === 'remainder') {
         if (w > 70 && h > 26) labels.push({ cell: c, x, y, w, h, kind: 'rest', name: v.name, size, note: '', text: null, sizeText: null });
@@ -305,6 +306,8 @@ export function createWovenTreemap(canvas, options) {
     gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(1, 'rgba(0,0,0,.36)');
     ctx.fillStyle = gr; ctx.fillRect(0, 0, W, H);
     if (view.provisional) {
+      // a dashed brass frame plus words: live sums must never pass for committed ones
+      ctx.save(); ctx.strokeStyle = palette.permission; ctx.lineWidth = 1.5; ctx.setLineDash([6, 5]); ctx.strokeRect(1, 1, W - 2, H - 2); ctx.restore();
       const text = 'Provisional: sums from a running scan';
       ctx.font = palette.fontSmall;
       const tw = ctx.measureText(text).width;

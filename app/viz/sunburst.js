@@ -163,7 +163,7 @@ export function createSunburst(canvas, options) {
     const stitches = new Map();
     for (const a of arcs) {
       const src = a.n.src;
-      if (!src) { arcPath(rest, a); continue; }
+      if (!src || src.kind === 'other') { arcPath(rest, a); continue; } // unlisted or engine-folded bytes: hatched
       const warp = warpOf(src.threads.meaning, palette, show.meaning);
       let p = byWarp.get(warp.colour);
       if (!p) { p = new Path2D(); byWarp.set(warp.colour, p); }

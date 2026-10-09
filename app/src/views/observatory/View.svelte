@@ -239,7 +239,7 @@
 <style>
   .top { display: flex; align-items: baseline; gap: 12px 18px; flex-wrap: wrap; }
   h1 { margin: 0; }
-  .crumbs { flex: 1; min-width: 0; }
+  .crumbs { flex: 1 1 12rem; min-width: 0; }
   .crumbs ol { list-style: none; display: flex; flex-wrap: wrap; gap: 2px; margin: 0; padding: 0; }
   .crumbs li + li::before { content: '/'; margin: 0 8px; color: var(--faint); }
   .crumb { font: 500 0.95rem/1.3 var(--num-font); color: var(--muted); background: none; border: 0; padding: 2px; cursor: pointer; overflow-wrap: anywhere; text-align: left; }
@@ -268,7 +268,7 @@
   figcaption { font-size: 0.78rem; color: var(--muted); }
   figure canvas { width: 100%; height: 86px; display: block; }
   .disks { display: grid; gap: 4px; margin: 10px 0; }
-  .disk { display: grid; grid-template-columns: 26px minmax(0, 1fr) 150px; gap: 8px; align-items: center; }
+  .disk { display: grid; grid-template-columns: 26px minmax(60px, 1fr) auto; gap: 8px; align-items: center; }
   .dl { font-size: 0.8rem; color: var(--muted); }
   .disk canvas { width: 100%; height: 24px; display: block; }
   .dv { font-size: 0.75rem; color: var(--muted); text-align: right; white-space: nowrap; }
