@@ -5,6 +5,10 @@ personal-data use and ADR-V3-17 also wait on owner answers (doc 41 section 18). 
 supersede, [17](17-adrs.md) and [39](39-architecture-decisions-v2.md). Each says whether it accepts or overturns a
 driver default from the v0.3 brief. "Two-way" means cheap to undo; "one-way" means costly.
 
+**Revision 2 (after the cross-vendor review on PR #110).** ADR-V3-05, 06, 07, 10, 13, 15 and 16 carry an
+"Amended" paragraph saying what changed and why; ADR-V3-18 to 22 are new. The per-finding disposition is in
+doc 41 section 20.
+
 ## ADR-V3-01: Embed the engine in the shell process; keep the service boundary a trait
 
 **Context.** Doc 04's target process table separates shell and catalogue engine; LW-017 plans an authenticated
@@ -24,7 +28,8 @@ reference, not the performance architecture (doc 25).
 **Context.** The driver proposed `loomward-windows`, `loomward-catalog`, an engine/service layer and an API
 adapter. The backlog names `loomward-catalogue`, `loomward-protocol` and `loomward-service`. Eight lanes will
 add crates in parallel.
-**Decision.** Crates: `loomward-core` (exists), `loomward-windows`, `loomward-lab`, `loomward-catalog` (the
+**Decision.** Crates: `loomward-core` (exists), `loomward-windows`, `loomward-telemetry` (added by the
+coordinator in #109 for read-only sampling), `loomward-lab`, `loomward-catalog` (the
 driver's spelling; backlog paths `loomward-catalogue/...` map to it), `loomward-learn`, `loomward-engine`,
 `loomward-protocol`, `loomward-service`, `loomward-http`; `native/` stays outside the workspace. Root
 `Cargo.toml` uses `members = ["crates/*"]`; the coordinator pre-declares approved dependencies in
@@ -84,6 +89,14 @@ elevation. Bad: slower than MFT readers; claims are limited to measured comparis
 kept for CI only, no file IDs. `FindFirstFileExW` everywhere: rejected as default, no file IDs.
 **Reversibility.** Two-way per volume. Review on the LW-101 result (another strategy 20% faster with equal
 information) or if an owner decision ever permits an elevated helper.
+**Amended (review findings 2, 3, 20).** The fallback is now a capability chain: extended 128-bit IDs, then
+`FileIdBothDirectoryInfo` (64-bit, width preserved, no reparse tag), then `FindFirstFileExW` (no ID). Revision 1
+required matching a listed ID that the fallback cannot supply; now child directories are opened **relative to the
+parent handle** (`NtCreateFile` with `RootDirectory`) and validated **after opening** (attributes, reparse tag,
+`FileIdInfo`) before listing, with an explicit policy for absent IDs. Reparse, offline and recall directories are
+never listed; the no-hydration guarantee is scoped to tested providers. Buffer and end-of-directory semantics are
+specified. Reason: a listed attribute can change before open, and `RECALL_ON_DATA_ACCESS` directories hydrate on
+enumeration.
 
 ## ADR-V3-06: SQLite catalogue, single writer thread, per-directory transactions, integer storage
 
@@ -100,6 +113,11 @@ embedded KV store (sled, redb): rejected, we need secondary indexes and ad-hoc q
 documented plan (ADR-V2-03). DuckDB: rejected, analytical engine with weak single-row upsert behaviour for refresh.
 **Reversibility.** One-way for data already written (rebuildable by rescanning, so moderate). Review if P4 or
 P14 misses by over 25%.
+**Amended (review findings 7, 13, 14).** "One listing, one transaction" is kept, but listings now stream in chunks
+into `stage_entry` under a shared 64 MiB byte semaphore and are published atomically when `ListingDone` arrives;
+revision 1's per-producer buffers were unbounded for huge directories. Only a **complete** listing may delete
+or mark absent. Allocated-basis indexes (`dir_by_allocated`, `file_by_allocated`, both with `id` tie-break) are
+added. Durability, grant placement and refresh reconciliation moved to ADR-V3-18 and ADR-V3-22.
 
 ## ADR-V3-07: Materialised subtree sums plus a live arena; bounded slices with fold-into-other
 
@@ -115,6 +133,10 @@ allocated-basis ordering of tiny files is approximate and labelled.
 to the UI: rejected, gigabytes. Server-side layout (send rectangles): rejected, every zoom and resize would
 round-trip.
 **Reversibility.** Two-way (columns can be recomputed). Review if a slice needs more than 6,000 nodes.
+**Amended (review findings 8, 14).** Sums are now published under revisions (ADR-V3-19), and a slice is either
+`consistent` (every sum published at a revision covering its listings) or `provisional_live` (one arena read for
+all directory sums, `other` clamped). Revision 1 could subtract newly committed children from an old parent. The
+"approximate files" ordering is gone: allocated ordering has its own index.
 
 ## ADR-V3-08: Grants come from native surfaces, never from webview strings; volume roots refused in v0.3
 
@@ -164,6 +186,34 @@ as the production path: rejected with ADR-V3-09. Direct HTTPS to an OpenAI API: 
 Codex subscription and Loomward would then hold a credential.
 **Reversibility.** Two-way. Review if the canary fails (synthetic-only, consider a local model) or if Codex
 gains a documented tool-free mode.
+**Amended (review findings 1, 12, 17, 26; this replaces the canary gate).** Revision 1's gate was unsound: an
+empty working directory does not stop absolute-path reads, `-s read-only` still permits reads, a Job Object
+limits lifetime and resources but not reads or destinations, the owner's configuration wires MCP servers, and a
+prompt-injection canary can "pass" because the model declined. New rule: **personal teacher use remains disabled
+until the runner enforces and verifies a filesystem read allowlist (C-FS), disabled tools/MCP/plugins (C-TOOLS)
+and ambient context (C-CTX), and restricted egress (C-NET); canary tests exercise enforcement with a probe
+launched under the identical profile; model refusal is not a passing result.** The runner launches the resolved
+native Codex binary (hash and version pinned) directly with `STARTUPINFOEX` (job list with a non-inherited job
+handle, explicit stdio handle list, no breakaway, fail closed), with `-s read-only --ignore-user-config
+--ignore-rules --ephemeral --skip-git-repo-check`, `--disable` for every tool feature of the pinned version, an
+empty working directory, a per-request `CODEX_HOME` and a minimal environment; the effective configuration is
+hashed into `runner_profile_digest`, which previews and grants bind. Grants are consumed with the request row in
+`state.db` (`synchronous=FULL`) before spawning. The native dialog renders every previewed item from a stored,
+immutable, complete request. C-FS (credential copy into an AppContainer-readable home) and C-NET (destination
+filtering appears to need elevation) are owner decisions (Q2); until they are resolved and tested, the teacher is
+**synthetic-only in v0.3**.
+**Measured (PR #116, Sol spike, `docs/research/teacher-confinement.md`): partially achievable.** With the hardened
+invocation (code-mode host disabled), every injection, cooperative-read and network canary produced 0 executed
+tool items, blocked by the CLI's router/policy rather than by model refusal; but a direct collaboration tool stayed
+callable (1 executed item) despite the disabled multi-agent flags. So the CLI's own flags do **not** establish
+complete tool removal, and they establish no filesystem or egress isolation at all. Structured output works:
+10/10 schema-valid 25-item batches, median 21.8 s (range 19.0-88.8 s), about 24.6k input tokens per batch. Direct
+launch of the native `codex.exe` with stdin and no shell works (`codex.cmd` is a batch wrapper).
+**Decision after measurement.** The teacher runner ships **synthetic-only**. The gate for personal metadata is an
+**OS-enforced boundary** (AppContainer or restricted token with a filesystem read allowlist, and egress restricted
+to the model endpoint) demonstrated by **enforcement canaries** run under that boundary: probe processes that must
+fail to read outside the allowlist and to reach a non-endpoint host, plus the #116 tool canaries repeated inside
+it. CLI flags are kept as defence in depth, not as the gate. The 180 s timeout covers the observed 88.8 s maximum.
 
 ## ADR-V3-11: Svelte 5 shell in TypeScript; heavy visuals as JSDoc-typed ES modules (partly overturns the default)
 
@@ -209,11 +259,20 @@ path to real heat.
 **Alternatives.** Benchmark each disk: rejected, writes or long reads without permission. Treat mtime as heat by
 default: rejected, invariant 4 (modification is not access).
 **Reversibility.** Two-way.
+**Amended (review findings 4, 5, 18).** Revision 1 fed entry allocation to the planner as relief and passed
+unknown flags as `null`, which the reference planner rejects as invalid input. Now: candidates are an ancestry
+antichain; relief is `verified_unique_allocation` only after a budgeted link-count pass shows every object's
+names inside the group, else `unknown` and pre-rejected (`relief_unknown`) unless the owner asks for the labelled
+`entry_allocation_whatif`; groups sharing objects are pre-rejected; `estimate_basis` is an enum; destination
+need is cluster-rounded and labelled. Unknown flags and heat are **omitted** so the planner's own defaults reject
+them with its own reasons; volumes with unknown tier or capacity are excluded and listed. `rejected` keeps exact
+parity with the planner; service-level exclusions go to `pre_rejected` and `excluded_volumes`.
 
 ## ADR-V3-14: Read-only telemetry under leases; own budgets are in-process caps only
 
 **Context.** Owner pillar (d). Invariant 1 lists priority and trim as effects; doc 31 says control own work first.
-**Decision.** `loomward-windows` samples memory, CPU, processes, PDH GPU and disk counters read-only.
+**Decision.** `loomward-telemetry` (#109; the coordinator's early split from `loomward-windows`) samples memory,
+CPU, processes, PDH GPU and disk counters read-only, with the field definitions in doc 41 section 11.
 Subscriptions are 60 s leases; no lease, no sampling. Processes are keyed by pid plus start time. Explanations
 are rule-based text. `budgets.set` changes only Loomward's own thread-pool sizes; no OS priority, I/O priority,
 affinity or working-set calls anywhere in v0.3.
@@ -234,6 +293,13 @@ no side-by-side view of synthetic and personal data. Neutral: browser mode defau
 needs an explicit flag.
 **Alternatives.** A `dataset_class` column: rejected, one missed `WHERE` clause breaks the invariant.
 **Reversibility.** Two-way.
+**Amended (review finding 16).** Separate files only help if classification is trustworthy; revision 1 let any
+`--grant-root` folder into the default synthetic session, where a synthetic-policy disclosure grant needs no
+dialog. Now: **synthetic sessions accept only trusted fixture sources and identity-verified lab-generated roots;
+arbitrary owner-selected roots are personal and are rejected by synthetic sessions.** Lab roots are registered in
+the synthetic `state.db` by `loomward-lab generate --register` (which creates the root and refuses non-empty
+directories) with root identity and manifest digest; `meta.dataset_class` is checked on open; provenance is
+rechecked at root-grant and disclosure-grant creation.
 
 ## ADR-V3-16: Hand-authored JSON Schema is the contract; Rust DTOs hand-written, TS generated
 
@@ -249,6 +315,12 @@ are manual. Neutral: the generator only needs the schema subset we use (objects,
 **Alternatives.** Generate the schema from Rust (`schemars`): rejected, it makes Rust the master and lands late.
 `ts-rs`/`specta`: rejected for the same reason. Hand-written TS: rejected, drift.
 **Reversibility.** Two-way.
+**Amended (review findings 22, 23, 24).** Isolated `$def` validation let a wrong payload pass inside a generic
+envelope. Tests now validate **complete envelopes**, discriminated through `commands.json`, with `date-time`
+format checks; byte strings are range-checked to `u64::MAX` at runtime; timestamps carry a UTC pattern. Protocol
+behaviour that a schema cannot express (deadlines, revision scopes, idempotency, commit-before-event, epochs,
+replay, timed-out mutations) is normative in `contracts/v3/semantics.md`. `EventStream` and `DisclosureSummary`
+are defined so L1a is complete.
 
 ## ADR-V3-17: The synthetic lab is capped at 2M entries on G: until the owner answers Q3
 
@@ -258,4 +330,86 @@ Creating a VHDX to contain it needs elevation.
 allows it (Q3). P2 is measured at 2M and extrapolated, clearly labelled, until then.
 **Consequences.** Good: no unrequested permanent footprint. Bad: the 10M target is unproven until Q3.
 **Alternatives.** Run 10M anyway: rejected, a lasting side effect on the owner's disk without consent.
+**Reversibility.** Two-way.
+
+## ADR-V3-18: Refresh reconciles identity first and finalises absence only after a completed run (new)
+
+**Context.** Review findings 6 and 7. Revision 1 deleted absent children per listing: a directory moved from
+`A/x` to `B/x` was cascade-deleted if A was listed first and hit the unique `(root, file_id)` index if B was
+listed first (reproduced in memory). A cancelled or limited listing could delete valid subtrees.
+**Decision.** Child directories are matched by `(root_id, file_id)` before name; a known identity under a new
+parent is reparented. Directories absent from a **complete** listing become `absent_pending` (hidden, not
+deleted); they are deleted only when the whole run completes with every listing complete; otherwise they remain
+tombstones for a later run. Files absent from a complete listing are deleted at once (their labels survive on
+`object_ref`); a name now carrying a different ID gets a new row. An **incomplete** listing only upserts.
+Targeted (watcher) refreshes reconcile both parents of a rename or leave a tombstone.
+**Consequences.** Good: order-independent moves, no data loss from partial listings, stable node IDs across
+moves. Bad: tombstones persist after cancelled runs; depth fix-ups at finalise. Neutral: directories without
+native IDs match by name only and cannot be reparented.
+**Alternatives.** Global mark-and-sweep at the end only, files included: rejected, files cannot be matched by ID
+(hard links share IDs) and a per-directory complete listing already proves their absence. Immediate deletion
+with re-insert on discovery: rejected (revision 1), loses subtrees and violates the unique index.
+**Reversibility.** Two-way.
+
+## ADR-V3-19: Aggregates are published under revisions; live views are labelled provisional (new)
+
+**Context.** Review finding 8: a listing could commit before its ancestors' totals changed, so "other" could go
+negative, and a crash lost the arena while leaving inconsistent sums.
+**Decision.** `catalog_rev` increments per writer transaction. A listing transaction sets `dirty_rev` and
+`subtree_rev` on the directory and its ancestors and records `dirty_run`. `DirFinal` carries its run and is
+applied only if that run is active and still the directory's `dirty_run`; it sets `agg_valid_rev`. A directory's
+sums are consistent iff `agg_valid_rev >= dirty_rev`. Committed reads never use inconsistent sums: the writer
+repairs the region first (bottom-up rollup). Recovery repairs before a root serves slices. During a run, slices
+use one arena read for all directory sums and say `provisional_live`.
+**Consequences.** Good: no cross-revision subtraction; crash-safe; cursors can bind to `subtree_rev`. Bad: an
+ancestor walk per listing (bounded by depth) and extra columns. Neutral: watchers reuse the repair rollup.
+**Alternatives.** Recompute all aggregates at the end of a run: rejected, no live view and long windows of
+staleness. Snapshot isolation via one long read transaction during scans: rejected, blocks WAL checkpoints for
+minutes.
+**Reversibility.** Two-way.
+
+## ADR-V3-20: Node IDs carry row incarnation; durable references are continuity-keyed (new)
+
+**Context.** Review findings 9 and 10: SQLite reuses the largest deleted row ID (reproduced), so
+`HMAC(session, kind, row_id)` could name another file; `(volume_key, file_id)` can be reused after deletion.
+**Decision.** All row tables use `AUTOINCREMENT`; rows record `born_run`; node IDs encode kind, row ID,
+`born_run` and catalogue instance under an HMAC tag and are verified on use. A row is never kept when the object
+under its name changes. Durable references exist only for native IDs on NTFS/ReFS with an observed creation time,
+keyed by `(volume_key, file_id, creation_ft)`; a mismatch makes the old reference `unresolved`, never
+auto-reattached; rebuilds and reformats leave references unresolved until the exact key is seen again.
+**Consequences.** Good: a delayed label can never land on a replacement file. Bad: a file whose creation time is
+rewritten loses its labels until reconciled; FAT/exFAT items cannot be labelled durably. Neutral: unresolved
+labels are counted for later owner reconciliation.
+**Alternatives.** Path-based reattachment: rejected, a reused path is not the same object (doc 26).
+Content hashing for continuity: rejected, it needs content reads.
+**Reversibility.** Two-way.
+
+## ADR-V3-21: Three byte quantities that are never conflated (new)
+
+**Context.** Review findings 4 and 5: hard links counted once per name, links outside a group, and directory
+records that observe only the default stream made "relief" an overclaim.
+**Decision.** Every byte figure is one of: **bytes by directory entry** (what the tree shows: default-stream EOF
+and allocation as listed), **unique observed objects within a named scope** (deduplicated by
+`(volume_key, file_id)`), or **estimated reclaimable bytes** (only when every object's links are observed inside
+the group; else unknown). Alternate streams are not observed (`stream_coverage: default_stream_only`). Link
+counts come from a budgeted metadata-only pass (`FileStandardInfo`) for placement candidates only.
+**Consequences.** Good: invariant 4 holds for storage numbers. Bad: on day one most groups show relief
+`unknown`. Neutral: the what-if path remains for exploration, labelled.
+**Alternatives.** Count unique bytes everywhere: rejected, needs a link-count open per file across 10M entries.
+**Reversibility.** Two-way.
+
+## ADR-V3-22: Consent and precious state are durable; derived state is rebuildable (new)
+
+**Context.** Review findings 11 and 12: root grants sat in the rebuildable catalogue; WAL with
+`synchronous=NORMAL` can lose acknowledged commits on power loss; `ATTACH` is not atomic across two WAL files.
+**Decision.** Root grants, revocations and lab registrations live in `state.db`. The writer connection sets
+`main.synchronous=NORMAL` (`catalog.db`) and `st.synchronous=FULL` (`state.db`). No transaction spans both files
+and no correctness property depends on it; precious writes go first. `state.db` is backed up by `VACUUM INTO` at
+every start (7 kept) and before migrations. Catalogue recovery recreates roots only from active grants.
+Revocation commits first, then cancels the root's run and fences the writer against later messages for that
+grant. Disclosure grants are consumed with their request row before any process starts.
+**Consequences.** Good: acknowledged labels, revocations and grant consumption survive power loss; corruption of
+derived data cannot create or revive consent. Bad: slower `state.db` commits (small, infrequent). Neutral: the
+catalogue keeps `NORMAL` for scan throughput.
+**Alternatives.** One file with `FULL` everywhere: rejected, it slows 10M-row publication for no benefit.
 **Reversibility.** Two-way.
