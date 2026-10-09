@@ -32,8 +32,10 @@ Answered by the owner in the founding session: synthetic trees first for velocit
 may pick a few big real folders themselves for read-only metadata stress tests (authorised).
 Bounds that still apply: metadata only (names, sizes, times; never file contents), non-elevated,
 state kept outside Git and outside the scanned root, no real file names in commits, issues or
-fixtures. Each agent-picked root is named in `evidence/` before it is scanned, so every real scan
-still has an explicit, recorded root (AGENTS.md invariant 2 now carries this grant).
+fixtures. Never a volume root, a whole user profile, or a credential or browser-profile store.
+Each agent-picked root is recorded in the gitignored `.loomward/` state before it is scanned, so
+every real scan still has an explicit, recorded root; public evidence uses anonymised labels and
+aggregate counts (AGENTS.md invariant 2 now carries this grant).
 
 ## q-5 — Teacher on real metadata: disclosure scope and tier — OPEN
 

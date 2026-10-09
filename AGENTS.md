@@ -65,8 +65,10 @@ disable, skip or weaken a failing test to advance a milestone.
 2. **No silent reach.** No automatic cloud requests, model downloads, installers, global config
    changes, elevation or whole-disk scans. Real-disk scans take an explicit root, non-elevated,
    metadata only, with state outside it; a path seen in a doc is not a grant. Owner grant
-   (HUMAN_TODO q-4): an agent may pick a big real folder for a read-only stress test, naming it
-   in `evidence/` before scanning; no real file names enter Git.
+   (HUMAN_TODO q-4): an agent may pick a big real folder for a read-only stress test (never a
+   volume root, a whole user profile, or a credential or browser-profile store), recording its
+   path in the gitignored `.loomward/` state before scanning. Git gets anonymised labels and
+   aggregate counts only, never real paths or names.
 3. **Data classes stay separate.** Human labels, teacher (LLM) labels, preferences and operation
    grants are distinct. A learned score is never an approval. No training on, or forwarding of,
    user metadata beyond explicit scope. Synthetic and personal evidence never mix.
