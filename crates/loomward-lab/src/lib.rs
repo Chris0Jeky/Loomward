@@ -1,0 +1,324 @@
+//! Deterministic synthetic plans and a checked Windows directory-buffer decoder.
+use serde::{Deserialize, Serialize};
+use std::{collections::BTreeSet, io, path::PathBuf};
+
+pub const MARKER: &str = "Loomward disposable scale lab v1\n";
+pub const MAX_FILES: u64 = 3_000_000;
+pub const QUEUE_LIMIT: usize = 1024;
+pub const MAX_DEPTH: usize = 128;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Profile {
+    Dev,
+    Media,
+    Mixed,
+}
+impl Profile {
+    pub fn parse(s: &str) -> io::Result<Self> {
+        match s {
+            "dev" => Ok(Self::Dev),
+            "media" => Ok(Self::Media),
+            "mixed" => Ok(Self::Mixed),
+            _ => Err(invalid("profile must be dev, media or mixed")),
+        }
+    }
+    pub fn bucket_size(self) -> u64 {
+        match self {
+            Self::Dev => 64,
+            Self::Media => 128,
+            Self::Mixed => 256,
+        }
+    }
+}
+
+pub fn invalid(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, message.into())
+}
+
+/// Deliberately a direct child: no relative paths, namespaces, traversal or ADS.
+pub fn root_name(input: &str) -> io::Result<&str> {
+    let prefix = "G:\\loomward-lab\\scale\\";
+    if input.len() <= prefix.len()
+        || !input
+            .get(..prefix.len())
+            .is_some_and(|s| s.eq_ignore_ascii_case(prefix))
+    {
+        return Err(invalid(
+            "root must be a direct child of G:\\loomward-lab\\scale",
+        ));
+    }
+    let name = &input[prefix.len()..];
+    if name.len() > 80
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        || name.eq_ignore_ascii_case("con")
+        || name.eq_ignore_ascii_case("prn")
+        || name.eq_ignore_ascii_case("aux")
+        || name.eq_ignore_ascii_case("nul")
+        || (1..=9).any(|n| {
+            name.eq_ignore_ascii_case(&format!("com{n}"))
+                || name.eq_ignore_ascii_case(&format!("lpt{n}"))
+        })
+    {
+        return Err(invalid(
+            "root name must be non-device ASCII letters, digits, - or _",
+        ));
+    }
+    Ok(name)
+}
+
+pub fn mix(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9e3779b97f4a7c15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
+    x ^ (x >> 31)
+}
+
+pub fn bucket_path(bucket: u64, seed: u64, profile: Profile) -> PathBuf {
+    let mut path = PathBuf::from(format!("workspace-{:04}", bucket / 64));
+    path.push(match profile {
+        Profile::Dev => "node_modules/パッケージ-café",
+        Profile::Media => "media/写真-é",
+        Profile::Mixed => "projects/資料-café",
+    });
+    // Forty components including the shard and leaf; this deliberately crosses MAX_PATH.
+    let depth = if bucket % 64 == 0 {
+        36
+    } else {
+        (mix(bucket ^ seed) % 5) as usize
+    };
+    for level in 0..depth {
+        path.push(format!("source-level-{level:02}"));
+    }
+    path.push(format!("package-{bucket:06}"));
+    path
+}
+
+pub fn file_spec(index: u64, seed: u64, profile: Profile) -> (String, u64) {
+    let h = mix(index ^ seed);
+    let (extension, size) = match profile {
+        Profile::Dev => (["rs", "js", "json", "ts"][h as usize % 4], h % 16385),
+        Profile::Media => (["mkv", "wav", "raw"][h as usize % 3], (1 + h % 16) << 30),
+        Profile::Mixed => match h % 100 {
+            0..=69 => ("txt", 1 + (h >> 8) % 16384),
+            70..=89 => ("jpg", (1 + (h >> 8) % 16) << 20),
+            90..=97 => ("zip", (1 + (h >> 8) % 32) << 24),
+            _ => ("model", (1 + (h >> 8) % 8) << 30),
+        },
+    };
+    let case = if index % 2 == 0 { "Sample" } else { "sample" };
+    (format!("{case}-{index:09}-λ.{extension}"), size)
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Totals {
+    pub files: u64,
+    /// Descendants only: data/ itself is not counted.
+    pub directories: u64,
+    pub logical_bytes: u64,
+    pub skipped_reparse: u64,
+}
+impl Totals {
+    pub fn add(&mut self, other: Self) {
+        self.files += other.files;
+        self.directories += other.directories;
+        self.logical_bytes += other.logical_bytes;
+        self.skipped_reparse += other.skipped_reparse;
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Manifest {
+    pub schema_version: u32,
+    pub complete: bool,
+    pub seed: u64,
+    pub profile: Profile,
+    pub expected: Totals,
+    pub file_data_allocation_bytes: u64,
+    pub generation_seconds: f64,
+    pub volume_free_before: u64,
+    pub volume_free_after: u64,
+}
+
+pub fn expected(files: u64, seed: u64, profile: Profile) -> io::Result<Totals> {
+    if files == 0 || files > MAX_FILES {
+        return Err(invalid("files must be in 1..=3000000"));
+    }
+    let mut directories = BTreeSet::new();
+    for bucket in 0..files.div_ceil(profile.bucket_size()) {
+        let path = bucket_path(bucket, seed, profile);
+        for parent in path.ancestors().filter(|p| !p.as_os_str().is_empty()) {
+            directories.insert(parent.to_path_buf());
+        }
+    }
+    Ok(Totals {
+        files,
+        directories: directories.len() as u64,
+        logical_bytes: (0..files).map(|i| file_spec(i, seed, profile).1).sum(),
+        skipped_reparse: 0,
+    })
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct DirectoryRecord {
+    pub name: Vec<u16>,
+    pub logical_bytes: u64,
+    pub allocation_bytes: u64,
+    pub attributes: u32,
+    pub reparse_tag: u32,
+    pub file_id: [u8; 16],
+}
+
+/// FILE_ID_EXTD_DIR_INFO's variable-length chain; reject malformed lengths/offsets.
+pub fn decode_records(
+    buffer: &[u8],
+    mut emit: impl FnMut(DirectoryRecord) -> io::Result<()>,
+) -> io::Result<()> {
+    let mut pos = 0;
+    loop {
+        let row = buffer
+            .get(pos..)
+            .ok_or_else(|| invalid("directory offset out of range"))?;
+        if row.len() < 88 {
+            return Err(invalid("truncated directory header"));
+        }
+        let u32_at = |offset| u32::from_le_bytes(row[offset..offset + 4].try_into().unwrap());
+        let u64_at = |offset| u64::from_le_bytes(row[offset..offset + 8].try_into().unwrap());
+        let next = u32_at(0) as usize;
+        let name_len = u32_at(60) as usize;
+        let end = 88usize
+            .checked_add(name_len)
+            .ok_or_else(|| invalid("name overflow"))?;
+        if name_len == 0
+            || name_len % 2 != 0
+            || end > row.len()
+            || (next != 0 && (next % 8 != 0 || next < end || next >= row.len()))
+            || u64_at(40) > i64::MAX as u64
+            || u64_at(48) > i64::MAX as u64
+        {
+            return Err(invalid("invalid directory record"));
+        }
+        let name: Vec<u16> = row[88..end]
+            .chunks_exact(2)
+            .map(|s| u16::from_le_bytes([s[0], s[1]]))
+            .collect();
+        if name.iter().any(|&c| matches!(c, 0 | 47 | 92 | 58)) {
+            return Err(invalid("invalid directory name"));
+        }
+        emit(DirectoryRecord {
+            name,
+            logical_bytes: u64_at(40),
+            allocation_bytes: u64_at(48),
+            attributes: u32_at(56),
+            reparse_tag: u32_at(68),
+            file_id: row[72..88].try_into().unwrap(),
+        })?;
+        if next == 0 {
+            return Ok(());
+        }
+        pos += next;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn scope_rejects_escape_and_devices() {
+        assert_eq!(
+            root_name(r"G:\loomward-lab\scale\test-1").unwrap(),
+            "test-1"
+        );
+        for path in [
+            r"G:\loomward-lab\scale",
+            r"G:\loomward-lab\scale-other\x",
+            r"G:\loomward-lab\scale\..\x",
+            r"G:\loomward-lab\scale\x:y",
+            r"G:\loomward-lab\scale\NUL",
+            r"E:\loomward-lab\scale\x",
+            r"\\?\G:\loomward-lab\scale\x",
+        ] {
+            assert!(root_name(path).is_err(), "{path}");
+        }
+    }
+    #[test]
+    fn deterministic_profiles_and_independent_small_oracle() {
+        for profile in [Profile::Dev, Profile::Mixed, Profile::Media] {
+            let totals = expected(3, 42, profile).unwrap();
+            assert_eq!(totals.files, 3);
+            assert_eq!(totals.directories, 40);
+            assert_eq!(
+                totals.logical_bytes,
+                file_spec(0, 42, profile).1
+                    + file_spec(1, 42, profile).1
+                    + file_spec(2, 42, profile).1
+            );
+            assert_eq!(bucket_path(0, 42, profile), bucket_path(0, 42, profile));
+            assert!(bucket_path(0, 42, profile).to_string_lossy().len() > 260);
+            assert_ne!(file_spec(0, 42, profile), file_spec(0, 43, profile));
+        }
+        assert!(expected(0, 0, Profile::Dev).is_err());
+        assert!(expected(MAX_FILES + 1, 0, Profile::Dev).is_err());
+        assert!(Profile::parse("bogus").is_err());
+    }
+    #[test]
+    fn buffer_decoder_accepts_unicode_and_rejects_corruption() {
+        let mut buffer = vec![0u8; 96];
+        buffer[40..48].copy_from_slice(&123u64.to_le_bytes());
+        buffer[60..64].copy_from_slice(&2u32.to_le_bytes());
+        buffer[88..90].copy_from_slice(&0x03bbu16.to_le_bytes());
+        let mut count = 0;
+        decode_records(&buffer, |r| {
+            assert_eq!(r.name, [0x03bb]);
+            assert_eq!(r.logical_bytes, 123);
+            count += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(count, 1);
+        for len in [0u32, 1, 1000] {
+            buffer[60..64].copy_from_slice(&len.to_le_bytes());
+            assert!(decode_records(&buffer, |_| Ok(())).is_err());
+        }
+        buffer[60..64].copy_from_slice(&2u32.to_le_bytes());
+        buffer[0..4].copy_from_slice(&8u32.to_le_bytes());
+        assert!(decode_records(&buffer, |_| Ok(())).is_err());
+        buffer[0..4].copy_from_slice(&0u32.to_le_bytes());
+        buffer[88..90].copy_from_slice(&92u16.to_le_bytes());
+        assert!(decode_records(&buffer, |_| Ok(())).is_err());
+    }
+
+    #[test]
+    fn buffer_decoder_follows_offsets_and_propagates_failure() {
+        let mut buffer = vec![0u8; 192];
+        buffer[0..4].copy_from_slice(&96u32.to_le_bytes());
+        for pos in [0, 96] {
+            buffer[pos + 60..pos + 64].copy_from_slice(&2u32.to_le_bytes());
+            buffer[pos + 88..pos + 90].copy_from_slice(&65u16.to_le_bytes());
+        }
+        let mut count = 0;
+        decode_records(&buffer, |_| {
+            count += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(count, 2);
+        assert!(decode_records(&buffer, |_| Err(invalid("consumer failed"))).is_err());
+        buffer[96 + 48..96 + 56].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(decode_records(&buffer, |_| Ok(())).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn decoder_offsets_match_windows_abi() {
+        use std::mem::offset_of;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ID_EXTD_DIR_INFO;
+        assert_eq!(offset_of!(FILE_ID_EXTD_DIR_INFO, FileName), 88);
+        assert_eq!(offset_of!(FILE_ID_EXTD_DIR_INFO, EndOfFile), 40);
+        assert_eq!(offset_of!(FILE_ID_EXTD_DIR_INFO, AllocationSize), 48);
+        assert_eq!(offset_of!(FILE_ID_EXTD_DIR_INFO, ReparsePointTag), 68);
+        assert_eq!(offset_of!(FILE_ID_EXTD_DIR_INFO, FileId), 72);
+    }
+}

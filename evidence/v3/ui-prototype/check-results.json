@@ -1,0 +1,78 @@
+{
+  "url_host": "127.0.0.1",
+  "screenshots": [
+    "evidence/v3/ui-prototype/atlas-1440.png",
+    "evidence/v3/ui-prototype/atlas-full-1440.png",
+    "evidence/v3/ui-prototype/atlas-drilled-1440.png",
+    "evidence/v3/ui-prototype/observatory-1440.png",
+    "evidence/v3/ui-prototype/observatory-zoomed-1440.png",
+    "evidence/v3/ui-prototype/atlas-390.png",
+    "evidence/v3/ui-prototype/atlas-drilled-390.png",
+    "evidence/v3/ui-prototype/observatory-390.png",
+    "evidence/v3/ui-prototype/observatory-zoomed-390.png"
+  ],
+  "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "treemap_benchmark_all_depths": {
+    "mean": 2.6708333334575096,
+    "p95": 3.9000000059604645,
+    "max": 4.200000002980232,
+    "cells": 1188,
+    "layoutMs": 3.7000000029802322,
+    "frames": 120,
+    "maxDepth": 99
+  },
+  "treemap_benchmark_50k_siblings": {
+    "mean": 5.198333333308498,
+    "p95": 6.299999997019768,
+    "max": 8.299999997019768,
+    "cells": 9901,
+    "layoutMs": 15.900000005960464,
+    "frames": 120,
+    "maxDepth": 3
+  },
+  "treemap_benchmark": {
+    "mean": 2.227500000099341,
+    "p95": 3.2999999970197678,
+    "max": 6.799999997019768,
+    "cells": 757,
+    "layoutMs": 4.0999999940395355,
+    "frames": 120,
+    "maxDepth": 3,
+    "nodes": 57529
+  },
+  "treemap_live": {
+    "cpu_mean": 0.5500000002483527,
+    "cpu_p95": 0.7000000029802322,
+    "frame_median": 16.69999999999891,
+    "frame_p95": 16.799999999999272,
+    "dropped": 0,
+    "frames": 119
+  },
+  "treemap_zoom_raf_ms": {
+    "frames": 40,
+    "median": 16.699999999999818,
+    "p95": 33.399999999999636,
+    "max": 33.399999999999636
+  },
+  "hostile_name_probe": "passed",
+  "sunburst_benchmark": {
+    "mean": 9.646666666616996,
+    "p95": 12.400000005960464,
+    "arcs": 162
+  },
+  "sunburst_live_orbit": {
+    "cpu_mean": 1.1958333344509204,
+    "cpu_p95": 2,
+    "frame_median": 16.700000000000728,
+    "frame_p95": 16.799999999999272,
+    "dropped": 2,
+    "frames": 119
+  },
+  "sunburst_benchmark_rebuild": {
+    "mean": 15.765000000347694,
+    "p95": 22.700000002980232,
+    "arcs": 162
+  },
+  "reduced_motion": "checked",
+  "failures": []
+}

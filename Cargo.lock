@@ -135,6 +135,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "loomward-lab"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "windows-sys",
+]
+
+[[package]]
 name = "loomward-learn"
 version = "0.1.0"
 dependencies = [
@@ -142,6 +151,15 @@ dependencies = [
  "serde_json",
  "sha2",
  "unicode-general-category",
+]
+
+[[package]]
+name = "loomward-telemetry"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "windows-sys",
 ]
 
 [[package]]
