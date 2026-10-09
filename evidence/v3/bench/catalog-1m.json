@@ -1,0 +1,74 @@
+{
+  "P14": {
+    "bytes_per_entry": 126.55031513455032,
+    "catalog_bytes": 126676992,
+    "dataset_scale_met": false,
+    "target_bytes_per_entry": 200,
+    "target_dataset_rows": 10000000
+  },
+  "P4": {
+    "insert_seconds": 25.7158483,
+    "met": false,
+    "rows_per_second": 38925.45127511893,
+    "target_rows_per_second": 250000
+  },
+  "P6": {
+    "dataset_scale_met": false,
+    "http_round_trip": "unverified",
+    "nodes": 2500,
+    "payload_bytes": 1383727,
+    "target_dataset_rows": 10000000,
+    "target_ms": 60,
+    "target_payload_bytes": 1500000,
+    "timing": {
+      "max_ms": 24.3144,
+      "min_ms": 21.483800000000002,
+      "p50_ms": 21.9584,
+      "p95_ms": 22.8367,
+      "runs": 21
+    }
+  },
+  "P7": {
+    "limit": 200,
+    "target_ms": 20,
+    "timing": {
+      "max_ms": 1.231,
+      "min_ms": 0.7668,
+      "p50_ms": 0.7954,
+      "p95_ms": 0.8496,
+      "runs": 21
+    }
+  },
+  "P8": {
+    "budget_hits": 21,
+    "target_ms": 300,
+    "timing": {
+      "max_ms": 35.9369,
+      "min_ms": 31.839899999999997,
+      "p50_ms": 32.458099999999995,
+      "p95_ms": 34.775,
+      "runs": 21
+    },
+    "work_budget_sqlite_ops": 2000000
+  },
+  "all_schema_indexes_present": true,
+  "dataset_class": "synthetic",
+  "directories": 1001,
+  "files": 1000000,
+  "finalise_seconds": 1.5367783,
+  "insert_includes_generation_and_queue_backpressure": true,
+  "limitations": [
+    "single warm run on this Windows host; no cold-cache claim",
+    "P6 and P14 at 1M, not the 10M target; HTTP and process-memory measurement belong to integration"
+  ],
+  "oracle": {
+    "allocated_known_bytes": "496873078784",
+    "allocation_unknown_files": 10310,
+    "logical_bytes": "500000500000",
+    "matched": true
+  },
+  "platform": "windows",
+  "schema_version": 1,
+  "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
+  "temporary_directory_removed": true
+}
