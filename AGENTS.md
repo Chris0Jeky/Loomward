@@ -44,9 +44,10 @@ it into a worktree that will be torn down, and copy anything out before deleting
 | `Loomward-*` without `v2` | v0.1 deliverables, superseded; history only |
 
 Unbundle by merging, never by copying files over: verify the sha256 values, fetch the bundle's two
-branches, push both, then merge `expansion/interop-v2` into `main` with
-`--allow-unrelated-histories` through a PR. Expected add/add conflicts: `.gitignore` (union of
-both, keeping `/Resources`) and `AGENTS.md` (**keep this one**). Before resolving, diff the
+branches and push both as they are. Then create an integration branch from `main`, run
+`git merge --allow-unrelated-histories expansion/interop-v2` on it locally (GitHub cannot do that
+join itself), resolve the conflicts, push it and open the PR. Expected add/add conflicts:
+`.gitignore` (union of both, keeping `/Resources`) and `AGENTS.md` (**keep this one**). Before resolving, diff the
 bundle's `AGENTS.md` against this file and fold in any product rule still missing. Then update
 the proving-check table with measured counts.
 
