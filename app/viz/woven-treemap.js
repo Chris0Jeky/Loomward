@@ -35,6 +35,8 @@ import { weaveTile, fringeTile, looseTile, hatchTile, strokeStitch } from './wea
  * @property {() => boolean} [reducedMotion]
  * @property {(n: number) => string} [format]   bytes for labels
  * @property {number} [maxDepth]
+ * @property {string} [marks]   performance-mark prefix: records `<prefix>:layout`, `<prefix>:first-paint`
+ *   (CPU ms) and `<prefix>:slice-to-paint` (wall clock) for every slice (docs/41 P9)
  */
 
 /**
@@ -56,7 +58,7 @@ export function nodeInfo(v) {
   return { id: v.id, name: v.name, size: v.size, src, synthetic: v.synthetic, folded: v.folded, zero: v.zero, parentId: v.parent ? v.parent.id : null, drillable };
 }
 
-/** Zero-area children by reason, for the label band and the inspector. @param {VNode} v */
+/** Zero-area children by reason, for the label band and the inspector. @param {{ zero: import('./types.js').SliceNodeLike[] }} v */
 export function zeroCounts(v) {
   let denied = 0, unmeasured = 0, empty = 0;
   for (const z of v.zero) {
@@ -90,6 +92,8 @@ export function createWovenTreemap(canvas, options) {
   /** @type {{ outer: ReturnType<typeof build>, inner: ReturnType<typeof build>, rect: { x: number, y: number, w: number, h: number }, dir: number, start: number, dur: number } | null} */
   let anim = null;
   let revealT = 1, revealStart = 0, raf = 0;
+  /** @type {{ start: number, layout: number, nodes: number } | null} */
+  let pendingMark = null;
   /** @type {Cell | null} */
   let hover = null;
   let cursor = 0, kbd = false;
@@ -330,10 +334,12 @@ export function createWovenTreemap(canvas, options) {
     ctx.restore();
   }
 
+  let paintStart = 0;
   /** @param {number} now */
   function frame(now) {
     raf = 0;
     if (!view) return;
+    paintStart = performance.now();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = palette.ink;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -352,6 +358,14 @@ export function createWovenTreemap(canvas, options) {
       if (revealT < 1) { revealT = Math.min(1, (now - revealStart) / 1700); more = revealT < 1; }
       paint(view, identity, 1, null, revealT);
       overlays();
+    }
+    if (pendingMark && options.marks) {
+      const end = performance.now(), m = pendingMark, pre = options.marks;
+      pendingMark = null;
+      const detail = { nodes: m.nodes, cells: view.cells.length };
+      performance.measure(`${pre}:layout`, { start: m.start, duration: m.layout, detail });
+      performance.measure(`${pre}:first-paint`, { start: paintStart, end, detail });
+      performance.measure(`${pre}:slice-to-paint`, { start: m.start, end, detail });
     }
     if (more) raf = requestAnimationFrame(frame);
   }
@@ -489,10 +503,12 @@ export function createWovenTreemap(canvas, options) {
      * @param {SliceLike} s @param {{ animate?: boolean }} [opts]
      */
     setSlice(s, opts = {}) {
+      const start = performance.now();
       const prev = view;
       slice = s;
       const { root } = buildTree(s);
       const next = build(root);
+      pendingMark = { start, layout: performance.now() - start, nodes: s.nodes.length };
       cursor = 0; hover = null;
       anim = null;
       if (prev && opts.animate !== false && !reduced()) {
