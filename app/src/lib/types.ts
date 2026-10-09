@@ -116,6 +116,8 @@ export interface TreeSlice {
   complete: boolean;
   live: boolean;
   ordering: 'exact' | 'approximate_live' | 'approximate_files';
+  /** PR #110 makes this required: 'provisional_live' sums come from a running scan and must look provisional. */
+  aggregate_state?: 'consistent' | 'provisional_live';
   truncated: boolean;
   nodes: SliceNode[];
 }
@@ -143,6 +145,35 @@ export interface TreeSliceRequest { anchor: Anchor; depth: number; max_nodes: nu
 export interface TreeChildrenRequest { node_id: NodeId; sort: 'size_desc' | 'name_asc' | 'modified_desc'; basis: Basis; limit: number; cursor: Cursor | null }
 export interface SearchRequest { root_id: RootId | null; text: string; extension: string | null; min_bytes: NullableBytes; kind: 'any' | 'file' | 'dir'; limit: number; cursor: Cursor | null }
 
+// Telemetry (wave 2 in contracts/v3; the mock serves synthetic samples). Subset used by the Observatory view.
+export type NullableFraction = number | null;
+export type NullableRate = number | null;
+export type TelemetryChannel = 'system' | 'processes' | 'gpu' | 'disks' | 'engine';
+export interface TelemetrySnapshotRequest { channels: TelemetryChannel[] }
+export interface SystemSample {
+  memory: { total_bytes: NullableBytes; available_bytes: NullableBytes; commit_bytes: NullableBytes; commit_limit_bytes: NullableBytes; load_fraction: NullableFraction };
+  cpu: { logical_cpus: number; busy_fraction: NullableFraction };
+}
+export interface GpuSample {
+  state: 'observed' | 'unavailable' | 'denied';
+  basis: 'pdh_gpu_counters' | 'unavailable';
+  adapters: { adapter_id: string; name: string; dedicated_total_bytes: NullableBytes; dedicated_used_bytes: NullableBytes; shared_used_bytes: NullableBytes; engine_busy_fraction: NullableFraction }[];
+}
+export interface DiskSample {
+  state: 'observed' | 'unavailable';
+  disks: { disk_label: string; volume_ids: string[]; read_bytes_per_s: NullableRate; write_bytes_per_s: NullableRate; busy_fraction: NullableFraction; queue_length: NullableRate }[];
+}
+export interface TelemetrySample {
+  sample_seq: number;
+  observed_at: Timestamp;
+  elapsed_ms: number | null;
+  system: SystemSample | null;
+  gpu: GpuSample | null;
+  disks: DiskSample | null;
+  engine: Record<string, unknown> | null;
+  processes: Record<string, unknown> | null;
+}
+
 /** Command name -> [request, result] for the commands this lane calls. */
 export interface CommandMap {
   'session.hello': [Record<string, never>, SessionInfo];
@@ -152,5 +183,6 @@ export interface CommandMap {
   'tree.slice': [TreeSliceRequest, TreeSlice];
   'tree.children': [TreeChildrenRequest, EntryPage];
   'search.query': [SearchRequest, EntryPage];
+  'telemetry.snapshot': [TelemetrySnapshotRequest, TelemetrySample];
 }
 export type CommandName = keyof CommandMap;
