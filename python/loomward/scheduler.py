@@ -30,7 +30,7 @@ def vector(value: dict, *, unknown=False) -> dict:
         raise ValueError('Unknown resource dimensions')
     result = {}
     for dimension in DIMENSIONS:
-        v = value.get(dimension, 0)
+        v = value[dimension] if dimension in value else (None if unknown else 0)
         result[dimension] = None if unknown and v is None else number(v)
     return result
 
@@ -160,7 +160,7 @@ class LeaseBroker:
             lease = self._leases.get(lease_id)
             if lease is None or lease['owner'] != owner or not hmac.compare_digest(lease['token'].encode('utf-8'), token.encode('utf-8')):
                 raise PermissionError('Lease release capability is invalid')
-            if lease['status'] == 'expired':
+            if lease['status'] in ('expired', 'released'):
                 return False
             lease['status'] = 'released'
             return True
