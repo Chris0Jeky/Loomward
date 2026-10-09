@@ -22,6 +22,7 @@ PROJECT = Path(__file__).resolve().parents[2]
 ASSETS = {'/expansion.js': ('expansion.js', 'text/javascript; charset=utf-8'), '/': ('index.html', 'text/html; charset=utf-8'), '/app.js': ('app.js', 'text/javascript; charset=utf-8'),
           '/styles.css': ('styles.css', 'text/css; charset=utf-8'), '/demo-data.js': ('demo-data.js', 'text/javascript; charset=utf-8')}
 MAX_BODY = 65536
+DRAIN_LIMIT = 1024 * 1024
 
 
 class App:
@@ -221,21 +222,25 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, path.read_bytes(), asset[1])
 
     def do_POST(self):
-        if not self._authorised(True):
-            self.close_connection = True
-            return
-        if self.headers.get('Transfer-Encoding'):
-            self.close_connection = True; self._json(400, {'error': 'Chunked request bodies are not supported'}); return
+        chunked = bool(self.headers.get('Transfer-Encoding'))
         try:
             length = int(self.headers.get('Content-Length', '-1'))
         except ValueError:
             length = -1
+        # Read or drain a bounded body before any reply: Windows resets a socket closed with unread
+        # request bytes, which can destroy an early error reply before the client reads it.
+        raw = self.rfile.read(length) if not chunked and 0 <= length <= DRAIN_LIMIT else b''
+        if not self._authorised(True):
+            self.close_connection = True
+            return
+        if chunked:
+            self.close_connection = True; self._json(400, {'error': 'Chunked request bodies are not supported'}); return
         if not 0 <= length <= MAX_BODY:
             self.close_connection = True; self._json(413, {'error': 'Request body exceeds the 64 KiB limit or has no valid length'}); return
         if self.headers.get('Content-Type', '').split(';')[0].lower() != 'application/json':
             self.close_connection = True; self._json(415, {'error': 'Use application/json'}); return
         try:
-            body = strict_json(self.rfile.read(length).decode('utf-8'))
+            body = strict_json(raw.decode('utf-8'))
             if not isinstance(body, dict):
                 raise ValueError('JSON object required')
             result = self.server.app.post(self.path, body)

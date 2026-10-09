@@ -59,6 +59,13 @@ class ServerTests(unittest.TestCase):
     def test_oversized_body_is_rejected_before_processing(self):
         self.assertEqual(self.request('POST','/api/label',{'padding':'x'*65536})[0],413)
         self.assertEqual(self.app.store.events(self.app.scope),[])
+    def test_early_rejections_are_delivered_with_an_unread_body(self):
+        # Windows resets a socket closed with unread request bytes, which can destroy the error reply
+        pad={'padding':'x'*60000}
+        for _ in range(15):
+            self.assertEqual(self.request('POST','/api/label',pad,headers={'Content-Type':'text/plain'})[0],415)
+            self.assertEqual(self.request('POST','/api/label',pad,auth=False)[0],403)
+            self.assertEqual(self.request('POST','/api/label',{'padding':'x'*70000})[0],413)
     def test_wrong_media_type_is_rejected(self):
         self.assertEqual(self.request('POST','/api/label',{},headers={'Content-Type':'text/plain'})[0],415)
     def test_foreign_file_identity_cannot_be_labelled(self):
