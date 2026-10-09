@@ -1,0 +1,27 @@
+{
+  "tier": 1,
+  "name": "sandbox",
+  "authority": {
+    "push": "free",
+    "merge": "free"
+  },
+  "flags": {
+    "sensitive_data": false,
+    "wave_mode": false,
+    "dormant_production": false,
+    "relaxed_work_loss_guards": false
+  },
+  "model_routing": {
+    "harness_and_review": "top",
+    "slices": "top",
+    "maintenance": "mid"
+  },
+  "budgets": {
+    "standing_context_tokens": 2500,
+    "session_baseline_tokens": null
+  },
+  "human_todo": "HUMAN_TODO.md",
+  "runtimes": ["claude", "codex"],
+  "last_reviewed": "2026-10-09",
+  "notes": "Declared 2026-10-09 when the estate harness was added. Public repository, no releases, no other users, no money, no real user data: sandbox autonomy (law 9). The owner said in the founding session that commits, pushes, PRs, issues, merges, comments and reviews are free. Re-review the tier, and set sensitive_data, before the first of: a native file or process effect beyond read-only observation (any LW-* executor), real inventory or training data entering the repository or its fixtures, a published release or installer, or a connected model provider. Promotion to T2 is proposed in HUMAN_TODO.md. Codex (GPT-6.1 Sol) works here as a peer in its own worktree; the driver commits for it."
+}

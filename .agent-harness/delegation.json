@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "muse": {
+    "worker_network": "proxy-only"
+  },
+  "notes": "Owner direction 2026-10-09 (founding session): use Muse swarm lanes as much as needed for testing, bug-hunting, reviews and docs. A Muse worker may therefore use proxy-only sandbox network so a proving check that resolves crates or Python packages can be delegated (restricted network hangs rather than fails). Every other dial keeps the harness default (py -3 ~/.claude/tools/delegation_policy.py show --repo <this repo>); push, pull-request, merge and deploy are not declarable and remain undelegated. Recorded for confirmation as HUMAN_TODO q-2."
+}
