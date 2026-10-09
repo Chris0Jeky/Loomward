@@ -25,7 +25,7 @@ def plan_tiers_v2(scenario: dict[str, Any], *, node_budget: int = 50_000) -> dic
     goal = scenario['target_free_bytes']
     need = max(0, goal - source['free_bytes'])
     budget = scenario['max_transfer_bytes']
-    groups = {g['id']: g for g in scenario['groups']}
+    groups = {g['id']: g for g in scenario.get('groups', [])}
     targets = sorted((v for v in volumes.values() if v['id'] != source_id
                       and v.get('online', False) and v.get('writable', False)
                       and v['tier'] >= source['tier']), key=lambda v: v['id'])
