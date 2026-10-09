@@ -1,0 +1,23 @@
+E......E
+======================================================================
+ERROR: test_batch_validator_receives_proposed_complete_scope (test_store.StoreTests.test_batch_validator_receives_proposed_complete_scope)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward/tests/test_store.py", line 52, in test_batch_validator_receives_proposed_complete_scope
+    store.feedback('scope','two',{'name':'document.pdf'},'Documents',validate_batch=lambda events:seen.extend(events))
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: Store.feedback() got an unexpected keyword argument 'validate_batch'
+
+======================================================================
+ERROR: test_training_validation_precedes_feedback_commit (test_store.StoreTests.test_training_validation_precedes_feedback_commit)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward/tests/test_store.py", line 46, in test_training_validation_precedes_feedback_commit
+    store.feedback('scope','item',{'name':'invoice.pdf'},'Finance',validate_batch=reject)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: Store.feedback() got an unexpected keyword argument 'validate_batch'
+
+----------------------------------------------------------------------
+Ran 8 tests in 0.037s
+
+FAILED (errors=2)

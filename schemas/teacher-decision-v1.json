@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Loomward teacher-decision-v1",
+  "description": "Default taxonomy only. Request builder emits an item-specific const and selected taxonomy. Runtime checks also require evidence for non-abstention.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "item_id",
+    "label",
+    "reason",
+    "evidence",
+    "abstain"
+  ],
+  "properties": {
+    "item_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "label": {
+      "enum": [
+        "Documents",
+        "Finance",
+        "Media",
+        "Projects",
+        "Models",
+        "Archive",
+        null
+      ]
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "evidence": {
+      "type": "array",
+      "maxItems": 4,
+      "items": {
+        "enum": [
+          "name",
+          "extension",
+          "context",
+          "size_bytes"
+        ]
+      }
+    },
+    "abstain": {
+      "type": "boolean"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "abstain": {
+            "const": false
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "evidence": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ]
+}

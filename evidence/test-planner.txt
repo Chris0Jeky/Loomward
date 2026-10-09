@@ -1,0 +1,20 @@
+test_accounts_for_different_source_destination_sizes (test_planner.PlannerTests.test_accounts_for_different_source_destination_sizes) ... ok
+test_duplicate_ids_rejected (test_planner.PlannerTests.test_duplicate_ids_rejected) ... ok
+test_group_not_split_to_fit (test_planner.PlannerTests.test_group_not_split_to_fit) ... ok
+test_hot_group_stays (test_planner.PlannerTests.test_hot_group_stays) ... ok
+test_infeasible_capacity_is_reported (test_planner.PlannerTests.test_infeasible_capacity_is_reported) ... ok
+test_input_is_unchanged (test_planner.PlannerTests.test_input_is_unchanged) ... ok
+test_invalid_numbers_rejected (test_planner.PlannerTests.test_invalid_numbers_rejected) ... ok
+test_nan_heat_rejected (test_planner.PlannerTests.test_nan_heat_rejected) ... ok
+test_no_faster_tier_for_demotion (test_planner.PlannerTests.test_no_faster_tier_for_demotion) ... ok
+test_no_pressure_means_no_move (test_planner.PlannerTests.test_no_pressure_means_no_move) ... ok
+test_offline_destination_is_ineligible (test_planner.PlannerTests.test_offline_destination_is_ineligible) ... ok
+test_pinned_active_and_protected_are_ineligible (test_planner.PlannerTests.test_pinned_active_and_protected_are_ineligible) ... ok
+test_recent_move_cooldown (test_planner.PlannerTests.test_recent_move_cooldown) ... ok
+test_transfer_budget (test_planner.PlannerTests.test_transfer_budget) ... ok
+test_unknown_heat_is_not_assumed_cold (test_planner.PlannerTests.test_unknown_heat_is_not_assumed_cold) ... ok
+
+----------------------------------------------------------------------
+Ran 15 tests in 0.002s
+
+OK

@@ -1,0 +1,491 @@
+.............................................../usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e51b75b0>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e51b7e20>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e51b74c0>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fd8c70>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fda7a0>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fd8b80>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fd89a0>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fda890>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fda980>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdac50>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdaa70>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdab60>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdae30>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdaf20>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdb010>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdb100>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdb1f0>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdb2e0>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdb3d0>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdb4c0>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdb5b0>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdb6a0>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdb790>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdb880>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdb970>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdba60>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdbb50>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdbc40>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdbd30>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdbe20>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdbf10>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef0040>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef0130>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef0220>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef0310>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef0400>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef04f0>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef05e0>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef06d0>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef07c0>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef08b0>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef09a0>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef0a90>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef0b80>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef0c70>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef0d60>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef0e50>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef0f40>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef1030>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef1120>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef1210>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef1300>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef13f0>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef14e0>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef15d0>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef16c0>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef17b0>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef18a0>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef1990>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef1a80>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef1b70>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef1c60>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef1d50>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef1e40>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef1f30>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef2020>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef2110>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef2200>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef22f0>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/lib/python3.13/re/__init__.py:172: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef23e0>
+  return _compile(pattern, flags).fullmatch(string)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdbf10>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdbe20>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdbd30>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdbc40>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdbb50>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdba60>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdb970>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdb880>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdb790>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdb6a0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdb5b0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdb4c0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdb3d0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdb2e0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdb1f0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdb100>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdb010>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdaf20>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdae30>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdab60>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdaa70>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fdac50>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fda980>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fda890>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fd89a0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fd8b80>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fda7a0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4fd8c70>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e51b74c0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e51b7e20>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e51b75b0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef23e0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef22f0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef2200>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef2110>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef2020>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef1f30>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef1e40>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef1d50>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef1c60>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef1b70>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef1a80>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef1990>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef18a0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef17b0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef16c0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef15d0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef14e0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef13f0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef1300>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef1210>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef1120>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef1030>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef0f40>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef0e50>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef0d60>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef0c70>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef0b80>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef0a90>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef09a0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef08b0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef07c0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef06d0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef05e0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef04f0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef0400>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef0310>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef0220>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef0130>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef0040>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef2c50>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef2e30>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef2f20>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef3100>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef31f0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef32e0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef33d0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef34c0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef35b0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef36a0>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef3790>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef3880>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef3970>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef3a60>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef3b50>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef3c40>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef3d30>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef3e20>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4ef3f10>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4f3c040>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4f3c130>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/data/loomward/python/loomward/store.py:72: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f52e4f3c220>
+  previous = c.execute('SELECT payload FROM feedback WHERE event_id=?', (event_id,)).fetchone()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+.....................
+----------------------------------------------------------------------
+Ran 68 tests in 6.618s
+
+OK

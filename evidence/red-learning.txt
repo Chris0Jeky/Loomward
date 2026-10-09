@@ -1,0 +1,83 @@
+test_conflicting_same_revision_rejected (test_learning.LearningTests.test_conflicting_same_revision_rejected) ... FAIL
+test_empty_model_abstains (test_learning.LearningTests.test_empty_model_abstains) ... ok
+test_genuinely_learns_examples (test_learning.LearningTests.test_genuinely_learns_examples) ... ok
+test_human_label_dominates_teacher (test_learning.LearningTests.test_human_label_dominates_teacher) ... ERROR
+test_model_roundtrip (test_learning.LearningTests.test_model_roundtrip) ... ERROR
+test_opposite_labels_change_prediction (test_learning.LearningTests.test_opposite_labels_change_prediction) ... FAIL
+test_raw_content_field_rejected (test_learning.LearningTests.test_raw_content_field_rejected) ... FAIL
+test_retraction_does_not_resurrect_teacher_label (test_learning.LearningTests.test_retraction_does_not_resurrect_teacher_label) ... ERROR
+test_scores_sum_to_one (test_learning.LearningTests.test_scores_sum_to_one) ... ok
+test_teacher_only_cannot_escape_abstention (test_learning.LearningTests.test_teacher_only_cannot_escape_abstention) ... ok
+test_unknown_label_rejected (test_learning.LearningTests.test_unknown_label_rejected) ... FAIL
+test_unknown_vocabulary_abstains (test_learning.LearningTests.test_unknown_vocabulary_abstains) ... ok
+
+======================================================================
+ERROR: test_human_label_dominates_teacher (test_learning.LearningTests.test_human_label_dominates_teacher)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward/tests/test_learning.py", line 37, in test_human_label_dominates_teacher
+    self.assertEqual(s.training_count,4)
+                     ^^^^^^^^^^^^^^^^
+AttributeError: 'Student' object has no attribute 'training_count'
+
+======================================================================
+ERROR: test_model_roundtrip (test_learning.LearningTests.test_model_roundtrip)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward/tests/test_learning.py", line 55, in test_model_roundtrip
+    s=Student(['Finance','Media']); s.fit(examples()); restored=Student.from_dict(s.to_dict())
+                                                                ^^^^^^^^^^^^^^^^^
+AttributeError: type object 'Student' has no attribute 'from_dict'
+
+======================================================================
+ERROR: test_retraction_does_not_resurrect_teacher_label (test_learning.LearningTests.test_retraction_does_not_resurrect_teacher_label)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward/tests/test_learning.py", line 41, in test_retraction_does_not_resurrect_teacher_label
+    s=Student(['Finance','Media']); s.fit(rows); self.assertEqual(s.training_count,0)
+                                                                  ^^^^^^^^^^^^^^^^
+AttributeError: 'Student' object has no attribute 'training_count'
+
+======================================================================
+FAIL: test_conflicting_same_revision_rejected (test_learning.LearningTests.test_conflicting_same_revision_rejected)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward/tests/test_learning.py", line 49, in test_conflicting_same_revision_rejected
+    with self.assertRaises(ValueError): s.fit([event('a','x','Finance'),event('a','x','Media')])
+         ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_opposite_labels_change_prediction (test_learning.LearningTests.test_opposite_labels_change_prediction)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward/tests/test_learning.py", line 25, in test_opposite_labels_change_prediction
+    self.assertEqual(s.predict({'name':'invoice payment'})['suggestions'][0]['label'],'Media')
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'Finance' != 'Media'
+- Finance
++ Media
+
+
+======================================================================
+FAIL: test_raw_content_field_rejected (test_learning.LearningTests.test_raw_content_field_rejected)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward/tests/test_learning.py", line 46, in test_raw_content_field_rejected
+    with self.assertRaises(ValueError): validate_features({'name':'x','content':'secret'})
+         ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_unknown_label_rejected (test_learning.LearningTests.test_unknown_label_rejected)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/data/loomward/tests/test_learning.py", line 44, in test_unknown_label_rejected
+    with self.assertRaises(ValueError): s.fit([event('a','x','NotAllowed')])
+         ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+AssertionError: ValueError not raised
+
+----------------------------------------------------------------------
+Ran 12 tests in 0.005s
+
+FAILED (failures=4, errors=3)

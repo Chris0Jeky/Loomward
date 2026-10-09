@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Loomward · Workspace companion</title>
+<meta name="description" content="A local-first workspace, storage and resource companion. Observation-only research prototype.">
+<link rel="stylesheet" href="/styles.css">
+<script src="/demo-data.js" defer></script><script src="/app.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<aside class="sidebar" aria-label="Primary navigation">
+ <div class="brand"><span class="brand-mark" aria-hidden="true">L</span><div>Loomward<small>WORKSPACE COMPANION</small></div></div>
+ <div class="workspace-tag"><span class="status-dot"></span><span id="workspace-kind">Local workspace</span></div>
+ <div class="nav-label">YOUR WORKSPACE</div><nav id="navigation"></nav>
+ <div class="sidebar-bottom"><div class="shield-icon" aria-hidden="true">◇</div><strong>You stay in control.</strong><p>Observe. Understand. Decide.<br>No file or process changes.</p><span class="build-tag">v0.1 · research prototype</span></div>
+</aside>
+<div class="shell">
+ <header class="topbar"><div class="breadcrumb">Workspace <span>/</span> <strong id="crumb">Overview</strong></div><div class="topbar-actions"><span class="local-pill"><span class="status-dot"></span>Local-first</span><button class="button subtle small" data-action="import">Import snapshot</button><div class="profile-dot" aria-label="Local profile">L</div></div></header>
+ <main id="main" tabindex="-1"><div id="mode-banner" class="mode-banner"></div><div id="content"></div></main>
+ <footer><span id="footer-status">Observation and simulation only</span><span>Intelligence proposes. You decide.</span></footer>
+</div>
+<input type="file" id="snapshot-file" accept="application/json,.json" hidden>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body></html>

@@ -1,0 +1,88 @@
+{
+  "source_id": "fast",
+  "target_free_bytes": 96636764160,
+  "max_transfer_bytes": 107374182400,
+  "cooldown_days": 7,
+  "volumes": [
+    {
+      "id": "fast",
+      "name": "Primary workspace",
+      "capacity_bytes": 549755813888,
+      "free_bytes": 47244640256,
+      "reserve_bytes": 53687091200,
+      "tier": 0,
+      "online": true,
+      "writable": true
+    },
+    {
+      "id": "warm",
+      "name": "Project SSD",
+      "capacity_bytes": 1099511627776,
+      "free_bytes": 332859965440,
+      "reserve_bytes": 107374182400,
+      "tier": 1,
+      "online": true,
+      "writable": true
+    },
+    {
+      "id": "archive",
+      "name": "Archive HDD",
+      "capacity_bytes": 2199023255552,
+      "free_bytes": 944892805120,
+      "reserve_bytes": 214748364800,
+      "tier": 2,
+      "online": true,
+      "writable": true
+    }
+  ],
+  "groups": [
+    {
+      "id": "completed-project",
+      "volume_id": "fast",
+      "source_bytes": 38654705664,
+      "destination_bytes": 38654705664,
+      "transfer_bytes": 38654705664,
+      "heat": 0.03,
+      "pinned": false,
+      "active": false,
+      "protected": false,
+      "days_since_move": 90
+    },
+    {
+      "id": "previous-model",
+      "volume_id": "fast",
+      "source_bytes": 15032385536,
+      "destination_bytes": 15032385536,
+      "transfer_bytes": 15032385536,
+      "heat": 0.1,
+      "pinned": false,
+      "active": false,
+      "protected": false,
+      "days_since_move": 90
+    },
+    {
+      "id": "current-model",
+      "volume_id": "fast",
+      "source_bytes": 10737418240,
+      "destination_bytes": 10737418240,
+      "transfer_bytes": 10737418240,
+      "heat": 0.8,
+      "pinned": true,
+      "active": true,
+      "protected": false,
+      "days_since_move": 90
+    },
+    {
+      "id": "working-film",
+      "volume_id": "fast",
+      "source_bytes": 53687091200,
+      "destination_bytes": 53687091200,
+      "transfer_bytes": 53687091200,
+      "heat": 0.9,
+      "pinned": false,
+      "active": true,
+      "protected": false,
+      "days_since_move": 90
+    }
+  ]
+}

@@ -1,0 +1,258 @@
+{
+  "schema_version": 1,
+  "mode": "demo",
+  "events": [
+    {
+      "event_id": "seed-Documents-0",
+      "item_id": "seed-Documents-0",
+      "revision": 1,
+      "source": "human",
+      "label": "Documents",
+      "features": {
+        "name": "project notes research summary",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      },
+      "retracted": false
+    },
+    {
+      "event_id": "seed-Documents-1",
+      "item_id": "seed-Documents-1",
+      "revision": 1,
+      "source": "human",
+      "label": "Documents",
+      "features": {
+        "name": "meeting notes agenda document",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      },
+      "retracted": false
+    },
+    {
+      "event_id": "seed-Documents-2",
+      "item_id": "seed-Documents-2",
+      "revision": 1,
+      "source": "human",
+      "label": "Documents",
+      "features": {
+        "name": "proposal written report",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      },
+      "retracted": false
+    },
+    {
+      "event_id": "seed-Finance-0",
+      "item_id": "seed-Finance-0",
+      "revision": 1,
+      "source": "human",
+      "label": "Finance",
+      "features": {
+        "name": "invoice payment receipt",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      },
+      "retracted": false
+    },
+    {
+      "event_id": "seed-Finance-1",
+      "item_id": "seed-Finance-1",
+      "revision": 1,
+      "source": "human",
+      "label": "Finance",
+      "features": {
+        "name": "quarterly invoice accounts payment",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      },
+      "retracted": false
+    },
+    {
+      "event_id": "seed-Finance-2",
+      "item_id": "seed-Finance-2",
+      "revision": 1,
+      "source": "human",
+      "label": "Finance",
+      "features": {
+        "name": "expense receipt invoice",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      },
+      "retracted": false
+    },
+    {
+      "event_id": "seed-Media-0",
+      "item_id": "seed-Media-0",
+      "revision": 1,
+      "source": "human",
+      "label": "Media",
+      "features": {
+        "name": "video movie footage",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      },
+      "retracted": false
+    },
+    {
+      "event_id": "seed-Media-1",
+      "item_id": "seed-Media-1",
+      "revision": 1,
+      "source": "human",
+      "label": "Media",
+      "features": {
+        "name": "photo image portrait camera",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      },
+      "retracted": false
+    },
+    {
+      "event_id": "seed-Media-2",
+      "item_id": "seed-Media-2",
+      "revision": 1,
+      "source": "human",
+      "label": "Media",
+      "features": {
+        "name": "conference recording video",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      },
+      "retracted": false
+    },
+    {
+      "event_id": "seed-Projects-0",
+      "item_id": "seed-Projects-0",
+      "revision": 1,
+      "source": "human",
+      "label": "Projects",
+      "features": {
+        "name": "source code repository software",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      },
+      "retracted": false
+    },
+    {
+      "event_id": "seed-Projects-1",
+      "item_id": "seed-Projects-1",
+      "revision": 1,
+      "source": "human",
+      "label": "Projects",
+      "features": {
+        "name": "application build software code",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      },
+      "retracted": false
+    },
+    {
+      "event_id": "seed-Projects-2",
+      "item_id": "seed-Projects-2",
+      "revision": 1,
+      "source": "human",
+      "label": "Projects",
+      "features": {
+        "name": "design project source",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      },
+      "retracted": false
+    },
+    {
+      "event_id": "seed-Models-0",
+      "item_id": "seed-Models-0",
+      "revision": 1,
+      "source": "human",
+      "label": "Models",
+      "features": {
+        "name": "assistant gguf model weights",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      },
+      "retracted": false
+    },
+    {
+      "event_id": "seed-Models-1",
+      "item_id": "seed-Models-1",
+      "revision": 1,
+      "source": "human",
+      "label": "Models",
+      "features": {
+        "name": "language model experiment gguf",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      },
+      "retracted": false
+    },
+    {
+      "event_id": "seed-Models-2",
+      "item_id": "seed-Models-2",
+      "revision": 1,
+      "source": "human",
+      "label": "Models",
+      "features": {
+        "name": "inference model weights",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      },
+      "retracted": false
+    },
+    {
+      "event_id": "seed-Archive-0",
+      "item_id": "seed-Archive-0",
+      "revision": 1,
+      "source": "human",
+      "label": "Archive",
+      "features": {
+        "name": "completed project archive old",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      },
+      "retracted": false
+    },
+    {
+      "event_id": "seed-Archive-1",
+      "item_id": "seed-Archive-1",
+      "revision": 1,
+      "source": "human",
+      "label": "Archive",
+      "features": {
+        "name": "historical completed archive",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      },
+      "retracted": false
+    },
+    {
+      "event_id": "seed-Archive-2",
+      "item_id": "seed-Archive-2",
+      "revision": 1,
+      "source": "human",
+      "label": "Archive",
+      "features": {
+        "name": "previous project archive closed",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      },
+      "retracted": false
+    }
+  ]
+}

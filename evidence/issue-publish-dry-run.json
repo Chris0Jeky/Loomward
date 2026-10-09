@@ -1,0 +1,38 @@
+{
+  "dry_run": true,
+  "repository": "example/loomward",
+  "issues": [
+    {
+      "id": "LW-001",
+      "title": "[LW-001] Verify the reference workbench on Windows"
+    },
+    {
+      "id": "LW-002",
+      "title": "[LW-002] Compile, format and lock the native Rust workspace"
+    },
+    {
+      "id": "LW-064",
+      "title": "[LW-064] Build a disposable Windows filesystem fixture laboratory"
+    },
+    {
+      "id": "LW-003",
+      "title": "[LW-003] Implement handle-derived Windows object identity"
+    },
+    {
+      "id": "LW-004",
+      "title": "[LW-004] Inventory volume identity and capabilities"
+    },
+    {
+      "id": "LW-016",
+      "title": "[LW-016] Standardise the exact v2 wire protocol"
+    },
+    {
+      "id": "LW-005",
+      "title": "[LW-005] Build the local native catalogue and migration harness"
+    },
+    {
+      "id": "LW-006",
+      "title": "[LW-006] Add bounded native scan jobs and cancellation"
+    }
+  ]
+}

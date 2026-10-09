@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "loomward-reference"
+version = "0.1.0"
+description = "Observation-only reference implementation for a learned Windows workspace companion"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = []
+
+[project.optional-dependencies]
+telemetry = ["psutil>=7,<8"]
+browser-tests = ["playwright>=1.56,<2"]
+
+[tool.setuptools.packages.find]
+where = ["python"]
+# The UI is deliberately source-checkout only in this research package.
+# A wheel/native distributable is not claimed. Use scripts/run.py from this checkout.
