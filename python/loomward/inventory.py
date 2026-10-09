@@ -62,6 +62,7 @@ def scan(root: str | Path, *, max_entries: int = 50_000, max_depth: int = 64,
          exclude_names: frozenset[str] = DEFAULT_EXCLUDED) -> dict[str, Any]:
     integer(max_entries, 'max_entries', 1, MAX_RECORDS)
     integer(max_depth, 'max_depth', 0, 256)
+    exclude_names = frozenset(n.casefold() for n in exclude_names)
     root = checked_root(root)
     started = time.monotonic()
     records: list[dict[str, Any]] = []

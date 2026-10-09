@@ -1,5 +1,6 @@
 """Small, inspectable supervised learner. Scores are not calibrated probabilities."""
 from __future__ import annotations
+import copy
 import hashlib
 import json
 import math
@@ -166,8 +167,8 @@ class Student:
                 'score_note': 'Uncalibrated relative model scores, not a probability that a move is safe.'}
 
     def to_dict(self) -> dict[str, Any]:
-        return {'schema_version': 1, 'algorithm': 'weighted_multinomial_nb_v1', 'labels': self.labels,
-                'events': self._events, 'model_id': self.model_id, 'calibrated': False}
+        return {'schema_version': 1, 'algorithm': 'weighted_multinomial_nb_v1', 'labels': list(self.labels),
+                'events': copy.deepcopy(self._events), 'model_id': self.model_id, 'calibrated': False}
 
     @classmethod
     def from_dict(cls, value: Any) -> 'Student':

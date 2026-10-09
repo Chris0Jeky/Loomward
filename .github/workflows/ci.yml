@@ -2,6 +2,9 @@ name: reference-and-native
 on: [push, pull_request, workflow_dispatch]
 permissions:
   contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   python:
     strategy:
@@ -11,17 +14,19 @@ jobs:
         python: ['3.11', '3.13']
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: ${{ matrix.python }}
       - run: python -m unittest discover -s tests
         env:
           PYTHONPATH: python
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
       - run: node --check ui/app.js
+      - run: node --check ui/expansion.js
+      - run: node tests/test_ui_logic.mjs
   native:
     strategy:
       fail-fast: false
@@ -29,11 +34,16 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
       - run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
       - run: cargo +stable fmt --all -- --check
       - run: cargo +stable test --workspace
       - run: cargo +stable clippy --workspace --all-targets -- -D warnings
-# This workflow was authored, not run on GitHub. Resolve/commit Cargo.lock and pin
-# actions to reviewed full commit SHAs before public-release automation.
-# Tauri/WebView2 packaging and browser QA are separate Windows validation gates.
+# Hosted CI first ran green on 2026-10-09 (PR #2). Actions are pinned to full commit SHAs.
