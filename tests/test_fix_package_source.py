@@ -33,15 +33,31 @@ class PackageSourceTests(unittest.TestCase):
         subprocess.run(["git", "commit", "-m", "init"], cwd=root,
                        check=True, capture_output=True)
 
-    def test_untracked_and_ignored_files_excluded(self):
+    def test_ignored_files_excluded(self):
         with tempfile.TemporaryDirectory() as t:
             root = Path(t)
             self.init_repo(root)
             (root / "Resources").mkdir()
             (root / "Resources" / "secret.txt").write_text("private")
-            (root / ".gitignore").write_text("ignored.txt\n")
+            (root / ".git" / "info" / "exclude").write_text("/Resources\nignored.txt\n")
             (root / "ignored.txt").write_text("ignored")
             self.assertEqual(package_source.source_files(root), [root / "a.txt"])
+
+    def test_untracked_unignored_file_is_refused_not_dropped(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            self.init_repo(root)
+            (root / "new_module.py").write_text("x = 1\n")
+            with self.assertRaises(SystemExit):
+                package_source.source_files(root)
+
+    def test_subdirectory_of_a_checkout_is_refused(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            self.init_repo(root)
+            (root / "sub").mkdir()
+            with self.assertRaises(SystemExit):
+                package_source.source_files(root / "sub")
 
     def test_non_git_dir_raises(self):
         with tempfile.TemporaryDirectory() as t:

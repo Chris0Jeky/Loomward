@@ -14,6 +14,12 @@ def source_files(root: Path) -> list[Path]:
         proc=subprocess.run(['git','-C',str(root),'ls-files','-z'],capture_output=True,check=True)
     except (OSError,subprocess.CalledProcessError):
         raise SystemExit('Cannot list tracked files: '+str(root)+' is not a git checkout or git is unavailable')
+    top=subprocess.run(['git','-C',str(root),'rev-parse','--show-toplevel'],capture_output=True,text=True)
+    if top.returncode or Path(top.stdout.strip()).resolve()!=root.resolve():
+        raise SystemExit('Package from the repository root: '+str(root)+' is not the top of a git checkout')
+    untracked=subprocess.run(['git','-C',str(root),'ls-files','--others','--exclude-standard','-z'],capture_output=True,check=True).stdout
+    if untracked:
+        raise SystemExit('Untracked source files would be silently left out; add or ignore them first')
     files=[]
     for name in sorted(n.decode('utf-8','surrogateescape') for n in proc.stdout.split(b'\0') if n):
         rel=Path(name)
