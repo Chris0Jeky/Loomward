@@ -229,7 +229,11 @@ class Handler(BaseHTTPRequestHandler):
             length = -1
         # Read or drain a bounded body before any reply: Windows resets a socket closed with unread
         # request bytes, which can destroy an early error reply before the client reads it.
-        raw = self.rfile.read(length) if not chunked and 0 <= length <= DRAIN_LIMIT else b''
+        try:
+            raw = self.rfile.read(length) if not chunked and 0 <= length <= DRAIN_LIMIT else b''
+        except OSError:  # stalled past the connection timeout or reset: nothing useful to answer
+            self.close_connection = True
+            return
         if not self._authorised(True):
             self.close_connection = True
             return
