@@ -63,8 +63,10 @@ disable, skip or weaken a failing test to advance a milestone.
    the specific `LW-*` issue and its Windows safety gate authorise that capability. Never add a
    general execute, shell, delete or kill endpoint, through HTTP, IPC or MCP.
 2. **No silent reach.** No automatic cloud requests, model downloads, installers, global config
-   changes, elevation or whole-disk scans. Real-disk scans take an explicit disposable root,
-   non-elevated, with state outside it; a path seen in a doc is not a grant.
+   changes, elevation or whole-disk scans. Real-disk scans take an explicit root, non-elevated,
+   metadata only, with state outside it; a path seen in a doc is not a grant. Owner grant
+   (HUMAN_TODO q-4): an agent may pick a big real folder for a read-only stress test, naming it
+   in `evidence/` before scanning; no real file names enter Git.
 3. **Data classes stay separate.** Human labels, teacher (LLM) labels, preferences and operation
    grants are distinct. A learned score is never an approval. No training on, or forwarding of,
    user metadata beyond explicit scope. Synthetic and personal evidence never mix.
