@@ -99,6 +99,10 @@ CURATED_TOKEN_FEATURES: list[dict[str, Any]] = [
     feat('file', '', '', 1 << 20),
     feat('file', '', '', (1 << 53) - 1),
     feat('file', '', '', 1 << 52),
+] + [
+    # log2 of 2^k - 1 rounds up to k in binary floats for k >= 49, which moves the size bucket
+    feat('file', '', '', (1 << k) - 1) for k in range(40, 54)
+] + [
     feat(' '.join(chr(97 + i // 26) + chr(97 + i % 26) for i in range(70)), '', '', 0),  # 70 words: only the first 64 count
     feat('x' * 256, '', 'y ' * 255 + 'zz', 0),
 ]
