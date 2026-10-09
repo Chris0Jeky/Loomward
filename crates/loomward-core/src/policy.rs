@@ -39,13 +39,18 @@ pub fn evaluate(capability: Capability, evidence: &Evidence) -> Decision {
         _ if !evidence.scoped_grant => Some("scope_not_granted"),
         InspectContents if !evidence.content_read_consent => Some("content_consent_required"),
         InspectContents if !evidence.current_identity_verified => Some("identity_not_current"),
-        InspectContents if evidence.protected || evidence.sensitive || evidence.reparse_or_placeholder => {
+        InspectContents
+            if evidence.protected || evidence.sensitive || evidence.reparse_or_placeholder =>
+        {
             Some("excluded_content")
         }
         WriteFeedback if evidence.sensitive => Some("sensitive_training_excluded"),
         _ => None,
     };
-    Decision { allowed: reason.is_none(), reason: reason.unwrap_or("bounded_capability_permitted") }
+    Decision {
+        allowed: reason.is_none(),
+        reason: reason.unwrap_or("bounded_capability_permitted"),
+    }
 }
 
 #[cfg(test)]
@@ -57,25 +62,45 @@ mod tests {
     }
     #[test]
     fn explicit_scope_allows_metadata_without_reading_contents() {
-        let e = Evidence { scoped_grant: true, ..Default::default() };
+        let e = Evidence {
+            scoped_grant: true,
+            ..Default::default()
+        };
         assert!(evaluate(Capability::ObserveMetadata, &e).allowed);
         assert!(!evaluate(Capability::InspectContents, &e).allowed);
     }
     #[test]
     fn even_all_grants_cannot_enable_mutations() {
-        let e = Evidence { scoped_grant: true, content_read_consent: true, current_identity_verified: true, ..Default::default() };
-        for c in [Capability::MoveFile, Capability::DeleteFile, Capability::RenameFile, Capability::ControlProcess] {
+        let e = Evidence {
+            scoped_grant: true,
+            content_read_consent: true,
+            current_identity_verified: true,
+            ..Default::default()
+        };
+        for c in [
+            Capability::MoveFile,
+            Capability::DeleteFile,
+            Capability::RenameFile,
+            Capability::ControlProcess,
+        ] {
             assert_eq!(evaluate(c, &e).reason, "mutation_not_implemented");
         }
     }
     #[test]
     fn protected_placeholder_never_hashes() {
-        let e = Evidence { scoped_grant: true, content_read_consent: true, current_identity_verified: true,
-                           reparse_or_placeholder: true, ..Default::default() };
+        let e = Evidence {
+            scoped_grant: true,
+            content_read_consent: true,
+            current_identity_verified: true,
+            reparse_or_placeholder: true,
+            ..Default::default()
+        };
         assert!(!evaluate(Capability::InspectContents, &e).allowed);
     }
     #[test]
     fn model_confidence_is_not_a_policy_field() {
-        assert!(serde_json::from_str::<Evidence>(r#"{"scoped_grant":true,"confidence":1.0}"#).is_err());
+        assert!(
+            serde_json::from_str::<Evidence>(r#"{"scoped_grant":true,"confidence":1.0}"#).is_err()
+        );
     }
 }
