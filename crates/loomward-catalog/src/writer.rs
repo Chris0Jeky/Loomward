@@ -1445,7 +1445,8 @@ fn rebuild_multilink(conn: &Connection, root: i64) -> Result<()> {
     conn.execute("DELETE FROM multilink WHERE volume_id=?1", [volume])?;
     conn.execute("INSERT INTO multilink SELECT ?1,f.file_id,count(*),max(f.allocated) FROM file f JOIN dir d ON d.id=f.dir_id JOIN visible_dir v ON v.id=d.id JOIN root r ON r.id=d.root_id WHERE r.volume_id=?1 AND f.file_id IS NOT NULL AND d.listing_state!='excluded' GROUP BY f.file_id HAVING count(*)>1",[volume])?;
     conn.execute("UPDATE file SET flags=flags & ~?2 WHERE dir_id IN (SELECT d.id FROM dir d JOIN root r ON r.id=d.root_id WHERE r.volume_id=?1) AND flags & ?2 != 0",params![volume,HARDLINK_SUSPECTED])?;
-    conn.execute("UPDATE file SET flags=flags | ?2 WHERE dir_id IN (SELECT d.id FROM dir d JOIN root r ON r.id=d.root_id WHERE r.volume_id=?1) AND file_id IN (SELECT file_id FROM multilink WHERE volume_id=?1)",params![volume,HARDLINK_SUSPECTED])?;
+    // Only visible rows carry the flag; hidden copies were cleared above and are not counted.
+    conn.execute("UPDATE file SET flags=flags | ?2 WHERE dir_id IN (SELECT d.id FROM dir d JOIN visible_dir v ON v.id=d.id JOIN root r ON r.id=d.root_id WHERE r.volume_id=?1 AND d.listing_state!='excluded') AND file_id IN (SELECT file_id FROM multilink WHERE volume_id=?1)",params![volume,HARDLINK_SUSPECTED])?;
     Ok(())
 }
 /// One directory read, one postorder propagation, one prepared update per visible directory.

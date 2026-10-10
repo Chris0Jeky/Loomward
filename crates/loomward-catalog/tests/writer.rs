@@ -2412,6 +2412,54 @@ fn multilink_ignores_files_below_excluded_or_absent_ancestors() {
 }
 
 #[test]
+fn multilink_flags_only_visible_copies_when_hidden_copies_share_the_id() {
+    let (temp, c, grant, root, run) = setup();
+    let w = c.writer();
+    let proj = directory("proj", 5);
+    w.call(listing(run, root, vec![], vec![proj.clone()]))
+        .unwrap();
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    let proj_id: i64 = db
+        .query_row("SELECT id FROM dir WHERE name='proj'", [], |r| r.get(0))
+        .unwrap();
+    w.call(listing(
+        run,
+        proj_id,
+        vec![identified("hidden", 8, 100)],
+        vec![],
+    ))
+    .unwrap();
+    end(w, run, "completed");
+
+    let run = begin(w, grant, 5);
+    let mut placeholder = proj.clone();
+    placeholder.flags = 1 << 3;
+    w.call(listing(
+        run,
+        root,
+        vec![
+            identified("visible", 8, 100),
+            identified("visible2", 8, 100),
+        ],
+        vec![placeholder],
+    ))
+    .unwrap();
+    end(w, run, "completed");
+    let flag = |name: &str| -> i64 {
+        db.query_row(
+            "SELECT flags & ?1 FROM file WHERE name=?2",
+            rusqlite::params![HARDLINK_SUSPECTED, name],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    // The two visible names are a genuine link; the hidden copy is neither counted nor flagged.
+    assert_ne!(flag("visible"), 0);
+    assert_ne!(flag("visible2"), 0);
+    assert_eq!(flag("hidden"), 0);
+}
+
+#[test]
 fn absent_parent_retires_its_excluded_child_and_descendants() {
     let (temp, c, grant, root, run) = setup();
     let w = c.writer();
