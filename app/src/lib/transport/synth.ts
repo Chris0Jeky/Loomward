@@ -40,6 +40,7 @@ export const HOSTILE_NAMES = [
   'invoice‮txt.exe',
   'a&amp;b &lt;i&gt;.doc',
   'javascript:alert(1)',
+  'budget\u200B\u200Dfinal.xlsx', // zero-width space and joiner: invisible unless shown
   'long-'.repeat(48) + 'name.txt',
 ];
 

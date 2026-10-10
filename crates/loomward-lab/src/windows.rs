@@ -1,6 +1,6 @@
 use loomward_lab::{
-    bucket_path, decode_records, expected, file_spec, invalid, root_name, Manifest, Profile,
-    Totals, MARKER, MAX_DEPTH, QUEUE_LIMIT,
+    bucket_path, decode_records, disagreements, expected, file_spec, invalid, real_root, root_name,
+    CrossTotals, Manifest, Profile, Totals, MARKER, MAX_DEPTH, QUEUE_LIMIT,
 };
 use serde::Serialize;
 use std::{
@@ -25,18 +25,19 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{
-        ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_FILES, FILETIME, HANDLE, INVALID_HANDLE_VALUE,
+        CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_FILES, FILETIME, HANDLE,
+        INVALID_HANDLE_VALUE,
     },
+    Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY},
     Storage::FileSystem::*,
     System::{
         Ioctl::FSCTL_SET_SPARSE,
         ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS},
-        Threading::{GetCurrentProcess, GetProcessTimes},
+        Threading::{GetCurrentProcess, GetProcessTimes, OpenProcessToken},
         IO::DeviceIoControl,
     },
 };
 
-const BASE: &str = r"G:\loomward-lab\scale";
 const MIN_FREE: u64 = 20_000_000_000;
 const REJECT_ATTRS: u32 = FILE_ATTRIBUTE_REPARSE_POINT
     | FILE_ATTRIBUTE_OFFLINE
@@ -96,19 +97,20 @@ struct Scope {
 impl Scope {
     fn open(input: &str, create: bool) -> io::Result<Self> {
         let name = root_name(input)?;
-        let root = PathBuf::from(format!(r"\\?\G:\loomward-lab\scale\{name}"));
+        let drive = &input[..1];
+        let base = PathBuf::from(format!(r"\\?\{drive}:\loomward-lab\scale"));
+        let root = base.join(name);
         // Check the drive ancestor without enumerating anything outside the lab.
-        plain_metadata(Path::new(r"G:\"))?;
+        plain_metadata(Path::new(&format!(r"{drive}:\")))?;
         let mut pins = Vec::new();
-        for path in [r"\\?\G:\loomward-lab", r"\\?\G:\loomward-lab\scale"] {
-            let path = Path::new(path);
+        for path in [base.parent().unwrap(), base.as_path()] {
             if create && !path.try_exists()? {
                 fs::create_dir(path)?;
             }
             pins.push(pin_directory(path)?);
         }
         let marker = if create {
-            if free_bytes(Path::new(BASE))? < MIN_FREE {
+            if free_bytes(&base)? < MIN_FREE {
                 return Err(invalid("less than 20 GB free; generation refused"));
             }
             fs::create_dir(&root)?; // Fails even for an existing empty or marked tree.
@@ -302,12 +304,14 @@ enum Strategy {
 #[derive(Debug, Default)]
 struct Observed {
     totals: Totals,
+    denied_directories: u64,
     allocation_bytes: u64,
     ids: u64,
 }
 impl Observed {
     fn add(&mut self, other: Self) {
         self.totals.add(other.totals);
+        self.denied_directories += other.denied_directories;
         self.allocation_bytes += other.allocation_bytes;
         self.ids += other.ids;
     }
@@ -332,6 +336,7 @@ struct Queue {
 struct Pool {
     state: Mutex<Queue>,
     wake: Condvar,
+    real: bool,
 }
 
 fn walk(
@@ -339,6 +344,16 @@ fn walk(
     strategy: Strategy,
     threads: usize,
     buffer_kib: usize,
+) -> io::Result<Observed> {
+    walk_mode(root, strategy, threads, buffer_kib, false)
+}
+
+fn walk_mode(
+    root: &Path,
+    strategy: Strategy,
+    threads: usize,
+    buffer_kib: usize,
+    real: bool,
 ) -> io::Result<Observed> {
     let pool = Pool {
         state: Mutex::new(Queue {
@@ -351,6 +366,7 @@ fn walk(
             error: None,
         }),
         wake: Condvar::new(),
+        real,
     };
     thread::scope(|s| -> io::Result<Observed> {
         let handles: Vec<_> = (0..threads)
@@ -398,6 +414,23 @@ fn walk(
 }
 
 fn visit(
+    job: Job,
+    strategy: Strategy,
+    buffer_kib: usize,
+    pool: &Pool,
+    totals: &mut Observed,
+) -> io::Result<()> {
+    let result = visit_directory(job, strategy, buffer_kib, pool, totals);
+    match result {
+        Err(e) if pool.real && e.kind() == io::ErrorKind::PermissionDenied => {
+            totals.denied_directories += 1;
+            Ok(())
+        }
+        result => result,
+    }
+}
+
+fn visit_directory(
     job: Job,
     strategy: Strategy,
     buffer_kib: usize,
@@ -476,7 +509,9 @@ fn visit(
         Strategy::Std => {
             for row in fs::read_dir(&path)? {
                 let row = row?;
-                let metadata = fs::symlink_metadata(row.path())?;
+                // A denied per-entry stat is not a denied directory enumeration.
+                let metadata = fs::symlink_metadata(row.path())
+                    .map_err(|e| io::Error::other(format!("entry metadata failed: {e}")))?;
                 entry(
                     row.file_name(),
                     metadata.file_attributes(),
@@ -604,6 +639,223 @@ fn cpu_seconds() -> io::Result<f64> {
     Ok((ticks(kernel) + ticks(user)) as f64 / 10_000_000.0)
 }
 
+fn require_non_elevated() -> io::Result<()> {
+    let mut token: HANDLE = null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut elevation: TOKEN_ELEVATION = unsafe { zeroed() };
+    let mut returned = 0;
+    let success = unsafe {
+        GetTokenInformation(
+            token,
+            TokenElevation,
+            (&mut elevation as *mut TOKEN_ELEVATION).cast(),
+            size_of::<TOKEN_ELEVATION>() as u32,
+            &mut returned,
+        )
+    };
+    let error = io::Error::last_os_error();
+    unsafe {
+        CloseHandle(token);
+    }
+    if success == 0 {
+        return Err(error);
+    }
+    if elevation.TokenIsElevated != 0 {
+        return Err(invalid("non-elevated token required"));
+    }
+    Ok(())
+}
+
+#[derive(serde::Deserialize, Serialize)]
+struct CrossRun {
+    strategy: String,
+    threads: usize,
+    buffer_kib: usize,
+    cache_label: String,
+    observed: Option<CrossTotals>,
+    wall_seconds: f64,
+    files_per_second: Option<f64>,
+    cpu_seconds: f64,
+    peak_rss_bytes: usize,
+    error: Option<String>,
+}
+
+fn validated_root_log(root: &Path, log_path: &Path) -> io::Result<PathBuf> {
+    if !log_path.is_absolute() {
+        return Err(invalid(
+            "root-log must be absolute and outside the scan root",
+        ));
+    }
+    let root = fs::canonicalize(root)?;
+    let parent = fs::canonicalize(
+        log_path
+            .parent()
+            .ok_or_else(|| invalid("root-log parent required"))?,
+    )?;
+    let root_key = root
+        .to_str()
+        .ok_or_else(|| invalid("root final path must be Unicode"))?
+        .to_lowercase();
+    let parent_key = parent
+        .to_str()
+        .ok_or_else(|| invalid("root-log parent final path must be Unicode"))?
+        .to_lowercase();
+    if !parent.is_dir() || Path::new(&parent_key).starts_with(Path::new(&root_key)) {
+        return Err(invalid(
+            "root-log must be absolute and outside the scan root",
+        ));
+    }
+    Ok(parent.join(
+        log_path
+            .file_name()
+            .ok_or_else(|| invalid("root-log filename required"))?,
+    ))
+}
+
+/// Runs the syntactic guard on the input AND on its resolved long-name path, so an 8.3 alias or a
+/// junction cannot name a refused profile, credential or browser location.
+fn resolved_real_root(input: &str) -> io::Result<String> {
+    real_root(input)?;
+    let canonical = fs::canonicalize(input)?;
+    let canonical = canonical.to_string_lossy();
+    let long = canonical
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&canonical)
+        .to_string();
+    real_root(&long)?;
+    Ok(long)
+}
+
+fn cross_check(
+    input: &str,
+    name: Option<&str>,
+    threads: usize,
+    buffer_kib: usize,
+    cache_label: &str,
+    root_log: &str,
+) -> io::Result<()> {
+    let resolved = resolved_real_root(input)?;
+    let input = resolved.as_str();
+    if let Some(name) = name {
+        let strategy = match name {
+            "std-single" | "std-parallel" => Strategy::Std,
+            "find" => Strategy::Find,
+            "handle" => Strategy::Handle,
+            _ => return Err(invalid("unknown cross-check strategy")),
+        };
+        let root = PathBuf::from(format!(r"\\?\{input}"));
+        let log_path = validated_root_log(Path::new(input), Path::new(root_log))?;
+        let mut log = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(log_path)?;
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(io::Error::other)?
+            .as_secs();
+        writeln!(
+            log,
+            "{timestamp}\t{input}\towner-authorised metadata stress; {name}; {cache_label}"
+        )?;
+        log.sync_all()?;
+        // Validate and retain every root component before traversal; no resolve() hiding links.
+        let mut ancestors = Vec::new();
+        for ancestor in root.ancestors().collect::<Vec<_>>().into_iter().rev() {
+            plain_metadata(ancestor)?;
+            ancestors.push(pin_directory(ancestor)?);
+        }
+        let threads = if name == "std-single" { 1 } else { threads };
+        let cpu_start = cpu_seconds()?;
+        let start = Instant::now();
+        let actual = walk_mode(&root, strategy, threads, buffer_kib, true);
+        let wall = start.elapsed().as_secs_f64();
+        let cpu = cpu_seconds()? - cpu_start;
+        let mut counters: PROCESS_MEMORY_COUNTERS = unsafe { zeroed() };
+        counters.cb = size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+        if unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let (observed, error) = match actual {
+            Ok(actual) => (
+                Some(CrossTotals {
+                    totals: actual.totals,
+                    denied_directories: actual.denied_directories,
+                }),
+                None,
+            ),
+            Err(e) => (
+                None,
+                Some(format!("{:?}; os_code={:?}", e.kind(), e.raw_os_error())),
+            ),
+        };
+        let result = CrossRun {
+            strategy: name.into(),
+            threads,
+            buffer_kib,
+            cache_label: cache_label.into(),
+            observed,
+            wall_seconds: wall,
+            files_per_second: observed.map(|r| r.totals.files as f64 / wall),
+            cpu_seconds: cpu,
+            peak_rss_bytes: counters.PeakWorkingSetSize,
+            error,
+        };
+        println!("{}", serde_json::to_string(&result)?);
+        return Ok(());
+    }
+    let mut runs: Vec<CrossRun> = Vec::new();
+    let mut differences = Vec::new();
+    for strategy in ["std-single", "std-parallel", "find", "handle"] {
+        let output = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "cross-check",
+                "--root",
+                input,
+                "--root-log",
+                root_log,
+                "--strategy",
+                strategy,
+                "--threads",
+                &threads.to_string(),
+                "--buffer-kib",
+                &buffer_kib.to_string(),
+                "--cache-label",
+                cache_label,
+            ])
+            .output()?;
+        if !output.status.success() {
+            differences.push(format!(
+                "{strategy} failed before reporting aggregates; exit={}",
+                output.status
+            ));
+            continue;
+        }
+        let run: CrossRun = serde_json::from_slice(&output.stdout)?;
+        if let Some(error) = &run.error {
+            differences.push(format!("{strategy} traversal failed: {error}"));
+        }
+        if let (Some(baseline), Some(actual)) =
+            (runs.first().and_then(|r| r.observed), run.observed)
+        {
+            differences.extend(disagreements(&runs[0].strategy, baseline, strategy, actual));
+        }
+        runs.push(run);
+    }
+    let exact = differences.is_empty() && runs.len() == 4;
+    println!(
+        "{}",
+        serde_json::to_string(
+            &serde_json::json!({ "runs": runs, "agreement": exact, "disagreements": differences })
+        )?
+    );
+    if !exact {
+        return Err(invalid("strategy disagreement; see aggregate report"));
+    }
+    Ok(())
+}
+
 #[derive(Serialize)]
 struct Measurement {
     strategy: String,
@@ -686,6 +938,9 @@ fn bench(
 }
 
 fn destroy(input: &str) -> io::Result<()> {
+    if !input.starts_with("G:") && !input.starts_with("g:") {
+        return Err(invalid("destroy remains restricted to the G: lab"));
+    }
     let mut scope = Scope::open(input, false)?;
     let busy = Busy::take(&scope)?;
     // Preflight the entire tree before deleting a single entry. Refuse all reparse points.
@@ -726,6 +981,7 @@ fn destroy(input: &str) -> io::Result<()> {
 }
 
 pub fn run() -> io::Result<()> {
+    require_non_elevated()?;
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(command) = args.first() else {
         return Err(invalid("generate|bench|destroy --root G:\\loomward-lab\\scale\\NAME [--files N --seed S --profile dev|media|mixed] [--threads N] [--strategy std-single|std-parallel|find|handle --buffer-kib N --cache-label LABEL]"));
@@ -738,6 +994,14 @@ pub fn run() -> io::Result<()> {
         "generate" => &["--root", "--files", "--seed", "--profile", "--threads"],
         "bench" => &[
             "--root",
+            "--strategy",
+            "--threads",
+            "--buffer-kib",
+            "--cache-label",
+        ],
+        "cross-check" => &[
+            "--root",
+            "--root-log",
             "--strategy",
             "--threads",
             "--buffer-kib",
@@ -794,6 +1058,126 @@ pub fn run() -> io::Result<()> {
                 .to_string(),
         ),
         "destroy" => destroy(root),
+        "cross-check" => cross_check(
+            root,
+            options.get("--strategy").copied(),
+            threads,
+            buffer,
+            options.get("--cache-label").unwrap_or(&"uncontrolled"),
+            required("--root-log")?,
+        ),
         _ => unreachable!(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct LogScope(PathBuf);
+
+    impl LogScope {
+        fn new() -> Self {
+            // Parallel tests share a pid and the Windows clock is coarse: a counter keeps names unique.
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "loomward-log-guard-{}-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs::create_dir(&path).unwrap();
+            fs::create_dir(path.join("scanroot-long-name")).unwrap();
+            Self(path)
+        }
+
+        fn root(&self) -> PathBuf {
+            self.0.join("scanroot-long-name")
+        }
+    }
+
+    impl Drop for LogScope {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+
+    #[test]
+    fn root_log_refuses_case_variant() {
+        let scope = LogScope::new();
+        let log = PathBuf::from(scope.root().to_str().unwrap().to_uppercase()).join("unsafe.log");
+        assert!(validated_root_log(&scope.root(), &log).is_err());
+    }
+
+    #[test]
+    fn root_log_refuses_parent_components() {
+        let scope = LogScope::new();
+        fs::create_dir(scope.0.join("outside")).unwrap();
+        let log = scope.0.join("outside\\..\\scanroot-long-name\\unsafe.log");
+        assert!(validated_root_log(&scope.root(), &log).is_err());
+    }
+
+    #[test]
+    fn root_log_refuses_namespace_alias() {
+        let scope = LogScope::new();
+        let log = fs::canonicalize(scope.root()).unwrap().join("unsafe.log");
+        assert!(log.to_str().unwrap().starts_with(r"\\?\"));
+        assert!(validated_root_log(&scope.root(), &log).is_err());
+    }
+
+    #[test]
+    fn real_root_guard_sees_the_resolved_long_name() {
+        let short = r"C:\PROGRA~1";
+        if !Path::new(short).exists() {
+            eprintln!("UNVERIFIED: no 8.3 alias for Program Files on this host");
+            return;
+        }
+        let long = resolved_real_root(short).unwrap();
+        assert!(
+            long.to_ascii_lowercase().ends_with(r"\program files"),
+            "{long}"
+        );
+        assert!(resolved_real_root(r"C:\Users").is_err());
+    }
+
+    #[test]
+    fn root_log_refuses_short_name_alias() {
+        let scope = LogScope::new();
+        let mut buffer = vec![0u16; 32768];
+        let length = unsafe {
+            GetShortPathNameW(
+                wide(&scope.root()).as_ptr(),
+                buffer.as_mut_ptr(),
+                buffer.len() as u32,
+            )
+        };
+        assert!(length > 0 && (length as usize) < buffer.len());
+        let short = PathBuf::from(OsString::from_wide(&buffer[..length as usize]));
+        if short == scope.root() {
+            eprintln!("UNVERIFIED: fixture volume has no 8.3 alias");
+            return;
+        }
+        assert!(validated_root_log(&scope.root(), &short.join("unsafe.log")).is_err());
+        assert!(validated_root_log(&short, &scope.root().join("unsafe.log")).is_err());
+    }
+
+    #[test]
+    fn root_log_refuses_unresolved_parent_and_relative_path() {
+        let scope = LogScope::new();
+        assert!(validated_root_log(&scope.root(), &scope.0.join("missing\\unsafe.log")).is_err());
+        assert!(validated_root_log(&scope.root(), Path::new("relative.log")).is_err());
+    }
+
+    #[test]
+    fn root_log_accepts_external_sibling_with_shared_prefix() {
+        let scope = LogScope::new();
+        let sibling = scope.0.join("scanroot-long-name-sibling");
+        fs::create_dir(&sibling).unwrap();
+        assert!(validated_root_log(&scope.root(), &sibling.join("safe.log")).is_ok());
+        assert!(validated_root_log(&scope.root(), &scope.0.join("safe.log")).is_ok());
+        assert!(validated_root_log(&scope.root(), &scope.root().join("unsafe.log")).is_err());
     }
 }
