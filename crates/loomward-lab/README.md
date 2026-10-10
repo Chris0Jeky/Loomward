@@ -21,9 +21,9 @@ that directory itself.
 
 Synthetic generation/bench roots must be **direct children of G:\loomward-lab\scale or E:\loomward-lab\scale**, with ASCII letters/digits/hyphens/
 underscores and no device names. Relative, UNC, device, ADS and traversal paths are refused.
-Generation never overwrites an existing root. It reserves 20 GB (decimal) free space, limits a tree to
-3M files, except the owner-authorised oversized **L tier (10,000,000 files)**, which is permitted
-only under the E: scale lab. G: and every other root keep the 3M cap/refusal. The root grammar,
+Generation never overwrites an existing root. It reserves 20 GB (decimal) free space, limits a G: tree to
+2M files, except the owner-authorised oversized **L tier (10,000,000 files)**, which is permitted
+only under the E: scale lab. G: and every other root keep the 2M cap/refusal. The root grammar,
 marker, non-elevated token, never-overwrite check and sparse zero payloads remain mandatory.
 It sparsifies before extending files and refuses completion if payload allocation or the
 observed generation volume delta exceeds 20 GB (decimal) for <=3M files. For oversized E: trees,

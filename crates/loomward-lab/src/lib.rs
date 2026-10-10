@@ -8,6 +8,8 @@ use std::{
 
 pub const MARKER: &str = "Loomward disposable scale lab v1\n";
 pub const MAX_FILES: u64 = 3_000_000;
+/// ADR-V3-17: G: lab trees stay capped at 2M entries.
+pub const G_MAX_FILES: u64 = 2_000_000;
 pub const L_FILES: u64 = 10_000_000;
 pub const RESERVE_BYTES: u64 = 20_000_000_000;
 pub const QUEUE_LIMIT: usize = 1024;
@@ -95,11 +97,11 @@ pub fn generation_limits(input: &str, files: u64) -> io::Result<u64> {
     let cap = if input[..1].eq_ignore_ascii_case("E") {
         L_FILES
     } else {
-        MAX_FILES
+        G_MAX_FILES
     };
     if files == 0 || files > cap {
         return Err(invalid(
-            "files must be 1..=3000000; up to 10000000 only under the E: scale lab",
+            "files must be 1..=2000000 on G:; up to 10000000 only under the E: scale lab",
         ));
     }
     Ok((RESERVE_BYTES * files.max(MAX_FILES)).div_ceil(MAX_FILES))
@@ -389,7 +391,7 @@ mod tests {
             assert!(generation_limits(path, 0).is_err());
         }
         assert_eq!(
-            generation_limits(r"G:\loomward-lab\scale\small", MAX_FILES).unwrap(),
+            generation_limits(r"G:\loomward-lab\scale\small", G_MAX_FILES).unwrap(),
             20_000_000_000
         );
         for path in [
@@ -402,6 +404,17 @@ mod tests {
             assert!(generation_limits(path, 10_000_000).is_err(), "{path}");
         }
         assert!(generation_limits(r"G:\loomward-lab\scale\large", MAX_FILES + 1).is_err());
+    }
+    #[test]
+    fn g_scale_lab_is_capped_at_two_million() {
+        assert_eq!(
+            generation_limits(r"G:\loomward-lab\scale\small", 2_000_000).unwrap(),
+            20_000_000_000
+        );
+        let err = generation_limits(r"G:\loomward-lab\scale\large", 2_000_001).unwrap_err();
+        assert!(err.to_string().contains("2000000"), "{err}");
+        assert!(generation_limits(r"g:\loomward-lab\scale\large", 2_000_001).is_err());
+        assert!(generation_limits(r"G:\loomward-lab\scale\large", MAX_FILES).is_err());
     }
     use super::*;
     #[test]
