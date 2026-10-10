@@ -142,6 +142,8 @@ pub struct RootRow {
     pub finished_at_ns: Option<i64>,
 }
 
+/// At most [`MAX_ACTIVE_ROOTS`] rows (the contract's list cap): every active grant first, then the
+/// newest revoked ones, returned in root id order. Grants are refused past that many active roots.
 pub fn roots(conn: &Connection, only: Option<i64>) -> Sql<Vec<RootRow>> {
     let mut stmt = conn.prepare_cached(
         "SELECT r.id,r.grant_id,r.volume_id,r.generation,r.state,g.display_path,g.origin,g.granted_via,g.state,
@@ -149,7 +151,7 @@ pub fn roots(conn: &Connection, only: Option<i64>) -> Sql<Vec<RootRow>> {
                 (SELECT id FROM main.dir WHERE root_id=r.id AND parent_id IS NULL),
                 (SELECT max(finished_at_ns) FROM main.scan_run WHERE root_id=r.id AND state='completed')
          FROM main.root r JOIN st.root_grant g ON g.id=r.grant_id
-         WHERE ?1 IS NULL OR r.id=?1 ORDER BY r.id LIMIT 64",
+         WHERE ?1 IS NULL OR r.id=?1 ORDER BY g.state='active' DESC,r.id DESC LIMIT 64",
     )?;
     let rows = stmt
         .query_map([only], |r| {
@@ -169,8 +171,21 @@ pub fn roots(conn: &Connection, only: Option<i64>) -> Sql<Vec<RootRow>> {
                 finished_at_ns: r.get(12)?,
             })
         })?
-        .collect();
-    rows
+        .collect::<Sql<Vec<RootRow>>>();
+    rows.map(|mut r| {
+        r.sort_by_key(|r| r.root);
+        r
+    })
+}
+
+pub const MAX_ACTIVE_ROOTS: i64 = 64;
+
+pub fn active_grants(conn: &Connection) -> Sql<i64> {
+    conn.query_row(
+        "SELECT count(*) FROM st.root_grant WHERE state='active'",
+        [],
+        |r| r.get(0),
+    )
 }
 
 /// The catalogue root observing a grant.

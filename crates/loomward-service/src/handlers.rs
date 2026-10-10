@@ -393,7 +393,16 @@ impl Inner {
         };
         let (root, fresh) = match self.grant(&path, "desktop_picker") {
             Ok(g) => g,
-            Err(r) => return refused(r),
+            Err(crate::Refused::Rule(r)) => return refused(r),
+            Err(crate::Refused::RootLimit) => {
+                return Err(with_reason(
+                    fail(
+                        ErrorCode::ResourceBudget,
+                        "64 roots are already granted; revoke one before granting another",
+                    ),
+                    "root_limit_reached",
+                ))
+            }
         };
         if !fresh {
             return refused(RootGrantResultRefusal::AlreadyGranted);

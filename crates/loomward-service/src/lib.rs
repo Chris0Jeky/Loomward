@@ -125,9 +125,13 @@ impl Service {
             hooks: Default::default(),
         });
         for (i, root) in config.grant_roots.iter().enumerate() {
-            inner
-                .grant(root, "cli_flag")
-                .map_err(|r| format!("grant root #{} refused: {}", i + 1, refusal_name(r)))?;
+            inner.grant(root, "cli_flag").map_err(|r| {
+                let rule = match r {
+                    Refused::Rule(r) => refusal_name(r),
+                    Refused::RootLimit => "root_limit_reached".into(),
+                };
+                format!("grant root #{} refused: {rule}", i + 1)
+            })?;
         }
         spawn_telemetry_pump(Arc::downgrade(&inner));
         Ok(Service { inner })
@@ -154,6 +158,20 @@ pub(crate) fn refusal_name(r: Refusal) -> String {
         .ok()
         .and_then(|v| v.as_str().map(str::to_owned))
         .unwrap_or_default()
+}
+
+/// Why a grant was refused: a contract refusal rule, or the active-root cap (the contract lists
+/// at most 64 roots, so a 65th active root could not be shown or revoked).
+#[derive(Debug, PartialEq)]
+pub(crate) enum Refused {
+    Rule(Refusal),
+    RootLimit,
+}
+
+impl From<Refusal> for Refused {
+    fn from(r: Refusal) -> Self {
+        Refused::Rule(r)
+    }
 }
 
 /// Commands that change state. Their outcome is retained under the `request_id` (section 4) and a
@@ -590,7 +608,7 @@ impl Inner {
     /// Grants one already path-checked root under the session's provenance policy. A synthetic
     /// session accepts only a registered lab root whose native identity matches the registry; a
     /// personal session accepts an owner folder. Re-granting an active root returns it.
-    pub(crate) fn grant(&self, root: &Path, via: &str) -> Result<(i64, bool), Refusal> {
+    pub(crate) fn grant(&self, root: &Path, via: &str) -> Result<(i64, bool), Refused> {
         let (volume_key, file_id) = lab::identity(root)?;
         let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
         let conn = self.db();
@@ -611,6 +629,11 @@ impl Inner {
             {
                 return Ok((root, false));
             }
+        }
+        if db::active_grants(&conn).map_err(|_| Refusal::IdentityUnavailable)?
+            >= db::MAX_ACTIVE_ROOTS
+        {
+            return Err(Refused::RootLimit);
         }
         drop(conn);
         let text = root.to_string_lossy();
@@ -635,7 +658,7 @@ impl Inner {
             .map_err(|_| Refusal::IdentityUnavailable)?;
         match reply {
             WriteReply::Root { root_id, .. } => Ok((root_id, true)),
-            _ => Err(Refusal::IdentityUnavailable),
+            _ => Err(Refusal::IdentityUnavailable.into()),
         }
     }
 

@@ -1122,3 +1122,65 @@ fn revocation_runs_with_the_idempotency_slot_cap_full() {
         ),
     );
 }
+
+/// #185 item 3: revoked roots keep their rows, so after many grant/revoke cycles `roots.list`
+/// still shows every active root (then the newest revoked ones), in id order, at most 64.
+#[test]
+fn roots_list_keeps_active_roots_past_64_revoked_rows() {
+    let tmp = tempfile::tempdir().unwrap();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let all: Vec<(i64, i64)> = (1..=70).map(|i| register(&svc, i)).collect();
+    for (_, grant) in &all[..66] {
+        svc.inner.revoke(*grant).unwrap();
+    }
+    for command in ["roots.list", "grants.list"] {
+        let (list, _) = ok(command, call(&svc, command, json!({})));
+        let key = if command == "roots.list" {
+            "roots"
+        } else {
+            "grants"
+        };
+        let ids: Vec<i64> = list[key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| svc.inner.root_row(r["root_id"].as_str().unwrap()).unwrap())
+            .collect();
+        let expected: Vec<i64> = all[6..].iter().map(|(root, _)| *root).collect();
+        assert_eq!(
+            ids, expected,
+            "{command}: 4 active and the 60 newest revoked"
+        );
+    }
+}
+
+/// #185 item 3: the contract lists at most 64 roots, so a 65th active grant is refused by name;
+/// re-granting an active root and granting after a revocation still work.
+#[test]
+fn grants_past_64_active_roots_are_refused_by_rule() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = tmp.path().join("state");
+    let svc = open(&state, DatasetClass::Personal);
+    let dirs: Vec<std::path::PathBuf> = (0..65)
+        .map(|i| {
+            let d = tmp.path().join(format!("owner-{i}"));
+            std::fs::create_dir(&d).unwrap();
+            d.canonicalize().unwrap()
+        })
+        .collect();
+    let mut granted = Vec::new();
+    for d in &dirs[..64] {
+        granted.push(svc.inner.grant(d, "cli_flag").unwrap().0);
+    }
+    assert_eq!(
+        svc.inner.grant(&dirs[64], "cli_flag"),
+        Err(crate::Refused::RootLimit)
+    );
+    assert_eq!(
+        svc.inner.grant(&dirs[0], "cli_flag"),
+        Ok((granted[0], false))
+    );
+    let grant = crate::db::roots(&svc.inner.db(), Some(granted[0])).unwrap()[0].grant;
+    svc.inner.revoke(grant).unwrap();
+    assert!(svc.inner.grant(&dirs[64], "cli_flag").unwrap().1);
+}
