@@ -642,8 +642,10 @@ dependencies = [
  "hyper",
  "hyper-util",
  "loomward-protocol",
+ "loomward-service",
  "serde_json",
  "subtle",
+ "tempfile",
  "tokio",
 ]
 
@@ -678,6 +680,24 @@ dependencies = [
  "jsonschema",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "loomward-service"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "loomward-catalog",
+ "loomward-engine",
+ "loomward-protocol",
+ "loomward-telemetry",
+ "loomward-windows",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tempfile",
 ]
 
 [[package]]

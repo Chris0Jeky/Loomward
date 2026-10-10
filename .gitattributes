@@ -1,2 +1,3 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# Normalise text to LF in the repository and check it out as LF everywhere, Windows included:
+# agent edit tools match multi-line text exactly, and CRLF working copies broke them.
+* text=auto eol=lf

@@ -13,7 +13,6 @@
 //! thread and returns a synchronous [`Handle`].
 
 pub mod fixture;
-pub mod grants;
 
 use axum::body::{Body, Bytes};
 use axum::http::{header, HeaderMap, HeaderValue, Method, Response, StatusCode};
