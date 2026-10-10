@@ -2,7 +2,7 @@
 
 2026-10-10. Windows, `x86_64-pc-windows-msvc`. Issue [#18](https://github.com/Chris0Jeky/Loomward/issues/18).
 Base `cf27a4ec6734026d1bb3a9d0b393c7e294e4eb60`, branch `feat/duplicate-reader-lw012`;
-the tested changes are uncommitted. All file contents and names in these fixtures are synthetic.
+measured on the lane diff before it was committed. All file contents and names in these fixtures are synthetic.
 There was no personal-content inspection, whole-disk scan or benchmark. Fixture tests contacted no
 external service and performed no file effects outside their disposable scope.
 
