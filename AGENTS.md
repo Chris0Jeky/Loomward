@@ -48,8 +48,9 @@ a first measurement and must be reported as such. On Windows use `codex.cmd`, `n
 | You changed | Run |
 |---|---|
 | Python reference, schemas, JS boundary, fixtures | `py -3 scripts/verify.py` (212 tests with 1 symlink-privilege skip, 2 JS syntax, 9 JS boundary, 80 cross-language fixtures; it also runs the Rust gates when cargo is present) |
-| Rust workspace (`crates/*`, glob) | `cargo fmt --all --check`, `cargo test --workspace` (54 on Windows: core 29, windows 10, telemetry 10, lab 5), `cargo clippy --workspace --all-targets -- -D warnings`; add `--all-features` for the `loomward-windows` fixture lab |
+| Rust workspace (`crates/*`, glob) | `cargo fmt --all --check`, `cargo test --workspace` (155 on Windows: core 30, engine 4, http 30, lab 14, learn 8, protocol 35, telemetry 24, windows 10), `cargo clippy --workspace --all-targets -- -D warnings`; add `--all-features` for the `loomward-windows` fixture lab |
 | Browser UI | `py -3 scripts/test_ui.py` (14 Chromium checks; Playwright installed here) |
+| Svelte app (`app/`) | `npm.cmd --prefix app run check`, `run test`, `run build`, then `py -3 scripts/test_app.py` (Playwright e2e incl. Atlas and Observatory); add `--live-serve` when you touch `loomward-http` or an app transport |
 | Everything above in one go | `py -3 scripts/verify.py --ui` |
 | Tauri shell (`native/`) | excluded from the root workspace; build it separately (never built yet) |
 | Docs only | `git diff --check` plus the links you touched |
