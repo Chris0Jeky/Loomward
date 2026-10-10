@@ -78,14 +78,18 @@ fn unc_and_device_state_paths_are_refused_with_exact_message() {
 }
 
 #[test]
-#[ignore = "defect: db::local_path lets other verbatim device namespaces such as GLOBALROOT through; tracked in #246"]
 fn verbatim_device_namespace_state_paths_are_refused() {
-    // loomward-service/src/paths.rs refuses every verbatim form except the drive form (#185);
-    // the catalogue's local_path only refuses `\\.\` and `\\?\UNC\`.
-    let path = r"\\?\GLOBALROOT\Device\NoSuchDevice\state";
-    match Catalog::open(std::path::Path::new(path), "synthetic").err() {
-        Some(Error::Invalid(message)) => assert_eq!(message, "network or device database path"),
-        other => panic!("path {path:?} must be refused as a device path, got {other:?}"),
+    for path in [
+        r"\\?\GLOBALROOT\Device\NoSuchDevice\state",
+        r"\\?\Volume{00000000-0000-0000-0000-000000000000}\state",
+        r"\??\C:\state",
+        r"\\?\C:state",
+        "//?/GLOBALROOT/Device/fixture/state",
+    ] {
+        match Catalog::open(std::path::Path::new(path), "synthetic").err() {
+            Some(Error::Invalid(message)) => assert_eq!(message, "network or device database path"),
+            other => panic!("path {path:?} must be refused as a device path, got {other:?}"),
+        }
     }
 }
 

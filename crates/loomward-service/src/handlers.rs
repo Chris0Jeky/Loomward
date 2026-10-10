@@ -93,7 +93,7 @@ impl Inner {
         let handled = match command {
             SessionHello => self.hello(ctx),
             HealthGet => self.health(),
-            RootsList => self.roots_list(),
+            RootsList => self.roots_list(work),
             RootsRequestGrant => self.request_grant(ctx),
             RootsRevoke => {
                 let r: RootRevokeRequest = req.decode_payload()?;
@@ -130,12 +130,14 @@ impl Inner {
                     .map(|job| JobResult { job }),
             ),
             JobsList => engine(self.engine.job_list(&req.decode_payload()?)),
-            TreeSlice => self.tree_slice(req),
-            TreeChildren => self.tree_children(req),
-            TreePath => self.node_read(req, |reader, key| reader.path(key).map(|p| encode(&p))),
-            NodeInspect => {
-                self.node_read(req, |reader, key| reader.inspect(key).map(|d| encode(&d)))
-            }
+            TreeSlice => self.tree_slice(req, work),
+            TreeChildren => self.tree_children(req, work),
+            TreePath => self.node_read(req, work, |reader, key| {
+                reader.path(key).map(|p| encode(&p))
+            }),
+            NodeInspect => self.node_read(req, work, |reader, key| {
+                reader.inspect(key).map(|d| encode(&d))
+            }),
             SearchQuery => self.search(req, work),
             StatsBreakdown => self.breakdown(req, work),
             TiersModel | PlacementCandidates | PlacementSimulate | ProposalsList | ProposalsGet => {
@@ -359,9 +361,9 @@ impl Inner {
         }))
     }
 
-    fn root_list(&self) -> Result<Value, ErrorBody> {
+    fn root_list(&self, work: Option<&crate::ReadWork>) -> Result<Value, ErrorBody> {
         let rows = db::roots(&self.db(), None).map_err(sql_error)?;
-        let mut reader = self.catalog.reader().map_err(catalog_error)?;
+        let mut reader = self.read_reader(work)?;
         let roots = rows
             .iter()
             .map(|r| self.root_json(r, Some(&mut reader)))
@@ -369,9 +371,9 @@ impl Inner {
         Ok(json!({"roots": roots}))
     }
 
-    fn roots_list(&self) -> Handled {
+    fn roots_list(&self, work: Option<&crate::ReadWork>) -> Handled {
         let revs = self.revisions()?;
-        Ok(out(self.root_list()?, Some(revs)))
+        Ok(out(self.root_list(work)?, Some(revs)))
     }
 
     fn grant_of_root(&self, root: i64) -> Result<i64, ErrorBody> {
@@ -417,11 +419,15 @@ impl Inner {
             let id = RootId::new(self.root_id(root)).expect("rt_ id");
             // The revocation is durable whatever happens next; a missing scan writer or job only
             // means there is nothing to cancel or fence.
-            let _ = self.engine.scan_cancel_root(&id);
-            let _ = self.engine.scan_writer_fence(&id);
+            let _ = self
+                .engine
+                .scan_cancel_root(&loomward_engine::scan::RootKey::Grant(grant), &id);
+            let _ = self
+                .engine
+                .scan_writer_fence(&loomward_engine::scan::RootKey::Grant(grant), &id);
         }
         let revs = self.revisions()?;
-        if let Ok(list) = self.root_list() {
+        if let Ok(list) = self.root_list(None) {
             self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));
         }
         Ok((ts_ns(at), revs))
@@ -442,10 +448,14 @@ impl Inner {
             return;
         }
         if cancel {
-            let _ = self.engine.scan_cancel_root(id);
+            let _ = self
+                .engine
+                .scan_cancel_root(&loomward_engine::scan::RootKey::Grant(grant), id);
         }
-        let _ = self.engine.scan_writer_fence(id);
-        if let (Ok(revs), Ok(list)) = (self.revisions(), self.root_list()) {
+        let _ = self
+            .engine
+            .scan_writer_fence(&loomward_engine::scan::RootKey::Grant(grant), id);
+        if let (Ok(revs), Ok(list)) = (self.revisions(), self.root_list(None)) {
             self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));
         }
     }
@@ -539,7 +549,7 @@ impl Inner {
             .first()
             .ok_or_else(|| fail(ErrorCode::InternalError, "grant vanished"))?;
         let root_json = self.root_json(row, None)?;
-        if let Ok(list) = self.root_list() {
+        if let Ok(list) = self.root_list(None) {
             self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));
         }
         Ok(out(
@@ -669,11 +679,12 @@ impl Inner {
     fn node_read(
         &self,
         req: &RequestEnvelope,
+        work: Option<&crate::ReadWork>,
         read: impl FnOnce(&mut Reader, NodeKey) -> loomward_catalog::Result<Result<Value, ErrorBody>>,
     ) -> Handled {
         let r: NodeRefRequest = req.decode_payload()?;
         let revs = self.revisions()?;
-        let mut reader = self.catalog.reader().map_err(catalog_error)?;
+        let mut reader = self.read_reader(work)?;
         let key = self.node(&r.node_id, &mut reader)?;
         if !matches!(key, NodeKey::Dir(_) | NodeKey::File(_)) {
             return Err(fail(
@@ -686,10 +697,10 @@ impl Inner {
         self.sealed(value, revs)
     }
 
-    fn tree_slice(&self, req: &RequestEnvelope) -> Handled {
+    fn tree_slice(&self, req: &RequestEnvelope, work: Option<&crate::ReadWork>) -> Handled {
         let r: TreeSliceRequest = req.decode_payload()?;
         let revs = self.revisions()?;
-        let mut reader = self.catalog.reader().map_err(catalog_error)?;
+        let mut reader = self.read_reader(work)?;
         let anchor = match &r.anchor {
             Anchor::Atlas {} => NodeKey::Atlas,
             Anchor::Root { root_id } => {
@@ -716,10 +727,10 @@ impl Inner {
         self.sealed(encode(&slice)?, revs)
     }
 
-    fn tree_children(&self, req: &RequestEnvelope) -> Handled {
+    fn tree_children(&self, req: &RequestEnvelope, work: Option<&crate::ReadWork>) -> Handled {
         let r: TreeChildrenRequest = req.decode_payload()?;
         let revs = self.revisions()?;
-        let mut reader = self.catalog.reader().map_err(catalog_error)?;
+        let mut reader = self.read_reader(work)?;
         let key = self.node(&r.node_id, &mut reader)?;
         let NodeKey::Dir(dir) = key else {
             return Err(fail(

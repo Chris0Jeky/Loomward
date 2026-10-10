@@ -63,18 +63,12 @@ pub fn validate_profile_root(root: &Path, profile: &Path) -> Result<(), String> 
         return Err("whole profiles are not eligible".into());
     }
     let profiles = profile.parent().ok_or("profile unavailable")?;
-    // Siblings of the profile are other profiles only under a real profiles directory (#253).
-    let profiles_directory = profiles.file_name().is_some_and(|name| {
+    if root.parent().and_then(Path::file_name).is_some_and(|name| {
         matches!(
             name.to_string_lossy().to_lowercase().as_str(),
             "users" | "profiles" | "documents and settings"
         )
-    });
-    if profiles_directory
-        && root
-            .parent()
-            .is_some_and(|parent| folded(parent) == folded(profiles))
-    {
+    }) {
         return Err("whole profiles are not eligible".into());
     }
     for component in root.strip_prefix(profiles).unwrap_or(root).components() {
@@ -98,6 +92,12 @@ pub fn validate_profile_root(root: &Path, profile: &Path) -> Result<(), String> 
             ".npm",
             ".terraform.d",
             ".gemini",
+            ".m2",
+            ".gradle",
+            ".android",
+            ".minikube",
+            ".ollama",
+            ".oci",
         ]
         .contains(
             &component
@@ -113,11 +113,13 @@ pub fn validate_profile_root(root: &Path, profile: &Path) -> Result<(), String> 
 }
 
 fn check_profile(root: &Path) -> Result<(), Refusal> {
-    let profile = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"));
-    let profile = profile
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/unavailable/profile"));
-    let profile = profile.canonicalize().unwrap_or(profile);
+    use loomward_shell::known_folders::{Folder, FolderProvider, Location, WindowsFolders};
+    let Location::FileSystem { current, .. } = WindowsFolders.location(Folder::Profile) else {
+        return Err(Refusal::ProtectedProfileOrStore);
+    };
+    let profile = current
+        .canonicalize()
+        .map_err(|_| Refusal::ProtectedProfileOrStore)?;
     validate_profile_root(root, &profile).map_err(|_| Refusal::ProtectedProfileOrStore)
 }
 
@@ -279,15 +281,82 @@ fn unsafe_attributes(_: &std::fs::Metadata) -> bool {
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
+    #[test]
+    fn followup_os_profile_ignores_environment() {
+        let mut passed = true;
+        for redirected in [false, true] {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child
+                .args([
+                    "--exact",
+                    "paths::tests::followup_profile_environment_child",
+                ])
+                .env("LOOMWARD_PROFILE_ENV_TEST", "1")
+                .env_remove("HOME");
+            if redirected {
+                child.env("USERPROFILE", "C:/synthetic/redirected-profile");
+            } else {
+                child.env_remove("USERPROFILE");
+            }
+            passed &= child.status().unwrap().success();
+        }
+        assert!(passed, "OS profile protection depended on the environment");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn followup_profile_environment_child() {
+        if std::env::var_os("LOOMWARD_PROFILE_ENV_TEST").is_none() {
+            return;
+        }
+        use loomward_shell::known_folders::{Folder, FolderProvider, Location, WindowsFolders};
+        let Location::FileSystem { current, .. } = WindowsFolders.location(Folder::Profile) else {
+            panic!("profile unavailable");
+        };
+        assert_eq!(
+            check_profile(&current.canonicalize().unwrap()),
+            Err(Refusal::ProtectedProfileOrStore)
+        );
+        let parent = current.canonicalize().unwrap().parent().unwrap().to_owned();
+        if parent.parent().is_some() {
+            assert_eq!(
+                check_profile(&parent),
+                Err(Refusal::ProtectedProfileOrStore)
+            );
+        }
+        let tmp = crate::tests::temp_root();
+        assert!(check_profile(&tmp.path().canonicalize().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn followup_profiles_directory_is_protected_independently_of_profile() {
+        let tmp = crate::tests::temp_root();
+        let other = tmp.path().join("Users/other");
+        std::fs::create_dir_all(&other).unwrap();
+        assert!(validate_profile_root(&other, &tmp.path().join("redirected/fixture")).is_err());
+        assert!(validate_profile_root(
+            &other.join("Documents"),
+            &tmp.path().join("redirected/fixture")
+        )
+        .is_ok());
+    }
+
     #[test]
     fn hardening_profile_and_store_fence_is_shared_with_cli_roots() {
-        let tmp = tempfile::tempdir_in(".").unwrap();
+        let tmp = crate::tests::temp_root();
         let profile = tmp.path().join("profiles").join("fixture");
         let allowed = profile.join("Documents").join("lab");
         std::fs::create_dir_all(&allowed).unwrap();
         let profile = profile.canonicalize().unwrap();
         assert!(validate_profile_root(&allowed.canonicalize().unwrap(), &profile).is_ok());
         for relative in [
+            ".m2",
+            ".gradle",
+            ".android",
+            ".minikube",
+            ".ollama",
+            ".oci",
             ".ssh",
             ".aws",
             ".azure",
@@ -327,7 +396,7 @@ mod tests {
                 "network_or_removable_unsupported"
             );
         }
-        let tmp = tempfile::tempdir_in(".").unwrap();
+        let tmp = crate::tests::temp_root();
         let state = tmp.path().join("missing").join("state");
         let canonical = prospective_dir(&state).unwrap();
         assert_eq!(
@@ -343,7 +412,7 @@ mod tests {
 
     #[test]
     fn refusals_by_rule() {
-        let tmp = tempfile::tempdir_in(".").unwrap();
+        let tmp = crate::tests::temp_root();
         let base = tmp.path().canonicalize().unwrap();
         let (a, b, state) = (base.join("a"), base.join("a").join("b"), base.join("state"));
         for d in [&a, &b, &state] {
@@ -389,7 +458,7 @@ mod tests {
     /// #224: an unresolvable stored grant compares as text instead of failing the start.
     #[test]
     fn an_offline_grant_is_compared_lexically() {
-        let tmp = tempfile::tempdir_in(".").unwrap();
+        let tmp = crate::tests::temp_root();
         let dist = tmp.path().join("dist");
         std::fs::create_dir_all(&dist).unwrap();
         let canonical = dist.canonicalize().unwrap();

@@ -4,11 +4,16 @@ use std::{path::Path, time::Duration};
 
 pub(crate) fn local_path(path: &Path) -> Result<()> {
     let text = path.to_string_lossy().replace('/', "\\");
-    let upper = text.to_ascii_uppercase();
-    if upper.starts_with("\\\\?\\UNC\\")
-        || upper.starts_with("\\\\.\\")
-        || (upper.starts_with("\\\\") && !upper.starts_with("\\\\?\\"))
-    {
+    let refused = if let Some(rest) = text.strip_prefix("\\\\?\\") {
+        let b = rest.as_bytes();
+        !(b.len() >= 2
+            && b[0].is_ascii_alphabetic()
+            && b[1] == b':'
+            && (b.len() == 2 || b[2] == b'\\'))
+    } else {
+        text.starts_with("\\\\") || text.starts_with("\\??\\")
+    };
+    if refused {
         return Err(Error::Invalid("network or device database path"));
     }
     Ok(())

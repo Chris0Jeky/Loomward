@@ -700,6 +700,7 @@ dependencies = [
  "loomward-catalog",
  "loomward-engine",
  "loomward-protocol",
+ "loomward-shell",
  "loomward-telemetry",
  "loomward-windows",
  "rusqlite",
