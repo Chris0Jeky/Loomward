@@ -97,7 +97,7 @@ Names below are test functions in `placement/tests.rs`, except the two `linkcoun
 - `crates/loomward-engine/tests/smoke.rs`
 - `crates/loomward-engine/Cargo.toml` and `Cargo.lock` (existing workspace dependencies only)
 - `crates/loomward-windows/src/linkcount.rs`
-- `docs/16-implementation-status.md`, `handoff/CHECKPOINT.json`, this receipt
+- this receipt (the coordinator updates `docs/16-implementation-status.md` and `handoff/CHECKPOINT.json` at the wave checkpoint)
 
 ## Integration questions for L2 and L8
 

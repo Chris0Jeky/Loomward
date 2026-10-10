@@ -809,3 +809,47 @@ fn placement_native_link_pass_feeds_verified_relief_on_disposable_hardlinks() {
     assert!(plan.satisfied);
     assert_eq!(plan.proposals[0].source_bytes_relieved, Bytes(allocation));
 }
+
+/// Commits through `MemoryStore`, then holds the call past the deadline.
+struct SlowStore(MemoryStore);
+
+impl ProposalStore for SlowStore {
+    fn save(
+        &self,
+        source: &VolumeId,
+        digest: &Digest,
+        plan: &PlacementPlan,
+        deadline: Instant,
+    ) -> EngineResult<PlacementPlan> {
+        let saved = self.0.save(source, digest, plan, deadline)?;
+        std::thread::sleep(
+            deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(20),
+        );
+        Ok(saved)
+    }
+    fn list(&self) -> EngineResult<ProposalList> {
+        self.0.list()
+    }
+    fn get(&self, request: &ProposalRefRequest) -> EngineResult<ProposalDetail> {
+        self.0.get(request)
+    }
+}
+
+#[test]
+fn placement_save_committed_at_the_deadline_returns_the_saved_proposal() {
+    let engine = engine();
+    let input = input();
+    let store = SlowStore(MemoryStore::default());
+    let mut req = request();
+    req.save = true;
+    let saved = engine
+        .placement_simulate(
+            &input,
+            &req,
+            Instant::now() + Duration::from_secs(2),
+            Some(&store),
+        )
+        .expect("a committed save is reported, not a deadline error");
+    assert!(saved.proposal_id.is_some());
+    assert_eq!(engine.proposals_list(&store).unwrap().proposals.len(), 1);
+}

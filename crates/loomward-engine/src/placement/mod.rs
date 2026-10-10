@@ -293,7 +293,8 @@ impl Engine {
                 &plan,
                 deadline,
             )?;
-            check_deadline(deadline)?;
+            // Once the store has committed, report the saved proposal even past the deadline:
+            // a committed mutation must not read as a failure that invites a duplicate retry.
             Ok(saved)
         } else {
             Ok(plan)
