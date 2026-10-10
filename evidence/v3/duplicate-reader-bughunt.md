@@ -99,3 +99,81 @@ For one combined commit: `Fix duplicate comparison attribution and partial evide
 
 Equality remains point-in-time default-stream evidence, not an atomic snapshot or effect authority.
 Metadata operations and cancellation draining still depend on the filesystem driver returning.
+
+## Addendum: failed representatives invalidate their earlier witness role
+
+2026-10-10, follow-up to the confirmed HIGH in the post-merge review of #261.
+Starting HEAD `a8d2fbe73030c3a8ee27665511469991ac7c709c`, branch
+`fix/duplicate-partition-reverify`. The grouping source at that HEAD is byte-identical to the
+`origin/main` snapshot `c662b13e20dfb2ac3acc03d7a996e88ee6ad5df4` used for regression proof.
+Windows Rust target `x86_64-pc-windows-msvc`; synthetic inputs and disposable native fixtures only.
+
+### Changed
+
+Removing a failed representative alone was insufficient: separate `equal(R, X)` and
+`equal(R, Y)` calls could witness different versions of R. X and Y then survived as a group
+without a direct comparison. Metadata validation did not repair that content-equality gap.
+
+At `crates/loomward-windows/src/duplicate_reader.rs:322`, the existing partition loop now uses
+a pending queue. A non-budget representative failure removes the entire partition, skips the
+failed entry with its original reason, and queues every survivor before the innocent candidate.
+Each survivor is placed through exact comparisons again. Further representative failures repeat
+this process without recursive calls. All comparisons use the existing shared meter and native
+reader; hashes still establish no equality. A budget stop leaves unmatched survivors unexamined
+with partial coverage and a stop reason, rather than emitting the former partition.
+
+At `crates/loomward-windows/src/duplicate_reader.rs:357`, a representative that fails final
+metadata validation also invalidates its partition. Its surviving members return to exact
+comparison. Other finally validated groups are emitted immediately and retained on a later stop.
+The existing final cancellation/deadline and native late-stop preservation tests remain green.
+
+### Verified: regression and mutation proof
+
+The original grouping implementation was restored with all new tests present. All six new tests
+failed through assertions, not compilation or fixture setup. The fixed source was then restored
+byte-for-byte. These tests live in `crates/loomward-windows/src/duplicate_reader/tests.rs`:
+
+| Test and line | Proof |
+| --- | --- |
+| `core_failed_representative_reverifies_different_survivors` (:293) | Four inputs model R witnessing A then B; X/Y are directly compared and no group is emitted |
+| `core_failed_representative_reverifies_equal_survivors` (:308) | Equal X/Y remain grouped only after direct comparison; all comparison calls and 48 total bytes are asserted |
+| `core_failed_representative_reverification_budget_is_partial` (:317) | Budget stops the X/Y re-comparison; no group, partial coverage, byte-budget stop, 32 consumed bytes |
+| `core_failed_representative_reverification_handles_another_failure` (:328) | Six inputs build a second suspect partition; its failed witness is skipped and its survivors are compared directly |
+| `core_final_failed_representative_reverifies_survivors` (:342) | A final representative validation failure cannot leave unequal survivors grouped |
+| `native_failed_representative_reverification_uses_shared_budget` (:616) | Real disposable files exercise a four-input partition and changed representative: 64 bytes with sufficient budget; 48 bytes and no group when re-verification exhausts the budget |
+
+Three distinct mutations were killed by assertion failures:
+
+1. Restore the original `origin/main` grouping core: all six new tests fail.
+2. Trust surviving members after their representative fails final validation: the final-witness
+   test fails.
+3. Suppress the byte-budget stop reason: the core and native re-verification budget tests fail.
+
+After restoration, `cargo test -p loomward-windows duplicate_reader` passes: 34 passed,
+0 failed, 0 ignored. Local mutation commands and raw outputs remain in the gitignored
+`.loomward/duplicate-partition-reverify/` directory; they are not public evidence inputs.
+
+### Verified: final gates
+
+| Command | Output |
+| --- | --- |
+| `cargo fmt --all --check` | PASS, exit 0 |
+| `cargo test --workspace` | PASS, exit 0; 573 passed, 0 failed, 1 pre-existing ignored |
+| `cargo test -p loomward-windows -p loomward-engine --all-features` | PASS, exit 0; 204 passed, 0 failed, 0 ignored |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | PASS, exit 0 |
+| `git diff --check` | PASS, exit 0; repeated after completing the addendum |
+
+The unchanged ignored workspace test is `verbatim_device_namespace_state_paths_are_refused`,
+tracked in #246. Gate outputs are retained under the same gitignored directory as `gate-0.txt`
+through `gate-4.txt`.
+
+### NOT verified and residual risk
+
+No hosted CI, independent review, non-Windows execution, real changing disk inventory or physical
+device read fault was exercised. Python, UI and desktop-shell gates were not run because those
+surfaces are unchanged. No long benchmarks, commit or push was performed.
+
+Equality remains point-in-time default-stream evidence, not an atomic snapshot or deletion
+authority. Re-verification uses additional bytes within the same budget and can reduce coverage;
+unknown inputs remain visible as partial coverage. Filesystem-driver return and cancellation
+draining retain their existing limitations. No out-of-scope fixes were folded into this addendum.
