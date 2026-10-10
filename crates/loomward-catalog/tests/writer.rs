@@ -54,6 +54,247 @@ fn identified(name: &str, id: u8, size: u64) -> Observation {
 }
 
 #[test]
+fn rejected_chunk_fences_queued_completion_without_deleting_old_entries() {
+    for with_reference in [false, true] {
+        let (temp, c, grant, root, run) = setup();
+        let w = c.writer();
+        let mut old = identified("old", 2, 10);
+        old.created_ft = Some(1);
+        w.call(listing(
+            run,
+            root,
+            vec![old],
+            vec![identified("child", 3, 0)],
+        ))
+        .unwrap();
+        let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+        let file: i64 = db
+            .query_row("SELECT id FROM file", [], |r| r.get(0))
+            .unwrap();
+        let child: i64 = db
+            .query_row("SELECT id FROM dir WHERE name='child'", [], |r| r.get(0))
+            .unwrap();
+        if with_reference {
+            w.call(WriteCommand::ObjectReference {
+                node: NodeKey::File(file),
+                observed_at_ns: 2,
+            })
+            .unwrap();
+        }
+        w.call(WriteCommand::EndRun {
+            run_id: run,
+            state: "completed".into(),
+            finished_at_ns: 3,
+        })
+        .unwrap();
+        let WriteReply::Run(run) = w
+            .call(WriteCommand::BeginRun {
+                grant_id: grant,
+                mode: "refresh".into(),
+                strategy: "fixture".into(),
+                started_at_ns: 4,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        let good = w
+            .send(WriteCommand::StageChunk {
+                run_id: run,
+                dir_id: root,
+                seq: 0,
+                files: vec![identified("accepted", 4, 20)],
+                dirs: vec![],
+            })
+            .unwrap();
+        let bad = w
+            .send(WriteCommand::StageChunk {
+                run_id: run,
+                dir_id: root,
+                seq: 2,
+                files: vec![identified("rejected", 5, 30)],
+                dirs: vec![],
+            })
+            .unwrap();
+        let done = w
+            .send(WriteCommand::ListingDone {
+                run_id: run,
+                dir_id: root,
+                outcome: ListingOutcome::Complete,
+                skipped: 0,
+                errors: 0,
+            })
+            .unwrap();
+        // A different directory remains publishable even after this listing fails.
+        let other = w
+            .send(WriteCommand::ListingDone {
+                run_id: run,
+                dir_id: child,
+                outcome: ListingOutcome::Complete,
+                skipped: 0,
+                errors: 0,
+            })
+            .unwrap();
+        good.wait().unwrap();
+        assert!(bad.wait().is_err());
+        done.wait().unwrap();
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM file WHERE id=?1", [file], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        other.wait().unwrap();
+        assert_eq!(
+            db.query_row("SELECT listing_outcome FROM dir WHERE id=?1", [root], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "partial"
+        );
+        assert!(matches!(
+            w.call(WriteCommand::StageChunk {
+                run_id: run,
+                dir_id: root,
+                seq: 1,
+                files: vec![],
+                dirs: vec![]
+            }),
+            Err(Error::Invalid(_))
+        ));
+        w.call(WriteCommand::ListingDone {
+            run_id: run,
+            dir_id: root,
+            outcome: ListingOutcome::Incomplete("denied".into()),
+            skipped: 0,
+            errors: 1,
+        })
+        .unwrap();
+        assert_eq!(
+            db.query_row("SELECT listing_outcome FROM dir WHERE id=?1", [root], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "denied"
+        );
+        w.call(WriteCommand::EndRun {
+            run_id: run,
+            state: "completed".into(),
+            finished_at_ns: 5,
+        })
+        .unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM dir WHERE id=?1 AND listing_state='complete'",
+                [child],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        assert_ne!(
+            db.query_row("SELECT listing_state FROM dir WHERE id=?1", [root], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap(),
+            "complete"
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM file WHERE id=?1", [file], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM file WHERE name='rejected'", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        if with_reference {
+            let state = Connection::open(temp.path().join("state.db")).unwrap();
+            assert_eq!(
+                state
+                    .query_row("SELECT state FROM object_ref", [], |r| r
+                        .get::<_, String>(0))
+                    .unwrap(),
+                "resolved"
+            );
+        }
+        assert_eq!(w.queued_bytes(), 0);
+    }
+}
+
+#[test]
+fn root_origins_must_match_the_dataset_before_any_grant_is_written() {
+    for dataset in ["synthetic", "personal"] {
+        for origin in ["fixture", "lab_generated", "owner_granted"] {
+            let temp = tempfile::tempdir().unwrap();
+            let c = Catalog::open(temp.path(), dataset).unwrap();
+            let state = Connection::open(temp.path().join("state.db")).unwrap();
+            if origin == "lab_generated" {
+                state.execute("INSERT INTO lab_root VALUES(1,'fixture',?1,'synthetic-digest','seed','small',0)", [vec![1u8;16]]).unwrap();
+            }
+            let accepted = (dataset == "personal") == (origin == "owner_granted");
+            let result = c.writer().call(WriteCommand::RegisterRoot(RootObservation {
+                volume_key: "fixture".into(),
+                display_name: "Fixture".into(),
+                display_path: "Fixture root".into(),
+                root_file_id: Some(vec![1; 16]),
+                filesystem: Some("NTFS".into()),
+                origin: origin.into(),
+                granted_via: if origin == "owner_granted" {
+                    "cli_flag"
+                } else {
+                    "fixture"
+                }
+                .into(),
+                observed_at_ns: 0,
+            }));
+            assert_eq!(result.is_ok(), accepted, "{dataset}/{origin}: {result:?}");
+            assert_eq!(
+                state
+                    .query_row("SELECT count(*) FROM root_grant", [], |r| r
+                        .get::<_, i64>(0))
+                    .unwrap(),
+                i64::from(accepted)
+            );
+        }
+    }
+}
+
+#[test]
+fn invalid_incomplete_reason_cannot_publish_or_delete() {
+    let (temp, c, _, root, run) = setup();
+    c.writer()
+        .call(listing(run, root, vec![identified("old", 2, 10)], vec![]))
+        .unwrap();
+    for reason in ["", "complete", "invented"] {
+        assert!(matches!(
+            c.writer().call(WriteCommand::ListingDone {
+                run_id: run,
+                dir_id: root,
+                outcome: ListingOutcome::Incomplete(reason.into()),
+                skipped: 0,
+                errors: 0
+            }),
+            Err(Error::Invalid(_))
+        ));
+    }
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    assert_eq!(
+        db.query_row("SELECT name FROM file", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+        "old"
+    );
+    assert_eq!(
+        db.query_row("SELECT listing_state FROM dir WHERE id=?1", [root], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap(),
+        "complete"
+    );
+}
+
+#[test]
 fn refresh_preserves_identity_rename_swaps_and_cascades_removed_subtrees() {
     let (temp, c, grant, root, run) = setup();
     let w = c.writer();

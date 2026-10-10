@@ -75,6 +75,248 @@ fn validate(def: &str, value: serde_json::Value) {
     let errors: Vec<_> = v.iter_errors(&value).map(|e| e.to_string()).collect();
     assert!(errors.is_empty(), "{def}: {errors:?}");
 }
+
+#[test]
+fn incomplete_listing_reasons_survive_children_slices_and_restart() {
+    for staged in [false, true] {
+        for reason in [
+            "partial",
+            "denied",
+            "excluded",
+            "cancelled",
+            "unscanned",
+            "stale",
+        ] {
+            let (tmp, c, grant, root, _) = setup();
+            let WriteReply::Run(run) = c
+                .writer()
+                .call(WriteCommand::BeginRun {
+                    grant_id: grant,
+                    mode: "targeted".into(),
+                    strategy: "fixture".into(),
+                    started_at_ns: 2,
+                })
+                .unwrap()
+            else {
+                panic!()
+            };
+            if staged {
+                c.writer()
+                    .call(WriteCommand::ListingDone {
+                        run_id: run,
+                        dir_id: root,
+                        outcome: ListingOutcome::Incomplete(reason.into()),
+                        skipped: 1,
+                        errors: 1,
+                    })
+                    .unwrap();
+            } else {
+                c.writer()
+                    .call(WriteCommand::DirListing(DirListing {
+                        run_id: run,
+                        dir_id: root,
+                        files: vec![],
+                        dirs: vec![],
+                        state: reason.into(),
+                        skipped: 1,
+                        errors: 1,
+                    }))
+                    .unwrap();
+            }
+            c.writer()
+                .call(WriteCommand::EndRun {
+                    run_id: run,
+                    state: "completed".into(),
+                    finished_at_ns: 3,
+                })
+                .unwrap();
+            drop(c);
+            let c = Catalog::open(tmp.path(), "synthetic").unwrap();
+            let mut reader = c.reader().unwrap();
+            let slice = reader
+                .slice(&SliceRequest {
+                    anchor: NodeKey::Dir(root),
+                    depth: 1,
+                    max_nodes: 100,
+                    min_share: 0.0,
+                    basis: Basis::Logical,
+                    include_files: true,
+                })
+                .unwrap();
+            assert_eq!(slice.nodes[0].coverage, reason, "{staged}/{reason}");
+            validate("TreeSlice", serde_json::to_value(&slice).unwrap());
+            let page = reader
+                .children(&ChildrenRequest {
+                    dir_id: root,
+                    sort: Sort::SizeDesc,
+                    basis: Basis::Logical,
+                    limit: 100,
+                    cursor: None,
+                })
+                .unwrap();
+            assert_eq!(page.items.len(), 60);
+            assert!(page.items.iter().all(|row| row.coverage == "stale"));
+        }
+    }
+}
+
+#[test]
+fn absent_budgeted_search_advances_examined_rows_and_terminates() {
+    let (_tmp, c, grant, _, _) = setup();
+    let mut reader = c.reader().unwrap();
+    let mut req = SearchRequest {
+        root_id: Some(grant),
+        text: "absent".into(),
+        extension: None,
+        min_bytes: None,
+        kind: "file".into(),
+        limit: 10,
+        cursor: None,
+        work_budget: 500,
+    };
+    let mut last = 0;
+    let mut hits = 0;
+    for _ in 0..100 {
+        let page = reader.search(&req).unwrap();
+        assert!(page.items.is_empty());
+        if let Some(cursor) = page.next_cursor {
+            assert!(cursor.last_id > last, "stalled at {last}: {cursor:?}");
+            last = cursor.last_id;
+            hits += usize::from(page.budget_hit);
+            req.cursor = Some(cursor);
+        } else {
+            assert!(hits > 0, "fixture must exercise interruption");
+            return;
+        }
+    }
+    panic!("search never terminated");
+}
+
+#[test]
+fn v3_upgrade_preserves_observations_and_legacy_coverage() {
+    let (tmp, c, grant, root, _) = setup();
+    drop(c);
+    let db = Connection::open(tmp.path().join("catalog.db")).unwrap();
+    let instance: String = db
+        .query_row("SELECT value FROM meta WHERE key='instance_id'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    db.execute_batch("ALTER TABLE dir DROP COLUMN listing_outcome; PRAGMA user_version=3")
+        .unwrap();
+    db.close().unwrap();
+    let state = Connection::open(tmp.path().join("state.db")).unwrap();
+    state.pragma_update(None, "user_version", 3).unwrap();
+    state.close().unwrap();
+    let c = Catalog::open(tmp.path(), "synthetic").unwrap();
+    let mut r = c.reader().unwrap();
+    let slice = r
+        .slice(&SliceRequest {
+            anchor: NodeKey::Dir(root),
+            depth: 1,
+            max_nodes: 100,
+            min_share: 0.0,
+            basis: Basis::Logical,
+            include_files: true,
+        })
+        .unwrap();
+    assert_eq!(slice.nodes[0].coverage, "complete");
+    assert_eq!(slice.nodes[0].files, 60);
+    let db = Connection::open(tmp.path().join("catalog.db")).unwrap();
+    assert_eq!(
+        db.query_row("SELECT value FROM meta WHERE key='instance_id'", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap(),
+        instance
+    );
+    assert_eq!(
+        db.query_row("SELECT listing_outcome FROM dir WHERE id=?1", [root], |r| r
+            .get::<_, Option<String>>(0))
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        SCHEMA_VERSION
+    );
+    let WriteReply::Run(run) = c
+        .writer()
+        .call(WriteCommand::BeginRun {
+            grant_id: grant,
+            mode: "targeted".into(),
+            strategy: "fixture".into(),
+            started_at_ns: 2,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    c.writer()
+        .call(WriteCommand::ListingDone {
+            run_id: run,
+            dir_id: root,
+            outcome: ListingOutcome::Incomplete("cancelled".into()),
+            skipped: 0,
+            errors: 0,
+        })
+        .unwrap();
+    c.writer()
+        .call(WriteCommand::EndRun {
+            run_id: run,
+            state: "completed".into(),
+            finished_at_ns: 3,
+        })
+        .unwrap();
+    assert_eq!(
+        r.slice(&SliceRequest {
+            anchor: NodeKey::Dir(root),
+            depth: 1,
+            max_nodes: 100,
+            min_share: 0.0,
+            basis: Basis::Logical,
+            include_files: true
+        })
+        .unwrap()
+        .nodes[0]
+            .coverage,
+        "cancelled"
+    );
+    assert!(tmp.path().join("state.before-v3.db").exists());
+}
+
+#[test]
+fn sparse_budgeted_search_keeps_every_match_without_duplicates() {
+    let (_tmp, c, grant, _, _) = setup();
+    let mut r = c.reader().unwrap();
+    let mut req = SearchRequest {
+        root_id: Some(grant),
+        text: "5.txt".into(),
+        extension: None,
+        min_bytes: None,
+        kind: "file".into(),
+        limit: 2,
+        cursor: None,
+        work_budget: 500,
+    };
+    let mut names = Vec::new();
+    for _ in 0..100 {
+        let page = r.search(&req).unwrap();
+        names.extend(page.items.into_iter().map(|row| row.name));
+        if page.next_cursor.is_none() {
+            assert_eq!(
+                names,
+                (0..6)
+                    .map(|i| format!("synthetic-0{i}5.txt"))
+                    .collect::<Vec<_>>()
+            );
+            return;
+        }
+        req.cursor = page.next_cursor;
+    }
+    panic!("sparse search never terminated");
+}
 #[test]
 fn children_pages_are_keysets_bound_to_revision_sort_basis_and_anchor() {
     let (_tmp, c, grant, root, _) = setup();

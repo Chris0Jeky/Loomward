@@ -28,6 +28,8 @@ CREATE TABLE dir (
   created_ft INTEGER, modified_ft INTEGER, changed_ft INTEGER,
   listing_state TEXT NOT NULL CHECK (listing_state IN
     ('complete','incomplete','unlisted','excluded','denied','absent_pending')),
+  listing_outcome TEXT CHECK (listing_outcome IN
+    ('complete','partial','denied','excluded','cancelled','unscanned','stale')),
   born_run INTEGER NOT NULL, seen_run INTEGER NOT NULL,
   listing_rev INTEGER NOT NULL DEFAULT 0, subtree_rev INTEGER NOT NULL DEFAULT 0,
   dirty_rev INTEGER NOT NULL DEFAULT 0, dirty_run INTEGER, agg_valid_rev INTEGER NOT NULL DEFAULT 0,

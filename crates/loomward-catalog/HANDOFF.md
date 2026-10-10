@@ -542,3 +542,100 @@ physical power-loss guarantees. The existing P4 throughput miss still stands.
 Worktree is not removal-ready because these changes are uncommitted.
 `HUMAN_TODO.md` was read and preserved: q-5 remains open, q-6 is not yet needed;
 neither blocks this synthetic catalogue fix.
+
+## PR #173 single fix round — 10 October 2026
+
+### Changed
+
+Uncommitted worker changes on `feat/l2-catalog-durable`, starting at
+`7066d7ea953b350fda4b1a75cdf04576a8c1d1cc`. The driver commits and pushes.
+
+1. A rejected staged chunk fences its `(run_id, dir_id)` in the writer across
+   batches. Later chunks reject; a queued complete outcome becomes partial and
+   upsert-only, including precious-reference preparation. Explicit incomplete
+   reasons remain intact. The fence expires when the run ends. Regression:
+   `rejected_chunk_fences_queued_completion_without_deleting_old_entries` queues
+   the accepted prefix, a sequence gap and completion before waiting, with and
+   without a durable reference; omitted files and directories survive, a different
+   directory completes, and the failed listing never completes. Before the fix,
+   the old-file count was 0 instead of 1.
+2. Root origins are checked against `st.meta.dataset_class` before a precious
+   grant is written. Synthetic accepts fixtures and registered lab roots; personal
+   accepts owner grants. Regression:
+   `root_origins_must_match_the_dataset_before_any_grant_is_written` checks both
+   rejection directions and positive controls, including registered labs. Before
+   the fix, synthetic/owner_granted incorrectly returned a root.
+3. Validated outcomes are stored separately from the listing lifecycle state and
+   projected as contract coverage states. Schema 4 adds nullable `listing_outcome`
+   without rebuilding or dropping observations. Old rows fall back to their old
+   coverage; their previously lost reasons cannot be recovered. Regressions:
+   `incomplete_listing_reasons_survive_children_slices_and_restart` exercises
+   direct/staged publication, all six incomplete coverage states, stale children,
+   restart and schema validation; before the fix denied projected as partial.
+   `invalid_incomplete_reason_cannot_publish_or_delete` rejects empty, complete and
+   invented incomplete reasons. `v3_upgrade_preserves_observations_and_legacy_coverage`
+   pins the additive migration, original instance, retained rows and new cancelled
+   writes. Existing v2 durable-reference migration tests remain green.
+4. Search yields examined rows internally with a match flag, advancing the
+   unchanged cursor only after each row is fully examined. The lookahead match
+   still resumes after the last returned match. Regression:
+   `absent_budgeted_search_advances_examined_rows_and_terminates` uses a fixed
+   500-op budget and checks strictly increasing watermarks through termination;
+   before the fix it stalled at file ID 0. Additional sparse-search proof:
+   `sparse_budgeted_search_keeps_every_match_without_duplicates`.
+5. The corruption fixture now deliberately restores a healthy page-1 WAL,
+   checkpoints/truncates it, switches the closed fixture to DELETE journaling,
+   verifies no WAL/SHM remains, and only then corrupts the main file. The probe is
+   read-only and closed before archive/rebuild. It covers page sizes 512, 4096 and
+   65536 (including header encoding 1), with all original exact-archive-byte,
+   healthy-rebuild and unchanged-precious-state assertions. sqlite_schema's root
+   is page 1, whose b-tree header is at byte 100 regardless of page size
+   ([SQLite file format](https://www.sqlite.org/fileformat.html)). A valid WAL
+   can supply that page instead of the main file
+   ([SQLite WAL](https://www.sqlite.org/wal.html)). Omitting fixture cleanup
+   reproduced the masking mechanism on Windows: the damaged schema returned
+   `Ok(25)` instead of CORRUPT, failing the test with exit 101. Restoring the exact
+   fixture bytes returns green. This is evidence for the portable repair, not a
+   claim that the Linux job's precise environment was reproduced. Archive code
+   already uses rename after inspection closes; it needed no platform-specific
+   change.
+
+Public API: no method signatures, command/reply shapes, DTOs or cursor fields
+changed for L8. The exported `SCHEMA_VERSION` value changes from 3 to 4; existing
+databases migrate additively. Root-origin and incomplete-reason rejection is
+intentional validation tightening.
+
+Recommended commit messages:
+
+- `fix(catalog): fence failed staged listings`
+- `fix(catalog): enforce dataset-specific root origins`
+- `fix(catalog): preserve incomplete listing coverage`
+- `fix(catalog): advance search cursors past examined rows`
+- `test(catalog): isolate schema corruption from WAL recovery`
+
+### Verified
+
+Windows: `cargo fmt --all --check`, `cargo test --workspace` (304 passed,
+64 catalogue tests; zero failed/ignored),
+`cargo clippy --workspace --all-targets -- -D warnings`, and `git diff --check`.
+The four behavioral regressions were observed red against the starting source
+before implementation. The WAL-masking experiment was observed red with cleanup
+omitted, and the test was restored byte-for-byte. No existing test was weakened.
+All observations in the tests are disposable synthetic fixtures.
+
+### NOT verified
+
+Linux execution and the precise cause of the reported Ubuntu job; hosted CI,
+the separate L8 service runtime, scale performance, Python/UI and physical
+power-loss durability. No commit, push, merge or external action.
+
+### Residual risk
+
+Linux must execute the final corruption fixture to establish hosted portability.
+WAL masking is reproduced locally and now excluded by construction; page-size
+assumptions and live handles are also explicitly checked. Old generic incomplete
+rows retain partial coverage because their original reason was never stored.
+Schema 4 cannot be opened by the older schema-3 binary. The worktree remains
+owned by the driver and is not removal-ready while changes are uncommitted.
+`HUMAN_TODO.md` was read and preserved; q-5 remains open and q-6 is not yet needed,
+neither relevant to this synthetic fix round.

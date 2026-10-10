@@ -168,6 +168,19 @@ pub enum ListingOutcome {
     Complete,
     Incomplete(String),
 }
+impl ListingOutcome {
+    pub(crate) fn coverage(&self) -> Result<&str> {
+        match self {
+            Self::Complete => Ok("complete"),
+            Self::Incomplete(reason)
+                if reason != "complete" && STATES.contains(&reason.as_str()) =>
+            {
+                Ok(reason)
+            }
+            _ => Err(Error::Invalid("incomplete listing reason")),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Totals {

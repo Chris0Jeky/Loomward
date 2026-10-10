@@ -1,5 +1,5 @@
 use loomward_catalog::{Catalog, Error, APPLICATION_ID, SCHEMA_VERSION};
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 
 #[test]
 fn fresh_pair_has_strict_schema_and_separate_data_classes() {
@@ -161,60 +161,108 @@ fn corrupt_derived_catalog_is_preserved_and_precious_corruption_is_refused() {
 
 #[test]
 fn corrupt_schema_page_rebuilds_only_the_derived_database() {
-    for name in ["catalog.db", "state.db"] {
-        let temp = tempfile::tempdir().unwrap();
-        drop(Catalog::open(temp.path(), "synthetic").unwrap());
-        let path = temp.path().join(name);
-        let mut damaged = std::fs::read(&path).unwrap();
-        assert_eq!(&damaged[..16], b"SQLite format 3\0");
-        damaged[100] = 0; // Invalid schema b-tree page type; retain the database header.
-        std::fs::write(&path, &damaged).unwrap();
-        let db = Connection::open(&path).unwrap();
-        assert_eq!(
-            db.pragma_query_value(None, "application_id", |r| r.get::<_, i64>(0))
-                .unwrap(),
-            APPLICATION_ID
-        );
-        assert_eq!(
-            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-                .unwrap(),
-            SCHEMA_VERSION
-        );
-        assert!(matches!(
-            db.query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get::<_, i64>(0)),
-            Err(rusqlite::Error::SqliteFailure(e, _))
-                if e.code == rusqlite::ErrorCode::DatabaseCorrupt
-        ));
-        drop(db);
-        let precious = std::fs::read(temp.path().join("state.db")).unwrap();
-        let result = Catalog::open(temp.path(), "synthetic");
-        if name == "catalog.db" {
-            drop(result.unwrap());
-            let archive = std::fs::read_dir(temp.path())
-                .unwrap()
-                .map(|e| e.unwrap().path())
-                .find(|p| {
-                    p.file_name()
-                        .unwrap()
-                        .to_string_lossy()
-                        .starts_with("catalog.corrupt-")
-                })
-                .unwrap();
-            assert_eq!(std::fs::read(archive).unwrap(), damaged);
+    for page_size in [512, 4096, 65536] {
+        for name in ["catalog.db", "state.db"] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join(name);
             let db = Connection::open(&path).unwrap();
-            assert_eq!(
-                db.query_row("PRAGMA quick_check", [], |r| r.get::<_, String>(0))
-                    .unwrap(),
-                "ok"
+            db.pragma_update(None, "page_size", page_size).unwrap();
+            db.execute_batch("VACUUM").unwrap();
+            db.close().unwrap();
+            drop(Catalog::open(temp.path(), "synthetic").unwrap());
+            // Exercise the same setup when a valid page-1 WAL survives a previous connection.
+            let db = Connection::open(&path).unwrap();
+            db.pragma_update(None, "user_version", SCHEMA_VERSION)
+                .unwrap();
+            let wal_path = path.with_file_name(format!("{name}-wal"));
+            let wal = std::fs::read(&wal_path).unwrap();
+            assert_eq!(u32::from_be_bytes(wal[32..36].try_into().unwrap()), 1);
+            db.close().unwrap();
+            std::fs::write(&wal_path, wal).unwrap();
+            let db = Connection::open(&path).unwrap();
+            db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)").unwrap();
+            let mode: String = db
+                .pragma_update_and_check(None, "journal_mode", "DELETE", |r| r.get(0))
+                .unwrap();
+            assert_eq!(mode, "delete");
+            assert!(
+                db.query_row("SELECT count(*) FROM sqlite_schema", [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap()
+                    > 0
             );
-        } else {
-            assert!(matches!(result, Err(Error::CorruptDatabase)));
+            db.close().unwrap();
+            // A healthy WAL page must not mask (or checkpoint over) the injected main-file damage.
+            assert!(!path.with_file_name(format!("{name}-wal")).exists());
+            assert!(!path.with_file_name(format!("{name}-shm")).exists());
+            let mut damaged = std::fs::read(&path).unwrap();
+            assert_eq!(&damaged[..16], b"SQLite format 3\0");
+            let encoded_size = u16::from_be_bytes([damaged[16], damaged[17]]);
+            let header_page_size = if encoded_size == 1 {
+                65536
+            } else {
+                usize::from(encoded_size)
+            };
+            assert_eq!(header_page_size, page_size as usize);
+            // sqlite_schema is rooted at page 1; its b-tree header follows the 100-byte file header.
+            assert!(matches!(damaged[100], 5 | 13));
+            damaged[100] = 0;
+            std::fs::write(&path, &damaged).unwrap();
+            let db = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+            assert_eq!(
+                db.pragma_query_value(None, "application_id", |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                APPLICATION_ID
+            );
+            assert_eq!(
+                db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                SCHEMA_VERSION
+            );
+            let schema_read = db.query_row("SELECT count(*) FROM sqlite_schema", [], |r| {
+                r.get::<_, i64>(0)
+            });
+            assert!(
+                matches!(
+                    &schema_read,
+                    Err(rusqlite::Error::SqliteFailure(e, _))
+                        if e.code == rusqlite::ErrorCode::DatabaseCorrupt
+                ),
+                "{schema_read:?}"
+            );
+            db.close().unwrap();
             assert_eq!(std::fs::read(&path).unwrap(), damaged);
+            let precious = std::fs::read(temp.path().join("state.db")).unwrap();
+            let result = Catalog::open(temp.path(), "synthetic");
+            if name == "catalog.db" {
+                drop(result.unwrap());
+                let archive = std::fs::read_dir(temp.path())
+                    .unwrap()
+                    .map(|e| e.unwrap().path())
+                    .find(|p| {
+                        p.file_name()
+                            .unwrap()
+                            .to_string_lossy()
+                            .starts_with("catalog.corrupt-")
+                            && p.extension().is_some_and(|ext| ext == "db")
+                    })
+                    .unwrap();
+                assert_eq!(std::fs::read(archive).unwrap(), damaged);
+                let db = Connection::open(&path).unwrap();
+                assert_eq!(
+                    db.query_row("PRAGMA quick_check", [], |r| r.get::<_, String>(0))
+                        .unwrap(),
+                    "ok"
+                );
+            } else {
+                assert!(matches!(result, Err(Error::CorruptDatabase)));
+                assert_eq!(std::fs::read(&path).unwrap(), damaged);
+            }
+            assert_eq!(
+                std::fs::read(temp.path().join("state.db")).unwrap(),
+                precious
+            );
         }
-        assert_eq!(
-            std::fs::read(temp.path().join("state.db")).unwrap(),
-            precious
-        );
     }
 }
 

@@ -7,6 +7,7 @@ the L2 errata in issue #117. Requires Rust 1.88; tested with Rust 1.97.1 on Wind
 databases, checks ownership, dataset class, supported version and `quick_check`, and
 refuses UNC/device paths. Migration 2 applies the revised schema to existing v1 data;
 migration 3 adds the pending reference journal without changing existing bindings or instances.
+Migration 4 adds a nullable listing outcome; existing observations and references stay intact.
 Derived catalogue corruption is archived with its sidecars and rebuilt. Precious
 state corruption is refused. `main.synchronous=NORMAL`, `st.synchronous=FULL` and
 foreign keys are enabled. No transaction writes both persistent files.
@@ -37,7 +38,10 @@ first, then fences subsequent observations and marks the run cancelled.
 publishes the whole directory in one transaction, decoding one chunk at a time;
 staged rows are invisible beforehand. A listing is capped at two million entries.
 An incomplete outcome only upserts, retaining unseen entries as stale. Complete
-listings delete absent files and hide missing child directories as tombstones.
+outcomes after a rejected chunk are downgraded to partial for that run and directory.
+Denied, excluded, cancelled and other validated incomplete outcomes survive
+projection and restart. Complete listings delete absent files and hide missing
+child directories as tombstones.
 Only a complete root traversal may sweep tombstones; targeted runs retain them.
 Identity matches precede names, so directory moves retain descendants in either
 listing order and dirty both ancestor chains. Depths are repaired at finalisation.

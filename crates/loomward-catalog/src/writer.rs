@@ -239,8 +239,12 @@ fn validate(c: &WriteCommand) -> Result<usize> {
             entries_bytes(files, dirs)
         }
         WriteCommand::ListingDone {
-            skipped, errors, ..
+            skipped,
+            errors,
+            outcome,
+            ..
         } => {
+            outcome.coverage()?;
             if *skipped > i64::MAX as u64 || *errors > i64::MAX as u64 {
                 return Err(Error::Invalid("listing bounds"));
             }
@@ -280,6 +284,7 @@ struct Context {
     parents: HashMap<i64, Option<i64>>,
     marked: HashSet<i64>,
     revision: i64,
+    fenced_listings: HashSet<(i64, i64)>,
 }
 impl Context {
     fn dirty(&mut self, conn: &Connection, start: i64, run: i64) -> Result<()> {
@@ -331,6 +336,7 @@ fn work(
         parents: HashMap::new(),
         marked: HashSet::new(),
         revision: 0,
+        fenced_listings: HashSet::new(),
     };
     loop {
         let Some(first) = pending.take().or_else(|| rx.recv().ok()) else {
@@ -385,7 +391,7 @@ fn work(
         // Precious writes commit before the catalogue transaction, which writes main only.
         let prepared: Vec<_> = batch
             .iter()
-            .map(|p| prepare_state(&mut conn, &p.command))
+            .map(|p| prepare_state(&mut conn, &p.command, &context.fenced_listings))
             .collect();
         #[cfg(test)]
         if matches!(crash, Some(PublicationCrash::BeforeCatalog)) {
@@ -431,6 +437,12 @@ fn work(
                             }
                         }
                     }));
+                    if results.last().is_some_and(Result::is_err) {
+                        if let WriteCommand::StageChunk { run_id, dir_id, .. } = &p.command {
+                            // Savepoint rollback must not make the accepted prefix publishable as complete.
+                            context.fenced_listings.insert((*run_id, *dir_id));
+                        }
+                    }
                 }
                 let commit_start = Instant::now();
                 #[cfg(test)]
@@ -509,9 +521,24 @@ fn state_revision(conn: &Connection) -> Result<()> {
     )?;
     Ok(())
 }
-fn prepare_state(conn: &mut Connection, c: &WriteCommand) -> Result<Option<i64>> {
+fn prepare_state(
+    conn: &mut Connection,
+    c: &WriteCommand,
+    fenced: &HashSet<(i64, i64)>,
+) -> Result<Option<i64>> {
     match c {
         WriteCommand::RegisterRoot(o) => {
+            let dataset: String = conn.query_row(
+                "SELECT value FROM st.meta WHERE key='dataset_class'",
+                [],
+                |r| r.get(0),
+            )?;
+            if !matches!(
+                (dataset.as_str(), o.origin.as_str()),
+                ("synthetic", "fixture" | "lab_generated") | ("personal", "owner_granted")
+            ) {
+                return Err(Error::DatasetMismatch);
+            }
             if o.volume_key.is_empty()
                 || o.volume_key.len() > 80
                 || o.display_name.chars().count() > 260
@@ -606,7 +633,8 @@ fn prepare_state(conn: &mut Connection, c: &WriteCommand) -> Result<Option<i64>>
                 *run_id,
                 *dir_id,
                 None,
-                matches!(outcome, ListingOutcome::Complete),
+                matches!(outcome, ListingOutcome::Complete)
+                    && !fenced.contains(&(*run_id, *dir_id)),
             )?;
             Ok(None)
         }
@@ -701,6 +729,7 @@ fn retire_files(
             parents: HashMap::new(),
             marked: HashSet::new(),
             revision: tx.query_row("SELECT catalog_rev+1 FROM revision", [], |r| r.get(0))?,
+            fenced_listings: HashSet::new(),
         };
         let result = publish(
             &tx,
@@ -709,7 +738,7 @@ fn retire_files(
             if complete {
                 ListingOutcome::Complete
             } else {
-                ListingOutcome::Incomplete(String::new())
+                ListingOutcome::Incomplete("partial".into())
             },
             (0, 0),
             &mut validation,
@@ -842,6 +871,9 @@ fn apply(
             files,
             dirs,
         } => {
+            if ctx.fenced_listings.contains(&(*run_id, *dir_id)) {
+                return Err(Error::Invalid("failed staged listing"));
+            }
             stage(conn, *run_id, *dir_id, *seq, files, dirs)?;
             Ok(WriteReply::Done)
         }
@@ -855,7 +887,13 @@ fn apply(
             conn,
             *run_id,
             *dir_id,
-            outcome.clone(),
+            if matches!(outcome, ListingOutcome::Complete)
+                && ctx.fenced_listings.contains(&(*run_id, *dir_id))
+            {
+                ListingOutcome::Incomplete("partial".into())
+            } else {
+                outcome.clone()
+            },
             (*skipped, *errors),
             ctx,
             None,
@@ -899,6 +937,7 @@ fn apply(
             )?;
             let completed=state=="completed" && conn.query_row("SELECT mode='targeted' AND NOT EXISTS(SELECT 1 FROM dir WHERE root_id=?2 AND seen_run=?1 AND listing_state='incomplete') FROM scan_run WHERE id=?1",params![run_id,root],|r|r.get::<_,bool>(0))?;
             conn.execute("UPDATE root SET active_run=NULL,generation=CASE WHEN ?2 THEN ?3 ELSE generation END,state=CASE WHEN ?4 THEN 'complete' ELSE 'partial' END WHERE id=?1",params![root,full||completed,run_id,full])?;
+            ctx.fenced_listings.retain(|(run, _)| run != run_id);
             Ok(WriteReply::Done)
         }
         WriteCommand::RevokeGrant { grant_id, .. } => {
@@ -1001,6 +1040,7 @@ fn publish(
     let root = active_run(conn, run, Some(dir))?;
     let (depth,fs):(i64,Option<String>)=conn.query_row("SELECT d.depth,v.filesystem FROM dir d JOIN root r ON r.id=d.root_id LEFT JOIN volume v ON v.id=r.volume_id WHERE d.id=?1",[dir],|r|Ok((r.get(0)?,r.get(1)?)))?;
     let complete = matches!(outcome, ListingOutcome::Complete);
+    let coverage = outcome.coverage()?;
     let is_direct = direct.is_some();
     let has_old = old_files(conn, dir)?;
     conn.execute_batch("CREATE TEMP TABLE IF NOT EXISTS listing_seen(kind INTEGER,id INTEGER,PRIMARY KEY(kind,id));DELETE FROM listing_seen;CREATE TEMP TABLE IF NOT EXISTS listing_names(name TEXT,raw BLOB,kind INTEGER);DELETE FROM listing_names")?;
@@ -1164,7 +1204,7 @@ fn publish(
                 }
                 members_changed |=
                     name != o.name || utf16 != o.name_utf16 || state == "absent_pending";
-                conn.prepare_cached("UPDATE dir SET parent_id=?2,name=?3,name_utf16=?4,attrs=?5,reparse_tag=?6,flags=?7,created_ft=?8,modified_ft=?9,changed_ft=?10,listing_state=CASE WHEN listing_state='absent_pending' THEN 'unlisted' ELSE listing_state END WHERE id=?1")?.execute(params![id,dir,o.name,o.name_utf16,o.attrs,o.reparse_tag,o.flags,o.created_ft,o.modified_ft,o.changed_ft])?;
+                conn.prepare_cached("UPDATE dir SET parent_id=?2,name=?3,name_utf16=?4,attrs=?5,reparse_tag=?6,flags=?7,created_ft=?8,modified_ft=?9,changed_ft=?10,listing_outcome=CASE WHEN listing_state='absent_pending' THEN NULL ELSE listing_outcome END,listing_state=CASE WHEN listing_state='absent_pending' THEN 'unlisted' ELSE listing_state END WHERE id=?1")?.execute(params![id,dir,o.name,o.name_utf16,o.attrs,o.reparse_tag,o.flags,o.created_ft,o.modified_ft,o.changed_ft])?;
                 id
             } else {
                 let quality = identity.map_or("path_observation", |id| {
@@ -1220,7 +1260,7 @@ fn publish(
         noid = sums.4;
         own.newest_ft = sums.5;
     }
-    conn.execute("UPDATE dir SET listing_state=?2,seen_run=?3,listing_rev=listing_rev+?4,own_files=?5,own_logical=?6,own_allocated=?7,own_alloc_unknown=?8,own_noid=?9,own_newest_ft=?10,own_skipped=?11,own_errors=?12 WHERE id=?1",params![dir,if complete{"complete"}else{"incomplete"},run,i64::from(members_changed),own.files as i64,own.logical as i64,own.allocated as i64,own.allocation_unknown as i64,noid,own.newest_ft,skipped as i64,errors as i64])?;
+    conn.execute("UPDATE dir SET listing_state=?2,seen_run=?3,listing_rev=listing_rev+?4,own_files=?5,own_logical=?6,own_allocated=?7,own_alloc_unknown=?8,own_noid=?9,own_newest_ft=?10,own_skipped=?11,own_errors=?12,listing_outcome=?13 WHERE id=?1",params![dir,if complete{"complete"}else{"incomplete"},run,i64::from(members_changed),own.files as i64,own.logical as i64,own.allocated as i64,own.allocation_unknown as i64,noid,own.newest_ft,skipped as i64,errors as i64,coverage])?;
     ctx.dirty(conn, dir, run)?;
     conn.execute(
         "DELETE FROM stage_entry WHERE run_id=?1 AND dir_id=?2",
