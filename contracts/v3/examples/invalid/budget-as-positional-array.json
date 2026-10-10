@@ -1,0 +1,8 @@
+{
+  "def": "ScanBudget",
+  "reason": "a struct is an object, never a positional array",
+  "value": [
+    1000000,
+    4
+  ]
+}

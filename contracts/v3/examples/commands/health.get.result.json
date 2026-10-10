@@ -1,0 +1,32 @@
+{
+  "observed_at": "2026-10-09T12:00:00Z",
+  "engine": {
+    "private_commit_bytes": "104857600",
+    "working_set_bytes": "125829120",
+    "cpu_seconds": 12.5,
+    "threads": 21
+  },
+  "catalog": {
+    "schema_version": 1,
+    "db_bytes": "52428800",
+    "wal_bytes": "4194304",
+    "files": 41880,
+    "dirs": 6120,
+    "writer_queue_depth": 0,
+    "writer_queue_capacity": 64
+  },
+  "jobs_running": 1,
+  "last_error": {
+    "code": "device_offline",
+    "message": "Volume vo_lab2 went offline during a refresh.",
+    "retryable": true,
+    "detail": null
+  },
+  "warnings": [
+    {
+      "code": "scan_throttled",
+      "message": "The scan was throttled because the catalogue writer queue is full.",
+      "at": "2026-10-09T12:00:00Z"
+    }
+  ]
+}

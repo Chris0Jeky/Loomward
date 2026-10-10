@@ -85,19 +85,21 @@
         "command": { "$ref": "#/$defs/CommandName" },
         "payload": { "type": "object", "$comment": "Validated against the request definition named for this command in commands.json." },
         "deadline_ms": { "type": "integer", "minimum": 1, "maximum": 60000 },
-        "expected_generation": { "$ref": "#/$defs/Generation" }
+        "expected_generation": { "$ref": "#/$defs/Generation" },
+        "expected_state_rev": { "$ref": "#/$defs/Generation", "$comment": "Revision precondition for owner-state mutations (volumes.declare_tier, collections.update_members): the call commits only while state.db is still at this revision, else stale_generation with detail.reason state_rev_changed (semantics.md sections 3 and 5). Elsewhere invalid_request." }
       }
     },
     "ResponseMeta": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["served_at", "elapsed_ms", "dataset_class", "budget_hit", "catalog_rev"],
+      "required": ["served_at", "elapsed_ms", "dataset_class", "budget_hit", "catalog_rev", "state_rev"],
       "properties": {
         "served_at": { "$ref": "#/$defs/Timestamp" },
         "elapsed_ms": { "$ref": "#/$defs/Count" },
         "dataset_class": { "$ref": "#/$defs/DatasetClass" },
         "budget_hit": { "type": "boolean" },
-        "catalog_rev": { "$ref": "#/$defs/NullableGeneration", "$comment": "Catalogue revision the response was read at, or committed at for a mutation (semantics.md section 5)." }
+        "catalog_rev": { "$ref": "#/$defs/NullableGeneration", "$comment": "Catalogue revision the response was read at, or committed at for a mutation (semantics.md section 5)." },
+        "state_rev": { "$ref": "#/$defs/NullableGeneration", "$comment": "state.db revision the response was read at, or committed at for a mutation; null when the command touched no state.db data (semantics.md section 5)." }
       }
     },
     "ResponseOk": {
@@ -129,7 +131,7 @@
     "EventEnvelope": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["protocol", "epoch", "seq", "event", "at", "catalog_rev", "data"],
+      "required": ["protocol", "epoch", "seq", "event", "at", "catalog_rev", "state_rev", "data"],
       "properties": {
         "protocol": { "$ref": "#/$defs/Protocol" },
         "epoch": { "$ref": "#/$defs/StreamEpoch" },
@@ -137,6 +139,7 @@
         "event": { "$ref": "#/$defs/EventName" },
         "at": { "$ref": "#/$defs/Timestamp" },
         "catalog_rev": { "$ref": "#/$defs/NullableGeneration", "$comment": "Emitted only after the change it describes is committed (semantics.md section 6)." },
+        "state_rev": { "$ref": "#/$defs/NullableGeneration", "$comment": "state.db revision of the commit the event describes; null for events about catalogue-only changes or telemetry." },
         "data": { "type": "object", "$comment": "Validated against the event definition named in commands.json; L1 generates discriminated envelope validation from commands.json (semantics.md section 10)." }
       }
     },
@@ -437,7 +440,7 @@
       }
     },
 
-    "JobKind": { "enum": ["scan", "refit", "teacher", "placement_simulation"] },
+    "JobKind": { "enum": ["scan", "refit", "teacher"], "$comment": "placement.simulate is synchronous and bounded, never a job (semantics.md section 2)." },
     "JobState": { "enum": ["queued", "running", "cancel_requested", "cancelled", "failed", "completed"] },
     "ScanBudget": {
       "type": "object",
@@ -513,7 +516,7 @@
       "additionalProperties": false,
       "required": ["limit"],
       "properties": {
-        "kinds": { "type": "array", "maxItems": 4, "uniqueItems": true, "items": { "$ref": "#/$defs/JobKind" } },
+        "kinds": { "type": "array", "maxItems": 3, "uniqueItems": true, "items": { "$ref": "#/$defs/JobKind" } },
         "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
       }
     },

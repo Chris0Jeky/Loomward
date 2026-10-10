@@ -1,0 +1,10 @@
+{
+  "subscription_id": "sb_0001",
+  "channels": [
+    "system",
+    "disks",
+    "engine"
+  ],
+  "interval_ms": 2000,
+  "expires_at": "2026-10-09T12:01:00Z"
+}

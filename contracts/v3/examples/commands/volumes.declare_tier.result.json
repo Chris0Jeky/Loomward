@@ -1,0 +1,39 @@
+{
+  "volume": {
+    "volume_id": "vo_lab1",
+    "display_name": "Lab fast",
+    "mount_points": [
+      "Lab:\\"
+    ],
+    "filesystem": "NTFS",
+    "label": "Lab fast",
+    "online": true,
+    "read_only": false,
+    "removable": false,
+    "capacity_bytes": "1000204886016",
+    "free_bytes": "412316860416",
+    "device": {
+      "bus_type": "nvme",
+      "seek_penalty": false,
+      "multiple_disks": false,
+      "basis": "ioctl_storage_query_property"
+    },
+    "tier": {
+      "tier": 1,
+      "basis": "declared",
+      "declared_tier": 1,
+      "hint_tier": 0,
+      "note": "Declared by the owner; the device hint says NVMe."
+    },
+    "features": {
+      "file_ids_128": true,
+      "hard_links": true,
+      "sparse_files": true,
+      "compression": true,
+      "reparse_points": true,
+      "usn_journal": null
+    },
+    "observed_at": "2026-10-09T12:00:00Z"
+  },
+  "preference_recorded_at": "2026-10-09T12:00:00Z"
+}

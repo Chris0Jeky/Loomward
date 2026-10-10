@@ -1,0 +1,24 @@
+{
+  "job_id": "jb_0010",
+  "state": "completed",
+  "recipient": "codex_cli_gpt_6_1_sol",
+  "payload_digest": "sha256:cde4f746885bc8492e81ebae9b60f354e735f3e1e4a27fadc0983480a720c883",
+  "labels": [
+    {
+      "node_id": "nd_0020",
+      "label": "Project",
+      "abstain": false,
+      "reason": "Name and extension suggest a project document.",
+      "evidence": [
+        "name",
+        "extension"
+      ],
+      "data_class": "teacher",
+      "weight": 0.2,
+      "requires_review": true,
+      "autonomy_allowed": false
+    }
+  ],
+  "rejected_output": false,
+  "rejection_reason": null
+}

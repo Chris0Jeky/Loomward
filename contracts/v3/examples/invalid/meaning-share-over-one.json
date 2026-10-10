@@ -1,0 +1,13 @@
+{
+  "def": "MeaningThread",
+  "reason": "share is a fraction in 0..1",
+  "value": {
+    "state": "labelled",
+    "label": "Project",
+    "share": 1.5,
+    "source": "human",
+    "collection_ids": [
+      "co_proj1"
+    ]
+  }
+}

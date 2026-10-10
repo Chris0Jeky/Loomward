@@ -1,0 +1,6 @@
+{
+  "source_volume_id": "vo_lab1",
+  "basis": "root_children",
+  "max_groups": 50,
+  "min_bytes": "1048576"
+}

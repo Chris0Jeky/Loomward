@@ -129,6 +129,7 @@
           <div class="bar" role="img" aria-label={`In use ${formatBytes(inUse?.toString() ?? null)} of ${formatBytes(mem.total_bytes)}`}>
             {#if share(inUse, total) !== null}<div class="fill" style={`width:${share(inUse, total)}%`}></div>{/if}
           </div>
+          <div class="tbl-wrap">
           <table class="tbl ledger">
             <caption class="sr-only">Physical memory ledger</caption>
             <thead><tr><th scope="col">Category</th><th scope="col" class="r">Bytes</th><th scope="col" class="r">Share</th><th scope="col">Source</th></tr></thead>
@@ -141,6 +142,7 @@
               <tr><th scope="row">Available</th><td class="r num">{@render B(mem.available_bytes, 'not reported')}</td><td class="r num">{share(avail, total) ?? 'unknown'}{share(avail, total) === null ? '' : '%'}</td><td class="muted">standby plus free, reported as one figure</td></tr>
             </tbody>
           </table>
+          </div>
         </div>
         <div>
           <h3>Commit charge <span class="muted small">(separate from the ledger)</span></h3>
@@ -271,7 +273,8 @@
   .simbanner { border: 1px dashed var(--permission); border-radius: var(--radius); padding: 8px 12px; background: var(--surface); }
   .bad { color: var(--danger); }
   .small { font-size: 0.8rem; }
-  .memrow { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+  .memrow { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 20px; }
+  .memrow > div { min-width: 0; }
   .bar { height: 14px; border: 1px solid var(--line); border-radius: 7px; background: var(--raised); overflow: hidden; margin-bottom: 10px; }
   .fill { height: 100%; background: var(--residency); opacity: 0.8; }
   .commit .fill { background: repeating-linear-gradient(135deg, var(--permission) 0 4px, color-mix(in srgb, var(--permission) 45%, transparent) 4px 8px); }

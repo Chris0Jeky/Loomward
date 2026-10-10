@@ -1,0 +1,13 @@
+{
+  "proposals": [
+    {
+      "proposal_id": "pp_0001",
+      "kind": "placement_simulation",
+      "status": "simulation_only",
+      "created_at": "2026-10-09T12:00:00Z",
+      "source_volume_id": "vo_lab1",
+      "satisfied": true,
+      "shortfall_bytes": "0"
+    }
+  ]
+}

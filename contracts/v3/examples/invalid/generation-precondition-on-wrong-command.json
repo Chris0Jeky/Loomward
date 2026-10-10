@@ -1,0 +1,20 @@
+{
+  "def": "RequestEnvelope",
+  "reason": "expected_generation is only accepted by commands anchored in exactly one root",
+  "complete": true,
+  "rust_only": true,
+  "value": {
+    "protocol": "loomward/3",
+    "request_id": "r_11",
+    "command": "scan.start",
+    "payload": {
+      "root_id": "rt_synth1",
+      "mode": "refresh",
+      "budget": {
+        "max_entries": 1000000,
+        "threads": 4
+      }
+    },
+    "expected_generation": "12"
+  }
+}

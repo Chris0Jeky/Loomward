@@ -1,0 +1,10 @@
+{
+  "def": "JobListRequest",
+  "reason": "placement.simulate is never a job",
+  "value": {
+    "kinds": [
+      "placement_simulation"
+    ],
+    "limit": 5
+  }
+}

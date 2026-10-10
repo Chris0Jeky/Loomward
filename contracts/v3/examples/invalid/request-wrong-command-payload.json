@@ -1,0 +1,18 @@
+{
+  "def": "RequestEnvelope",
+  "reason": "a scan.start payload sent as tree.slice",
+  "complete": true,
+  "value": {
+    "protocol": "loomward/3",
+    "request_id": "r_13",
+    "command": "tree.slice",
+    "payload": {
+      "root_id": "rt_synth1",
+      "mode": "refresh",
+      "budget": {
+        "max_entries": 1000000,
+        "threads": 4
+      }
+    }
+  }
+}
