@@ -23,6 +23,19 @@ struct Args {
     static_dir: Option<PathBuf>,
 }
 
+impl Args {
+    fn http_options(self, roots: &[PathBuf]) -> Options {
+        Options {
+            bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), self.port),
+            allow_origins: self.allow_origins,
+            static_dir: self.static_dir,
+            grant_roots: roots.to_vec(),
+            state_dir: self.state_dir,
+            ..Options::default()
+        }
+    }
+}
+
 fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut a = Args {
         dataset: DatasetClass::Synthetic,
@@ -85,12 +98,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let options = Options {
-        bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), args.port),
-        allow_origins: args.allow_origins,
-        static_dir: args.static_dir,
-        ..Options::default()
-    };
+    let options = args.http_options(&roots);
     let handle = match serve(Arc::new(service), options) {
         Ok(h) => h,
         Err(e) => {
@@ -106,4 +114,34 @@ fn main() -> ExitCode {
     println!("{}", handle.url());
     handle.wait();
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn http_options_consume_exactly_the_validated_canonical_roots() {
+        let base = std::env::temp_dir().join(format!("lw-http-startup-{}", std::process::id()));
+        let grant = base.join("grant");
+        std::fs::create_dir_all(&grant).unwrap();
+        let raw = grant.join("..").join("grant");
+        let args = parse(
+            [
+                "--dataset".into(),
+                "personal".into(),
+                "--allow-personal".into(),
+                "--grant-root".into(),
+                raw.to_str().unwrap().into(),
+            ]
+            .into_iter(),
+        )
+        .unwrap();
+        let roots = grants::validate_roots(args.dataset, &args.grant_roots, None).unwrap();
+        assert_ne!(roots, args.grant_roots);
+        let options = args.http_options(&roots);
+        assert_eq!(options.grant_roots, roots);
+        assert_eq!(options.grant_roots, vec![grant.canonicalize().unwrap()]);
+        std::fs::remove_dir_all(base).unwrap();
+    }
 }

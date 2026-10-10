@@ -643,6 +643,7 @@ dependencies = [
  "hyper-util",
  "loomward-protocol",
  "serde_json",
+ "socket2",
  "subtle",
  "tokio",
 ]
