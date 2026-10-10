@@ -1,4 +1,5 @@
 //! Read-only native observations. Identity is never an operation grant.
+pub mod duplicate_reader;
 pub mod enumerate;
 pub mod identity;
 pub mod jobs;

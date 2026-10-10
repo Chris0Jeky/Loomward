@@ -34,27 +34,38 @@ Bundling is off (`bundle.active: false`); no installer is built.
 | Command layer, dialog guards, Tauri IPC + ACL (mock runtime) | `cargo test --manifest-path native/Cargo.toml` |
 | The real Win32 disclosure box (needs an interactive desktop) | `cargo test --manifest-path native/Cargo.toml -- --ignored native_disclosure` |
 | Self test | `native/target/debug/loomward-desktop.exe --self-test` |
-| Real WebView2: IPC, ACL, CSP, heartbeat, teardown, P9 | `py -3 native/tests/webview2_probe.py` (Playwright over CDP; writes `evidence/v3/native/`) |
+| Real WebView2: raw IPC, ACL, CSP, navigation, heartbeat, renderer lag, teardown | `py -3 native/tests/webview2_probe.py` (Playwright over CDP; writes `evidence/v3/native/`) |
 
 ## IPC surface
 
 | Command | Arguments | Returns | Notes |
 |---|---|---|---|
-| `lw_call` | `{ request: RequestEnvelope }` | `ResponseEnvelope` | Over 64 KiB rejects the invoke; everything else enters through `RequestEnvelope::from_slice` and answers with an envelope. `roots.request_grant` in a synthetic session and `grants.create_disclosure` in a personal one are refused here before the service (`synthetic_session_requires_lab_root`, `confinement_not_enforced`). |
-| `lw_events` | `{ channel: Channel<EventEnvelope>, lastEpoch: string \| null, lastSeq: number \| null }` | `null` once `stream.hello` is on the channel | The service's stream is pumped into the channel, `stream.hello` heartbeat after 15 s of silence included. At most four streams per window. A page load or window close tears that window's streams down. A `lastSeq` without a valid `lastEpoch` resumes from an unknown epoch (`stream.lagged`, `epoch_changed`). |
+| `lw_call` | `Uint8Array` containing a UTF-8 JSON `RequestEnvelope` | `ResponseEnvelope` | The raw body is checked against 64 KiB before JSON parsing; `RequestEnvelope::from_slice` refuses duplicate keys at every depth. Already-parsed JSON IPC is refused. At most four calls are admitted before blocking work is spawned. `roots.request_grant` in a synthetic session and `grants.create_disclosure` in a personal one are refused here before the service (`synthetic_session_requires_lab_root`, `confinement_not_enforced`). |
+| `lw_events` | `{ channel: Channel<EventEnvelope>, lastEpoch: string \| null, lastSeq: number \| null }` | `null` once `stream.hello` is on the channel | The service's stream is pumped into the channel, `stream.hello` heartbeat after 15 s of silence included. At four streams the oldest is evicted; drop guards release slots on pump panics. A page load or window close tears that window's streams down. A `lastSeq` without a valid `lastEpoch` resumes from an unknown epoch (`stream.lagged`, `epoch_changed`). This command uses Tauri's parsed arguments; it does not claim raw size or duplicate-key enforcement. |
 
 `capabilities/default.json` grants the `main` window `allow-lw-call` and `allow-lw-events` and
 nothing else: no `core:*` permission, and no plugin is registered (no fs, shell, dialog, http,
 process or updater). `build.rs` declares the two commands to the ACL, so an unlisted one is
 refused. The CSP in `tauri.conf.json` allows only same-origin scripts and styles and IPC.
+Main-document navigation stays on the embedded origin and new windows are denied. Production
+assets ignore `?transport=mock`; mock UI checks require a development build. The client turns
+events queued for over five seconds into one `stream.lagged` resync notice, discarding stale
+backlog until fresh events arrive. Channel delivery remains fire-and-forget, not an acknowledged
+or bounded renderer queue.
+The WebView2 probe gives each run a private test profile under its output directory, so debug
+options do not share the application's normal profile or another run's environment.
 
 ## Native dialogs
 
 `DesktopDialogs` (`src/dialogs.rs`) implements `NativeDialogs` in Rust; the webview cannot open
-either dialog. The folder picker (`rfd`) never opens in a synthetic session. The disclosure box is
-a task-modal Win32 `MessageBoxW` whose default button is Cancel, listing recipient, model, fields
-and every `DisclosureSummary` item with hidden characters written as `\u{..}`. It is unreachable
-today: personal disclosure is refused with `confinement_not_enforced` until LW-111.
+either dialog. The folder picker (`rfd`) never opens in a synthetic session. Its result goes
+through the service's grant-root validator (native selection permits volume roots), then refuses
+whole profiles and credential/browser stores; the service must still check state overlap,
+dataset provenance and native identity when granting. Concurrent dialog requests decline.
+The disclosure box is a main-window-owned Win32 `MessageBoxW` whose default button is Cancel,
+listing every item with non-ASCII characters escaped as `\u{..}`. Text over 2,048 characters
+declines without truncation. Personal disclosure is refused by both the adapter and the dialog
+implementation until LW-111 provides scrolling confirmation and the confinement gate passes.
 
 ## For lane L8 (the real service)
 
