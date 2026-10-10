@@ -183,7 +183,12 @@ def main() -> int:
         shell = subprocess.Popen([str(a.exe)], env=env, stdout=log, stderr=subprocess.STDOUT)
         try:
             with sync_playwright() as pw:
-                browser = connect_webview(pw, port)
+                try:
+                    browser = connect_webview(pw, port)
+                except RuntimeError as e:
+                    hosts = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq msedgewebview2.exe', '/FO', 'CSV', '/NH'],
+                                           capture_output=True, text=True).stdout.count('msedgewebview2.exe')
+                    raise RuntimeError(f'{e}; shell exit code {shell.poll()}, {hosts} msedgewebview2 processes') from e
                 results['webview2'] = browser.version
                 page = next(p for c in browser.contexts for p in c.pages)
                 page.wait_for_load_state('load')
