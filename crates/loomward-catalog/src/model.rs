@@ -54,16 +54,18 @@ pub struct RootObservation {
     pub volume_key: String,
     pub display_name: String,
     pub display_path: String,
-    pub root_file_id: Option<[u8; 16]>,
+    pub root_file_id: Option<Vec<u8>>,
+    pub filesystem: Option<String>,
     pub origin: String,
     pub granted_via: String,
     pub observed_at_ns: i64,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Observation {
     pub name: String,
     pub name_utf16: Option<Vec<u8>>,
-    pub file_id: Option<[u8; 16]>,
+    pub file_id: Option<Vec<u8>>,
+    pub id_basis: String,
     pub logical: u64,
     pub allocated: Option<u64>,
     pub extension: Option<String>,
@@ -82,6 +84,7 @@ impl Observation {
             name: name.into(),
             name_utf16: None,
             file_id: None,
+            id_basis: "listed".into(),
             logical,
             allocated,
             extension: None,
@@ -96,7 +99,12 @@ impl Observation {
         }
     }
     pub(crate) fn validate(&self) -> Result<()> {
-        if self.name.is_empty()
+        if self
+            .file_id
+            .as_ref()
+            .is_some_and(|id| !matches!(id.len(), 8 | 16))
+            || !matches!(self.id_basis.as_str(), "listed" | "post_open" | "none")
+            || self.name.is_empty()
             || self.name.chars().count() > 260
             || self.name.contains(['\0', '/', '\\'])
             || matches!(self.name.as_str(), "." | "..")
@@ -155,6 +163,12 @@ pub struct DirListing {
     pub skipped: u64,
     pub errors: u64,
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ListingOutcome {
+    Complete,
+    Incomplete(String),
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Totals {
     pub files: u64,
@@ -177,10 +191,41 @@ pub enum WriteCommand {
         started_at_ns: i64,
     },
     DirListing(DirListing),
+    StageChunk {
+        run_id: i64,
+        dir_id: i64,
+        seq: i64,
+        files: Vec<Observation>,
+        dirs: Vec<Observation>,
+    },
+    ListingDone {
+        run_id: i64,
+        dir_id: i64,
+        outcome: ListingOutcome,
+        skipped: u64,
+        errors: u64,
+    },
+    RevokeGrant {
+        grant_id: i64,
+        revoked_at_ns: i64,
+    },
+    Repair {
+        root_id: i64,
+    },
+    ObjectReference {
+        node: NodeKey,
+        observed_at_ns: i64,
+    },
+    ReconcileReference {
+        reference_id: i64,
+        node: NodeKey,
+        observed_at_ns: i64,
+    },
     DirFinal {
         run_id: i64,
         dir_id: i64,
         totals: Totals,
+        input_revision: i64,
     },
     EndRun {
         run_id: i64,
@@ -191,16 +236,24 @@ pub enum WriteCommand {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WriteReply {
-    Root { grant_id: i64, dir_id: i64 },
+    Root {
+        grant_id: i64,
+        root_id: i64,
+        dir_id: i64,
+    },
     Run(i64),
-    Listing { revision: i64 },
+    Listing {
+        revision: i64,
+    },
+    Reference(i64),
     Done,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ChildrenCursor {
     pub dir_id: i64,
-    pub listing_rev: i64,
+    pub subtree_rev: i64,
+    pub catalog_instance: String,
     pub sort: Sort,
     pub basis: Basis,
     pub value: CursorValue,
@@ -209,6 +262,7 @@ pub struct ChildrenCursor {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum CursorValue {
+    Unknown,
     Number(i64),
     Text(String),
 }
@@ -231,7 +285,8 @@ pub struct SliceRequest {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SearchCursor {
-    pub revisions: Vec<(i64, i64)>,
+    pub catalog_rev: i64,
+    pub catalog_instance: String,
     pub text: String,
     pub extension: Option<String>,
     pub min_bytes: Option<u64>,
@@ -354,6 +409,7 @@ pub struct TreeSlice {
     pub complete: bool,
     pub live: bool,
     pub ordering: String,
+    pub aggregate_state: String,
     pub truncated: bool,
     pub nodes: Vec<SliceNode>,
 }
@@ -376,6 +432,10 @@ pub struct SubtreeTotals {
     pub logical_bytes: String,
     pub allocated_bytes: Option<String>,
     pub allocation_unknown_files: u64,
+    pub stream_coverage: String,
+    pub unique_objects: Option<u64>,
+    pub unique_allocated_bytes: Option<String>,
+    pub multi_link_entries: u64,
     pub skipped: u64,
     pub failed: u64,
     pub complete: bool,
@@ -387,6 +447,7 @@ pub struct IdentityObservation {
     pub file_id_hex: Option<String>,
     pub observed_generation: Option<String>,
     pub authorises_effects: bool,
+    pub durable_reference: String,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct Timestamps {

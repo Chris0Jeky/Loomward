@@ -7,10 +7,12 @@ mod slice;
 mod writer;
 pub use model::*;
 pub use query::Reader;
-pub use writer::{Receipt, Writer};
+pub use writer::{
+    BytePermit, Cancellation, Receipt, Writer, WriterTimings, CHUNK_ENTRIES, QUEUE_BYTES,
+};
 
 pub const APPLICATION_ID: i64 = 0x4c4d5752;
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 #[derive(Debug)]
 pub enum Error {
@@ -24,6 +26,9 @@ pub enum Error {
     NotFound,
     StaleGeneration,
     Closed,
+    Cancelled,
+    RepairRequired,
+    ResourceBudget,
 }
 pub type Result<T> = std::result::Result<T, Error>;
 impl From<rusqlite::Error> for Error {
@@ -38,7 +43,7 @@ impl From<std::io::Error> for Error {
 }
 pub struct Catalog {
     dir: std::path::PathBuf,
-    writer: Writer,
+    writer: std::sync::Arc<Writer>,
 }
 impl Catalog {
     pub fn open(dir: &Path, dataset: &str) -> Result<Self> {
@@ -50,14 +55,16 @@ impl Catalog {
         let dir = dir.canonicalize()?;
         db::local_path(&dir)?;
         let connection = db::open_pair(&dir, dataset)?;
-        let writer = Writer::start(connection)?;
+        let writer = std::sync::Arc::new(Writer::start(connection)?);
         Ok(Self { dir, writer })
     }
     pub fn writer(&self) -> &Writer {
         &self.writer
     }
     pub fn reader(&self) -> Result<Reader> {
-        Reader::open(&self.dir)
+        let mut reader = Reader::open(&self.dir)?;
+        reader.writer = Some(self.writer.clone());
+        Ok(reader)
     }
 }
 impl std::fmt::Display for Error {

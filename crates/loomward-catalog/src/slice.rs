@@ -37,15 +37,21 @@ fn virtual_row(key: NodeKey, name: String) -> Raw {
         created: None,
         changed: None,
         accessed: None,
+        born_run: 0,
+        valid: true,
     }
 }
-fn sum_into(parent: &mut Raw, child: &Raw) {
-    parent.totals.logical += child.totals.logical;
-    parent.totals.allocated += child.totals.allocated;
-    parent.totals.files += child.totals.files;
-    parent.totals.dirs += child.totals.dirs;
-    parent.totals.allocation_unknown += child.totals.allocation_unknown;
+fn sum_into(parent: &mut Raw, child: &Raw) -> Result<()> {
+    parent.totals.logical = add(parent.totals.logical, child.totals.logical)?;
+    parent.totals.allocated = add(parent.totals.allocated, child.totals.allocated)?;
+    parent.totals.files = add(parent.totals.files, child.totals.files)?;
+    parent.totals.dirs = add(parent.totals.dirs, child.totals.dirs)?;
+    parent.totals.allocation_unknown = add(
+        parent.totals.allocation_unknown,
+        child.totals.allocation_unknown,
+    )?;
     parent.totals.complete &= child.totals.complete;
+    Ok(())
 }
 fn kind(row: &Raw) -> String {
     match row.key {
@@ -79,19 +85,22 @@ impl Reader {
         {
             return Err(Error::Invalid("slice bounds"));
         }
-        self.read(|conn| slice(conn, req, overlay))
+        let (slice, clamps) = self.read(|conn| slice(conn, req, overlay))?;
+        self.live_clamp_count = self.live_clamp_count.saturating_add(clamps);
+        Ok(slice)
     }
 }
 fn slice(
     conn: &Connection,
     req: &SliceRequest,
     overlay: &HashMap<i64, Totals>,
-) -> Result<TreeSlice> {
+) -> Result<(TreeSlice, u64)> {
+    let mut clamps = 0;
     let mut virtual_children: HashMap<NodeKey, Vec<Raw>> = HashMap::new();
     let mut roots = Vec::new();
     let mut atlas = virtual_row(NodeKey::Atlas, "Atlas".into());
     if matches!(req.anchor, NodeKey::Atlas | NodeKey::Volume(_)) {
-        let mut stmt=conn.prepare("SELECT d.id,g.volume_id FROM dir d JOIN root_grant g ON g.id=d.grant_id WHERE d.parent_id IS NULL AND g.state='active' ORDER BY g.id LIMIT 65")?;
+        let mut stmt=conn.prepare("SELECT d.id,g.volume_id FROM dir d JOIN root_grant g ON g.id=d.root_id WHERE d.parent_id IS NULL AND g.state='active' ORDER BY g.id LIMIT 65")?;
         let root_ids = stmt
             .query_map([], |r| {
                 Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?))
@@ -118,7 +127,7 @@ fn slice(
                     })?;
                 let mut volume = virtual_row(*key, name);
                 for child in children {
-                    sum_into(&mut volume, child);
+                    sum_into(&mut volume, child)?;
                 }
                 volumes.push(volume);
             }
@@ -126,7 +135,7 @@ fn slice(
         let orphan = virtual_children.remove(&NodeKey::Atlas).unwrap_or_default();
         volumes.extend(orphan);
         for volume in &volumes {
-            sum_into(&mut atlas, volume);
+            sum_into(&mut atlas, volume)?;
         }
         virtual_children.insert(NodeKey::Atlas, volumes);
     }
@@ -167,6 +176,32 @@ fn slice(
         live_grants.insert(*g, live(conn, *g)?);
     }
     let any_live = live_grants.values().any(|v| *v);
+    if any_live {
+        for (g, is_live) in &live_grants {
+            if *is_live {
+                let mut stmt = conn.prepare(
+                    "SELECT id FROM dir WHERE root_id=?1 AND listing_state!='absent_pending'",
+                )?;
+                let ids = stmt
+                    .query_map([g], |r| r.get::<_, i64>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                if ids.iter().any(|id| !overlay.contains_key(id)) {
+                    return Err(Error::RepairRequired);
+                }
+            }
+        }
+        for children in virtual_children.values_mut() {
+            for child in children {
+                if let NodeKey::Dir(id) = child.key {
+                    if let Some(t) = overlay.get(&id) {
+                        child.totals = t.clone();
+                    }
+                }
+            }
+        }
+    } else if !anchor.valid || roots.iter().any(|r| !r.valid) {
+        return Err(Error::RepairRequired);
+    }
     let anchor_size = anchor.size(req.basis);
     let complete = anchor.totals.complete && !any_live;
     let mut nodes = vec![Node {
@@ -182,7 +217,6 @@ fn slice(
         heap.push((anchor_size, Reverse(0)));
     }
     let mut truncated = false;
-    let mut approximate_files = false;
     while let Some((_, Reverse(index))) = heap.pop() {
         if nodes[index].depth >= req.depth {
             truncated |= nodes[index].row.totals.files > 0 || nodes[index].row.totals.dirs > 0;
@@ -226,6 +260,9 @@ fn slice(
         } else {
             Some(children.len() as u64)
         };
+        if !parent.live && children.iter().any(|r| !r.valid) {
+            return Err(Error::RepairRequired);
+        }
         children.retain(|r| r.size(req.basis) as f64 >= req.min_share * anchor_size as f64);
         // Reserve a slot for other before spending the bounded query result.
         children.truncate(remaining - 1);
@@ -238,17 +275,20 @@ fn slice(
         let mut dirs = 0_u64;
         let mut unknown = 0_u64;
         for child in children {
-            logical += child.totals.logical;
-            allocated += child.totals.allocated;
-            files += child.totals.files;
-            unknown += child.totals.allocation_unknown;
-            dirs += child.totals.dirs
-                + u64::from(
-                    matches!(child.key, NodeKey::Dir(_))
-                        && matches!(parent_row.key, NodeKey::Dir(_)),
-                );
-            approximate_files |=
-                req.basis == Basis::Allocated && matches!(child.key, NodeKey::File(_));
+            logical = add(logical, child.totals.logical)?;
+            allocated = add(allocated, child.totals.allocated)?;
+            files = add(files, child.totals.files)?;
+            unknown = add(unknown, child.totals.allocation_unknown)?;
+            dirs = add(
+                dirs,
+                add(
+                    child.totals.dirs,
+                    u64::from(
+                        matches!(child.key, NodeKey::Dir(_))
+                            && matches!(parent_row.key, NodeKey::Dir(_)),
+                    ),
+                )?,
+            )?;
             let child_live = live_grants
                 .get(&child.grant)
                 .copied()
@@ -270,11 +310,21 @@ fn slice(
         let visible = nodes[index].children.len() as u64;
         let omitted = known_count.map(|n| n.saturating_sub(visible));
         let remainder = Totals {
-            logical: parent_row.totals.logical.saturating_sub(logical),
-            allocated: parent_row.totals.allocated.saturating_sub(allocated),
-            files: parent_row.totals.files.saturating_sub(files),
-            dirs: parent_row.totals.dirs.saturating_sub(dirs),
-            allocation_unknown: parent_row.totals.allocation_unknown.saturating_sub(unknown),
+            logical: difference(parent_row.totals.logical, logical, parent_live, &mut clamps)?,
+            allocated: difference(
+                parent_row.totals.allocated,
+                allocated,
+                parent_live,
+                &mut clamps,
+            )?,
+            files: difference(parent_row.totals.files, files, parent_live, &mut clamps)?,
+            dirs: difference(parent_row.totals.dirs, dirs, parent_live, &mut clamps)?,
+            allocation_unknown: difference(
+                parent_row.totals.allocation_unknown,
+                unknown,
+                parent_live,
+                &mut clamps,
+            )?,
             complete: parent_row.totals.complete,
             ..Totals::default()
         };
@@ -285,7 +335,6 @@ fn slice(
             || remainder.allocation_unknown > 0
         {
             truncated = true;
-            approximate_files |= req.basis == Basis::Allocated && remainder.files > 0;
             let mut other = virtual_row(NodeKey::Other(index as i64), "Other".into());
             other.totals = remainder;
             other.grant = parent_row.grant;
@@ -304,29 +353,36 @@ fn slice(
     }
     let mut output = Vec::new();
     flatten(conn, &nodes, 0, None, req.basis, &mut output)?;
-    Ok(TreeSlice {
-        anchor_node_id: req.anchor.reference(),
-        basis: req.basis,
-        root_generations: root_revs
-            .into_iter()
-            .map(|(id, rev)| RootGeneration {
-                root_id: format!("rt_{id}"),
-                generation: Some(rev.to_string()),
-            })
-            .collect(),
-        complete,
-        live: any_live,
-        ordering: if any_live {
-            "approximate_live"
-        } else if approximate_files {
-            "approximate_files"
-        } else {
-            "exact"
-        }
-        .into(),
-        truncated,
-        nodes: output,
-    })
+    Ok((
+        TreeSlice {
+            anchor_node_id: req.anchor.reference(),
+            basis: req.basis,
+            root_generations: root_revs
+                .into_iter()
+                .map(|(id, rev)| RootGeneration {
+                    root_id: format!("rt_{id}"),
+                    generation: rev.map(|rev| rev.to_string()),
+                })
+                .collect(),
+            complete,
+            live: any_live,
+            aggregate_state: if any_live {
+                "provisional_live"
+            } else {
+                "consistent"
+            }
+            .into(),
+            ordering: if any_live {
+                "approximate_live"
+            } else {
+                "exact"
+            }
+            .into(),
+            truncated,
+            nodes: output,
+        },
+        clamps,
+    ))
 }
 fn flatten(
     conn: &Connection,
@@ -406,4 +462,19 @@ fn flatten(
         flatten(conn, nodes, *child, Some(index), basis, out)?;
     }
     Ok(())
+}
+
+fn add(a: u64, b: u64) -> Result<u64> {
+    a.checked_add(b)
+        .ok_or(Error::Invalid("aggregate byte overflow"))
+}
+fn difference(parent: u64, children: u64, live: bool, clamps: &mut u64) -> Result<u64> {
+    match parent.checked_sub(children) {
+        Some(value) => Ok(value),
+        None if live => {
+            *clamps += 1;
+            Ok(0)
+        }
+        None => Err(Error::Invalid("inconsistent committed aggregate")),
+    }
 }

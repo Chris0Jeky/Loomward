@@ -52,22 +52,56 @@ fn inspect(path: &Path, dataset: &str) -> Result<i64> {
     Ok(version)
 }
 
+fn backup(conn: &Connection, path: &Path, label: &str) -> Result<std::path::PathBuf> {
+    let mut backup = path.with_file_name(format!("state.{label}.db"));
+    let mut suffix = 0;
+    while backup.exists() {
+        suffix += 1;
+        backup = path.with_file_name(format!("state.{label}-{suffix}.db"));
+    }
+    conn.execute("VACUUM INTO ?1", [backup.to_string_lossy().as_ref()])?;
+    Ok(backup)
+}
 fn migrate(path: &Path, schema: &str, version: i64, dataset: &str, precious: bool) -> Result<()> {
     let mut conn = Connection::open(path)?;
     conn.busy_timeout(Duration::from_secs(5))?;
     if version < SCHEMA_VERSION {
         if precious {
-            // Never overwrite a previous migration backup.
-            let mut backup = path.with_file_name(format!("state.before-v{}.db", version));
-            let mut suffix = 0;
-            while backup.exists() {
-                suffix += 1;
-                backup = path.with_file_name(format!("state.before-v{version}-{suffix}.db"));
-            }
-            conn.execute("VACUUM INTO ?1", [backup.to_string_lossy().as_ref()])?;
+            backup(&conn, path, &format!("before-v{version}"))?;
         }
         let tx = conn.transaction()?;
-        tx.execute_batch(schema)?;
+        if version == 1 {
+            // Retain the entire old precious schema, including records lacking v2 provenance.
+            let tables = {
+                let mut s=tx.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'")?;
+                let rows = s
+                    .query_map([], |r| r.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows
+            };
+            for table in &tables {
+                tx.execute_batch(&format!(
+                    "ALTER TABLE \"{table}\" RENAME TO \"legacy_v1_{table}\""
+                ))?;
+            }
+            tx.execute_batch(schema)?;
+            tx.execute_batch("INSERT INTO object_ref(id,volume_key,file_id,creation_ft,kind,state,retired) SELECT id,volume_key,file_id,0,kind,'unresolved',1 FROM legacy_v1_object_ref")?;
+            for table in [
+                "taxonomy",
+                "student_model",
+                "collection",
+                "collection_member",
+                "tier_declaration",
+                "proposal",
+            ] {
+                tx.execute_batch(&format!(
+                    "INSERT INTO {table} SELECT * FROM legacy_v1_{table}"
+                ))?;
+            }
+            // Legacy labels/disclosures remain in their archived tables: no invented withdrawal or grant.
+        } else {
+            tx.execute_batch(schema)?;
+        }
         tx.execute(
             "INSERT INTO meta(key,value) VALUES ('dataset_class',?1),('engine_version','0.3.0')",
             [dataset],
@@ -81,61 +115,201 @@ fn migrate(path: &Path, schema: &str, version: i64, dataset: &str, precious: boo
         tx.commit()?;
     }
     conn.pragma_update(None, "journal_mode", "WAL")?;
-    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    conn.pragma_update(
+        None,
+        "synchronous",
+        if precious { "FULL" } else { "NORMAL" },
+    )?;
+    if precious {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        backup(&conn, path, &format!("start-{stamp}"))?;
+        let mut backups =
+            std::fs::read_dir(path.parent().ok_or(Error::Invalid("state directory"))?)?
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .is_some_and(|s| s.to_string_lossy().starts_with("state.start-"))
+                })
+                .collect::<Vec<_>>();
+        backups.sort();
+        let remove = backups.len().saturating_sub(7);
+        for old in backups.into_iter().take(remove) {
+            std::fs::remove_file(old)?;
+        }
+    }
     Ok(())
 }
-
+pub(crate) fn derive_root(
+    conn: &Connection,
+    grant: i64,
+    observation: Option<&crate::RootObservation>,
+) -> Result<(i64, i64)> {
+    let (key, id, path, state): (String, Vec<u8>, String, String) = conn.query_row(
+        "SELECT volume_key,root_file_id,display_path,state FROM st.root_grant WHERE id=?1",
+        [grant],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )?;
+    if state != "active" {
+        return Err(Error::NotFound);
+    }
+    let name = observation.map_or(path.as_str(), |o| o.display_name.as_str());
+    let filesystem = observation.and_then(|o| o.filesystem.as_deref());
+    let at = observation.map_or(0, |o| o.observed_at_ns);
+    conn.execute("INSERT INTO volume(volume_key,display_name,filesystem,identity_json,capabilities_json,device_json,online,observed_at_ns) VALUES(?1,?2,?3,'{}','{}','{}',1,?4) ON CONFLICT(volume_key) DO UPDATE SET filesystem=coalesce(excluded.filesystem,volume.filesystem)",rusqlite::params![key,name,filesystem,at])?;
+    let volume: i64 = conn.query_row("SELECT id FROM volume WHERE volume_key=?1", [key], |r| {
+        r.get(0)
+    })?;
+    conn.execute("INSERT INTO root(grant_id,volume_id,root_file_id,state) VALUES(?1,?2,?3,'never_scanned') ON CONFLICT(grant_id) DO NOTHING",rusqlite::params![grant,volume,id])?;
+    let root: i64 = conn.query_row("SELECT id FROM root WHERE grant_id=?1", [grant], |r| {
+        r.get(0)
+    })?;
+    let dir: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM dir WHERE root_id=?1 AND parent_id IS NULL",
+            [root],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let dir = if let Some(dir) = dir {
+        dir
+    } else {
+        conn.execute("INSERT INTO dir(root_id,parent_id,name,file_id,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run) VALUES(?1,NULL,?2,?3,?4,'post_open',0,0,'unlisted',0,0)",rusqlite::params![root,name,id,if id.len()==16{"native_file_id_128"}else{"native_file_id_64"}])?;
+        conn.last_insert_rowid()
+    };
+    Ok((root, dir))
+}
+fn preserve_catalog(dir: &Path, label: &str) -> Result<()> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    for suffix in ["", "-wal", "-shm"] {
+        let file = dir.join(format!("catalog.db{suffix}"));
+        if file.exists() {
+            std::fs::rename(
+                file,
+                dir.join(format!("catalog.{label}-{stamp}.db{suffix}")),
+            )?;
+        }
+    }
+    Ok(())
+}
 pub(crate) fn open_pair(dir: &Path, dataset: &str) -> Result<Connection> {
     let state = dir.join("state.db");
     let catalog = dir.join("catalog.db");
-    // Preflight both before creating or migrating either file.
     let sv = inspect(&state, dataset)?;
     let cv = match inspect(&catalog, dataset) {
         Err(Error::CorruptDatabase) => {
-            let stamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos();
-            std::fs::rename(&catalog, dir.join(format!("catalog.corrupt-{stamp}.db")))?;
-            for suffix in ["-wal", "-shm"] {
-                let path = dir.join(format!("catalog.db{suffix}"));
-                if path.exists() {
-                    std::fs::rename(
-                        path,
-                        dir.join(format!("catalog.corrupt-{stamp}.db{suffix}")),
-                    )?;
-                }
-            }
+            preserve_catalog(dir, "corrupt")?;
             0
         }
         other => other?,
     };
     migrate(&state, include_str!("state.sql"), sv, dataset, true)?;
-    migrate(&catalog, include_str!("catalog.sql"), cv, dataset, false)?;
+    if cv == 1 {
+        // Consent migrates first; archive the derived file only after that durable commit.
+        let mut st = Connection::open(&state)?;
+        st.pragma_update(None, "synchronous", "FULL")?;
+        st.execute(
+            "ATTACH DATABASE ?1 AS old",
+            [catalog.to_string_lossy().as_ref()],
+        )?;
+        let tx = st.transaction()?;
+        tx.execute_batch("INSERT INTO root_grant(id,volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns,revoked_at_ns) SELECT g.id,v.volume_key,coalesce(g.root_file_id,zeroblob(8)),g.display_path,g.origin,g.granted_via,CASE WHEN g.root_file_id IS NULL THEN 'identity_changed' ELSE g.state END,g.granted_at_ns,g.revoked_at_ns FROM old.root_grant g JOIN old.volume v ON v.id=g.volume_id WHERE NOT EXISTS(SELECT 1 FROM root_grant n WHERE n.id=g.id)")?;
+        tx.commit()?;
+        drop(st);
+        preserve_catalog(dir, "before-v1")?;
+    }
+    migrate(
+        &catalog,
+        include_str!("catalog.sql"),
+        if cv == 1 { 0 } else { cv },
+        dataset,
+        false,
+    )?;
     let mut conn = Connection::open(catalog)?;
     conn.busy_timeout(Duration::from_secs(5))?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "cache_size", -65536)?;
+    conn.set_prepared_statement_cache_capacity(128);
     conn.execute(
         "ATTACH DATABASE ?1 AS st",
         [state.to_string_lossy().as_ref()],
     )?;
-    conn.execute_batch("PRAGMA st.synchronous=NORMAL")?;
+    conn.execute_batch("PRAGMA st.synchronous=FULL;PRAGMA st.foreign_keys=ON")?;
+    let instance: String =
+        conn.query_row("SELECT value FROM meta WHERE key='instance_id'", [], |r| {
+            r.get(0)
+        })?;
+    {
+        let tx = conn.transaction()?;
+        if tx.execute("UPDATE st.object_ref SET state='unresolved',retired=1 WHERE state='resolved' AND catalog_instance IS NOT ?1",[instance])?>0{tx.execute("UPDATE st.revision SET state_rev=state_rev+1",[])?;}
+        tx.commit()?;
+    }
     let tx = conn.transaction()?;
-    let interrupted = {
-        let mut stmt =
-            tx.prepare("SELECT DISTINCT grant_id FROM scan_run WHERE state='running'")?;
-        let rows = stmt
+    let grants = {
+        let mut s = tx.prepare("SELECT id FROM st.root_grant WHERE state='active'")?;
+        let rows = s
             .query_map([], |r| r.get::<_, i64>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows
     };
-    tx.execute("UPDATE dir SET state='stale',sub_complete=0 WHERE grant_id IN (SELECT grant_id FROM scan_run WHERE state='running')", [])?;
-    for grant in interrupted {
-        crate::writer::rollup(&tx, grant, false)?;
+    for grant in grants {
+        derive_root(&tx, grant, None)?;
     }
-    tx.execute(r#"UPDATE scan_run SET state='failed',error_json='{"code":"restart_interrupted"}' WHERE state='running'"#, [])?;
+    let interrupted = {
+        let mut s = tx.prepare("SELECT DISTINCT root_id FROM scan_run WHERE state='running'")?;
+        let rows = s
+            .query_map([], |r| r.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    for root in interrupted {
+        tx.execute("UPDATE root SET state='repairing' WHERE id=?1", [root])?;
+        crate::writer::rollup(&tx, root, false)?;
+        tx.execute(
+            "UPDATE root SET state='partial',active_run=NULL WHERE id=?1",
+            [root],
+        )?;
+    }
+    tx.execute("UPDATE scan_run SET state='failed',error_json='{\"code\":\"restart_interrupted\"}' WHERE state='running'",[])?;
+    tx.execute("DELETE FROM stage_entry", [])?;
+    tx.execute("UPDATE revision SET catalog_rev=catalog_rev+1", [])?;
     tx.commit()?;
+    grant_view(&conn)?;
     Ok(conn)
+}
+pub(crate) fn grant_view(conn: &Connection) -> Result<()> {
+    conn.execute_batch("CREATE TEMP VIEW root_grant AS SELECT r.id,r.volume_id,g.volume_key,g.display_path,g.state,g.root_file_id,g.origin,g.granted_via,g.granted_at_ns,g.revoked_at_ns FROM main.root r JOIN st.root_grant g ON g.id=r.grant_id;
+    CREATE TEMP VIEW visible_dir AS WITH RECURSIVE visible(id) AS (SELECT d.id FROM main.dir d JOIN root_grant g ON g.id=d.root_id WHERE d.parent_id IS NULL AND g.state='active' UNION ALL SELECT d.id FROM main.dir d JOIN visible v ON d.parent_id=v.id WHERE d.listing_state!='absent_pending') SELECT id FROM visible")?;
+    Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn writer_connection_uses_full_for_precious_state_and_normal_for_catalogue() {
+        let temp = tempfile::tempdir().unwrap();
+        let conn = open_pair(temp.path(), "synthetic").unwrap();
+        assert_eq!(
+            conn.query_row("PRAGMA main.synchronous", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row("PRAGMA st.synchronous", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            conn.query_row("PRAGMA foreign_keys", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
 }
