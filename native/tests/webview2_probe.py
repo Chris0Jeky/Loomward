@@ -34,6 +34,7 @@ from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
 HEARTBEAT_S = 15
+PROFILES = ROOT / '.loomward/webview2-profiles'
 
 OPEN_CHANNEL = """async () => {
   const t = window.__TAURI_INTERNALS__;
@@ -90,7 +91,8 @@ def connect_webview(pw, port: int):
 
 def p9(exe: Path, out: Path, count: int) -> dict:
     port = free_port()
-    profile = Path(tempfile.mkdtemp(prefix='p9-profile-', dir=out))
+    PROFILES.mkdir(parents=True, exist_ok=True)
+    profile = Path(tempfile.mkdtemp(prefix='p9-profile-', dir=PROFILES))
     env = dict(os.environ, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=f'--remote-debugging-port={port}',
                WEBVIEW2_USER_DATA_FOLDER=str(profile.resolve()))
     with open(out / 'webview2-p9-shell.log', 'w', encoding='utf-8') as log:
@@ -161,7 +163,8 @@ def main() -> int:
     a.out.mkdir(parents=True, exist_ok=True)
     port = free_port()
     # Each run owns its profile: debug options must not collide with another WebView2 environment.
-    profile = Path(tempfile.mkdtemp(prefix='profile-', dir=a.out))
+    PROFILES.mkdir(parents=True, exist_ok=True)
+    profile = Path(tempfile.mkdtemp(prefix='profile-', dir=PROFILES))
     env = dict(os.environ, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=f'--remote-debugging-port={port}',
                WEBVIEW2_USER_DATA_FOLDER=str(profile.resolve()))
     log_path = a.out / 'webview2-shell.log'
