@@ -1,30 +1,30 @@
 {
   "P14": {
-    "bytes_per_entry": 126.55031513455032,
-    "catalog_bytes": 126676992,
+    "bytes_per_entry": 155.00541557900542,
+    "catalog_bytes": 155160576,
     "dataset_scale_met": false,
     "target_bytes_per_entry": 200,
     "target_dataset_rows": 10000000
   },
   "P4": {
-    "insert_seconds": 25.7158483,
+    "insert_seconds": 64.4973702,
     "met": false,
-    "rows_per_second": 38925.45127511893,
+    "rows_per_second": 15520.028132867965,
     "target_rows_per_second": 250000
   },
   "P6": {
     "dataset_scale_met": false,
     "http_round_trip": "unverified",
     "nodes": 2500,
-    "payload_bytes": 1383727,
+    "payload_bytes": 1383755,
     "target_dataset_rows": 10000000,
     "target_ms": 60,
     "target_payload_bytes": 1500000,
     "timing": {
-      "max_ms": 24.3144,
-      "min_ms": 21.483800000000002,
-      "p50_ms": 21.9584,
-      "p95_ms": 22.8367,
+      "max_ms": 51.0795,
+      "min_ms": 32.713699999999996,
+      "p50_ms": 44.8698,
+      "p95_ms": 48.9037,
       "runs": 21
     }
   },
@@ -32,10 +32,10 @@
     "limit": 200,
     "target_ms": 20,
     "timing": {
-      "max_ms": 1.231,
-      "min_ms": 0.7668,
-      "p50_ms": 0.7954,
-      "p95_ms": 0.8496,
+      "max_ms": 1.2924,
+      "min_ms": 0.5801,
+      "p50_ms": 0.9955999999999999,
+      "p95_ms": 1.2910000000000001,
       "runs": 21
     }
   },
@@ -43,10 +43,10 @@
     "budget_hits": 21,
     "target_ms": 300,
     "timing": {
-      "max_ms": 35.9369,
-      "min_ms": 31.839899999999997,
-      "p50_ms": 32.458099999999995,
-      "p95_ms": 34.775,
+      "max_ms": 18.9993,
+      "min_ms": 11.5739,
+      "p50_ms": 16.6166,
+      "p95_ms": 18.4338,
       "runs": 21
     },
     "work_budget_sqlite_ops": 2000000
@@ -55,7 +55,7 @@
   "dataset_class": "synthetic",
   "directories": 1001,
   "files": 1000000,
-  "finalise_seconds": 1.5367783,
+  "finalise_seconds": 1.8548433,
   "insert_includes_generation_and_queue_backpressure": true,
   "limitations": [
     "single warm run on this Windows host; no cold-cache claim",
@@ -68,7 +68,16 @@
     "matched": true
   },
   "platform": "windows",
-  "schema_version": 1,
+  "publication_path": "StageChunk + ListingDone; byte reservation before file generation",
+  "schema_version": 2,
   "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
-  "temporary_directory_removed": true
+  "temporary_directory_removed": true,
+  "writer_timings": {
+    "commit_seconds": 40.69064559999999,
+    "dirty_updates": 2260,
+    "file_insert_seconds": 20.355390799999995,
+    "file_seen_seconds": 0.0,
+    "listing_seconds": 22.85444400000003,
+    "name_validation_seconds": 0.5855864000000017
+  }
 }

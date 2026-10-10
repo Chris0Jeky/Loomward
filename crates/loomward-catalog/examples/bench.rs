@@ -20,17 +20,20 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let temp = tempfile::tempdir()?;
     let cleanup_path = temp.path().to_path_buf();
     let c = Catalog::open(temp.path(), "synthetic")?;
-    let WriteReply::Root { grant_id, dir_id } =
-        c.writer()
-            .call(WriteCommand::RegisterRoot(RootObservation {
-                volume_key: "synthetic-bench".into(),
-                display_name: "Synthetic benchmark".into(),
-                display_path: "Synthetic benchmark root".into(),
-                root_file_id: Some(0_u128.to_le_bytes()),
-                origin: "lab_generated".into(),
-                granted_via: "fixture".into(),
-                observed_at_ns: 0,
-            }))?
+    let WriteReply::Root {
+        grant_id, dir_id, ..
+    } = c
+        .writer()
+        .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_key: "synthetic-bench".into(),
+            display_name: "Synthetic benchmark".into(),
+            display_path: "Synthetic benchmark root".into(),
+            root_file_id: Some(0_u128.to_le_bytes().to_vec()),
+            filesystem: Some("NTFS".into()),
+            origin: "fixture".into(),
+            granted_via: "fixture".into(),
+            observed_at_ns: 0,
+        }))?
     else {
         unreachable!()
     };
@@ -47,20 +50,25 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let children = (0..directories)
         .map(|i| {
             let mut o = Observation::file(format!("dir-{i:05}"), 0, None);
-            o.file_id = Some((i as u128 + 1).to_le_bytes());
+            o.file_id = Some((i as u128 + 1).to_le_bytes().to_vec());
             o
         })
         .collect();
     let insert_start = Instant::now();
-    c.writer().call(WriteCommand::DirListing(DirListing {
+    c.writer().call(WriteCommand::StageChunk {
         run_id: run,
         dir_id,
+        seq: 0,
         files: vec![],
         dirs: children,
-        state: "complete".into(),
+    })?;
+    c.writer().call(WriteCommand::ListingDone {
+        run_id: run,
+        dir_id,
+        outcome: ListingOutcome::Complete,
         skipped: 0,
         errors: 0,
-    }))?;
+    })?;
     let db = Connection::open(temp.path().join("catalog.db"))?;
     let ids = {
         let mut s = db.prepare("SELECT id FROM dir WHERE parent_id=?1 ORDER BY name")?;
@@ -74,8 +82,11 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut expected_logical = 0_u64;
     let mut expected_allocated = 0_u64;
     let mut expected_unknown = 0_u64;
+    let cancel = Cancellation::default();
     for (i, id) in ids.iter().enumerate() {
         let count = 1000.min(rows - generated);
+        // Reserve before constructing the chunk, including serialization/decode scratch.
+        let permit = c.writer().reserve_bytes(4 * 1024 * 1024, &cancel)?;
         let mut files = Vec::with_capacity(count);
         for j in 0..count {
             let serial = i * 1000 + j;
@@ -91,24 +102,34 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             let mut f = Observation::file(format!("synthetic-{serial:07}.dat"), size, allocated);
             f.extension = Some("dat".into());
             f.family = "data".into();
-            f.file_id = Some((serial as u128 + 10_000_000).to_le_bytes());
+            f.file_id = Some((serial as u128 + 10_000_000).to_le_bytes().to_vec());
             files.push(f);
         }
-        receipts.push(c.writer().send(WriteCommand::DirListing(DirListing {
+        receipts.push(c.writer().send_reserved(
+            WriteCommand::StageChunk {
+                run_id: run,
+                dir_id: *id,
+                seq: 0,
+                files,
+                dirs: vec![],
+            },
+            permit,
+            &cancel,
+        )?);
+        receipts.push(c.writer().send(WriteCommand::ListingDone {
             run_id: run,
             dir_id: *id,
-            files,
-            dirs: vec![],
-            state: "complete".into(),
+            outcome: ListingOutcome::Complete,
             skipped: 0,
             errors: 0,
-        }))?);
+        })?);
         generated += count;
     }
     for receipt in receipts {
         receipt.wait()?;
     }
     let insert_s = insert_start.elapsed().as_secs_f64();
+    let writer_timings = c.writer().timings();
     let finalise = Instant::now();
     c.writer().call(WriteCommand::EndRun {
         run_id: run,
@@ -194,9 +215,11 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     drop(c);
     let catalog_bytes = std::fs::metadata(temp.path().join("catalog.db"))?.len();
     let entries = rows + directories + 1;
-    let mut receipt = json!({"schema_version":1,"dataset_class":"synthetic","platform":std::env::consts::OS,"scope":"in-process generated metadata only; no enumeration, no HTTP, no personal data","files":rows,"directories":directories+1,"insert_includes_generation_and_queue_backpressure":true,"all_schema_indexes_present":true,"oracle":{"logical_bytes":expected_logical.to_string(),"allocated_known_bytes":expected_allocated.to_string(),"allocation_unknown_files":expected_unknown,"matched":true},"P4":{"insert_seconds":insert_s,"rows_per_second":entries as f64/insert_s,"target_rows_per_second":250000,"met":entries as f64/insert_s>=250000.0},"finalise_seconds":finalise_s,"P6":{"timing":summary(slice_ms),"nodes":slice_nodes,"payload_bytes":payload_bytes,"target_ms":60,"target_payload_bytes":1500000,"target_dataset_rows":10000000,"dataset_scale_met":false,"http_round_trip":"unverified"},"P7":{"timing":summary(page_ms),"limit":200,"target_ms":20},"P8":{"timing":summary(search_ms),"work_budget_sqlite_ops":2000000,"budget_hits":budget_hits,"target_ms":300},"P14":{"catalog_bytes":catalog_bytes,"bytes_per_entry":catalog_bytes as f64/entries as f64,"target_bytes_per_entry":200,"target_dataset_rows":10000000,"dataset_scale_met":false},"limitations":["single warm run on this Windows host; no cold-cache claim","P6 and P14 at 1M, not the 10M target; HTTP and process-memory measurement belong to integration"]});
+    let mut receipt = json!({"schema_version":2,"dataset_class":"synthetic","platform":std::env::consts::OS,"scope":"in-process generated metadata only; no enumeration, no HTTP, no personal data","files":rows,"directories":directories+1,"insert_includes_generation_and_queue_backpressure":true,"all_schema_indexes_present":true,"oracle":{"logical_bytes":expected_logical.to_string(),"allocated_known_bytes":expected_allocated.to_string(),"allocation_unknown_files":expected_unknown,"matched":true},"P4":{"insert_seconds":insert_s,"rows_per_second":entries as f64/insert_s,"target_rows_per_second":250000,"met":entries as f64/insert_s>=250000.0},"writer_timings":writer_timings,"finalise_seconds":finalise_s,"P6":{"timing":summary(slice_ms),"nodes":slice_nodes,"payload_bytes":payload_bytes,"target_ms":60,"target_payload_bytes":1500000,"target_dataset_rows":10000000,"dataset_scale_met":false,"http_round_trip":"unverified"},"P7":{"timing":summary(page_ms),"limit":200,"target_ms":20},"P8":{"timing":summary(search_ms),"work_budget_sqlite_ops":2000000,"budget_hits":budget_hits,"target_ms":300},"P14":{"catalog_bytes":catalog_bytes,"bytes_per_entry":catalog_bytes as f64/entries as f64,"target_bytes_per_entry":200,"target_dataset_rows":10000000,"dataset_scale_met":false},"limitations":["single warm run on this Windows host; no cold-cache claim","P6 and P14 at 1M, not the 10M target; HTTP and process-memory measurement belong to integration"]});
     temp.close()?;
     assert!(!cleanup_path.exists());
+    receipt["publication_path"] =
+        json!("StageChunk + ListingDone; byte reservation before file generation");
     receipt["temporary_directory_removed"] = json!(true);
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
