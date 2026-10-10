@@ -75,16 +75,20 @@ pub fn validate_roots(roots: &[PathBuf], state_dir: Option<&Path>) -> Result<Vec
     Ok(out)
 }
 
-/// UNC (`\\server\share`, `\\?\UNC\...`) and device (`\\.\`) paths: no silent network I/O
-/// (invariant 2, #146). The verbatim local form `\\?\C:\` is local.
+/// UNC (`\\server\share`, `\\?\UNC\...`), device (`\\.\`, `\??\`) and every other verbatim
+/// namespace (`\\?\GLOBALROOT\...` shadow copies and raw devices, `\\?\Volume{..}`): no silent
+/// network or device I/O (invariant 2, #146, #185). Only the verbatim drive form `\\?\C:\` is local.
 fn network_path(path: &Path) -> bool {
-    let text = path
-        .to_string_lossy()
-        .replace('/', "\\")
-        .to_ascii_uppercase();
-    text.starts_with("\\\\?\\UNC\\")
-        || text.starts_with("\\\\.\\")
-        || (text.starts_with("\\\\") && !text.starts_with("\\\\?\\"))
+    let text = path.to_string_lossy().replace('/', "\\");
+    if let Some(rest) = text.strip_prefix("\\\\?\\") {
+        let b = rest.as_bytes();
+        let drive = b.len() >= 2
+            && b[0].is_ascii_alphabetic()
+            && b[1] == b':'
+            && (b.len() == 2 || b[2] == b'\\');
+        return !drive;
+    }
+    text.starts_with("\\\\") || text.starts_with("\\??\\")
 }
 
 #[cfg(windows)]
@@ -149,5 +153,31 @@ mod tests {
             .ends_with("network_or_removable_unsupported"));
         // A refusal names the rule and the position, never the path.
         assert!(!rule(&[a.clone(), b.clone()], None).contains(&*base.to_string_lossy()));
+    }
+
+    /// #185 item 4: only the verbatim drive form is local; every other verbatim or device
+    /// namespace (shadow copies, raw devices, volume GUIDs, pipes, NT `\??\`) is refused.
+    #[test]
+    fn only_the_verbatim_drive_form_is_local() {
+        for device in [
+            r"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\x",
+            r"\\?\globalroot\Device\HarddiskVolume1\x",
+            "//?/GLOBALROOT/Device/HarddiskVolume1/x",
+            r"\\?\Volume{00000000-0000-0000-0000-000000000000}\x",
+            r"\\?\pipe\x",
+            r"\\?\C",
+            r"\\?\C:x",
+            r"\\?\",
+            r"\??\C:\x",
+        ] {
+            assert_eq!(
+                check_root(Path::new(device), None, &[], true),
+                Err(Refusal::NetworkOrRemovableUnsupported),
+                "{device}"
+            );
+        }
+        for local in [r"\\?\C:\x", r"\\?\c:", r"C:\x", "x"] {
+            assert!(!network_path(Path::new(local)), "{local}");
+        }
     }
 }

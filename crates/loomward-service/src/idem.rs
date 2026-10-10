@@ -56,6 +56,17 @@ impl Idempotency {
     }
 
     pub fn claim(&self, request_id: &str, fingerprint: &Value) -> Claim {
+        self.claim_in(request_id, fingerprint, true)
+    }
+
+    /// For revocation only: never [`Claim::Full`], so a flood of other mutations cannot refuse
+    /// the owner's revocation.
+    // ponytail: revocation slots are uncapped; a revocation flood grows the cache for one TTL.
+    pub fn claim_uncapped(&self, request_id: &str, fingerprint: &Value) -> Claim {
+        self.claim_in(request_id, fingerprint, false)
+    }
+
+    fn claim_in(&self, request_id: &str, fingerprint: &Value, capped: bool) -> Claim {
         let mut slots = self.slots.lock().unwrap_or_else(|e| e.into_inner());
         let ttl = self.ttl;
         // ponytail: O(MAX_SLOTS) sweep per claim; an expiry queue if the cap grows.
@@ -64,7 +75,7 @@ impl Idempotency {
         match slots.get(request_id) {
             Some(slot) if slot.fingerprint == fingerprint => Claim::Wait,
             Some(_) => Claim::Conflict,
-            None if slots.len() >= self.max => Claim::Full,
+            None if capped && slots.len() >= self.max => Claim::Full,
             None => {
                 slots.insert(
                     request_id.to_owned(),

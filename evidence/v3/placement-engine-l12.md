@@ -44,10 +44,12 @@ Windows 11, Python 3.14.3, rustc 1.97.1. Commands executed in this worktree:
 | `py -3 scripts/verify.py` | PASS: 216 Python tests with 1 symlink-privilege skip, 2 JS syntax checks, 9 JS assertions, 80 cross-language admission fixtures, and all Rust gates |
 | `git diff --check` | PASS |
 
-Placement has 19 tests. Its parity test writes a temporary JSON fixture and invokes `py -3`
+Placement has 19 tests. Its planner-parity-on-builder-scenarios test
+(`placement_planner_parity_on_builder_scenarios`) writes a temporary JSON fixture and invokes `py -3`
 against the real Python reference: 30 builder scenarios (10 cases x budgets 0, 1, 50,000)
-match Rust field by field. Every case also compares engine/core `rejected` serialization
-byte for byte. The Python-absent path prints `UNVERIFIED` and skips only this parity test.
+match Rust field by field. It checks planner parity on builder scenarios only; it does not
+validate the builder. Every case also compares engine/core `rejected` serialization
+byte for byte. The Python-absent path prints a `SKIP:` line to stderr and returns early.
 Python was present and the comparison executed on this host.
 
 Two Windows link-count tests prove matching native hard-link identity/link counts,
