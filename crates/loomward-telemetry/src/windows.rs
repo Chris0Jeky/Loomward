@@ -355,22 +355,7 @@ pub(super) fn collect(
         let query_started = Instant::now();
         let (row, opened) = process(&entry, image_name_buffer);
         costs.process_queries_ms += query_started.elapsed().as_secs_f64() * 1000.0;
-        let totals = &mut snapshot.process_totals;
-        totals.opened += usize::from(opened);
-        totals.access_denied += usize::from(
-            row.unknowns
-                .iter()
-                .any(|u| u.windows_error == Some(ERROR_ACCESS_DENIED)),
-        );
-        totals.partial_or_unknown += usize::from(row.protected_or_unknown);
-        if let Some(bytes) = row.working_set_bytes {
-            totals.working_set_observed += 1;
-            totals.working_set_sum_bytes += bytes;
-        }
-        if let Some(bytes) = row.private_commit_bytes {
-            totals.private_commit_observed += 1;
-            totals.private_commit_sum_bytes += bytes;
-        }
+        snapshot.process_totals.observe(&row, opened);
         snapshot.processes.push(row);
         has_entry = unsafe { Process32NextW(handle.0, &mut entry) };
     }
@@ -396,6 +381,7 @@ fn finish(mut snapshot: Snapshot) -> Snapshot {
     if snapshot.process_totals.partial_or_unknown > 0
         || snapshot.process_totals.enumeration_truncated
         || !snapshot.process_totals.enumeration_unknowns.is_empty()
+        || !snapshot.process_totals.sum_unknowns.is_empty()
         || !snapshot.pdh_unknowns.is_empty()
         || matches!(&snapshot.gpu, Observation::Unknown { .. })
         || matches!(&snapshot.gpu, Observation::Observed { value } if value.iter().any(|adapter| !adapter.unknowns.is_empty()))
@@ -411,6 +397,26 @@ fn finish(mut snapshot: Snapshot) -> Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overflowed_sums_mark_partial_coverage_without_hiding_processes() {
+        let mut snapshot = unsupported_snapshot();
+        snapshot.status = "observed".into();
+        for bytes in [u64::MAX, 1] {
+            let row = Process {
+                working_set_bytes: Some(bytes),
+                private_commit_bytes: Some(bytes),
+                ..Process::default()
+            };
+            snapshot.process_totals.observe(&row, true);
+            snapshot.processes.push(row);
+        }
+        let snapshot = finish(snapshot);
+        assert_eq!(snapshot.status, "partial");
+        assert_eq!(snapshot.processes.len(), 2);
+        assert_eq!(snapshot.process_totals.sum_unknowns.len(), 2);
+        assert!(snapshot.process_totals.enumeration_unknowns.is_empty());
+    }
 
     #[test]
     fn short_lived_process_is_unknown_after_exit_even_with_a_retained_handle() {

@@ -81,7 +81,7 @@ All PDH paths below are English paths added with `PdhAddEnglishCounterW`.
 | `rates.cpu_fraction` | fraction [0,1] | delta user + kernel CPU seconds / (interval x all active logical CPUs) | null first sample, unmatched instance, invalid interval/capacity/counter or out-of-range fraction |
 | `rates.io_read_bytes_per_s`, `io_write_bytes_per_s`, `io_other_bytes_per_s` | bytes/s | matched process counter deltas / monotonic interval | null first sample, missing identity/counter, regression or invalid interval |
 | `rates.working_set_delta_bytes`, `private_commit_delta_bytes` | signed bytes | matched process memory differences | null on missing counter/identity or out-of-range delta |
-| `process_totals` | counts / bytes / coverage | enumeration before display projection | counts explain partial sums; working-set sums can repeat shared pages; enumeration failures in `enumeration_unknowns[]` |
+| `process_totals` | counts / bytes / coverage | enumeration before display projection | counts explain partial sums; working-set sums can repeat shared pages; enumeration failures in `enumeration_unknowns[]`; additive `sum_unknowns[]` marks overflowing byte sums, which saturate at `u64::MAX` as lower bounds rather than exact totals |
 | `disk_io[].disk_label` | PDH instance label | `PhysicalDisk(*)` | malformed names skipped and counted; `_Total` excluded |
 | `read_bytes_per_s`, `write_bytes_per_s` | bytes/s | `Disk Read Bytes/sec`, `Disk Write Bytes/sec` | null first sample or missing/invalid instance; per-field reason |
 | `busy_fraction` | fraction [0,1] | 1 - `% Idle Time` / 100, clamped | null first sample or missing/invalid instance; never derived from queue length |
@@ -90,7 +90,7 @@ All PDH paths below are English paths added with `PdhAddEnglishCounterW`.
 | `gpu[].adapter_id` | LUID string | adapter LUID parsed from current PDH instances | malformed identity skipped and counted; not a device name or grant |
 | `dedicated_total_bytes` | bytes | unavailable from these usage counters | always null with `capacity_not_provided_by_gpu_usage_counters` |
 | `dedicated_used_bytes`, `shared_used_bytes` | bytes | `\GPU Adapter Memory(*)\Dedicated Usage` / `Shared Usage` | independently null on missing/invalid instance/query; no process sums or dedicated+shared "total" |
-| `engine_busy_fraction` | fraction [0,1] | max over engine types of summed `\GPU Engine(*)\Utilization Percentage` / 100, clamped | null first sample, missing engine/type/value or unidentified malformed instance; never a maximum of individual process values |
+| `engine_busy_fraction` | fraction [0,1] | max over engine types of summed `\GPU Engine(*)\Utilization Percentage` / 100, clamped | null first sample or missing engine/type/value; unidentified malformed instances are skipped and reported in `pdh_unknowns[]` with partial snapshot coverage, retaining identified adapters' values; never a maximum of individual process values |
 | `engines[].engine_type`, `busy_fraction`, `unknowns[]` | PDH type / fraction / reasons | instances grouped by adapter LUID and engine type | unnamed provider types are null with `engine_type_unavailable`; incomplete type sums stay unknown |
 | `process_gpu` | group status | optional GPU Process Memory collection deferred | unsupported with reason; no per-process GPU bytes |
 | `pdh_malformed_instances`, `pdh_unknowns[]` | count / reasons | shared PDH parser, expansion and queries | count includes malformed occurrences across counter arrays/expansions; valid disk rows survive |

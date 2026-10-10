@@ -96,6 +96,14 @@ pub struct Process {
     pub rates: Rates,
 }
 
+impl Process {
+    pub fn access_denied(&self) -> bool {
+        self.unknowns
+            .iter()
+            .any(|u| u.reason == "access_denied" || u.windows_error == Some(5))
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ProcessTotals {
     pub enumerated: usize,
@@ -107,8 +115,47 @@ pub struct ProcessTotals {
     pub working_set_sum_bytes: u64,
     pub private_commit_observed: usize,
     pub private_commit_sum_bytes: u64,
+    /// Overflowed sums are saturated lower bounds, not exact byte totals.
+    #[serde(default)]
+    pub sum_unknowns: Vec<Unknown>,
     pub enumeration_truncated: bool,
     pub enumeration_unknowns: Vec<Unknown>,
+}
+
+#[cfg(any(windows, test))]
+impl ProcessTotals {
+    fn observe(&mut self, row: &Process, opened: bool) {
+        self.opened += usize::from(opened);
+        self.access_denied += usize::from(row.access_denied());
+        self.partial_or_unknown += usize::from(row.protected_or_unknown);
+        for (field, bytes, observed, sum) in [
+            (
+                "working_set_sum_bytes",
+                row.working_set_bytes,
+                &mut self.working_set_observed,
+                &mut self.working_set_sum_bytes,
+            ),
+            (
+                "private_commit_sum_bytes",
+                row.private_commit_bytes,
+                &mut self.private_commit_observed,
+                &mut self.private_commit_sum_bytes,
+            ),
+        ] {
+            if let Some(bytes) = bytes {
+                *observed += 1;
+                *sum = sum.checked_add(bytes).unwrap_or_else(|| {
+                    if !self.sum_unknowns.iter().any(|u| u.field == field) {
+                        self.sum_unknowns.push(unknown(
+                            field,
+                            "sum_overflow; reported_bytes_are_a_lower_bound",
+                        ));
+                    }
+                    u64::MAX
+                });
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -397,6 +444,7 @@ impl Sampler {
                 if current.process_totals.partial_or_unknown > 0
                     || current.process_totals.enumeration_truncated
                     || !current.process_totals.enumeration_unknowns.is_empty()
+                    || !current.process_totals.sum_unknowns.is_empty()
                 {
                     current.status = "partial".into();
                 }
@@ -571,6 +619,51 @@ fn unsupported_snapshot() -> Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_sum_overflow_is_a_visible_lower_bound_and_does_not_hide_rows() {
+        let mut ordinary = ProcessTotals::default();
+        for bytes in [7, 9] {
+            ordinary.observe(
+                &Process {
+                    working_set_bytes: Some(bytes),
+                    private_commit_bytes: Some(bytes),
+                    ..Process::default()
+                },
+                true,
+            );
+        }
+        assert_eq!(ordinary.working_set_sum_bytes, 16);
+        assert_eq!(ordinary.private_commit_sum_bytes, 16);
+        assert!(ordinary.sum_unknowns.is_empty());
+        let mut legacy = serde_json::to_value(&ordinary).unwrap();
+        legacy.as_object_mut().unwrap().remove("sum_unknowns");
+        assert!(serde_json::from_value::<ProcessTotals>(legacy)
+            .unwrap()
+            .sum_unknowns
+            .is_empty());
+        let mut totals = ProcessTotals::default();
+        for bytes in [u64::MAX, 1, 2] {
+            totals.observe(
+                &Process {
+                    working_set_bytes: Some(bytes),
+                    private_commit_bytes: Some(bytes),
+                    ..Process::default()
+                },
+                true,
+            );
+        }
+        assert_eq!(totals.working_set_sum_bytes, u64::MAX);
+        assert_eq!(totals.private_commit_sum_bytes, u64::MAX);
+        assert_eq!(totals.working_set_observed, 3);
+        assert_eq!(totals.private_commit_observed, 3);
+        assert_eq!(totals.sum_unknowns.len(), 2);
+        for field in ["working_set_sum_bytes", "private_commit_sum_bytes"] {
+            assert!(totals.sum_unknowns.iter().any(|u| u.field == field
+                && u.reason == "sum_overflow; reported_bytes_are_a_lower_bound"));
+        }
+        assert!(totals.enumeration_unknowns.is_empty());
+    }
 
     fn process() -> Process {
         Process {

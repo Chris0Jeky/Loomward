@@ -58,9 +58,16 @@ impl State {
         self.leases.retain(|_, lease| lease.expires > now);
         self.events
             .retain(|event| self.leases.contains_key(&event.subscription_id));
+        if self.leases.is_empty() {
+            self.latest = None;
+        }
     }
 
-    fn latest(&self) -> EngineResult<&Latest> {
+    fn latest(&mut self) -> EngineResult<&Latest> {
+        let now = Instant::now();
+        if !self.leases.values().any(|lease| lease.expires > now) {
+            self.expire(now);
+        }
         self.latest
             .as_ref()
             .ok_or_else(|| EngineError::PartialCoverage {
@@ -139,15 +146,31 @@ impl Telemetry {
                     detail: None,
                 })?;
         let expires_at = mapping::timestamp((unix + LEASE_DURATION).as_nanos() as i128 / 100)?;
-        state.next_generation =
-            state
-                .next_generation
-                .checked_add(1)
-                .ok_or_else(|| EngineError::ResourceBudget {
+        let unchanged = state.leases.get(&id).filter(|lease| {
+            lease.channels.len() == request.channels.len()
+                && lease
+                    .channels
+                    .iter()
+                    .all(|channel| request.channels.contains(channel))
+        });
+        let (generation, next_event) = if let Some(lease) = unchanged {
+            (
+                lease.generation,
+                if lease.interval == request.interval_ms {
+                    lease.next_event
+                } else {
+                    now
+                },
+            )
+        } else {
+            state.next_generation = state.next_generation.checked_add(1).ok_or_else(|| {
+                EngineError::ResourceBudget {
                     message: "telemetry lease generations exhausted".into(),
-                })?;
-        let generation = state.next_generation;
-        state.events.retain(|event| event.subscription_id != id);
+                }
+            })?;
+            state.events.retain(|event| event.subscription_id != id);
+            (state.next_generation, now)
+        };
         state.leases.insert(
             id.clone(),
             Lease {
@@ -155,7 +178,7 @@ impl Telemetry {
                 channels: request.channels.clone(),
                 interval: request.interval_ms,
                 expires: now + LEASE_DURATION,
-                next_event: now,
+                next_event,
             },
         );
         if !state.running {
@@ -426,14 +449,15 @@ impl Engine {
         &self,
         request: &TelemetrySnapshotRequest,
     ) -> EngineResult<TelemetrySample> {
-        let state = lock(&self.telemetry.shared.state)?;
+        let mut state = lock(&self.telemetry.shared.state)?;
+        let busy = state.busy;
         let latest = state.latest()?;
         mapping::sample(
             &latest.raw,
             latest.own.as_ref(),
             latest.sequence,
             &request.channels,
-            state.busy,
+            busy,
         )
     }
 
@@ -460,7 +484,7 @@ impl Engine {
 
     /// Bounded process display; unknown sort values come last, PID breaks ties.
     pub fn processes_list(&self, request: &ProcessListRequest) -> EngineResult<ProcessList> {
-        let state = lock(&self.telemetry.shared.state)?;
+        let mut state = lock(&self.telemetry.shared.state)?;
         let latest = state.latest()?;
         if latest.raw.status == "unsupported"
             || !latest.raw.process_totals.enumeration_unknowns.is_empty()
@@ -488,7 +512,7 @@ impl Engine {
         &self,
         request: &ProcessRefRequest,
     ) -> EngineResult<ProcessExplanation> {
-        let state = lock(&self.telemetry.shared.state)?;
+        let mut state = lock(&self.telemetry.shared.state)?;
         let latest = state.latest()?;
         if !latest.raw.sampled_channels.processes {
             return Err(EngineError::PartialCoverage {

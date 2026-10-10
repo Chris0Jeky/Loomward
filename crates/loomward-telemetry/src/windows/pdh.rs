@@ -660,15 +660,15 @@ fn gpu_rows(
     let mut adapters: BTreeMap<String, GpuAdapter> = BTreeMap::new();
     let mut types: BTreeMap<(String, String), Result<f64, String>> = BTreeMap::new();
     let engines = record_array("gpu_engines", engines, snapshot);
-    let mut engine_error = engines.as_ref().err().cloned();
+    let engine_error = engines.as_ref().err().cloned();
     if let Ok(array) = engines {
-        if array.malformed > 0 {
-            engine_error = Some("unidentified_malformed_engine_instance".into());
-        }
         for row in array.rows {
             let Some((id, Some(kind))) = gpu_instance(&row.instance, true) else {
                 snapshot.pdh_malformed_instances += 1;
-                engine_error = Some("unidentified_malformed_engine_instance".into());
+                snapshot.pdh_unknowns.push(unknown(
+                    "gpu_engines",
+                    "unidentified_malformed_engine_instance",
+                ));
                 continue;
             };
             adapters.entry(id.clone()).or_insert_with(|| GpuAdapter {
@@ -693,14 +693,13 @@ fn gpu_rows(
         let array = record_array(field, array, snapshot);
         memory_errors[index] = array.as_ref().err().cloned();
         if let Ok(array) = array {
-            if array.malformed > 0 {
-                memory_errors[index] = Some("unidentified_malformed_adapter_instance".into());
-            }
             let mut totals: BTreeMap<String, Result<u64, String>> = BTreeMap::new();
             for row in array.rows {
                 let Some((id, _)) = gpu_instance(&row.instance, false) else {
                     snapshot.pdh_malformed_instances += 1;
-                    memory_errors[index] = Some("unidentified_malformed_adapter_instance".into());
+                    snapshot
+                        .pdh_unknowns
+                        .push(unknown(field, "unidentified_malformed_adapter_instance"));
                     continue;
                 };
                 let sum = totals.entry(id).or_insert(Ok(0));
@@ -1020,6 +1019,57 @@ mod tests {
     const B_3D: &str = "pid_9_luid_0x00000000_0x00005678_phys_0_eng_0_engtype_3D";
 
     #[test]
+    fn malformed_gpu_instances_preserve_identified_adapters_with_partial_coverage() {
+        for unnamed in [false, true] {
+            let mut engines = array(vec![
+                (A_3D, Ok(10.0)),
+                (B_3D, Ok(20.0)),
+                ("pid_7_luid_BAD", Ok(0.0)),
+            ])
+            .unwrap();
+            let mut dedicated =
+                array(vec![(A, Ok(100)), (B, Ok(200)), ("luid_BAD", Ok(300))]).unwrap();
+            let mut shared = array(vec![(A, Ok(50)), (B, Ok(60)), ("luid_BAD", Ok(70))]).unwrap();
+            if unnamed {
+                engines.rows.pop();
+                dedicated.rows.pop();
+                shared.rows.pop();
+                engines.malformed = 1;
+                dedicated.malformed = 1;
+                shared.malformed = 1;
+            }
+            let mut snapshot = unsupported_snapshot();
+            snapshot.gpu = gpu_rows(Ok(engines), Ok(dedicated), Ok(shared), &mut snapshot);
+            let snapshot = super::super::finish(snapshot);
+            assert_eq!(snapshot.status, "partial");
+            assert_eq!(snapshot.pdh_malformed_instances, 3);
+            assert!(snapshot
+                .pdh_unknowns
+                .iter()
+                .any(|u| u.field == "gpu_engines"));
+            assert!(snapshot
+                .pdh_unknowns
+                .iter()
+                .any(|u| u.field == "dedicated_used_bytes"));
+            assert!(snapshot
+                .pdh_unknowns
+                .iter()
+                .any(|u| u.field == "shared_used_bytes"));
+            let Observation::Observed { value } = snapshot.gpu else {
+                panic!("valid adapters lost")
+            };
+            assert_eq!(value.len(), 2);
+            for (adapter, busy, dedicated, shared) in
+                [(&value[0], 0.1, 100, 50), (&value[1], 0.2, 200, 60)]
+            {
+                assert_eq!(adapter.engine_busy_fraction, Some(busy));
+                assert_eq!(adapter.dedicated_used_bytes, Some(dedicated));
+                assert_eq!(adapter.shared_used_bytes, Some(shared));
+            }
+        }
+    }
+
+    #[test]
     fn gpu_joins_by_luid_sums_types_then_takes_max_and_uses_global_memory() {
         let mut snapshot = unsupported_snapshot();
         let Observation::Observed { value } = gpu_rows(
@@ -1189,7 +1239,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_gpu_instance_cannot_become_a_zero_or_partial_total() {
+    fn malformed_gpu_instance_is_reported_without_erasing_valid_values() {
         let mut snapshot = unsupported_snapshot();
         let Observation::Observed { value } = gpu_rows(
             array(vec![(A_3D, Ok(10.0)), ("pid_7_luid_BAD", Ok(0.0))]),
@@ -1201,8 +1251,16 @@ mod tests {
         };
         assert_eq!(value.len(), 1);
         assert_eq!(snapshot.pdh_malformed_instances, 2);
-        assert!(value[0].engine_busy_fraction.is_none());
-        assert!(value[0].dedicated_used_bytes.is_none());
+        assert_eq!(value[0].engine_busy_fraction, Some(0.1));
+        assert_eq!(value[0].dedicated_used_bytes, Some(100));
+        assert!(snapshot
+            .pdh_unknowns
+            .iter()
+            .any(|u| u.field == "gpu_engines"));
+        assert!(snapshot
+            .pdh_unknowns
+            .iter()
+            .any(|u| u.field == "dedicated_used_bytes"));
         assert_eq!(value[0].shared_used_bytes, Some(50));
         for instance in [
             "pid_1_luid_0x0000000_0x00001234_phys_0_eng_0_engtype_3D",
