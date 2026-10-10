@@ -15,6 +15,11 @@
 pub mod fixture;
 pub mod grants;
 
+#[cfg(windows)]
+mod windows_socket;
+#[cfg(windows)]
+use windows_socket::exclusive_address_use;
+
 use axum::body::{Body, Bytes};
 use axum::http::{header, HeaderMap, HeaderValue, Method, Response, StatusCode};
 use futures_util::stream;
@@ -27,14 +32,18 @@ use loomward_protocol::{
     RecvOutcome, RequestEnvelope, ResponseEnvelope, StreamEpoch, ViewService,
 };
 use std::convert::Infallible;
+use std::future::Future;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::thread::JoinHandle;
 use std::time::Duration;
 use subtle::ConstantTimeEq;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::{mpsc, watch, Semaphore};
 
 /// The session-token header on every API request, SSE included.
@@ -45,7 +54,7 @@ pub const DRAIN_LIMIT: usize = 1024 * 1024;
 /// Concurrent SSE streams per service; the next one gets HTTP 429 (`semantics.md` section 7).
 pub const MAX_STREAMS: usize = 4;
 /// Largest static file served.
-const MAX_STATIC_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_STATIC_BYTES: u64 = 4 * 1024 * 1024;
 /// How long the first event (`stream.hello`) may take before the stream is refused.
 const FIRST_EVENT_TIMEOUT: Duration = Duration::from_secs(5);
 /// How often an idle pump rechecks for a gone client or a shutdown.
@@ -68,8 +77,18 @@ pub struct Options {
     pub allow_origins: Vec<String>,
     /// Directory served for non-API `GET`s (the built `app/dist`).
     pub static_dir: Option<PathBuf>,
+    /// Validated grant roots, kept separate from unauthenticated static files.
+    pub grant_roots: Vec<PathBuf>,
+    /// State directory, also excluded from the static tree.
+    pub state_dir: Option<PathBuf>,
     /// Bound on receiving a request's headers, and separately its body.
     pub read_timeout: Duration,
+    /// Maximum time without progress on a pending response write.
+    pub write_timeout: Duration,
+    /// Maximum lifetime of a connection that has not opened SSE.
+    pub connection_lifetime: Duration,
+    /// Maximum time the SSE pump waits for space in its bounded channel.
+    pub sse_send_timeout: Duration,
     /// Connections served at once; further ones wait in the listen backlog.
     pub max_connections: usize,
 }
@@ -80,7 +99,12 @@ impl Default for Options {
             bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
             allow_origins: Vec::new(),
             static_dir: None,
+            grant_roots: Vec::new(),
+            state_dir: None,
             read_timeout: Duration::from_secs(10),
+            write_timeout: Duration::from_secs(30),
+            connection_lifetime: Duration::from_secs(60),
+            sse_send_timeout: Duration::from_secs(30),
             max_connections: 16,
         }
     }
@@ -177,6 +201,14 @@ pub fn serve(service: Arc<dyn ViewService>, options: Options) -> io::Result<Hand
             if !dir.is_dir() {
                 return Err(invalid("--static must name a directory".into()));
             }
+            for protected in options.grant_roots.iter().chain(options.state_dir.iter()) {
+                let protected = protected.canonicalize()?;
+                if dir.starts_with(&protected) || protected.starts_with(&dir) {
+                    return Err(invalid(
+                        "--static overlaps a grant root or the state directory".into(),
+                    ));
+                }
+            }
             Some(dir)
         }
         None => None,
@@ -185,7 +217,16 @@ pub fn serve(service: Arc<dyn ViewService>, options: Options) -> io::Result<Hand
     getrandom::fill(&mut raw).map_err(|e| io::Error::other(e.to_string()))?;
     let token: String = raw.iter().map(|b| format!("{b:02x}")).collect();
 
-    let listener = std::net::TcpListener::bind(options.bind)?;
+    let socket = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::STREAM,
+        Some(socket2::Protocol::TCP),
+    )?;
+    #[cfg(windows)]
+    exclusive_address_use(&socket)?;
+    socket.bind(&options.bind.into())?;
+    socket.listen(128)?;
+    let listener: std::net::TcpListener = socket.into();
     listener.set_nonblocking(true)?;
     let addr = listener.local_addr()?;
     let stop = Arc::new(AtomicBool::new(false));
@@ -197,6 +238,9 @@ pub fn serve(service: Arc<dyn ViewService>, options: Options) -> io::Result<Hand
         token: token.clone(),
         static_dir,
         read_timeout: options.read_timeout,
+        write_timeout: options.write_timeout,
+        connection_lifetime: options.connection_lifetime,
+        sse_send_timeout: options.sse_send_timeout,
         streams: Arc::new(Semaphore::new(MAX_STREAMS)),
         stop: stop.clone(),
     });
@@ -236,6 +280,9 @@ struct Shared {
     token: String,
     static_dir: Option<PathBuf>,
     read_timeout: Duration,
+    write_timeout: Duration,
+    connection_lifetime: Duration,
+    sse_send_timeout: Duration,
     streams: Arc<Semaphore>,
     stop: Arc<AtomicBool>,
 }
@@ -264,16 +311,103 @@ async fn accept_loop(
         tokio::spawn(async move {
             let _permit = permit;
             let timeout = shared.read_timeout;
+            let lifetime = shared.connection_lifetime;
+            let io = WriteDeadline {
+                tcp,
+                timeout: shared.write_timeout,
+                stalled: None,
+            };
+            let sse = Arc::new(AtomicBool::new(false));
+            let opened = sse.clone();
             let service = hyper::service::service_fn(move |req| {
                 let shared = shared.clone();
-                async move { Ok::<_, Infallible>(handle(&shared, req).await) }
+                let opened = opened.clone();
+                async move {
+                    let res = handle(&shared, req).await;
+                    if res
+                        .headers()
+                        .get(header::CONTENT_TYPE)
+                        .is_some_and(|v| v == "text/event-stream")
+                    {
+                        opened.store(true, Ordering::SeqCst);
+                    }
+                    Ok::<_, Infallible>(res)
+                }
             });
-            let _ = hyper::server::conn::http1::Builder::new()
+            let mut builder = hyper::server::conn::http1::Builder::new();
+            builder
                 .timer(TokioTimer::new())
-                .header_read_timeout(timeout)
-                .serve_connection(TokioIo::new(tcp), service)
-                .await;
+                .header_read_timeout(timeout);
+            let connection = builder.serve_connection(TokioIo::new(io), service);
+            tokio::pin!(connection);
+            tokio::select! {
+                _ = &mut connection => {},
+                _ = tokio::time::sleep(lifetime) => {
+                    if sse.load(Ordering::SeqCst) {
+                        let _ = connection.await;
+                    }
+                }
+            }
         });
+    }
+}
+
+/// Start the clock only when a write stalls; reads and quiet SSE streams have no write deadline.
+struct WriteDeadline {
+    tcp: tokio::net::TcpStream,
+    timeout: Duration,
+    stalled: Option<Pin<Box<tokio::time::Sleep>>>,
+}
+
+impl WriteDeadline {
+    fn progress<T>(
+        &mut self,
+        cx: &mut Context<'_>,
+        result: Poll<io::Result<T>>,
+    ) -> Poll<io::Result<T>> {
+        if result.is_ready() {
+            self.stalled = None;
+            return result;
+        }
+        let timer = self
+            .stalled
+            .get_or_insert_with(|| Box::pin(tokio::time::sleep(self.timeout)));
+        if timer.as_mut().poll(cx).is_ready() {
+            Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "response write stalled",
+            )))
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
+impl AsyncRead for WriteDeadline {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.tcp).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for WriteDeadline {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let result = Pin::new(&mut self.tcp).poll_write(cx, buf);
+        self.progress(cx, result)
+    }
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        // TcpStream flush is a no-op; it must not reset a stalled write's clock.
+        Pin::new(&mut self.tcp).poll_flush(cx)
+    }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.tcp).poll_shutdown(cx)
     }
 }
 
@@ -313,44 +447,84 @@ async fn drain(body: Incoming, headers: &HeaderMap, timeout: Duration) -> Draine
     }
 }
 
+async fn early_reply(
+    s: &Shared,
+    body: Incoming,
+    headers: &HeaderMap,
+    res: Response<Body>,
+) -> Response<Body> {
+    // LW-001: a bounded drain preserves early replies on Windows; it cannot override the gate.
+    let _ = drain(body, headers, s.read_timeout).await;
+    res
+}
+
 async fn route(s: &Shared, req: hyper::Request<Incoming>) -> Response<Body> {
     let (parts, body) = req.into_parts();
-    // LW-001: read or drain a bounded body before any reply, early errors included.
-    let drained = drain(body, &parts.headers, s.read_timeout).await;
-    if matches!(drained, Drained::Failed) {
-        return refuse(
-            StatusCode::BAD_REQUEST,
-            "the request body could not be read",
-        );
-    }
     if !host_ok(s, &parts) {
-        return refuse(StatusCode::FORBIDDEN, "unexpected Host");
+        return early_reply(
+            s,
+            body,
+            &parts.headers,
+            refuse(StatusCode::FORBIDDEN, "unexpected Host"),
+        )
+        .await;
     }
     let cross_origin = match origin_check(s, &parts.headers) {
         Ok(cross) => cross,
-        Err(()) => return refuse(StatusCode::FORBIDDEN, "cross-origin requests are forbidden"),
+        Err(()) => {
+            return early_reply(
+                s,
+                body,
+                &parts.headers,
+                refuse(StatusCode::FORBIDDEN, "cross-origin requests are forbidden"),
+            )
+            .await
+        }
     };
     let path = parts.uri.path();
     if !path.starts_with("/api/") {
-        return match parts.method {
+        let res = match parts.method {
             Method::GET | Method::HEAD => static_file(s, path).await,
             _ => refuse(StatusCode::METHOD_NOT_ALLOWED, "method not allowed"),
         };
+        return early_reply(s, body, &parts.headers, res).await;
     }
     let known = matches!(path, "/api/v3/call" | "/api/v3/events");
-    let mut res = if parts.method == Method::OPTIONS && known && cross_origin.is_some() {
-        preflight()
+    let early = if parts.method == Method::OPTIONS && known && cross_origin.is_some() {
+        Some(preflight())
     } else if !token_ok(s, &parts.headers) {
-        refuse(
+        Some(refuse(
             StatusCode::FORBIDDEN,
             "a valid local session token is required",
-        )
+        ))
     } else {
         match (&parts.method, path) {
-            (&Method::POST, "/api/v3/call") => call(s, &parts.headers, drained).await,
-            (&Method::GET, "/api/v3/events") => events(s, &parts.headers).await,
-            _ if known => refuse(StatusCode::METHOD_NOT_ALLOWED, "method not allowed"),
-            _ => refuse(StatusCode::NOT_FOUND, "not found"),
+            (&Method::POST, "/api/v3/call") => call_header_refusal(&parts.headers),
+            (&Method::GET, "/api/v3/events") => Some(events(s, &parts.headers).await),
+            _ if known => Some(refuse(StatusCode::METHOD_NOT_ALLOWED, "method not allowed")),
+            _ => Some(refuse(StatusCode::NOT_FOUND, "not found")),
+        }
+    };
+    let mut res = if let Some(res) = early {
+        early_reply(s, body, &parts.headers, res).await
+    } else {
+        let read = match tokio::time::timeout(
+            s.read_timeout,
+            Limited::new(body, MAX_REQUEST_BYTES).collect(),
+        )
+        .await
+        {
+            Ok(Ok(collected)) => Drained::Complete(collected.to_bytes()),
+            Ok(Err(e)) if e.is::<http_body_util::LengthLimitError>() => Drained::TooLarge,
+            _ => Drained::Failed,
+        };
+        if matches!(read, Drained::Failed) {
+            refuse(
+                StatusCode::BAD_REQUEST,
+                "the request body could not be read",
+            )
+        } else {
+            call(s, &parts.headers, read).await
         }
     };
     if let Some(origin) = cross_origin {
@@ -457,19 +631,36 @@ fn security_headers(h: &mut HeaderMap, api: bool) {
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
 }
 
-async fn call(s: &Shared, headers: &HeaderMap, drained: Drained) -> Response<Body> {
+fn call_header_refusal(headers: &HeaderMap) -> Option<Response<Body>> {
     if headers.contains_key(header::TRANSFER_ENCODING) {
-        return refuse(
+        return Some(refuse(
             StatusCode::BAD_REQUEST,
             "chunked request bodies are not supported",
-        );
+        ));
     }
-    let bytes = match (content_length(headers), drained) {
-        (Some(n), Drained::Complete(b))
-            if n as usize == b.len() && b.len() <= MAX_REQUEST_BYTES =>
-        {
-            b
-        }
+    if !content_length(headers).is_some_and(|n| n <= MAX_REQUEST_BYTES as u64) {
+        return Some(refuse(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "the request body exceeds 64 KiB or has no valid Content-Length",
+        ));
+    }
+    let json = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(';').next())
+        .is_some_and(|m| m.trim().eq_ignore_ascii_case("application/json"));
+    if !json {
+        return Some(refuse(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "use application/json",
+        ));
+    }
+    None
+}
+
+async fn call(s: &Shared, headers: &HeaderMap, read: Drained) -> Response<Body> {
+    let bytes = match (content_length(headers), read) {
+        (Some(n), Drained::Complete(b)) if n == b.len() as u64 && b.len() <= MAX_REQUEST_BYTES => b,
         _ => {
             return refuse(
                 StatusCode::PAYLOAD_TOO_LARGE,
@@ -477,14 +668,6 @@ async fn call(s: &Shared, headers: &HeaderMap, drained: Drained) -> Response<Bod
             )
         }
     };
-    let json = headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(';').next())
-        .is_some_and(|m| m.trim().eq_ignore_ascii_case("application/json"));
-    if !json {
-        return refuse(StatusCode::UNSUPPORTED_MEDIA_TYPE, "use application/json");
-    }
     let service = s.service.clone();
     match tokio::task::spawn_blocking(move || dispatch(&*service, &bytes)).await {
         Ok(envelope) => json_response(
@@ -579,11 +762,13 @@ async fn events(s: &Shared, headers: &HeaderMap) -> Response<Body> {
     let (tx, rx) = mpsc::channel::<Bytes>(32);
     let _ = tx.try_send(sse_frame(&first));
     let stop = s.stop.clone();
+    let runtime = tokio::runtime::Handle::current();
+    let send_timeout = s.sse_send_timeout;
     let spawned = std::thread::Builder::new()
         .name("loomward-sse".into())
         .spawn(move || {
             let _permit = permit;
-            pump(stream, &tx, &stop);
+            pump(stream, &tx, &stop, &runtime, send_timeout);
         });
     if spawned.is_err() {
         return refuse(
@@ -604,11 +789,20 @@ async fn events(s: &Shared, headers: &HeaderMap) -> Response<Body> {
 
 /// Moves events from the service's stream into the response until the client goes, the
 /// service closes the stream or the adapter stops. Always releases the subscriber slot.
-fn pump(mut stream: Box<dyn EventStream>, tx: &mpsc::Sender<Bytes>, stop: &AtomicBool) {
+fn pump(
+    mut stream: Box<dyn EventStream>,
+    tx: &mpsc::Sender<Bytes>,
+    stop: &AtomicBool,
+    runtime: &tokio::runtime::Handle,
+    timeout: Duration,
+) {
     while !stop.load(Ordering::SeqCst) && !tx.is_closed() {
         match stream.recv_timeout(PUMP_POLL) {
             RecvOutcome::Event(e) => {
-                if tx.blocking_send(sse_frame(&e)).is_err() {
+                if runtime
+                    .block_on(tx.send_timeout(sse_frame(&e), timeout))
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -698,6 +892,47 @@ async fn static_file(s: &Shared, path: &str) -> Response<Body> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stalled_sse_channel_closes_stream_and_releases_permit() {
+        use loomward_protocol::DatasetClass;
+        let service = Arc::new(
+            fixture::FixtureService::new(DatasetClass::Synthetic)
+                .unwrap()
+                .with_stream_limits(Duration::from_millis(10), 1024),
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let handle = runtime.handle().clone();
+        let slots = Arc::new(Semaphore::new(MAX_STREAMS));
+        let permit = slots.clone().try_acquire_owned().unwrap();
+        let source = service.subscribe(None);
+        let (tx, rx) = mpsc::channel(32);
+        let worker = std::thread::spawn(move || {
+            let _permit = permit;
+            pump(
+                source,
+                &tx,
+                &AtomicBool::new(false),
+                &handle,
+                Duration::from_millis(500),
+            );
+        });
+        // Retain the receiver but never read: 32 heartbeats fill the channel, then send stalls.
+        let closed = runtime.block_on(async {
+            let end = tokio::time::Instant::now() + Duration::from_secs(8);
+            while service.open_streams() != 0 && tokio::time::Instant::now() < end {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            service.open_streams() == 0
+        });
+        drop(rx); // Also lets the unfixed blocking_send exit after a failed assertion's deadline.
+        worker.join().unwrap();
+        assert!(closed, "stalled SSE pump never closed its source");
+        assert_eq!(slots.available_permits(), MAX_STREAMS);
+    }
 
     #[test]
     fn static_paths_never_escape() {
