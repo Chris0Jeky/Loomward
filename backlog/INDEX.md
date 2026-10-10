@@ -106,3 +106,15 @@ The first eight manifest entries preserve the original native critical path. Pub
 | [LW-098](issues/LW-098.md) | Preserve disclosure suppression across views and exports | M1I | P0 | LW-020, LW-067, LW-069 |
 | [LW-099](issues/LW-099.md) | Cache extraction results under bounded invalidation and budgets | M2I | P1 | LW-014, LW-072, LW-078, LW-094 |
 | [LW-100](issues/LW-100.md) | Gate release claims against executable capability evidence | M2I | P0 | LW-057, LW-063, LW-065, LW-096, LW-097 |
+| [LW-101](issues/LW-101.md) | Measure enumeration strategies and promote the winner into loomward-windows | V3 | P0 | LW-002, LW-064 |
+| [LW-102](issues/LW-102.md) | Deterministic synthetic scale lab with manifest oracles and lab-root registration | V3 | P0 | LW-002 |
+| [LW-103](issues/LW-103.md) | v3 view-service contract, protocol crate and generated TS types | V3 | P0 | LW-016 |
+| [LW-104](issues/LW-104.md) | Svelte app shell, transports and mock mode | V3 | P0 | None |
+| [LW-105](issues/LW-105.md) | Woven-atlas treemap, Observatory sunburst and gauge modules | V3 | P0 | LW-104 |
+| [LW-106](issues/LW-106.md) | Loopback HTTP and SSE adapter (loomward-serve) | V3 | P0 | LW-103 |
+| [LW-107](issues/LW-107.md) | Read-only system, GPU and disk telemetry samplers | V3 | P1 | LW-050 |
+| [LW-108](issues/LW-108.md) | Tier model and placement data path over observed volumes | V3 | P1 | LW-004, LW-080 |
+| [LW-109](issues/LW-109.md) | Codex teacher runner, synthetic-only, with single-use grants | V3 | P1 | LW-110, LW-023 |
+| [LW-110](issues/LW-110.md) | Rust student port with Python parity fixtures | V3 | P0 | None |
+| [LW-111](issues/LW-111.md) | OS-enforced teacher confinement and enforcement canaries | V3 | P1 | LW-109 |
+| [LW-112](issues/LW-112.md) | Wave-3 service integration and grant policy | V3 | P1 | LW-103, LW-106 |
