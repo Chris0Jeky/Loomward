@@ -115,11 +115,13 @@ describe('mock transport', () => {
         stop();
       };
       await run();
-      expect(seen).toEqual(['stream.hello:e_mock']);
-      await run({ epoch: 'e_mock', seq: 0 });
-      expect(seen).toEqual(['stream.hello:e_mock']);
+      expect(seen).toEqual(['stream.hello:e_mock_epoch']);
+      // StreamEpoch in contracts/v3/view-service.schema.json.
+      expect(seen[0].split(':')[1]).toMatch(/^[A-Za-z0-9_-]{8,64}$/);
+      await run({ epoch: 'e_mock_epoch', seq: 0 });
+      expect(seen).toEqual(['stream.hello:e_mock_epoch']);
       await run({ epoch: 'e_old', seq: 9 });
-      expect(seen).toEqual(['stream.hello:e_mock', 'stream.lagged:e_mock']);
+      expect(seen).toEqual(['stream.hello:e_mock_epoch', 'stream.lagged:e_mock_epoch']);
     });
   });
 });

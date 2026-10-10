@@ -33,7 +33,7 @@ from test_app_views import run_views
 
 ROOT = Path(__file__).resolve().parents[1]
 TOKEN = 'a1b2c3d4e5f60718293a4b5c6d7e8f90'
-EPOCH = 'e_fake'
+EPOCH = 'e_fake_epoch'
 HOSTILE = '<img src=x onerror=alert(1)>.png'
 MIME = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json'}
 

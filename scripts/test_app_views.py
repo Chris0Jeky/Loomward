@@ -21,7 +21,7 @@ from playwright.sync_api import Page, expect
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / 'app' / 'dist'
 TOKEN = '0f1e2d3c4b5a69788796a5b4c3d2e1f0'
-EPOCH = 'e_fake'
+EPOCH = 'e_fake_epoch'
 MIME = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml'}
 VIEWPORTS = {'1440': (1440, 900), '390': (390, 844)}
 

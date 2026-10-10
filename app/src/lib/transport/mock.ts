@@ -21,7 +21,7 @@ const DATASET: DatasetClass = 'synthetic';
 const GRANTED_AT = '2026-10-01T09:00:00Z';
 /** The synthetic catalogue never changes, so its revision is fixed. The state.db revision comes from the view mock. */
 const CATALOG_REV = '1';
-const EPOCH = 'e_mock';
+const EPOCH = 'e_mock_epoch';
 /** Which revision scopes (semantics.md section 5) a command's response is read at: catalogue, state.db, both, or neither. */
 const REVS: Partial<Record<string, 'c' | 's' | 'cs'>> = {
   'health.get': 'c', 'tree.children': 'c', 'search.query': 'c',
