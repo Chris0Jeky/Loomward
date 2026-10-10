@@ -1,21 +1,24 @@
-//! `loomward-serve`: the browser adapter. Until lane L8 lands the real service it answers from
-//! the contract examples (`FixtureService`), so it scans nothing whatever roots are granted.
+//! `loomward-serve`: the browser adapter over the engine service (`loomward-service`). Roots come
+//! only from `--grant-root`, checked by the shared path rules and then by the session's provenance
+//! policy (a synthetic session grants only registered lab roots). `--fixtures` serves the contract
+//! examples instead (`FixtureService`): no state, no roots, no scanning.
 
 use loomward_http::fixture::FixtureService;
-use loomward_http::{grants, serve, Options};
-use loomward_protocol::DatasetClass;
+use loomward_http::{serve, Options};
+use loomward_protocol::{DatasetClass, ViewService};
+use loomward_service::{paths, Config, Service};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-const USAGE: &str = "usage: loomward-serve [--dataset synthetic|personal] [--allow-personal] \
-[--state-dir DIR] [--grant-root DIR]... [--port N] [--allow-origin http://localhost:PORT]... \
-[--static DIR]";
+const USAGE: &str = "usage: loomward-serve (--state-dir DIR | --fixtures) [--dataset synthetic|personal] \
+[--allow-personal] [--grant-root DIR]... [--port N] [--allow-origin http://localhost:PORT]... [--static DIR]";
 
 struct Args {
     dataset: DatasetClass,
     allow_personal: bool,
+    fixtures: bool,
     state_dir: Option<PathBuf>,
     grant_roots: Vec<PathBuf>,
     port: u16,
@@ -23,10 +26,24 @@ struct Args {
     static_dir: Option<PathBuf>,
 }
 
+impl Args {
+    fn http_options(self, roots: &[PathBuf]) -> Options {
+        Options {
+            bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), self.port),
+            allow_origins: self.allow_origins,
+            static_dir: self.static_dir,
+            grant_roots: roots.to_vec(),
+            state_dir: self.state_dir,
+            ..Options::default()
+        }
+    }
+}
+
 fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut a = Args {
         dataset: DatasetClass::Synthetic,
         allow_personal: false,
+        fixtures: false,
         state_dir: None,
         grant_roots: Vec::new(),
         port: 0,
@@ -44,6 +61,7 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
                 }
             }
             "--allow-personal" => a.allow_personal = true,
+            "--fixtures" => a.fixtures = true,
             "--state-dir" => a.state_dir = Some(value()?.into()),
             "--grant-root" => a.grant_roots.push(value()?.into()),
             "--port" => a.port = value()?.parse().map_err(|_| "--port takes 0-65535")?,
@@ -56,7 +74,44 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     if a.dataset == DatasetClass::Personal && !a.allow_personal {
         return Err("--dataset personal also requires --allow-personal".into());
     }
+    match (a.fixtures, &a.state_dir) {
+        (true, Some(_)) => return Err("--fixtures keeps no state; drop --state-dir".into()),
+        (true, None) if !a.grant_roots.is_empty() => {
+            return Err("--fixtures serves contract examples and grants no roots".into())
+        }
+        (false, None) => return Err("--state-dir is required (or --fixtures)".into()),
+        _ => {}
+    }
     Ok(a)
+}
+
+type Started = (Arc<dyn ViewService>, String, Vec<PathBuf>);
+
+fn service(args: &Args) -> Result<Started, String> {
+    if args.fixtures {
+        let s = FixtureService::new(args.dataset).map_err(|e| e.to_string())?;
+        return Ok((
+            Arc::new(s),
+            "fixture service (contract examples, no scanning)".into(),
+            Vec::new(),
+        ));
+    }
+    let state_dir = args.state_dir.clone().expect("checked by parse");
+    std::fs::create_dir_all(&state_dir).map_err(|_| "cannot create --state-dir".to_string())?;
+    // The canonical roots the rules approved are exactly the roots the service grants (#146).
+    let roots = paths::validate_roots(&args.grant_roots, Some(&state_dir))?;
+    let count = roots.len();
+    let s = Service::open(Config {
+        state_dir,
+        dataset: args.dataset,
+        allow_personal: args.allow_personal,
+        grant_roots: roots.clone(),
+    })?;
+    Ok((
+        Arc::new(s),
+        format!("engine service; {count} grant root(s) granted"),
+        roots,
+    ))
 }
 
 fn main() -> ExitCode {
@@ -70,40 +125,59 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let roots =
-        match grants::validate_roots(args.dataset, &args.grant_roots, args.state_dir.as_deref()) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("loomward-serve: {e}");
-                return ExitCode::from(2);
-            }
-        };
-    let service = match FixtureService::new(args.dataset) {
+    let (service, summary, roots) = match service(&args) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("loomward-serve: {e}");
-            return ExitCode::FAILURE;
+            return ExitCode::from(2);
         }
     };
-    let options = Options {
-        bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), args.port),
-        allow_origins: args.allow_origins,
-        static_dir: args.static_dir,
-        ..Options::default()
-    };
-    let handle = match serve(Arc::new(service), options) {
+    // The static root must not overlap the roots the service granted or its state (#146).
+    let options = args.http_options(&roots);
+    let handle = match serve(service, options) {
         Ok(h) => h,
         Err(e) => {
             eprintln!("loomward-serve: {e}");
             return ExitCode::FAILURE;
         }
     };
-    eprintln!(
-        "loomward-serve: fixture service (contract examples, no scanning); {} grant root(s) validated",
-        roots.len()
-    );
+    eprintln!("loomward-serve: {summary}");
     // The one place the token is shown. Open this URL; the app moves the token out of the address bar.
     println!("{}", handle.url());
     handle.wait();
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn http_options_consume_exactly_the_validated_canonical_roots() {
+        let base = std::env::temp_dir().join(format!("lw-http-startup-{}", std::process::id()));
+        let grant = base.join("grant");
+        let state = base.join("state");
+        std::fs::create_dir_all(&grant).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        let raw = grant.join("..").join("grant");
+        let args = parse(
+            [
+                "--dataset".into(),
+                "personal".into(),
+                "--allow-personal".into(),
+                "--grant-root".into(),
+                raw.to_str().unwrap().into(),
+                "--state-dir".into(),
+                state.to_str().unwrap().into(),
+            ]
+            .into_iter(),
+        )
+        .unwrap();
+        let roots = paths::validate_roots(&args.grant_roots, Some(&state)).unwrap();
+        assert_ne!(roots, args.grant_roots);
+        let options = args.http_options(&roots);
+        assert_eq!(options.grant_roots, roots);
+        assert_eq!(options.grant_roots, vec![grant.canonicalize().unwrap()]);
+        std::fs::remove_dir_all(base).unwrap();
+    }
 }
