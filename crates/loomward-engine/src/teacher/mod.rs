@@ -9,7 +9,7 @@
 //! 180 s and validates output strictly. The only egress is `teacher.run`, from a pinned native
 //! `codex.exe` launched directly (no shell).
 //!
-//! Gate: [`Engine::teacher_run`] already refuses a personal-class engine with
+//! Gate: [`Engine::teacher_run`] refuses any non-synthetic engine with
 //! `PermissionDenied("confinement_not_enforced")`; that line stays until LW-111 demonstrates
 //! enforcement. Synthetic runs only from fixture or registered lab roots.
 //!
@@ -33,9 +33,9 @@ impl Engine {
     }
 
     /// Runs the teacher for one disclosure grant (`teacher.run`) as a job. Synthetic-only: a
-    /// personal-class engine is refused before anything else.
+    /// non-synthetic engine is refused before anything else.
     pub fn teacher_run(&self, request: &TeacherRunRequest) -> EngineResult<Job> {
-        if self.config().dataset_class == DatasetClass::Personal {
+        if self.config().dataset_class != DatasetClass::Synthetic {
             return Err(EngineError::PermissionDenied {
                 message: CONFINEMENT_NOT_ENFORCED.to_string(),
             });
