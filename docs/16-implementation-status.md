@@ -59,7 +59,7 @@ runs Python 3.11/3.13 and the Rust workspace on ubuntu and windows.
 
 | Area | State on `main` | Evidence |
 |---|---|---|
-| Python reference | 212 tests (1 symlink-privilege skip); two Windows bugs and eleven review findings fixed test-first (#2, #106) | `evidence/v3/README.md` |
+| Python reference | 216 tests (1 symlink-privilege skip); two Windows bugs and eleven review findings fixed test-first (#2, #106) | `evidence/v3/README.md` |
 | `loomward-core` | v1 planner plus the v2 allocator port; 222 parity cases equal Python field by field (#107) | `evidence/v3/planner-v2-rust.md` |
 | `loomward-windows` | handle-derived identity, volume capabilities, opt-in disposable fixture lab; read-only (#108) | `evidence/v3/windows-native.md` |
 | `loomward-telemetry` | schema v2: memory ledger (standby, modified, free), machine-normalised CPU, disk busy separate from queue, PDH GPU aggregated by LUID with churn kept unknown (#109, #139) | `evidence/v3/telemetry.md` |

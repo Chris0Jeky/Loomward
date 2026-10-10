@@ -14,7 +14,7 @@
     "docs/40-parallel-work-packs.md"
   ],
   "reference": {
-    "python_tests": 212,
+    "python_tests": 216,
     "browser_checks": 14,
     "js_boundary_assertions": 9,
     "js_python_parity_cases": 80,
