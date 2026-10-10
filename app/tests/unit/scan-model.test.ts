@@ -51,6 +51,24 @@ describe('applying job snapshots', () => {
     for (const pair of [[equalTime, newer], [newer, equalTime]]) expect(fromList(pair).rt_a).toEqual(newer);
   });
 
+  it('falls back to creation time if either snapshot has no submission sequence', () => {
+    const older = done({ job_id: 'jb_old', seq: 20 });
+    const newer = job('queued', { job_id: 'jb_new', seq: 21, created_at: '2026-10-10T11:00:00Z' });
+    for (const missing of [older, newer]) {
+      const legacy = { ...missing, seq: undefined as unknown as number };
+      const pair = missing === older ? [legacy, newer] : [older, legacy];
+      expect(fromList(pair).rt_a?.job_id).toBe('jb_new');
+      expect(fromList([...pair].reverse()).rt_a?.job_id).toBe('jb_new');
+    }
+  });
+
+  it('keeps the book object for stale and duplicate revisions', () => {
+    const current = done({ rev: 5 });
+    const book = applyJob({}, current);
+    for (const rev of [4, 5]) expect(applyJob(book, { ...current, rev })).toBe(book);
+    expect(applyJob(book, { ...current, rev: 6 }).rt_a?.rev).toBe(6);
+  });
+
   it('accepts only higher revisions in either delivery order, without merging stale fields', () => {
     const older = done({ rev: 4, progress: progress({ examined: 120 }), coverage: 'complete' });
     const newer = done({ rev: 5, progress: progress({ examined: 100 }), coverage: null });
@@ -114,6 +132,13 @@ describe('applying job snapshots', () => {
     const b = applyJob({}, job('running'));
     expect(applyProgress(b, 'rt_a', 'jb_other', progress())).toBe(b);
     expect(applyProgress(b, 'rt_x', 'jb_1', progress())).toBe(b);
+  });
+
+  it('never lets an unreadable created_at outrank a readable one when seq is missing', () => {
+    const readable = job('queued', { job_id: 'jb_ok', seq: undefined, created_at: '2026-10-10T10:00:00Z' });
+    const unreadable = job('queued', { job_id: 'jb_bad', seq: undefined, created_at: 'not a time' });
+    expect(applyJob(applyJob({}, unreadable), readable).rt_a?.job_id).toBe('jb_ok');
+    expect(applyJob(applyJob({}, readable), unreadable).rt_a?.job_id).toBe('jb_ok');
   });
 
   it('rebuilds from a jobs.list in any order', () => {
