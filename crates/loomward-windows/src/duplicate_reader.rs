@@ -1,0 +1,338 @@
+//! Synthetic/lab default-stream equality evidence. Never effect authority or reclaimability.
+use crate::{enumerate::OpenedIdentity, identity::ObservedIdentity};
+#[cfg(any(windows, test))]
+use std::{collections::BTreeMap, time::Instant};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
+
+#[derive(Debug, Clone)]
+pub struct Entry {
+    pub relative: PathBuf,
+    pub expected: ObservedIdentity,
+}
+#[derive(Debug, Clone, Copy)]
+pub struct Budget {
+    /// Default-stream bytes across all passes, counting both comparison inputs.
+    pub bytes: u64,
+    /// Shared wall-clock allowance, checked around every native call.
+    /// Pending content I/O is cancelled at the deadline; metadata calls and cancellation
+    /// draining still depend on the filesystem driver returning.
+    pub time: Duration,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reason {
+    ContentReadGated,
+    Elevated,
+    Unsupported,
+    InvalidPath,
+    ChangedDuringRead,
+    ReparsePoint,
+    Placeholder,
+    Offline,
+    SpecialFile,
+    SharingViolation,
+    AccessDenied,
+    Io,
+    ByteBudget,
+    TimeBudget,
+    EntryBudget,
+}
+impl Reason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ContentReadGated => "content_read_gated",
+            Self::Elevated => "elevated",
+            Self::Unsupported => "unsupported",
+            Self::InvalidPath => "invalid_path",
+            Self::ChangedDuringRead => "changed_during_read",
+            Self::ReparsePoint => "reparse_point",
+            Self::Placeholder => "placeholder",
+            Self::Offline => "offline",
+            Self::SpecialFile => "special_file",
+            Self::SharingViolation => "sharing_violation",
+            Self::AccessDenied => "access_denied",
+            Self::Io => "io",
+            Self::ByteBudget => "byte_budget",
+            Self::TimeBudget => "time_budget",
+            Self::EntryBudget => "entry_budget",
+        }
+    }
+}
+#[derive(Debug)]
+pub struct Skip {
+    pub entry: usize,
+    pub reason: Reason,
+}
+#[derive(Debug, Default)]
+pub struct Report {
+    /// Input indices; equal default streams at observation, never permission to delete.
+    pub groups: Vec<Vec<usize>>,
+    /// Known native objects with multiple names (including observed single names with nlink > 1).
+    pub links: Vec<Vec<usize>>,
+    pub skipped: Vec<Skip>,
+    pub bytes_read: u64,
+    /// A budget stop leaves the remaining input unexamined, never absent.
+    pub stop: Option<Reason>,
+    /// Incomplete coverage, including budget hits and refused/changed entries.
+    pub partial: bool,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(windows)]
+enum Event {
+    Partial,
+    Full,
+    Read,
+    Compare,
+}
+
+/// Low-level reader for trusted synthetic/lab listings only. Product callers use GrantedRoot.
+pub fn inspect(
+    root: &Path,
+    expected_root: &OpenedIdentity,
+    entries: &[Entry],
+    budget: Budget,
+) -> Result<Report, Reason> {
+    #[cfg(windows)]
+    {
+        inspect_with_hook(root, expected_root, entries, budget, |_, _| {})
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (root, expected_root, entries, budget);
+        Err(Reason::Unsupported)
+    }
+}
+#[cfg(windows)]
+fn inspect_with_hook(
+    root: &Path,
+    expected: &OpenedIdentity,
+    entries: &[Entry],
+    budget: Budget,
+    hook: impl FnMut(Event, usize),
+) -> Result<Report, Reason> {
+    let mut meter = Meter::new(budget);
+    if let Err(reason) = meter.check() {
+        return Ok(Report {
+            partial: true,
+            stop: Some(reason),
+            ..Report::default()
+        });
+    }
+    let mut reader = native::Reader::new(root, expected, hook)?;
+    Ok(group(entries, &mut reader, &mut meter))
+}
+
+// Shared global budgets apply to metadata, both hash passes and both sides of exact comparison.
+#[cfg(any(windows, test))]
+struct Meter {
+    remaining: u64,
+    read: u64,
+    deadline: Instant,
+}
+#[cfg(any(windows, test))]
+impl Meter {
+    fn new(budget: Budget) -> Self {
+        Self {
+            remaining: budget.bytes,
+            read: 0,
+            deadline: Instant::now()
+                .checked_add(budget.time)
+                .unwrap_or_else(Instant::now),
+        }
+    }
+    fn check(&self) -> Result<(), Reason> {
+        if Instant::now() >= self.deadline {
+            Err(Reason::TimeBudget)
+        } else {
+            Ok(())
+        }
+    }
+    fn reserve(&self, bytes: u64) -> Result<(), Reason> {
+        self.check()?;
+        if bytes > self.remaining {
+            Err(Reason::ByteBudget)
+        } else {
+            Ok(())
+        }
+    }
+    fn consumed(&mut self, bytes: usize) {
+        self.remaining -= bytes as u64;
+        self.read += bytes as u64;
+    }
+}
+#[cfg(any(windows, test))]
+trait ContentReader {
+    fn validate(&mut self, index: usize, entry: &Entry, meter: &Meter) -> Result<(), Reason>;
+    fn hash(
+        &mut self,
+        index: usize,
+        entry: &Entry,
+        partial: bool,
+        meter: &mut Meter,
+    ) -> Result<[u8; 32], Reason>;
+    fn equal(
+        &mut self,
+        left: usize,
+        right: usize,
+        entries: &[Entry],
+        meter: &mut Meter,
+    ) -> Result<bool, Reason>;
+}
+#[cfg(any(windows, test))]
+fn attributes(attributes: u32) -> Result<(), Reason> {
+    if attributes & 0x40000 != 0 || attributes & 0x400000 != 0 {
+        Err(Reason::Placeholder)
+    } else if attributes & 0x1000 != 0 {
+        Err(Reason::Offline)
+    } else if attributes & 0x400 != 0 {
+        Err(Reason::ReparsePoint)
+    } else if attributes & (0x10 | 0x40) != 0 {
+        Err(Reason::SpecialFile)
+    } else {
+        Ok(())
+    }
+}
+#[cfg(any(windows, test))]
+fn skip(report: &mut Report, index: usize, reason: Reason) {
+    report.partial = true;
+    if budget_reason(reason) {
+        report.stop = Some(reason);
+    }
+    report.skipped.push(Skip {
+        entry: index,
+        reason,
+    });
+}
+#[cfg(any(windows, test))]
+fn budget_reason(reason: Reason) -> bool {
+    matches!(
+        reason,
+        Reason::ByteBudget | Reason::TimeBudget | Reason::EntryBudget
+    )
+}
+#[cfg(any(windows, test))]
+fn group(entries: &[Entry], reader: &mut impl ContentReader, meter: &mut Meter) -> Report {
+    let mut report = Report::default();
+    let mut objects: BTreeMap<_, Vec<usize>> = BTreeMap::new();
+    for (index, entry) in entries.iter().enumerate() {
+        let checked = meter.check().and_then(|_| {
+            if index >= 200_000 {
+                return Err(Reason::EntryBudget);
+            }
+            attributes(entry.expected.attributes)?;
+            if !matches!(
+                entry.expected.object.quality,
+                crate::identity::IdentityQuality::FileId128
+            ) {
+                return Err(Reason::Unsupported);
+            }
+            reader.validate(index, entry, meter)
+        });
+        if let Err(reason) = checked {
+            skip(&mut report, index, reason);
+            if budget_reason(reason) {
+                break;
+            }
+            continue;
+        }
+        objects
+            .entry((
+                entry.expected.object.volume_serial.clone(),
+                entry.expected.object.file_id,
+            ))
+            .or_default()
+            .push(index);
+    }
+    let mut sizes: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
+    for indices in objects.into_values() {
+        if indices.len() > 1 || entries[indices[0]].expected.link_count > 1 {
+            report.links.push(indices);
+        } else {
+            let index = indices[0];
+            match entries[index].expected.size.parse::<u64>() {
+                Ok(0) => {}
+                Ok(size) => sizes.entry(size).or_default().push(index),
+                Err(_) => skip(&mut report, index, Reason::Unsupported),
+            }
+        }
+    }
+    let mut groups: Vec<Vec<usize>> = sizes.into_values().filter(|g| g.len() > 1).collect();
+    for indices in &mut groups {
+        indices.sort_unstable();
+    }
+    for partial in [true, false] {
+        let mut next = Vec::new();
+        for indices in groups {
+            let mut hashes: BTreeMap<[u8; 32], Vec<usize>> = BTreeMap::new();
+            for index in indices {
+                match reader.hash(index, &entries[index], partial, meter) {
+                    Ok(hash) => hashes.entry(hash).or_default().push(index),
+                    Err(reason) => skip(&mut report, index, reason),
+                }
+            }
+            next.extend(hashes.into_values().filter(|g| g.len() > 1));
+        }
+        groups = next;
+    }
+    for indices in groups {
+        // Exact comparison partitions even hash collisions; no digest establishes equality.
+        let mut partitions: Vec<Vec<usize>> = Vec::new();
+        for index in indices {
+            let mut placed = false;
+            for partition in &mut partitions {
+                match reader.equal(partition[0], index, entries, meter) {
+                    Ok(true) => {
+                        partition.push(index);
+                        placed = true;
+                        break;
+                    }
+                    Ok(false) => {}
+                    Err(reason) => {
+                        skip(&mut report, index, reason);
+                        placed = true;
+                        break;
+                    }
+                }
+            }
+            if !placed {
+                partitions.push(vec![index]);
+            }
+        }
+        for mut partition in partitions {
+            partition.retain(
+                |&index| match reader.validate(index, &entries[index], meter) {
+                    Ok(()) => true,
+                    Err(reason) => {
+                        skip(&mut report, index, reason);
+                        false
+                    }
+                },
+            );
+            if partition.len() > 1 {
+                report.groups.push(partition);
+            }
+        }
+    }
+    if let Err(reason) = meter.check() {
+        report.groups.clear();
+        report.partial = true;
+        report.stop = Some(reason);
+    }
+    report.bytes_read = meter.read;
+    report
+}
+#[cfg(windows)]
+mod native;
+#[cfg(test)]
+impl Budget {
+    fn test() -> Self {
+        Self {
+            bytes: 1_000_000,
+            time: Duration::from_secs(10),
+        }
+    }
+}
+#[cfg(test)]
+mod tests;

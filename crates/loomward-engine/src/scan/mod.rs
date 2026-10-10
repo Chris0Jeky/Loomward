@@ -111,6 +111,23 @@ impl GrantedRoot {
     pub fn dataset_class(&self) -> DatasetClass {
         self.dataset_class
     }
+    /// Content equality evidence for a trusted listing under this grant; never effect authority.
+    /// Personal grants remain metadata-only until a separate owner content-read decision.
+    pub fn inspect_duplicates(
+        &self,
+        entries: &[loomward_windows::duplicate_reader::Entry],
+        budget: loomward_windows::duplicate_reader::Budget,
+    ) -> Result<
+        loomward_windows::duplicate_reader::Report,
+        loomward_windows::duplicate_reader::Reason,
+    > {
+        use loomward_windows::duplicate_reader::{self, Reason};
+        if self.dataset_class != DatasetClass::Synthetic {
+            return Err(Reason::ContentReadGated);
+        }
+        let expected = self.expected.as_ref().ok_or(Reason::Unsupported)?;
+        duplicate_reader::inspect(&self.path, expected, entries, budget)
+    }
 }
 impl Engine {
     /// The only production way to mint a [`GrantedRoot`] (#144): read grant `grant_id` from this
