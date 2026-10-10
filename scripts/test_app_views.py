@@ -12,6 +12,7 @@ import queue
 import re
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -372,6 +373,80 @@ def check_tiers(page: Page, base: str, shoot) -> None:
 
 # --- Companion --------------------------------------------------------------------------------------
 
+def check_process_strip(browser, base: str, shots: Path | None) -> None:
+    page = browser.new_page(viewport={'width': 1440, 'height': 1000})
+    errors = []
+    page.on('pageerror', lambda e: errors.append(str(e)))
+    start = datetime.now(timezone.utc)
+    page.clock.install(time=start)
+    page.goto(f'{base}/?transport=mock#/observatory')
+    strip = page.get_by_role('region', name='Processes', exact=True)
+    expect(strip.locator('li')).to_have_count(5)
+    expect(strip.get_by_role('status')).to_contain_text('Synthetic process observations')
+    expect(strip.get_by_role('status')).to_contain_text('could not be read (unknown, not zero)')
+    expect(strip.locator('.process-metric').first).to_contain_text('unknown')
+    ok('0.0%' not in strip.inner_text(), 'process strip: initial CPU rates are unknown, never zero')
+    retained_at = strip.locator('time').first.get_attribute('datetime')
+
+    page.clock.set_system_time(start + timedelta(seconds=12))
+    wait_until(page, '() => document.querySelector(".process-strip time").textContent.includes("12 s ago")')
+    ok(strip.locator('time').first.get_attribute('datetime') == retained_at, 'process strip: newer gauge samples do not refresh row observation time')
+    page.clock.set_system_time(start + timedelta(seconds=16))
+    wait_until(page, '() => document.querySelector(".process-strip .process-metric").textContent.includes("%")')
+    expect(strip.locator('time').first).not_to_contain_text('age unknown')
+    cpu = [float(t.split('%')[0]) for t in strip.locator('.process-metric').all_inner_texts()]
+    ok(cpu == sorted(cpu, reverse=True), f'process strip: descending machine-normalised CPU {cpu}')
+
+    page.get_by_label('Process lens').select_option('private_desc')
+    expect(strip.locator('.process-name').first).to_have_text('vm-host.exe')
+    expect(strip.locator('.process-metric').first).to_contain_text('6.80 GiB')
+    ok(strip.get_by_role('button', name=FORBIDDEN_BUTTONS).count() == 0, 'process strip has no process effect controls')
+
+    # An update cannot reorder a row while its explanation link has focus.
+    strip.get_by_role('link').first.focus()
+    held_at = strip.locator('time').first.get_attribute('datetime')
+    held_order = strip.locator('.process-name').all_inner_texts()
+    page.clock.set_system_time(start + timedelta(seconds=32))
+    expect(strip.get_by_role('status')).to_contain_text('A newer observation is waiting')
+    ok(strip.locator('.process-name').all_inner_texts() == held_order and strip.locator('time').first.get_attribute('datetime') == held_at,
+       'process strip: row order and observations hold under keyboard focus')
+    page.get_by_label('Process lens').focus()
+    expect(strip.get_by_role('status')).not_to_contain_text('A newer observation is waiting')
+    ok(strip.locator('time').first.get_attribute('datetime') != held_at, 'process strip: focus leaving releases the queued observation')
+
+    page.get_by_role('button', name='Pause updates').click()
+    expect(strip.get_by_role('status')).to_contain_text('Paused; showing retained observations')
+    paused_at = strip.locator('time').first.get_attribute('datetime')
+    page.clock.set_system_time(start + timedelta(seconds=44))
+    wait_until(page, '() => document.querySelector(".process-strip time").textContent.includes("12 s ago")')
+    ok(strip.locator('time').first.get_attribute('datetime') == paused_at, 'process strip: paused retained rows still show their own age')
+    page.get_by_role('button', name='Resume updates').click()
+    expect(page.get_by_label('Process lens')).to_be_enabled()
+
+    if shots:
+        for theme, label in (('woven-atlas', 'Woven atlas'), ('observatory', 'Observatory')):
+            page.get_by_role('group', name='Theme').get_by_role('button', name=label).click()
+            strip.screenshot(path=str(shots / f'process-strip-{theme}.png'))
+        page.set_viewport_size({'width': 320, 'height': 844})
+        strip.screenshot(path=str(shots / 'process-strip-320.png'))
+    page.set_viewport_size({'width': 320, 'height': 844})
+    ok(page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'process strip: no horizontal page scroll at 320 px')
+    ok(strip.locator('time').first.is_visible(), 'process strip: row ages stay visible at 320 px')
+
+    strip.get_by_role('link').first.focus()
+    page.keyboard.press('Enter')
+    expect(page.get_by_role('heading', name='Companion', level=1)).to_be_visible()
+    explanation = page.get_by_role('region', name='Explanation')
+    expect(explanation).to_contain_text('vm-host.exe')
+    expect(explanation.get_by_role('heading')).to_be_focused()
+    ok(explanation.get_by_role('button').count() == 0, 'process strip: Enter opens the row explanation in Companion, read-only')
+    page.goto(f'{base}/?transport=mock#/companion?process=pc_missing')
+    expect(page.locator('main [role=alert]').filter(has_text='no such process')).to_be_visible()
+    ok(page.get_by_role('region', name='Explanation').count() == 0, 'an expired or missing process reference is not explained as a different process')
+    ok(not errors, f'process strip: no page errors {errors}')
+    page.close()
+
+
 def check_companion(page: Page, base: str, shoot) -> None:
     page.goto(f'{base}/?transport=mock#/companion')
     expect(page.get_by_role('heading', name='Companion', level=1)).to_be_visible()
@@ -523,6 +598,7 @@ def run_views(page: Page, base: str, shots: Path | None) -> None:
         page.set_viewport_size({'width': 1360, 'height': 900})
 
     page.set_viewport_size({'width': 1360, 'height': 900})
+    check_process_strip(page.context.browser, base, shots)
     check_explorer_mock(page, base, shoot)
     engine = FakeEngine()
     engine.start()

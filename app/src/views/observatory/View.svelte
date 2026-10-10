@@ -14,7 +14,7 @@
   import { formatCount } from '../../lib/format/time';
   import { LoomwardError } from '../../lib/transport/client';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
-  import type { DatasetClass, ResponseMeta } from '../../lib/contracts.gen';
+  import type { DatasetClass } from '../../lib/contracts.gen';
   import type { TelemetrySample } from '../../lib/contracts.gen';
   import type { NodeInfo } from '../../../viz/types.js';
   import { createSunburst } from '../../../viz/sunburst.js';
@@ -26,6 +26,9 @@
   import LoadError from '../atlas/LoadError.svelte';
   import { Poller } from './poller';
   import { byteCount, uniqueLabels, vramGiB, vramLabel } from './telemetry';
+  import ProcessStrip from './ProcessStrip.svelte';
+  import { ObservatoryFeed, type ProcessReading } from './feed';
+  import type { ProcessLens } from './processes';
 
   const nav = new SliceNav({ depth: 4, maxNodes: 2500, minShare: 0 });
   const reducedMQ = matchMedia('(prefers-reduced-motion: reduce)');
@@ -55,7 +58,11 @@
   const recentIo: number[] = [];
   let diskKeys = $state<string[]>([]); // unique per disk even when the engine repeats a label
   const lastRate = new Map<string, number | null>(); // a new disk's canvas mounts after its first sample: replay it
-  let poller: Poller<{ result: TelemetrySample; meta: ResponseMeta }> | null = null;
+  let poller: Poller<Awaited<ReturnType<ObservatoryFeed['read']>>> | null = null;
+  let feed: ObservatoryFeed | null = null;
+  let processLens = $state<ProcessLens>('cpu_desc');
+  let processReading = $state<ProcessReading | null>(null);
+  const processesAvailable = $derived(session.info?.capabilities.observation.process_observation === true);
   let paused = $state(false); // WCAG 2.2.2: the 1 s polling can be paused
 
   function gaugeTheme(): GaugeTheme {
@@ -102,6 +109,7 @@
     telState = 'unavailable';
     telNote = e instanceof LoomwardError ? e.message : session.handle(e);
     tel = null;
+    processReading = { list: null, dataset: null, error: e instanceof LoomwardError ? e.code : 'unavailable', note: telNote, lens: processLens };
     // nothing stale stays drawn: every dial reads unknown and every trace starts again
     for (const g of Object.values(gauges)) g.push(null);
     for (const g of sparks.values()) g.clear();
@@ -149,9 +157,14 @@
       call: async () => {
         const c = session.client;
         if (!c) throw new Error('no session');
-        return c.call('telemetry.snapshot', { channels: ['system', 'gpu', 'disks'] });
+        feed ??= new ObservatoryFeed(c, processesAvailable);
+        return feed.read(processLens);
       },
-      onSample: ({ result, meta }) => { telClass = meta.dataset_class; telState = 'live'; telNote = ''; apply(result); },
+      onSample: ({ result, meta, processes }) => {
+        telClass = meta.dataset_class; telState = 'live'; telNote = ''; apply(result);
+        if (processes) processReading = processes;
+        else if (!processesAvailable) processReading = { list: null, dataset: null, error: 'capability_unavailable', note: '', lens: processLens };
+      },
       onError: (e) => fail(e),
       intervalMs: 1000,
       backoffMs: [2000, 4000, 8000, 15000, 30000],
@@ -161,6 +174,7 @@
     p.start();
     return () => {
       p.stop(); poller = null;
+      feed?.close(); feed = null;
       off.forEach((f) => f());
       s.destroy(); sb = null;
       Object.values(gauges).forEach((g) => g.destroy());
@@ -208,8 +222,10 @@
 
   function togglePause() {
     paused = !paused;
-    if (paused) poller?.stop(); else poller?.start();
+    if (paused) { poller?.stop(); feed?.close(); feed = null; } else poller?.start();
   }
+
+  function changeProcessLens() { if (!paused) poller?.kick(); }
 
   function basisKey(e: KeyboardEvent) {
     if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
@@ -302,6 +318,8 @@
       {/if}
       <p class="fine">Read-only. There is no memory cleaner, trim or kill control here, by design. Available already includes the standby cache.</p>
     </section>
+
+    <ProcessStrip reading={processReading} {paused} bind:lens={processLens} onchange={changeProcessLens} />
 
     <Inspector node={shown} status={hovered ? 'Hover' : selected ? 'Selected' : 'Nothing selected'} basis={nav.basis} {provisional} {palette} path={pathNames} />
   </div>

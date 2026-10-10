@@ -2,7 +2,7 @@ import type { ByteCount, ErrorCode, Timestamp } from '../contracts.gen';
 import type {
   CandidateGroup, GroupOverride, HeatBasis, OwnBudgets, PlacementCandidates, PlacementPlan, PlacementProposal,
   PlacementSimulateRequest, PoolName, PoolUse, ProcessExplanation, ProcessList, ProcessRow,
-  RootRevokeResult, GrantRevokeResult, TelemetrySample, TelemetrySubscription, TierModel, Volume, VolumeList,
+  RootRevokeResult, GrantRevokeResult, TelemetryChannel, TelemetrySample, TelemetrySubscription, TierModel, Volume, VolumeList,
 } from '../contracts.gen';
 import type { PreRejectReason, RejectReason } from '../derived';
 import { formatBytes } from '../format/bytes';
@@ -58,7 +58,7 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
   const iso = () => now().toISOString();
   const revokedRoots = new Map<string, Timestamp>();
   const revokedGrants = new Map<string, Timestamp>();
-  const subscriptions = new Set<string>();
+  const subscriptions = new Map<string, { channels: TelemetryChannel[]; expiresAt: number }>();
   let stateRev = 1;
   let sampleSeq = 0;
 
@@ -215,19 +215,24 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
   // --- companion ------------------------------------------------------------------------------
   const NAMES = ['browser-main', 'render-worker', 'game-launcher', 'chat-client', 'code-editor', 'sync-agent', 'media-player', 'build-server', 'db-engine', 'vm-host', 'updater', 'indexer', 'print-spooler', 'audio-svc', 'shell-host'];
   const BIG_FIXED: [string, number][] = [['browser-main.exe', 2.4], ['vm-host.exe', 6.8], ['db-engine.exe', 3.1]];
-  const processRows = (): ProcessRow[] => {
+  const processRows = (ratesKnown = false): ProcessRow[] => {
     const rnd = prng(7);
+    const observedAt = iso();
     const rows: ProcessRow[] = [];
     const add = (name: string, pid: number, access: ProcessRow['access'], commit: number, owned = false) => {
       const denied = access === 'denied';
       const limited = access === 'limited';
       const ws = commit * (0.55 + rnd() * 0.5);
       rows.push({
-        observed_at: iso(), process_ref: `pc_${pid}_${(pid * 2654435761 >>> 0).toString(36)}`, pid, name, started_at: denied ? null : new Date(Date.UTC(2026, 9, 1, 6, 0) + pid * 1000).toISOString(),
+        observed_at: observedAt, process_ref: `pc_${pid}_${(pid * 2654435761 >>> 0).toString(36)}`, pid, name, started_at: denied ? null : new Date(Date.UTC(2026, 9, 1, 6, 0) + pid * 1000).toISOString(),
         private_commit_bytes: denied ? null : str(gib(commit)), private_working_set_bytes: denied || limited ? null : str(gib(ws * 0.8)), working_set_bytes: denied ? null : str(gib(ws)),
         cpu_fraction: denied ? null : Math.round(rnd() * rnd() * 400) / 1000, io_read_bytes_per_s: denied ? null : Math.round(rnd() * rnd() * 4e7), io_write_bytes_per_s: denied ? null : Math.round(rnd() * rnd() * 2e7),
         gpu_dedicated_bytes: denied || rnd() < 0.7 ? null : str(gib(rnd() * 1.5)), access, loomward_owned: owned,
       });
+      if (!ratesKnown) {
+        const row = rows[rows.length - 1]!;
+        row.cpu_fraction = null; row.io_read_bytes_per_s = null; row.io_write_bytes_per_s = null;
+      }
     };
     BIG_FIXED.forEach(([n, g], i) => add(n, 4100 + i * 4, 'full', g));
     add('loomward-mock.exe', 5200, 'full', 0.09, true);
@@ -237,7 +242,8 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
     for (let i = 0; i < 52; i++) add(`${NAMES[i % NAMES.length]}${i < NAMES.length ? '' : '-' + i}.exe`, 7000 + i * 12, i % 11 === 5 ? 'limited' : 'full', 0.02 + rnd() * rnd() * 1.6);
     return rows;
   };
-  const ROWS = processRows();
+  let ROWS = processRows();
+  let processObservedAt = now().getTime();
   const num = (s: string | null) => (s === null ? -1 : Number(s));
   const SORT: Record<string, (r: ProcessRow) => number> = {
     private_desc: (r) => num(r.private_commit_bytes), working_set_desc: (r) => num(r.working_set_bytes), cpu_desc: (r) => r.cpu_fraction ?? -1,
@@ -246,9 +252,12 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
   const processes = (p: Record<string, unknown>): ProcessList => {
     const limit = Number.isInteger(p.limit) && (p.limit as number) >= 1 && (p.limit as number) <= 200 ? (p.limit as number) : fail('invalid_request', 'limit must be 1..200');
     const sort = typeof p.sort === 'string' && (p.sort === 'name_asc' || p.sort in SORT) ? p.sort : fail('invalid_request', 'unknown sort');
+    // Synthetic enumeration is retained for 15 s too; re-reading never makes old rows fresh.
+    const leased = [...subscriptions.values()].some((s) => s.expiresAt > now().getTime() && s.channels.includes('processes'));
+    if (leased && now().getTime() - processObservedAt >= 15000) { ROWS = processRows(true); processObservedAt = now().getTime(); }
     const sorted = [...ROWS].sort(sort === 'name_asc' ? (a, b) => a.name.localeCompare(b.name) : (a, b) => SORT[sort]!(b) - SORT[sort]!(a) || a.pid - b.pid);
     return {
-      sample_seq: sampleSeq, observed_at: iso(), rows: sorted.slice(0, limit), observed_count: ROWS.length, denied_count: ROWS.filter((r) => r.access === 'denied').length,
+      sample_seq: sampleSeq, observed_at: ROWS[0]!.observed_at, rows: sorted.slice(0, limit), observed_count: ROWS.length, denied_count: ROWS.filter((r) => r.access === 'denied').length,
       truncated: limit < ROWS.length, note: 'Processes the operating system would not describe are counted and shown as unknown, never as zero.',
     };
   };
@@ -267,7 +276,7 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
     }
     if (r.loomward_owned) facts.push({ code: 'loomward_owned', text: 'This is Loomward itself. Its own budgets are below.' });
     return {
-      process_ref: r.process_ref, observed_at: iso(), facts, caveats, available_actions: [],
+      process_ref: r.process_ref, observed_at: r.observed_at, facts, caveats, available_actions: [],
       summary: r.access === 'denied' ? `${r.name} could not be observed.` : `${r.name} (pid ${r.pid}) is observed read-only; Loomward offers no action on it.`,
     };
   };
@@ -308,8 +317,8 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
     'placement.simulate': simulate,
     'telemetry.subscribe': (p): TelemetrySubscription => {
       const id = typeof p.subscription_id === 'string' ? p.subscription_id : `sub_mock_${subscriptions.size + 1}`;
-      if (typeof p.subscription_id === 'string' && !subscriptions.has(id)) fail('not_found', 'unknown or expired subscription');
-      subscriptions.add(id);
+      if (typeof p.subscription_id === 'string' && (subscriptions.get(id)?.expiresAt ?? 0) <= now().getTime()) fail('not_found', 'unknown or expired subscription');
+      subscriptions.set(id, { channels: p.channels as TelemetryChannel[], expiresAt: now().getTime() + 60_000 });
       return { subscription_id: id, channels: p.channels as TelemetrySubscription['channels'], interval_ms: p.interval_ms as TelemetrySubscription['interval_ms'], expires_at: new Date(now().getTime() + 60_000).toISOString() };
     },
     'telemetry.unsubscribe': (p) => ({ subscription_id: String(p.subscription_id), stopped: subscriptions.delete(String(p.subscription_id)) }),
