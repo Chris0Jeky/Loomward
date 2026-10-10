@@ -18,8 +18,9 @@
 //!   it matches by name. Excluded entries (reparse points, offline or recall-on-access
 //!   placeholders, the state directory) are published with `reparse_not_followed`,
 //!   `cloud_placeholder` or `excluded_state_dir` and stay visible as `excluded`; the catalogue
-//!   never counts them in totals, a known directory that becomes excluded is replaced (its old
-//!   subtree retires), and the parent counts them as skipped, so its coverage is never complete.
+//!   never counts them in totals, and the parent counts them as skipped, so its coverage is
+//!   never complete. A known directory that becomes excluded keeps its row; its subtree is
+//!   hidden but unknown, never retired while it stays excluded, and revives when it returns.
 //! - **Partial #8.** The writer reparents a directory inside the new parent's publication and
 //!   dirties both ancestor chains in that transaction, cancelled run or not. A child ticket is
 //!   resolved after that publication, so no ticket carries an `old_parent`.

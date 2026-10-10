@@ -888,12 +888,16 @@ fn retire_files(
 fn full_traversal(conn: &Connection, run: i64, root: i64) -> Result<bool> {
     Ok(conn.query_row("WITH RECURSIVE visible(id) AS (SELECT id FROM dir WHERE root_id=?2 AND parent_id IS NULL UNION ALL SELECT d.id FROM dir d JOIN visible v ON d.parent_id=v.id WHERE d.listing_state!='absent_pending') SELECT mode!='targeted' AND NOT EXISTS(SELECT 1 FROM dir WHERE id IN (SELECT id FROM visible) AND (seen_run!=?1 OR listing_state NOT IN ('complete','excluded'))) FROM scan_run WHERE id=?1",params![run,root],|r|r.get(0))?)
 }
+/// Rows inside an excluded directory, transitively. Its contents were never observed after it
+/// became excluded, so their absence is unknown: neither `retire_pending` nor the EndRun delete
+/// may treat them as gone (invariant 4). Both statements use this same set.
+const SHIELDED: &str = "shielded(id) AS (SELECT id FROM dir WHERE root_id=?1 AND listing_state='excluded' UNION ALL SELECT d.id FROM dir d JOIN shielded s ON d.parent_id=s.id)";
 fn retire_pending(conn: &mut Connection, run: i64) -> Result<()> {
     let root = active_run(conn, run, None)?;
     if !full_traversal(conn, run, root)? {
         return Ok(());
     }
-    retire_selected(conn,"WITH RECURSIVE removed(id) AS (SELECT id FROM dir WHERE root_id=?1 AND listing_state='absent_pending' UNION ALL SELECT d.id FROM dir d JOIN removed x ON d.parent_id=x.id) SELECT o.id FROM st.object_ref o WHERE o.state='resolved' AND o.catalog_instance=(SELECT value FROM meta WHERE key='instance_id') AND ((o.kind='dir' AND o.row_id IN (SELECT id FROM removed)) OR (o.kind='file' AND o.row_id IN (SELECT id FROM file WHERE dir_id IN (SELECT id FROM removed))))",[root])
+    retire_selected(conn,&format!("WITH RECURSIVE {SHIELDED}, removed(id) AS (SELECT id FROM dir WHERE root_id=?1 AND listing_state='absent_pending' AND id NOT IN (SELECT id FROM shielded) UNION ALL SELECT d.id FROM dir d JOIN removed x ON d.parent_id=x.id) SELECT o.id FROM st.object_ref o WHERE o.state='resolved' AND o.catalog_instance=(SELECT value FROM meta WHERE key='instance_id') AND ((o.kind='dir' AND o.row_id IN (SELECT id FROM removed)) OR (o.kind='file' AND o.row_id IN (SELECT id FROM file WHERE dir_id IN (SELECT id FROM removed))))"),[root])
 }
 fn apply(
     conn: &Connection,
@@ -1021,7 +1025,7 @@ fn apply(
             let full = state == "completed" && full_traversal(conn, *run_id, root)?;
             if full {
                 conn.execute(
-                    "DELETE FROM dir WHERE root_id=?1 AND listing_state='absent_pending'",
+                    &format!("WITH RECURSIVE {SHIELDED} DELETE FROM dir WHERE root_id=?1 AND listing_state='absent_pending' AND id NOT IN (SELECT id FROM shielded)"),
                     [root],
                 )?;
                 ctx.parents.clear();
