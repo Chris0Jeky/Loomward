@@ -21,8 +21,10 @@
   import { createGauge, type GaugeTheme } from '../../../viz/gauges.js';
   import Inspector from '../atlas/Inspector.svelte';
   import RegionList from '../atlas/RegionList.svelte';
-  import { SliceNav, canvasLabel, formatApprox, readPalette } from '../atlas/shared.svelte';
+  import { SliceNav, canvasLabel, formatApprox, pathTo, readPalette } from '../atlas/shared.svelte';
+  import LoadError from '../atlas/LoadError.svelte';
   import { Poller } from './poller';
+  import { byteCount, uniqueLabels, vramGiB } from './telemetry';
 
   const nav = new SliceNav({ depth: 4, maxNodes: 2500, minShare: 0 });
   const reducedMQ = matchMedia('(prefers-reduced-motion: reduce)');
@@ -35,6 +37,7 @@
   let live = $state('');
   const shown = $derived(hovered ?? selected);
   const provisional = $derived(nav.slice?.aggregate_state === 'provisional_live');
+  const pathNames = $derived(shown ? pathTo(shown, (id) => sb?.info(id) ?? null, nav.trail.map((c) => c.name)) : []);
 
   // --- telemetry ---------------------------------------------------------------------------
   type TelState = 'waiting' | 'live' | 'unavailable';
@@ -47,6 +50,8 @@
   let gauges: Record<string, ReturnType<typeof createGauge>> = {};
   const sparks = new Map<string, ReturnType<typeof createGauge>>();
   const recentIo: number[] = [];
+  let diskKeys = $state<string[]>([]); // unique per disk even when the engine repeats a label
+  const lastRate = new Map<string, number | null>(); // a new disk's canvas mounts after its first sample: replay it
   let poller: Poller<{ result: TelemetrySample; meta: ResponseMeta }> | null = null;
 
   function gaugeTheme(): GaugeTheme {
@@ -56,7 +61,7 @@
     return { track: t('--gauge-track'), value: t('--gauge-value'), glow: t('--gauge-glow'), text: t('--text'), dim: t('--muted'), unknown: t('--unknown'), fontNum: `500 19px ${num}`, fontSmall: `400 10.5px ${num}` };
   }
   const frac = (f: number | null | undefined) => (typeof f === 'number' ? f * 100 : null);
-  const num = (s: string | null | undefined) => (typeof s === 'string' && /^\d+$/.test(s) ? Number(s) : null);
+  const num = byteCount;
   const mbps = (v: number | null) => (v === null ? 'unknown' : `${(v / 1e6).toFixed(v >= 1e8 ? 0 : 1)} MB/s`);
   const rateOf = (d: { read_bytes_per_s: number | null; write_bytes_per_s: number | null }) =>
     d.read_bytes_per_s === null || d.write_bytes_per_s === null ? null : d.read_bytes_per_s + d.write_bytes_per_s;
@@ -72,9 +77,9 @@
     const gpu = s.gpu?.adapters[0];
     gauges.cpu?.push(frac(s.system?.cpu.busy_fraction));
     gauges.gpu?.push(frac(gpu?.engine_busy_fraction));
-    const used = num(gpu?.dedicated_used_bytes), total = num(gpu?.dedicated_total_bytes);
-    if (total !== null && total > 0) gauges.vram?.setRange(0, total / 2 ** 30);
-    gauges.vram?.push(used === null || total === null ? null : used / 2 ** 30); // no total, no scale: unknown
+    const vram = vramGiB(gpu?.dedicated_used_bytes, gpu?.dedicated_total_bytes);
+    if (vram.totalGiB !== null) gauges.vram?.setRange(0, vram.totalGiB);
+    gauges.vram?.push(vram.value); // no total (or a total of 0), no scale: unknown
     const disks = s.disks?.disks ?? [];
     const rates = disks.map(rateOf);
     const sum = rates.length && rates.every((r) => r !== null) ? (rates as number[]).reduce((a, b) => a + b, 0) / 1e6 : null;
@@ -84,7 +89,9 @@
       gauges.io?.setRange(0, ioScale);
     }
     gauges.io?.push(sum);
-    disks.forEach((d, i) => { const r = rates[i] ?? null; sparks.get(d.disk_label)?.push(r === null ? null : r / 1e6); });
+    diskKeys = uniqueLabels(disks.map((d) => d.disk_label));
+    lastRate.clear();
+    diskKeys.forEach((k, i) => { const r = rates[i] ?? null, mb = r === null ? null : r / 1e6; lastRate.set(k, mb); sparks.get(k)?.push(mb); });
   }
 
   function fail(e: unknown) {
@@ -95,13 +102,15 @@
     for (const g of Object.values(gauges)) g.push(null);
     for (const g of sparks.values()) g.clear();
     recentIo.length = 0;
+    lastRate.clear();
   }
 
-  /** Svelte action: a sparkline per disk, keyed by the disk's own label. */
-  function sparkline(node: HTMLCanvasElement, label: string) {
+  /** Svelte action: a sparkline per disk, keyed by the disk's unique key (its label, marked when repeated). */
+  function sparkline(node: HTMLCanvasElement, key: string) {
     const g = createGauge(node, { kind: 'spark', unit: 'MB/s', theme: gaugeTheme() });
-    sparks.set(label, g);
-    return { destroy() { g.destroy(); sparks.delete(label); } };
+    sparks.set(key, g);
+    if (lastRate.has(key)) g.push(lastRate.get(key) ?? null);
+    return { destroy() { g.destroy(); sparks.delete(key); } };
   }
 
   const memory = $derived.by(() => {
@@ -150,10 +159,14 @@
     };
   });
 
-  // A new session (or stale data) restarts the slice and pokes the poller out of any backoff.
+  // A new session (or stale data) restarts the slice. A stream event during an outage must not defeat the
+  // telemetry backoff (kick(true) holds it); only a fresh connection forgets it.
   $effect(() => {
     void session.epoch;
-    if (session.client) untrack(() => { void nav.start(); poller?.kick(); });
+    if (session.client) untrack(() => { void nav.start(); poller?.kick(true); });
+  });
+  $effect(() => {
+    if (session.state === 'connected') untrack(() => poller?.kick());
   });
   $effect(() => {
     const s = nav.slice;
@@ -207,7 +220,7 @@
   </div>
 </div>
 
-{#if nav.error}<p class="bad" role="alert">Could not load this view: {nav.error} Nothing is drawn until a load succeeds.</p>{/if}
+<LoadError {nav} />
 
 <div class="stage">
   <section class="orbit" aria-label="Sunburst">
@@ -248,10 +261,10 @@
         <figure><figcaption>Disk I/O <span class="scale num">0–{ioScale >= 1000 ? `${ioScale / 1000}k` : ioScale}</span></figcaption><canvas bind:this={gaugeEls.io} aria-label={`Disk read plus write rate, scale 0 to ${ioScale} MB/s`}></canvas></figure>
       </div>
       <div class="disks">
-        {#each tel?.disks?.disks ?? [] as d (d.disk_label)}
+        {#each tel?.disks?.disks ?? [] as d, i (diskKeys[i] ?? i)}
           <div class="disk">
-            <span class="dl"><VisibleName name={d.disk_label} /></span>
-            <canvas use:sparkline={d.disk_label} aria-hidden="true"></canvas>
+            <span class="dl"><VisibleName name={diskKeys[i] ?? d.disk_label} /></span>
+            <canvas use:sparkline={diskKeys[i] ?? String(i)} aria-hidden="true"></canvas>
             <span class="dv num">r {mbps(d.read_bytes_per_s)} · w {mbps(d.write_bytes_per_s)}</span>
           </div>
         {/each}
@@ -272,7 +285,7 @@
       <p class="fine">Read-only. There is no memory cleaner, trim or kill control here, by design. Available already includes the standby cache.</p>
     </section>
 
-    <Inspector node={shown} status={hovered ? 'Hover' : selected ? 'Selected' : 'Nothing selected'} basis={nav.basis} {provisional} {palette} path={nav.trail.map((c) => c.name)} />
+    <Inspector node={shown} status={hovered ? 'Hover' : selected ? 'Selected' : 'Nothing selected'} basis={nav.basis} {provisional} {palette} path={pathNames} />
   </div>
 </div>
 
@@ -288,7 +301,6 @@
   .seg { display: inline-flex; padding: 2px; border: 1px solid var(--line); border-radius: 999px; }
   .seg button { font: inherit; font-size: 0.85rem; border: 0; background: none; color: var(--muted); padding: 4px 12px; border-radius: 999px; cursor: pointer; }
   .seg button[aria-checked='true'] { background: var(--raised); color: var(--text); box-shadow: inset 0 0 0 1px var(--line-strong); }
-  .bad { color: var(--danger); }
   .warn { color: var(--warn); }
   .stage { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 380px); gap: 24px; margin-top: 12px; }
   .orbit { min-width: 0; }

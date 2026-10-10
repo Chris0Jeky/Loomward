@@ -154,6 +154,20 @@ def run(ctx) -> dict:
     expect(crumbs(page)).to_have_count(before)
     print('PASS atlas mouse drill and breadcrumb back')
 
+    # --- inspector path: every ancestor of a deep hover is listed (#141) ----------------------------
+    box = canvas.bounding_box()
+    trail = crumbs(page).all_inner_texts()
+    deepest: list[str] = []
+    for gy in range(1, 12):
+        for gx in range(1, 16):
+            page.mouse.move(box['x'] + box['width'] * gx / 16, box['y'] + box['height'] * gy / 12)
+            parts = page.locator('main aside.inspector .path bdi').all_inner_texts()
+            if len(parts) > len(deepest):
+                deepest = parts
+    check(len(deepest) >= len(trail) + 2, f'inspector path of a depth-2 hover lists the intermediate directory: {deepest}')
+    check(deepest[:len(trail)] == trail, 'inspector path starts with the trail')
+    page.mouse.move(0, 0)
+
     # --- text equivalent and hostile names -------------------------------------------------------
     page.locator('main details.as-text summary').click()
     page.locator('main details.as-text button', has_text='Synthetic Alpha').click()

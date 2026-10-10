@@ -3,7 +3,7 @@ import { formatBytes } from '../../lib/format/bytes';
 import { escapedName } from '../../lib/format/names';
 import { session } from '../../lib/stores/session.svelte';
 import type { Anchor, Basis, TreeSlice } from '../../lib/types';
-import type { Palette } from '../../../viz/types.js';
+import type { NodeInfo, Palette } from '../../../viz/types.js';
 
 /** Read the viz palette from the CSS tokens of the current theme (styles/tokens.css is the only source). */
 export function readPalette(): Palette {
@@ -31,6 +31,17 @@ export const canvasLabel = (name: string) => escapedName(name);
 
 /** Byte label for a lossy layout number (exact strings are shown wherever the slice has them). */
 export const formatApprox = (n: number) => formatBytes(String(Math.max(0, Math.round(n))));
+
+/**
+ * Names from the start of the trail to `node`, every directory between the slice anchor and a deep
+ * descendant included. Parent links come from the renderer's `info`; the slice root is the last crumb
+ * (it keeps the crumb's label, e.g. "All roots"), so it is not repeated.
+ */
+export function pathTo(node: NodeInfo, info: (id: string) => NodeInfo | null, trail: string[]): string[] {
+  const below: string[] = [];
+  for (let n: NodeInfo | null = node; n?.parentId; n = info(n.parentId)) below.push(n.name);
+  return [...trail, ...below.reverse()];
+}
 
 export interface Crumb { id: string; name: string; anchor: Anchor }
 
@@ -81,7 +92,8 @@ export class SliceNav {
     }
   }
 
-  load(): Promise<boolean> { return this.go(this.trail); }
+  /** Retry the current view; with no trail yet (the first load failed) that is the start. */
+  load(): Promise<boolean> { return this.trail.length ? this.go(this.trail) : this.start(); }
   start(): Promise<boolean> { return this.go([{ id: 'atlas', name: 'All roots', anchor: { kind: 'atlas' } }]); }
   drill(id: string, name: string): Promise<boolean> {
     if (this.here?.id === id) return Promise.resolve(true);
