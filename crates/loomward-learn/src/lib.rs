@@ -1,6 +1,7 @@
 //! Weighted multinomial Naive Bayes student, ported from `python/loomward/learning.py` (ADR-V3-09).
 //! Python stays the oracle: fixtures in `fixtures/learning-v3/` pin tokens, abstention and model IDs.
 //! Scores are relative and uncalibrated; nothing here authorises a file or process effect.
+#![forbid(unsafe_code)]
 
 use std::fmt;
 

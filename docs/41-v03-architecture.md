@@ -140,8 +140,14 @@ flowchart TB
 ```
 
 Dependencies point one way: adapters to service to engine to leaves. Leaves (`core`, `learn`, `windows`,
-`telemetry`) never depend on the engine. Win32 calls and `unsafe` live only in `loomward-windows` and
-`loomward-telemetry`; every other crate keeps `#![forbid(unsafe_code)]`.
+`telemetry`) never depend on the engine. Win32 calls and `unsafe` live only in the platform crates
+`loomward-windows`, `loomward-telemetry`, `loomward-apps` and `loomward-shell`, plus two narrow Windows
+helpers in `loomward-http` (exclusive port binding, static-file handle paths) and the Windows generator and benchmark code in
+`loomward-lab`, and in the desktop shell (`native/`: console attach and the disclosure message box). The library
+crates `core`, `engine`, `catalog`, `service`, `protocol`, `learn` and `cli` keep `#![forbid(unsafe_code)]`;
+the attribute covers their library code only. This inventory is of production code: test harnesses (for example
+`native/tests/desktop.rs` window automation) and benchmark examples (for example `crates/loomward-catalog/examples/bench.rs`)
+also call Win32 through `unsafe`.
 
 | Crate | Responsibility | Key modules | Must not |
 |---|---|---|---|

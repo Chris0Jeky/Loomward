@@ -162,6 +162,16 @@ pub(crate) fn open_relative_mode(
     share: u32,
     asynchronous: bool,
 ) -> Result<File, SourceError> {
+    open_relative_with_attributes(parent, name, access, share, asynchronous, 0)
+}
+fn open_relative_with_attributes(
+    parent: &File,
+    name: &[u16],
+    access: u32,
+    share: u32,
+    asynchronous: bool,
+    object_attributes: u32,
+) -> Result<File, SourceError> {
     non_elevated()?;
     checked_child(name)?;
     let mut name = name.to_vec();
@@ -174,7 +184,7 @@ pub(crate) fn open_relative_mode(
         Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
         RootDirectory: parent.as_raw_handle(),
         ObjectName: &unicode as *const _ as *mut _,
-        Attributes: 0,
+        Attributes: object_attributes,
         SecurityDescriptor: null_mut(),
         SecurityQualityOfService: null_mut(),
     };
@@ -212,6 +222,108 @@ fn directory_attributes(file: &File) -> Result<FILE_ATTRIBUTE_TAG_INFO, SourceEr
     let attr: FILE_ATTRIBUTE_TAG_INFO =
         information(file.as_raw_handle(), FileAttributeTagInfo).ok_or_else(last_error)?;
     validate_directory_attributes(attr)
+}
+
+fn readonly_error(error: SourceError) -> std::io::Error {
+    match error {
+        SourceError::Io(code) => std::io::Error::from_raw_os_error(if code < 0 {
+            (unsafe { RtlNtStatusToDosError(code) }) as i32
+        } else {
+            code
+        }),
+        SourceError::AccessDenied => std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "non-elevated guarded access required",
+        ),
+        _ => std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "placeholder, offline, reparse or invalid path refused",
+        ),
+    }
+}
+
+/// Open a local directory by a non-elevated, no-recall, no-follow handle walk.
+/// Ancestor handles bind subsequent opens; attribute-only handles do not prevent renames.
+pub fn open_readonly_directory(path: &Path) -> std::io::Result<File> {
+    let mut pins = root_handles(path, FILE_READ_ATTRIBUTES | SYNCHRONIZE, FILE_SHARE_READ)
+        .map_err(readonly_error)?;
+    Ok(pins.pop().unwrap())
+}
+
+/// Open user-supplied shortcut path text for metadata only; no reparse following or recall.
+pub fn open_metadata_child(parent: &File, name: &[u16]) -> std::io::Result<File> {
+    open_readonly_child(parent, name, false)
+}
+
+pub(crate) fn open_readonly_child(
+    parent: &File,
+    name: &[u16],
+    contents: bool,
+) -> std::io::Result<File> {
+    directory_attributes(parent).map_err(readonly_error)?;
+    let file = open_relative_with_attributes(
+        parent,
+        name,
+        FILE_READ_ATTRIBUTES | SYNCHRONIZE | if contents { FILE_READ_DATA } else { 0 },
+        FILE_SHARE_READ | FILE_SHARE_DELETE,
+        false,
+        OBJ_CASE_INSENSITIVE,
+    )
+    .map_err(readonly_error)?;
+    if unsafe { GetFileType(file.as_raw_handle()) } != FILE_TYPE_DISK {
+        return Err(readonly_error(SourceError::Refused));
+    }
+    let attr: FILE_ATTRIBUTE_TAG_INFO = information(file.as_raw_handle(), FileAttributeTagInfo)
+        .ok_or_else(|| readonly_error(last_error()))?;
+    if refused_attributes(attr.FileAttributes) {
+        return Err(readonly_error(SourceError::Refused));
+    }
+    Ok(file)
+}
+
+/// Read at most `cap` bytes from one regular, no-recall, no-follow shortcut child.
+#[cfg(feature = "shortcut-read")]
+pub fn read_capped_regular_file(
+    parent: &File,
+    name: &[u16],
+    cap: usize,
+) -> std::io::Result<Vec<u8>> {
+    read_capped_regular_file_with(parent, name, cap, || {})
+}
+
+#[cfg(feature = "shortcut-read")]
+fn read_capped_regular_file_with(
+    parent: &File,
+    name: &[u16],
+    cap: usize,
+    after_open: impl FnOnce(),
+) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let limit = cap
+        .checked_add(1)
+        .ok_or_else(|| readonly_error(SourceError::Refused))?;
+    let file = open_readonly_child(parent, name, true)?;
+    let attr: FILE_ATTRIBUTE_TAG_INFO = information(file.as_raw_handle(), FileAttributeTagInfo)
+        .ok_or_else(|| readonly_error(last_error()))?;
+    if attr.FileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+        return Err(readonly_error(SourceError::Refused));
+    }
+    if file.metadata()?.len() > cap as u64 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "file size exceeds cap",
+        ));
+    }
+    after_open();
+    let mut bytes = Vec::new();
+    file.take(limit as u64).read_to_end(&mut bytes)?;
+    if bytes.len() > cap {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "file size exceeds cap",
+        ));
+    }
+    Ok(bytes)
 }
 fn validate_directory_attributes(
     attr: FILE_ATTRIBUTE_TAG_INFO,
@@ -831,6 +943,86 @@ mod cancellation_tests {
             }
         }
     }
+    #[test]
+    fn shortcut_opens_ignore_case_and_listing_opens_stay_exact() {
+        let source = include_str!("native.rs").replace("\r\n", "\n");
+        let source = source
+            .split("#[cfg(test)]\nmod cancellation_tests")
+            .next()
+            .unwrap();
+        assert!(source.contains(
+            "open_relative_with_attributes(parent, name, access, share, asynchronous, 0)"
+        ));
+        assert!(source.contains(
+            "FILE_SHARE_READ | FILE_SHARE_DELETE,\n        false,\n        OBJ_CASE_INSENSITIVE,"
+        ));
+        assert!(source.contains("Attributes: object_attributes,"));
+    }
+
+    #[cfg(feature = "shortcut-read")]
+    fn shortcut_fixture() -> (tempfile::TempDir, File, Vec<u16>) {
+        use std::{fs::OpenOptions, os::windows::fs::OpenOptionsExt};
+        let temp = super::super::tests::canonical_tempdir();
+        std::fs::write(temp.path().join("synthetic.lnk"), b"original").unwrap();
+        // Test setup may open metadata while elevated; the APIs under test must refuse it.
+        let parent = OpenOptions::new()
+            .access_mode(FILE_READ_ATTRIBUTES | SYNCHRONIZE)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(temp.path())
+            .unwrap();
+        (temp, parent, "synthetic.lnk".encode_utf16().collect())
+    }
+
+    #[cfg(feature = "shortcut-read")]
+    #[test]
+    fn shortcut_reader_caps_bytes_and_metadata_handles_cannot_read() {
+        use std::io::Read;
+        let (temp, parent, name) = shortcut_fixture();
+        if running_elevated() {
+            assert!(read_capped_regular_file(&parent, &name, 8).is_err());
+            assert!(open_metadata_child(&parent, &name).is_err());
+            return;
+        }
+        let mut metadata = open_metadata_child(&parent, &name).unwrap();
+        assert!(metadata.read(&mut [0; 1]).is_err());
+        assert_eq!(
+            read_capped_regular_file(&parent, &name, 8).unwrap(),
+            b"original"
+        );
+        assert!(read_capped_regular_file(&parent, &name, 7).is_err());
+        assert!(read_capped_regular_file(&parent, &name, 0).is_err());
+        assert!(read_capped_regular_file(&parent, &name, usize::MAX).is_err());
+        std::fs::create_dir(temp.path().join("directory")).unwrap();
+        assert!(read_capped_regular_file(
+            &parent,
+            &"directory".encode_utf16().collect::<Vec<_>>(),
+            8
+        )
+        .is_err());
+    }
+
+    #[cfg(feature = "shortcut-read")]
+    #[test]
+    fn reader_uses_final_pinned_handle_after_leaf_swap() {
+        let (temp, parent, name) = shortcut_fixture();
+        if running_elevated() {
+            assert!(read_capped_regular_file(&parent, &name, 8).is_err());
+            assert!(open_metadata_child(&parent, &name).is_err());
+            return;
+        }
+        let path = temp.path().join("synthetic.lnk");
+        let mut swapped = false;
+        let bytes = read_capped_regular_file_with(&parent, &name, 8, || {
+            std::fs::rename(&path, temp.path().join("moved.lnk")).unwrap();
+            std::fs::write(&path, b"replaced").unwrap();
+            swapped = true;
+        })
+        .unwrap();
+        assert!(swapped);
+        assert_eq!(bytes, b"original");
+    }
+
     fn fixture() -> Option<(tempfile::TempDir, NativeSource, NativeDir)> {
         let temp = super::super::tests::canonical_tempdir();
         let source = NativeSource::with_strategy(Strategy::Find);

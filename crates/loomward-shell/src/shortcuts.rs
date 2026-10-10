@@ -3,6 +3,8 @@ pub const MAX_FILE_BYTES: usize = 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Text {
     Unicode(String),
+    /// Exact UTF-16 when the name contains an unpaired surrogate.
+    Wide(Vec<u16>),
     Ansi(Vec<u8>),
 }
 impl Text {
@@ -223,9 +225,10 @@ fn unicode(b: &[u8]) -> Result<Text, ParseError> {
         .chunks_exact(2)
         .map(|c| u16::from_le_bytes([c[0], c[1]]))
         .collect();
-    String::from_utf16(&units)
-        .map(Text::Unicode)
-        .map_err(|_| ParseError("invalid UTF-16"))
+    Ok(match String::from_utf16(&units) {
+        Ok(text) => Text::Unicode(text),
+        Err(_) => Text::Wide(units),
+    })
 }
 fn terminated(b: &[u8], wide: bool) -> Result<Text, ParseError> {
     if wide {
@@ -540,17 +543,20 @@ pub fn read(path: &Path) -> io::Result<Shortcut> {
 #[cfg(windows)]
 mod native {
     use super::*;
-    use loomward_windows::enumerate::{DirSource, NativeDir, NativeSource};
+    use loomward_windows::enumerate::{
+        open_metadata_child, open_readonly_directory, read_capped_regular_file,
+    };
     use std::{
-        fs::{File, OpenOptions},
-        io::Read,
+        fs::File,
         mem::{size_of, zeroed},
-        os::windows::{fs::OpenOptionsExt, io::AsRawHandle},
+        os::windows::io::AsRawHandle,
         ptr,
     };
     use windows_sys::Win32::{
         Storage::FileSystem::*,
-        System::WindowsProgramming::{DRIVE_NO_ROOT_DIR, DRIVE_REMOTE, DRIVE_UNKNOWN},
+        System::WindowsProgramming::{
+            DRIVE_CDROM, DRIVE_NO_ROOT_DIR, DRIVE_REMOTE, DRIVE_REMOVABLE, DRIVE_UNKNOWN,
+        },
     };
 
     fn wide(s: &str) -> Vec<u16> {
@@ -564,80 +570,67 @@ mod native {
             return VolumeState::Unknown;
         }
         let root = wide(&format!("{drive}:\\"));
-        match unsafe { GetDriveTypeW(root.as_ptr()) } {
-            DRIVE_REMOTE => return VolumeState::Network,
-            DRIVE_NO_ROOT_DIR => return VolumeState::Unavailable,
-            DRIVE_UNKNOWN => return VolumeState::Unknown,
-            _ => {}
-        }
-        let mut serial = 0;
-        if unsafe {
-            GetVolumeInformationW(
-                root.as_ptr(),
-                ptr::null_mut(),
-                0,
-                &mut serial,
-                ptr::null_mut(),
-                ptr::null_mut(),
-                ptr::null_mut(),
-                0,
-            )
-        } == 0
-        {
-            return match io::Error::last_os_error().raw_os_error() {
-                Some(21 | 55 | 1167) => VolumeState::Unavailable,
-                _ => VolumeState::Unknown,
-            };
-        }
-        if expected.is_some_and(|s| s != serial) {
-            VolumeState::Unavailable
-        } else {
-            VolumeState::Available
+        volume_after_type(unsafe { GetDriveTypeW(root.as_ptr()) }, || {
+            let mut serial = 0;
+            if unsafe {
+                GetVolumeInformationW(
+                    root.as_ptr(),
+                    ptr::null_mut(),
+                    0,
+                    &mut serial,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    0,
+                )
+            } == 0
+            {
+                return match io::Error::last_os_error().raw_os_error() {
+                    Some(21 | 55 | 1167) => VolumeState::Unavailable,
+                    _ => VolumeState::Unknown,
+                };
+            }
+            if expected.is_some_and(|s| s != serial) {
+                VolumeState::Unavailable
+            } else {
+                VolumeState::Available
+            }
+        })
+    }
+    fn volume_after_type(kind: u32, probe: impl FnOnce() -> VolumeState) -> VolumeState {
+        match kind {
+            DRIVE_REMOTE => VolumeState::Network,
+            DRIVE_NO_ROOT_DIR => VolumeState::Unavailable,
+            DRIVE_UNKNOWN => VolumeState::Unknown,
+            // Avoid media activation and modal no-disk errors: do not query the volume or target.
+            DRIVE_REMOVABLE | DRIVE_CDROM => VolumeState::Unknown,
+            _ => probe(),
         }
     }
 
-    /// Retain every ancestor and final metadata handle for this read. Attribute-only handles do not
-    /// refuse writes or renames, and components reopen by full path (#248).
-    fn pins(path: &str) -> io::Result<(NativeDir, Vec<File>)> {
+    /// Every child opens relative to the previous handle; path renames cannot redirect the walk.
+    fn pins(path: &str, mut after_open: impl FnMut(usize)) -> io::Result<Vec<File>> {
         let drive = local_drive(path)
             .ok_or_else(|| invalid("only ordinary absolute local paths supported"))?;
         if volume(drive, None) != VolumeState::Available {
             return Err(invalid("local volume unavailable or unknown"));
         }
         let root = format!("{drive}:\\");
-        // Reuse the existing fail-closed token check; a failed elevation query is not permission.
-        let (guard, _) = NativeSource::default()
-            .open_root(Path::new(&root))
-            .map_err(|_| invalid("non-elevated guarded access required"))?;
-        let mut files = Vec::new();
-        let mut current = root;
+        let mut files = vec![open_readonly_directory(Path::new(&root))?];
+        after_open(0);
         let parts: Vec<_> = path[3..].split('\\').filter(|s| !s.is_empty()).collect();
-        for i in 0..=parts.len() {
-            if i > 0 {
-                if !current.ends_with('\\') {
-                    current.push('\\');
-                }
-                current.push_str(parts[i - 1]);
-            }
-            let file = OpenOptions::new()
-                .access_mode(FILE_READ_ATTRIBUTES)
-                .share_mode(FILE_SHARE_READ)
-                .custom_flags(
-                    FILE_FLAG_OPEN_NO_RECALL
-                        | FILE_FLAG_OPEN_REPARSE_POINT
-                        | FILE_FLAG_BACKUP_SEMANTICS,
-                )
-                .open(&current)?;
-            let attrs = attributes(&file)?;
-            if loomward_windows::enumerate::refused_attributes(attrs) {
-                return Err(invalid("placeholder, offline or reparse path refused"));
-            }
-            if i < parts.len() && attrs & FILE_ATTRIBUTE_DIRECTORY == 0 {
+        for (i, part) in parts.iter().enumerate() {
+            let file = open_metadata_child(
+                files.last().unwrap(),
+                &part.encode_utf16().collect::<Vec<_>>(),
+            )?;
+            if i + 1 < parts.len() && attributes(&file)? & FILE_ATTRIBUTE_DIRECTORY == 0 {
                 return Err(invalid("ancestor is not a directory"));
             }
             files.push(file);
+            after_open(i + 1);
         }
-        Ok((guard, files))
+        Ok(files)
     }
     fn attributes(file: &File) -> io::Result<u32> {
         if unsafe { GetFileType(file.as_raw_handle()) } != FILE_TYPE_DISK {
@@ -658,35 +651,42 @@ mod native {
         Ok(info.FileAttributes)
     }
     pub(super) fn metadata(path: &str) -> MetadataState {
-        match pins(path) {
+        match pins(path, |_| {}) {
             Ok(_) => MetadataState::Present,
             Err(e) if matches!(e.raw_os_error(), Some(2 | 3)) => MetadataState::Missing,
             Err(_) => MetadataState::Unknown,
         }
     }
     pub(super) fn read(path: &Path) -> io::Result<Shortcut> {
+        read_with(path, |_| {})
+    }
+    fn read_with(path: &Path, after_open: impl FnMut(usize)) -> io::Result<Shortcut> {
         let text = path
             .to_str()
             .ok_or_else(|| invalid("path is not Unicode"))?;
-        let (_root, pins) = pins(text)?;
-        let metadata = pins.last().unwrap();
-        if attributes(metadata)? & FILE_ATTRIBUTE_DIRECTORY != 0 {
-            return Err(invalid("shortcut is a directory"));
+        local_drive(text).ok_or_else(|| invalid("only ordinary absolute local paths supported"))?;
+        let (parent, name) = text
+            .rsplit_once('\\')
+            .ok_or_else(|| invalid("file name required"))?;
+        if name.is_empty() {
+            return Err(invalid("file name required"));
         }
-        if metadata.metadata()?.len() > MAX_FILE_BYTES as u64 {
-            return Err(invalid("file size exceeds cap"));
-        }
-        let file = OpenOptions::new()
-            .read(true)
-            .share_mode(FILE_SHARE_READ)
-            .custom_flags(FILE_FLAG_OPEN_NO_RECALL | FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(path)?;
-        if loomward_windows::enumerate::refused_attributes(attributes(&file)?) {
-            return Err(invalid("placeholder, offline or reparse file refused"));
-        }
-        let mut bytes = Vec::new();
-        file.take((MAX_FILE_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)?;
+        let parent = if parent.len() == 2 {
+            format!("{parent}\\")
+        } else {
+            parent.to_owned()
+        };
+        let pins = pins(&parent, after_open)?;
+        let bytes = read_capped_regular_file(
+            pins.last().unwrap(),
+            &name.encode_utf16().collect::<Vec<_>>(),
+            MAX_FILE_BYTES,
+        )?;
         parse(&bytes).map_err(|e| invalid(e.0))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        include!("../tests/support/native.rs");
     }
 }
