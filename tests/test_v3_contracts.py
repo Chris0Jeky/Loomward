@@ -30,6 +30,23 @@ class V3ContractTests(unittest.TestCase):
         missing = set(re.findall(r'#/\$defs/([A-Za-z0-9_]+)', text)) - set(self.defs)
         self.assertEqual(missing, set())
 
+    def test_job_counter_fixtures_match_the_schema(self):
+        try:
+            import jsonschema
+        except ImportError:
+            self.skipTest('jsonschema not installed')
+        schema = dict(self.schema, **{'$ref': '#/$defs/Job'})
+        schema.pop('anyOf', None)
+        validator = jsonschema.validators.validator_for(schema)(schema)
+        for path in (V3 / 'examples/commands').glob('*.result.json'):
+            result = json.loads(path.read_text(encoding='utf-8'))
+            jobs = result.get('jobs', [result['job']] if 'job' in result else [])
+            for job in jobs:
+                validator.validate(job)
+        for field in ('seq', 'rev'):
+            invalid = load(f'examples/invalid/job-missing-{field}.json')
+            self.assertFalse(validator.is_valid(invalid['value']))
+
     def test_commands_and_events_name_defined_types(self):
         for kind in ('commands', 'events'):
             for name, spec in self.commands[kind].items():

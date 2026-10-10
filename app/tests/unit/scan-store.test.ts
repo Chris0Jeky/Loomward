@@ -7,7 +7,7 @@ import { createMockTransport } from '../../src/lib/transport/mock';
 import type { Transport } from '../../src/lib/transport/transport';
 
 const job = (state: JobState, over: Partial<Job> = {}): Job => ({
-  job_id: 'jb_1', kind: 'scan', state, root_id: 'rt_a', created_at: '2026-10-10T10:00:00Z', started_at: null, finished_at: null, progress: null, coverage: null, error: null, ...over,
+  job_id: 'jb_1', seq: 1, rev: { queued: 0, running: 1, cancel_requested: 2, completed: 3, failed: 3, cancelled: 3 }[state], kind: 'scan', state, root_id: 'rt_a', created_at: '2026-10-10T10:00:00Z', started_at: null, finished_at: null, progress: null, coverage: null, error: null, ...over,
 });
 const ev = (event: EventEnvelope['event'], data: unknown): EventEnvelope =>
   ({ protocol: 'loomward/3', epoch: 'e1', seq: 1, event, at: '2026-10-10T10:00:00Z', catalog_rev: null, state_rev: null, data } as EventEnvelope);
@@ -37,7 +37,7 @@ describe('the scan store follows the event stream', () => {
     scans.onEvent(ev('job.state', { job: job('running') }));
     const p = { phase: 'done', strategy: 'std_read_dir', examined: 9, indexed_files: 7, indexed_dirs: 2, skipped: 0, failed: 0, logical_bytes: '10', allocated_bytes: null, pending_dirs: 0, writer_queue_depth: 0, entries_per_second: 1, elapsed_ms: 900, limit_hit: false };
     scans.onEvent(ev('scan.progress', { job_id: 'jb_1', root_id: 'rt_a', progress: p }));
-    scans.onEvent(ev('job.state', { job: job('completed', { coverage: 'complete', finished_at: '2026-10-10T10:00:05Z' }) }));
+    scans.onEvent(ev('job.state', { job: job('completed', { coverage: 'complete', progress: p as Job['progress'], finished_at: '2026-10-10T10:00:05Z' }) }));
     expect(scans.view('rt_a', 0)).toMatchObject({ activity: 'completed', elapsedMs: 900 });
     expect(scans.view('rt_a', 0)?.detail).toContain('7 files, 2 folders');
   });
@@ -72,6 +72,14 @@ describe('settling and syncing keep what was known', () => {
   beforeEach(fresh);
   afterEach(() => { session.client = null; });
 
+  it('discards job ordering across engine epochs', () => {
+    scans.onEvent(ev('job.state', { job: job('completed', { seq: 50 }) }));
+    scans.onEvent({ ...ev('stream.hello', {}), epoch: 'restarted_epoch' });
+    expect(scans.book).toEqual({});
+    scans.onEvent({ ...ev('job.state', { job: job('queued', { job_id: 'jb_new', seq: 1 }) }), epoch: 'restarted_epoch' });
+    expect(scans.book.rt_a?.job_id).toBe('jb_new');
+  });
+
   it('surfaces an omitted scan whose state cannot be confirmed, and clears the warning on confirmation', async () => {
     scans.apply(job('running'));
     let confirmed = false;
@@ -93,7 +101,7 @@ describe('settling and syncing keep what was known', () => {
   it('settles when a newer finished scan replaces an older finished one for the same root', () => {
     scans.onEvent(ev('job.state', { job: job('completed', { coverage: 'complete', finished_at: '2026-10-10T10:00:05Z' }) }));
     const settled = scans.settled;
-    scans.onEvent(ev('job.state', { job: job('completed', { job_id: 'jb_2', created_at: '2026-10-10T11:00:00Z', coverage: 'partial', finished_at: '2026-10-10T11:00:05Z' }) }));
+    scans.onEvent(ev('job.state', { job: job('completed', { job_id: 'jb_2', seq: 2, created_at: '2026-10-10T11:00:00Z', coverage: 'partial', finished_at: '2026-10-10T11:00:05Z' }) }));
     expect(scans.view('rt_a', 0)?.activity).toBe('partial');
     expect(scans.settled).toBe(settled + 1);
   });
@@ -192,9 +200,9 @@ describe('against the mock transport', () => {
     const r = await call('scan.start', { root_id: 'rt_mock_10', mode: 'full' });
     expect(r.ok && (r.result as unknown as { job: Job }).job.state).toBe('queued');
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(names()).toEqual(['job:queued', 'job:running', 'scan.progress', 'tree.invalidated', 'job:completed']);
+    expect(names()).toEqual(['job:queued', 'job:running', 'scan.progress', 'job:running', 'tree.invalidated', 'job:completed']);
     const seqs = events.filter((e) => e.event !== 'stream.hello').map((e) => e.seq);
-    expect(seqs).toEqual([1, 2, 3, 4, 5]);
+    expect(seqs).toEqual([1, 2, 3, 4, 5, 6]);
     const list = await call('roots.list', {});
     const root = list.ok && (list.result as unknown as { roots: { root_id: string; scan: { state: string; coverage: string } }[] }).roots.find((x) => x.root_id === 'rt_mock_10');
     expect(root).toMatchObject({ scan: { state: 'complete', coverage: 'complete' } });
@@ -206,6 +214,21 @@ describe('against the mock transport', () => {
     const done = events.filter((e) => e.event === 'job.state').map((e) => (e.data as unknown as { job: Job }).job).at(-1)!;
     expect(done).toMatchObject({ state: 'completed', coverage: 'partial' });
     expect(done.progress?.failed).toBe(4);
+  });
+
+  it('serves engine-like job counters through the composite mock transport', async () => {
+    const c = new Client(transport);
+    const first = (await c.call('scan.start', { root_id: 'rt_mock_10', mode: 'full' })).result.job;
+    const second = (await c.call('scan.start', { root_id: 'rt_mock_11', mode: 'full' })).result.job;
+    expect([first.seq, second.seq]).toEqual([1, 2]);
+    expect(first.rev).toBe(0);
+    await vi.advanceTimersByTimeAsync(10_000);
+    const snapshots = events.filter((e) => e.event === 'job.state').map((e) => (e.data as unknown as { job: Job }).job).filter((j) => j.job_id === first.job_id);
+    expect(snapshots.map((j) => j.rev)).toEqual([0, 1, 2, 3]);
+    expect(snapshots.every((j) => j.seq === first.seq)).toBe(true);
+    expect((await c.call('jobs.get', { job_id: first.job_id })).result.job).toEqual(snapshots.at(-1));
+    expect((await c.call('jobs.list', { limit: 50 })).result.jobs.map((j) => j.seq)).toEqual([2, 1]);
+    expect((await c.call('scan.cancel', { job_id: first.job_id })).result.job.rev).toBe(3);
   });
 
   it('refuses a fixture root with the service\'s reason, and an unknown root as not found', async () => {

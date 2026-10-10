@@ -2,6 +2,8 @@
   "jobs": [
     {
       "job_id": "jb_0008",
+      "seq": 8,
+      "rev": 2,
       "kind": "scan",
       "state": "running",
       "root_id": "rt_synth1",
@@ -29,6 +31,8 @@
     },
     {
       "job_id": "jb_0007",
+      "seq": 7,
+      "rev": 3,
       "kind": "scan",
       "state": "completed",
       "root_id": "rt_synth1",

@@ -121,6 +121,17 @@ Rules:
 
 ## 6. Commit before event, and response ordering
 
+- Every `Job` response and `job.state` snapshot requires unsigned `seq` and `rev` counters
+  (JSON integers in `0..=2^53-1`). The engine registry assigns `seq` at submission, starting at 1,
+  uniquely and increasingly across all job kinds for that engine's lifetime; `jobs.list` is newest first.
+  Each job starts at `rev = 0`; every state or progress change increments it before publication.
+  An unchanged read or repeated cancellation does not increment it. Clients order different jobs by
+  `Job.seq` and accept same-job snapshots only at a higher `Job.rev`, regardless of delivery order.
+  Both counters are engine-local, not durable: they MUST NOT be compared across engine restarts.
+  On an epoch change clients discard retained job ordering and resync. `Job.seq` is distinct from
+  the event envelope's stream `seq`. Missing `rev` in legacy snapshots may use a null-preserving merge.
+  Bare `scan.progress` events have no job revision; revision-aware clients use the progress carried by
+  `job.state` snapshots so a late progress event cannot overwrite a newer revision.
 - A response to a mutation is sent only after its transaction is committed at the durability level of the file
   it wrote (`state.db` `synchronous=FULL`; `catalog.db` `NORMAL`).
 - An event describing a state change is emitted only after the change is committed; `EventEnvelope.catalog_rev`

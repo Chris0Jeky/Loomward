@@ -485,9 +485,11 @@
     "Job": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["job_id", "kind", "state", "root_id", "created_at", "started_at", "finished_at", "progress", "coverage", "error"],
+      "required": ["job_id", "seq", "rev", "kind", "state", "root_id", "created_at", "started_at", "finished_at", "progress", "coverage", "error"],
       "properties": {
         "job_id": { "$ref": "#/$defs/JobId" },
+        "seq": { "$ref": "#/$defs/Count" },
+        "rev": { "$ref": "#/$defs/Count" },
         "kind": { "$ref": "#/$defs/JobKind" },
         "state": { "$ref": "#/$defs/JobState" },
         "root_id": { "anyOf": [{ "$ref": "#/$defs/RootId" }, { "type": "null" }] },

@@ -412,6 +412,8 @@ export interface ScanProgress {
 
 export interface Job {
   job_id: JobId;
+  seq: Count;
+  rev: Count;
   kind: JobKind;
   state: JobState;
   root_id: RootId | null;
