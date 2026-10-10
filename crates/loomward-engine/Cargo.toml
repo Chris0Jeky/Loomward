@@ -8,6 +8,8 @@ description = "Loomward v0.3 engine: jobs, scan, events, telemetry, placement, l
 
 [dependencies]
 loomward-protocol = { path = "../loomward-protocol" }
+loomward-telemetry = { path = "../loomward-telemetry" }
 
 [dev-dependencies]
 serde_json.workspace = true
+jsonschema = { version = "0.58.6", default-features = false }

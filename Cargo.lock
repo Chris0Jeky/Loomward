@@ -529,7 +529,9 @@ dependencies = [
 name = "loomward-engine"
 version = "0.1.0"
 dependencies = [
+ "jsonschema",
  "loomward-protocol",
+ "loomward-telemetry",
  "serde_json",
 ]
 

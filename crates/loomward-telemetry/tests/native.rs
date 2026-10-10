@@ -229,6 +229,9 @@ fn windows_observations_and_rates_have_structural_truths() {
 fn rates_survive_a_process_not_being_displayed_in_the_first_sample() {
     let mut sampler = Sampler::default();
     assert!(sampler.sample(0).processes.is_empty());
+    let own = sampler.own_process().unwrap();
+    assert_eq!(own.pid, std::process::id());
+    assert!(own.private_commit_bytes.unwrap() > 0);
     std::thread::sleep(Duration::from_millis(100));
     let next = sampler.sample(1024);
     let own = next
@@ -237,6 +240,26 @@ fn rates_survive_a_process_not_being_displayed_in_the_first_sample() {
         .find(|p| p.pid == std::process::id())
         .unwrap();
     assert!(own.rates.cpu_fraction.is_some());
+}
+
+#[test]
+fn own_usage_has_structural_truth_or_an_explicit_unsupported_reason() {
+    match loomward_telemetry::own_usage() {
+        Observation::Observed { value } => {
+            assert!(value.cpu_seconds >= 0.0);
+            assert!(value.calling_thread_cpu_seconds >= 0.0);
+            assert!(value.calling_thread_cpu_seconds <= value.cpu_seconds);
+            assert!(value.private_commit_bytes > 0);
+            assert!(value.peak_private_commit_bytes >= value.private_commit_bytes);
+        }
+        Observation::Unsupported { reason } => {
+            #[cfg(windows)]
+            panic!("Windows own usage should be attempted: {reason}");
+            #[cfg(not(windows))]
+            assert!(!reason.is_empty());
+        }
+        Observation::Unknown { reason } => panic!("own usage unavailable: {reason}"),
+    }
 }
 
 #[cfg(not(windows))]
