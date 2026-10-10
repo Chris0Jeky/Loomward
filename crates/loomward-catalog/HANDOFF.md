@@ -553,7 +553,7 @@ pushes before its own guarded cleanup. No worktree removal was attempted.
 
 # L2 catalogue receipt â€” 2026-10-09
 
-Changed: uncommitted work in `C:/Users/jekyt/wt/lw-l2`, branch `feat/l2-catalog`, base and HEAD
+Changed: uncommitted work in the `lw-l2` worktree, branch `feat/l2-catalog`, base and HEAD
 `f4c6f1ae28dd999f6654f9cb18dffdeedf970bf1` (`arch/v03-architecture`). The driver commits.
 Initial worktree was clean. No push, PR, merge, issue, real-disk scan or external application
 action occurred. Network use was Cargo package-registry resolution only.
