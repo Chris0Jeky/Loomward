@@ -143,7 +143,8 @@ impl GrantedRoot {
 }
 impl Engine {
     /// Content equality evidence under a freshly checked active synthetic grant.
-    /// Personal grants remain metadata-only; root revocation cancels pending content reads.
+    /// Personal grants remain metadata-only; root revocation requests content-read cancellation.
+    /// Revocation can return before I/O drains; the final gate refuses a revoked report.
     pub fn inspect_duplicates(
         &self,
         root: &GrantedRoot,
@@ -161,7 +162,7 @@ impl Engine {
         .map_err(|reason| EngineError::PermissionDenied {
             message: reason.as_str().into(),
         })?;
-        // A revoked observation never escapes as equality evidence.
+        // Refuse evidence if revocation is observed at this final gate.
         let gate = self.scan_root_gate(root.root_id());
         let revoked = gate
             .lock()

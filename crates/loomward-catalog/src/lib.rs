@@ -7,6 +7,7 @@
 //! Publications without intents keep NORMAL (ADR-V3-22); no transaction writes both files.
 //! Membership readers accept the confirmed binding or a pending binding whose instance and
 //! token match the published witness, keeping surviving hard links visible before confirmation.
+#![forbid(unsafe_code)]
 use std::path::Path;
 mod db;
 mod model;

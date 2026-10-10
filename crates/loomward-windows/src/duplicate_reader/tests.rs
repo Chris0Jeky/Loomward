@@ -1,6 +1,64 @@
 use super::*;
 
 #[test]
+fn shortcut_reader_is_capped_feature_gated_and_shell_only() {
+    let source = include_str!("../enumerate/native.rs").replace("\r\n", "\n");
+    assert!(!source.contains("pub fn open_readonly_child("));
+    assert!(
+        source.contains("#[cfg(feature = \"shortcut-read\")]\npub fn read_capped_regular_file(")
+    );
+    let exports = include_str!("../enumerate/mod.rs").replace("\r\n", "\n");
+    assert!(exports.contains("#[cfg(all(windows, feature = \"shortcut-read\"))]\npub use native::read_capped_regular_file;"));
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    fn check(path: &Path) {
+        for entry in std::fs::read_dir(path).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                if path.file_name().unwrap() != "target" {
+                    check(&path);
+                }
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                assert!(
+                    !text.contains("read_capped_regular_file")
+                        && !text.contains("loomward_windows::*"),
+                    "shortcut reader reference outside shell: {}",
+                    path.display()
+                );
+            } else if path.file_name().unwrap() == "Cargo.toml" {
+                assert!(
+                    !std::fs::read_to_string(&path)
+                        .unwrap()
+                        .contains("shortcut-read"),
+                    "shortcut-read enabled outside shell: {}",
+                    path.display()
+                );
+            }
+        }
+    }
+    for entry in std::fs::read_dir(workspace.join("crates")).unwrap() {
+        let path = entry.unwrap().path();
+        if !["loomward-shell", "loomward-windows"]
+            .iter()
+            .any(|name| path.ends_with(name))
+        {
+            check(&path);
+        }
+    }
+    check(&workspace.join("native"));
+    assert!(include_str!("../../Cargo.toml").contains("shortcut-read = []"));
+    assert!(
+        std::fs::read_to_string(workspace.join("crates/loomward-shell/Cargo.toml"))
+            .unwrap()
+            .contains("features = [\"shortcut-read\"]")
+    );
+}
+
+#[test]
 fn content_reader_is_feature_gated_and_engine_only() {
     let source = include_str!("../duplicate_reader.rs").replace("\r\n", "\n");
     assert!(source.contains(
@@ -129,7 +187,7 @@ impl ContentReader for Collision {
         right: usize,
         _: &[Entry],
         _: &mut Meter,
-    ) -> Result<bool, Reason> {
+    ) -> Result<bool, Skip> {
         Ok(left != 0 && right != 0)
     }
 }
@@ -188,6 +246,73 @@ fn core_entry_and_time_budgets_are_partial() {
     assert_eq!(report.stop, Some(Reason::ByteBudget));
     assert_eq!(report.bytes_read, 1);
     assert!(report.groups.is_empty());
+}
+
+struct FinalStop {
+    validations: usize,
+    reason: Reason,
+}
+impl ContentReader for FinalStop {
+    fn validate(&mut self, _: usize, _: &Entry, meter: &Meter) -> Result<(), Reason> {
+        meter.check()?;
+        self.validations += 1;
+        if self.validations == 4 {
+            match self.reason {
+                Reason::Cancelled => meter
+                    .cancel
+                    .as_ref()
+                    .unwrap()
+                    .store(true, Ordering::Release),
+                Reason::TimeBudget => std::thread::sleep(
+                    meter.deadline.saturating_duration_since(Instant::now())
+                        + Duration::from_millis(1),
+                ),
+                _ => unreachable!(),
+            }
+        }
+        Ok(())
+    }
+    fn hash(
+        &mut self,
+        index: usize,
+        entry: &Entry,
+        partial: bool,
+        meter: &mut Meter,
+    ) -> Result<[u8; 32], Reason> {
+        Collision.hash(index, entry, partial, meter)
+    }
+    fn equal(&mut self, _: usize, _: usize, _: &[Entry], _: &mut Meter) -> Result<bool, Skip> {
+        Ok(true)
+    }
+}
+fn final_stop_keeps_verified_groups(reason: Reason) {
+    let entries = [synthetic_entry(1, "1", 4), synthetic_entry(2, "1", 4)];
+    let mut meter = Meter::new(Budget {
+        bytes: 100,
+        time: Duration::from_millis(50),
+    });
+    meter.cancel = Some(Default::default());
+    let report = group(
+        &entries,
+        &mut FinalStop {
+            validations: 0,
+            reason,
+        },
+        &mut meter,
+    );
+    assert_eq!(report.groups, vec![vec![0, 1]]);
+    assert!(report.partial);
+    assert_eq!(report.stop, Some(reason));
+    assert!(report.skipped.is_empty());
+    assert_eq!(report.bytes_read, 4);
+}
+#[test]
+fn core_final_deadline_keeps_verified_groups() {
+    final_stop_keeps_verified_groups(Reason::TimeBudget);
+}
+#[test]
+fn core_final_cancel_keeps_verified_groups() {
+    final_stop_keeps_verified_groups(Reason::Cancelled);
 }
 
 #[cfg(windows)]
@@ -314,7 +439,7 @@ mod native {
         assert_eq!(r.bytes_read, 10 * 64 * 1024);
     }
     #[test]
-    fn native_final_validation_drops_an_earlier_equal_pair() {
+    fn native_changed_representative_keeps_remaining_equal_pair() {
         let Some(temp) = fixture() else { return };
         for n in ["a", "b", "c"] {
             fs::write(temp.path().join(n), b"same").unwrap();
@@ -336,11 +461,182 @@ mod native {
             },
         )
         .unwrap();
-        assert!(r.groups.is_empty());
-        assert!(r
-            .skipped
-            .iter()
-            .any(|s| s.entry == 0 && s.reason == Reason::ChangedDuringRead));
+        assert_eq!(r.groups, vec![vec![1, 2]]);
+        assert!(r.partial);
+        assert_eq!(r.skipped.len(), 1);
+        assert_eq!(r.skipped[0].entry, 0);
+        assert_eq!(r.skipped[0].reason, Reason::ChangedDuringRead);
+    }
+    #[test]
+    fn native_final_validation_drops_changed_member() {
+        let Some(temp) = fixture() else { return };
+        for name in ["a", "b", "c"] {
+            fs::write(temp.path().join(name), b"same").unwrap();
+        }
+        let entries = ["a", "b", "c"].map(|name| entry(temp.path(), name));
+        let report = inspect_with_hook(
+            temp.path(),
+            &root_id(temp.path()),
+            &entries,
+            Budget::test(),
+            |event, index| {
+                if event == Event::Compare && index == 2 {
+                    fs::write(temp.path().join("b"), b"changed").unwrap();
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(report.groups, vec![vec![0, 2]]);
+        assert!(report.partial);
+        assert_eq!(report.skipped.len(), 1);
+        assert_eq!(report.skipped[0].entry, 1);
+        assert_eq!(report.skipped[0].reason, Reason::ChangedDuringRead);
+    }
+    #[test]
+    fn native_sharing_failed_representative_keeps_remaining_equal_pair() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let Some(temp) = fixture() else { return };
+        for name in ["a", "b", "c"] {
+            fs::write(temp.path().join(name), b"same").unwrap();
+        }
+        let entries = ["a", "b", "c"].map(|name| entry(temp.path(), name));
+        let mut exclusive = None;
+        let report = inspect_with_hook(
+            temp.path(),
+            &root_id(temp.path()),
+            &entries,
+            Budget::test(),
+            |event, index| {
+                if event == Event::Compare && index == 1 {
+                    exclusive = Some(
+                        fs::OpenOptions::new()
+                            .read(true)
+                            .share_mode(0)
+                            .open(temp.path().join("a"))
+                            .unwrap(),
+                    );
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(report.groups, vec![vec![1, 2]]);
+        assert!(report.partial);
+        assert_eq!(report.skipped.len(), 1);
+        assert_eq!(report.skipped[0].entry, 0);
+        assert_eq!(report.skipped[0].reason, Reason::SharingViolation);
+    }
+    #[test]
+    fn native_changed_candidate_keeps_representative() {
+        let Some(temp) = fixture() else { return };
+        for name in ["a", "b", "c"] {
+            fs::write(temp.path().join(name), b"same").unwrap();
+        }
+        let entries = ["a", "b", "c"].map(|name| entry(temp.path(), name));
+        let report = inspect_with_hook(
+            temp.path(),
+            &root_id(temp.path()),
+            &entries,
+            Budget::test(),
+            |event, index| {
+                if event == Event::Compare && index == 1 {
+                    fs::write(temp.path().join("b"), b"changed").unwrap();
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(report.groups, vec![vec![0, 2]]);
+        assert!(report.partial);
+        assert_eq!(report.skipped.len(), 1);
+        assert_eq!(report.skipped[0].entry, 1);
+        assert_eq!(report.skipped[0].reason, Reason::ChangedDuringRead);
+    }
+    #[test]
+    fn native_compare_finish_attributes_failure_to_its_operand() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let Some(temp) = fixture() else { return };
+        for failed in [0, 1] {
+            for name in ["a", "b", "c"] {
+                fs::write(temp.path().join(name), b"same").unwrap();
+            }
+            let entries = ["a", "b", "c"].map(|name| entry(temp.path(), name));
+            let mut comparing = false;
+            let mut changed = false;
+            let report = inspect_with_hook(
+                temp.path(),
+                &root_id(temp.path()),
+                &entries,
+                Budget::test(),
+                |event, index| {
+                    if event == Event::Compare {
+                        comparing = true;
+                    }
+                    if comparing && !changed && event == Event::Read && index == failed {
+                        let file = fs::OpenOptions::new()
+                            .access_mode(
+                                windows_sys::Win32::Storage::FileSystem::FILE_WRITE_ATTRIBUTES,
+                            )
+                            .open(temp.path().join(&entries[failed].relative))
+                            .unwrap();
+                        file.set_times(fs::FileTimes::new().set_modified(
+                            std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1),
+                        ))
+                        .unwrap();
+                        changed = true;
+                    }
+                },
+            )
+            .unwrap();
+            assert!(changed);
+            assert_eq!(
+                report.groups,
+                vec![if failed == 0 { vec![1, 2] } else { vec![0, 2] }]
+            );
+            assert!(report.partial);
+            assert_eq!(report.skipped.len(), 1);
+            assert_eq!(report.skipped[0].entry, failed);
+            assert_eq!(report.skipped[0].reason, Reason::ChangedDuringRead);
+        }
+    }
+    #[test]
+    fn native_stop_keeps_earlier_verified_group_and_later_input_unknown() {
+        let Some(temp) = fixture() else { return };
+        for (name, bytes) in [
+            ("a", b"same".as_slice()),
+            ("b", b"same"),
+            ("c", b"longer"),
+            ("d", b"longer"),
+        ] {
+            fs::write(temp.path().join(name), bytes).unwrap();
+        }
+        let entries = ["a", "b", "c", "d"].map(|name| entry(temp.path(), name));
+        for reason in [Reason::Cancelled, Reason::TimeBudget] {
+            let cancel = Arc::new(AtomicBool::new(false));
+            let report = inspect_with_cancel_hook(
+                temp.path(),
+                &root_id(temp.path()),
+                &entries,
+                Budget {
+                    bytes: 100,
+                    time: Duration::from_millis(100),
+                },
+                cancel.clone(),
+                |event, index| {
+                    if event == Event::Compare && index == 3 {
+                        if reason == Reason::Cancelled {
+                            cancel.store(true, Ordering::Release);
+                        } else {
+                            std::thread::sleep(Duration::from_millis(110));
+                        }
+                    }
+                },
+            )
+            .unwrap();
+            assert_eq!(report.groups, vec![vec![0, 1]]);
+            assert!(report.partial);
+            assert_eq!(report.stop, Some(reason));
+            assert!(report.skipped.iter().all(|s| s.entry >= 2));
+            assert_eq!(report.bytes_read, 48);
+        }
     }
     #[test]
     fn native_sharing_violation_visible() {

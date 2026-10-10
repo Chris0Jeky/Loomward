@@ -5,6 +5,7 @@
 //! adapters call, and a DTO for every `$def`. Deserialising validates, so a handler only
 //! ever sees in-bounds values. A schema match is never permission: the service
 //! re-validates scope, grants and bounds.
+#![forbid(unsafe_code)]
 
 pub mod command;
 pub mod dto;

@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-loomward-windows = { path = "../loomward-windows" }
+loomward-windows = { path = "../loomward-windows", features = ["shortcut-read"] }
 windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_System_Com", "Win32_Storage_FileSystem", "Win32_System_WindowsProgramming"] }
 
 [dev-dependencies]

@@ -315,31 +315,47 @@ impl<F: FnMut(Event, usize)> ContentReader for Reader<F> {
         right: usize,
         entries: &[Entry],
         meter: &mut Meter,
-    ) -> Result<bool, Reason> {
+    ) -> Result<bool, Skip> {
         (self.hook)(Event::Compare, right);
-        let a = self.open(&entries[left], true, meter)?;
-        let b = self.open(&entries[right], true, meter)?;
+        let failed_left = |reason| Skip {
+            entry: left,
+            reason,
+        };
+        let failed_right = |reason| Skip {
+            entry: right,
+            reason,
+        };
+        let a = self
+            .open(&entries[left], true, meter)
+            .map_err(failed_left)?;
+        let b = self
+            .open(&entries[right], true, meter)
+            .map_err(failed_right)?;
         let size = entries[left]
             .expected
             .size
             .parse::<u64>()
-            .map_err(|_| Reason::Unsupported)?;
+            .map_err(|_| failed_left(Reason::Unsupported))?;
         let mut offset = 0;
         let mut buffers = [vec![0; BLOCK], vec![0; BLOCK]];
         let mut equal = true;
         while offset < size {
             let count = (size - offset).min(BLOCK as u64) as usize;
-            meter.reserve(2 * count as u64)?;
-            self.read(left, &a.file, offset, &mut buffers[0][..count], meter)?;
-            self.read(right, &b.file, offset, &mut buffers[1][..count], meter)?;
+            meter.reserve(2 * count as u64).map_err(failed_right)?;
+            self.read(left, &a.file, offset, &mut buffers[0][..count], meter)
+                .map_err(failed_left)?;
+            self.read(right, &b.file, offset, &mut buffers[1][..count], meter)
+                .map_err(failed_right)?;
             if buffers[0][..count] != buffers[1][..count] {
                 equal = false;
                 break;
             }
             offset += count as u64;
         }
-        self.finish(&a, &entries[left], meter)?;
-        self.finish(&b, &entries[right], meter)?;
+        self.finish(&a, &entries[left], meter)
+            .map_err(failed_left)?;
+        self.finish(&b, &entries[right], meter)
+            .map_err(failed_right)?;
         Ok(equal)
     }
 }

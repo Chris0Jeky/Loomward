@@ -10,6 +10,8 @@ license.workspace = true
 fixtures = []
 # Internal content-read boundary: only loomward-engine enables this in the workspace.
 content-read = []
+# Capped shortcut bytes: only loomward-shell enables this in the workspace.
+shortcut-read = []
 
 [dependencies]
 serde.workspace = true
