@@ -1,4 +1,5 @@
 //! Read-only native observations. Identity is never an operation grant.
+#[cfg(any(feature = "content-read", test))]
 pub mod duplicate_reader;
 pub mod enumerate;
 pub mod identity;

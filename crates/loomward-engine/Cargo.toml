@@ -14,7 +14,7 @@ lab = []
 loomward-protocol = { path = "../loomward-protocol" }
 loomward-core = { path = "../loomward-core" }
 loomward-telemetry = { path = "../loomward-telemetry" }
-loomward-windows = { path = "../loomward-windows" }
+loomward-windows = { path = "../loomward-windows", features = ["content-read"] }
 serde_json.workspace = true
 sha2.workspace = true
 getrandom = "0.4"
