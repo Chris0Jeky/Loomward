@@ -21,7 +21,8 @@ Research prototype, not a file manager or system optimiser.
   - `loomward-windows`: non-elevated native enumeration (no-recall opens, reparse and offline
     refusal) and guarded `ReadDirectoryChangesW` change watchers;
   - `loomward-engine`: the scan pipeline (identity dedupe, dirty-epoch relists, honest partials),
-    change-tracked reconciliation, jobs and events, engine telemetry leases, and placement
+    change-tracked reconciliation (in the engine, not yet reachable from the app), jobs and events,
+    engine telemetry leases, and placement
     *simulation*;
   - `loomward-catalog`: the durable SQLite catalogue (crash-safe reference retirement; about 53k
     rows/s inserted at 1M rows);
