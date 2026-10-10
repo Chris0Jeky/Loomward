@@ -36,6 +36,8 @@ a { color: var(--accent); }
 code, .mono { font-family: var(--font-mono); font-size: 0.92em; }
 .num { font-family: var(--num-font); font-variant-numeric: tabular-nums; }
 .muted { color: var(--muted); }
+/* a live region that stays in the page: no gap while it is empty */
+.live:not(.has) { margin: 0; }
 .sr-only {
   position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
 }
@@ -53,14 +55,14 @@ code, .mono { font-family: var(--font-mono); font-size: 0.92em; }
   font: inherit;
   color: var(--text);
   background: var(--raised);
-  border: 1px solid var(--line);
+  border: 1px solid var(--control-line);
   border-radius: var(--radius);
   padding: 6px 12px;
   cursor: pointer;
   transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
 }
 .btn:hover:not(:disabled) { border-color: var(--accent); }
-.btn:disabled { opacity: 0.5; cursor: default; }
+.btn:disabled, .btn[aria-disabled='true'] { opacity: 0.5; cursor: default; }
 .btn[aria-pressed='true'], .btn[aria-current='true'] {
   background: var(--accent);
   color: var(--accent-ink);
@@ -70,7 +72,7 @@ input[type='search'], input[type='text'], select {
   font: inherit;
   color: var(--text);
   background: var(--bg);
-  border: 1px solid var(--line);
+  border: 1px solid var(--control-line);
   border-radius: var(--radius);
   padding: 6px 10px;
 }
@@ -81,7 +83,9 @@ table.tbl { width: 100%; border-collapse: collapse; }
 .tbl th { color: var(--muted); font-weight: 600; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.06em; }
 .tbl td.r, .tbl th.r { text-align: right; }
 .tbl td.r, .tbl td.nowrap { white-space: nowrap; }
-.tbl td:first-child { min-width: 11rem; }
+.tbl td:first-child, .tbl th[scope='row'] { min-width: 11rem; }
+/* a row header names its row: it reads as the cell it replaced, not as a column heading */
+.tbl th[scope='row'] { color: var(--text); font-weight: 400; font-size: inherit; text-transform: none; letter-spacing: 0; }
 .tbl bdi { overflow-wrap: anywhere; }
 
 .tag {
@@ -99,3 +103,9 @@ table.tbl { width: 100%; border-collapse: collapse; }
 @media (forced-colors: active) {
   .btn[aria-pressed='true'], .btn[aria-current='true'] { outline: 2px solid Highlight; }
 }
+/* an input's placeholder is a hint, not the label, and must still read: same contrast as muted text */
+::placeholder { color: var(--muted); opacity: 1; }
+/* WCAG 2.5.8: targets of at least 24 px (a checkbox's label is its target) */
+button { min-height: 24px; min-width: 24px; }
+select, input:not([type='checkbox']):not([type='radio']) { min-height: 24px; }
+label:has(input[type='checkbox']) { min-height: 24px; }

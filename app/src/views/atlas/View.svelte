@@ -12,7 +12,8 @@
   import { createWovenTreemap, drawSwatch } from '../../../viz/woven-treemap.js';
   import Inspector from './Inspector.svelte';
   import RegionList from './RegionList.svelte';
-  import { SliceNav, canvasLabel, formatApprox, pathTo, readPalette } from './shared.svelte';
+  import { SliceNav, announceSlice, canvasLabel, describeNode, describeSize, formatApprox, pathTo, readPalette, type SliceKey } from './shared.svelte';
+  import { Say } from '../../lib/ui/say.svelte';
   import LoadError from './LoadError.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
 
@@ -25,15 +26,16 @@
   let palette = $state(readPalette());
   let hovered = $state<NodeInfo | null>(null);
   let selected = $state<NodeInfo | null>(null);
-  let live = $state('');
+  const say = new Say();
   let tip = $state<{ x: number; y: number; name: string; sub: string } | null>(null);
   let show = $state<ThreadToggles>({ meaning: true, residency: true, permission: true });
   let revealed = false;
+  let shownKey: SliceKey | null = null; // what the last "Showing ..." announced: a refetch of the same view stays silent
   let well = $state<HTMLDivElement>();
 
   const shown = $derived(hovered ?? selected);
   const provisional = $derived(nav.slice?.aggregate_state === 'provisional_live');
-  const pathNames = $derived(shown ? pathTo(shown, (id) => tm?.info(id) ?? null, nav.trail.map((c) => c.name)) : []);
+  const pathNames = $derived(shown ? pathTo(shown, nav.slice, nav.trail.map((c) => c.name)) : []);
 
   onMount(() => {
     if (!canvas) return;
@@ -42,15 +44,20 @@
     const off = [
       t.on('hover', (e: { node: NodeInfo | null; clientX: number; clientY: number; viaKeyboard: boolean }) => {
         hovered = e.node;
-        if (e.node && e.viaKeyboard) live = describe(e.node);
+        if (e.node && e.viaKeyboard) say.say(describeNode(e.node));
         if (e.node && !e.viaKeyboard && well) {
           const r = well.getBoundingClientRect();
           tip = { x: e.clientX - r.left, y: e.clientY - r.top, name: e.node.name, sub: describeSize(e.node) };
         } else tip = null;
       }),
-      t.on('select', (n: NodeInfo) => { selected = n; live = describe(n); }),
+      t.on('select', (n: NodeInfo) => { selected = n; say.say(describeNode(n)); }),
       t.on('drill', (n: NodeInfo) => { hovered = null; tip = null; void nav.drill(n.id, n.name); }),
-      t.on('back', () => { hovered = null; void nav.back(); }),
+      t.on('back', () => {
+        hovered = null;
+        if (nav.trail.length < 2) say.say(`Already at the top: ${canvasLabel(nav.here?.name ?? '')}.`);
+        void nav.back();
+      }),
+      t.on('edge', (e: { dir: string; node: NodeInfo }) => say.say(`Nothing further ${e.dir}. Still on ${canvasLabel(e.node.name)}.`)),
     ];
     return () => { off.forEach((f) => f()); t.destroy(); tm = null; };
   });
@@ -68,14 +75,17 @@
     const t = tm;
     if (!s) {
       // a failed load: drop the cloth so nothing stale stays drawn or clickable
-      untrack(() => { t.clear(); hovered = null; selected = null; tip = null; });
+      untrack(() => { t.clear(); hovered = null; selected = null; tip = null; shownKey = null; });
       return;
     }
     untrack(() => {
       t.setSlice(s);
       if (!revealed) { revealed = true; t.reveal(); }
-      if (selected && !s.nodes.some((n) => n.node_id === selected!.id)) selected = null;
-      live = `Showing ${canvasLabel(nav.here?.name ?? '')}: ${formatCount(s.nodes.length)} nodes${s.truncated ? ', more exist than this slice holds' : ''}${s.aggregate_state === 'provisional_live' ? ', provisional sums from a running scan' : ''}.`;
+      // the selection follows the new slice: re-read it from the renderer (its old info is from the previous slice)
+      selected = selected ? t.info(selected.id) : null;
+      const a = announceSlice(shownKey, s, nav.here?.name ?? '');
+      shownKey = a.key;
+      if (a.text) say.say(a.text);
     });
   });
 
@@ -88,22 +98,12 @@
   $effect(() => { tm?.setThreads({ ...show }); });
   $effect(() => { tm?.setBasis(nav.basis); });
 
-  function describeSize(n: NodeInfo): string {
-    const src = n.src;
-    if (!src) return `${formatApprox(n.size)} · ${n.synthetic === 'fold' ? (n.folded === null ? 'some items folded, count unknown' : `${n.folded} items folded`) : 'not in this slice'}`;
-    const z = n.zero.filter((x) => x.coverage === 'denied').length;
-    return `${formatApprox(n.size)}${z ? ` · ${z} access denied` : ''}${src.size_unknown_files ? ` · ${src.size_unknown_files} alloc unknown` : ''}`;
-  }
-  function describe(n: NodeInfo): string {
-    return `${canvasLabel(n.name)}, ${describeSize(n)}.${n.drillable ? ' Enter opens it.' : ''}`;
-  }
-
   function inspectById(id: string) {
     const n = tm?.info(id) ?? null;
     if (!n) return;
     selected = n;
     hovered = null;
-    live = describe(n);
+    say.say(describeNode(n));
   }
 
   // Basis radiogroup: arrow keys move the choice.
@@ -152,6 +152,9 @@
   });
 </script>
 
+<!-- WCAG 1.4.13: the hover tooltip can be dismissed without moving the pointer -->
+<svelte:window onkeydown={(e) => { if (e.key === 'Escape' && tip) tip = null; }} />
+
 <div class="top">
   <h1>Atlas</h1>
   <nav class="crumbs" aria-label="Location">
@@ -192,7 +195,7 @@
         bind:this={canvas}
         tabindex="0"
         aria-label="Woven treemap of the slice. Arrow keys move between regions, Enter opens one, Escape goes back."
-        aria-describedby="atlas-live"
+        onblur={() => say.clear()}
       ></canvas>
       {#if tip}
         <div class="tip" style:left={`${Math.min(tip.x + 16, (well?.clientWidth ?? 0) - 240)}px`} style:top={`${tip.y + 18}px`}>
@@ -200,7 +203,7 @@
         </div>
       {/if}
     </div>
-    <p id="atlas-live" class="sr-only" aria-live="polite">{live}</p>
+    <p id="atlas-live" class="sr-only" aria-live="polite">{say.text}</p>
     <p class="help">Click a region to open it · <kbd>Arrows</kbd> move · <kbd>Enter</kbd> opens · <kbd>Esc</kbd> goes back</p>
     <RegionList slice={nav.slice} onopen={(id, name) => void nav.drill(id, name)} oninspect={inspectById} />
   </section>
@@ -238,8 +241,12 @@
   .crumb { font: 400 1.05rem/1.3 var(--head-font); color: var(--muted); background: none; border: 0; padding: 2px; cursor: pointer; overflow-wrap: anywhere; text-align: left; }
   .crumb:hover { color: var(--text); }
   .crumb[aria-current='location'] { color: var(--text); cursor: default; }
+  @media (forced-colors: active) {
+    .crumb[aria-current='location'] { text-decoration: underline; text-underline-offset: 3px; }
+    .seg button[aria-checked='true'] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
+  }
   .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; margin: 12px 0; }
-  .seg { display: inline-flex; padding: 2px; border: 1px solid var(--line); border-radius: 999px; }
+  .seg { display: inline-flex; padding: 2px; border: 1px solid var(--control-line); border-radius: 999px; }
   .seg button { font: inherit; font-size: 0.85rem; border: 0; background: none; color: var(--muted); padding: 4px 12px; border-radius: 999px; cursor: pointer; }
   .seg button[aria-checked='true'] { background: var(--raised); color: var(--text); box-shadow: inset 0 0 0 1px var(--line-strong); }
   .toggles { display: flex; gap: 14px; border: 0; margin: 0; padding: 0; font-size: 0.88rem; color: var(--muted); }

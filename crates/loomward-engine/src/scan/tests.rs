@@ -1,0 +1,818 @@
+use super::*;
+use crate::{Engine, EngineConfig};
+use loomward_protocol::{DatasetClass, RootId};
+use source::*;
+use std::{
+    sync::{atomic::AtomicBool, Arc},
+    time::Duration,
+};
+fn identity(id: u64) -> OpenedIdentity {
+    OpenedIdentity {
+        id: Some(FileIdObs::Id64(id)),
+        basis: IdBasis::Listed,
+        volume_serial: Some(42),
+        attributes: 0x10,
+        reparse_tag: None,
+    }
+}
+fn root() -> GrantedRoot {
+    GrantedRoot::new(
+        RootId::new("rt_test").unwrap(),
+        "unused".into(),
+        DatasetClass::Synthetic,
+        identity(1),
+    )
+}
+#[test]
+fn dataset_class_is_checked_before_start_or_refresh() {
+    let e = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Personal)).unwrap();
+    let root = root();
+    for result in [e.scan_start(&root, None), e.scan_refresh(&root, None)] {
+        assert_eq!(
+            result.unwrap_err().to_body().message.as_str(),
+            "dataset_class_mismatch"
+        );
+    }
+}
+#[test]
+fn same_run_obsolete_final_is_rejected_n1() {
+    let sink = MemorySink::default();
+    let root = root();
+    sink.begin_run(root.root_id(), 7, &RunScope::FullRoot)
+        .unwrap();
+    let ticket = sink
+        .prepare_listing(root.root_id(), 7, None, &[], identity(1))
+        .unwrap();
+    sink.dirty_again(root.root_id(), ticket.dir);
+    assert!(sink
+        .consume(
+            root.root_id(),
+            ScanMessage::DirFinal {
+                run: 7,
+                ticket,
+                sums: Sums::ZERO,
+                complete: true
+            }
+        )
+        .is_err());
+    assert!(sink.totals(root.root_id()).is_none());
+}
+#[test]
+fn targeted_run_never_sweeps_unrelated_tombstones_n2() {
+    let sink = MemorySink::default();
+    let root = root();
+    let targeted = RunScope::Targeted(vec![2]);
+    sink.begin_run(root.root_id(), 7, &targeted).unwrap();
+    sink.finish_run(root.root_id(), 7, &targeted, true).unwrap();
+    assert!(!sink.sweep_allowed(root.root_id()));
+    sink.begin_run(root.root_id(), 8, &RunScope::FullRoot)
+        .unwrap();
+    sink.finish_run(root.root_id(), 8, &RunScope::FullRoot, true)
+        .unwrap();
+    assert!(sink.sweep_allowed(root.root_id()));
+}
+#[test]
+fn reparent_invalidates_both_chains_and_restart_repairs() {
+    let sink = Arc::new(MemorySink::default());
+    let root = root();
+    sink.begin_run(root.root_id(), 7, &RunScope::FullRoot)
+        .unwrap();
+    let r = sink
+        .prepare_listing(root.root_id(), 7, None, &[], identity(1))
+        .unwrap();
+    let a = sink
+        .prepare_listing(root.root_id(), 7, Some(r.dir), &[65], identity(2))
+        .unwrap();
+    let b = sink
+        .prepare_listing(root.root_id(), 7, Some(r.dir), &[66], identity(3))
+        .unwrap();
+    sink.prepare_listing(root.root_id(), 7, Some(a.dir), &[120], identity(4))
+        .unwrap();
+    let old_totals = Sums {
+        files: 99,
+        ..Sums::ZERO
+    };
+    sink.consume(
+        root.root_id(),
+        ScanMessage::DirFinal {
+            run: 7,
+            ticket: r,
+            sums: old_totals,
+            complete: true,
+        },
+    )
+    .unwrap();
+    assert_eq!(sink.totals(root.root_id()), Some(old_totals));
+    let x = sink
+        .prepare_listing(root.root_id(), 7, Some(b.dir), &[120], identity(4))
+        .unwrap();
+    assert_eq!(x.old_parent, Some(a.dir));
+    sink.consume(
+        root.root_id(),
+        ScanMessage::InvalidateChains {
+            run: 7,
+            old_parent: a.dir,
+            new_parent: b.dir,
+        },
+    )
+    .unwrap();
+    for ticket in [a, b, r] {
+        assert!(sink.invalidated(root.root_id()).contains(&ticket.dir));
+        assert!(matches!(
+            sink.consume(
+                root.root_id(),
+                ScanMessage::DirFinal {
+                    run: 7,
+                    ticket,
+                    sums: Sums {
+                        files: 99,
+                        ..Sums::ZERO
+                    },
+                    complete: true,
+                },
+            ),
+            Err(crate::EngineError::StaleGeneration { .. })
+        ));
+    }
+    assert!(sink.totals(root.root_id()).is_none());
+    sink.recover_interrupted().unwrap();
+    assert!(sink.is_repairing(root.root_id()));
+    assert!(!sink.sweep_allowed(root.root_id()));
+    let report = run_scan(
+        &Tree,
+        &root,
+        8,
+        sink.clone(),
+        Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions::default(),
+    )
+    .unwrap();
+    assert!(report.complete);
+    assert_eq!(
+        report.totals,
+        Sums {
+            files: 1,
+            dirs: 1,
+            logical: 123,
+            allocated: Some(4096)
+        }
+    );
+    assert_eq!(sink.totals(root.root_id()), Some(report.totals));
+    assert!(!sink.is_repairing(root.root_id()));
+}
+struct Tree;
+impl DirSource for Tree {
+    type Dir = u64;
+    fn strategy(&self) -> Strategy {
+        Strategy::Portable
+    }
+    fn open_root(&self, _: &std::path::Path) -> Result<(u64, OpenedIdentity), SourceError> {
+        Ok((1, identity(1)))
+    }
+    fn open_child(&self, _: &u64, e: &RawEntry<'_>) -> Result<(u64, OpenedIdentity), SourceError> {
+        let Some(FileIdObs::Id64(id)) = e.file_id else {
+            unreachable!()
+        };
+        Ok((id, identity(id)))
+    }
+    fn list(&self, dir: &u64, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+        let (attributes, id, size) = if *dir == 1 { (0x10, 2, 0) } else { (0, 3, 123) };
+        let e = RawEntry {
+            name: &[120],
+            file_id: Some(FileIdObs::Id64(id)),
+            attributes,
+            reparse_tag: None,
+            end_of_file: size,
+            allocation_size: Some(4096),
+            creation: None,
+            last_write: None,
+            change: None,
+            last_access: None,
+        };
+        if sink(e) == Flow::Stop {
+            ListOutcome::Incomplete(IncompleteReason::Cancelled)
+        } else {
+            ListOutcome::Complete
+        }
+    }
+}
+#[test]
+fn staged_pipeline_has_exact_totals_and_releases_bytes() {
+    let sink = Arc::new(MemorySink::default());
+    let root = root();
+    let bytes = Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES));
+    let report = run_scan(
+        &Tree,
+        &root,
+        1,
+        sink.clone(),
+        bytes.clone(),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions::default(),
+    )
+    .unwrap();
+    assert!(report.complete);
+    assert_eq!(
+        report.totals,
+        Sums {
+            files: 1,
+            dirs: 1,
+            logical: 123,
+            allocated: Some(4096)
+        }
+    );
+    assert_eq!(sink.totals(root.root_id()), Some(report.totals));
+    assert_eq!(bytes.used(), 0);
+}
+#[test]
+fn incomplete_listing_does_not_authorize_absence() {
+    let root = root();
+    let sink = Arc::new(MemorySink::default());
+    let report = run_scan(
+        &Tree,
+        &root,
+        1,
+        sink.clone(),
+        Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions {
+            max_entries: 1,
+            ..ScanOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(!report.complete);
+    assert!(!sink.sweep_allowed(root.root_id()));
+}
+#[test]
+fn fence_rejects_late_staging_and_final() {
+    let sink = MemorySink::default();
+    let root = root();
+    sink.begin_run(root.root_id(), 7, &RunScope::FullRoot)
+        .unwrap();
+    let ticket = sink
+        .prepare_listing(root.root_id(), 7, None, &[], identity(1))
+        .unwrap();
+    sink.fence_root(root.root_id()).unwrap();
+    assert!(sink
+        .consume(
+            root.root_id(),
+            ScanMessage::DirListing {
+                run: 7,
+                ticket,
+                entries: vec![]
+            }
+        )
+        .is_err());
+    assert!(sink
+        .consume(
+            root.root_id(),
+            ScanMessage::DirFinal {
+                run: 7,
+                ticket,
+                sums: Sums::ZERO,
+                complete: true
+            }
+        )
+        .is_err());
+}
+#[test]
+fn checked_sums_report_byte_overflow_detail() {
+    let error = Sums {
+        logical: u64::MAX,
+        ..Sums::ZERO
+    }
+    .checked_add(Sums {
+        logical: 1,
+        ..Sums::ZERO
+    })
+    .unwrap_err();
+    assert_eq!(
+        error.to_body().detail.unwrap().get("reason").unwrap(),
+        "byte_overflow"
+    );
+}
+#[test]
+fn cancel_before_admission_returns_quickly() {
+    let now = std::time::Instant::now();
+    assert!(run_scan(
+        &Tree,
+        &root(),
+        1,
+        Arc::new(MemorySink::default()),
+        Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        Arc::new(AtomicBool::new(true)),
+        ScanOptions::default()
+    )
+    .is_err());
+    assert!(now.elapsed() < Duration::from_millis(250));
+}
+#[test]
+fn obsolete_run_final_and_nonunique_refs_cannot_reparent() {
+    let sink = MemorySink::default();
+    let root = root();
+    sink.begin_run(root.root_id(), 7, &RunScope::FullRoot)
+        .unwrap();
+    let r = sink
+        .prepare_listing(root.root_id(), 7, None, &[], identity(1))
+        .unwrap();
+    assert!(sink
+        .consume(
+            root.root_id(),
+            ScanMessage::DirFinal {
+                run: 6,
+                ticket: r,
+                sums: Sums::ZERO,
+                complete: true
+            }
+        )
+        .is_err());
+    let a = sink
+        .prepare_listing(root.root_id(), 7, Some(r.dir), &[65], identity(2))
+        .unwrap();
+    let b = sink
+        .prepare_listing(root.root_id(), 7, Some(r.dir), &[66], identity(3))
+        .unwrap();
+    let mut observed = identity(4);
+    observed.basis = IdBasis::NonUnique;
+    let x = sink
+        .prepare_listing(root.root_id(), 7, Some(a.dir), &[120], observed)
+        .unwrap();
+    let y = sink
+        .prepare_listing(root.root_id(), 7, Some(b.dir), &[120], observed)
+        .unwrap();
+    assert_ne!(x.dir, y.dir);
+    assert_eq!(y.old_parent, None);
+}
+#[test]
+fn root_identity_mismatch_never_enters_writer() {
+    struct NeverList;
+    impl DirSource for NeverList {
+        type Dir = u64;
+        fn strategy(&self) -> Strategy {
+            Strategy::Portable
+        }
+        fn open_root(&self, path: &std::path::Path) -> Result<(u64, OpenedIdentity), SourceError> {
+            Tree.open_root(path)
+        }
+        fn open_child(
+            &self,
+            _: &u64,
+            _: &RawEntry<'_>,
+        ) -> Result<(u64, OpenedIdentity), SourceError> {
+            panic!("a mismatched grant must not open children")
+        }
+        fn list(&self, _: &u64, _: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+            panic!("a mismatched grant must not list the opened root")
+        }
+    }
+    let mut root = root();
+    root.expected = Some(identity(999));
+    let sink = Arc::new(MemorySink::default());
+    let error = run_scan(
+        &NeverList,
+        &root,
+        1,
+        sink.clone(),
+        Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions::default(),
+    )
+    .unwrap_err();
+    assert_eq!(error.to_body().message.as_str(), "root_identity_changed");
+    assert!(sink.totals(root.root_id()).is_none());
+}
+
+struct BlockingSource {
+    entered: Arc<AtomicBool>,
+    release: Arc<AtomicBool>,
+    dropped: Arc<std::sync::atomic::AtomicU64>,
+}
+struct HeldDir {
+    entered: Arc<AtomicBool>,
+    dropped: Arc<std::sync::atomic::AtomicU64>,
+}
+impl Drop for HeldDir {
+    fn drop(&mut self) {
+        assert!(!self.entered.load(std::sync::atomic::Ordering::Acquire));
+        self.dropped
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+impl DirSource for BlockingSource {
+    type Dir = HeldDir;
+    fn strategy(&self) -> Strategy {
+        Strategy::Portable
+    }
+    fn open_root(&self, _: &std::path::Path) -> Result<(HeldDir, OpenedIdentity), SourceError> {
+        Ok((
+            HeldDir {
+                entered: self.entered.clone(),
+                dropped: self.dropped.clone(),
+            },
+            identity(1),
+        ))
+    }
+    fn open_child(
+        &self,
+        _: &HeldDir,
+        _: &RawEntry<'_>,
+    ) -> Result<(HeldDir, OpenedIdentity), SourceError> {
+        unreachable!()
+    }
+    fn list(&self, _: &HeldDir, _: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+        use std::sync::atomic::Ordering;
+        self.entered.store(true, Ordering::Release);
+        while !self.release.load(Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        self.entered.store(false, Ordering::Release);
+        ListOutcome::Complete
+    }
+}
+#[test]
+fn blocked_worker_cancel_ack_does_not_close_live_handle() {
+    use loomward_protocol::{JobKind, JobState};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let e = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Synthetic)).unwrap();
+    let sink = Arc::new(MemorySink::default());
+    e.set_scan_sink(sink.clone()).unwrap();
+    let entered = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(AtomicBool::new(false));
+    let dropped = Arc::new(AtomicU64::new(0));
+    let source = BlockingSource {
+        entered: entered.clone(),
+        release: release.clone(),
+        dropped: dropped.clone(),
+    };
+    let root = root();
+    let root_id = root.root_id().clone();
+    e.register_job_runner(
+        JobKind::Scan,
+        Arc::new(move |ctx, _| {
+            run_scan(
+                &source,
+                &root,
+                1,
+                sink.clone(),
+                Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+                ctx.cancel,
+                ScanOptions::default(),
+            )?;
+            Ok(loomward_protocol::CoverageState::Complete)
+        }),
+    );
+    let job = e
+        .job_submit(crate::jobs::JobSpec::new(
+            JobKind::Scan,
+            Some(root_id.clone()),
+        ))
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    while !entered.load(Ordering::Acquire) {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let start = std::time::Instant::now();
+    assert_eq!(
+        e.scan_cancel_root(&root_id).unwrap()[0].state,
+        JobState::CancelRequested
+    );
+    assert!(start.elapsed() < Duration::from_millis(250));
+    assert_eq!(dropped.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        e.job_status(&job.job_id).unwrap().state,
+        JobState::CancelRequested
+    );
+    e.scan_writer_fence(&root_id).unwrap();
+    release.store(true, Ordering::Release);
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    while e.job_status(&job.job_id).unwrap().state != JobState::Cancelled {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(dropped.load(Ordering::Relaxed), 1);
+}
+#[test]
+fn scan_worker_cap_is_shared_across_roots_and_released() {
+    let e = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Synthetic)).unwrap();
+    let lease = e.budgets.reserve_scan_workers(Some(8)).unwrap();
+    assert!(e.budgets.reserve_scan_workers(Some(1)).is_err());
+    assert_eq!(e.budgets_get().unwrap().pools[0].current_workers.get(), 8);
+    drop(lease);
+    assert_eq!(e.budgets_get().unwrap().pools[0].current_workers.get(), 0);
+    assert!(e.budgets.reserve_scan_workers(Some(8)).is_ok());
+}
+#[test]
+fn writer_install_is_startup_only() {
+    let e = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Synthetic)).unwrap();
+    e.set_scan_sink(Arc::new(MemorySink::default())).unwrap();
+    assert!(e.set_scan_sink(Arc::new(MemorySink::default())).is_err());
+}
+#[cfg(windows)]
+#[test]
+fn native_scan_job_reports_exact_final_progress() {
+    if skip_elevated() {
+        return;
+    }
+    let temp = canonical_tempdir();
+    std::fs::write(temp.path().join("synthetic"), [0u8; 123]).unwrap();
+    let source = loomward_windows::enumerate::NativeSource::default();
+    let (_, identity) = source
+        .open_root(temp.path())
+        .unwrap_or_else(|e| panic!("{e:?}: {}", explain(temp.path())));
+    let root = GrantedRoot::new(
+        RootId::new("rt_native_test").unwrap(),
+        temp.path().to_path_buf(),
+        DatasetClass::Synthetic,
+        identity,
+    );
+    let e = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Synthetic)).unwrap();
+    e.set_scan_sink(Arc::new(MemorySink::default())).unwrap();
+    let job = e.scan_start(&root, None).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    let job = loop {
+        let j = e.job_status(&job.job_id).unwrap();
+        if j.state == loomward_protocol::JobState::Completed {
+            break j;
+        }
+        assert!(std::time::Instant::now() < deadline, "{j:?}");
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    let p = job.progress.unwrap();
+    assert_eq!(p.examined.get(), 1);
+    assert_eq!(p.indexed_files.get(), 1);
+    assert_eq!(p.logical_bytes.get(), 123);
+    assert_eq!(p.skipped.get(), 0);
+    assert_eq!(p.failed.get(), 0);
+}
+struct Oversized;
+impl DirSource for Oversized {
+    type Dir = u64;
+    fn strategy(&self) -> Strategy {
+        Strategy::Portable
+    }
+    fn open_root(&self, _: &std::path::Path) -> Result<(u64, OpenedIdentity), SourceError> {
+        Ok((1, identity(1)))
+    }
+    fn open_child(&self, _: &u64, _: &RawEntry<'_>) -> Result<(u64, OpenedIdentity), SourceError> {
+        unreachable!()
+    }
+    fn list(&self, _: &u64, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+        for i in 0..2_500_000u32 {
+            let mut name = [0u16; 6];
+            for (j, c) in name.iter_mut().enumerate() {
+                *c = u16::from(b"0123456789abcdef"[((i >> (j * 4)) & 15) as usize]);
+            }
+            if sink(RawEntry {
+                name: &name,
+                file_id: None,
+                attributes: 0,
+                reparse_tag: None,
+                end_of_file: 1,
+                allocation_size: None,
+                creation: None,
+                last_write: None,
+                change: None,
+                last_access: None,
+            }) == Flow::Stop
+            {
+                return ListOutcome::Incomplete(IncompleteReason::Cancelled);
+            }
+        }
+        ListOutcome::Complete
+    }
+}
+#[test]
+fn oversized_stress_is_separate_with_partial_oracle_n6() {
+    let sink = Arc::new(MemorySink::default());
+    let root = root();
+    let report = run_scan(
+        &Oversized,
+        &root,
+        1,
+        sink.clone(),
+        Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions {
+            workers: 1,
+            ..ScanOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(!report.complete);
+    assert!(report.limit_hit);
+    assert_eq!(report.totals.files, 2_000_000);
+    assert_eq!(report.totals.logical, 2_000_000);
+    assert_eq!(report.totals.allocated, None);
+    assert!(!sink.sweep_allowed(root.root_id()));
+}
+struct FailedWriter(MemorySink);
+impl ScanSink for FailedWriter {
+    fn recover_interrupted(&self) -> crate::EngineResult<()> {
+        self.0.recover_interrupted()
+    }
+    fn begin_run(&self, root: &RootId, run: u64, scope: &RunScope) -> crate::EngineResult<()> {
+        self.0.begin_run(root, run, scope)
+    }
+    fn prepare_listing(
+        &self,
+        root: &RootId,
+        run: u64,
+        parent: Option<u64>,
+        name: &[u16],
+        identity: OpenedIdentity,
+    ) -> crate::EngineResult<ListingTicket> {
+        self.0.prepare_listing(root, run, parent, name, identity)
+    }
+    fn consume(&self, _: &RootId, message: ScanMessage) -> crate::EngineResult<()> {
+        if let ScanMessage::DirListing { entries, .. } = message {
+            assert!(entries
+                .iter()
+                .all(|e| e.file_id.is_some() || !e.identity_eligible));
+        }
+        Err(crate::EngineError::Internal {
+            message: "fixture writer failure".into(),
+            detail: None,
+        })
+    }
+    fn finish_run(
+        &self,
+        root: &RootId,
+        run: u64,
+        scope: &RunScope,
+        complete: bool,
+    ) -> crate::EngineResult<()> {
+        self.0.finish_run(root, run, scope, complete)
+    }
+    fn fence_root(&self, root: &RootId) -> crate::EngineResult<()> {
+        self.0.fence_root(root)
+    }
+}
+#[test]
+fn writer_failure_unblocks_producers_and_releases_shared_bytes() {
+    let bytes = Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES));
+    let start = std::time::Instant::now();
+    let result = run_scan(
+        &Oversized,
+        &root(),
+        1,
+        Arc::new(FailedWriter(MemorySink::default())),
+        bytes.clone(),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions::default(),
+    );
+    assert_eq!(
+        result.unwrap_err().to_body().message.as_str(),
+        "fixture writer failure"
+    );
+    assert!(start.elapsed() < Duration::from_secs(2));
+    assert_eq!(bytes.used(), 0);
+}
+#[test]
+fn busy_scan_preserves_job_id_wire_detail() {
+    let e = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Synthetic)).unwrap();
+    e.set_scan_sink(Arc::new(MemorySink::default())).unwrap();
+    e.register_job_runner(
+        loomward_protocol::JobKind::Scan,
+        Arc::new(|ctx, _| {
+            while !ctx.is_cancelled() {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Ok(loomward_protocol::CoverageState::Cancelled)
+        }),
+    );
+    let root = root();
+    let job = e
+        .job_submit(crate::jobs::JobSpec::new(
+            loomward_protocol::JobKind::Scan,
+            Some(root.root_id().clone()),
+        ))
+        .unwrap();
+    let error = e.scan_start(&root, None).unwrap_err();
+    e.job_cancel(&job.job_id).unwrap();
+    assert_eq!(
+        error.to_body().detail.unwrap().get("job_id").unwrap(),
+        job.job_id.as_str()
+    );
+}
+#[cfg(windows)]
+#[test]
+fn native_state_root_is_excluded_by_handle_identity() {
+    if skip_elevated() {
+        return;
+    }
+    let temp = canonical_tempdir();
+    let source = loomward_windows::enumerate::NativeSource::default();
+    let (_, identity) = source
+        .open_root(temp.path())
+        .unwrap_or_else(|e| panic!("{e:?}: {}", explain(temp.path())));
+    let root = GrantedRoot::new(
+        RootId::new("rt_state_exclusion").unwrap(),
+        temp.path().to_path_buf(),
+        DatasetClass::Synthetic,
+        identity,
+    );
+    let error = run_scan(
+        &source,
+        &root,
+        1,
+        Arc::new(MemorySink::default()),
+        Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions {
+            excluded_path: Some(temp.path().to_path_buf()),
+            ..ScanOptions::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.to_body().message.as_str(), "root_is_state_directory");
+}
+#[test]
+fn cross_run_ticket_cannot_finalize_an_unlisted_directory() {
+    let sink = MemorySink::default();
+    let root = root();
+    sink.begin_run(root.root_id(), 7, &RunScope::FullRoot)
+        .unwrap();
+    let ticket = sink
+        .prepare_listing(root.root_id(), 7, None, &[], identity(1))
+        .unwrap();
+    sink.finish_run(root.root_id(), 7, &RunScope::FullRoot, false)
+        .unwrap();
+    sink.begin_run(root.root_id(), 8, &RunScope::Targeted(vec![]))
+        .unwrap();
+    assert!(sink
+        .consume(
+            root.root_id(),
+            ScanMessage::DirFinal {
+                run: 8,
+                ticket,
+                sums: Sums::ZERO,
+                complete: true
+            }
+        )
+        .is_err());
+}
+#[test]
+fn targeted_pipeline_never_establishes_absence_outside_scope() {
+    let sink = Arc::new(MemorySink::default());
+    let root = root();
+    let report = run_scan(
+        &Tree,
+        &root,
+        1,
+        sink.clone(),
+        Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions {
+            scope: RunScope::Targeted(vec![2]),
+            ..ScanOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(!report.complete);
+    assert!(!sink.sweep_allowed(root.root_id()));
+    assert_eq!(report.totals.files, 1);
+}
+
+/// Native roots are opened component by component and refuse reparse ancestors, so tests grant a
+/// canonical temp base (hosted runners may junction the temp folder), as a real grant would.
+#[cfg(windows)]
+fn canonical_tempdir() -> tempfile::TempDir {
+    tempfile::tempdir_in(std::fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap()
+}
+
+/// Each ancestor's attributes, for a refused root on an unfamiliar host.
+#[cfg(windows)]
+fn explain(path: &std::path::Path) -> String {
+    use std::os::windows::fs::MetadataExt;
+    path.ancestors()
+        .map(|a| {
+            let attrs = std::fs::symlink_metadata(a)
+                .map(|m| m.file_attributes())
+                .unwrap_or(0);
+            format!("{}={attrs:#x}", a.display())
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+/// Hosted CI runners hold an elevated token, and the native scan refuses elevation by design
+/// (AGENTS.md invariant 2). There, pin the refusal and skip; elsewhere run the native test.
+#[cfg(windows)]
+fn skip_elevated() -> bool {
+    if !loomward_windows::enumerate::running_elevated() {
+        return false;
+    }
+    let temp = canonical_tempdir();
+    assert!(
+        matches!(
+            loomward_windows::enumerate::NativeSource::default().open_root(temp.path()),
+            Err(loomward_windows::enumerate::SourceError::Refused)
+        ),
+        "an elevated token must be refused before any open"
+    );
+    eprintln!("skipped: elevated token; the native scan refuses elevation (invariant 2)");
+    true
+}

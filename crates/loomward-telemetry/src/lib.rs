@@ -174,6 +174,33 @@ pub fn snapshot(max_processes: usize) -> Snapshot {
     Sampler::default().sample(max_processes)
 }
 
+/// Own-process aggregate counters for P12/P13; no process names or paths.
+#[derive(Clone, Debug)]
+pub struct OwnUsage {
+    /// Cumulative user + kernel CPU seconds over all process threads.
+    pub cpu_seconds: f64,
+    /// Cumulative CPU seconds for the calling thread.
+    pub calling_thread_cpu_seconds: f64,
+    /// Current private committed allocations (PrivateUsage).
+    pub private_commit_bytes: u64,
+    /// True high-water private commit (PeakPagefileUsage).
+    pub peak_private_commit_bytes: u64,
+}
+
+/// Read own CPU and private commit only. Any failed API makes the observation unknown.
+pub fn own_usage() -> Observation<OwnUsage> {
+    #[cfg(windows)]
+    {
+        windows::own_usage()
+    }
+    #[cfg(not(windows))]
+    {
+        Observation::Unsupported {
+            reason: "native own-usage measurement requires Windows".into(),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Sampler {
     previous: Option<(Instant, Snapshot)>,
@@ -182,6 +209,16 @@ pub struct Sampler {
 }
 
 impl Sampler {
+    /// The engine's own row before display truncation; no new OS observation is performed.
+    pub fn own_process(&self) -> Option<&Process> {
+        self.previous
+            .as_ref()?
+            .1
+            .processes
+            .iter()
+            .find(|p| p.pid == std::process::id())
+    }
+
     pub fn sample(&mut self, max_processes: usize) -> Snapshot {
         let now = Instant::now();
         #[cfg(windows)]

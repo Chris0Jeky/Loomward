@@ -7,6 +7,9 @@ Serves the built app/dist from a tiny loopback static server and drives it with 
     and a dropped engine flips the shell to "unavailable" and back.
 Run `npm.cmd --prefix app run build` first.
 
+`--a11y` runs only the WCAG 2.2 AA leg (scripts/test_app_a11y.py, lane L18): names, focus, announcements,
+zoom reflow, control-edge contrast, canvas keyboard and forced-colours states, on the mock transport.
+
 `--live-serve` replaces the Python servers with the real `loomward-serve --static app/dist` binary
 (lane L6, its FixtureService answering from contracts/v3/examples): the static files under the
 server's own CSP header, the fragment-token handshake, calls and the SSE stream through the real
@@ -29,6 +32,7 @@ from urllib.parse import urlsplit
 
 from playwright.sync_api import Page, expect, sync_playwright
 
+from test_app_a11y import run_a11y
 from test_app_views import run_views
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -225,6 +229,7 @@ def main() -> None:
     ap.add_argument('--browser', default=None, help='path to a Chromium executable')
     ap.add_argument('--screenshots', type=Path)
     ap.add_argument('--view-shots', type=Path, help='directory for view screenshots and results from both view lanes (evidence/v3/app-views); omitted = none')
+    ap.add_argument('--a11y', action='store_true', help='run only the WCAG 2.2 AA leg (scripts/test_app_a11y.py, lane L18)')
     ap.add_argument('--live-serve', action='store_true', help='run the http leg against the real loomward-serve binary')
     a = ap.parse_args()
     if not (DIST / 'index.html').exists():
@@ -236,6 +241,14 @@ def main() -> None:
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     base = f'http://127.0.0.1:{server.server_port}'
+    if a.a11y:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(executable_path=a.browser, headless=True, args=['--no-sandbox'])
+            run_a11y(browser, base, check)
+            browser.close()
+        server.shutdown()
+        print('ALL PASS (a11y)')
+        return
     shots = a.screenshots
     if shots:
         shots.mkdir(parents=True, exist_ok=True)
@@ -298,7 +311,7 @@ def main() -> None:
         expect(page.locator('main nav[aria-label="Location"]')).to_be_visible()
 
         # drill down, then breadcrumb back
-        page.locator('main table tbody tr td button.crumb').first.click()
+        page.locator('main table tbody tr th button.crumb').first.click()
         expect(page.locator('main nav[aria-label="Location"] button')).to_have_count(2)
         page.locator('main nav[aria-label="Location"] button').first.click()
         expect(page.locator('main nav[aria-label="Location"] button')).to_have_count(1)

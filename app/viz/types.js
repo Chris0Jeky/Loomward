@@ -100,7 +100,7 @@
  */
 
 /**
- * @typedef {'select' | 'hover' | 'drill' | 'back'} VizEvent
+ * @typedef {'select' | 'hover' | 'drill' | 'back' | 'edge'} VizEvent
  */
 
 export {};

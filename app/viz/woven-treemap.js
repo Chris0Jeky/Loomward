@@ -13,7 +13,7 @@
  *   tm.setSlice(slice)           animated drill in or out when the new anchor relates to the old one
  *   tm.setThreads({ meaning, residency, permission })
  *   tm.setTheme(palette)  tm.setBasis(basis)  tm.focus(nodeId)  tm.resize()  tm.destroy()
- *   tm.on('select' | 'hover' | 'drill' | 'back', handler) -> unsubscribe
+ *   tm.on('select' | 'hover' | 'drill' | 'back' | 'edge', handler) -> unsubscribe
  *   tm.reveal()  tm.renderFrame()  tm.benchmark(frames)  tm.timeLayout()
  */
 import { buildTree, layoutTreemap } from './layout.js';
@@ -475,6 +475,7 @@ export function createWovenTreemap(canvas, options) {
         if (s < bestScore) { bestScore = s; best = i; }
       });
       if (best >= 0) cursor = best;
+      else { emit('edge', { dir: e.key.slice(5).toLowerCase(), node: nodeInfo(cur.node) }); return; }
     } else if (e.key === 'Home') { cursor = 0; e.preventDefault(); }
     else if (e.key === 'End') { cursor = top.length - 1; e.preventDefault(); }
     else if (e.key === 'Enter' || e.key === ' ') {
@@ -491,8 +492,17 @@ export function createWovenTreemap(canvas, options) {
     sendHover(/** @type {Cell} */ (top[cursor]), null, true);
     schedule();
   };
-  const onFocus = () => { kbd = true; schedule(); };
-  const onBlur = () => { kbd = false; schedule(); };
+  // Keyboard focus announces the region the cursor is on (a mouse click that focuses the canvas stays quiet).
+  const onFocus = () => {
+    kbd = true; schedule();
+    const top = topCells();
+    if (top.length && canvas.matches(':focus-visible')) sendHover(/** @type {Cell} */ (top[Math.min(cursor, top.length - 1)]), null, true);
+  };
+  const onBlur = () => {
+    const wasKeyboard = kbd && !hover;
+    kbd = false; schedule();
+    if (wasKeyboard) sendHover(null, null, false);
+  };
   canvas.addEventListener('pointermove', onMove);
   canvas.addEventListener('pointerleave', onLeave);
   canvas.addEventListener('click', onClick);
@@ -517,7 +527,8 @@ export function createWovenTreemap(canvas, options) {
       treeById = ids;
       const next = build(root);
       pendingMark = { start, layout: performance.now() - start, nodes: s.nodes.length };
-      cursor = 0; hover = null;
+      const prevFocus = prev?.focus.id, prevCursor = prev ? topCells()[cursor]?.node.id : undefined;
+      hover = null;
       anim = null;
       if (prev && opts.animate !== false && !reduced()) {
         const inward = next.focus.id !== prev.focus.id && prev.byId.has(next.focus.id);
@@ -527,6 +538,13 @@ export function createWovenTreemap(canvas, options) {
         if (cell) anim = { outer, inner, rect: { x: cell.x, y: cell.y, w: cell.w, h: cell.h }, dir: inward ? 1 : -1, start: performance.now(), dur: 620 };
       }
       view = next;
+      // Keep the keyboard cursor where the reader was: back lands on the region just left, a refresh stays put.
+      cursor = 0;
+      for (const id of [prevFocus, prevCursor]) {
+        const c = id ? next.byId.get(id) : undefined;
+        const i = c ? topCells().indexOf(topOf(c)) : -1;
+        if (i >= 0) { cursor = i; break; }
+      }
       if (selected && !next.byId.has(selected)) selected = null;
       schedule();
     },

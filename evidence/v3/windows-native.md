@@ -1,6 +1,6 @@
 # Windows-native lane W evidence: LW-064, LW-003, LW-004
 
-Measured on 2026-10-09 in `C:/Users/jekyt/wt/lw-win`, branch `feat/windows-native`,
+Measured on 2026-10-09 in a disposable worktree, branch `feat/windows-native`,
 base/HEAD `1ee166d597b61cf935a84499351009f0e316857a`. Changes are uncommitted for the driver.
 This is the first measurement of these native adapters, not the Python reference scanner.
 Platform: Windows 11, OS build 26300, x86_64-pc-windows-msvc, rustc/cargo 1.97.1.
@@ -71,7 +71,7 @@ Selected actual output tail (fmt returned no output):
 ```text
 test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.45s
-    Checking loomward-windows v0.1.0 (C:\Users\jekyt\wt\lw-win\crates\loomward-windows)
+    Checking loomward-windows v0.1.0 (<worktree>/crates/loomward-windows; local path redacted)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.05s
 ```
 
