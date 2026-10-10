@@ -1159,26 +1159,28 @@ mod native_tests {
             )
             .unwrap();
         let (results, result) = mpsc::channel();
+        let gate_released = AtomicBool::new(false);
+        let (cancelling, cancel_started) = mpsc::sync_channel(1);
         std::thread::scope(|threads| {
             let start = threads.spawn(|| engine.scan_start(&root, None));
             entry.recv_timeout(Duration::from_secs(2)).unwrap();
             threads.spawn(|| {
-                results
-                    .send(engine.scan_cancel_root(root.root_id()))
-                    .unwrap()
+                cancelling.send(()).unwrap();
+                let cancelled = engine.scan_cancel_root(root.root_id());
+                let returned_after_release = gate_released.load(Ordering::Acquire);
+                results.send((cancelled, returned_after_release)).unwrap()
             });
-            // The old cancellation runs in this gap and misses the not-yet-installed watch.
-            let early = result.recv_timeout(Duration::from_millis(100));
+            cancel_started.recv_timeout(Duration::from_secs(2)).unwrap();
+            gate_released.store(true, Ordering::Release);
             release.send(()).unwrap();
             let winner = start.join().unwrap().unwrap();
-            let cancelled = match early {
-                Ok(cancelled) => cancelled,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    result.recv_timeout(Duration::from_secs(2)).unwrap()
-                }
-                Err(error) => panic!("canceller disconnected: {error}"),
-            }
-            .unwrap();
+            let (cancelled, returned_after_release) =
+                result.recv_timeout(Duration::from_secs(2)).unwrap();
+            let cancelled = cancelled.unwrap();
+            assert!(
+                returned_after_release,
+                "revocation must block on the start gate and return only after release"
+            );
             assert_eq!(
                 cancelled.len(),
                 1,
