@@ -866,6 +866,10 @@ fn root_identity_mismatch_never_enters_writer() {
     .unwrap_err();
     assert_eq!(error.to_body().message.as_str(), "root_identity_changed");
     assert!(sink.totals(root.root_id()).is_none());
+    assert!(
+        sink.identity_changed(root.root_id()),
+        "the writer is told, so it can record the transition (#206)"
+    );
 }
 
 struct BlockingSource {
@@ -1662,27 +1666,44 @@ fn granted_root_comes_only_from_an_active_durable_grant() {
     insert(1, &file_id, "active");
     insert(2, &file_id, "revoked");
     insert(3, &[9; 16], "active");
+    // Catalogue root row `g` observes grant `g`.
+    rusqlite::Connection::open(state.path().join("catalog.db"))
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE root(id INTEGER PRIMARY KEY,grant_id INTEGER);
+             INSERT INTO root VALUES(1,1),(2,2),(3,3),(4,4);",
+        )
+        .unwrap();
     let engine = Engine::open(EngineConfig::new(
         state.path().to_path_buf(),
         DatasetClass::Synthetic,
     ))
     .unwrap();
-    let id = || RootId::new("rt_granted").unwrap();
+    let rt = |row: i64| RootId::new(format!("rt_{row}_0a1b2c3d")).unwrap();
     let message =
         |r: EngineResult<GrantedRoot>| r.unwrap_err().to_body().message.as_str().to_owned();
-    let root = engine.granted_root(id(), 1).unwrap();
+    let root = engine.granted_root(rt(1), 1).unwrap();
     assert_eq!(root.path(), root_dir.path());
     assert_eq!(root.dataset_class(), DatasetClass::Synthetic);
-    assert_eq!(message(engine.granted_root(id(), 2)), "grant_not_active");
-    assert_eq!(message(engine.granted_root(id(), 4)), "grant_not_active");
+    assert_eq!(message(engine.granted_root(rt(2), 2)), "grant_not_active");
+    assert_eq!(message(engine.granted_root(rt(4), 4)), "grant_not_active");
     assert_eq!(
-        message(engine.granted_root(id(), 3)),
+        message(engine.granted_root(rt(3), 3)),
         "root_identity_changed"
+    );
+    // #206: a root ID and an active grant that do not belong together are refused.
+    assert_eq!(
+        message(engine.granted_root(rt(3), 1)),
+        "grant_root_mismatch"
+    );
+    assert_eq!(
+        message(engine.granted_root(RootId::new("rt_granted").unwrap(), 1)),
+        "grant_root_mismatch"
     );
     // The row's class, not the caller's, reaches the engine's class check.
     conn.execute("UPDATE meta SET value='personal'", [])
         .unwrap();
-    let personal = engine.granted_root(id(), 1).unwrap();
+    let personal = engine.granted_root(rt(1), 1).unwrap();
     assert_eq!(personal.dataset_class(), DatasetClass::Personal);
     engine
         .set_scan_sink(Arc::new(MemorySink::default()))
@@ -1774,4 +1795,164 @@ fn a_sink_without_watch_support_scans_unwatched() {
     assert_eq!(sink.0.totals(root.root_id()).unwrap().logical, 7);
     // No watch pin outlives the scan: the user can rename the scanned folder.
     std::fs::rename(temp.path().join("child"), temp.path().join("renamed")).unwrap();
+}
+/// One wide directory of near-limit (32,767-unit) child names: the names its listing holds until
+/// the children are adopted are charged to the arena reservation, so the held set stops at a
+/// limit instead of growing past the scan's byte budget (#206).
+struct WideNames;
+impl DirSource for WideNames {
+    type Dir = u64;
+    fn strategy(&self) -> Strategy {
+        Strategy::Portable
+    }
+    fn open_root(&self, _: &std::path::Path) -> Result<(u64, OpenedIdentity), SourceError> {
+        Ok((1, identity(1)))
+    }
+    fn open_child(&self, _: &u64, e: &RawEntry<'_>) -> Result<(u64, OpenedIdentity), SourceError> {
+        let Some(FileIdObs::Id64(id)) = e.file_id else {
+            unreachable!()
+        };
+        Ok((id, identity(id)))
+    }
+    fn list(&self, dir: &u64, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+        if *dir != 1 {
+            return ListOutcome::Complete;
+        }
+        let mut name = vec![u16::from(b'n'); 32767];
+        for i in 0..400u64 {
+            name[..3].copy_from_slice(&[
+                0x41 + (i / 26 / 26) as u16,
+                0x41 + (i / 26 % 26) as u16,
+                0x41 + (i % 26) as u16,
+            ]);
+            if sink(RawEntry {
+                name: &name,
+                file_id: Some(FileIdObs::Id64(i + 2)),
+                attributes: 0x10,
+                reparse_tag: None,
+                end_of_file: 0,
+                allocation_size: Some(0),
+                creation: None,
+                last_write: None,
+                change: None,
+                last_access: None,
+            }) == Flow::Stop
+            {
+                return ListOutcome::Incomplete(IncompleteReason::Cancelled);
+            }
+        }
+        ListOutcome::Complete
+    }
+}
+#[test]
+fn held_child_names_are_charged_to_the_scan_byte_budget() {
+    let bytes = Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES));
+    let arena = (bytes.capacity() / 4).min(16 * 1024 * 1024);
+    let report = run_scan(
+        &WideNames,
+        &root(),
+        1,
+        Arc::new(MemorySink::default()),
+        bytes,
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions::default(),
+    )
+    .unwrap();
+    assert!(report.limit_hit && !report.complete, "{report:?}");
+    let held = report.totals.dirs as usize * 32767 * 2;
+    assert!(
+        report.totals.dirs > 0 && held <= arena,
+        "{} held names ({held} bytes) exceed the {arena}-byte arena",
+        report.totals.dirs
+    );
+}
+/// A writer whose first child prepare is obsolete (the parent's publication was rejected).
+struct StalePrepare {
+    sink: MemorySink,
+    refused: AtomicBool,
+}
+impl ScanSink for StalePrepare {
+    fn refresh_listing(
+        &self,
+        root: &RootId,
+        run: u64,
+        ticket: ListingTicket,
+    ) -> crate::EngineResult<ListingTicket> {
+        self.sink.refresh_listing(root, run, ticket)
+    }
+    fn recover_interrupted(&self) -> crate::EngineResult<()> {
+        self.sink.recover_interrupted()
+    }
+    fn begin_run(&self, root: &RootId, run: u64, scope: &RunScope) -> crate::EngineResult<()> {
+        self.sink.begin_run(root, run, scope)
+    }
+    fn prepare_listing(
+        &self,
+        root: &RootId,
+        run: u64,
+        parent: Option<u64>,
+        name: &[u16],
+        identity: OpenedIdentity,
+    ) -> crate::EngineResult<ListingTicket> {
+        if parent.is_some() && !self.refused.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return Err(crate::EngineError::StaleGeneration {
+                message: "obsolete scan writer message".into(),
+                detail: loomward_protocol::Detail::new(std::collections::BTreeMap::from([(
+                    "reason".to_string(),
+                    serde_json::json!("listing_revision_changed"),
+                )]))
+                .ok(),
+            });
+        }
+        self.sink.prepare_listing(root, run, parent, name, identity)
+    }
+    fn consume(&self, root: &RootId, message: ScanMessage) -> crate::EngineResult<()> {
+        self.sink.consume(root, message)
+    }
+    fn finish_run(
+        &self,
+        root: &RootId,
+        run: u64,
+        scope: &RunScope,
+        complete: bool,
+    ) -> crate::EngineResult<()> {
+        self.sink.finish_run(root, run, scope, complete)
+    }
+    fn fence_root(&self, root: &RootId) -> crate::EngineResult<()> {
+        self.sink.fence_root(root)
+    }
+}
+/// #206 MEDIUM-2: an obsolete child prepare relists its parent instead of failing the run.
+#[test]
+fn stale_child_prepare_relists_the_parent() {
+    let sink = Arc::new(StalePrepare {
+        sink: MemorySink::default(),
+        refused: AtomicBool::new(false),
+    });
+    let root = root();
+    let report = run_scan(
+        &Tree,
+        &root,
+        1,
+        sink.clone(),
+        Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions {
+            workers: 1,
+            ..ScanOptions::default()
+        },
+    )
+    .expect("a stale prepare is not a run failure");
+    assert!(sink.refused.load(std::sync::atomic::Ordering::Acquire));
+    assert!(report.complete, "{report:?}");
+    assert_eq!(
+        report.totals,
+        Sums {
+            files: 1,
+            dirs: 1,
+            logical: 123,
+            allocated: Some(4096)
+        }
+    );
+    assert_eq!(sink.sink.totals(root.root_id()), Some(report.totals));
 }
