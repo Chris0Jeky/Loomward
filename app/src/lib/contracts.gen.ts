@@ -173,7 +173,7 @@ export interface EventEnvelope {
   data: Record<string, unknown>;
 }
 
-export type EmptyRequest = Record<string, unknown>;
+export type EmptyRequest = Record<string, never>;
 
 export interface Capabilities {
   observation: {

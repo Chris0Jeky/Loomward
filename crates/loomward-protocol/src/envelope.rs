@@ -104,16 +104,114 @@ impl RequestEnvelope {
         decode_exact(Value::Object(self.payload.clone()))
     }
 
-    /// The adapter entry point: parses the raw bytes of a call and runs the complete check of
-    /// [`RequestEnvelope::validate`], so an envelope that comes back is for a known command, carries
-    /// exactly that command's payload and uses only preconditions the command accepts. A bad body
-    /// is `invalid_request`, an unknown command `unknown_command`.
-    pub fn from_slice(bytes: &[u8]) -> Result<Self, ErrorBody> {
-        let value: Value = serde_json::from_slice(bytes)
-            .map_err(|e| ErrorBody::invalid_request(&e.to_string()))?;
-        let request: Self = decode_exact(value)?;
-        request.validate()?;
+    /// The adapter entry point (semantics.md section 1): parses the raw bytes of a call and runs
+    /// the checks in ingress order. The body must be one JSON object without a repeated member at
+    /// any depth, else `invalid_request` with no `request_id`. A `protocol` other than
+    /// `loomward/3` is `unsupported_protocol` with the `request_id` echoed when it is well formed.
+    /// Then the envelope must decode exactly, name a known command (`unknown_command`), carry
+    /// exactly that command's payload and use only preconditions the command accepts
+    /// ([`RequestEnvelope::validate`]). The returned [`Rejected`] is ready to become a response.
+    pub fn from_slice(bytes: &[u8]) -> Result<Self, Rejected> {
+        let value = parse_strict(bytes)
+            .map_err(|message| Rejected::new(None, ErrorBody::invalid_request(&message)))?;
+        let id = value
+            .get("request_id")
+            .and_then(Value::as_str)
+            .and_then(|s| RequestId::new(s).ok());
+        if let Some(protocol) = value.get("protocol").and_then(Value::as_str) {
+            if protocol != Protocol::VALUE {
+                let message = format!("this service speaks {}", Protocol::VALUE);
+                let error = ErrorBody::new(ErrorCode::UnsupportedProtocol, &message, false);
+                return Err(Rejected::new(id, error));
+            }
+        }
+        let request: Self = decode_exact(value).map_err(|e| Rejected::new(id, e))?;
+        request
+            .validate()
+            .map_err(|e| Rejected::new(Some(request.request_id.clone()), e))?;
         Ok(request)
+    }
+}
+
+/// A call refused before it reached a command, with what the error response needs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Rejected {
+    /// The request's id when the body was parseable and the id well formed, else `null`.
+    pub request_id: Option<RequestId>,
+    pub error: ErrorBody,
+}
+
+impl Rejected {
+    pub fn new(request_id: Option<RequestId>, error: ErrorBody) -> Self {
+        Self { request_id, error }
+    }
+
+    /// The error response to send (no `meta`: nothing was served).
+    pub fn into_response(self) -> ResponseEnvelope {
+        ResponseEnvelope::error(self.request_id, self.error, None)
+    }
+}
+
+/// Parses one JSON document, refusing a repeated object member at any depth. `serde_json`
+/// collapses duplicates silently into the last value, so a plain parse cannot enforce the rule.
+/// Nesting is bounded by `serde_json`'s recursion limit (128).
+fn parse_strict(bytes: &[u8]) -> Result<Value, String> {
+    let mut de = serde_json::Deserializer::from_slice(bytes);
+    let Strict(value) = Strict::deserialize(&mut de).map_err(|e| e.to_string())?;
+    de.end().map_err(|e| e.to_string())?;
+    Ok(value)
+}
+
+struct Strict(Value);
+
+impl<'de> Deserialize<'de> for Strict {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> de::Visitor<'de> for V {
+            type Value = Strict;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("any JSON value")
+            }
+            fn visit_bool<E: de::Error>(self, v: bool) -> Result<Strict, E> {
+                Ok(Strict(Value::Bool(v)))
+            }
+            fn visit_i64<E: de::Error>(self, v: i64) -> Result<Strict, E> {
+                Ok(Strict(v.into()))
+            }
+            fn visit_u64<E: de::Error>(self, v: u64) -> Result<Strict, E> {
+                Ok(Strict(v.into()))
+            }
+            fn visit_f64<E: de::Error>(self, v: f64) -> Result<Strict, E> {
+                serde_json::Number::from_f64(v)
+                    .map(|n| Strict(Value::Number(n)))
+                    .ok_or_else(|| E::custom("number is not finite"))
+            }
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<Strict, E> {
+                Ok(Strict(Value::String(v.to_owned())))
+            }
+            fn visit_unit<E: de::Error>(self) -> Result<Strict, E> {
+                Ok(Strict(Value::Null))
+            }
+            fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Strict, A::Error> {
+                let mut items = Vec::new();
+                while let Some(Strict(item)) = seq.next_element()? {
+                    items.push(item);
+                }
+                Ok(Strict(Value::Array(items)))
+            }
+            fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<Strict, A::Error> {
+                let mut out = Map::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    if out.contains_key(&key) {
+                        return Err(de::Error::custom(format!("duplicate member `{key}`")));
+                    }
+                    let Strict(value) = map.next_value()?;
+                    out.insert(key, value);
+                }
+                Ok(Strict(Value::Object(out)))
+            }
+        }
+        d.deserialize_any(V)
     }
 }
 

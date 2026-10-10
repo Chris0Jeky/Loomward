@@ -321,6 +321,12 @@ impl<const MIN: usize, const MAX: usize> Deref for BoundedStr<MIN, MAX> {
     }
 }
 
+impl<const MIN: usize, const MAX: usize> fmt::Display for BoundedStr<MIN, MAX> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 impl<const MIN: usize, const MAX: usize> TryFrom<&str> for BoundedStr<MIN, MAX> {
     type Error = Invalid;
     fn try_from(v: &str) -> Result<Self, Invalid> {

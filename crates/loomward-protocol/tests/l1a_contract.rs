@@ -422,6 +422,7 @@ fn strict_decode_refuses_positional_arrays_and_accepts_integral_floats() {
     assert_eq!(
         RequestEnvelope::from_slice(br#"["loomward/3","r_1","a.b",{}]"#)
             .unwrap_err()
+            .error
             .code,
         ErrorCode::InvalidRequest
     );
@@ -434,7 +435,10 @@ fn strict_decode_refuses_positional_arrays_and_accepts_integral_floats() {
     assert_eq!(decode_exact::<Fraction>(json!(1)).unwrap(), frac);
     assert_eq!(ok.command.as_str(), "tree.slice");
     assert_eq!(
-        RequestEnvelope::from_slice(b"{not json").unwrap_err().code,
+        RequestEnvelope::from_slice(b"{not json")
+            .unwrap_err()
+            .error
+            .code,
         ErrorCode::InvalidRequest
     );
 }
@@ -517,18 +521,21 @@ fn from_slice_is_the_complete_entry_point() {
     // A scan.start payload sent as tree.slice: structurally an object, wrong for the command.
     let wrong = br#"{"protocol":"loomward/3","request_id":"r_1","command":"tree.slice","payload":{"root_id":"rt_a","mode":"full"}}"#;
     assert_eq!(
-        RequestEnvelope::from_slice(wrong).unwrap_err().code,
+        RequestEnvelope::from_slice(wrong).unwrap_err().error.code,
         ErrorCode::InvalidRequest
     );
     let unknown =
         br#"{"protocol":"loomward/3","request_id":"r_1","command":"files.erase","payload":{}}"#;
     assert_eq!(
-        RequestEnvelope::from_slice(unknown).unwrap_err().code,
+        RequestEnvelope::from_slice(unknown).unwrap_err().error.code,
         ErrorCode::UnknownCommand
     );
     let precondition = br#"{"protocol":"loomward/3","request_id":"r_1","command":"scan.start","payload":{"root_id":"rt_a","mode":"full"},"expected_state_rev":"3"}"#;
     assert_eq!(
-        RequestEnvelope::from_slice(precondition).unwrap_err().code,
+        RequestEnvelope::from_slice(precondition)
+            .unwrap_err()
+            .error
+            .code,
         ErrorCode::InvalidRequest
     );
     let good = br#"{"protocol":"loomward/3","request_id":"r_1","command":"scan.start","payload":{"root_id":"rt_a","mode":"full"}}"#;
@@ -549,4 +556,84 @@ fn integers_above_two_to_the_53_are_not_conflated() {
     assert!(decode_exact::<Wide>(json!({"x": 9007199254740993u64})).is_err());
     assert!(decode_exact::<Wide>(json!({"x": 1})).is_ok());
     assert!(decode_exact::<Wide>(json!({"x": 0.5})).is_ok());
+}
+
+fn rejected(bytes: &[u8]) -> Rejected {
+    RequestEnvelope::from_slice(bytes).expect_err("must be refused")
+}
+
+#[test]
+fn unsupported_protocol_is_distinct_and_echoes_a_valid_request_id() {
+    let body =
+        br#"{"protocol":"loomward/4","request_id":"r_77","command":"session.hello","payload":{}}"#;
+    let r = rejected(body);
+    assert_eq!(r.error.code, ErrorCode::UnsupportedProtocol);
+    assert_eq!(r.request_id.as_ref().map(|i| i.as_str()), Some("r_77"));
+    // A malformed request_id is not echoed.
+    let r = rejected(br#"{"protocol":"loomward/4","request_id":"bad id!","command":"session.hello","payload":{}}"#);
+    assert_eq!(r.error.code, ErrorCode::UnsupportedProtocol);
+    assert!(r.request_id.is_none());
+    // The protocol is judged before anything else is looked at.
+    let r = rejected(br#"{"protocol":"loomward/4","request_id":"r_78","command":"files.erase","payload":[1],"extra":true}"#);
+    assert_eq!(r.error.code, ErrorCode::UnsupportedProtocol);
+    // A missing or non-string protocol is just an invalid request.
+    let r = rejected(br#"{"request_id":"r_79","command":"session.hello","payload":{}}"#);
+    assert_eq!(r.error.code, ErrorCode::InvalidRequest);
+    assert_eq!(r.request_id.as_ref().map(|i| i.as_str()), Some("r_79"));
+    let r =
+        rejected(br#"{"protocol":3,"request_id":"r_80","command":"session.hello","payload":{}}"#);
+    assert_eq!(r.error.code, ErrorCode::InvalidRequest);
+    // Later rejections still echo the id; the response is ready to send.
+    let r = rejected(
+        br#"{"protocol":"loomward/3","request_id":"r_81","command":"files.erase","payload":{}}"#,
+    );
+    assert_eq!(r.error.code, ErrorCode::UnknownCommand);
+    match r.into_response() {
+        ResponseEnvelope::Err(e) => assert_eq!(e.request_id.unwrap().as_str(), "r_81"),
+        ResponseEnvelope::Ok(_) => panic!("a rejection is an error response"),
+    }
+}
+
+#[test]
+fn duplicate_json_members_are_refused_at_any_depth() {
+    let dup_command = br#"{"protocol":"loomward/3","request_id":"r_1","command":"scan.cancel","command":"scan.start","payload":{}}"#;
+    let dup_payload = br#"{"protocol":"loomward/3","request_id":"r_1","command":"scan.start","payload":{"root_id":"rt_a","root_id":"rt_b","mode":"full"}}"#;
+    let dup_deep = br#"{"protocol":"loomward/3","request_id":"r_1","command":"tree.slice","payload":{"anchor":{"kind":"root","root_id":"rt_a","kind":"atlas"},"depth":2,"max_nodes":100,"min_share":0,"basis":"logical","include_files":false}}"#;
+    let dup_in_array = br#"{"protocol":"loomward/3","request_id":"r_1","command":"collections.update_members","payload":{"collection_id":"co_a","add":[],"remove":[],"zz":[{"a":1,"a":2}]}}"#;
+    for (name, body) in [
+        ("command", &dup_command[..]),
+        ("payload", dup_payload),
+        ("deep", dup_deep),
+        ("array", dup_in_array),
+    ] {
+        let r = rejected(body);
+        assert_eq!(r.error.code, ErrorCode::InvalidRequest, "{name}");
+        assert!(
+            r.request_id.is_none(),
+            "{name}: a body that does not parse echoes no id"
+        );
+        assert!(
+            r.error.message.contains("duplicate"),
+            "{name}: {}",
+            r.error.message
+        );
+    }
+    // The same members without the repeat are fine.
+    let ok = br#"{"protocol":"loomward/3","request_id":"r_1","command":"scan.start","payload":{"root_id":"rt_a","mode":"full"}}"#;
+    assert!(RequestEnvelope::from_slice(ok).is_ok());
+    // Repeats in different objects are not duplicates.
+    let siblings = br#"{"protocol":"loomward/3","request_id":"r_1","command":"collections.update_members","payload":{"collection_id":"co_a","add":[],"remove":[]}}"#;
+    assert!(RequestEnvelope::from_slice(siblings).is_ok());
+}
+
+#[test]
+fn nesting_beyond_the_parser_bound_is_refused_not_overflowed() {
+    let deep = format!(
+        r#"{{"protocol":"loomward/3","request_id":"r_1","command":"scan.start","payload":{}}}"#,
+        "[".repeat(5000) + &"]".repeat(5000)
+    );
+    assert_eq!(
+        rejected(deep.as_bytes()).error.code,
+        ErrorCode::InvalidRequest
+    );
 }

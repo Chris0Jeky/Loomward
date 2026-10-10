@@ -78,6 +78,8 @@ def ts_type(node, indent):
         extra = node.get("additionalProperties")
         if isinstance(extra, dict):
             return f"{{ [key: string]: {ts_type(extra, indent)} }}"
+        if extra is False:
+            return "Record<string, never>"  # a closed empty object, e.g. EmptyRequest
         return "Record<string, unknown>"
     raise ValueError(f"unsupported schema node: {node!r}")
 
