@@ -93,7 +93,7 @@
     "#148 (P4 toward 250k: receipt pipelining)",
     "#160 (P12 to at or under 1%)",
     "LW-056 (L17 10M lab tier and scale benchmarks)",
-    "LW-111 (teacher sandbox, waiting on owner q-8)"
+    "LW-111 (teacher: synthetic inference broker first, owner q-8 answered 2026-10-10; personal data waits on q-5)"
   ],
   "optional_independent_starts": [
     "LW-065",
@@ -147,7 +147,7 @@
     ]
   },
   "backlog_github_map": "backlog/github-issues.json (#4-#105, #120-#131); follow-ups #141-#171",
-  "teacher_confinement": "synthetic-only; an unregistered AppContainer refused the probe before it ran (#174); owner decision q-8 (AppContainer profile or inference broker) is open, then q-5",
+  "teacher_confinement": "synthetic-only; an unregistered AppContainer refused the probe before it ran (#174); owner decision q-8 answered 2026-10-10: inference broker first, synthetic tests only, no credential reuse, no paid fallback, no Windows security change (HUMAN_TODO; docs/superpowers/specs/2026-10-10-synthetic-inference-broker-design.md); q-5 (personal-data disclosure) remains open",
   "wave4": {
     "merged": [
       "#173",

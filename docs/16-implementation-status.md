@@ -110,5 +110,5 @@ tier on E: (L17a).
 
 Not established: personal (real-disk) scans through the product, gated on #206 (excluded entries must stay
 visible, held names charged to the byte budget) and the rest of #184; P4 at 250k (#148); P12 at or under 1%
-(#160); cold-cache or HDD timings; the teacher on real data (owner decisions q-8, then q-5). An intermittent
+(#160); cold-cache or HDD timings; the teacher on real data (q-8 answered broker-first on 10 October, design in `docs/superpowers/specs/2026-10-10-synthetic-inference-broker-design.md`; q-5 still open). An intermittent
 native watch test failure under heavy host load is tracked (#201). No file or process effect exists.
