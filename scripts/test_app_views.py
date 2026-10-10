@@ -12,6 +12,7 @@ import queue
 import re
 import threading
 import time
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -32,11 +33,11 @@ FORBIDDEN_BUTTONS = re.compile(r'kill|suspend|trim|terminate|end task|priority|e
 
 
 
-def wait_until(page, expression: str, arg=None, timeout_ms: int = 9000) -> None:
+def wait_until(page, expression: str | Callable[[], bool], arg=None, timeout_ms: int = 9000) -> None:
     # page.wait_for_function polls through page-side eval, which the app's CSP (no
     # 'unsafe-eval') blocks whenever the predicate is not already true; page.evaluate is not.
     deadline = time.monotonic() + timeout_ms / 1000
-    while not page.evaluate(expression, arg):
+    while not (expression() if callable(expression) else page.evaluate(expression, arg)):
         if time.monotonic() > deadline:
             raise AssertionError(f'timed out waiting for: {expression}')
         time.sleep(0.05)
@@ -267,12 +268,14 @@ def check_explorer_mock(page: Page, base: str, shoot) -> None:
     page.get_by_label('Kind').select_option('dir')
     page.get_by_role('button', name='Search', exact=True).click()
     expect(page.get_by_text('Search results for')).to_be_visible()
+    expect(page.locator('main .tbl-wrap')).to_have_attribute('aria-busy', 'false')
     kinds = rows(page).locator('td:nth-child(2)').all_inner_texts()
     ok(len(kinds) > 0 and set(kinds) == {'dir'}, 'kind filter keeps folders only')
     page.get_by_label('Kind').select_option('any')
     page.get_by_placeholder('Search names').fill('')
     page.get_by_label('Extension').fill('pdf')
     page.get_by_role('button', name='Search', exact=True).click()
+    expect(page.locator('main .tbl-wrap')).to_have_attribute('aria-busy', 'false')
     names = rows(page).locator('th:first-child').all_inner_texts()
     ok(len(names) > 0 and all(n.split('\n')[0].endswith('.pdf') for n in names), 'extension filter alone searches and matches only that extension')
     page.get_by_label('Extension').fill('')
