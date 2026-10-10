@@ -39,9 +39,10 @@ Research prototype, not a file manager or system optimiser.
 **In review or not built yet**
 
 - **Scanning through the product.** `loomward-serve` runs the L8 view service over the engine and
-  catalogue (#179), but there `scan.start` still answers unavailable until the catalogue-backed scan
-  writer and the change-tracking gates (#184) land. `loomward-serve --fixtures` and the desktop
-  shell answer every command, `scan.start` included, from the contract's example fixtures; those
+  catalogue (#179). Since #205, `scan.start` runs for synthetic lab roots registered with the
+  service. Personal sessions answer `capability_unavailable` with reason
+  `personal_scan_gated_184` until the change-tracking gates (#184) land. `loomward-serve --fixtures`
+  and the desktop shell answer every command, `scan.start` included, from the contract's example fixtures; those
   are not scans. Native enumeration has
   been measured only on synthetic lab trees and on four owner-authorised real folders, read-only,
   metadata only and anonymised. A whole volume may become a scan root only when the owner picks it
