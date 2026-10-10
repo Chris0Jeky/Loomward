@@ -1216,3 +1216,151 @@ fn skip_elevated() -> bool {
     eprintln!("skipped: elevated token; the native scan refuses elevation (invariant 2)");
     true
 }
+
+/// #144: a root is minted only from an active grant row in the engine's own `state.db`, with the
+/// row's path, identity and dataset class; a mismatched class is refused at start and refresh.
+#[cfg(windows)]
+#[test]
+fn granted_root_comes_only_from_an_active_durable_grant() {
+    if skip_elevated() {
+        return;
+    }
+    let state = canonical_tempdir();
+    let root_dir = canonical_tempdir();
+    let (_, identity) = loomward_windows::enumerate::NativeSource::default()
+        .open_root(root_dir.path())
+        .unwrap();
+    let file_id = match identity.id.unwrap() {
+        FileIdObs::Id128(id) => id.to_vec(),
+        FileIdObs::Id64(id) => id.to_le_bytes().to_vec(),
+    };
+    let volume = format!("vsn_{}", identity.volume_serial.unwrap());
+    let conn = rusqlite::Connection::open(state.path().join("state.db")).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);
+         INSERT INTO meta VALUES('dataset_class','synthetic');
+         CREATE TABLE root_grant(id INTEGER PRIMARY KEY,display_path TEXT,volume_key TEXT,root_file_id BLOB,state TEXT);",
+    )
+    .unwrap();
+    let path = root_dir.path().to_string_lossy().into_owned();
+    let insert = |id: i64, file_id: &[u8], state: &str| {
+        conn.execute(
+            "INSERT INTO root_grant VALUES(?1,?2,?3,?4,?5)",
+            rusqlite::params![id, path, volume, file_id, state],
+        )
+        .unwrap();
+    };
+    insert(1, &file_id, "active");
+    insert(2, &file_id, "revoked");
+    insert(3, &[9; 16], "active");
+    let engine = Engine::open(EngineConfig::new(
+        state.path().to_path_buf(),
+        DatasetClass::Synthetic,
+    ))
+    .unwrap();
+    let id = || RootId::new("rt_granted").unwrap();
+    let message =
+        |r: EngineResult<GrantedRoot>| r.unwrap_err().to_body().message.as_str().to_owned();
+    let root = engine.granted_root(id(), 1).unwrap();
+    assert_eq!(root.path(), root_dir.path());
+    assert_eq!(root.dataset_class(), DatasetClass::Synthetic);
+    assert_eq!(message(engine.granted_root(id(), 2)), "grant_not_active");
+    assert_eq!(message(engine.granted_root(id(), 4)), "grant_not_active");
+    assert_eq!(
+        message(engine.granted_root(id(), 3)),
+        "root_identity_changed"
+    );
+    // The row's class, not the caller's, reaches the engine's class check.
+    conn.execute("UPDATE meta SET value='personal'", [])
+        .unwrap();
+    let personal = engine.granted_root(id(), 1).unwrap();
+    assert_eq!(personal.dataset_class(), DatasetClass::Personal);
+    engine
+        .set_scan_sink(Arc::new(MemorySink::default()))
+        .unwrap();
+    for result in [
+        engine.scan_start(&personal, None),
+        engine.scan_refresh(&personal, None),
+    ] {
+        assert_eq!(
+            result.unwrap_err().to_body().message.as_str(),
+            "dataset_class_mismatch"
+        );
+    }
+}
+
+/// A sink without watch support (the trait default) scans with no watcher and no lasting pins.
+struct Unwatched(MemorySink);
+impl ScanSink for Unwatched {
+    fn recover_interrupted(&self) -> crate::EngineResult<()> {
+        self.0.recover_interrupted()
+    }
+    fn begin_run(&self, root: &RootId, run: u64, scope: &RunScope) -> crate::EngineResult<()> {
+        self.0.begin_run(root, run, scope)
+    }
+    fn prepare_listing(
+        &self,
+        root: &RootId,
+        run: u64,
+        parent: Option<u64>,
+        name: &[u16],
+        identity: OpenedIdentity,
+    ) -> crate::EngineResult<ListingTicket> {
+        self.0.prepare_listing(root, run, parent, name, identity)
+    }
+    fn refresh_listing(
+        &self,
+        root: &RootId,
+        run: u64,
+        ticket: ListingTicket,
+    ) -> crate::EngineResult<ListingTicket> {
+        self.0.refresh_listing(root, run, ticket)
+    }
+    fn consume(&self, root: &RootId, message: ScanMessage) -> crate::EngineResult<()> {
+        self.0.consume(root, message)
+    }
+    fn finish_run(
+        &self,
+        root: &RootId,
+        run: u64,
+        scope: &RunScope,
+        complete: bool,
+    ) -> crate::EngineResult<()> {
+        self.0.finish_run(root, run, scope, complete)
+    }
+    fn fence_root(&self, root: &RootId) -> crate::EngineResult<()> {
+        self.0.fence_root(root)
+    }
+}
+#[cfg(windows)]
+#[test]
+fn a_sink_without_watch_support_scans_unwatched() {
+    if skip_elevated() {
+        return;
+    }
+    let temp = canonical_tempdir();
+    std::fs::create_dir(temp.path().join("child")).unwrap();
+    std::fs::write(temp.path().join("child").join("synthetic"), [0u8; 7]).unwrap();
+    let (_, identity) = loomward_windows::enumerate::NativeSource::default()
+        .open_root(temp.path())
+        .unwrap();
+    let root = GrantedRoot::new(
+        RootId::new("rt_unwatched").unwrap(),
+        temp.path().to_path_buf(),
+        DatasetClass::Synthetic,
+        identity,
+    );
+    let e = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Synthetic)).unwrap();
+    let sink = Arc::new(Unwatched(MemorySink::default()));
+    e.set_scan_sink(sink.clone()).unwrap();
+    let job = e.scan_start(&root, None).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while e.job_status(&job.job_id).unwrap().state != loomward_protocol::JobState::Completed {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(e.scan_watches.lock().unwrap().is_empty());
+    assert_eq!(sink.0.totals(root.root_id()).unwrap().logical, 7);
+    // No watch pin outlives the scan: the user can rename the scanned folder.
+    std::fs::rename(temp.path().join("child"), temp.path().join("renamed")).unwrap();
+}

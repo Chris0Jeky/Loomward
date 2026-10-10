@@ -6,8 +6,9 @@
 //! entry points remain explicitly unavailable. No catalogue durability is implied by the
 //! aggregate-only in-memory fixture sink.
 //!
-//! The engine exposes no generic command and accepts no path from a caller: the service resolves
-//! a granted root from `state.db` and passes a [`scan::GrantedRoot`]. Nothing here performs a
+//! The engine exposes no generic command and accepts no path from a caller: it mints a
+//! [`scan::GrantedRoot`] only from an active grant row in its own `state.db`
+//! ([`Engine::granted_root`]), named by the service. Nothing here performs a
 //! file or process effect (AGENTS.md invariant 1).
 
 #![forbid(unsafe_code)]
