@@ -274,21 +274,26 @@ fn slice(
         let mut files = 0_u64;
         let mut dirs = 0_u64;
         let mut unknown = 0_u64;
+        let mut counted = 0_u64;
         for child in children {
-            logical = add(logical, child.totals.logical)?;
-            allocated = add(allocated, child.totals.allocated)?;
-            files = add(files, child.totals.files)?;
-            unknown = add(unknown, child.totals.allocation_unknown)?;
-            dirs = add(
-                dirs,
-                add(
-                    child.totals.dirs,
-                    u64::from(
-                        matches!(child.key, NodeKey::Dir(_))
-                            && matches!(parent_row.key, NodeKey::Dir(_)),
-                    ),
-                )?,
-            )?;
+            // An excluded entry, or anything left inside one, is shown but never counted.
+            if (child.flags | parent_row.flags) & EXCLUDED_FLAGS == 0 {
+                counted += 1;
+                logical = add(logical, child.totals.logical)?;
+                allocated = add(allocated, child.totals.allocated)?;
+                files = add(files, child.totals.files)?;
+                unknown = add(unknown, child.totals.allocation_unknown)?;
+                dirs = add(
+                    dirs,
+                    add(
+                        child.totals.dirs,
+                        u64::from(
+                            matches!(child.key, NodeKey::Dir(_))
+                                && matches!(parent_row.key, NodeKey::Dir(_)),
+                        ),
+                    )?,
+                )?;
+            }
             let child_live = live_grants
                 .get(&child.grant)
                 .copied()
@@ -307,8 +312,7 @@ fn slice(
             });
             nodes[index].children.push(i);
         }
-        let visible = nodes[index].children.len() as u64;
-        let omitted = known_count.map(|n| n.saturating_sub(visible));
+        let omitted = known_count.map(|n| n.saturating_sub(counted));
         let remainder = Totals {
             logical: difference(parent_row.totals.logical, logical, parent_live, &mut clamps)?,
             allocated: difference(
