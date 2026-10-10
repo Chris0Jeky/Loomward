@@ -5,7 +5,7 @@
 // running scan has no counts and no percentage, and none is invented. A scan is "complete" only when the
 // service says its coverage is complete; anything else says partial.
 import type { ErrorCode, Job, JobState, ScanProgress } from '../contracts.gen';
-import { formatBytes } from '../format/bytes';
+import { formatBytes, parseBytes } from '../format/bytes';
 import { formatCount } from '../format/time';
 
 /** The latest scan job per root id. */
@@ -23,7 +23,26 @@ export const isActive = (s: JobState): boolean => RANK[s] < TERMINAL;
  * knows is added, nothing already known is erased by a null, and the larger counters win (they only grow).
  */
 function merge(cur: Job, job: Job): Job {
-  const progress = cur.progress && job.progress ? (job.progress.examined >= cur.progress.examined ? job.progress : cur.progress) : (job.progress ?? cur.progress);
+  let progress = job.progress ?? cur.progress;
+  if (cur.progress && job.progress) {
+    const a = cur.progress, b = job.progress;
+    const maxBytes = (x: string | null, y: string | null) => {
+      const left = parseBytes(x), right = parseBytes(y);
+      return left === null ? y : right === null || left > right ? x : y;
+    };
+    progress = {
+      ...(b.examined >= a.examined ? b : a),
+      examined: Math.max(a.examined, b.examined),
+      indexed_files: Math.max(a.indexed_files, b.indexed_files),
+      indexed_dirs: Math.max(a.indexed_dirs, b.indexed_dirs),
+      skipped: Math.max(a.skipped, b.skipped),
+      failed: Math.max(a.failed, b.failed),
+      logical_bytes: maxBytes(a.logical_bytes, b.logical_bytes)!,
+      allocated_bytes: maxBytes(a.allocated_bytes, b.allocated_bytes),
+      elapsed_ms: Math.max(a.elapsed_ms, b.elapsed_ms),
+      limit_hit: a.limit_hit || b.limit_hit,
+    };
+  }
   return {
     ...job,
     started_at: job.started_at ?? cur.started_at,

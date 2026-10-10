@@ -6,6 +6,7 @@ export class Explanation {
   error = $state('');
   pending = $state<string | null>(null);
   private ticket = 0;
+  private requestedAt = 0;
 
   constructor(private readonly client: () => Client | null, private readonly handle: (e: unknown) => string) {}
 
@@ -13,6 +14,7 @@ export class Explanation {
     const c = this.client();
     if (!c) return;
     const mine = ++this.ticket;
+    this.requestedAt = Date.now();
     this.error = '';
     this.answer = null;
     this.pending = null;
@@ -28,7 +30,12 @@ export class Explanation {
   }
 
   async resume(sample: ProcessList | null): Promise<void> {
-    if (sample && this.pending) await this.open(this.pending, null, false);
+    if (!sample || !this.pending || !(Date.parse(sample.observed_at) > this.requestedAt)) return;
+    const mine = this.ticket + 1;
+    try { await this.open(this.pending, null, false); }
+    catch (e) {
+      if (mine === this.ticket) this.error = e instanceof Error ? e.message : 'Could not explain this process.';
+    }
   }
 
   close(): void { this.ticket++; this.pending = null; }

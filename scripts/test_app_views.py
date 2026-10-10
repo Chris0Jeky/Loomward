@@ -68,6 +68,7 @@ class FakeEngine:
         self.telemetry_calls: list[dict] = []
         self.explain_partial_once = False
         self.explain_calls: list[str] = []
+        self.process_observed_at: str | None = None
 
     @property
     def base(self) -> str:
@@ -108,7 +109,12 @@ class FakeEngine:
             if cmd in ('telemetry.snapshot', 'processes.list', 'tree.slice', 'budgets.get'):
                 if cmd == 'processes.list' and self.process_error:
                     return (self.process_error, 'synthetic process observation failure')
-                return json.loads((ROOT / f'contracts/v3/examples/commands/{cmd}.result.json').read_text())
+                result = json.loads((ROOT / f'contracts/v3/examples/commands/{cmd}.result.json').read_text())
+                if cmd == 'processes.list' and self.process_observed_at:
+                    result['observed_at'] = self.process_observed_at
+                    for row in result['rows']:
+                        row['observed_at'] = self.process_observed_at
+                return result
         if cmd == 'tree.slice':
             delay, root = self.slice_queue.pop(0) if self.slice_queue else (0.0, 'Fake Root')
             time.sleep(delay)
@@ -460,6 +466,11 @@ def check_process_strip_failures(browser) -> None:
            'Companion deep link: partial coverage waits honestly without a stale explanation alert')
         engine.process_error = ''
         page.clock.set_system_time(start + timedelta(seconds=80))
+        expect(page.locator('table.procs tbody tr')).to_have_count(1)
+        expect(page.get_by_role('status').filter(has_text='Waiting for a fresh process sample.')).to_be_visible()
+        ok(len(engine.explain_calls) == 1, 'Companion deep link: retained observations do not trigger a retry')
+        engine.process_observed_at = (start + timedelta(seconds=96)).isoformat().replace('+00:00', 'Z')
+        page.clock.set_system_time(start + timedelta(seconds=96))
         expect(page.get_by_role('region', name='Explanation')).to_be_visible(timeout=10000)
         expect(page.get_by_role('heading', name='About this process')).to_be_focused()
         ok(len(engine.explain_calls) == 2 and engine.explain_calls[0] == engine.explain_calls[1],

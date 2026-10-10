@@ -72,6 +72,24 @@ describe('settling and syncing keep what was known', () => {
   beforeEach(fresh);
   afterEach(() => { session.client = null; });
 
+  it('surfaces an omitted scan whose state cannot be confirmed, and clears the warning on confirmation', async () => {
+    scans.apply(job('running'));
+    let confirmed = false;
+    const { client } = clientWith((c) => c === 'jobs.list' ? { jobs: [] } : confirmed ? { job: job('running') } :
+      { error: { code: 'internal_error', message: 'Synthetic service unavailable' } });
+    session.client = client;
+    await scans.sync();
+    expect(scans.problems.rt_a).toBe("Could not confirm this scan's state: Synthetic service unavailable");
+    expect(scans.change?.text).toBe(scans.problems.rt_a);
+    expect(scans.book.rt_a?.state).toBe('running'); // the failure is to confirm, not a reported scan failure
+    confirmed = true;
+    await scans.sync();
+    expect(scans.problems.rt_a).toBeUndefined();
+    scans.problems.rt_a = 'The scan could not be cancelled: Synthetic refusal';
+    await scans.sync();
+    expect(scans.problems.rt_a).toBe('The scan could not be cancelled: Synthetic refusal');
+  });
+
   it('settles when a newer finished scan replaces an older finished one for the same root', () => {
     scans.onEvent(ev('job.state', { job: job('completed', { coverage: 'complete', finished_at: '2026-10-10T10:00:05Z' }) }));
     const settled = scans.settled;
