@@ -254,10 +254,11 @@ No weakened or ignored test is an acceptable substitute. Do not enable scan.star
 
 ### NOT verified / residual risk
 
-The MEDIUM-2 ancestor-rename requirement is **known failing**, rather than untested. Its lifetime
-interference with user operations remains a scan.start blocker. No safe alternative native open
-strategy was established in the bounded diagnosis. The workspace release-wait timeout remains
-an observed failure even though narrower repetitions passed.
+Historical result, superseded by Part 2 below: the MEDIUM-2 ancestor-rename requirement was
+**known failing**, rather than untested. At that point, its lifetime interference with user
+operations remained a scan.start blocker. No safe alternative native open strategy had been
+established in the bounded diagnosis. The workspace release-wait timeout was an observed
+failure even though narrower repetitions passed.
 
 No L8 service/durable catalogue adapter integration, UI disclosure, hosted CI, Linux run,
 elevated-host execution, native ACL mutation/coverage transition, real cloud-placeholder hydration,
