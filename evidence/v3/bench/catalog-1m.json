@@ -7,9 +7,9 @@
     "target_dataset_rows": 10000000
   },
   "P4": {
-    "insert_seconds": 18.8208024,
+    "insert_seconds": 36.0241015,
     "met": false,
-    "rows_per_second": 53185.883296877924,
+    "rows_per_second": 27786.98033592871,
     "target_rows_per_second": 250000
   },
   "P6": {
@@ -21,28 +21,28 @@
     "target_ms": 60,
     "target_payload_bytes": 1500000,
     "timing": {
-      "max_ms": 44.049699999999994,
-      "min_ms": 28.293100000000003,
-      "p50_ms": 31.824900000000003,
-      "p95_ms": 40.9925,
+      "max_ms": 40.2946,
+      "min_ms": 30.131999999999998,
+      "p50_ms": 32.593900000000005,
+      "p95_ms": 35.3436,
       "runs": 21
     }
   },
   "P7": {
     "allocated_timing": {
-      "max_ms": 0.9047000000000001,
-      "min_ms": 0.48050000000000004,
-      "p50_ms": 0.499,
-      "p95_ms": 0.8145,
+      "max_ms": 0.976,
+      "min_ms": 0.4854,
+      "p50_ms": 0.5051,
+      "p95_ms": 0.8631,
       "runs": 21
     },
     "limit": 200,
     "target_ms": 20,
     "timing": {
-      "max_ms": 1.0019,
-      "min_ms": 0.5844999999999999,
-      "p50_ms": 0.6336,
-      "p95_ms": 0.9541999999999999,
+      "max_ms": 1.1345999999999998,
+      "min_ms": 0.5912,
+      "p50_ms": 0.6605,
+      "p95_ms": 0.949,
       "runs": 21
     }
   },
@@ -50,10 +50,10 @@
     "budget_hits": 21,
     "target_ms": 300,
     "timing": {
-      "max_ms": 17.703,
-      "min_ms": 11.9744,
-      "p50_ms": 13.4991,
-      "p95_ms": 15.6974,
+      "max_ms": 18.3707,
+      "min_ms": 12.2473,
+      "p50_ms": 13.1667,
+      "p95_ms": 17.2205,
       "runs": 21
     },
     "work_budget_sqlite_ops": 2000000
@@ -62,52 +62,69 @@
   "dataset_class": "synthetic",
   "directories": 1001,
   "files": 1000000,
+  "files_per_directory": 1000,
   "final_writer_timings": {
-    "checkpoint_seconds": 0.119119,
+    "checkpoint_seconds": 0.2357688,
     "commands": 2005,
-    "commit_seconds": 7.825971900000002,
+    "commit_seconds": 11.846841399999997,
     "dirty_updates": 3001,
-    "file_insert_seconds": 6.718017600000004,
+    "file_insert_seconds": 20.407506099999964,
     "file_seen_seconds": 0.0,
-    "invalidation_seconds": 0.010182000000000026,
-    "listing_seconds": 8.997373000000012,
+    "invalidation_seconds": 0.0240567,
+    "listing_seconds": 23.005854099999986,
     "max_transaction_bytes": 62929920,
     "max_transaction_commands": 30,
-    "multilink_seconds": 1.1382851999999999,
-    "name_validation_seconds": 0.523222200000004,
-    "rollup_seconds": 0.0028756,
-    "staging_seconds": 0.5587109999999993,
-    "state_prepare_seconds": 0.027095400000000002,
-    "transactions": 72,
+    "multilink_seconds": 1.3246397,
+    "name_validation_seconds": 0.6649335000000013,
+    "rollup_seconds": 0.0045821,
+    "staging_seconds": 0.9050469000000002,
+    "state_prepare_seconds": 0.04465450000000001,
+    "transactions": 98,
     "validation_dry_run_seconds": 0.0
   },
-  "finalise_seconds": 1.2742825,
+  "finalise_seconds": 1.5689502,
+  "host_load": "shared-host; concurrent lanes; warm synthetic workload",
   "index_maintenance": "inline in file_insert_seconds; not separately timed by SQLite",
   "index_probe": {
-    "commit_seconds": 1.2048703,
+    "commit_seconds": 0.9280709,
     "index_build_seconds": {
-      "file_by_allocated": 0.3071922,
-      "file_by_ext": 0.6117424,
-      "file_by_logical": 0.3322142,
-      "file_identity": 0.5325169
+      "file_by_allocated": 0.4174814,
+      "file_by_ext": 1.2950646,
+      "file_by_logical": 0.4579462,
+      "file_identity": 0.8035763
     },
-    "insert_without_secondary_indexes_seconds": 0.6759551,
+    "insert_without_secondary_indexes_seconds": 0.6630611,
     "rows": 1000000,
     "scope": "isolated file-table SQL copy with parent rows and foreign keys; no staging, live view or publication protocol; not P4"
   },
   "insert_includes_generation_and_queue_backpressure": true,
   "limitations": [
-    "Three warm 1M runs per baseline/final variant on the same Windows host; host load and disk/cache state were not controlled; no cold-cache or hardware ceiling claim",
-    "P6/P14 at 1M, not their 10M target; HTTP, native scanning, process RSS and power-loss durability unverified",
-    "Inline index maintenance is included in publication INSERT time; the isolated index-build probe is a separate diagnostic, not staged P4",
-    "No-reference synthetic publications do not execute the validation dry run; intent-bearing performance is unmeasured; its FULL durability tests remain required",
-    "Query summaries are medians of three 21-probe warm-run summaries; allocated P7 was not instrumented in the baseline"
+    "shared-host warm synthetic workload; no controlled host-load or cold-cache claim",
+    "P6 and P14 below 10M target; no HTTP or native scan integration",
+    "process high-water is measured through queries, excluding the isolated index probe; cache settings are not an OS process-memory cap"
   ],
+  "memory": {
+    "peak_pagefile_bytes": 205549568,
+    "peak_working_set_bytes": 205828096,
+    "scope": "process high-water through publication/queries; before isolated index probe"
+  },
   "oracle": {
     "allocated_known_bytes": "496873078784",
     "allocation_unknown_files": 10310,
     "logical_bytes": "500000500000",
     "matched": true
+  },
+  "phases": {
+    "finalise_memory_high_water": {
+      "peak_pagefile_bytes": 197062656,
+      "peak_working_set_bytes": 199356416,
+      "scope": "process high-water through publication/queries; before isolated index probe"
+    },
+    "publication_memory_high_water": {
+      "peak_pagefile_bytes": 197062656,
+      "peak_working_set_bytes": 199323648,
+      "scope": "process high-water through publication/queries; before isolated index probe"
+    }
   },
   "platform": "windows",
   "publication_path": "StageChunk + ListingDone; byte reservation before file generation",
@@ -117,1131 +134,3373 @@
   "writer_timings": {
     "checkpoint_seconds": 0.0,
     "commands": 2004,
-    "commit_seconds": 7.8244896000000015,
+    "commit_seconds": 11.845649599999996,
     "dirty_updates": 3001,
-    "file_insert_seconds": 6.718017600000004,
+    "file_insert_seconds": 20.407506099999964,
     "file_seen_seconds": 0.0,
-    "invalidation_seconds": 0.010182000000000026,
-    "listing_seconds": 8.997373000000012,
+    "invalidation_seconds": 0.0240567,
+    "listing_seconds": 23.005854099999986,
     "max_transaction_bytes": 62929920,
     "max_transaction_commands": 30,
     "multilink_seconds": 0.0,
-    "name_validation_seconds": 0.523222200000004,
+    "name_validation_seconds": 0.6649335000000013,
     "rollup_seconds": 0.0,
-    "staging_seconds": 0.5587109999999993,
-    "state_prepare_seconds": 0.0258342,
-    "transactions": 71,
+    "staging_seconds": 0.9050469000000002,
+    "state_prepare_seconds": 0.043011900000000006,
+    "transactions": 97,
     "validation_dry_run_seconds": 0.0
   },
-  "aggregation": "per-metric median of three final runs; not a fourth run; root metrics retain the original receipt shape",
-  "baseline": {
-    "P14": {
-      "bytes_per_entry": 155.02178319502178,
-      "catalog_bytes": 155176960,
-      "dataset_scale_met": false,
-      "target_bytes_per_entry": 200,
-      "target_dataset_rows": 10000000
-    },
-    "P4": {
-      "insert_seconds": 60.6315758,
-      "met": false,
-      "rows_per_second": 16509.56596117365,
-      "target_rows_per_second": 250000
-    },
-    "P6": {
-      "dataset_scale_met": false,
-      "http_round_trip": "unverified",
-      "nodes": 2500,
-      "payload_bytes": 1383755,
-      "target_dataset_rows": 10000000,
-      "target_ms": 60,
-      "target_payload_bytes": 1500000,
-      "timing": {
-        "max_ms": 60.063900000000004,
-        "min_ms": 31.065099999999997,
-        "p50_ms": 43.250499999999995,
-        "p95_ms": 51.284299999999995,
-        "runs": 21
+  "aggregation": "Top-level timings are one representative final run (median P4); P4c.metrics has independent per-metric medians and ranges of three run summaries, queries 21 warm probes/run.",
+  "history": [
+    {
+      "scope": "unchanged main receipt before P4c, including P4a measurements and history",
+      "receipt": {
+        "P14": {
+          "bytes_per_entry": 155.02178319502178,
+          "catalog_bytes": 155176960,
+          "dataset_scale_met": false,
+          "target_bytes_per_entry": 200,
+          "target_dataset_rows": 10000000
+        },
+        "P4": {
+          "insert_seconds": 18.8208024,
+          "met": false,
+          "rows_per_second": 53185.883296877924,
+          "target_rows_per_second": 250000
+        },
+        "P6": {
+          "dataset_scale_met": false,
+          "http_round_trip": "unverified",
+          "nodes": 2500,
+          "payload_bytes": 1383755,
+          "target_dataset_rows": 10000000,
+          "target_ms": 60,
+          "target_payload_bytes": 1500000,
+          "timing": {
+            "max_ms": 44.049699999999994,
+            "min_ms": 28.293100000000003,
+            "p50_ms": 31.824900000000003,
+            "p95_ms": 40.9925,
+            "runs": 21
+          }
+        },
+        "P7": {
+          "allocated_timing": {
+            "max_ms": 0.9047000000000001,
+            "min_ms": 0.48050000000000004,
+            "p50_ms": 0.499,
+            "p95_ms": 0.8145,
+            "runs": 21
+          },
+          "limit": 200,
+          "target_ms": 20,
+          "timing": {
+            "max_ms": 1.0019,
+            "min_ms": 0.5844999999999999,
+            "p50_ms": 0.6336,
+            "p95_ms": 0.9541999999999999,
+            "runs": 21
+          }
+        },
+        "P8": {
+          "budget_hits": 21,
+          "target_ms": 300,
+          "timing": {
+            "max_ms": 17.703,
+            "min_ms": 11.9744,
+            "p50_ms": 13.4991,
+            "p95_ms": 15.6974,
+            "runs": 21
+          },
+          "work_budget_sqlite_ops": 2000000
+        },
+        "all_schema_indexes_present": true,
+        "dataset_class": "synthetic",
+        "directories": 1001,
+        "files": 1000000,
+        "final_writer_timings": {
+          "checkpoint_seconds": 0.119119,
+          "commands": 2005,
+          "commit_seconds": 7.825971900000002,
+          "dirty_updates": 3001,
+          "file_insert_seconds": 6.718017600000004,
+          "file_seen_seconds": 0.0,
+          "invalidation_seconds": 0.010182000000000026,
+          "listing_seconds": 8.997373000000012,
+          "max_transaction_bytes": 62929920,
+          "max_transaction_commands": 30,
+          "multilink_seconds": 1.1382851999999999,
+          "name_validation_seconds": 0.523222200000004,
+          "rollup_seconds": 0.0028756,
+          "staging_seconds": 0.5587109999999993,
+          "state_prepare_seconds": 0.027095400000000002,
+          "transactions": 72,
+          "validation_dry_run_seconds": 0.0
+        },
+        "finalise_seconds": 1.2742825,
+        "index_maintenance": "inline in file_insert_seconds; not separately timed by SQLite",
+        "index_probe": {
+          "commit_seconds": 1.2048703,
+          "index_build_seconds": {
+            "file_by_allocated": 0.3071922,
+            "file_by_ext": 0.6117424,
+            "file_by_logical": 0.3322142,
+            "file_identity": 0.5325169
+          },
+          "insert_without_secondary_indexes_seconds": 0.6759551,
+          "rows": 1000000,
+          "scope": "isolated file-table SQL copy with parent rows and foreign keys; no staging, live view or publication protocol; not P4"
+        },
+        "insert_includes_generation_and_queue_backpressure": true,
+        "limitations": [
+          "Three warm 1M runs per baseline/final variant on the same Windows host; host load and disk/cache state were not controlled; no cold-cache or hardware ceiling claim",
+          "P6/P14 at 1M, not their 10M target; HTTP, native scanning, process RSS and power-loss durability unverified",
+          "Inline index maintenance is included in publication INSERT time; the isolated index-build probe is a separate diagnostic, not staged P4",
+          "No-reference synthetic publications do not execute the validation dry run; intent-bearing performance is unmeasured; its FULL durability tests remain required",
+          "Query summaries are medians of three 21-probe warm-run summaries; allocated P7 was not instrumented in the baseline"
+        ],
+        "oracle": {
+          "allocated_known_bytes": "496873078784",
+          "allocation_unknown_files": 10310,
+          "logical_bytes": "500000500000",
+          "matched": true
+        },
+        "platform": "windows",
+        "publication_path": "StageChunk + ListingDone; byte reservation before file generation",
+        "schema_version": 4,
+        "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
+        "temporary_directory_removed": true,
+        "writer_timings": {
+          "checkpoint_seconds": 0.0,
+          "commands": 2004,
+          "commit_seconds": 7.8244896000000015,
+          "dirty_updates": 3001,
+          "file_insert_seconds": 6.718017600000004,
+          "file_seen_seconds": 0.0,
+          "invalidation_seconds": 0.010182000000000026,
+          "listing_seconds": 8.997373000000012,
+          "max_transaction_bytes": 62929920,
+          "max_transaction_commands": 30,
+          "multilink_seconds": 0.0,
+          "name_validation_seconds": 0.523222200000004,
+          "rollup_seconds": 0.0,
+          "staging_seconds": 0.5587109999999993,
+          "state_prepare_seconds": 0.0258342,
+          "transactions": 71,
+          "validation_dry_run_seconds": 0.0
+        },
+        "aggregation": "per-metric median of three final runs; not a fourth run; root metrics retain the original receipt shape",
+        "baseline": {
+          "P14": {
+            "bytes_per_entry": 155.02178319502178,
+            "catalog_bytes": 155176960,
+            "dataset_scale_met": false,
+            "target_bytes_per_entry": 200,
+            "target_dataset_rows": 10000000
+          },
+          "P4": {
+            "insert_seconds": 60.6315758,
+            "met": false,
+            "rows_per_second": 16509.56596117365,
+            "target_rows_per_second": 250000
+          },
+          "P6": {
+            "dataset_scale_met": false,
+            "http_round_trip": "unverified",
+            "nodes": 2500,
+            "payload_bytes": 1383755,
+            "target_dataset_rows": 10000000,
+            "target_ms": 60,
+            "target_payload_bytes": 1500000,
+            "timing": {
+              "max_ms": 60.063900000000004,
+              "min_ms": 31.065099999999997,
+              "p50_ms": 43.250499999999995,
+              "p95_ms": 51.284299999999995,
+              "runs": 21
+            }
+          },
+          "P7": {
+            "limit": 200,
+            "target_ms": 20,
+            "timing": {
+              "max_ms": 1.524,
+              "min_ms": 0.605,
+              "p50_ms": 0.9958,
+              "p95_ms": 1.2995,
+              "runs": 21
+            }
+          },
+          "P8": {
+            "budget_hits": 21,
+            "target_ms": 300,
+            "timing": {
+              "max_ms": 22.658,
+              "min_ms": 12.5366,
+              "p50_ms": 16.9349,
+              "p95_ms": 22.5157,
+              "runs": 21
+            },
+            "work_budget_sqlite_ops": 2000000
+          },
+          "all_schema_indexes_present": true,
+          "dataset_class": "synthetic",
+          "directories": 1001,
+          "files": 1000000,
+          "final_writer_timings": {
+            "commands": 2005,
+            "commit_seconds": 35.77447159999999,
+            "dirty_updates": 3001,
+            "file_insert_seconds": 21.143815500000024,
+            "file_seen_seconds": 0.0,
+            "invalidation_seconds": 0.018228399999999992,
+            "listing_seconds": 23.75332079999998,
+            "multilink_seconds": 1.5336798,
+            "name_validation_seconds": 0.6028029000000023,
+            "rollup_seconds": 0.0041673,
+            "staging_seconds": 0.7898311000000003,
+            "state_prepare_seconds": 0.06120580000000003,
+            "transactions": 257,
+            "validation_dry_run_seconds": 0.0
+          },
+          "finalise_seconds": 1.5559516,
+          "index_maintenance": "inline in file_insert_seconds; not separately timed by SQLite",
+          "insert_includes_generation_and_queue_backpressure": true,
+          "limitations": [
+            "single warm run on this Windows host; no cold-cache claim",
+            "P6 and P14 at 1M, not the 10M target; HTTP and process-memory measurement belong to integration"
+          ],
+          "oracle": {
+            "allocated_known_bytes": "496873078784",
+            "allocation_unknown_files": 10310,
+            "logical_bytes": "500000500000",
+            "matched": true
+          },
+          "platform": "windows",
+          "publication_path": "StageChunk + ListingDone; byte reservation before file generation",
+          "schema_version": 4,
+          "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
+          "temporary_directory_removed": true,
+          "writer_timings": {
+            "commands": 2004,
+            "commit_seconds": 35.76961759999999,
+            "dirty_updates": 3001,
+            "file_insert_seconds": 21.143815500000024,
+            "file_seen_seconds": 0.0,
+            "invalidation_seconds": 0.018228399999999992,
+            "listing_seconds": 23.75332079999998,
+            "multilink_seconds": 0.0,
+            "name_validation_seconds": 0.6028029000000023,
+            "rollup_seconds": 0.0,
+            "staging_seconds": 0.7898311000000003,
+            "state_prepare_seconds": 0.059344900000000034,
+            "transactions": 256,
+            "validation_dry_run_seconds": 0.0
+          }
+        },
+        "baseline_runs": [
+          {
+            "P14": {
+              "bytes_per_entry": 155.02178319502178,
+              "catalog_bytes": 155176960,
+              "dataset_scale_met": false,
+              "target_bytes_per_entry": 200,
+              "target_dataset_rows": 10000000
+            },
+            "P4": {
+              "insert_seconds": 54.0354053,
+              "met": false,
+              "rows_per_second": 18524.909629945905,
+              "target_rows_per_second": 250000
+            },
+            "P6": {
+              "dataset_scale_met": false,
+              "http_round_trip": "unverified",
+              "nodes": 2500,
+              "payload_bytes": 1383755,
+              "target_dataset_rows": 10000000,
+              "target_ms": 60,
+              "target_payload_bytes": 1500000,
+              "timing": {
+                "max_ms": 60.063900000000004,
+                "min_ms": 29.8917,
+                "p50_ms": 37.6048,
+                "p95_ms": 48.9054,
+                "runs": 21
+              }
+            },
+            "P7": {
+              "limit": 200,
+              "target_ms": 20,
+              "timing": {
+                "max_ms": 1.524,
+                "min_ms": 0.5712999999999999,
+                "p50_ms": 0.657,
+                "p95_ms": 1.2124,
+                "runs": 21
+              }
+            },
+            "P8": {
+              "budget_hits": 21,
+              "target_ms": 300,
+              "timing": {
+                "max_ms": 21.368100000000002,
+                "min_ms": 12.1172,
+                "p50_ms": 14.7043,
+                "p95_ms": 20.755,
+                "runs": 21
+              },
+              "work_budget_sqlite_ops": 2000000
+            },
+            "all_schema_indexes_present": true,
+            "dataset_class": "synthetic",
+            "directories": 1001,
+            "files": 1000000,
+            "final_writer_timings": {
+              "commands": 2005,
+              "commit_seconds": 31.932818,
+              "dirty_updates": 3001,
+              "file_insert_seconds": 18.766686600000007,
+              "file_seen_seconds": 0.0,
+              "invalidation_seconds": 0.01630150000000002,
+              "listing_seconds": 21.084323600000005,
+              "multilink_seconds": 1.5336798,
+              "name_validation_seconds": 0.5339396000000042,
+              "rollup_seconds": 0.0037824,
+              "staging_seconds": 0.7244884000000001,
+              "state_prepare_seconds": 0.05339330000000001,
+              "transactions": 257,
+              "validation_dry_run_seconds": 0.0
+            },
+            "finalise_seconds": 1.5559516,
+            "index_maintenance": "inline in file_insert_seconds; not separately timed by SQLite",
+            "insert_includes_generation_and_queue_backpressure": true,
+            "limitations": [
+              "single warm run on this Windows host; no cold-cache claim",
+              "P6 and P14 at 1M, not the 10M target; HTTP and process-memory measurement belong to integration"
+            ],
+            "oracle": {
+              "allocated_known_bytes": "496873078784",
+              "allocation_unknown_files": 10310,
+              "logical_bytes": "500000500000",
+              "matched": true
+            },
+            "platform": "windows",
+            "publication_path": "StageChunk + ListingDone; byte reservation before file generation",
+            "schema_version": 4,
+            "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
+            "temporary_directory_removed": true,
+            "writer_timings": {
+              "commands": 2004,
+              "commit_seconds": 31.9282152,
+              "dirty_updates": 3001,
+              "file_insert_seconds": 18.766686600000007,
+              "file_seen_seconds": 0.0,
+              "invalidation_seconds": 0.01630150000000002,
+              "listing_seconds": 21.084323600000005,
+              "multilink_seconds": 0.0,
+              "name_validation_seconds": 0.5339396000000042,
+              "rollup_seconds": 0.0,
+              "staging_seconds": 0.7244884000000001,
+              "state_prepare_seconds": 0.05189470000000001,
+              "transactions": 256,
+              "validation_dry_run_seconds": 0.0
+            }
+          },
+          {
+            "P14": {
+              "bytes_per_entry": 155.02178319502178,
+              "catalog_bytes": 155176960,
+              "dataset_scale_met": false,
+              "target_bytes_per_entry": 200,
+              "target_dataset_rows": 10000000
+            },
+            "P4": {
+              "insert_seconds": 60.6315758,
+              "met": false,
+              "rows_per_second": 16509.56596117365,
+              "target_rows_per_second": 250000
+            },
+            "P6": {
+              "dataset_scale_met": false,
+              "http_round_trip": "unverified",
+              "nodes": 2500,
+              "payload_bytes": 1383755,
+              "target_dataset_rows": 10000000,
+              "target_ms": 60,
+              "target_payload_bytes": 1500000,
+              "timing": {
+                "max_ms": 59.1526,
+                "min_ms": 32.0014,
+                "p50_ms": 43.250499999999995,
+                "p95_ms": 51.284299999999995,
+                "runs": 21
+              }
+            },
+            "P7": {
+              "limit": 200,
+              "target_ms": 20,
+              "timing": {
+                "max_ms": 1.3719,
+                "min_ms": 0.605,
+                "p50_ms": 0.9958,
+                "p95_ms": 1.2995,
+                "runs": 21
+              }
+            },
+            "P8": {
+              "budget_hits": 21,
+              "target_ms": 300,
+              "timing": {
+                "max_ms": 22.658,
+                "min_ms": 12.644,
+                "p50_ms": 16.9349,
+                "p95_ms": 22.5157,
+                "runs": 21
+              },
+              "work_budget_sqlite_ops": 2000000
+            },
+            "all_schema_indexes_present": true,
+            "dataset_class": "synthetic",
+            "directories": 1001,
+            "files": 1000000,
+            "final_writer_timings": {
+              "commands": 2005,
+              "commit_seconds": 35.77447159999999,
+              "dirty_updates": 3001,
+              "file_insert_seconds": 21.143815500000024,
+              "file_seen_seconds": 0.0,
+              "invalidation_seconds": 0.018228399999999992,
+              "listing_seconds": 23.75332079999998,
+              "multilink_seconds": 1.4651345,
+              "name_validation_seconds": 0.6028029000000023,
+              "rollup_seconds": 0.0041673,
+              "staging_seconds": 0.7898311000000003,
+              "state_prepare_seconds": 0.06230040000000001,
+              "transactions": 258,
+              "validation_dry_run_seconds": 0.0
+            },
+            "finalise_seconds": 1.4878389,
+            "index_maintenance": "inline in file_insert_seconds; not separately timed by SQLite",
+            "insert_includes_generation_and_queue_backpressure": true,
+            "limitations": [
+              "single warm run on this Windows host; no cold-cache claim",
+              "P6 and P14 at 1M, not the 10M target; HTTP and process-memory measurement belong to integration"
+            ],
+            "oracle": {
+              "allocated_known_bytes": "496873078784",
+              "allocation_unknown_files": 10310,
+              "logical_bytes": "500000500000",
+              "matched": true
+            },
+            "platform": "windows",
+            "publication_path": "StageChunk + ListingDone; byte reservation before file generation",
+            "schema_version": 4,
+            "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
+            "temporary_directory_removed": true,
+            "writer_timings": {
+              "commands": 2004,
+              "commit_seconds": 35.76961759999999,
+              "dirty_updates": 3001,
+              "file_insert_seconds": 21.143815500000024,
+              "file_seen_seconds": 0.0,
+              "invalidation_seconds": 0.018228399999999992,
+              "listing_seconds": 23.75332079999998,
+              "multilink_seconds": 0.0,
+              "name_validation_seconds": 0.6028029000000023,
+              "rollup_seconds": 0.0,
+              "staging_seconds": 0.7898311000000003,
+              "state_prepare_seconds": 0.06116930000000001,
+              "transactions": 257,
+              "validation_dry_run_seconds": 0.0
+            }
+          },
+          {
+            "P14": {
+              "bytes_per_entry": 155.02178319502178,
+              "catalog_bytes": 155176960,
+              "dataset_scale_met": false,
+              "target_bytes_per_entry": 200,
+              "target_dataset_rows": 10000000
+            },
+            "P4": {
+              "insert_seconds": 78.6532142,
+              "met": false,
+              "rows_per_second": 12726.765335420965,
+              "target_rows_per_second": 250000
+            },
+            "P6": {
+              "dataset_scale_met": false,
+              "http_round_trip": "unverified",
+              "nodes": 2500,
+              "payload_bytes": 1383755,
+              "target_dataset_rows": 10000000,
+              "target_ms": 60,
+              "target_payload_bytes": 1500000,
+              "timing": {
+                "max_ms": 68.8631,
+                "min_ms": 31.065099999999997,
+                "p50_ms": 56.5244,
+                "p95_ms": 64.9546,
+                "runs": 21
+              }
+            },
+            "P7": {
+              "limit": 200,
+              "target_ms": 20,
+              "timing": {
+                "max_ms": 1.6957,
+                "min_ms": 0.606,
+                "p50_ms": 1.0797,
+                "p95_ms": 1.6188,
+                "runs": 21
+              }
+            },
+            "P8": {
+              "budget_hits": 21,
+              "target_ms": 300,
+              "timing": {
+                "max_ms": 25.1151,
+                "min_ms": 12.5366,
+                "p50_ms": 18.970000000000002,
+                "p95_ms": 23.4019,
+                "runs": 21
+              },
+              "work_budget_sqlite_ops": 2000000
+            },
+            "all_schema_indexes_present": true,
+            "dataset_class": "synthetic",
+            "directories": 1001,
+            "files": 1000000,
+            "final_writer_timings": {
+              "commands": 2005,
+              "commit_seconds": 50.5410765,
+              "dirty_updates": 3001,
+              "file_insert_seconds": 23.9354146,
+              "file_seen_seconds": 0.0,
+              "invalidation_seconds": 0.02055239999999998,
+              "listing_seconds": 26.882329800000054,
+              "multilink_seconds": 1.7461924,
+              "name_validation_seconds": 0.6869342000000019,
+              "rollup_seconds": 0.0046734,
+              "staging_seconds": 0.8861777000000013,
+              "state_prepare_seconds": 0.06120580000000003,
+              "transactions": 257,
+              "validation_dry_run_seconds": 0.0
+            },
+            "finalise_seconds": 1.7719659,
+            "index_maintenance": "inline in file_insert_seconds; not separately timed by SQLite",
+            "insert_includes_generation_and_queue_backpressure": true,
+            "limitations": [
+              "single warm run on this Windows host; no cold-cache claim",
+              "P6 and P14 at 1M, not the 10M target; HTTP and process-memory measurement belong to integration"
+            ],
+            "oracle": {
+              "allocated_known_bytes": "496873078784",
+              "allocation_unknown_files": 10310,
+              "logical_bytes": "500000500000",
+              "matched": true
+            },
+            "platform": "windows",
+            "publication_path": "StageChunk + ListingDone; byte reservation before file generation",
+            "schema_version": 4,
+            "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
+            "temporary_directory_removed": true,
+            "writer_timings": {
+              "commands": 2004,
+              "commit_seconds": 50.5351261,
+              "dirty_updates": 3001,
+              "file_insert_seconds": 23.9354146,
+              "file_seen_seconds": 0.0,
+              "invalidation_seconds": 0.02055239999999998,
+              "listing_seconds": 26.882329800000054,
+              "multilink_seconds": 0.0,
+              "name_validation_seconds": 0.6869342000000019,
+              "rollup_seconds": 0.0,
+              "staging_seconds": 0.8861777000000013,
+              "state_prepare_seconds": 0.059344900000000034,
+              "transactions": 256,
+              "validation_dry_run_seconds": 0.0
+            }
+          }
+        ],
+        "runs": [
+          {
+            "P14": {
+              "bytes_per_entry": 155.02178319502178,
+              "catalog_bytes": 155176960,
+              "dataset_scale_met": false,
+              "target_bytes_per_entry": 200,
+              "target_dataset_rows": 10000000
+            },
+            "P4": {
+              "insert_seconds": 21.6786411,
+              "met": false,
+              "rows_per_second": 46174.52705557268,
+              "target_rows_per_second": 250000
+            },
+            "P6": {
+              "dataset_scale_met": false,
+              "http_round_trip": "unverified",
+              "nodes": 2500,
+              "payload_bytes": 1383755,
+              "target_dataset_rows": 10000000,
+              "target_ms": 60,
+              "target_payload_bytes": 1500000,
+              "timing": {
+                "max_ms": 41.3679,
+                "min_ms": 28.1696,
+                "p50_ms": 30.4459,
+                "p95_ms": 40.899499999999996,
+                "runs": 21
+              }
+            },
+            "P7": {
+              "allocated_timing": {
+                "max_ms": 0.6465000000000001,
+                "min_ms": 0.48050000000000004,
+                "p50_ms": 0.49379999999999996,
+                "p95_ms": 0.6314,
+                "runs": 21
+              },
+              "limit": 200,
+              "target_ms": 20,
+              "timing": {
+                "max_ms": 1.0019,
+                "min_ms": 0.5693,
+                "p50_ms": 0.6087,
+                "p95_ms": 0.8852000000000001,
+                "runs": 21
+              }
+            },
+            "P8": {
+              "budget_hits": 21,
+              "target_ms": 300,
+              "timing": {
+                "max_ms": 15.5193,
+                "min_ms": 11.9744,
+                "p50_ms": 12.347199999999999,
+                "p95_ms": 14.985899999999999,
+                "runs": 21
+              },
+              "work_budget_sqlite_ops": 2000000
+            },
+            "all_schema_indexes_present": true,
+            "dataset_class": "synthetic",
+            "directories": 1001,
+            "files": 1000000,
+            "final_writer_timings": {
+              "checkpoint_seconds": 0.1514857,
+              "commands": 2005,
+              "commit_seconds": 12.3144816,
+              "dirty_updates": 3001,
+              "file_insert_seconds": 5.911459999999998,
+              "file_seen_seconds": 0.0,
+              "invalidation_seconds": 0.009156000000000001,
+              "listing_seconds": 7.913386299999996,
+              "max_transaction_bytes": 62929920,
+              "max_transaction_commands": 30,
+              "multilink_seconds": 1.1382851999999999,
+              "name_validation_seconds": 0.44065850000000345,
+              "rollup_seconds": 0.0028756,
+              "staging_seconds": 0.5467374000000004,
+              "state_prepare_seconds": 0.013366700000000009,
+              "transactions": 72,
+              "validation_dry_run_seconds": 0.0
+            },
+            "finalise_seconds": 1.3292685,
+            "index_maintenance": "inline in file_insert_seconds; not separately timed by SQLite",
+            "index_probe": {
+              "commit_seconds": 1.6128073,
+              "index_build_seconds": {
+                "file_by_allocated": 0.3044089,
+                "file_by_ext": 0.6570718,
+                "file_by_logical": 0.3622371,
+                "file_identity": 0.5325169
+              },
+              "insert_without_secondary_indexes_seconds": 0.6213835,
+              "rows": 1000000,
+              "scope": "isolated file-table SQL copy with parent rows and foreign keys; no staging, live view or publication protocol; not P4"
+            },
+            "insert_includes_generation_and_queue_backpressure": true,
+            "limitations": [
+              "single warm run on this Windows host; no cold-cache claim",
+              "P6 and P14 at 1M, not the 10M target; HTTP and process-memory measurement belong to integration"
+            ],
+            "oracle": {
+              "allocated_known_bytes": "496873078784",
+              "allocation_unknown_files": 10310,
+              "logical_bytes": "500000500000",
+              "matched": true
+            },
+            "platform": "windows",
+            "publication_path": "StageChunk + ListingDone; byte reservation before file generation",
+            "schema_version": 4,
+            "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
+            "temporary_directory_removed": true,
+            "writer_timings": {
+              "checkpoint_seconds": 0.0,
+              "commands": 2004,
+              "commit_seconds": 12.283362200000001,
+              "dirty_updates": 3001,
+              "file_insert_seconds": 5.911459999999998,
+              "file_seen_seconds": 0.0,
+              "invalidation_seconds": 0.009156000000000001,
+              "listing_seconds": 7.913386299999996,
+              "max_transaction_bytes": 62929920,
+              "max_transaction_commands": 30,
+              "multilink_seconds": 0.0,
+              "name_validation_seconds": 0.44065850000000345,
+              "rollup_seconds": 0.0,
+              "staging_seconds": 0.5467374000000004,
+              "state_prepare_seconds": 0.009011600000000008,
+              "transactions": 71,
+              "validation_dry_run_seconds": 0.0
+            }
+          },
+          {
+            "P14": {
+              "bytes_per_entry": 155.02178319502178,
+              "catalog_bytes": 155176960,
+              "dataset_scale_met": false,
+              "target_bytes_per_entry": 200,
+              "target_dataset_rows": 10000000
+            },
+            "P4": {
+              "insert_seconds": 17.116035,
+              "met": false,
+              "rows_per_second": 58483.229322679,
+              "target_rows_per_second": 250000
+            },
+            "P6": {
+              "dataset_scale_met": false,
+              "http_round_trip": "unverified",
+              "nodes": 2500,
+              "payload_bytes": 1383755,
+              "target_dataset_rows": 10000000,
+              "target_ms": 60,
+              "target_payload_bytes": 1500000,
+              "timing": {
+                "max_ms": 45.127599999999994,
+                "min_ms": 28.4212,
+                "p50_ms": 33.5512,
+                "p95_ms": 42.092,
+                "runs": 21
+              }
+            },
+            "P7": {
+              "allocated_timing": {
+                "max_ms": 1.0965,
+                "min_ms": 0.4754,
+                "p50_ms": 0.4996999999999999,
+                "p95_ms": 0.8145,
+                "runs": 21
+              },
+              "limit": 200,
+              "target_ms": 20,
+              "timing": {
+                "max_ms": 1.2854999999999999,
+                "min_ms": 0.5844999999999999,
+                "p50_ms": 0.6411,
+                "p95_ms": 1.0261,
+                "runs": 21
+              }
+            },
+            "P8": {
+              "budget_hits": 21,
+              "target_ms": 300,
+              "timing": {
+                "max_ms": 18.9408,
+                "min_ms": 12.142999999999999,
+                "p50_ms": 14.0709,
+                "p95_ms": 17.0686,
+                "runs": 21
+              },
+              "work_budget_sqlite_ops": 2000000
+            },
+            "all_schema_indexes_present": true,
+            "dataset_class": "synthetic",
+            "directories": 1001,
+            "files": 1000000,
+            "final_writer_timings": {
+              "checkpoint_seconds": 0.0156802,
+              "commands": 2005,
+              "commit_seconds": 6.500772500000001,
+              "dirty_updates": 3001,
+              "file_insert_seconds": 6.718017600000004,
+              "file_seen_seconds": 0.0,
+              "invalidation_seconds": 0.010182000000000026,
+              "listing_seconds": 8.997373000000012,
+              "max_transaction_bytes": 62929920,
+              "max_transaction_commands": 30,
+              "multilink_seconds": 1.2492806,
+              "name_validation_seconds": 0.523222200000004,
+              "rollup_seconds": 0.0027832,
+              "staging_seconds": 0.5587109999999993,
+              "state_prepare_seconds": 0.027095400000000002,
+              "transactions": 72,
+              "validation_dry_run_seconds": 0.0
+            },
+            "finalise_seconds": 1.2742825,
+            "index_maintenance": "inline in file_insert_seconds; not separately timed by SQLite",
+            "index_probe": {
+              "commit_seconds": 1.0801947,
+              "index_build_seconds": {
+                "file_by_allocated": 0.3127994,
+                "file_by_ext": 0.6117424,
+                "file_by_logical": 0.3322142,
+                "file_identity": 0.5518568
+              },
+              "insert_without_secondary_indexes_seconds": 0.721661,
+              "rows": 1000000,
+              "scope": "isolated file-table SQL copy with parent rows and foreign keys; no staging, live view or publication protocol; not P4"
+            },
+            "insert_includes_generation_and_queue_backpressure": true,
+            "limitations": [
+              "single warm run on this Windows host; no cold-cache claim",
+              "P6 and P14 at 1M, not the 10M target; HTTP and process-memory measurement belong to integration"
+            ],
+            "oracle": {
+              "allocated_known_bytes": "496873078784",
+              "allocation_unknown_files": 10310,
+              "logical_bytes": "500000500000",
+              "matched": true
+            },
+            "platform": "windows",
+            "publication_path": "StageChunk + ListingDone; byte reservation before file generation",
+            "schema_version": 4,
+            "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
+            "temporary_directory_removed": true,
+            "writer_timings": {
+              "checkpoint_seconds": 0.0,
+              "commands": 2004,
+              "commit_seconds": 6.496790100000001,
+              "dirty_updates": 3001,
+              "file_insert_seconds": 6.718017600000004,
+              "file_seen_seconds": 0.0,
+              "invalidation_seconds": 0.010182000000000026,
+              "listing_seconds": 8.997373000000012,
+              "max_transaction_bytes": 62929920,
+              "max_transaction_commands": 30,
+              "multilink_seconds": 0.0,
+              "name_validation_seconds": 0.523222200000004,
+              "rollup_seconds": 0.0,
+              "staging_seconds": 0.5587109999999993,
+              "state_prepare_seconds": 0.0258342,
+              "transactions": 71,
+              "validation_dry_run_seconds": 0.0
+            }
+          },
+          {
+            "P14": {
+              "bytes_per_entry": 155.02178319502178,
+              "catalog_bytes": 155176960,
+              "dataset_scale_met": false,
+              "target_bytes_per_entry": 200,
+              "target_dataset_rows": 10000000
+            },
+            "P4": {
+              "insert_seconds": 18.8208024,
+              "met": false,
+              "rows_per_second": 53185.883296877924,
+              "target_rows_per_second": 250000
+            },
+            "P6": {
+              "dataset_scale_met": false,
+              "http_round_trip": "unverified",
+              "nodes": 2500,
+              "payload_bytes": 1383755,
+              "target_dataset_rows": 10000000,
+              "target_ms": 60,
+              "target_payload_bytes": 1500000,
+              "timing": {
+                "max_ms": 44.049699999999994,
+                "min_ms": 28.293100000000003,
+                "p50_ms": 31.824900000000003,
+                "p95_ms": 40.9925,
+                "runs": 21
+              }
+            },
+            "P7": {
+              "allocated_timing": {
+                "max_ms": 0.9047000000000001,
+                "min_ms": 0.4813,
+                "p50_ms": 0.499,
+                "p95_ms": 0.8329,
+                "runs": 21
+              },
+              "limit": 200,
+              "target_ms": 20,
+              "timing": {
+                "max_ms": 0.9649,
+                "min_ms": 0.588,
+                "p50_ms": 0.6336,
+                "p95_ms": 0.9541999999999999,
+                "runs": 21
+              }
+            },
+            "P8": {
+              "budget_hits": 21,
+              "target_ms": 300,
+              "timing": {
+                "max_ms": 17.703,
+                "min_ms": 11.915000000000001,
+                "p50_ms": 13.4991,
+                "p95_ms": 15.6974,
+                "runs": 21
+              },
+              "work_budget_sqlite_ops": 2000000
+            },
+            "all_schema_indexes_present": true,
+            "dataset_class": "synthetic",
+            "directories": 1001,
+            "files": 1000000,
+            "final_writer_timings": {
+              "checkpoint_seconds": 0.119119,
+              "commands": 2005,
+              "commit_seconds": 7.825971900000002,
+              "dirty_updates": 3001,
+              "file_insert_seconds": 6.956319200000011,
+              "file_seen_seconds": 0.0,
+              "invalidation_seconds": 0.010335600000000035,
+              "listing_seconds": 9.270159700000002,
+              "max_transaction_bytes": 62929920,
+              "max_transaction_commands": 30,
+              "multilink_seconds": 1.1042783,
+              "name_validation_seconds": 0.5367132000000034,
+              "rollup_seconds": 0.0035667,
+              "staging_seconds": 0.602586699999999,
+              "state_prepare_seconds": 0.032103100000000016,
+              "transactions": 73,
+              "validation_dry_run_seconds": 0.0
+            },
+            "finalise_seconds": 1.2304105,
+            "index_maintenance": "inline in file_insert_seconds; not separately timed by SQLite",
+            "index_probe": {
+              "commit_seconds": 1.2048703,
+              "index_build_seconds": {
+                "file_by_allocated": 0.3071922,
+                "file_by_ext": 0.6056429,
+                "file_by_logical": 0.2705567,
+                "file_identity": 0.519572
+              },
+              "insert_without_secondary_indexes_seconds": 0.6759551,
+              "rows": 1000000,
+              "scope": "isolated file-table SQL copy with parent rows and foreign keys; no staging, live view or publication protocol; not P4"
+            },
+            "insert_includes_generation_and_queue_backpressure": true,
+            "limitations": [
+              "single warm run on this Windows host; no cold-cache claim",
+              "P6 and P14 at 1M, not the 10M target; HTTP and process-memory measurement belong to integration"
+            ],
+            "oracle": {
+              "allocated_known_bytes": "496873078784",
+              "allocation_unknown_files": 10310,
+              "logical_bytes": "500000500000",
+              "matched": true
+            },
+            "platform": "windows",
+            "publication_path": "StageChunk + ListingDone; byte reservation before file generation",
+            "schema_version": 4,
+            "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
+            "temporary_directory_removed": true,
+            "writer_timings": {
+              "checkpoint_seconds": 0.0,
+              "commands": 2004,
+              "commit_seconds": 7.8244896000000015,
+              "dirty_updates": 3001,
+              "file_insert_seconds": 6.956319200000011,
+              "file_seen_seconds": 0.0,
+              "invalidation_seconds": 0.010335600000000035,
+              "listing_seconds": 9.270159700000002,
+              "max_transaction_bytes": 62929920,
+              "max_transaction_commands": 30,
+              "multilink_seconds": 0.0,
+              "name_validation_seconds": 0.5367132000000034,
+              "rollup_seconds": 0.0,
+              "staging_seconds": 0.602586699999999,
+              "state_prepare_seconds": 0.031074000000000015,
+              "transactions": 72,
+              "validation_dry_run_seconds": 0.0
+            }
+          }
+        ],
+        "throughput_ratio": 3.2215191739115228,
+        "experiments": [
+          {
+            "name": "batching",
+            "single_warm_run": true,
+            "P4": {
+              "insert_seconds": 42.3126054,
+              "met": false,
+              "rows_per_second": 23657.276372775665,
+              "target_rows_per_second": 250000
+            },
+            "writer_timings": {
+              "commands": 2004,
+              "commit_seconds": 17.7004132,
+              "dirty_updates": 3001,
+              "file_insert_seconds": 20.613101900000018,
+              "file_seen_seconds": 0.0,
+              "invalidation_seconds": 0.0177828,
+              "listing_seconds": 23.4435325,
+              "max_transaction_bytes": 62929920,
+              "max_transaction_commands": 30,
+              "multilink_seconds": 0.0,
+              "name_validation_seconds": 0.6822894000000004,
+              "rollup_seconds": 0.0,
+              "staging_seconds": 0.9106791000000007,
+              "state_prepare_seconds": 0.0135181,
+              "transactions": 98,
+              "validation_dry_run_seconds": 0.0
+            }
+          },
+          {
+            "name": "plain-insert",
+            "single_warm_run": true,
+            "P4": {
+              "insert_seconds": 29.0499777,
+              "met": false,
+              "rows_per_second": 34457.892200034286,
+              "target_rows_per_second": 250000
+            },
+            "writer_timings": {
+              "commands": 2004,
+              "commit_seconds": 11.2153569,
+              "dirty_updates": 3001,
+              "file_insert_seconds": 14.893391199999979,
+              "file_seen_seconds": 0.0,
+              "invalidation_seconds": 0.013875300000000028,
+              "listing_seconds": 16.940392099999986,
+              "max_transaction_bytes": 62929920,
+              "max_transaction_commands": 30,
+              "multilink_seconds": 0.0,
+              "name_validation_seconds": 0.44502570000000424,
+              "rollup_seconds": 0.0,
+              "staging_seconds": 0.7242250000000008,
+              "state_prepare_seconds": 0.00838300000000001,
+              "transactions": 75,
+              "validation_dry_run_seconds": 0.0
+            }
+          },
+          {
+            "name": "pragmas",
+            "single_warm_run": true,
+            "P4": {
+              "insert_seconds": 13.0070335,
+              "met": false,
+              "rows_per_second": 76958.4394473959,
+              "target_rows_per_second": 250000
+            },
+            "writer_timings": {
+              "commands": 2004,
+              "commit_seconds": 4.959939500000001,
+              "dirty_updates": 3001,
+              "file_insert_seconds": 4.904607500000006,
+              "file_seen_seconds": 0.0,
+              "invalidation_seconds": 0.00781269999999999,
+              "listing_seconds": 6.792174899999998,
+              "max_transaction_bytes": 62929920,
+              "max_transaction_commands": 30,
+              "multilink_seconds": 0.0,
+              "name_validation_seconds": 0.3809509000000042,
+              "rollup_seconds": 0.0,
+              "staging_seconds": 0.5025071000000001,
+              "state_prepare_seconds": 0.014973300000000016,
+              "transactions": 71,
+              "validation_dry_run_seconds": 0.0
+            }
+          },
+          {
+            "name": "cache-temp",
+            "single_warm_run": true,
+            "P4": {
+              "insert_seconds": 22.3375234,
+              "met": false,
+              "rows_per_second": 44812.53279851069,
+              "target_rows_per_second": 250000
+            },
+            "writer_timings": {
+              "commands": 2004,
+              "commit_seconds": 13.4677191,
+              "dirty_updates": 3001,
+              "file_insert_seconds": 5.482189999999992,
+              "file_seen_seconds": 0.0,
+              "invalidation_seconds": 0.008933800000000016,
+              "listing_seconds": 7.504555299999987,
+              "max_transaction_bytes": 62929920,
+              "max_transaction_commands": 30,
+              "multilink_seconds": 0.0,
+              "name_validation_seconds": 0.4064930000000045,
+              "rollup_seconds": 0.0,
+              "staging_seconds": 0.5350983000000002,
+              "state_prepare_seconds": 0.04258269999999998,
+              "transactions": 71,
+              "validation_dry_run_seconds": 0.0
+            }
+          },
+          {
+            "name": "catalog-checkpoint",
+            "single_warm_run": true,
+            "P4": {
+              "insert_seconds": 14.4429936,
+              "met": false,
+              "rows_per_second": 69307.03064217934,
+              "target_rows_per_second": 250000
+            },
+            "writer_timings": {
+              "commands": 2004,
+              "commit_seconds": 4.605125,
+              "dirty_updates": 3001,
+              "file_insert_seconds": 6.096512199999995,
+              "file_seen_seconds": 0.0,
+              "invalidation_seconds": 0.00939120000000001,
+              "listing_seconds": 8.334118100000003,
+              "max_transaction_bytes": 62929920,
+              "max_transaction_commands": 30,
+              "multilink_seconds": 0.0,
+              "name_validation_seconds": 0.4574923000000034,
+              "rollup_seconds": 0.0,
+              "staging_seconds": 0.5999916000000003,
+              "state_prepare_seconds": 0.008162900000000004,
+              "transactions": 71,
+              "validation_dry_run_seconds": 0.0
+            }
+          },
+          {
+            "name": "borrowed",
+            "single_warm_run": true,
+            "P4": {
+              "insert_seconds": 13.838347,
+              "met": false,
+              "rows_per_second": 72335.30131886416,
+              "target_rows_per_second": 250000
+            },
+            "writer_timings": {
+              "commands": 2004,
+              "commit_seconds": 4.853768799999998,
+              "dirty_updates": 3001,
+              "file_insert_seconds": 5.640097499999999,
+              "file_seen_seconds": 0.0,
+              "invalidation_seconds": 0.008969400000000035,
+              "listing_seconds": 7.53749000000001,
+              "max_transaction_bytes": 62929920,
+              "max_transaction_commands": 30,
+              "multilink_seconds": 0.0,
+              "name_validation_seconds": 0.41639780000000404,
+              "rollup_seconds": 0.0,
+              "staging_seconds": 0.5257929,
+              "state_prepare_seconds": 0.0022799,
+              "transactions": 71,
+              "validation_dry_run_seconds": 0.0
+            }
+          },
+          {
+            "name": "page-8192",
+            "single_warm_run": true,
+            "P4": {
+              "insert_seconds": 23.4019268,
+              "met": false,
+              "rows_per_second": 42774.29839666023,
+              "target_rows_per_second": 250000
+            },
+            "writer_timings": {
+              "commands": 2004,
+              "commit_seconds": 5.354497599999999,
+              "dirty_updates": 3001,
+              "file_insert_seconds": 11.905310799999993,
+              "file_seen_seconds": 0.0,
+              "invalidation_seconds": 0.0173884,
+              "listing_seconds": 14.78057180000001,
+              "max_transaction_bytes": 62929920,
+              "max_transaction_commands": 30,
+              "multilink_seconds": 0.0,
+              "name_validation_seconds": 0.6895011000000028,
+              "rollup_seconds": 0.0,
+              "staging_seconds": 0.7539291999999999,
+              "state_prepare_seconds": 0.018046400000000025,
+              "transactions": 82,
+              "validation_dry_run_seconds": 0.0
+            }
+          },
+          {
+            "name": "no-memory-temp",
+            "single_warm_run": true,
+            "P4": {
+              "insert_seconds": 26.9153035,
+              "met": false,
+              "rows_per_second": 37190.77512910081,
+              "target_rows_per_second": 250000
+            },
+            "writer_timings": {
+              "commands": 2004,
+              "commit_seconds": 5.941445600000002,
+              "dirty_updates": 3001,
+              "file_insert_seconds": 17.65006359999999,
+              "file_seen_seconds": 0.0,
+              "invalidation_seconds": 0.015022700000000003,
+              "listing_seconds": 19.8965909,
+              "max_transaction_bytes": 62929920,
+              "max_transaction_commands": 30,
+              "multilink_seconds": 0.0,
+              "name_validation_seconds": 0.5610303000000026,
+              "rollup_seconds": 0.0,
+              "staging_seconds": 0.8418002000000001,
+              "state_prepare_seconds": 0.008987600000000009,
+              "transactions": 86,
+              "validation_dry_run_seconds": 0.0
+            }
+          }
+        ],
+        "settings": {
+          "transaction_cumulative_reservation_bytes": 67108864,
+          "transaction_before_next_command_ms": 250,
+          "idle_receive_ms": 1,
+          "catalog_cache_kib": 262144,
+          "prepared_statement_cache_capacity": 128,
+          "catalog_checkpoint_pages": 16384,
+          "state_checkpoint_pages": 1000,
+          "catalog_page_size": 4096,
+          "temp_store": "MEMORY",
+          "intent_bearing_publications": "singleton; state FULL prepare, catalogue FULL commit, state FULL confirmation before receipt"
+        },
+        "source": {
+          "head": "533473f08b3f7f369fe19b575fcfd03aaf64d9c8",
+          "branch": "perf/catalog-p4",
+          "uncommitted": true,
+          "sha256": {
+            "crates/loomward-catalog/src/writer.rs": "0dbca6b1e7d2ade9eb9155b11f1065736397f628602bb2b238479318d99da3ac",
+            "crates/loomward-catalog/src/db.rs": "c848e729497f70c0cbe6e4176fb5511753b363bbf0518565ba47f57c422ee075",
+            "crates/loomward-catalog/examples/bench.rs": "c1c00b71aca90ddc8fdd83095f5ac42c0a1dd7571bedfb5effa44a2500c89439"
+          }
+        },
+        "verification": {
+          "platform": "Windows 11; Intel i5-13600K; rustc 1.97.1",
+          "commands": {
+            "cargo fmt --all --check": "pass",
+            "cargo test --workspace": "pass: 316 tests, zero failed/ignored",
+            "cargo clippy --workspace --all-targets -- -D warnings": "pass",
+            "git diff --check": "pass",
+            "cargo run -p loomward-catalog --release --example bench -- --rows 1000000": "pass: three final runs, oracle and all-index assertions"
+          },
+          "catalogue_tests": 66,
+          "mutations": [
+            {
+              "mutation": "bytes",
+              "test": "streamed_transactions_bound_bytes_and_release_applied_payloads",
+              "exit": 101,
+              "killed": true
+            },
+            {
+              "mutation": "state-checkpoint",
+              "test": "checkpoint_threshold_is_raised_only_for_catalogue",
+              "exit": 101,
+              "killed": true
+            }
+          ],
+          "production_bytes_restored": true
+        }
       }
-    },
-    "P7": {
-      "limit": 200,
-      "target_ms": 20,
-      "timing": {
-        "max_ms": 1.524,
-        "min_ms": 0.605,
-        "p50_ms": 0.9958,
-        "p95_ms": 1.2995,
-        "runs": 21
-      }
-    },
-    "P8": {
-      "budget_hits": 21,
-      "target_ms": 300,
-      "timing": {
-        "max_ms": 22.658,
-        "min_ms": 12.5366,
-        "p50_ms": 16.9349,
-        "p95_ms": 22.5157,
-        "runs": 21
+    }
+  ],
+  "P4b_parked": {
+    "commit": "32ef19f5f60dd79672bcdf62a9126a353bd18adf",
+    "disposition": "PARKED: bulk publication path excluded from P4c",
+    "host_load": "shared-host",
+    "metrics": {
+      "P4_rows_per_second": {
+        "before": 37057.24896483955,
+        "after": 25684.177700729768
       },
-      "work_budget_sqlite_ops": 2000000
+      "P4_seconds": {
+        "before": 27.0122858,
+        "after": 38.9734494
+      },
+      "P6_p50_ms": {
+        "before": 65.1571,
+        "after": 58.2518
+      },
+      "P7_logical_p50_ms": {
+        "before": 1.1829,
+        "after": 1.0840999999999998
+      },
+      "P7_allocated_p50_ms": {
+        "before": 0.9990000000000001,
+        "after": 0.9555
+      },
+      "P8_p50_ms": {
+        "before": 24.462600000000002,
+        "after": 22.5839
+      },
+      "RSS_bytes": {
+        "before": 217878528,
+        "after": 216309760
+      }
     },
-    "all_schema_indexes_present": true,
-    "dataset_class": "synthetic",
-    "directories": 1001,
-    "files": 1000000,
-    "final_writer_timings": {
-      "commands": 2005,
-      "commit_seconds": 35.77447159999999,
-      "dirty_updates": 3001,
-      "file_insert_seconds": 21.143815500000024,
-      "file_seen_seconds": 0.0,
-      "invalidation_seconds": 0.018228399999999992,
-      "listing_seconds": 23.75332079999998,
-      "multilink_seconds": 1.5336798,
-      "name_validation_seconds": 0.6028029000000023,
-      "rollup_seconds": 0.0041673,
-      "staging_seconds": 0.7898311000000003,
-      "state_prepare_seconds": 0.06120580000000003,
-      "transactions": 257,
-      "validation_dry_run_seconds": 0.0
+    "throughput_ratio": 0.6930945609346038,
+    "throughput_range": {
+      "before": [
+        24796.3290768326,
+        41359.2556637147
+      ],
+      "after": [
+        25082.344301904206,
+        29706.041709626872
+      ]
+    }
+  },
+  "P4c": {
+    "base": "fc79c7f8ed4260fd6a76d833de6b9dfb5fcce568",
+    "branch": "fix/catalog-rollback-and-spill",
+    "source_sha256": {
+      "crates/loomward-catalog/src/db.rs": "e7d2f5d0e50f6805305800d2985b5e3a9a4250a4c54d2996e5f64307172f2e94",
+      "crates/loomward-catalog/src/writer.rs": "7cbe23c928f126c92d3a9d10481897a8912f62e89e820b6f072b573a0a15edb4",
+      "crates/loomward-catalog/src/writer/publication_tests.rs": "e87564b0a860ff97b7b2e2def3958c265c901492fa5a082c6171b771206ea517",
+      "crates/loomward-catalog/examples/bench.rs": "f953e0d3a42483a3786a79f9b63a836472923586d9db05b2e3f15ac189726983"
     },
-    "finalise_seconds": 1.5559516,
-    "index_maintenance": "inline in file_insert_seconds; not separately timed by SQLite",
-    "insert_includes_generation_and_queue_backpressure": true,
+    "scope": "auto-rollback guard, resolved-reference singleton regression, FILE temp storage and bounded caches; no bulk publication path",
+    "host_load": "shared-host; other lanes share CPU/storage; no own benchmark or check overlapped a measured run",
+    "comparison": "A1/B1/A2/B2/A3/B3 then A/B one 2M-entry directory; unchanged main production and identical instrumented benchmark in separate detached checkout",
+    "settings": {
+      "main_cache_kib": 229376,
+      "temp_cache_kib": 16384,
+      "temp_store": "FILE",
+      "cache_spill": "ON",
+      "state_durability": "FULL unchanged",
+      "memory_scope": "SQLite page-cache targets, not total-process or private-commit caps"
+    },
+    "metrics": {
+      "main": {
+        "P4_rows_per_second": {
+          "median": 44487.69716852134,
+          "min": 41758.8703480107,
+          "max": 44709.81831587198
+        },
+        "P4_seconds": {
+          "median": 22.5006252,
+          "min": 22.3888407,
+          "max": 23.9709789
+        },
+        "P6_p50_ms": {
+          "median": 34.2364,
+          "min": 32.3474,
+          "max": 48.3798
+        },
+        "P6_p95_ms": {
+          "median": 72.4627,
+          "min": 37.4525,
+          "max": 82.6328
+        },
+        "P7_logical_p50_ms": {
+          "median": 0.7017,
+          "min": 0.6904,
+          "max": 1.0819
+        },
+        "P7_logical_p95_ms": {
+          "median": 1.5364,
+          "min": 1.1008,
+          "max": 1.9104
+        },
+        "P7_allocated_p50_ms": {
+          "median": 0.5629,
+          "min": 0.5129,
+          "max": 0.8842
+        },
+        "P7_allocated_p95_ms": {
+          "median": 1.0606,
+          "min": 0.8125,
+          "max": 1.1885000000000001
+        },
+        "P8_p50_ms": {
+          "median": 13.989899999999999,
+          "min": 13.085799999999999,
+          "max": 19.6734
+        },
+        "P8_p95_ms": {
+          "median": 24.9872,
+          "min": 14.1406,
+          "max": 26.4458
+        },
+        "RSS_bytes": {
+          "median": 219713536,
+          "min": 211595264,
+          "max": 220184576
+        },
+        "peak_private_commit_bytes": {
+          "median": 220512256,
+          "min": 211554304,
+          "max": 220704768
+        }
+      },
+      "p4c": {
+        "P4_rows_per_second": {
+          "median": 27786.98033592871,
+          "min": 19701.7473346131,
+          "max": 28305.660298726103
+        },
+        "P4_seconds": {
+          "median": 36.0241015,
+          "min": 35.3639869,
+          "max": 50.807727
+        },
+        "P6_p50_ms": {
+          "median": 32.593900000000005,
+          "min": 31.966300000000004,
+          "max": 38.9811
+        },
+        "P6_p95_ms": {
+          "median": 46.7733,
+          "min": 35.3436,
+          "max": 47.739999999999995
+        },
+        "P7_logical_p50_ms": {
+          "median": 0.6988,
+          "min": 0.6605,
+          "max": 0.8027000000000001
+        },
+        "P7_logical_p95_ms": {
+          "median": 1.0026,
+          "min": 0.949,
+          "max": 1.0926
+        },
+        "P7_allocated_p50_ms": {
+          "median": 0.5291,
+          "min": 0.5051,
+          "max": 0.5712
+        },
+        "P7_allocated_p95_ms": {
+          "median": 0.9012,
+          "min": 0.8631,
+          "max": 0.9118
+        },
+        "P8_p50_ms": {
+          "median": 13.6722,
+          "min": 13.1667,
+          "max": 15.4498
+        },
+        "P8_p95_ms": {
+          "median": 17.2205,
+          "min": 16.8784,
+          "max": 20.9172
+        },
+        "RSS_bytes": {
+          "median": 206815232,
+          "min": 205828096,
+          "max": 207183872
+        },
+        "peak_private_commit_bytes": {
+          "median": 205758464,
+          "min": 205549568,
+          "max": 206630912
+        }
+      }
+    },
+    "sequence": [
+      {
+        "label": "main-1000000-1",
+        "lane": "main",
+        "rows": 1000000,
+        "single_directory": false,
+        "started_utc": "2026-10-10T16:20:39.660898+00:00",
+        "wall_seconds": 29.41319890000159,
+        "exit": 0
+      },
+      {
+        "label": "p4c-1000000-1",
+        "lane": "p4c",
+        "rows": 1000000,
+        "single_directory": false,
+        "started_utc": "2026-10-10T16:21:09.074661+00:00",
+        "wall_seconds": 43.34400959999766,
+        "exit": 0
+      },
+      {
+        "label": "main-1000000-2",
+        "lane": "main",
+        "rows": 1000000,
+        "single_directory": false,
+        "started_utc": "2026-10-10T16:21:52.419359+00:00",
+        "wall_seconds": 31.209443400002783,
+        "exit": 0
+      },
+      {
+        "label": "p4c-1000000-2",
+        "lane": "p4c",
+        "rows": 1000000,
+        "single_directory": false,
+        "started_utc": "2026-10-10T16:22:23.629176+00:00",
+        "wall_seconds": 44.513965099991765,
+        "exit": 0
+      },
+      {
+        "label": "main-1000000-3",
+        "lane": "main",
+        "rows": 1000000,
+        "single_directory": false,
+        "started_utc": "2026-10-10T16:23:08.143983+00:00",
+        "wall_seconds": 34.737624100001995,
+        "exit": 0
+      },
+      {
+        "label": "p4c-1000000-3",
+        "lane": "p4c",
+        "rows": 1000000,
+        "single_directory": false,
+        "started_utc": "2026-10-10T16:23:42.882398+00:00",
+        "wall_seconds": 62.68752779997885,
+        "exit": 0
+      },
+      {
+        "label": "main-2000000-1",
+        "lane": "main",
+        "rows": 2000000,
+        "single_directory": true,
+        "started_utc": "2026-10-10T16:24:45.570254+00:00",
+        "wall_seconds": 60.5355533999973,
+        "exit": 0
+      },
+      {
+        "label": "p4c-2000000-1",
+        "lane": "p4c",
+        "rows": 2000000,
+        "single_directory": true,
+        "started_utc": "2026-10-10T16:25:46.106398+00:00",
+        "wall_seconds": 111.68492910001078,
+        "exit": 0
+      }
+    ],
+    "baseline_runs": [
+      {
+        "P14": {
+          "bytes_per_entry": 155.02178319502178,
+          "catalog_bytes": 155176960,
+          "dataset_scale_met": false,
+          "target_bytes_per_entry": 200,
+          "target_dataset_rows": 10000000
+        },
+        "P4": {
+          "insert_seconds": 22.5006252,
+          "met": false,
+          "rows_per_second": 44487.69716852134,
+          "target_rows_per_second": 250000
+        },
+        "P6": {
+          "dataset_scale_met": false,
+          "http_round_trip": "unverified",
+          "nodes": 2500,
+          "payload_bytes": 1383755,
+          "target_dataset_rows": 10000000,
+          "target_ms": 60,
+          "target_payload_bytes": 1500000,
+          "timing": {
+            "max_ms": 41.5343,
+            "min_ms": 29.0847,
+            "p50_ms": 32.3474,
+            "p95_ms": 37.4525,
+            "runs": 21
+          }
+        },
+        "P7": {
+          "allocated_timing": {
+            "max_ms": 0.8677,
+            "min_ms": 0.48069999999999996,
+            "p50_ms": 0.5129,
+            "p95_ms": 0.8125,
+            "runs": 21
+          },
+          "limit": 200,
+          "target_ms": 20,
+          "timing": {
+            "max_ms": 1.2708000000000002,
+            "min_ms": 0.5992999999999999,
+            "p50_ms": 0.6904,
+            "p95_ms": 1.1008,
+            "runs": 21
+          }
+        },
+        "P8": {
+          "budget_hits": 21,
+          "target_ms": 300,
+          "timing": {
+            "max_ms": 14.5497,
+            "min_ms": 12.3095,
+            "p50_ms": 13.085799999999999,
+            "p95_ms": 14.1406,
+            "runs": 21
+          },
+          "work_budget_sqlite_ops": 2000000
+        },
+        "all_schema_indexes_present": true,
+        "dataset_class": "synthetic",
+        "directories": 1001,
+        "files": 1000000,
+        "files_per_directory": 1000,
+        "final_writer_timings": {
+          "checkpoint_seconds": 0.0355331,
+          "commands": 2005,
+          "commit_seconds": 11.3099006,
+          "dirty_updates": 3001,
+          "file_insert_seconds": 7.162093299999994,
+          "file_seen_seconds": 0.0,
+          "invalidation_seconds": 0.011199800000000024,
+          "listing_seconds": 9.437826599999998,
+          "max_transaction_bytes": 62929920,
+          "max_transaction_commands": 30,
+          "multilink_seconds": 1.0300007,
+          "name_validation_seconds": 0.5200987000000021,
+          "rollup_seconds": 0.0042274,
+          "staging_seconds": 0.6490398999999992,
+          "state_prepare_seconds": 0.012915899999999998,
+          "transactions": 73,
+          "validation_dry_run_seconds": 0.0
+        },
+        "finalise_seconds": 1.1123194,
+        "host_load": "shared-host; concurrent lanes; warm synthetic workload",
+        "index_maintenance": "inline in file_insert_seconds; not separately timed by SQLite",
+        "index_probe": {
+          "commit_seconds": 1.4214047,
+          "index_build_seconds": {
+            "file_by_allocated": 0.3108935,
+            "file_by_ext": 0.5886279,
+            "file_by_logical": 0.2923725,
+            "file_identity": 0.5398468
+          },
+          "insert_without_secondary_indexes_seconds": 0.6131517,
+          "rows": 1000000,
+          "scope": "isolated file-table SQL copy with parent rows and foreign keys; no staging, live view or publication protocol; not P4"
+        },
+        "insert_includes_generation_and_queue_backpressure": true,
+        "limitations": [
+          "shared-host warm synthetic workload; no controlled host-load or cold-cache claim",
+          "P6 and P14 below 10M target; no HTTP or native scan integration",
+          "process high-water is measured through queries, excluding the isolated index probe; cache settings are not an OS process-memory cap"
+        ],
+        "memory": {
+          "peak_pagefile_bytes": 220704768,
+          "peak_working_set_bytes": 220184576,
+          "scope": "process high-water through publication/queries; before isolated index probe"
+        },
+        "oracle": {
+          "allocated_known_bytes": "496873078784",
+          "allocation_unknown_files": 10310,
+          "logical_bytes": "500000500000",
+          "matched": true
+        },
+        "phases": {
+          "finalise_memory_high_water": {
+            "peak_pagefile_bytes": 214245376,
+            "peak_working_set_bytes": 215175168,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          },
+          "publication_memory_high_water": {
+            "peak_pagefile_bytes": 214245376,
+            "peak_working_set_bytes": 215162880,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          }
+        },
+        "platform": "windows",
+        "publication_path": "StageChunk + ListingDone; byte reservation before file generation",
+        "schema_version": 4,
+        "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
+        "temporary_directory_removed": true,
+        "writer_timings": {
+          "checkpoint_seconds": 0.0,
+          "commands": 2004,
+          "commit_seconds": 11.2894552,
+          "dirty_updates": 3001,
+          "file_insert_seconds": 7.162093299999994,
+          "file_seen_seconds": 0.0,
+          "invalidation_seconds": 0.011199800000000024,
+          "listing_seconds": 9.437826599999998,
+          "max_transaction_bytes": 62929920,
+          "max_transaction_commands": 30,
+          "multilink_seconds": 0.0,
+          "name_validation_seconds": 0.5200987000000021,
+          "rollup_seconds": 0.0,
+          "staging_seconds": 0.6490398999999992,
+          "state_prepare_seconds": 0.008938899999999998,
+          "transactions": 72,
+          "validation_dry_run_seconds": 0.0
+        }
+      },
+      {
+        "P14": {
+          "bytes_per_entry": 155.02178319502178,
+          "catalog_bytes": 155176960,
+          "dataset_scale_met": false,
+          "target_bytes_per_entry": 200,
+          "target_dataset_rows": 10000000
+        },
+        "P4": {
+          "insert_seconds": 22.3888407,
+          "met": false,
+          "rows_per_second": 44709.81831587198,
+          "target_rows_per_second": 250000
+        },
+        "P6": {
+          "dataset_scale_met": false,
+          "http_round_trip": "unverified",
+          "nodes": 2500,
+          "payload_bytes": 1383755,
+          "target_dataset_rows": 10000000,
+          "target_ms": 60,
+          "target_payload_bytes": 1500000,
+          "timing": {
+            "max_ms": 80.2543,
+            "min_ms": 29.876900000000003,
+            "p50_ms": 48.3798,
+            "p95_ms": 72.4627,
+            "runs": 21
+          }
+        },
+        "P7": {
+          "allocated_timing": {
+            "max_ms": 1.5149,
+            "min_ms": 0.4856,
+            "p50_ms": 0.8842,
+            "p95_ms": 1.1885000000000001,
+            "runs": 21
+          },
+          "limit": 200,
+          "target_ms": 20,
+          "timing": {
+            "max_ms": 2.4407,
+            "min_ms": 0.6058,
+            "p50_ms": 1.0819,
+            "p95_ms": 1.9104,
+            "runs": 21
+          }
+        },
+        "P8": {
+          "budget_hits": 21,
+          "target_ms": 300,
+          "timing": {
+            "max_ms": 28.9755,
+            "min_ms": 14.5849,
+            "p50_ms": 19.6734,
+            "p95_ms": 26.4458,
+            "runs": 21
+          },
+          "work_budget_sqlite_ops": 2000000
+        },
+        "all_schema_indexes_present": true,
+        "dataset_class": "synthetic",
+        "directories": 1001,
+        "files": 1000000,
+        "files_per_directory": 1000,
+        "final_writer_timings": {
+          "checkpoint_seconds": 0.3241559,
+          "commands": 2005,
+          "commit_seconds": 7.0429644,
+          "dirty_updates": 3001,
+          "file_insert_seconds": 9.805849699999996,
+          "file_seen_seconds": 0.0,
+          "invalidation_seconds": 0.012585700000000023,
+          "listing_seconds": 12.845495200000004,
+          "max_transaction_bytes": 62929920,
+          "max_transaction_commands": 30,
+          "multilink_seconds": 1.3824368,
+          "name_validation_seconds": 0.7269687000000018,
+          "rollup_seconds": 0.0057513,
+          "staging_seconds": 0.8281783999999999,
+          "state_prepare_seconds": 0.009278799999999993,
+          "transactions": 79,
+          "validation_dry_run_seconds": 0.0
+        },
+        "finalise_seconds": 1.7164709999999999,
+        "host_load": "shared-host; concurrent lanes; warm synthetic workload",
+        "index_maintenance": "inline in file_insert_seconds; not separately timed by SQLite",
+        "index_probe": {
+          "commit_seconds": 1.276112,
+          "index_build_seconds": {
+            "file_by_allocated": 0.3168475,
+            "file_by_ext": 0.5968016,
+            "file_by_logical": 0.3100432,
+            "file_identity": 1.1155964
+          },
+          "insert_without_secondary_indexes_seconds": 0.8735082,
+          "rows": 1000000,
+          "scope": "isolated file-table SQL copy with parent rows and foreign keys; no staging, live view or publication protocol; not P4"
+        },
+        "insert_includes_generation_and_queue_backpressure": true,
+        "limitations": [
+          "shared-host warm synthetic workload; no controlled host-load or cold-cache claim",
+          "P6 and P14 below 10M target; no HTTP or native scan integration",
+          "process high-water is measured through queries, excluding the isolated index probe; cache settings are not an OS process-memory cap"
+        ],
+        "memory": {
+          "peak_pagefile_bytes": 220512256,
+          "peak_working_set_bytes": 219713536,
+          "scope": "process high-water through publication/queries; before isolated index probe"
+        },
+        "oracle": {
+          "allocated_known_bytes": "496873078784",
+          "allocation_unknown_files": 10310,
+          "logical_bytes": "500000500000",
+          "matched": true
+        },
+        "phases": {
+          "finalise_memory_high_water": {
+            "peak_pagefile_bytes": 214953984,
+            "peak_working_set_bytes": 215777280,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          },
+          "publication_memory_high_water": {
+            "peak_pagefile_bytes": 214929408,
+            "peak_working_set_bytes": 215744512,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          }
+        },
+        "platform": "windows",
+        "publication_path": "StageChunk + ListingDone; byte reservation before file generation",
+        "schema_version": 4,
+        "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
+        "temporary_directory_removed": true,
+        "writer_timings": {
+          "checkpoint_seconds": 0.0,
+          "commands": 2004,
+          "commit_seconds": 7.041308,
+          "dirty_updates": 3001,
+          "file_insert_seconds": 9.805849699999996,
+          "file_seen_seconds": 0.0,
+          "invalidation_seconds": 0.012585700000000023,
+          "listing_seconds": 12.845495200000004,
+          "max_transaction_bytes": 62929920,
+          "max_transaction_commands": 30,
+          "multilink_seconds": 0.0,
+          "name_validation_seconds": 0.7269687000000018,
+          "rollup_seconds": 0.0,
+          "staging_seconds": 0.8281783999999999,
+          "state_prepare_seconds": 0.008413099999999993,
+          "transactions": 78,
+          "validation_dry_run_seconds": 0.0
+        }
+      },
+      {
+        "P14": {
+          "bytes_per_entry": 155.02178319502178,
+          "catalog_bytes": 155176960,
+          "dataset_scale_met": false,
+          "target_bytes_per_entry": 200,
+          "target_dataset_rows": 10000000
+        },
+        "P4": {
+          "insert_seconds": 23.9709789,
+          "met": false,
+          "rows_per_second": 41758.8703480107,
+          "target_rows_per_second": 250000
+        },
+        "P6": {
+          "dataset_scale_met": false,
+          "http_round_trip": "unverified",
+          "nodes": 2500,
+          "payload_bytes": 1383755,
+          "target_dataset_rows": 10000000,
+          "target_ms": 60,
+          "target_payload_bytes": 1500000,
+          "timing": {
+            "max_ms": 86.2165,
+            "min_ms": 29.6657,
+            "p50_ms": 34.2364,
+            "p95_ms": 82.6328,
+            "runs": 21
+          }
+        },
+        "P7": {
+          "allocated_timing": {
+            "max_ms": 1.3756,
+            "min_ms": 0.4856,
+            "p50_ms": 0.5629,
+            "p95_ms": 1.0606,
+            "runs": 21
+          },
+          "limit": 200,
+          "target_ms": 20,
+          "timing": {
+            "max_ms": 4.2901,
+            "min_ms": 0.5988,
+            "p50_ms": 0.7017,
+            "p95_ms": 1.5364,
+            "runs": 21
+          }
+        },
+        "P8": {
+          "budget_hits": 21,
+          "target_ms": 300,
+          "timing": {
+            "max_ms": 26.8874,
+            "min_ms": 12.3427,
+            "p50_ms": 13.989899999999999,
+            "p95_ms": 24.9872,
+            "runs": 21
+          },
+          "work_budget_sqlite_ops": 2000000
+        },
+        "all_schema_indexes_present": true,
+        "dataset_class": "synthetic",
+        "directories": 1001,
+        "files": 1000000,
+        "files_per_directory": 1000,
+        "final_writer_timings": {
+          "checkpoint_seconds": 0.2860494,
+          "commands": 2005,
+          "commit_seconds": 7.3477749999999995,
+          "dirty_updates": 3001,
+          "file_insert_seconds": 10.621424899999989,
+          "file_seen_seconds": 0.0,
+          "invalidation_seconds": 0.014622300000000003,
+          "listing_seconds": 14.082844000000003,
+          "max_transaction_bytes": 62929920,
+          "max_transaction_commands": 30,
+          "multilink_seconds": 1.202652,
+          "name_validation_seconds": 0.8330582000000003,
+          "rollup_seconds": 0.0029391,
+          "staging_seconds": 0.8820688999999999,
+          "state_prepare_seconds": 0.009938099999999983,
+          "transactions": 78,
+          "validation_dry_run_seconds": 0.0
+        },
+        "finalise_seconds": 1.4944673,
+        "host_load": "shared-host; concurrent lanes; warm synthetic workload",
+        "index_maintenance": "inline in file_insert_seconds; not separately timed by SQLite",
+        "index_probe": {
+          "commit_seconds": 2.4465364,
+          "index_build_seconds": {
+            "file_by_allocated": 0.3216068,
+            "file_by_ext": 0.7653233,
+            "file_by_logical": 0.7202026,
+            "file_identity": 1.4573112
+          },
+          "insert_without_secondary_indexes_seconds": 0.8681379,
+          "rows": 1000000,
+          "scope": "isolated file-table SQL copy with parent rows and foreign keys; no staging, live view or publication protocol; not P4"
+        },
+        "insert_includes_generation_and_queue_backpressure": true,
+        "limitations": [
+          "shared-host warm synthetic workload; no controlled host-load or cold-cache claim",
+          "P6 and P14 below 10M target; no HTTP or native scan integration",
+          "process high-water is measured through queries, excluding the isolated index probe; cache settings are not an OS process-memory cap"
+        ],
+        "memory": {
+          "peak_pagefile_bytes": 211554304,
+          "peak_working_set_bytes": 211595264,
+          "scope": "process high-water through publication/queries; before isolated index probe"
+        },
+        "oracle": {
+          "allocated_known_bytes": "496873078784",
+          "allocation_unknown_files": 10310,
+          "logical_bytes": "500000500000",
+          "matched": true
+        },
+        "phases": {
+          "finalise_memory_high_water": {
+            "peak_pagefile_bytes": 205803520,
+            "peak_working_set_bytes": 207450112,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          },
+          "publication_memory_high_water": {
+            "peak_pagefile_bytes": 205803520,
+            "peak_working_set_bytes": 207405056,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          }
+        },
+        "platform": "windows",
+        "publication_path": "StageChunk + ListingDone; byte reservation before file generation",
+        "schema_version": 4,
+        "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
+        "temporary_directory_removed": true,
+        "writer_timings": {
+          "checkpoint_seconds": 0.0,
+          "commands": 2004,
+          "commit_seconds": 7.3468554,
+          "dirty_updates": 3001,
+          "file_insert_seconds": 10.621424899999989,
+          "file_seen_seconds": 0.0,
+          "invalidation_seconds": 0.014622300000000003,
+          "listing_seconds": 14.082844000000003,
+          "max_transaction_bytes": 62929920,
+          "max_transaction_commands": 30,
+          "multilink_seconds": 0.0,
+          "name_validation_seconds": 0.8330582000000003,
+          "rollup_seconds": 0.0,
+          "staging_seconds": 0.8820688999999999,
+          "state_prepare_seconds": 0.009087899999999982,
+          "transactions": 77,
+          "validation_dry_run_seconds": 0.0
+        }
+      }
+    ],
+    "runs": [
+      {
+        "P14": {
+          "bytes_per_entry": 155.02178319502178,
+          "catalog_bytes": 155176960,
+          "dataset_scale_met": false,
+          "target_bytes_per_entry": 200,
+          "target_dataset_rows": 10000000
+        },
+        "P4": {
+          "insert_seconds": 35.3639869,
+          "met": false,
+          "rows_per_second": 28305.660298726103,
+          "target_rows_per_second": 250000
+        },
+        "P6": {
+          "dataset_scale_met": false,
+          "http_round_trip": "unverified",
+          "nodes": 2500,
+          "payload_bytes": 1383755,
+          "target_dataset_rows": 10000000,
+          "target_ms": 60,
+          "target_payload_bytes": 1500000,
+          "timing": {
+            "max_ms": 79.5111,
+            "min_ms": 30.244500000000002,
+            "p50_ms": 38.9811,
+            "p95_ms": 46.7733,
+            "runs": 21
+          }
+        },
+        "P7": {
+          "allocated_timing": {
+            "max_ms": 1.0332,
+            "min_ms": 0.48979999999999996,
+            "p50_ms": 0.5712,
+            "p95_ms": 0.9118,
+            "runs": 21
+          },
+          "limit": 200,
+          "target_ms": 20,
+          "timing": {
+            "max_ms": 1.1988,
+            "min_ms": 0.5768,
+            "p50_ms": 0.8027000000000001,
+            "p95_ms": 1.0926,
+            "runs": 21
+          }
+        },
+        "P8": {
+          "budget_hits": 21,
+          "target_ms": 300,
+          "timing": {
+            "max_ms": 22.6656,
+            "min_ms": 12.426400000000001,
+            "p50_ms": 15.4498,
+            "p95_ms": 20.9172,
+            "runs": 21
+          },
+          "work_budget_sqlite_ops": 2000000
+        },
+        "all_schema_indexes_present": true,
+        "dataset_class": "synthetic",
+        "directories": 1001,
+        "files": 1000000,
+        "files_per_directory": 1000,
+        "final_writer_timings": {
+          "checkpoint_seconds": 0.0343408,
+          "commands": 2005,
+          "commit_seconds": 11.8583095,
+          "dirty_updates": 3001,
+          "file_insert_seconds": 19.76260349999998,
+          "file_seen_seconds": 0.0,
+          "invalidation_seconds": 0.019906399999999987,
+          "listing_seconds": 22.336145200000008,
+          "max_transaction_bytes": 62929920,
+          "max_transaction_commands": 30,
+          "multilink_seconds": 1.1523713,
+          "name_validation_seconds": 0.6322953000000016,
+          "rollup_seconds": 0.0360529,
+          "staging_seconds": 0.9229796000000002,
+          "state_prepare_seconds": 0.02277209999999998,
+          "transactions": 96,
+          "validation_dry_run_seconds": 0.0
+        },
+        "finalise_seconds": 1.2576751,
+        "host_load": "shared-host; concurrent lanes; warm synthetic workload",
+        "index_maintenance": "inline in file_insert_seconds; not separately timed by SQLite",
+        "index_probe": {
+          "commit_seconds": 1.4752748,
+          "index_build_seconds": {
+            "file_by_allocated": 0.3169411,
+            "file_by_ext": 0.8431179,
+            "file_by_logical": 0.3410922,
+            "file_identity": 0.6302498
+          },
+          "insert_without_secondary_indexes_seconds": 0.7819477,
+          "rows": 1000000,
+          "scope": "isolated file-table SQL copy with parent rows and foreign keys; no staging, live view or publication protocol; not P4"
+        },
+        "insert_includes_generation_and_queue_backpressure": true,
+        "limitations": [
+          "shared-host warm synthetic workload; no controlled host-load or cold-cache claim",
+          "P6 and P14 below 10M target; no HTTP or native scan integration",
+          "process high-water is measured through queries, excluding the isolated index probe; cache settings are not an OS process-memory cap"
+        ],
+        "memory": {
+          "peak_pagefile_bytes": 205758464,
+          "peak_working_set_bytes": 206815232,
+          "scope": "process high-water through publication/queries; before isolated index probe"
+        },
+        "oracle": {
+          "allocated_known_bytes": "496873078784",
+          "allocation_unknown_files": 10310,
+          "logical_bytes": "500000500000",
+          "matched": true
+        },
+        "phases": {
+          "finalise_memory_high_water": {
+            "peak_pagefile_bytes": 198238208,
+            "peak_working_set_bytes": 200867840,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          },
+          "publication_memory_high_water": {
+            "peak_pagefile_bytes": 198238208,
+            "peak_working_set_bytes": 200867840,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          }
+        },
+        "platform": "windows",
+        "publication_path": "StageChunk + ListingDone; byte reservation before file generation",
+        "schema_version": 4,
+        "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
+        "temporary_directory_removed": true,
+        "writer_timings": {
+          "checkpoint_seconds": 0.0,
+          "commands": 2004,
+          "commit_seconds": 11.850696600000001,
+          "dirty_updates": 3001,
+          "file_insert_seconds": 19.76260349999998,
+          "file_seen_seconds": 0.0,
+          "invalidation_seconds": 0.019906399999999987,
+          "listing_seconds": 22.336145200000008,
+          "max_transaction_bytes": 62929920,
+          "max_transaction_commands": 30,
+          "multilink_seconds": 0.0,
+          "name_validation_seconds": 0.6322953000000016,
+          "rollup_seconds": 0.0,
+          "staging_seconds": 0.9229796000000002,
+          "state_prepare_seconds": 0.01397399999999998,
+          "transactions": 95,
+          "validation_dry_run_seconds": 0.0
+        }
+      },
+      {
+        "P14": {
+          "bytes_per_entry": 155.02178319502178,
+          "catalog_bytes": 155176960,
+          "dataset_scale_met": false,
+          "target_bytes_per_entry": 200,
+          "target_dataset_rows": 10000000
+        },
+        "P4": {
+          "insert_seconds": 36.0241015,
+          "met": false,
+          "rows_per_second": 27786.98033592871,
+          "target_rows_per_second": 250000
+        },
+        "P6": {
+          "dataset_scale_met": false,
+          "http_round_trip": "unverified",
+          "nodes": 2500,
+          "payload_bytes": 1383755,
+          "target_dataset_rows": 10000000,
+          "target_ms": 60,
+          "target_payload_bytes": 1500000,
+          "timing": {
+            "max_ms": 40.2946,
+            "min_ms": 30.131999999999998,
+            "p50_ms": 32.593900000000005,
+            "p95_ms": 35.3436,
+            "runs": 21
+          }
+        },
+        "P7": {
+          "allocated_timing": {
+            "max_ms": 0.976,
+            "min_ms": 0.4854,
+            "p50_ms": 0.5051,
+            "p95_ms": 0.8631,
+            "runs": 21
+          },
+          "limit": 200,
+          "target_ms": 20,
+          "timing": {
+            "max_ms": 1.1345999999999998,
+            "min_ms": 0.5912,
+            "p50_ms": 0.6605,
+            "p95_ms": 0.949,
+            "runs": 21
+          }
+        },
+        "P8": {
+          "budget_hits": 21,
+          "target_ms": 300,
+          "timing": {
+            "max_ms": 18.3707,
+            "min_ms": 12.2473,
+            "p50_ms": 13.1667,
+            "p95_ms": 17.2205,
+            "runs": 21
+          },
+          "work_budget_sqlite_ops": 2000000
+        },
+        "all_schema_indexes_present": true,
+        "dataset_class": "synthetic",
+        "directories": 1001,
+        "files": 1000000,
+        "files_per_directory": 1000,
+        "final_writer_timings": {
+          "checkpoint_seconds": 0.2357688,
+          "commands": 2005,
+          "commit_seconds": 11.846841399999997,
+          "dirty_updates": 3001,
+          "file_insert_seconds": 20.407506099999964,
+          "file_seen_seconds": 0.0,
+          "invalidation_seconds": 0.0240567,
+          "listing_seconds": 23.005854099999986,
+          "max_transaction_bytes": 62929920,
+          "max_transaction_commands": 30,
+          "multilink_seconds": 1.3246397,
+          "name_validation_seconds": 0.6649335000000013,
+          "rollup_seconds": 0.0045821,
+          "staging_seconds": 0.9050469000000002,
+          "state_prepare_seconds": 0.04465450000000001,
+          "transactions": 98,
+          "validation_dry_run_seconds": 0.0
+        },
+        "finalise_seconds": 1.5689502,
+        "host_load": "shared-host; concurrent lanes; warm synthetic workload",
+        "index_maintenance": "inline in file_insert_seconds; not separately timed by SQLite",
+        "index_probe": {
+          "commit_seconds": 0.9280709,
+          "index_build_seconds": {
+            "file_by_allocated": 0.4174814,
+            "file_by_ext": 1.2950646,
+            "file_by_logical": 0.4579462,
+            "file_identity": 0.8035763
+          },
+          "insert_without_secondary_indexes_seconds": 0.6630611,
+          "rows": 1000000,
+          "scope": "isolated file-table SQL copy with parent rows and foreign keys; no staging, live view or publication protocol; not P4"
+        },
+        "insert_includes_generation_and_queue_backpressure": true,
+        "limitations": [
+          "shared-host warm synthetic workload; no controlled host-load or cold-cache claim",
+          "P6 and P14 below 10M target; no HTTP or native scan integration",
+          "process high-water is measured through queries, excluding the isolated index probe; cache settings are not an OS process-memory cap"
+        ],
+        "memory": {
+          "peak_pagefile_bytes": 205549568,
+          "peak_working_set_bytes": 205828096,
+          "scope": "process high-water through publication/queries; before isolated index probe"
+        },
+        "oracle": {
+          "allocated_known_bytes": "496873078784",
+          "allocation_unknown_files": 10310,
+          "logical_bytes": "500000500000",
+          "matched": true
+        },
+        "phases": {
+          "finalise_memory_high_water": {
+            "peak_pagefile_bytes": 197062656,
+            "peak_working_set_bytes": 199356416,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          },
+          "publication_memory_high_water": {
+            "peak_pagefile_bytes": 197062656,
+            "peak_working_set_bytes": 199323648,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          }
+        },
+        "platform": "windows",
+        "publication_path": "StageChunk + ListingDone; byte reservation before file generation",
+        "schema_version": 4,
+        "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
+        "temporary_directory_removed": true,
+        "writer_timings": {
+          "checkpoint_seconds": 0.0,
+          "commands": 2004,
+          "commit_seconds": 11.845649599999996,
+          "dirty_updates": 3001,
+          "file_insert_seconds": 20.407506099999964,
+          "file_seen_seconds": 0.0,
+          "invalidation_seconds": 0.0240567,
+          "listing_seconds": 23.005854099999986,
+          "max_transaction_bytes": 62929920,
+          "max_transaction_commands": 30,
+          "multilink_seconds": 0.0,
+          "name_validation_seconds": 0.6649335000000013,
+          "rollup_seconds": 0.0,
+          "staging_seconds": 0.9050469000000002,
+          "state_prepare_seconds": 0.043011900000000006,
+          "transactions": 97,
+          "validation_dry_run_seconds": 0.0
+        }
+      },
+      {
+        "P14": {
+          "bytes_per_entry": 155.02178319502178,
+          "catalog_bytes": 155176960,
+          "dataset_scale_met": false,
+          "target_bytes_per_entry": 200,
+          "target_dataset_rows": 10000000
+        },
+        "P4": {
+          "insert_seconds": 50.807727,
+          "met": false,
+          "rows_per_second": 19701.7473346131,
+          "target_rows_per_second": 250000
+        },
+        "P6": {
+          "dataset_scale_met": false,
+          "http_round_trip": "unverified",
+          "nodes": 2500,
+          "payload_bytes": 1383755,
+          "target_dataset_rows": 10000000,
+          "target_ms": 60,
+          "target_payload_bytes": 1500000,
+          "timing": {
+            "max_ms": 49.5184,
+            "min_ms": 29.4272,
+            "p50_ms": 31.966300000000004,
+            "p95_ms": 47.739999999999995,
+            "runs": 21
+          }
+        },
+        "P7": {
+          "allocated_timing": {
+            "max_ms": 0.9684,
+            "min_ms": 0.4885,
+            "p50_ms": 0.5291,
+            "p95_ms": 0.9012,
+            "runs": 21
+          },
+          "limit": 200,
+          "target_ms": 20,
+          "timing": {
+            "max_ms": 1.2251,
+            "min_ms": 0.5952999999999999,
+            "p50_ms": 0.6988,
+            "p95_ms": 1.0026,
+            "runs": 21
+          }
+        },
+        "P8": {
+          "budget_hits": 21,
+          "target_ms": 300,
+          "timing": {
+            "max_ms": 18.727899999999998,
+            "min_ms": 12.5696,
+            "p50_ms": 13.6722,
+            "p95_ms": 16.8784,
+            "runs": 21
+          },
+          "work_budget_sqlite_ops": 2000000
+        },
+        "all_schema_indexes_present": true,
+        "dataset_class": "synthetic",
+        "directories": 1001,
+        "files": 1000000,
+        "files_per_directory": 1000,
+        "final_writer_timings": {
+          "checkpoint_seconds": 0.0093962,
+          "commands": 2005,
+          "commit_seconds": 15.178192299999997,
+          "dirty_updates": 3001,
+          "file_insert_seconds": 30.265666799999984,
+          "file_seen_seconds": 0.0,
+          "invalidation_seconds": 0.036859199999999946,
+          "listing_seconds": 34.440445699999984,
+          "max_transaction_bytes": 58734592,
+          "max_transaction_commands": 28,
+          "multilink_seconds": 1.2254558,
+          "name_validation_seconds": 0.9619797999999983,
+          "rollup_seconds": 0.0082078,
+          "staging_seconds": 1.2587805999999995,
+          "state_prepare_seconds": 0.017555399999999978,
+          "transactions": 138,
+          "validation_dry_run_seconds": 0.0
+        },
+        "finalise_seconds": 1.7220788,
+        "host_load": "shared-host; concurrent lanes; warm synthetic workload",
+        "index_maintenance": "inline in file_insert_seconds; not separately timed by SQLite",
+        "index_probe": {
+          "commit_seconds": 1.4287615,
+          "index_build_seconds": {
+            "file_by_allocated": 0.3252402,
+            "file_by_ext": 0.9596486,
+            "file_by_logical": 0.4392842,
+            "file_identity": 0.9989291
+          },
+          "insert_without_secondary_indexes_seconds": 3.4026821,
+          "rows": 1000000,
+          "scope": "isolated file-table SQL copy with parent rows and foreign keys; no staging, live view or publication protocol; not P4"
+        },
+        "insert_includes_generation_and_queue_backpressure": true,
+        "limitations": [
+          "shared-host warm synthetic workload; no controlled host-load or cold-cache claim",
+          "P6 and P14 below 10M target; no HTTP or native scan integration",
+          "process high-water is measured through queries, excluding the isolated index probe; cache settings are not an OS process-memory cap"
+        ],
+        "memory": {
+          "peak_pagefile_bytes": 206630912,
+          "peak_working_set_bytes": 207183872,
+          "scope": "process high-water through publication/queries; before isolated index probe"
+        },
+        "oracle": {
+          "allocated_known_bytes": "496873078784",
+          "allocation_unknown_files": 10310,
+          "logical_bytes": "500000500000",
+          "matched": true
+        },
+        "phases": {
+          "finalise_memory_high_water": {
+            "peak_pagefile_bytes": 198627328,
+            "peak_working_set_bytes": 200851456,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          },
+          "publication_memory_high_water": {
+            "peak_pagefile_bytes": 198627328,
+            "peak_working_set_bytes": 200851456,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          }
+        },
+        "platform": "windows",
+        "publication_path": "StageChunk + ListingDone; byte reservation before file generation",
+        "schema_version": 4,
+        "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
+        "temporary_directory_removed": true,
+        "writer_timings": {
+          "checkpoint_seconds": 0.0,
+          "commands": 2004,
+          "commit_seconds": 14.710259499999998,
+          "dirty_updates": 3001,
+          "file_insert_seconds": 30.265666799999984,
+          "file_seen_seconds": 0.0,
+          "invalidation_seconds": 0.036859199999999946,
+          "listing_seconds": 34.440445699999984,
+          "max_transaction_bytes": 58734592,
+          "max_transaction_commands": 28,
+          "multilink_seconds": 0.0,
+          "name_validation_seconds": 0.9619797999999983,
+          "rollup_seconds": 0.0,
+          "staging_seconds": 1.2587805999999995,
+          "state_prepare_seconds": 0.010533599999999978,
+          "transactions": 137,
+          "validation_dry_run_seconds": 0.0
+        }
+      }
+    ],
+    "single_directory": {
+      "main": {
+        "P14": {
+          "bytes_per_entry": 455.032376967623,
+          "catalog_bytes": 910065664,
+          "dataset_scale_met": false,
+          "target_bytes_per_entry": 200,
+          "target_dataset_rows": 10000000
+        },
+        "P4": {
+          "insert_seconds": 40.8382746,
+          "met": false,
+          "rows_per_second": 48973.71447715374,
+          "target_rows_per_second": 250000
+        },
+        "P6": {
+          "dataset_scale_met": false,
+          "http_round_trip": "unverified",
+          "nodes": 2500,
+          "payload_bytes": 1394878,
+          "target_dataset_rows": 10000000,
+          "target_ms": 60,
+          "target_payload_bytes": 1500000,
+          "timing": {
+            "max_ms": 97.5806,
+            "min_ms": 44.2646,
+            "p50_ms": 60.6506,
+            "p95_ms": 84.3926,
+            "runs": 21
+          }
+        },
+        "P7": {
+          "allocated_timing": {
+            "max_ms": 1.4226,
+            "min_ms": 0.5629,
+            "p50_ms": 1.0558,
+            "p95_ms": 1.3912,
+            "runs": 21
+          },
+          "limit": 200,
+          "target_ms": 20,
+          "timing": {
+            "max_ms": 3.3611999999999997,
+            "min_ms": 0.7020000000000001,
+            "p50_ms": 1.2973,
+            "p95_ms": 2.2813999999999997,
+            "runs": 21
+          }
+        },
+        "P8": {
+          "budget_hits": 21,
+          "target_ms": 300,
+          "timing": {
+            "max_ms": 35.964200000000005,
+            "min_ms": 15.5093,
+            "p50_ms": 23.3369,
+            "p95_ms": 29.9132,
+            "runs": 21
+          },
+          "work_budget_sqlite_ops": 2000000
+        },
+        "all_schema_indexes_present": true,
+        "dataset_class": "synthetic",
+        "directories": 2,
+        "files": 2000000,
+        "files_per_directory": 2000000,
+        "final_writer_timings": {
+          "checkpoint_seconds": 0.0366769,
+          "commands": 2006,
+          "commit_seconds": 7.360627999999999,
+          "dirty_updates": 4,
+          "file_insert_seconds": 26.142234000000094,
+          "file_seen_seconds": 0.0,
+          "invalidation_seconds": 2.67e-05,
+          "listing_seconds": 32.1939571,
+          "max_transaction_bytes": 67108864,
+          "max_transaction_commands": 16,
+          "multilink_seconds": 3.8516985,
+          "name_validation_seconds": 1.4122506999887845,
+          "rollup_seconds": 0.0010773,
+          "staging_seconds": 1.0065245999999985,
+          "state_prepare_seconds": 0.010216399999999994,
+          "transactions": 131,
+          "validation_dry_run_seconds": 0.0
+        },
+        "finalise_seconds": 3.894921,
+        "host_load": "shared-host; concurrent lanes; warm synthetic workload",
+        "index_maintenance": "inline in file_insert_seconds; not separately timed by SQLite",
+        "index_probe": {
+          "commit_seconds": 2.1770054,
+          "index_build_seconds": {
+            "file_by_allocated": 2.223916,
+            "file_by_ext": 2.0693585,
+            "file_by_logical": 2.177548,
+            "file_identity": 1.9728409
+          },
+          "insert_without_secondary_indexes_seconds": 2.0481859,
+          "rows": 2000000,
+          "scope": "isolated file-table SQL copy with parent rows and foreign keys; no staging, live view or publication protocol; not P4"
+        },
+        "insert_includes_generation_and_queue_backpressure": true,
+        "limitations": [
+          "shared-host warm synthetic workload; no controlled host-load or cold-cache claim",
+          "P6 and P14 below 10M target; no HTTP or native scan integration",
+          "process high-water is measured through queries, excluding the isolated index probe; cache settings are not an OS process-memory cap"
+        ],
+        "memory": {
+          "peak_pagefile_bytes": 491225088,
+          "peak_working_set_bytes": 483655680,
+          "scope": "process high-water through publication/queries; before isolated index probe"
+        },
+        "oracle": {
+          "allocated_known_bytes": "993746374656",
+          "allocation_unknown_files": 20619,
+          "logical_bytes": "1000001000000",
+          "matched": true
+        },
+        "phases": {
+          "finalise_memory_high_water": {
+            "peak_pagefile_bytes": 491225088,
+            "peak_working_set_bytes": 483655680,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          },
+          "publication_memory_high_water": {
+            "peak_pagefile_bytes": 491225088,
+            "peak_working_set_bytes": 483655680,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          }
+        },
+        "platform": "windows",
+        "publication_path": "StageChunk + ListingDone; byte reservation before file generation",
+        "schema_version": 4,
+        "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
+        "temporary_directory_removed": true,
+        "writer_timings": {
+          "checkpoint_seconds": 0.0,
+          "commands": 2005,
+          "commit_seconds": 7.3576763,
+          "dirty_updates": 4,
+          "file_insert_seconds": 26.142234000000094,
+          "file_seen_seconds": 0.0,
+          "invalidation_seconds": 2.67e-05,
+          "listing_seconds": 32.1939571,
+          "max_transaction_bytes": 67108864,
+          "max_transaction_commands": 16,
+          "multilink_seconds": 0.0,
+          "name_validation_seconds": 1.4122506999887845,
+          "rollup_seconds": 0.0,
+          "staging_seconds": 1.0065245999999985,
+          "state_prepare_seconds": 0.008591299999999993,
+          "transactions": 130,
+          "validation_dry_run_seconds": 0.0
+        }
+      },
+      "p4c": {
+        "P14": {
+          "bytes_per_entry": 455.032376967623,
+          "catalog_bytes": 910065664,
+          "dataset_scale_met": false,
+          "target_bytes_per_entry": 200,
+          "target_dataset_rows": 10000000
+        },
+        "P4": {
+          "insert_seconds": 85.9346193,
+          "met": false,
+          "rows_per_second": 23273.530694514873,
+          "target_rows_per_second": 250000
+        },
+        "P6": {
+          "dataset_scale_met": false,
+          "http_round_trip": "unverified",
+          "nodes": 2500,
+          "payload_bytes": 1394878,
+          "target_dataset_rows": 10000000,
+          "target_ms": 60,
+          "target_payload_bytes": 1500000,
+          "timing": {
+            "max_ms": 43.1752,
+            "min_ms": 29.9341,
+            "p50_ms": 33.3603,
+            "p95_ms": 41.4929,
+            "runs": 21
+          }
+        },
+        "P7": {
+          "allocated_timing": {
+            "max_ms": 0.9477,
+            "min_ms": 0.5649000000000001,
+            "p50_ms": 0.6237,
+            "p95_ms": 0.9129999999999999,
+            "runs": 21
+          },
+          "limit": 200,
+          "target_ms": 20,
+          "timing": {
+            "max_ms": 1.3946,
+            "min_ms": 0.6865,
+            "p50_ms": 0.7832,
+            "p95_ms": 1.3542999999999998,
+            "runs": 21
+          }
+        },
+        "P8": {
+          "budget_hits": 21,
+          "target_ms": 300,
+          "timing": {
+            "max_ms": 18.9888,
+            "min_ms": 12.159400000000002,
+            "p50_ms": 12.896899999999999,
+            "p95_ms": 18.828500000000002,
+            "runs": 21
+          },
+          "work_budget_sqlite_ops": 2000000
+        },
+        "all_schema_indexes_present": true,
+        "dataset_class": "synthetic",
+        "directories": 2,
+        "files": 2000000,
+        "files_per_directory": 2000000,
+        "final_writer_timings": {
+          "checkpoint_seconds": 0.0314136,
+          "commands": 2006,
+          "commit_seconds": 11.814652099999995,
+          "dirty_updates": 4,
+          "file_insert_seconds": 67.40095540000016,
+          "file_seen_seconds": 0.0,
+          "invalidation_seconds": 3.04e-05,
+          "listing_seconds": 73.0036605,
+          "max_transaction_bytes": 67108864,
+          "max_transaction_commands": 16,
+          "multilink_seconds": 7.7449295,
+          "name_validation_seconds": 1.6518765999881784,
+          "rollup_seconds": 0.001348,
+          "staging_seconds": 0.8689451999999989,
+          "state_prepare_seconds": 0.03230620000000008,
+          "transactions": 131,
+          "validation_dry_run_seconds": 0.0
+        },
+        "finalise_seconds": 7.7872387,
+        "host_load": "shared-host; concurrent lanes; warm synthetic workload",
+        "index_maintenance": "inline in file_insert_seconds; not separately timed by SQLite",
+        "index_probe": {
+          "commit_seconds": 8.1928632,
+          "index_build_seconds": {
+            "file_by_allocated": 1.5457220999999999,
+            "file_by_ext": 1.3820344,
+            "file_by_logical": 1.4413423,
+            "file_identity": 1.4842977
+          },
+          "insert_without_secondary_indexes_seconds": 1.2432764,
+          "rows": 2000000,
+          "scope": "isolated file-table SQL copy with parent rows and foreign keys; no staging, live view or publication protocol; not P4"
+        },
+        "insert_includes_generation_and_queue_backpressure": true,
+        "limitations": [
+          "shared-host warm synthetic workload; no controlled host-load or cold-cache claim",
+          "P6 and P14 below 10M target; no HTTP or native scan integration",
+          "process high-water is measured through queries, excluding the isolated index probe; cache settings are not an OS process-memory cap"
+        ],
+        "memory": {
+          "peak_pagefile_bytes": 513298432,
+          "peak_working_set_bytes": 446132224,
+          "scope": "process high-water through publication/queries; before isolated index probe"
+        },
+        "oracle": {
+          "allocated_known_bytes": "993746374656",
+          "allocation_unknown_files": 20619,
+          "logical_bytes": "1000001000000",
+          "matched": true
+        },
+        "phases": {
+          "finalise_memory_high_water": {
+            "peak_pagefile_bytes": 513298432,
+            "peak_working_set_bytes": 446132224,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          },
+          "publication_memory_high_water": {
+            "peak_pagefile_bytes": 513298432,
+            "peak_working_set_bytes": 446132224,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          }
+        },
+        "platform": "windows",
+        "publication_path": "StageChunk + ListingDone; byte reservation before file generation",
+        "schema_version": 4,
+        "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
+        "temporary_directory_removed": true,
+        "writer_timings": {
+          "checkpoint_seconds": 0.0,
+          "commands": 2005,
+          "commit_seconds": 11.812066799999995,
+          "dirty_updates": 4,
+          "file_insert_seconds": 67.40095540000016,
+          "file_seen_seconds": 0.0,
+          "invalidation_seconds": 3.04e-05,
+          "listing_seconds": 73.0036605,
+          "max_transaction_bytes": 67108864,
+          "max_transaction_commands": 16,
+          "multilink_seconds": 0.0,
+          "name_validation_seconds": 1.6518765999881784,
+          "rollup_seconds": 0.0,
+          "staging_seconds": 0.8689451999999989,
+          "state_prepare_seconds": 0.028120400000000084,
+          "transactions": 130,
+          "validation_dry_run_seconds": 0.0
+        }
+      }
+    },
+    "cache_tuning_224_64_MiB": {
+      "metrics": {
+        "main": {
+          "P4_rows_per_second": {
+            "median": 67463.93956622726,
+            "min": 31395.90426253549,
+            "max": 71940.81994514335
+          },
+          "P4_seconds": {
+            "median": 14.8375711,
+            "min": 13.9142284,
+            "max": 31.8831715
+          },
+          "P6_p50_ms": {
+            "median": 32.7167,
+            "min": 31.107699999999998,
+            "max": 33.1646
+          },
+          "P6_p95_ms": {
+            "median": 45.661100000000005,
+            "min": 44.373000000000005,
+            "max": 53.427
+          },
+          "P7_logical_p50_ms": {
+            "median": 0.6468,
+            "min": 0.6382,
+            "max": 0.7007
+          },
+          "P7_logical_p95_ms": {
+            "median": 1.1295000000000002,
+            "min": 1.0330000000000001,
+            "max": 1.4537
+          },
+          "P7_allocated_p50_ms": {
+            "median": 0.5173000000000001,
+            "min": 0.5125000000000001,
+            "max": 0.5174
+          },
+          "P7_allocated_p95_ms": {
+            "median": 0.869,
+            "min": 0.8011999999999999,
+            "max": 1.0139
+          },
+          "P8_p50_ms": {
+            "median": 12.9359,
+            "min": 12.9027,
+            "max": 13.5071
+          },
+          "P8_p95_ms": {
+            "median": 19.5642,
+            "min": 18.2429,
+            "max": 20.8064
+          },
+          "RSS_bytes": {
+            "median": 217587712,
+            "min": 217378816,
+            "max": 217620480
+          },
+          "peak_private_commit_bytes": {
+            "median": 217800704,
+            "min": 217583616,
+            "max": 218128384
+          }
+        },
+        "p4c": {
+          "P4_rows_per_second": {
+            "median": 35578.35401882005,
+            "min": 31042.99107907509,
+            "max": 38843.996522949674
+          },
+          "P4_seconds": {
+            "median": 28.1351127,
+            "min": 25.769773700000002,
+            "max": 32.2456363
+          },
+          "P6_p50_ms": {
+            "median": 32.9599,
+            "min": 32.032199999999996,
+            "max": 35.8172
+          },
+          "P6_p95_ms": {
+            "median": 54.994099999999996,
+            "min": 38.8264,
+            "max": 61.254599999999996
+          },
+          "P7_logical_p50_ms": {
+            "median": 0.6819000000000001,
+            "min": 0.6554,
+            "max": 0.7695
+          },
+          "P7_logical_p95_ms": {
+            "median": 1.1883,
+            "min": 1.1727,
+            "max": 1.2214
+          },
+          "P7_allocated_p50_ms": {
+            "median": 0.5326000000000001,
+            "min": 0.5056,
+            "max": 0.5501
+          },
+          "P7_allocated_p95_ms": {
+            "median": 1.0731,
+            "min": 0.8478,
+            "max": 1.2091999999999998
+          },
+          "P8_p50_ms": {
+            "median": 14.2033,
+            "min": 13.765400000000001,
+            "max": 16.7081
+          },
+          "P8_p95_ms": {
+            "median": 21.528499999999998,
+            "min": 16.7984,
+            "max": 22.4087
+          },
+          "RSS_bytes": {
+            "median": 206303232,
+            "min": 205864960,
+            "max": 206536704
+          },
+          "peak_private_commit_bytes": {
+            "median": 205754368,
+            "min": 205336576,
+            "max": 205787136
+          }
+        }
+      },
+      "settings": {
+        "main_cache_kib": 229376,
+        "temp_cache_kib": 65536,
+        "temp_store": "FILE",
+        "cache_spill": "ON"
+      },
+      "sequence": [
+        {
+          "label": "main-1000000-1",
+          "lane": "main",
+          "rows": 1000000,
+          "single_directory": false,
+          "started_utc": "2026-10-10T16:30:13.553794+00:00",
+          "wall_seconds": 21.36007339999196,
+          "exit": 0
+        },
+        {
+          "label": "p4c-1000000-1",
+          "lane": "p4c",
+          "rows": 1000000,
+          "single_directory": false,
+          "started_utc": "2026-10-10T16:30:34.914465+00:00",
+          "wall_seconds": 33.43608970000059,
+          "exit": 0
+        },
+        {
+          "label": "main-1000000-2",
+          "lane": "main",
+          "rows": 1000000,
+          "single_directory": false,
+          "started_utc": "2026-10-10T16:31:08.350915+00:00",
+          "wall_seconds": 20.80940840000403,
+          "exit": 0
+        },
+        {
+          "label": "p4c-1000000-2",
+          "lane": "p4c",
+          "rows": 1000000,
+          "single_directory": false,
+          "started_utc": "2026-10-10T16:31:29.160884+00:00",
+          "wall_seconds": 35.1317436999816,
+          "exit": 0
+        },
+        {
+          "label": "main-1000000-3",
+          "lane": "main",
+          "rows": 1000000,
+          "single_directory": false,
+          "started_utc": "2026-10-10T16:32:04.292995+00:00",
+          "wall_seconds": 38.787878400005866,
+          "exit": 0
+        },
+        {
+          "label": "p4c-1000000-3",
+          "lane": "p4c",
+          "rows": 1000000,
+          "single_directory": false,
+          "started_utc": "2026-10-10T16:32:43.081274+00:00",
+          "wall_seconds": 39.332176899974,
+          "exit": 0
+        },
+        {
+          "label": "main-2000000-1",
+          "lane": "main",
+          "rows": 2000000,
+          "single_directory": true,
+          "started_utc": "2026-10-10T16:33:22.413747+00:00",
+          "wall_seconds": 44.73021300000255,
+          "exit": 0
+        },
+        {
+          "label": "p4c-2000000-1",
+          "lane": "p4c",
+          "rows": 2000000,
+          "single_directory": true,
+          "started_utc": "2026-10-10T16:34:07.144296+00:00",
+          "wall_seconds": 80.86761039998964,
+          "exit": 0
+        }
+      ],
+      "single_directory": {
+        "main": {
+          "P14": {
+            "bytes_per_entry": 455.032376967623,
+            "catalog_bytes": 910065664,
+            "dataset_scale_met": false,
+            "target_bytes_per_entry": 200,
+            "target_dataset_rows": 10000000
+          },
+          "P4": {
+            "insert_seconds": 28.2692421,
+            "met": false,
+            "rows_per_second": 70748.34171093677,
+            "target_rows_per_second": 250000
+          },
+          "P6": {
+            "dataset_scale_met": false,
+            "http_round_trip": "unverified",
+            "nodes": 2500,
+            "payload_bytes": 1394878,
+            "target_dataset_rows": 10000000,
+            "target_ms": 60,
+            "target_payload_bytes": 1500000,
+            "timing": {
+              "max_ms": 41.312799999999996,
+              "min_ms": 28.9539,
+              "p50_ms": 33.0418,
+              "p95_ms": 38.767,
+              "runs": 21
+            }
+          },
+          "P7": {
+            "allocated_timing": {
+              "max_ms": 1.2696,
+              "min_ms": 0.5679,
+              "p50_ms": 0.6256999999999999,
+              "p95_ms": 1.0948,
+              "runs": 21
+            },
+            "limit": 200,
+            "target_ms": 20,
+            "timing": {
+              "max_ms": 1.1974,
+              "min_ms": 0.6981999999999999,
+              "p50_ms": 0.7528,
+              "p95_ms": 1.1768,
+              "runs": 21
+            }
+          },
+          "P8": {
+            "budget_hits": 21,
+            "target_ms": 300,
+            "timing": {
+              "max_ms": 16.8098,
+              "min_ms": 11.9191,
+              "p50_ms": 12.3154,
+              "p95_ms": 16.0703,
+              "runs": 21
+            },
+            "work_budget_sqlite_ops": 2000000
+          },
+          "all_schema_indexes_present": true,
+          "dataset_class": "synthetic",
+          "directories": 2,
+          "files": 2000000,
+          "files_per_directory": 2000000,
+          "final_writer_timings": {
+            "checkpoint_seconds": 0.039572,
+            "commands": 2006,
+            "commit_seconds": 5.033397399999999,
+            "dirty_updates": 4,
+            "file_insert_seconds": 17.8675811999999,
+            "file_seen_seconds": 0.0,
+            "invalidation_seconds": 2.58e-05,
+            "listing_seconds": 22.2156512,
+            "max_transaction_bytes": 67108864,
+            "max_transaction_commands": 16,
+            "multilink_seconds": 3.2114276999999998,
+            "name_validation_seconds": 0.9321145999933027,
+            "rollup_seconds": 6.92e-05,
+            "staging_seconds": 0.8093048000000022,
+            "state_prepare_seconds": 0.009113800000000003,
+            "transactions": 131,
+            "validation_dry_run_seconds": 0.0
+          },
+          "finalise_seconds": 3.2547265,
+          "host_load": "shared-host; concurrent lanes; warm synthetic workload",
+          "index_maintenance": "inline in file_insert_seconds; not separately timed by SQLite",
+          "index_probe": {
+            "commit_seconds": 2.820467,
+            "index_build_seconds": {
+              "file_by_allocated": 1.4352871,
+              "file_by_ext": 1.7712465,
+              "file_by_logical": 1.6733586,
+              "file_identity": 1.5066982
+            },
+            "insert_without_secondary_indexes_seconds": 1.3081483999999999,
+            "rows": 2000000,
+            "scope": "isolated file-table SQL copy with parent rows and foreign keys; no staging, live view or publication protocol; not P4"
+          },
+          "insert_includes_generation_and_queue_backpressure": true,
+          "limitations": [
+            "shared-host warm synthetic workload; no controlled host-load or cold-cache claim",
+            "P6 and P14 below 10M target; no HTTP or native scan integration",
+            "process high-water is measured through queries, excluding the isolated index probe; cache settings are not an OS process-memory cap"
+          ],
+          "memory": {
+            "peak_pagefile_bytes": 491081728,
+            "peak_working_set_bytes": 483303424,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          },
+          "oracle": {
+            "allocated_known_bytes": "993746374656",
+            "allocation_unknown_files": 20619,
+            "logical_bytes": "1000001000000",
+            "matched": true
+          },
+          "phases": {
+            "finalise_memory_high_water": {
+              "peak_pagefile_bytes": 491081728,
+              "peak_working_set_bytes": 483303424,
+              "scope": "process high-water through publication/queries; before isolated index probe"
+            },
+            "publication_memory_high_water": {
+              "peak_pagefile_bytes": 491081728,
+              "peak_working_set_bytes": 483303424,
+              "scope": "process high-water through publication/queries; before isolated index probe"
+            }
+          },
+          "platform": "windows",
+          "publication_path": "StageChunk + ListingDone; byte reservation before file generation",
+          "schema_version": 4,
+          "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
+          "temporary_directory_removed": true,
+          "writer_timings": {
+            "checkpoint_seconds": 0.0,
+            "commands": 2005,
+            "commit_seconds": 5.030579599999999,
+            "dirty_updates": 4,
+            "file_insert_seconds": 17.8675811999999,
+            "file_seen_seconds": 0.0,
+            "invalidation_seconds": 2.58e-05,
+            "listing_seconds": 22.2156512,
+            "max_transaction_bytes": 67108864,
+            "max_transaction_commands": 16,
+            "multilink_seconds": 0.0,
+            "name_validation_seconds": 0.9321145999933027,
+            "rollup_seconds": 0.0,
+            "staging_seconds": 0.8093048000000022,
+            "state_prepare_seconds": 0.008570400000000004,
+            "transactions": 130,
+            "validation_dry_run_seconds": 0.0
+          }
+        },
+        "p4c": {
+          "P14": {
+            "bytes_per_entry": 455.032376967623,
+            "catalog_bytes": 910065664,
+            "dataset_scale_met": false,
+            "target_bytes_per_entry": 200,
+            "target_dataset_rows": 10000000
+          },
+          "P4": {
+            "insert_seconds": 66.8724827,
+            "met": false,
+            "rows_per_second": 29907.697744262154,
+            "target_rows_per_second": 250000
+          },
+          "P6": {
+            "dataset_scale_met": false,
+            "http_round_trip": "unverified",
+            "nodes": 2500,
+            "payload_bytes": 1394878,
+            "target_dataset_rows": 10000000,
+            "target_ms": 60,
+            "target_payload_bytes": 1500000,
+            "timing": {
+              "max_ms": 41.9045,
+              "min_ms": 30.5613,
+              "p50_ms": 34.2034,
+              "p95_ms": 41.673300000000005,
+              "runs": 21
+            }
+          },
+          "P7": {
+            "allocated_timing": {
+              "max_ms": 1.1608,
+              "min_ms": 0.5725,
+              "p50_ms": 0.6488,
+              "p95_ms": 1.0584,
+              "runs": 21
+            },
+            "limit": 200,
+            "target_ms": 20,
+            "timing": {
+              "max_ms": 2.1059,
+              "min_ms": 0.679,
+              "p50_ms": 0.8607,
+              "p95_ms": 1.5107,
+              "runs": 21
+            }
+          },
+          "P8": {
+            "budget_hits": 21,
+            "target_ms": 300,
+            "timing": {
+              "max_ms": 18.3265,
+              "min_ms": 12.1911,
+              "p50_ms": 12.935500000000001,
+              "p95_ms": 17.5798,
+              "runs": 21
+            },
+            "work_budget_sqlite_ops": 2000000
+          },
+          "all_schema_indexes_present": true,
+          "dataset_class": "synthetic",
+          "directories": 2,
+          "files": 2000000,
+          "files_per_directory": 2000000,
+          "final_writer_timings": {
+            "checkpoint_seconds": 0.0337218,
+            "commands": 2006,
+            "commit_seconds": 7.540374000000001,
+            "dirty_updates": 4,
+            "file_insert_seconds": 53.99537000000003,
+            "file_seen_seconds": 0.0,
+            "invalidation_seconds": 2.91e-05,
+            "listing_seconds": 58.334355699999996,
+            "max_transaction_bytes": 67108864,
+            "max_transaction_commands": 16,
+            "multilink_seconds": 3.0276818,
+            "name_validation_seconds": 0.9900494999947653,
+            "rollup_seconds": 9.16e-05,
+            "staging_seconds": 0.7809660000000002,
+            "state_prepare_seconds": 0.008846,
+            "transactions": 131,
+            "validation_dry_run_seconds": 0.0
+          },
+          "finalise_seconds": 3.0676103,
+          "host_load": "shared-host; concurrent lanes; warm synthetic workload",
+          "index_maintenance": "inline in file_insert_seconds; not separately timed by SQLite",
+          "index_probe": {
+            "commit_seconds": 1.4237178,
+            "index_build_seconds": {
+              "file_by_allocated": 1.9300378,
+              "file_by_ext": 1.4289316,
+              "file_by_logical": 1.6089887,
+              "file_identity": 1.3106389
+            },
+            "insert_without_secondary_indexes_seconds": 1.3260947,
+            "rows": 2000000,
+            "scope": "isolated file-table SQL copy with parent rows and foreign keys; no staging, live view or publication protocol; not P4"
+          },
+          "insert_includes_generation_and_queue_backpressure": true,
+          "limitations": [
+            "shared-host warm synthetic workload; no controlled host-load or cold-cache claim",
+            "P6 and P14 below 10M target; no HTTP or native scan integration",
+            "process high-water is measured through queries, excluding the isolated index probe; cache settings are not an OS process-memory cap"
+          ],
+          "memory": {
+            "peak_pagefile_bytes": 554684416,
+            "peak_working_set_bytes": 486158336,
+            "scope": "process high-water through publication/queries; before isolated index probe"
+          },
+          "oracle": {
+            "allocated_known_bytes": "993746374656",
+            "allocation_unknown_files": 20619,
+            "logical_bytes": "1000001000000",
+            "matched": true
+          },
+          "phases": {
+            "finalise_memory_high_water": {
+              "peak_pagefile_bytes": 554684416,
+              "peak_working_set_bytes": 486158336,
+              "scope": "process high-water through publication/queries; before isolated index probe"
+            },
+            "publication_memory_high_water": {
+              "peak_pagefile_bytes": 554684416,
+              "peak_working_set_bytes": 486158336,
+              "scope": "process high-water through publication/queries; before isolated index probe"
+            }
+          },
+          "platform": "windows",
+          "publication_path": "StageChunk + ListingDone; byte reservation before file generation",
+          "schema_version": 4,
+          "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
+          "temporary_directory_removed": true,
+          "writer_timings": {
+            "checkpoint_seconds": 0.0,
+            "commands": 2005,
+            "commit_seconds": 7.5349539000000005,
+            "dirty_updates": 4,
+            "file_insert_seconds": 53.99537000000003,
+            "file_seen_seconds": 0.0,
+            "invalidation_seconds": 2.91e-05,
+            "listing_seconds": 58.334355699999996,
+            "max_transaction_bytes": 67108864,
+            "max_transaction_commands": 16,
+            "multilink_seconds": 0.0,
+            "name_validation_seconds": 0.9900494999947653,
+            "rollup_seconds": 0.0,
+            "staging_seconds": 0.7809660000000002,
+            "state_prepare_seconds": 0.008439499999999999,
+            "transactions": 130,
+            "validation_dry_run_seconds": 0.0
+          }
+        }
+      }
+    },
+    "cache_tuning_single_runs": [
+      {
+        "name": "main256-temp16",
+        "main_cache_kib": 262144,
+        "temp_cache_kib": 16384,
+        "rows_per_second": 35687.63944547924,
+        "rss_mib": 198.4921875,
+        "wall_seconds": 40.91139639998437
+      },
+      {
+        "name": "main224-temp64",
+        "main_cache_kib": 229376,
+        "temp_cache_kib": 65536,
+        "rows_per_second": 38567.699408320834,
+        "rss_mib": 198.46875,
+        "wall_seconds": 40.56758920001448
+      }
+    ],
+    "mutation_checks": [
+      {
+        "name": "auto-rollback",
+        "test": "writer::publication_tests::auto_rollback_never_commits_a_failed_receipt_or_acknowledges_lost_rows",
+        "mutated_exit": 101,
+        "restored_exit": 0,
+        "restored_sha256": "7cbe23c928f126c92d3a9d10481897a8912f62e89e820b6f072b573a0a15edb4",
+        "mutation": "auto-rollback"
+      },
+      {
+        "name": "m1-singleton",
+        "test": "writer::publication_tests::resolved_references_keep_two_queued_publications_in_singleton_transactions",
+        "mutated_exit": 101,
+        "restored_exit": 0,
+        "restored_sha256": "7cbe23c928f126c92d3a9d10481897a8912f62e89e820b6f072b573a0a15edb4",
+        "mutation": "m1-singleton"
+      },
+      {
+        "name": "spill-cache",
+        "test": "db::tests::temp_tables_spill_with_a_small_cache",
+        "mutated_exit": 101,
+        "restored_exit": 0,
+        "restored_sha256": "e7d2f5d0e50f6805305800d2985b5e3a9a4250a4c54d2996e5f64307172f2e94",
+        "mutation": "spill-cache"
+      },
+      {
+        "name": "spill-storage-only",
+        "test": "db::tests::temp_tables_spill_with_a_small_cache",
+        "mutation": "FILE -> MEMORY only; cache limits unchanged",
+        "mutated_exit": 101,
+        "restored_exit": 0,
+        "restored_sha256": "e7d2f5d0e50f6805305800d2985b5e3a9a4250a4c54d2996e5f64307172f2e94"
+      }
+    ],
+    "verification": [
+      {
+        "command": "cargo fmt --all --check",
+        "exit": 0,
+        "seconds": 1.4065052999940235
+      },
+      {
+        "command": "cargo test --workspace",
+        "exit": 0,
+        "seconds": 49.905664199992316,
+        "passed": 366,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "command": "cargo clippy --workspace --all-targets -- -D warnings",
+        "exit": 0,
+        "seconds": 3.6598102999851108
+      },
+      {
+        "command": "git diff --check",
+        "exit": 0
+      }
+    ],
     "limitations": [
-      "single warm run on this Windows host; no cold-cache claim",
-      "P6 and P14 at 1M, not the 10M target; HTTP and process-memory measurement belong to integration"
+      "shared-host warm synthetic workloads; cache effect is observational, not isolated causal proof",
+      "250k P4 target not met; no 10M/HTTP/native enumeration integration, cold cache, Linux or physical power-loss test",
+      "FILE spill/cache pragmas pin page-cache policy, not a total-process memory cap or proof of bounded private commit",
+      "no commit or push; driver integrates and reviews",
+      "origin/main advanced during measurement; benchmarks and gates cover frozen starting main fc79c7f plus this uncommitted extraction, not integration onto 0cc03acd7581c33c0b92a245066553d408193d6f"
     ],
-    "oracle": {
-      "allocated_known_bytes": "496873078784",
-      "allocation_unknown_files": 10310,
-      "logical_bytes": "500000500000",
-      "matched": true
-    },
-    "platform": "windows",
-    "publication_path": "StageChunk + ListingDone; byte reservation before file generation",
-    "schema_version": 4,
-    "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
-    "temporary_directory_removed": true,
-    "writer_timings": {
-      "commands": 2004,
-      "commit_seconds": 35.76961759999999,
-      "dirty_updates": 3001,
-      "file_insert_seconds": 21.143815500000024,
-      "file_seen_seconds": 0.0,
-      "invalidation_seconds": 0.018228399999999992,
-      "listing_seconds": 23.75332079999998,
-      "multilink_seconds": 0.0,
-      "name_validation_seconds": 0.6028029000000023,
-      "rollup_seconds": 0.0,
-      "staging_seconds": 0.7898311000000003,
-      "state_prepare_seconds": 0.059344900000000034,
-      "transactions": 256,
-      "validation_dry_run_seconds": 0.0
-    }
-  },
-  "baseline_runs": [
-    {
-      "P14": {
-        "bytes_per_entry": 155.02178319502178,
-        "catalog_bytes": 155176960,
-        "dataset_scale_met": false,
-        "target_bytes_per_entry": 200,
-        "target_dataset_rows": 10000000
-      },
-      "P4": {
-        "insert_seconds": 54.0354053,
-        "met": false,
-        "rows_per_second": 18524.909629945905,
-        "target_rows_per_second": 250000
-      },
-      "P6": {
-        "dataset_scale_met": false,
-        "http_round_trip": "unverified",
-        "nodes": 2500,
-        "payload_bytes": 1383755,
-        "target_dataset_rows": 10000000,
-        "target_ms": 60,
-        "target_payload_bytes": 1500000,
-        "timing": {
-          "max_ms": 60.063900000000004,
-          "min_ms": 29.8917,
-          "p50_ms": 37.6048,
-          "p95_ms": 48.9054,
-          "runs": 21
-        }
-      },
-      "P7": {
-        "limit": 200,
-        "target_ms": 20,
-        "timing": {
-          "max_ms": 1.524,
-          "min_ms": 0.5712999999999999,
-          "p50_ms": 0.657,
-          "p95_ms": 1.2124,
-          "runs": 21
-        }
-      },
-      "P8": {
-        "budget_hits": 21,
-        "target_ms": 300,
-        "timing": {
-          "max_ms": 21.368100000000002,
-          "min_ms": 12.1172,
-          "p50_ms": 14.7043,
-          "p95_ms": 20.755,
-          "runs": 21
-        },
-        "work_budget_sqlite_ops": 2000000
-      },
-      "all_schema_indexes_present": true,
-      "dataset_class": "synthetic",
-      "directories": 1001,
-      "files": 1000000,
-      "final_writer_timings": {
-        "commands": 2005,
-        "commit_seconds": 31.932818,
-        "dirty_updates": 3001,
-        "file_insert_seconds": 18.766686600000007,
-        "file_seen_seconds": 0.0,
-        "invalidation_seconds": 0.01630150000000002,
-        "listing_seconds": 21.084323600000005,
-        "multilink_seconds": 1.5336798,
-        "name_validation_seconds": 0.5339396000000042,
-        "rollup_seconds": 0.0037824,
-        "staging_seconds": 0.7244884000000001,
-        "state_prepare_seconds": 0.05339330000000001,
-        "transactions": 257,
-        "validation_dry_run_seconds": 0.0
-      },
-      "finalise_seconds": 1.5559516,
-      "index_maintenance": "inline in file_insert_seconds; not separately timed by SQLite",
-      "insert_includes_generation_and_queue_backpressure": true,
-      "limitations": [
-        "single warm run on this Windows host; no cold-cache claim",
-        "P6 and P14 at 1M, not the 10M target; HTTP and process-memory measurement belong to integration"
-      ],
-      "oracle": {
-        "allocated_known_bytes": "496873078784",
-        "allocation_unknown_files": 10310,
-        "logical_bytes": "500000500000",
-        "matched": true
-      },
-      "platform": "windows",
-      "publication_path": "StageChunk + ListingDone; byte reservation before file generation",
-      "schema_version": 4,
-      "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
-      "temporary_directory_removed": true,
-      "writer_timings": {
-        "commands": 2004,
-        "commit_seconds": 31.9282152,
-        "dirty_updates": 3001,
-        "file_insert_seconds": 18.766686600000007,
-        "file_seen_seconds": 0.0,
-        "invalidation_seconds": 0.01630150000000002,
-        "listing_seconds": 21.084323600000005,
-        "multilink_seconds": 0.0,
-        "name_validation_seconds": 0.5339396000000042,
-        "rollup_seconds": 0.0,
-        "staging_seconds": 0.7244884000000001,
-        "state_prepare_seconds": 0.05189470000000001,
-        "transactions": 256,
-        "validation_dry_run_seconds": 0.0
-      }
-    },
-    {
-      "P14": {
-        "bytes_per_entry": 155.02178319502178,
-        "catalog_bytes": 155176960,
-        "dataset_scale_met": false,
-        "target_bytes_per_entry": 200,
-        "target_dataset_rows": 10000000
-      },
-      "P4": {
-        "insert_seconds": 60.6315758,
-        "met": false,
-        "rows_per_second": 16509.56596117365,
-        "target_rows_per_second": 250000
-      },
-      "P6": {
-        "dataset_scale_met": false,
-        "http_round_trip": "unverified",
-        "nodes": 2500,
-        "payload_bytes": 1383755,
-        "target_dataset_rows": 10000000,
-        "target_ms": 60,
-        "target_payload_bytes": 1500000,
-        "timing": {
-          "max_ms": 59.1526,
-          "min_ms": 32.0014,
-          "p50_ms": 43.250499999999995,
-          "p95_ms": 51.284299999999995,
-          "runs": 21
-        }
-      },
-      "P7": {
-        "limit": 200,
-        "target_ms": 20,
-        "timing": {
-          "max_ms": 1.3719,
-          "min_ms": 0.605,
-          "p50_ms": 0.9958,
-          "p95_ms": 1.2995,
-          "runs": 21
-        }
-      },
-      "P8": {
-        "budget_hits": 21,
-        "target_ms": 300,
-        "timing": {
-          "max_ms": 22.658,
-          "min_ms": 12.644,
-          "p50_ms": 16.9349,
-          "p95_ms": 22.5157,
-          "runs": 21
-        },
-        "work_budget_sqlite_ops": 2000000
-      },
-      "all_schema_indexes_present": true,
-      "dataset_class": "synthetic",
-      "directories": 1001,
-      "files": 1000000,
-      "final_writer_timings": {
-        "commands": 2005,
-        "commit_seconds": 35.77447159999999,
-        "dirty_updates": 3001,
-        "file_insert_seconds": 21.143815500000024,
-        "file_seen_seconds": 0.0,
-        "invalidation_seconds": 0.018228399999999992,
-        "listing_seconds": 23.75332079999998,
-        "multilink_seconds": 1.4651345,
-        "name_validation_seconds": 0.6028029000000023,
-        "rollup_seconds": 0.0041673,
-        "staging_seconds": 0.7898311000000003,
-        "state_prepare_seconds": 0.06230040000000001,
-        "transactions": 258,
-        "validation_dry_run_seconds": 0.0
-      },
-      "finalise_seconds": 1.4878389,
-      "index_maintenance": "inline in file_insert_seconds; not separately timed by SQLite",
-      "insert_includes_generation_and_queue_backpressure": true,
-      "limitations": [
-        "single warm run on this Windows host; no cold-cache claim",
-        "P6 and P14 at 1M, not the 10M target; HTTP and process-memory measurement belong to integration"
-      ],
-      "oracle": {
-        "allocated_known_bytes": "496873078784",
-        "allocation_unknown_files": 10310,
-        "logical_bytes": "500000500000",
-        "matched": true
-      },
-      "platform": "windows",
-      "publication_path": "StageChunk + ListingDone; byte reservation before file generation",
-      "schema_version": 4,
-      "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
-      "temporary_directory_removed": true,
-      "writer_timings": {
-        "commands": 2004,
-        "commit_seconds": 35.76961759999999,
-        "dirty_updates": 3001,
-        "file_insert_seconds": 21.143815500000024,
-        "file_seen_seconds": 0.0,
-        "invalidation_seconds": 0.018228399999999992,
-        "listing_seconds": 23.75332079999998,
-        "multilink_seconds": 0.0,
-        "name_validation_seconds": 0.6028029000000023,
-        "rollup_seconds": 0.0,
-        "staging_seconds": 0.7898311000000003,
-        "state_prepare_seconds": 0.06116930000000001,
-        "transactions": 257,
-        "validation_dry_run_seconds": 0.0
-      }
-    },
-    {
-      "P14": {
-        "bytes_per_entry": 155.02178319502178,
-        "catalog_bytes": 155176960,
-        "dataset_scale_met": false,
-        "target_bytes_per_entry": 200,
-        "target_dataset_rows": 10000000
-      },
-      "P4": {
-        "insert_seconds": 78.6532142,
-        "met": false,
-        "rows_per_second": 12726.765335420965,
-        "target_rows_per_second": 250000
-      },
-      "P6": {
-        "dataset_scale_met": false,
-        "http_round_trip": "unverified",
-        "nodes": 2500,
-        "payload_bytes": 1383755,
-        "target_dataset_rows": 10000000,
-        "target_ms": 60,
-        "target_payload_bytes": 1500000,
-        "timing": {
-          "max_ms": 68.8631,
-          "min_ms": 31.065099999999997,
-          "p50_ms": 56.5244,
-          "p95_ms": 64.9546,
-          "runs": 21
-        }
-      },
-      "P7": {
-        "limit": 200,
-        "target_ms": 20,
-        "timing": {
-          "max_ms": 1.6957,
-          "min_ms": 0.606,
-          "p50_ms": 1.0797,
-          "p95_ms": 1.6188,
-          "runs": 21
-        }
-      },
-      "P8": {
-        "budget_hits": 21,
-        "target_ms": 300,
-        "timing": {
-          "max_ms": 25.1151,
-          "min_ms": 12.5366,
-          "p50_ms": 18.970000000000002,
-          "p95_ms": 23.4019,
-          "runs": 21
-        },
-        "work_budget_sqlite_ops": 2000000
-      },
-      "all_schema_indexes_present": true,
-      "dataset_class": "synthetic",
-      "directories": 1001,
-      "files": 1000000,
-      "final_writer_timings": {
-        "commands": 2005,
-        "commit_seconds": 50.5410765,
-        "dirty_updates": 3001,
-        "file_insert_seconds": 23.9354146,
-        "file_seen_seconds": 0.0,
-        "invalidation_seconds": 0.02055239999999998,
-        "listing_seconds": 26.882329800000054,
-        "multilink_seconds": 1.7461924,
-        "name_validation_seconds": 0.6869342000000019,
-        "rollup_seconds": 0.0046734,
-        "staging_seconds": 0.8861777000000013,
-        "state_prepare_seconds": 0.06120580000000003,
-        "transactions": 257,
-        "validation_dry_run_seconds": 0.0
-      },
-      "finalise_seconds": 1.7719659,
-      "index_maintenance": "inline in file_insert_seconds; not separately timed by SQLite",
-      "insert_includes_generation_and_queue_backpressure": true,
-      "limitations": [
-        "single warm run on this Windows host; no cold-cache claim",
-        "P6 and P14 at 1M, not the 10M target; HTTP and process-memory measurement belong to integration"
-      ],
-      "oracle": {
-        "allocated_known_bytes": "496873078784",
-        "allocation_unknown_files": 10310,
-        "logical_bytes": "500000500000",
-        "matched": true
-      },
-      "platform": "windows",
-      "publication_path": "StageChunk + ListingDone; byte reservation before file generation",
-      "schema_version": 4,
-      "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
-      "temporary_directory_removed": true,
-      "writer_timings": {
-        "commands": 2004,
-        "commit_seconds": 50.5351261,
-        "dirty_updates": 3001,
-        "file_insert_seconds": 23.9354146,
-        "file_seen_seconds": 0.0,
-        "invalidation_seconds": 0.02055239999999998,
-        "listing_seconds": 26.882329800000054,
-        "multilink_seconds": 0.0,
-        "name_validation_seconds": 0.6869342000000019,
-        "rollup_seconds": 0.0,
-        "staging_seconds": 0.8861777000000013,
-        "state_prepare_seconds": 0.059344900000000034,
-        "transactions": 256,
-        "validation_dry_run_seconds": 0.0
-      }
-    }
-  ],
-  "runs": [
-    {
-      "P14": {
-        "bytes_per_entry": 155.02178319502178,
-        "catalog_bytes": 155176960,
-        "dataset_scale_met": false,
-        "target_bytes_per_entry": 200,
-        "target_dataset_rows": 10000000
-      },
-      "P4": {
-        "insert_seconds": 21.6786411,
-        "met": false,
-        "rows_per_second": 46174.52705557268,
-        "target_rows_per_second": 250000
-      },
-      "P6": {
-        "dataset_scale_met": false,
-        "http_round_trip": "unverified",
-        "nodes": 2500,
-        "payload_bytes": 1383755,
-        "target_dataset_rows": 10000000,
-        "target_ms": 60,
-        "target_payload_bytes": 1500000,
-        "timing": {
-          "max_ms": 41.3679,
-          "min_ms": 28.1696,
-          "p50_ms": 30.4459,
-          "p95_ms": 40.899499999999996,
-          "runs": 21
-        }
-      },
-      "P7": {
-        "allocated_timing": {
-          "max_ms": 0.6465000000000001,
-          "min_ms": 0.48050000000000004,
-          "p50_ms": 0.49379999999999996,
-          "p95_ms": 0.6314,
-          "runs": 21
-        },
-        "limit": 200,
-        "target_ms": 20,
-        "timing": {
-          "max_ms": 1.0019,
-          "min_ms": 0.5693,
-          "p50_ms": 0.6087,
-          "p95_ms": 0.8852000000000001,
-          "runs": 21
-        }
-      },
-      "P8": {
-        "budget_hits": 21,
-        "target_ms": 300,
-        "timing": {
-          "max_ms": 15.5193,
-          "min_ms": 11.9744,
-          "p50_ms": 12.347199999999999,
-          "p95_ms": 14.985899999999999,
-          "runs": 21
-        },
-        "work_budget_sqlite_ops": 2000000
-      },
-      "all_schema_indexes_present": true,
-      "dataset_class": "synthetic",
-      "directories": 1001,
-      "files": 1000000,
-      "final_writer_timings": {
-        "checkpoint_seconds": 0.1514857,
-        "commands": 2005,
-        "commit_seconds": 12.3144816,
-        "dirty_updates": 3001,
-        "file_insert_seconds": 5.911459999999998,
-        "file_seen_seconds": 0.0,
-        "invalidation_seconds": 0.009156000000000001,
-        "listing_seconds": 7.913386299999996,
-        "max_transaction_bytes": 62929920,
-        "max_transaction_commands": 30,
-        "multilink_seconds": 1.1382851999999999,
-        "name_validation_seconds": 0.44065850000000345,
-        "rollup_seconds": 0.0028756,
-        "staging_seconds": 0.5467374000000004,
-        "state_prepare_seconds": 0.013366700000000009,
-        "transactions": 72,
-        "validation_dry_run_seconds": 0.0
-      },
-      "finalise_seconds": 1.3292685,
-      "index_maintenance": "inline in file_insert_seconds; not separately timed by SQLite",
-      "index_probe": {
-        "commit_seconds": 1.6128073,
-        "index_build_seconds": {
-          "file_by_allocated": 0.3044089,
-          "file_by_ext": 0.6570718,
-          "file_by_logical": 0.3622371,
-          "file_identity": 0.5325169
-        },
-        "insert_without_secondary_indexes_seconds": 0.6213835,
-        "rows": 1000000,
-        "scope": "isolated file-table SQL copy with parent rows and foreign keys; no staging, live view or publication protocol; not P4"
-      },
-      "insert_includes_generation_and_queue_backpressure": true,
-      "limitations": [
-        "single warm run on this Windows host; no cold-cache claim",
-        "P6 and P14 at 1M, not the 10M target; HTTP and process-memory measurement belong to integration"
-      ],
-      "oracle": {
-        "allocated_known_bytes": "496873078784",
-        "allocation_unknown_files": 10310,
-        "logical_bytes": "500000500000",
-        "matched": true
-      },
-      "platform": "windows",
-      "publication_path": "StageChunk + ListingDone; byte reservation before file generation",
-      "schema_version": 4,
-      "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
-      "temporary_directory_removed": true,
-      "writer_timings": {
-        "checkpoint_seconds": 0.0,
-        "commands": 2004,
-        "commit_seconds": 12.283362200000001,
-        "dirty_updates": 3001,
-        "file_insert_seconds": 5.911459999999998,
-        "file_seen_seconds": 0.0,
-        "invalidation_seconds": 0.009156000000000001,
-        "listing_seconds": 7.913386299999996,
-        "max_transaction_bytes": 62929920,
-        "max_transaction_commands": 30,
-        "multilink_seconds": 0.0,
-        "name_validation_seconds": 0.44065850000000345,
-        "rollup_seconds": 0.0,
-        "staging_seconds": 0.5467374000000004,
-        "state_prepare_seconds": 0.009011600000000008,
-        "transactions": 71,
-        "validation_dry_run_seconds": 0.0
-      }
-    },
-    {
-      "P14": {
-        "bytes_per_entry": 155.02178319502178,
-        "catalog_bytes": 155176960,
-        "dataset_scale_met": false,
-        "target_bytes_per_entry": 200,
-        "target_dataset_rows": 10000000
-      },
-      "P4": {
-        "insert_seconds": 17.116035,
-        "met": false,
-        "rows_per_second": 58483.229322679,
-        "target_rows_per_second": 250000
-      },
-      "P6": {
-        "dataset_scale_met": false,
-        "http_round_trip": "unverified",
-        "nodes": 2500,
-        "payload_bytes": 1383755,
-        "target_dataset_rows": 10000000,
-        "target_ms": 60,
-        "target_payload_bytes": 1500000,
-        "timing": {
-          "max_ms": 45.127599999999994,
-          "min_ms": 28.4212,
-          "p50_ms": 33.5512,
-          "p95_ms": 42.092,
-          "runs": 21
-        }
-      },
-      "P7": {
-        "allocated_timing": {
-          "max_ms": 1.0965,
-          "min_ms": 0.4754,
-          "p50_ms": 0.4996999999999999,
-          "p95_ms": 0.8145,
-          "runs": 21
-        },
-        "limit": 200,
-        "target_ms": 20,
-        "timing": {
-          "max_ms": 1.2854999999999999,
-          "min_ms": 0.5844999999999999,
-          "p50_ms": 0.6411,
-          "p95_ms": 1.0261,
-          "runs": 21
-        }
-      },
-      "P8": {
-        "budget_hits": 21,
-        "target_ms": 300,
-        "timing": {
-          "max_ms": 18.9408,
-          "min_ms": 12.142999999999999,
-          "p50_ms": 14.0709,
-          "p95_ms": 17.0686,
-          "runs": 21
-        },
-        "work_budget_sqlite_ops": 2000000
-      },
-      "all_schema_indexes_present": true,
-      "dataset_class": "synthetic",
-      "directories": 1001,
-      "files": 1000000,
-      "final_writer_timings": {
-        "checkpoint_seconds": 0.0156802,
-        "commands": 2005,
-        "commit_seconds": 6.500772500000001,
-        "dirty_updates": 3001,
-        "file_insert_seconds": 6.718017600000004,
-        "file_seen_seconds": 0.0,
-        "invalidation_seconds": 0.010182000000000026,
-        "listing_seconds": 8.997373000000012,
-        "max_transaction_bytes": 62929920,
-        "max_transaction_commands": 30,
-        "multilink_seconds": 1.2492806,
-        "name_validation_seconds": 0.523222200000004,
-        "rollup_seconds": 0.0027832,
-        "staging_seconds": 0.5587109999999993,
-        "state_prepare_seconds": 0.027095400000000002,
-        "transactions": 72,
-        "validation_dry_run_seconds": 0.0
-      },
-      "finalise_seconds": 1.2742825,
-      "index_maintenance": "inline in file_insert_seconds; not separately timed by SQLite",
-      "index_probe": {
-        "commit_seconds": 1.0801947,
-        "index_build_seconds": {
-          "file_by_allocated": 0.3127994,
-          "file_by_ext": 0.6117424,
-          "file_by_logical": 0.3322142,
-          "file_identity": 0.5518568
-        },
-        "insert_without_secondary_indexes_seconds": 0.721661,
-        "rows": 1000000,
-        "scope": "isolated file-table SQL copy with parent rows and foreign keys; no staging, live view or publication protocol; not P4"
-      },
-      "insert_includes_generation_and_queue_backpressure": true,
-      "limitations": [
-        "single warm run on this Windows host; no cold-cache claim",
-        "P6 and P14 at 1M, not the 10M target; HTTP and process-memory measurement belong to integration"
-      ],
-      "oracle": {
-        "allocated_known_bytes": "496873078784",
-        "allocation_unknown_files": 10310,
-        "logical_bytes": "500000500000",
-        "matched": true
-      },
-      "platform": "windows",
-      "publication_path": "StageChunk + ListingDone; byte reservation before file generation",
-      "schema_version": 4,
-      "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
-      "temporary_directory_removed": true,
-      "writer_timings": {
-        "checkpoint_seconds": 0.0,
-        "commands": 2004,
-        "commit_seconds": 6.496790100000001,
-        "dirty_updates": 3001,
-        "file_insert_seconds": 6.718017600000004,
-        "file_seen_seconds": 0.0,
-        "invalidation_seconds": 0.010182000000000026,
-        "listing_seconds": 8.997373000000012,
-        "max_transaction_bytes": 62929920,
-        "max_transaction_commands": 30,
-        "multilink_seconds": 0.0,
-        "name_validation_seconds": 0.523222200000004,
-        "rollup_seconds": 0.0,
-        "staging_seconds": 0.5587109999999993,
-        "state_prepare_seconds": 0.0258342,
-        "transactions": 71,
-        "validation_dry_run_seconds": 0.0
-      }
-    },
-    {
-      "P14": {
-        "bytes_per_entry": 155.02178319502178,
-        "catalog_bytes": 155176960,
-        "dataset_scale_met": false,
-        "target_bytes_per_entry": 200,
-        "target_dataset_rows": 10000000
-      },
-      "P4": {
-        "insert_seconds": 18.8208024,
-        "met": false,
-        "rows_per_second": 53185.883296877924,
-        "target_rows_per_second": 250000
-      },
-      "P6": {
-        "dataset_scale_met": false,
-        "http_round_trip": "unverified",
-        "nodes": 2500,
-        "payload_bytes": 1383755,
-        "target_dataset_rows": 10000000,
-        "target_ms": 60,
-        "target_payload_bytes": 1500000,
-        "timing": {
-          "max_ms": 44.049699999999994,
-          "min_ms": 28.293100000000003,
-          "p50_ms": 31.824900000000003,
-          "p95_ms": 40.9925,
-          "runs": 21
-        }
-      },
-      "P7": {
-        "allocated_timing": {
-          "max_ms": 0.9047000000000001,
-          "min_ms": 0.4813,
-          "p50_ms": 0.499,
-          "p95_ms": 0.8329,
-          "runs": 21
-        },
-        "limit": 200,
-        "target_ms": 20,
-        "timing": {
-          "max_ms": 0.9649,
-          "min_ms": 0.588,
-          "p50_ms": 0.6336,
-          "p95_ms": 0.9541999999999999,
-          "runs": 21
-        }
-      },
-      "P8": {
-        "budget_hits": 21,
-        "target_ms": 300,
-        "timing": {
-          "max_ms": 17.703,
-          "min_ms": 11.915000000000001,
-          "p50_ms": 13.4991,
-          "p95_ms": 15.6974,
-          "runs": 21
-        },
-        "work_budget_sqlite_ops": 2000000
-      },
-      "all_schema_indexes_present": true,
-      "dataset_class": "synthetic",
-      "directories": 1001,
-      "files": 1000000,
-      "final_writer_timings": {
-        "checkpoint_seconds": 0.119119,
-        "commands": 2005,
-        "commit_seconds": 7.825971900000002,
-        "dirty_updates": 3001,
-        "file_insert_seconds": 6.956319200000011,
-        "file_seen_seconds": 0.0,
-        "invalidation_seconds": 0.010335600000000035,
-        "listing_seconds": 9.270159700000002,
-        "max_transaction_bytes": 62929920,
-        "max_transaction_commands": 30,
-        "multilink_seconds": 1.1042783,
-        "name_validation_seconds": 0.5367132000000034,
-        "rollup_seconds": 0.0035667,
-        "staging_seconds": 0.602586699999999,
-        "state_prepare_seconds": 0.032103100000000016,
-        "transactions": 73,
-        "validation_dry_run_seconds": 0.0
-      },
-      "finalise_seconds": 1.2304105,
-      "index_maintenance": "inline in file_insert_seconds; not separately timed by SQLite",
-      "index_probe": {
-        "commit_seconds": 1.2048703,
-        "index_build_seconds": {
-          "file_by_allocated": 0.3071922,
-          "file_by_ext": 0.6056429,
-          "file_by_logical": 0.2705567,
-          "file_identity": 0.519572
-        },
-        "insert_without_secondary_indexes_seconds": 0.6759551,
-        "rows": 1000000,
-        "scope": "isolated file-table SQL copy with parent rows and foreign keys; no staging, live view or publication protocol; not P4"
-      },
-      "insert_includes_generation_and_queue_backpressure": true,
-      "limitations": [
-        "single warm run on this Windows host; no cold-cache claim",
-        "P6 and P14 at 1M, not the 10M target; HTTP and process-memory measurement belong to integration"
-      ],
-      "oracle": {
-        "allocated_known_bytes": "496873078784",
-        "allocation_unknown_files": 10310,
-        "logical_bytes": "500000500000",
-        "matched": true
-      },
-      "platform": "windows",
-      "publication_path": "StageChunk + ListingDone; byte reservation before file generation",
-      "schema_version": 4,
-      "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
-      "temporary_directory_removed": true,
-      "writer_timings": {
-        "checkpoint_seconds": 0.0,
-        "commands": 2004,
-        "commit_seconds": 7.8244896000000015,
-        "dirty_updates": 3001,
-        "file_insert_seconds": 6.956319200000011,
-        "file_seen_seconds": 0.0,
-        "invalidation_seconds": 0.010335600000000035,
-        "listing_seconds": 9.270159700000002,
-        "max_transaction_bytes": 62929920,
-        "max_transaction_commands": 30,
-        "multilink_seconds": 0.0,
-        "name_validation_seconds": 0.5367132000000034,
-        "rollup_seconds": 0.0,
-        "staging_seconds": 0.602586699999999,
-        "state_prepare_seconds": 0.031074000000000015,
-        "transactions": 72,
-        "validation_dry_run_seconds": 0.0
-      }
-    }
-  ],
-  "throughput_ratio": 3.2215191739115228,
-  "experiments": [
-    {
-      "name": "batching",
-      "single_warm_run": true,
-      "P4": {
-        "insert_seconds": 42.3126054,
-        "met": false,
-        "rows_per_second": 23657.276372775665,
-        "target_rows_per_second": 250000
-      },
-      "writer_timings": {
-        "commands": 2004,
-        "commit_seconds": 17.7004132,
-        "dirty_updates": 3001,
-        "file_insert_seconds": 20.613101900000018,
-        "file_seen_seconds": 0.0,
-        "invalidation_seconds": 0.0177828,
-        "listing_seconds": 23.4435325,
-        "max_transaction_bytes": 62929920,
-        "max_transaction_commands": 30,
-        "multilink_seconds": 0.0,
-        "name_validation_seconds": 0.6822894000000004,
-        "rollup_seconds": 0.0,
-        "staging_seconds": 0.9106791000000007,
-        "state_prepare_seconds": 0.0135181,
-        "transactions": 98,
-        "validation_dry_run_seconds": 0.0
-      }
-    },
-    {
-      "name": "plain-insert",
-      "single_warm_run": true,
-      "P4": {
-        "insert_seconds": 29.0499777,
-        "met": false,
-        "rows_per_second": 34457.892200034286,
-        "target_rows_per_second": 250000
-      },
-      "writer_timings": {
-        "commands": 2004,
-        "commit_seconds": 11.2153569,
-        "dirty_updates": 3001,
-        "file_insert_seconds": 14.893391199999979,
-        "file_seen_seconds": 0.0,
-        "invalidation_seconds": 0.013875300000000028,
-        "listing_seconds": 16.940392099999986,
-        "max_transaction_bytes": 62929920,
-        "max_transaction_commands": 30,
-        "multilink_seconds": 0.0,
-        "name_validation_seconds": 0.44502570000000424,
-        "rollup_seconds": 0.0,
-        "staging_seconds": 0.7242250000000008,
-        "state_prepare_seconds": 0.00838300000000001,
-        "transactions": 75,
-        "validation_dry_run_seconds": 0.0
-      }
-    },
-    {
-      "name": "pragmas",
-      "single_warm_run": true,
-      "P4": {
-        "insert_seconds": 13.0070335,
-        "met": false,
-        "rows_per_second": 76958.4394473959,
-        "target_rows_per_second": 250000
-      },
-      "writer_timings": {
-        "commands": 2004,
-        "commit_seconds": 4.959939500000001,
-        "dirty_updates": 3001,
-        "file_insert_seconds": 4.904607500000006,
-        "file_seen_seconds": 0.0,
-        "invalidation_seconds": 0.00781269999999999,
-        "listing_seconds": 6.792174899999998,
-        "max_transaction_bytes": 62929920,
-        "max_transaction_commands": 30,
-        "multilink_seconds": 0.0,
-        "name_validation_seconds": 0.3809509000000042,
-        "rollup_seconds": 0.0,
-        "staging_seconds": 0.5025071000000001,
-        "state_prepare_seconds": 0.014973300000000016,
-        "transactions": 71,
-        "validation_dry_run_seconds": 0.0
-      }
-    },
-    {
-      "name": "cache-temp",
-      "single_warm_run": true,
-      "P4": {
-        "insert_seconds": 22.3375234,
-        "met": false,
-        "rows_per_second": 44812.53279851069,
-        "target_rows_per_second": 250000
-      },
-      "writer_timings": {
-        "commands": 2004,
-        "commit_seconds": 13.4677191,
-        "dirty_updates": 3001,
-        "file_insert_seconds": 5.482189999999992,
-        "file_seen_seconds": 0.0,
-        "invalidation_seconds": 0.008933800000000016,
-        "listing_seconds": 7.504555299999987,
-        "max_transaction_bytes": 62929920,
-        "max_transaction_commands": 30,
-        "multilink_seconds": 0.0,
-        "name_validation_seconds": 0.4064930000000045,
-        "rollup_seconds": 0.0,
-        "staging_seconds": 0.5350983000000002,
-        "state_prepare_seconds": 0.04258269999999998,
-        "transactions": 71,
-        "validation_dry_run_seconds": 0.0
-      }
-    },
-    {
-      "name": "catalog-checkpoint",
-      "single_warm_run": true,
-      "P4": {
-        "insert_seconds": 14.4429936,
-        "met": false,
-        "rows_per_second": 69307.03064217934,
-        "target_rows_per_second": 250000
-      },
-      "writer_timings": {
-        "commands": 2004,
-        "commit_seconds": 4.605125,
-        "dirty_updates": 3001,
-        "file_insert_seconds": 6.096512199999995,
-        "file_seen_seconds": 0.0,
-        "invalidation_seconds": 0.00939120000000001,
-        "listing_seconds": 8.334118100000003,
-        "max_transaction_bytes": 62929920,
-        "max_transaction_commands": 30,
-        "multilink_seconds": 0.0,
-        "name_validation_seconds": 0.4574923000000034,
-        "rollup_seconds": 0.0,
-        "staging_seconds": 0.5999916000000003,
-        "state_prepare_seconds": 0.008162900000000004,
-        "transactions": 71,
-        "validation_dry_run_seconds": 0.0
-      }
-    },
-    {
-      "name": "borrowed",
-      "single_warm_run": true,
-      "P4": {
-        "insert_seconds": 13.838347,
-        "met": false,
-        "rows_per_second": 72335.30131886416,
-        "target_rows_per_second": 250000
-      },
-      "writer_timings": {
-        "commands": 2004,
-        "commit_seconds": 4.853768799999998,
-        "dirty_updates": 3001,
-        "file_insert_seconds": 5.640097499999999,
-        "file_seen_seconds": 0.0,
-        "invalidation_seconds": 0.008969400000000035,
-        "listing_seconds": 7.53749000000001,
-        "max_transaction_bytes": 62929920,
-        "max_transaction_commands": 30,
-        "multilink_seconds": 0.0,
-        "name_validation_seconds": 0.41639780000000404,
-        "rollup_seconds": 0.0,
-        "staging_seconds": 0.5257929,
-        "state_prepare_seconds": 0.0022799,
-        "transactions": 71,
-        "validation_dry_run_seconds": 0.0
-      }
-    },
-    {
-      "name": "page-8192",
-      "single_warm_run": true,
-      "P4": {
-        "insert_seconds": 23.4019268,
-        "met": false,
-        "rows_per_second": 42774.29839666023,
-        "target_rows_per_second": 250000
-      },
-      "writer_timings": {
-        "commands": 2004,
-        "commit_seconds": 5.354497599999999,
-        "dirty_updates": 3001,
-        "file_insert_seconds": 11.905310799999993,
-        "file_seen_seconds": 0.0,
-        "invalidation_seconds": 0.0173884,
-        "listing_seconds": 14.78057180000001,
-        "max_transaction_bytes": 62929920,
-        "max_transaction_commands": 30,
-        "multilink_seconds": 0.0,
-        "name_validation_seconds": 0.6895011000000028,
-        "rollup_seconds": 0.0,
-        "staging_seconds": 0.7539291999999999,
-        "state_prepare_seconds": 0.018046400000000025,
-        "transactions": 82,
-        "validation_dry_run_seconds": 0.0
-      }
-    },
-    {
-      "name": "no-memory-temp",
-      "single_warm_run": true,
-      "P4": {
-        "insert_seconds": 26.9153035,
-        "met": false,
-        "rows_per_second": 37190.77512910081,
-        "target_rows_per_second": 250000
-      },
-      "writer_timings": {
-        "commands": 2004,
-        "commit_seconds": 5.941445600000002,
-        "dirty_updates": 3001,
-        "file_insert_seconds": 17.65006359999999,
-        "file_seen_seconds": 0.0,
-        "invalidation_seconds": 0.015022700000000003,
-        "listing_seconds": 19.8965909,
-        "max_transaction_bytes": 62929920,
-        "max_transaction_commands": 30,
-        "multilink_seconds": 0.0,
-        "name_validation_seconds": 0.5610303000000026,
-        "rollup_seconds": 0.0,
-        "staging_seconds": 0.8418002000000001,
-        "state_prepare_seconds": 0.008987600000000009,
-        "transactions": 86,
-        "validation_dry_run_seconds": 0.0
-      }
-    }
-  ],
-  "settings": {
-    "transaction_cumulative_reservation_bytes": 67108864,
-    "transaction_before_next_command_ms": 250,
-    "idle_receive_ms": 1,
-    "catalog_cache_kib": 262144,
-    "prepared_statement_cache_capacity": 128,
-    "catalog_checkpoint_pages": 16384,
-    "state_checkpoint_pages": 1000,
-    "catalog_page_size": 4096,
-    "temp_store": "MEMORY",
-    "intent_bearing_publications": "singleton; state FULL prepare, catalogue FULL commit, state FULL confirmation before receipt"
-  },
-  "source": {
-    "head": "533473f08b3f7f369fe19b575fcfd03aaf64d9c8",
-    "branch": "perf/catalog-p4",
-    "uncommitted": true,
-    "sha256": {
-      "crates/loomward-catalog/src/writer.rs": "0dbca6b1e7d2ade9eb9155b11f1065736397f628602bb2b238479318d99da3ac",
-      "crates/loomward-catalog/src/db.rs": "c848e729497f70c0cbe6e4176fb5511753b363bbf0518565ba47f57c422ee075",
-      "crates/loomward-catalog/examples/bench.rs": "c1c00b71aca90ddc8fdd83095f5ac42c0a1dd7571bedfb5effa44a2500c89439"
-    }
-  },
-  "verification": {
-    "platform": "Windows 11; Intel i5-13600K; rustc 1.97.1",
-    "commands": {
-      "cargo fmt --all --check": "pass",
-      "cargo test --workspace": "pass: 316 tests, zero failed/ignored",
-      "cargo clippy --workspace --all-targets -- -D warnings": "pass",
-      "git diff --check": "pass",
-      "cargo run -p loomward-catalog --release --example bench -- --rows 1000000": "pass: three final runs, oracle and all-index assertions"
-    },
-    "catalogue_tests": 66,
-    "mutations": [
-      {
-        "mutation": "bytes",
-        "test": "streamed_transactions_bound_bytes_and_release_applied_payloads",
-        "exit": 101,
-        "killed": true
-      },
-      {
-        "mutation": "state-checkpoint",
-        "test": "checkpoint_threshold_is_raised_only_for_catalogue",
-        "exit": 101,
-        "killed": true
-      }
-    ],
-    "production_bytes_restored": true
+    "throughput_ratio": 0.6245992061731227,
+    "disposition": "NOT performance-qualified: 224/16 MiB FILE extraction loses 37.5% median P4 against same-session main; larger-cache probes did not establish parity. Bulk remains parked.",
+    "recommended_default": "224 MiB main / 16 MiB temp / FILE / spill ON is the measured memory-first cache-policy choice; it carries the observed throughput cost, not a noise claim. Guard and M1 pin can land independently. Not a total-process memory bound.",
+    "origin_main_at_closeout": "0cc03acd7581c33c0b92a245066553d408193d6f"
   }
 }
