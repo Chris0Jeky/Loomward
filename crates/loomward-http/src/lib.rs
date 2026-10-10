@@ -13,7 +13,6 @@
 //! thread and returns a synchronous [`Handle`].
 
 pub mod fixture;
-pub mod grants;
 
 #[cfg(windows)]
 mod windows_socket;

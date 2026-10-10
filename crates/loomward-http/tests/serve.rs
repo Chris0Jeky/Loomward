@@ -1130,3 +1130,40 @@ fn sse_connections_outlive_the_non_sse_lifetime_cap() {
     assert_eq!(sse.next().event, "stream.hello");
     assert_eq!(svc.open_streams(), 1);
 }
+
+/// `loomward-serve`'s real configuration: the engine service behind the same boundary.
+#[test]
+fn the_engine_service_answers_through_the_adapter() {
+    let tmp = tempfile::tempdir().unwrap();
+    let service = loomward_service::Service::open(loomward_service::Config {
+        state_dir: tmp.path().into(),
+        dataset: DatasetClass::Synthetic,
+        allow_personal: false,
+        grant_roots: vec![],
+    })
+    .unwrap();
+    let h = serve(Arc::new(service), Options::default()).unwrap();
+    let v = call(&h, HELLO).json();
+    assert_eq!(v["ok"], true);
+    assert_eq!(
+        v["result"]["engine_version"]
+            .as_str()
+            .unwrap()
+            .split('/')
+            .next(),
+        Some("loomward-service")
+    );
+    assert_eq!(v["result"]["adapter"], "http");
+    let roots = call(
+        &h,
+        r#"{"protocol":"loomward/3","request_id":"r_2","command":"roots.list","payload":{}}"#,
+    )
+    .json();
+    assert_eq!(roots["result"]["roots"], json!([]));
+    assert!(
+        roots["meta"]["state_rev"].is_string(),
+        "state reads carry their revision"
+    );
+    let grant = call(&h, r#"{"protocol":"loomward/3","request_id":"r_3","command":"roots.request_grant","payload":{"purpose":"metadata_scan"}}"#).json();
+    assert_eq!(grant["error"]["code"], "capability_unavailable");
+}
