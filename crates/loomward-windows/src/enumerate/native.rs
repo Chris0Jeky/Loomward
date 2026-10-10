@@ -152,6 +152,15 @@ fn open_relative(
     access: u32,
     share: u32,
 ) -> Result<File, SourceError> {
+    open_relative_mode(parent, name, access, share, false)
+}
+fn open_relative_mode(
+    parent: &File,
+    name: &[u16],
+    access: u32,
+    share: u32,
+    asynchronous: bool,
+) -> Result<File, SourceError> {
     checked_child(name)?;
     let mut name = name.to_vec();
     let unicode = UNICODE_STRING {
@@ -179,7 +188,11 @@ fn open_relative(
             0,
             share,
             FILE_OPEN,
-            directory_create_options(),
+            if asynchronous {
+                FILE_OPEN_REPARSE_POINT | FILE_OPEN_NO_RECALL
+            } else {
+                directory_create_options()
+            },
             null(),
             0,
         )
@@ -204,6 +217,14 @@ fn directory_attributes(file: &File) -> Result<FILE_ATTRIBUTE_TAG_INFO, SourceEr
     Ok(attr)
 }
 fn root_handles(path: &Path, access: u32, share: u32) -> Result<Vec<File>, SourceError> {
+    root_handles_mode(path, access, share, false)
+}
+fn root_handles_mode(
+    path: &Path,
+    access: u32,
+    share: u32,
+    asynchronous: bool,
+) -> Result<Vec<File>, SourceError> {
     if !path.is_absolute() || path.as_os_str().encode_wide().any(|c| c == 0) {
         return Err(SourceError::Refused);
     }
@@ -236,7 +257,12 @@ fn root_handles(path: &Path, access: u32, share: u32) -> Result<Vec<File>, Sourc
             share,
             null(),
             OPEN_EXISTING,
-            crate::win::metadata_open_flags(),
+            crate::win::metadata_open_flags()
+                | if asynchronous && components.peek().is_none() {
+                    FILE_FLAG_OVERLAPPED
+                } else {
+                    0
+                },
             null_mut(),
         )
     };
@@ -251,7 +277,7 @@ fn root_handles(path: &Path, access: u32, share: u32) -> Result<Vec<File>, Sourc
             return Err(SourceError::Refused);
         };
         let name: Vec<u16> = name.encode_wide().collect();
-        let file = open_relative(
+        let file = open_relative_mode(
             pins.last().unwrap(),
             &name,
             if components.peek().is_none() {
@@ -260,6 +286,7 @@ fn root_handles(path: &Path, access: u32, share: u32) -> Result<Vec<File>, Sourc
                 metadata_access
             },
             share,
+            asynchronous && components.peek().is_none(),
         )?;
         directory_attributes(&file)?;
         pins.push(file);
@@ -344,6 +371,20 @@ fn opened(
                 .then_some(attr.ReparseTag),
         },
     ))
+}
+/// Retain component-wise, no-recall pins while opening the final component asynchronously.
+pub(crate) fn open_watch_root(
+    path: &Path,
+) -> Result<(Vec<File>, File, OpenedIdentity), SourceError> {
+    non_elevated()?;
+    let mut pins = root_handles_mode(
+        path,
+        FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        true,
+    )?;
+    let (dir, identity) = opened(pins.pop().unwrap(), None, Strategy::Extended)?;
+    Ok((pins, dir.file, identity))
 }
 /// True when this process holds an elevated token, which every native open refuses.
 pub fn running_elevated() -> bool {

@@ -7,83 +7,36 @@
   import { formatBytes, parseBytes } from '../../lib/format/bytes';
   import { escapedName, hasHiddenCharacters } from '../../lib/format/names';
   import { formatCount, formatTime } from '../../lib/format/time';
-  import { LoomwardError } from '../../lib/transport/client';
   import { session } from '../../lib/stores/session.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
-  import type { OwnBudgets, ProcessExplanation, ProcessList, ProcessRow, TelemetrySample } from '../../lib/contracts.gen';
+  import type { ProcessExplanation, ProcessRow } from '../../lib/contracts.gen';
   import type { ProcessSort } from '../../lib/derived';
+  import { ProcessTable } from './table.svelte';
 
-  const POLL_MS = 3000;
-  const LEASE_RENEW_MS = 20000;
   const SORTS: [ProcessSort, string][] = [
     ['private_desc', 'Private commit'], ['working_set_desc', 'Working set'], ['cpu_desc', 'CPU'], ['io_desc', 'Disk I/O'], ['gpu_desc', 'GPU memory'], ['name_asc', 'Name'],
   ];
 
-  let sort = $state<ProcessSort>('private_desc');
-  let limit = $state(20);
-  let list = $state<ProcessList | null>(null);
-  let sample = $state<TelemetrySample | null>(null);
-  let budgets = $state<OwnBudgets | null>(null);
   let explain = $state<{ row: ProcessRow; result: ProcessExplanation } | null>(null);
   let explainError = $state('');
   let aboutEl = $state<HTMLElement>();
-  let paused = $state(false); // WCAG 2.2.2: the 3 s polling can be paused
-  let focusInTable = false; // a row the reader is working in does not move: a new sample waits for focus to leave
-  let waiting = $state<ProcessList | null>(null);
-  let error = $state('');
-
-  let ticket = 0;
-  let sub: string | null = null;
-  let renewAt = 0;
+  let tableEl = $state<HTMLElement>();
 
   const available = $derived(session.info?.capabilities.observation.process_observation === true);
-
-  async function tick(): Promise<void> {
-    const c = session.client;
-    if (!c || !available) return;
-    const mine = ++ticket;
-    try {
-      // The sampler runs only while a 60 s lease is live: take one, renew it well inside the window.
-      if (sub === null || Date.now() >= renewAt) {
-        const lease = await c.call('telemetry.subscribe', { subscription_id: sub, channels: ['system', 'processes', 'engine'], interval_ms: 2000 });
-        sub = lease.result.subscription_id;
-        renewAt = Date.now() + LEASE_RENEW_MS;
-      }
-      const [s, p, b] = await Promise.all([
-        c.call('telemetry.snapshot', { channels: ['system', 'engine'] }),
-        c.call('processes.list', { sort, limit }),
-        budgets ? Promise.resolve(null) : c.call('budgets.get', {}),
-      ]);
-      if (mine !== ticket) return;
-      sample = s.result;
-      if (focusInTable) waiting = p.result; else { list = p.result; waiting = null; }
-      if (b) budgets = b.result;
-      error = '';
-    } catch (e) {
-      if (mine !== ticket) return;
-      if (e instanceof LoomwardError && e.code === 'not_found') { sub = null; renewAt = 0; }
-      error = session.handle(e);
-    }
-  }
+  // WCAG 2.2.2: the 3 s polling can be paused, and a row the reader is working in does not move: a new sample
+  // waits for focus to leave. Whether focus is in the table is read at each sample, not remembered from events,
+  // so a table that unmounts or hides while focused (no focusout) cannot hold the rows for good.
+  const table = new ProcessTable({
+    client: () => session.client,
+    available: () => available,
+    handle: (e) => session.handle(e),
+    holdsFocus: () => !!tableEl?.contains(document.activeElement),
+  });
 
   $effect(() => {
     void session.epoch;
-    if (!session.client || !available || paused) return;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let alive = true;
-    const loop = async () => {
-      if (!document.hidden) await untrack(tick);
-      if (alive) timer = setTimeout(loop, POLL_MS);
-    };
-    void loop();
-    const c = session.client;
-    return () => {
-      alive = false;
-      clearTimeout(timer);
-      ticket++;
-      if (sub !== null) void c.call('telemetry.unsubscribe', { subscription_id: sub }).catch(() => {});
-      sub = null;
-    };
+    if (!session.client || !available || table.paused) return;
+    return untrack(() => table.run());
   });
 
   async function explainRow(row: ProcessRow) {
@@ -104,6 +57,9 @@
 
   const pct = (f: number | null) => (f === null ? null : `${(f * 100).toFixed(1)}%`);
   const rate = (n: number | null) => (n === null ? null : `${formatBytes(Math.round(n).toString())}/s`);
+  const list = $derived(table.list);
+  const sample = $derived(table.sample);
+  const budgets = $derived(table.budgets);
   const mem = $derived(sample?.system?.memory ?? null);
   const total = $derived(parseBytes(mem?.total_bytes));
   const avail = $derived(parseBytes(mem?.available_bytes));
@@ -126,7 +82,7 @@
     <p class="muted">This session does not report process observation, so nothing is shown here and nothing is guessed.</p>
   </section>
 {:else}
-  <p class="bad live" class:has={!!error} role="alert">{error}</p>
+  <p class="bad live" class:has={!!table.error} role="alert">{table.error}</p>
 
   <section class="panel" aria-labelledby="h-mem">
     <h2 id="h-mem">Memory</h2>
@@ -169,13 +125,12 @@
   <section class="panel" aria-labelledby="h-proc">
     <h2 id="h-proc">Processes</h2>
     <div class="ctl">
-      <button type="button" class="btn" onclick={() => (paused = !paused)}>{paused ? 'Resume updates' : 'Pause updates'}</button>
-      {#if paused}<span class="warn" role="status">Paused: the table shows the last sample</span>{/if}
+      <button type="button" class="btn" onclick={() => (table.paused = !table.paused)}>{table.paused ? 'Resume updates' : 'Pause updates'}</button>
       <label class="field">Largest by
-        <select bind:value={sort} onchange={() => void tick()}>{#each SORTS as [id, label] (id)}<option value={id}>{label}</option>{/each}</select>
+        <select bind:value={table.sort} onchange={() => void table.reorder()}>{#each SORTS as [id, label] (id)}<option value={id}>{label}</option>{/each}</select>
       </label>
       <label class="field">Show
-        <select bind:value={limit} onchange={() => void tick()}>{#each [10, 20, 50, 100] as n (n)}<option value={n}>top {n}</option>{/each}</select>
+        <select bind:value={table.limit} onchange={() => void table.reorder()}>{#each [10, 20, 50, 100] as n (n)}<option value={n}>top {n}</option>{/each}</select>
       </label>
       {#if list}
         <span class="muted num" aria-live="polite">
@@ -184,11 +139,13 @@
         </span>
       {/if}
     </div>
+    <!-- persistent status regions: text put into a region that is already in the page is announced, a region inserted already filled often is not -->
+    <p id="proc-paused" class="warn small live" class:has={table.paused} role="status">{table.paused ? (list ? `Paused: the table keeps sample ${formatCount(list.sample_seq)}.` : 'Paused before the first sample arrived.') : ''}</p>
     {#if list}
-      {#if waiting}<p class="muted small" role="status">A newer sample is waiting; it appears when focus leaves the table, so rows do not move under it.</p>{/if}
-      <div class="tbl-wrap" onfocusin={() => (focusInTable = true)} onfocusout={(e) => { if (e.currentTarget.contains(e.relatedTarget as Node | null)) return; focusInTable = false; if (waiting) { list = waiting; waiting = null; } }}>
+      <p id="proc-waiting" class="muted small live" class:has={!!table.waiting} role="status">{table.waiting ? 'A newer sample is waiting; it appears when focus leaves the table, so rows do not move under it.' : ''}</p>
+      <div class="tbl-wrap" bind:this={tableEl} onfocusout={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) table.release(); }}>
         <table class="tbl procs">
-          <caption class="sr-only">Top processes by {SORTS.find(([id]) => id === sort)?.[1]}</caption>
+          <caption class="sr-only">Top processes by {SORTS.find(([id]) => id === table.sort)?.[1]}</caption>
           <thead>
             <tr>
               <th scope="col">Process</th><th scope="col" class="r">Private commit</th><th scope="col" class="r">Private working set</th><th scope="col" class="r">Working set</th>
@@ -222,7 +179,7 @@
           </tbody>
         </table>
       </div>
-      <p class="muted small">{list.note} CPU is a share of the whole machine. Working sets include shared pages, so do not add rows up. Private commit is what a process has promised, not what is resident. GPU memory is per process and is never summed into an adapter total.</p>
+      <p class="muted small">Rows from sample {formatCount(list.sample_seq)}. {list.note} CPU is a share of the whole machine. Working sets include shared pages, so do not add rows up. Private commit is what a process has promised, not what is resident. GPU memory is per process and is never summed into an adapter total.</p>
     {:else}<p class="muted">Waiting for the first sample.</p>{/if}
 
     <p class="bad live" class:has={!!explainError} role="alert">{explainError}</p>

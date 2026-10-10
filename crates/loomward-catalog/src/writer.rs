@@ -1,6 +1,8 @@
 use crate::*;
 use crossbeam_channel::{bounded, Receiver, Sender};
-use rusqlite::{params, types::Value, Connection, OptionalExtension};
+use rusqlite::{
+    params, types::ToSqlOutput, types::ValueRef as Value, Connection, OptionalExtension,
+};
 use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, Condvar, Mutex},
@@ -11,6 +13,8 @@ use std::{
 pub const CHUNK_ENTRIES: usize = 16_384;
 pub const QUEUE_BYTES: usize = 64 * 1024 * 1024;
 const WRITER_BYTES: usize = 32 * 1024 * 1024;
+const TRANSACTION_BYTES: usize = 64 * 1024 * 1024;
+const TRANSACTION_TIME: Duration = Duration::from_millis(250);
 type Quota = Arc<(Mutex<usize>, Condvar)>;
 
 /// Disconnect wakes every waiter; cancellation is not consumed by one producer.
@@ -272,11 +276,22 @@ fn validate(c: &WriteCommand) -> Result<usize> {
 }
 #[derive(Clone, Default, serde::Serialize)]
 pub struct WriterTimings {
+    pub staging_seconds: f64,
+    pub validation_dry_run_seconds: f64,
+    pub state_prepare_seconds: f64,
+    pub invalidation_seconds: f64,
+    pub rollup_seconds: f64,
+    pub multilink_seconds: f64,
+    pub transactions: u64,
+    pub commands: u64,
+    pub max_transaction_bytes: usize,
+    pub max_transaction_commands: usize,
     pub listing_seconds: f64,
     pub file_insert_seconds: f64,
     pub file_seen_seconds: f64,
     pub name_validation_seconds: f64,
     pub commit_seconds: f64,
+    pub checkpoint_seconds: f64,
     pub dirty_updates: u64,
 }
 struct Context {
@@ -288,6 +303,7 @@ struct Context {
 }
 impl Context {
     fn dirty(&mut self, conn: &Connection, start: i64, run: i64) -> Result<()> {
+        let started = Instant::now();
         let mut current = Some(start);
         let mut count = 0;
         let mut update = conn.prepare_cached(
@@ -312,6 +328,10 @@ impl Context {
                 return Err(Error::Invalid("directory identity cycle"));
             }
         }
+        self.timings
+            .lock()
+            .expect("timing lock")
+            .invalidation_seconds += started.elapsed().as_secs_f64();
         Ok(())
     }
 }
@@ -321,6 +341,14 @@ enum PublicationCrash {
     BeforeCatalog,
     AfterCatalog,
     Observe(fn(&Connection, bool)),
+}
+fn listing_command(command: &WriteCommand) -> bool {
+    matches!(
+        command,
+        WriteCommand::DirListing(_)
+            | WriteCommand::StageChunk { .. }
+            | WriteCommand::ListingDone { .. }
+    )
 }
 fn work(
     mut conn: Connection,
@@ -344,55 +372,29 @@ fn work(
         };
         let checkpoint = matches!(first.command, WriteCommand::EndRun { .. });
         let mut batch = vec![first];
-        if matches!(
-            batch[0].command,
-            WriteCommand::DirListing(_)
-                | WriteCommand::StageChunk { .. }
-                | WriteCommand::ListingDone { .. }
-        ) && !conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM st.object_ref WHERE state='resolved')",
-                [],
-                |r| r.get::<_, bool>(0),
-            )
-            .unwrap_or(true)
-        {
-            let start = Instant::now();
-            let mut rows = 0;
-            while rows < 50_000 && start.elapsed() < Duration::from_millis(250) {
-                match rx.try_recv() {
-                    Ok(p)
-                        if matches!(
-                            p.command,
-                            WriteCommand::DirListing(_)
-                                | WriteCommand::StageChunk { .. }
-                                | WriteCommand::ListingDone { .. }
-                        ) =>
-                    {
-                        rows += match &p.command {
-                            WriteCommand::DirListing(l) => l.files.len() + l.dirs.len(),
-                            WriteCommand::StageChunk { files, dirs, .. } => {
-                                files.len() + dirs.len()
-                            }
-                            _ => 0,
-                        };
-                        batch.push(p);
-                    }
-                    Ok(p) => {
-                        pending = Some(p);
-                        break;
-                    }
-                    Err(_) => break,
-                }
-            }
-        }
+        let batchable = listing_command(&batch[0].command)
+            && !conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM st.object_ref WHERE state='resolved')",
+                    [],
+                    |r| r.get::<_, bool>(0),
+                )
+                .unwrap_or(true);
         let mut results = Vec::with_capacity(batch.len());
         let mut failed = false;
         // Precious writes commit before the catalogue transaction, which writes main only.
-        let prepared: Vec<_> = batch
-            .iter()
-            .map(|p| prepare_state(&mut conn, &p.command, &context.fenced_listings))
-            .collect();
+        let prepare_start = Instant::now();
+        let mut prepared = Some(prepare_state(
+            &mut conn,
+            &batch[0].command,
+            &context.fenced_listings,
+            &context.timings,
+        ));
+        context
+            .timings
+            .lock()
+            .expect("timing lock")
+            .state_prepare_seconds += prepare_start.elapsed().as_secs_f64();
         #[cfg(test)]
         if matches!(crash, Some(PublicationCrash::BeforeCatalog)) {
             break;
@@ -411,7 +413,11 @@ fn work(
             conn.transaction()
         }) {
             Ok(mut tx) => {
-                for (p, ready) in batch.iter().zip(prepared) {
+                let transaction_start = Instant::now();
+                let mut bytes = 0;
+                loop {
+                    let p = batch.last_mut().expect("transaction command");
+                    let ready = prepared.take().unwrap_or(Ok(None));
                     results.push(ready.and_then(|prepared| {
                         let save = tx.savepoint()?;
                         save.execute(
@@ -443,6 +449,30 @@ fn work(
                             context.fenced_listings.insert((*run_id, *dir_id));
                         }
                     }
+                    bytes += p._permit.bytes;
+                    // Free the applied payload so producers can refill the bounded queue before COMMIT.
+                    p.command = WriteCommand::Barrier;
+                    release(&p._permit.quota, p._permit.bytes);
+                    p._permit.bytes = 0;
+                    if !batchable
+                        || bytes >= TRANSACTION_BYTES
+                        || transaction_start.elapsed() >= TRANSACTION_TIME
+                    {
+                        break;
+                    }
+                    match rx.recv_timeout(Duration::from_millis(1)) {
+                        Ok(next)
+                            if listing_command(&next.command)
+                                && bytes + next._permit.bytes <= TRANSACTION_BYTES =>
+                        {
+                            batch.push(next)
+                        }
+                        Ok(next) => {
+                            pending = Some(next);
+                            break;
+                        }
+                        Err(_) => break,
+                    }
                 }
                 let commit_start = Instant::now();
                 #[cfg(test)]
@@ -452,6 +482,14 @@ fn work(
                 let committed = tx.commit();
                 context.timings.lock().expect("timing lock").commit_seconds +=
                     commit_start.elapsed().as_secs_f64();
+                {
+                    let mut timing = context.timings.lock().expect("timing lock");
+                    timing.transactions += 1;
+                    timing.commands += batch.len() as u64;
+                    timing.max_transaction_bytes = timing.max_transaction_bytes.max(bytes);
+                    timing.max_transaction_commands =
+                        timing.max_transaction_commands.max(batch.len());
+                }
                 if let Err(e) = committed {
                     failed = true;
                     results.clear();
@@ -493,7 +531,13 @@ fn work(
             alive.take();
         }
         if checkpoint {
+            let started = Instant::now();
             let _ = conn.execute_batch("PRAGMA main.wal_checkpoint(TRUNCATE)");
+            context
+                .timings
+                .lock()
+                .expect("timing lock")
+                .checkpoint_seconds += started.elapsed().as_secs_f64();
         }
         for (p, result) in batch.into_iter().zip(results) {
             let Pending { reply, _permit, .. } = p;
@@ -525,6 +569,7 @@ fn prepare_state(
     conn: &mut Connection,
     c: &WriteCommand,
     fenced: &HashSet<(i64, i64)>,
+    timings: &Arc<Mutex<WriterTimings>>,
 ) -> Result<Option<i64>> {
     match c {
         WriteCommand::RegisterRoot(o) => {
@@ -619,6 +664,7 @@ fn prepare_state(
                 l.dir_id,
                 Some((&l.files, &l.dirs)),
                 l.state == "complete",
+                timings,
             )?;
             Ok(None)
         }
@@ -635,6 +681,7 @@ fn prepare_state(
                 None,
                 matches!(outcome, ListingOutcome::Complete)
                     && !fenced.contains(&(*run_id, *dir_id)),
+                timings,
             )?;
             Ok(None)
         }
@@ -712,6 +759,7 @@ fn retire_files(
     dir: i64,
     incoming: Option<(&[Observation], &[Observation])>,
     complete: bool,
+    timings: &Arc<Mutex<WriterTimings>>,
 ) -> Result<()> {
     active_run(conn, run, Some(dir))?;
     if !conn.query_row(
@@ -723,6 +771,7 @@ fn retire_files(
     }
     // Exercise every publication rejection before any precious binding can change.
     {
+        let started = Instant::now();
         let tx = conn.transaction()?;
         let mut validation = Context {
             timings: Arc::new(Mutex::new(WriterTimings::default())),
@@ -745,6 +794,10 @@ fn retire_files(
             incoming,
         );
         tx.rollback()?;
+        timings
+            .lock()
+            .expect("timing lock")
+            .validation_dry_run_seconds += started.elapsed().as_secs_f64();
         result?;
     }
     conn.execute_batch("CREATE TEMP TABLE IF NOT EXISTS continuity_entry(kind INTEGER,name TEXT,raw BLOB,identity BLOB,created_ft INTEGER);CREATE INDEX IF NOT EXISTS continuity_by_identity ON continuity_entry(kind,identity,created_ft);CREATE INDEX IF NOT EXISTS continuity_by_name ON continuity_entry(kind,name,raw);DELETE FROM continuity_entry")?;
@@ -874,7 +927,10 @@ fn apply(
             if ctx.fenced_listings.contains(&(*run_id, *dir_id)) {
                 return Err(Error::Invalid("failed staged listing"));
             }
+            let started = Instant::now();
             stage(conn, *run_id, *dir_id, *seq, files, dirs)?;
+            ctx.timings.lock().expect("timing lock").staging_seconds +=
+                started.elapsed().as_secs_f64();
             Ok(WriteReply::Done)
         }
         WriteCommand::ListingDone {
@@ -929,8 +985,14 @@ fn apply(
                 ctx.parents.clear();
             }
             conn.execute("DELETE FROM stage_entry WHERE run_id=?1", [run_id])?;
+            let started = Instant::now();
             rebuild_multilink(conn, root)?;
+            ctx.timings.lock().expect("timing lock").multilink_seconds +=
+                started.elapsed().as_secs_f64();
+            let started = Instant::now();
             rollup(conn, root, full)?;
+            ctx.timings.lock().expect("timing lock").rollup_seconds +=
+                started.elapsed().as_secs_f64();
             conn.execute(
                 "UPDATE scan_run SET state=?2,finished_at_ns=?3 WHERE id=?1",
                 params![run_id, state, finished_at_ns],
@@ -1074,8 +1136,8 @@ fn publish(
                 "listing entry limit; publish incomplete before limit",
             ));
         }
-        let mut values = Vec::new();
-        let mut tuples = Vec::new();
+        let mut values = Vec::with_capacity(128 * 17);
+        let mut tuples = Vec::with_capacity(128);
         for o in files {
             own.files += 1;
             own.logical = checked(own.logical, o.logical)?;
@@ -1130,10 +1192,10 @@ fn publish(
             values.extend([
                 id.map_or(Value::Null, Value::Integer),
                 Value::Integer(dir),
-                Value::Text(o.name.clone()),
-                o.name_utf16.clone().map_or(Value::Null, Value::Blob),
+                Value::Text(o.name.as_bytes()),
+                o.name_utf16.as_deref().map_or(Value::Null, Value::Blob),
                 ext.map_or(Value::Null, Value::Integer),
-                identity.map_or(Value::Null, |v| Value::Blob(v.to_vec())),
+                identity.map_or(Value::Null, Value::Blob),
                 Value::Integer(o.logical as i64),
                 o.allocated
                     .map_or(Value::Null, |v| Value::Integer(v as i64)),
@@ -1156,12 +1218,12 @@ fn publish(
                 names_seconds += name_start.elapsed().as_secs_f64();
             }
             if tuples.len() == 128 {
-                let (insert, seen) = insert_files(conn, &mut values, &mut tuples)?;
+                let (insert, seen) = insert_files(conn, &mut values, &mut tuples, has_old)?;
                 file_seconds += insert;
                 seen_seconds += seen;
             }
         }
-        let (insert, seen) = insert_files(conn, &mut values, &mut tuples)?;
+        let (insert, seen) = insert_files(conn, &mut values, &mut tuples, has_old)?;
         file_seconds += insert;
         seen_seconds += seen;
         for o in dirs {
@@ -1279,16 +1341,24 @@ fn publish(
 }
 fn insert_files(
     conn: &Connection,
-    values: &mut Vec<Value>,
+    values: &mut Vec<Value<'_>>,
     tuples: &mut Vec<&str>,
+    has_old: bool,
 ) -> Result<(f64, f64)> {
     if tuples.is_empty() {
         return Ok((0.0, 0.0));
     }
     let insert_start = Instant::now();
-    let sql=format!("INSERT INTO file(id,dir_id,name,name_utf16,ext_id,file_id,logical,allocated,created_ft,modified_ft,changed_ft,accessed_ft,attrs,reparse_tag,flags,born_run,seen_run) VALUES {} ON CONFLICT(id) DO UPDATE SET name=excluded.name,name_utf16=excluded.name_utf16,ext_id=excluded.ext_id,logical=excluded.logical,allocated=excluded.allocated,created_ft=excluded.created_ft,modified_ft=excluded.modified_ft,changed_ft=excluded.changed_ft,accessed_ft=excluded.accessed_ft,attrs=excluded.attrs,reparse_tag=excluded.reparse_tag,flags=excluded.flags,seen_run=excluded.seen_run",tuples.join(","));
+    let conflict = if has_old {
+        " ON CONFLICT(id) DO UPDATE SET name=excluded.name,name_utf16=excluded.name_utf16,ext_id=excluded.ext_id,logical=excluded.logical,allocated=excluded.allocated,created_ft=excluded.created_ft,modified_ft=excluded.modified_ft,changed_ft=excluded.changed_ft,accessed_ft=excluded.accessed_ft,attrs=excluded.attrs,reparse_tag=excluded.reparse_tag,flags=excluded.flags,seen_run=excluded.seen_run"
+    } else {
+        ""
+    };
+    let sql=format!("INSERT INTO file(id,dir_id,name,name_utf16,ext_id,file_id,logical,allocated,created_ft,modified_ft,changed_ft,accessed_ft,attrs,reparse_tag,flags,born_run,seen_run) VALUES {}{conflict}",tuples.join(","));
     conn.prepare_cached(&sql)?
-        .execute(rusqlite::params_from_iter(values.iter()))?;
+        .execute(rusqlite::params_from_iter(
+            values.iter().map(|v| ToSqlOutput::Borrowed(*v)),
+        ))?;
     let insert_seconds = insert_start.elapsed().as_secs_f64();
     values.clear();
     tuples.clear();
@@ -1407,6 +1477,90 @@ mod publication_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn streamed_transactions_bound_bytes_and_release_applied_payloads() {
+        let temp = tempfile::tempdir().unwrap();
+        let conn = crate::db::open_pair(temp.path(), "synthetic").unwrap();
+        let writer = Writer::start(conn).unwrap();
+        writer
+            .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_key: "fixture".into(),
+                display_name: "Fixture".into(),
+                display_path: "Fixture root".into(),
+                root_file_id: Some(vec![1; 16]),
+                filesystem: Some("NTFS".into()),
+                origin: "fixture".into(),
+                granted_via: "fixture".into(),
+                observed_at_ns: 0,
+            }))
+            .unwrap();
+        let WriteReply::Run(run_id) = writer
+            .call(WriteCommand::BeginRun {
+                grant_id: 1,
+                mode: "full".into(),
+                strategy: "fixture".into(),
+                started_at_ns: 1,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        drop(writer);
+        let conn = Connection::open(temp.path().join("catalog.db")).unwrap();
+        conn.execute(
+            "ATTACH DATABASE ?1 AS st",
+            [temp.path().join("state.db").to_string_lossy().as_ref()],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys=ON; PRAGMA main.synchronous=NORMAL; PRAGMA st.synchronous=FULL",
+        )
+        .unwrap();
+        let (tx, rx) = bounded(8);
+        let reservation = 24 * 1024 * 1024;
+        let quota = Arc::new((Mutex::new(3 * reservation), Condvar::new()));
+        let mut replies = Vec::new();
+        for size in [1, 2, 3] {
+            let (reply, result) = bounded(1);
+            tx.send(Pending {
+                command: WriteCommand::DirListing(DirListing {
+                    run_id,
+                    dir_id: 1,
+                    files: vec![Observation::file("item", size, Some(size))],
+                    dirs: vec![],
+                    state: "complete".into(),
+                    skipped: 0,
+                    errors: 0,
+                }),
+                reply,
+                _permit: BytePermit {
+                    quota: quota.clone(),
+                    bytes: reservation,
+                },
+            })
+            .unwrap();
+            replies.push(result);
+        }
+        drop(tx);
+        let timings = Arc::new(Mutex::new(WriterTimings::default()));
+        let (alive, _) = bounded(0);
+        work(conn, rx, timings.clone(), alive, None);
+        for reply in replies {
+            reply.recv().unwrap().unwrap();
+        }
+        let timing = timings.lock().unwrap();
+        assert_eq!(timing.transactions, 2);
+        assert_eq!(timing.commands, 3);
+        assert_eq!(timing.max_transaction_commands, 2);
+        assert_eq!(timing.max_transaction_bytes, 2 * reservation);
+        assert_eq!(*quota.0.lock().unwrap(), 0);
+        let conn = Connection::open(temp.path().join("catalog.db")).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT logical FROM file", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            3
+        );
+    }
     #[test]
     fn two_listings_in_one_writer_batch_reject_the_older_final() {
         let temp = tempfile::tempdir().unwrap();

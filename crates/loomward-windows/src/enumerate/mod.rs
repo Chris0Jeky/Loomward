@@ -271,6 +271,8 @@ pub fn query_stop(code: u32, cancelled: bool) -> ListOutcome {
 #[cfg(windows)]
 mod native;
 #[cfg(windows)]
+pub(crate) use native::open_watch_root;
+#[cfg(windows)]
 pub use native::{running_elevated, IoCancellation, NativeDir, NativeSource};
 #[cfg(test)]
 mod tests;

@@ -2,11 +2,57 @@
 use loomward_catalog::*;
 use rusqlite::Connection;
 use serde_json::json;
-use std::{path::PathBuf, time::Instant};
+use std::{
+    path::{Path, PathBuf},
+    time::Instant,
+};
 
 fn summary(mut ms: Vec<f64>) -> serde_json::Value {
     ms.sort_by(f64::total_cmp);
     json!({"runs":ms.len(),"p50_ms":ms[ms.len()/2],"p95_ms":ms[(ms.len()*95).div_ceil(100)-1],"min_ms":ms[0],"max_ms":ms[ms.len()-1]})
+}
+// An isolated SQL copy measures deferred index building without disrupting live readers.
+fn index_probe(source: &Path, destination: &Path) -> rusqlite::Result<serde_json::Value> {
+    let mut db = Connection::open(destination)?;
+    db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA cache_size=-262144; PRAGMA temp_store=MEMORY; PRAGMA foreign_keys=ON")?;
+    db.execute(
+        "ATTACH DATABASE ?1 AS source",
+        [source.to_string_lossy().as_ref()],
+    )?;
+    db.execute_batch(include_str!("../src/catalog.sql"))?;
+    for table in ["volume", "root", "dir", "ext"] {
+        db.execute(
+            &format!("INSERT INTO {table} SELECT * FROM source.{table}"),
+            [],
+        )?;
+    }
+    let indexes = {
+        let mut s = db.prepare("SELECT name,sql FROM source.sqlite_schema WHERE type='index' AND tbl_name='file' ORDER BY name")?;
+        let indexes = s
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        indexes
+    };
+    assert_eq!(indexes.len(), 4);
+    for (name, _) in &indexes {
+        db.execute_batch(&format!("DROP INDEX {name}"))?;
+    }
+    let tx = db.transaction()?;
+    let started = Instant::now();
+    let copied = tx.execute("INSERT INTO file SELECT * FROM source.file", [])?;
+    let insert_seconds = started.elapsed().as_secs_f64();
+    let mut index_seconds = serde_json::Map::new();
+    for (name, sql) in indexes {
+        let started = Instant::now();
+        tx.execute_batch(&sql)?;
+        index_seconds.insert(name, json!(started.elapsed().as_secs_f64()));
+    }
+    let started = Instant::now();
+    tx.commit()?;
+    let commit_seconds = started.elapsed().as_secs_f64();
+    Ok(
+        json!({"scope":"isolated file-table SQL copy with parent rows and foreign keys; no staging, live view or publication protocol; not P4", "rows":copied,"insert_without_secondary_indexes_seconds":insert_seconds,"index_build_seconds":index_seconds,"commit_seconds":commit_seconds}),
+    )
 }
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
@@ -70,6 +116,25 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         errors: 0,
     })?;
     let db = Connection::open(temp.path().join("catalog.db"))?;
+    for line in include_str!("../src/catalog.sql").lines().filter(|line| {
+        line.starts_with("CREATE INDEX ") || line.starts_with("CREATE UNIQUE INDEX ")
+    }) {
+        let name = line
+            .split_once(" ON ")
+            .unwrap()
+            .0
+            .split_whitespace()
+            .next_back()
+            .unwrap();
+        assert!(
+            db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='index' AND name=?1)",
+                [name],
+                |r| r.get::<_, bool>(0)
+            )?,
+            "missing index {name}"
+        );
+    }
     let ids = {
         let mut s = db.prepare("SELECT id FROM dir WHERE parent_id=?1 ORDER BY name")?;
         let v = s
@@ -137,6 +202,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         finished_at_ns: 1,
     })?;
     let finalise_s = finalise.elapsed().as_secs_f64();
+    let final_writer_timings = c.writer().timings();
     let (got_files, got_logical, got_allocated, got_unknown): (i64, i64, i64, i64) = db.query_row(
         "SELECT sub_files,sub_logical,sub_allocated,sub_alloc_unknown FROM dir WHERE id=?1",
         [dir_id],
@@ -172,6 +238,10 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         limit: 200,
         cursor: None,
     };
+    let allocated_request = ChildrenRequest {
+        basis: Basis::Allocated,
+        ..children_request.clone()
+    };
     let search_request = SearchRequest {
         root_id: Some(grant_id),
         text: "no-such-synthetic-name".into(),
@@ -185,9 +255,11 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // Warm each query once; measure 21 subsequent runs, including serialization for P6.
     reader.slice(&slice_request)?;
     reader.children(&children_request)?;
+    reader.children(&allocated_request)?;
     reader.search(&search_request)?;
     let mut slice_ms = Vec::new();
     let mut page_ms = Vec::new();
+    let mut allocated_page_ms = Vec::new();
     let mut search_ms = Vec::new();
     let mut budget_hits = 0;
     let mut payload_bytes = 0;
@@ -205,6 +277,10 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         page_ms.push(t.elapsed().as_secs_f64() * 1000.0);
         assert_eq!(page.items.len(), 200.min(rows));
         let t = Instant::now();
+        let page = reader.children(&allocated_request)?;
+        allocated_page_ms.push(t.elapsed().as_secs_f64() * 1000.0);
+        assert_eq!(page.items.len(), 200.min(rows));
+        let t = Instant::now();
         let page = reader.search(&search_request)?;
         search_ms.push(t.elapsed().as_secs_f64() * 1000.0);
         budget_hits += usize::from(page.budget_hit);
@@ -213,6 +289,10 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     drop(reader);
     drop(db);
     drop(c);
+    let index_probe = index_probe(
+        &temp.path().join("catalog.db"),
+        &temp.path().join("index-probe.db"),
+    )?;
     let catalog_bytes = std::fs::metadata(temp.path().join("catalog.db"))?.len();
     let entries = rows + directories + 1;
     let mut receipt = json!({"schema_version":SCHEMA_VERSION,"dataset_class":"synthetic","platform":std::env::consts::OS,"scope":"in-process generated metadata only; no enumeration, no HTTP, no personal data","files":rows,"directories":directories+1,"insert_includes_generation_and_queue_backpressure":true,"all_schema_indexes_present":true,"oracle":{"logical_bytes":expected_logical.to_string(),"allocated_known_bytes":expected_allocated.to_string(),"allocation_unknown_files":expected_unknown,"matched":true},"P4":{"insert_seconds":insert_s,"rows_per_second":entries as f64/insert_s,"target_rows_per_second":250000,"met":entries as f64/insert_s>=250000.0},"writer_timings":writer_timings,"finalise_seconds":finalise_s,"P6":{"timing":summary(slice_ms),"nodes":slice_nodes,"payload_bytes":payload_bytes,"target_ms":60,"target_payload_bytes":1500000,"target_dataset_rows":10000000,"dataset_scale_met":false,"http_round_trip":"unverified"},"P7":{"timing":summary(page_ms),"limit":200,"target_ms":20},"P8":{"timing":summary(search_ms),"work_budget_sqlite_ops":2000000,"budget_hits":budget_hits,"target_ms":300},"P14":{"catalog_bytes":catalog_bytes,"bytes_per_entry":catalog_bytes as f64/entries as f64,"target_bytes_per_entry":200,"target_dataset_rows":10000000,"dataset_scale_met":false},"limitations":["single warm run on this Windows host; no cold-cache claim","P6 and P14 at 1M, not the 10M target; HTTP and process-memory measurement belong to integration"]});
@@ -220,6 +300,11 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     assert!(!cleanup_path.exists());
     receipt["publication_path"] =
         json!("StageChunk + ListingDone; byte reservation before file generation");
+    receipt["final_writer_timings"] = json!(final_writer_timings);
+    receipt["P7"]["allocated_timing"] = summary(allocated_page_ms);
+    receipt["index_probe"] = index_probe;
+    receipt["index_maintenance"] =
+        json!("inline in file_insert_seconds; not separately timed by SQLite");
     receipt["temporary_directory_removed"] = json!(true);
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()

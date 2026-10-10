@@ -59,6 +59,9 @@ pub struct Engine {
     events: Arc<events::Bus>,
     jobs: Arc<jobs::Registry>,
     scan_sink: Mutex<Option<Arc<dyn scan::ScanSink>>>,
+    #[cfg(windows)]
+    scan_watches:
+        Mutex<std::collections::HashMap<loomward_protocol::RootId, Arc<scan::watch::RootWatch>>>,
     telemetry: telemetry::Telemetry,
 }
 
@@ -76,6 +79,8 @@ impl Engine {
             events,
             jobs: Default::default(),
             scan_sink: Mutex::new(None),
+            #[cfg(windows)]
+            scan_watches: Mutex::new(Default::default()),
             telemetry: telemetry::Telemetry::default(),
         })
     }
@@ -83,5 +88,14 @@ impl Engine {
     /// The configuration the engine was opened with.
     pub fn config(&self) -> &EngineConfig {
         &self.config
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Engine {
+    fn drop(&mut self) {
+        for watch in self.scan_watches.get_mut().unwrap().values() {
+            watch.stop();
+        }
     }
 }

@@ -268,9 +268,12 @@ def check_explorer_engine(page: Page, engine: FakeEngine) -> None:
     expect(rows(page)).to_have_count(50)
 
     # a cursor that went stale restarts the listing from the top, with a notice
+    notice_h = page.locator('#explorer-notice').element_handle()  # 4.1.3: a persistent region, empty until it speaks
+    ok(notice_h.text_content() == '' and notice_h.get_attribute('role') == 'status', 'the Explorer notice region is in the page, empty, before it has anything to say')
     engine.stale_once = True
     page.get_by_role('button', name='Load more').click()
     expect(page.get_by_text('starts again from the top')).to_be_visible()
+    ok(notice_h.evaluate('e => e.isConnected && e.textContent.includes("starts again")'), 'the restart notice is spoken by the region that was already there')
     expect(rows(page)).to_have_count(50)
     page.get_by_role('button', name='Load more').click()
     expect(rows(page)).to_have_count(100)
