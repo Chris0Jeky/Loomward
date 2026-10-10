@@ -43,7 +43,7 @@ Python 3.14.3 (`py -3`), cargo/rustc 1.97.1, rustup 1.29.0, Node 24.13.1, npm 11
 a first measurement and must be reported as such. On Windows use `codex.cmd`, `npm.cmd` and
 `npx.cmd`; the unsigned `.ps1` shims are blocked by this machine's execution policy.
 
-## Proving checks by seam (measured on Windows 2026-10-09; counts refreshed 2026-10-10 night, `evidence/v3/`)
+## Proving checks by seam (measured on Windows 2026-10-09; counts refreshed 2026-10-10 late, `evidence/v3/`)
 
 | You changed | Run |
 |---|---|
@@ -97,7 +97,8 @@ disable, skip or weaken a failing test to advance a milestone.
 - One bounded issue at a time: regression test first, then the change, then the full applicable
   suite. The session driver updates the status and checkpoint files
   (`docs/16-implementation-status.md`, `handoff/CHECKPOINT.json`) once per wave in a checkpoint PR,
-  without erasing history; feature PRs do not edit them.
+  without erasing history; feature PRs do not edit them, except that a PR which opens or closes a
+  safety gate or changes a product invariant updates both files itself, so they never state a stale gate.
 - Parallel lanes follow the ownership in `docs/40-parallel-work-packs.md`; shared schemas,
   protocol, routes and dependencies have one named owner per wave. Provider, event and proposal
   schemas marked design-only stay design-only until their issue lands.

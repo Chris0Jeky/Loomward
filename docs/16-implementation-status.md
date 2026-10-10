@@ -155,7 +155,8 @@ and desktop contexts. No file or process effect exists.
 ## v0.3 status, wave 6 (10 October 2026, late; counts measured at `6052bad`)
 
 The sections above are kept as history. This wave merged, each with a fresh-context review (Opus, Sonnet,
-a security audit or a cross-vendor Muse lens) and green CI; the desktop shell was re-proved locally:
+a security audit or a cross-vendor Muse lens) and green CI, except #261, which was merged before its
+review finished (its post-merge review found a defect, fixed in #267); the desktop shell was re-proved locally:
 
 | Area | State on `main` | Evidence |
 |---|---|---|

@@ -14,7 +14,7 @@
     "docs/40-parallel-work-packs.md"
   ],
   "reference": {
-    "python_tests": 216,
+    "python_tests": 222,
     "browser_checks": 14,
     "js_boundary_assertions": 9,
     "js_python_parity_cases": 80,
@@ -62,16 +62,19 @@
     "tauri": "first built 2026-10-10 (#164): lw_call/lw_events only, CSP, Rust-only dialogs, self-test 10/10, WebView2 probe 13/13, Atlas P9 17.5 ms",
     "enumeration": "GetFileInformationByHandleEx(FileIdExtdDirectoryInfo), 8 workers: 3M files in 0.558 s warm (5.38M files/s, 9.2 MiB RSS); cold cache unmeasured",
     "rust_tests_by_crate": {
-      "loomward-catalog": 69,
-      "loomward-core": 30,
-      "loomward-engine": 106,
-      "loomward-http": 40,
-      "loomward-lab": 22,
-      "loomward-learn": 8,
-      "loomward-protocol": 35,
-      "loomward-service": 35,
-      "loomward-telemetry": 28,
-      "loomward-windows": 37
+      "apps": 18,
+      "catalog": 115,
+      "core": 30,
+      "engine": 143,
+      "http": 56,
+      "lab": 26,
+      "learn": 8,
+      "protocol": 36,
+      "service": 58,
+      "shell": 23,
+      "telemetry": 33,
+      "windows": 82,
+      "doc": 3
     },
     "change_tracking": "L16: guarded ReadDirectoryChangesW watchers scoped to each scan (#183, #202); attribute/ACL hints; identity-based absence; USN accelerator not implemented",
     "scan": "M tier 1M files ~4.9M files/s warm, 20/20 exact manifests (#162); through the product for synthetic lab roots (#205); personal scans gated: #184, #206 and #240 closed, #269 in review (PR #278); elevated tokens refused",
