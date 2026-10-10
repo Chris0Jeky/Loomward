@@ -18,8 +18,8 @@ pub struct Reader {
     pub live_clamp_count: u64,
     breakdowns: HashMap<(i64, String, Basis, usize, String), Breakdown>,
 }
-pub(crate) const DIR_COLUMNS:&str="d.id,0 kind,d.name,d.sub_logical logical,d.sub_allocated allocated,d.sub_alloc_unknown unknown,d.sub_files files,d.sub_dirs dirs,d.modified_ft,d.attrs,d.flags,NULL extension,NULL family,CASE d.listing_state WHEN 'unlisted' THEN 'unscanned' WHEN 'incomplete' THEN 'partial' ELSE d.listing_state END,d.sub_complete complete,d.parent_id,d.root_id,d.file_id,d.created_ft,d.changed_ft,NULL accessed_ft,d.born_run,d.agg_valid_rev>=d.dirty_rev valid";
-pub(crate) const FILE_COLUMNS:&str="f.id,1 kind,f.name,f.logical,coalesce(f.allocated,0) allocated,(f.allocated IS NULL) unknown,1 files,0 dirs,f.modified_ft,f.attrs,f.flags,e.ext extension,e.family,CASE WHEN d.listing_state='incomplete' AND f.seen_run!=d.seen_run THEN 'stale' ELSE CASE d.listing_state WHEN 'unlisted' THEN 'unscanned' WHEN 'incomplete' THEN 'partial' ELSE d.listing_state END END,1 complete,f.dir_id parent_id,d.root_id,f.file_id,f.created_ft,f.changed_ft,f.accessed_ft,f.born_run,1 valid";
+pub(crate) const DIR_COLUMNS:&str="d.id,0 kind,d.name,d.sub_logical logical,d.sub_allocated allocated,d.sub_alloc_unknown unknown,d.sub_files files,d.sub_dirs dirs,d.modified_ft,d.attrs,d.flags,NULL extension,NULL family,coalesce(d.listing_outcome,CASE d.listing_state WHEN 'unlisted' THEN 'unscanned' WHEN 'incomplete' THEN 'partial' ELSE d.listing_state END),d.sub_complete complete,d.parent_id,d.root_id,d.file_id,d.created_ft,d.changed_ft,NULL accessed_ft,d.born_run,d.agg_valid_rev>=d.dirty_rev valid";
+pub(crate) const FILE_COLUMNS:&str="f.id,1 kind,f.name,f.logical,coalesce(f.allocated,0) allocated,(f.allocated IS NULL) unknown,1 files,0 dirs,f.modified_ft,f.attrs,f.flags,e.ext extension,e.family,CASE WHEN d.listing_state='incomplete' AND f.seen_run!=d.seen_run THEN 'stale' ELSE coalesce(d.listing_outcome,CASE d.listing_state WHEN 'unlisted' THEN 'unscanned' WHEN 'incomplete' THEN 'partial' ELSE d.listing_state END) END,1 complete,f.dir_id parent_id,d.root_id,f.file_id,f.created_ft,f.changed_ft,f.accessed_ft,f.born_run,1 valid";
 pub(crate) const FILE_FROM: &str =
     "file f JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id";
 #[derive(Clone, Debug)]
@@ -439,20 +439,23 @@ if c.catalog_rev!=catalog_rev||c.catalog_instance!=catalog_instance{return Err(E
             let mut last_id=req.cursor.as_ref().map_or(0,|c|c.last_id);
             let mut more=false;
             let result=(||->Result<()> {
-                for (kind,table,columns,from,ids) in [(0,"d",DIR_COLUMNS,"dir d","dir"),(1,"f",FILE_COLUMNS,FILE_FROM,"file")] {
+                for (kind,table,columns,from) in [(0,"d",DIR_COLUMNS,"dir d"),(1,"f",FILE_COLUMNS,FILE_FROM)] {
                     if (req.kind=="file"&&kind==0)||(req.kind=="dir"&&kind==1)||kind<last_kind{continue;}
                     if kind!=last_kind {last_kind=kind;last_id=0;}
                     loop {
-                        let end:Option<i64>=conn.prepare_cached(&format!("SELECT max(id) FROM (SELECT id FROM {ids} WHERE id>?1 ORDER BY id LIMIT 128)"))?.query_row([last_id],|r|r.get(0))?;
-                        let Some(end)=end else{break};
                         let ext_filter=if kind==0 {"?4 IS NULL"}else{"(?4 IS NULL OR e.ext=?4)"};
                         let size=if kind==0 {"d.sub_logical"}else{"f.logical"};
-                        let sql=format!("SELECT {columns} FROM {from} JOIN root_grant g ON g.id=d.root_id WHERE g.state='active' AND d.id IN (SELECT id FROM visible_dir) AND (?1 IS NULL OR d.root_id=?1) AND instr(lower({table}.name),lower(?2))>0 AND {table}.id>?3 AND {table}.id<=?7 AND {ext_filter} AND (?5 IS NULL OR {size}>=?5) ORDER BY {table}.id LIMIT ?6");
+                        // Yield examined rows as well as matches so an interrupted scan can resume.
+                        let sql=format!("SELECT {columns},coalesce(g.state='active' AND d.id IN (SELECT id FROM visible_dir) AND (?1 IS NULL OR d.root_id=?1) AND instr(lower({table}.name),lower(?2))>0 AND {ext_filter} AND (?5 IS NULL OR {size}>=?5),0) matched FROM {from} JOIN root_grant g ON g.id=d.root_id WHERE {table}.id>?3 ORDER BY {table}.id LIMIT 128");
                         let mut stmt=conn.prepare_cached(&sql)?;
-                        let mut iter=stmt.query(params![req.root_id,req.text,last_id,req.extension,req.min_bytes.map(|v|v as i64),(req.limit+1-rows.len()) as i64,end])?;
-                        while let Some(row)=iter.next()? {let row=raw(row)?;if !row.valid{return Err(Error::RepairRequired);}last_id=row_key(&row).1;rows.push(row);}
+                        let mut iter=stmt.query(params![req.root_id,req.text,last_id,req.extension,req.min_bytes.map(|v|v as i64)])?;
+                        let mut examined=0;
+                        while let Some(row)=iter.next()? {
+                            last_id=row.get(0)?;examined+=1;
+                            if row.get::<_,bool>(23)? {let row=raw(row)?;if !row.valid{return Err(Error::RepairRequired);}rows.push(row);if rows.len()>req.limit{break;}}
+                        }
                         if rows.len()>req.limit{more=true;break;}
-                        last_id=end;
+                        if examined<128{break;}
                     }
                     if more{break;}
                 }Ok(())

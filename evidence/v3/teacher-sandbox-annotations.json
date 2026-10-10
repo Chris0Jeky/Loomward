@@ -1,0 +1,39 @@
+{
+  "note": "Hand-written annotations for evidence/v3/teacher-sandbox.json, kept separate so that file stays exactly what `teacher_sandbox --run` emits. Rerunning the example regenerates only the machine receipt.",
+  "diagnostics": [
+    {
+      "role": "earlier ordinary child report-file control",
+      "create_process": {
+        "ok": true,
+        "error_code": null
+      },
+      "exit_code": 1,
+      "identity": {
+        "appcontainer": false,
+        "container_sid": null,
+        "in_job": true
+      },
+      "report_file_write": {
+        "ok": false,
+        "error_code": 5
+      },
+      "interpretation": "Not AppContainer enforcement; final ordinary control reports over inherited stdout"
+    }
+  ],
+  "blocked_questions": {
+    "filesystem": "No contained probe executed",
+    "network": "No contained probe executed with either capability set",
+    "process_and_job": "No contained probe executed",
+    "codex_startup": "Container launch failed before codex launch",
+    "tool_canaries": "blocked-by-design: no authenticated contained runner"
+  },
+  "context": {
+    "source_head": "35f020850e282f223aa37bc29475f9b9b1158f2a",
+    "source_changes": "uncommitted spike",
+    "windows_version": "10.0.26300",
+    "architecture": "64-bit",
+    "rustc": "1.97.1 (8bab26f4f 2026-07-14)",
+    "cargo": "1.97.1 (c980f4866 2026-06-30)",
+    "note": "Context, diagnostic and blocked-question annotations added to the final launcher receipt from local measurements"
+  }
+}

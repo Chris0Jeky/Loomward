@@ -57,3 +57,22 @@ reaches it, it prepares the exact command and a revert command here; the owner r
 Owner, in chat: whole volumes (`C:\`, `G:\`, `E:\`) may be personal scan roots when the owner picks them
 in the native grant dialog (ADR-V3-08); agents still never pick a volume root. The 10M-entry synthetic
 lab tier runs on `E:\loomward-lab\scale` only; `G:` stays capped at 2M (ADR-V3-17).
+
+## q-8 — Teacher sandbox path: AppContainer profile or inference broker — OPEN
+
+The L15b spike (#174) found that an AppContainer launch without a registered profile is refused by
+Windows before anything runs, so no enforcement could be measured. Choose the path in the agent-hq
+inbox (cockpit) or in chat; nothing personal is sent either way until q-5 is also answered.
+
+- [ ] **loomward-teacher-sandbox-path: How should Loomward's teacher (Sol via Codex) be confined before it may ever see your real file metadata: register a Windows AppContainer profile, or build an inference broker instead?**
+  - (a) Register an AppContainer profile for the spike: Agents may call CreateAppContainerProfile for one named Loomward test profile under your account, rerun the L15b canaries (filesystem, network, tools, child processes) and delete the profile afterwards. The firewall rule (q-6) still waits for you if endpoint-only egress is wanted.
+    + Measures real OS enforcement on this machine; + Removable with DeleteAppContainerProfile; - Writes a per-user Windows registration; - codex.exe still cannot authenticate inside the container, so a broker may be needed anyway; - Endpoint-only egress still needs q-6
+  - (b) Build an inference broker instead (recommended): Agents design and build a small broker: it holds your Codex login, accepts only bounded synthetic-then-redacted requests from Loomward, talks only to the model endpoint, and gives the teacher no file or shell access. No Windows profile or firewall change.
+    + No Windows registration or firewall change; + Solves the login problem the container cannot; + The boundary is code we test, not a policy we hope holds; - More engineering than option a; - Its own security review
+  - (c) Both: broker as the design, profile only to measure: Build the broker (b), and also allow the one-off profile registration (a) purely to measure what an AppContainer enforces, deleting it afterwards.
+    + Most evidence; - Most work; - Still writes the per-user registration
+  - (d) Not now: keep the teacher synthetic-only: No further sandbox work; the teacher stays on synthetic data indefinitely and LW-111 stays blocked.
+    + No new trust boundary; - The learning pillar never uses the teacher on your real organisation
+  - Why: The spike showed the container route needs a Windows registration and still leaves the login problem; a broker avoids both and keeps the boundary in tested code.
+  - Why an agent may not decide: It decides whether agents may write a Windows security registration under your account and which trust boundary guards your personal metadata; that is yours to choose.
+  - Source: `decisions/loomward-teacher-sandbox-path.json`
