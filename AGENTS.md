@@ -47,7 +47,7 @@ a first measurement and must be reported as such. On Windows use `codex.cmd`, `n
 
 | You changed | Run |
 |---|---|
-| Python reference, schemas, JS boundary, fixtures | `py -3 scripts/verify.py` (216 tests with 1 symlink-privilege skip, 2 JS syntax, 9 JS boundary, 80 cross-language fixtures; it also runs the Rust gates when cargo is present) |
+| Python reference, schemas, JS boundary, fixtures | `py -3 scripts/verify.py` (221 tests with 1 symlink-privilege skip, 2 JS syntax, 9 JS boundary, 80 cross-language fixtures; it also runs the Rust gates when cargo is present) |
 | Rust workspace (`crates/*`, glob) | `cargo fmt --all --check`, `cargo test --workspace` (240 on Windows: core 30, engine 61, http 30, lab 22, learn 8, protocol 35, telemetry 25, windows 29; native scan tests assert the elevation refusal on an elevated host such as hosted CI and run fully otherwise), `cargo clippy --workspace --all-targets -- -D warnings`; add `--all-features` for the `loomward-windows` fixture lab |
 | Browser UI | `py -3 scripts/test_ui.py` (14 Chromium checks; Playwright installed here) |
 | Svelte app (`app/`) | `npm.cmd --prefix app run check`, `run test`, `run build`, then `py -3 scripts/test_app.py` (Playwright e2e incl. Atlas and Observatory), or all four via `py -3 scripts/verify.py --app`; add `--live-serve` when you touch `loomward-http` or an app transport |
