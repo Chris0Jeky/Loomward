@@ -17,33 +17,40 @@ Research prototype, not a file manager or system optimiser.
 - The **Python reference** (`python/loomward/`) and its browser workbench (`ui/`): a synthetic
   demo, a bounded metadata scan of one explicit folder, a small weighted student model, a tier
   simulator and a read-only MCP reference. Its gates pass on Windows (see [Verify](#verify)).
-- **Rust crates** (`crates/`): `loomward-core`, `loomward-windows`, `loomward-telemetry`,
-  `loomward-lab`, `loomward-learn` (plus `loomward-cli`). The Rust workspace was first compiled
-  and tested on 2026-10-09; [Measured results](#measured-results) says which have recorded evidence.
-- The **Svelte app shell** (`app/`), on a **mock transport only**: today it ships the Explorer,
-  Tiers, Companion and Grants & health views over synthetic data (#119), with Atlas and
-  Observatory in review. With no engine it shows "unavailable", never demo data.
-- The **woven-atlas / Observatory prototype** (`app/prototype/`): canvas treemap, sunburst and
-  gauges on synthetic data.
+- The **native engine** (`crates/`, Rust, first compiled and tested on Windows on 2026-10-09):
+  - `loomward-windows`: non-elevated native enumeration (no-recall opens, reparse and offline
+    refusal) and guarded `ReadDirectoryChangesW` change watchers;
+  - `loomward-engine`: the scan pipeline (identity dedupe, dirty-epoch relists, honest partials),
+    change-tracked reconciliation (in the engine, not yet reachable from the app), jobs and events,
+    engine telemetry leases, and placement
+    *simulation*;
+  - `loomward-catalog`: the durable SQLite catalogue (crash-safe reference retirement; about 53k
+    rows/s inserted at 1M rows);
+  - `loomward-protocol` and `loomward-http`: the view-service contract types and `loomward-serve`
+    (token, Host and Origin checks; server-sent events);
+  - `loomward-core`, `loomward-telemetry`, `loomward-lab`, `loomward-learn` and `loomward-cli`.
+  [Measured results](#measured-results) says which have recorded evidence.
+- The **Svelte app** (`app/`): Explorer, Tiers, Companion, Grants & health, Atlas and Observatory,
+  over a mock transport or a live `loomward-serve`. Anything the engine cannot answer is shown
+  as unavailable or unknown, never as demo data.
+- The **desktop shell** (`native/`): a Tauri 2 and WebView2 build with a strict CSP and a
+  self-test. It runs the app against the contract fixtures.
 
-**Does not exist yet**
+**In review or not built yet**
 
-- A **native scan engine** and **persistent catalogue**: designed in
-  [docs/41](docs/41-v03-architecture.md), in progress in the lanes of
-  [docs/43](docs/43-v03-lanes.md), and absent from this tree (no engine, catalogue, protocol,
-  service or HTTP crate). The **view service** the app is meant to talk to has only its contract
-  ([`contracts/v3/`](contracts/v3/)).
-- A **desktop shell**: `native/` is a Tauri 2 scaffold that has never been built; WebView2 is
-  unverified.
-- **Real-disk scanning by the product.** Native enumeration has been measured on synthetic trees
-  and on four owner-authorised real folders (read-only, metadata only, anonymised), but only by
-  lab benchmarks. The Python reference can scan a folder you name. The owner has decided that a
-  whole volume may become a scan root only when the owner picks it in the native grant dialog
-  (ADR-V3-08); agents never pick one.
-- The **teacher on real data.** The optional LLM teacher is designed as weak supervision and stays
-  synthetic-only. A spike found the Codex CLI cannot be fully confined by its flags, so OS-level
-  sandbox work (LW-111) must pass first; whether real metadata may ever leave the machine is an
-  open owner decision ([HUMAN_TODO.md](HUMAN_TODO.md), q-5). No teacher runner exists here.
+- **Scanning through the product.** `loomward-serve` runs the L8 view service over the engine and
+  catalogue (#179), but there `scan.start` still answers unavailable until the catalogue-backed scan
+  writer and the change-tracking gates (#184) land. `loomward-serve --fixtures` and the desktop
+  shell answer every command, `scan.start` included, from the contract's example fixtures; those
+  are not scans. Native enumeration has
+  been measured only on synthetic lab trees and on four owner-authorised real folders, read-only,
+  metadata only and anonymised. A whole volume may become a scan root only when the owner picks it
+  in the native grant dialog (ADR-V3-08); agents never pick one.
+- **The teacher on real data.** The optional LLM teacher is weak supervision and stays
+  synthetic-only. A probe launched in an unregistered Windows AppContainer was refused before it
+  ran (#174; no teacher process started), so the
+  confinement route is an open owner decision ([HUMAN_TODO.md](HUMAN_TODO.md), q-8), and
+  whether real metadata may ever leave the machine is another (q-5).
 
 **No file or process effect exists.** Nothing here moves, deletes, renames, writes, kills,
 suspends, reprioritises or trims anything on your machine. (The lab tools create and delete
