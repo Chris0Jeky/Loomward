@@ -134,8 +134,35 @@ struct Shared<'a, S: DirSource> {
     limit_hit: AtomicBool,
     excluded: Vec<OpenedIdentity>,
     max_dirs: usize,
+    /// Child directories sighted by a listing but not yet adopted, across all workers:
+    /// `(count, name bytes)`. Their names are charged to the arena reservation.
+    held: Mutex<(usize, usize)>,
+    arena_bytes: usize,
+    node_bytes: usize,
+}
+/// One held child's share of [`Shared::held`], returned when the child is adopted or dropped.
+struct Held<'a>(&'a Mutex<(usize, usize)>, usize);
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        let mut held = self.0.lock().unwrap();
+        held.0 -= 1;
+        held.1 -= self.1;
+    }
 }
 impl<S: DirSource> Shared<'_, S> {
+    /// Hold one more sighted child if the arena reservation still covers every slot and held
+    /// child at the per-node estimate plus every held name, and the directory cap allows it.
+    fn hold(&self, name_bytes: usize) -> Option<Held<'_>> {
+        let slots = self.arena.lock().unwrap().len();
+        let mut held = self.held.lock().unwrap();
+        let fits = slots + held.0 < self.max_dirs
+            && (slots + held.0 + 1) * self.node_bytes + held.1 + name_bytes <= self.arena_bytes;
+        fits.then(|| {
+            held.0 += 1;
+            held.1 += name_bytes;
+            Held(&self.held, name_bytes)
+        })
+    }
     fn stopping(&self) -> bool {
         self.cancel.load(Ordering::Acquire) || self.writer_failed.load(Ordering::Acquire)
     }
@@ -420,14 +447,14 @@ impl<S: DirSource> Shared<'_, S> {
                 }
                 // Children are prepared only after this listing's ListingDone: a durable writer
                 // creates child rows when the parent listing publishes, so a child ticket must not
-                // be requested before then. Held handles count against the arena reservation.
-                let available = self.arena.lock().unwrap().len() + children.len() < self.max_dirs;
-                if !available {
+                // be requested before then. Held handles and names, across all workers, count
+                // against the arena reservation.
+                let Some(held) = self.hold(raw.name.len() * 2) else {
                     complete = false;
                     stopped = Some(IncompleteReason::Limit);
                     return Flow::Stop;
-                }
-                children.push((raw.name.to_vec(), dir, identity, key));
+                };
+                children.push((raw.name.to_vec(), dir, identity, key, held));
             }
             Flow::Continue
         });
@@ -469,7 +496,7 @@ impl<S: DirSource> Shared<'_, S> {
         }) {
             return Err(cancelled());
         }
-        for (name, dir, identity, key) in children {
+        for (name, dir, identity, key, _held) in children {
             if !self.adopt(&task, ticket, listing, &name, dir, identity, key)? {
                 complete = false;
             }
@@ -801,6 +828,9 @@ pub fn run_scan<S: DirSource>(
         limit_hit: AtomicBool::new(false),
         excluded,
         max_dirs,
+        held: Mutex::new((0, 0)),
+        arena_bytes,
+        node_bytes,
     };
     shared.arena.lock().unwrap().push(Slot {
         parent: None,

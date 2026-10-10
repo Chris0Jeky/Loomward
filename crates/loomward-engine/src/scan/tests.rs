@@ -1462,3 +1462,73 @@ fn a_sink_without_watch_support_scans_unwatched() {
     // No watch pin outlives the scan: the user can rename the scanned folder.
     std::fs::rename(temp.path().join("child"), temp.path().join("renamed")).unwrap();
 }
+/// One wide directory of near-limit (32,767-unit) child names: the names its listing holds until
+/// the children are adopted are charged to the arena reservation, so the held set stops at a
+/// limit instead of growing past the scan's byte budget (#206).
+struct WideNames;
+impl DirSource for WideNames {
+    type Dir = u64;
+    fn strategy(&self) -> Strategy {
+        Strategy::Portable
+    }
+    fn open_root(&self, _: &std::path::Path) -> Result<(u64, OpenedIdentity), SourceError> {
+        Ok((1, identity(1)))
+    }
+    fn open_child(&self, _: &u64, e: &RawEntry<'_>) -> Result<(u64, OpenedIdentity), SourceError> {
+        let Some(FileIdObs::Id64(id)) = e.file_id else {
+            unreachable!()
+        };
+        Ok((id, identity(id)))
+    }
+    fn list(&self, dir: &u64, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+        if *dir != 1 {
+            return ListOutcome::Complete;
+        }
+        let mut name = vec![u16::from(b'n'); 32767];
+        for i in 0..400u64 {
+            name[..3].copy_from_slice(&[
+                0x41 + (i / 26 / 26) as u16,
+                0x41 + (i / 26 % 26) as u16,
+                0x41 + (i % 26) as u16,
+            ]);
+            if sink(RawEntry {
+                name: &name,
+                file_id: Some(FileIdObs::Id64(i + 2)),
+                attributes: 0x10,
+                reparse_tag: None,
+                end_of_file: 0,
+                allocation_size: Some(0),
+                creation: None,
+                last_write: None,
+                change: None,
+                last_access: None,
+            }) == Flow::Stop
+            {
+                return ListOutcome::Incomplete(IncompleteReason::Cancelled);
+            }
+        }
+        ListOutcome::Complete
+    }
+}
+#[test]
+fn held_child_names_are_charged_to_the_scan_byte_budget() {
+    let bytes = Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES));
+    let arena = (bytes.capacity() / 4).min(16 * 1024 * 1024);
+    let report = run_scan(
+        &WideNames,
+        &root(),
+        1,
+        Arc::new(MemorySink::default()),
+        bytes,
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions::default(),
+    )
+    .unwrap();
+    assert!(report.limit_hit && !report.complete, "{report:?}");
+    let held = report.totals.dirs as usize * 32767 * 2;
+    assert!(
+        report.totals.dirs > 0 && held <= arena,
+        "{} held names ({held} bytes) exceed the {arena}-byte arena",
+        report.totals.dirs
+    );
+}
