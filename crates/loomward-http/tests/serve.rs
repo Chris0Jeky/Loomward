@@ -1167,3 +1167,436 @@ fn the_engine_service_answers_through_the_adapter() {
     let grant = call(&h, r#"{"protocol":"loomward/3","request_id":"r_3","command":"roots.request_grant","payload":{"purpose":"metadata_scan"}}"#).json();
     assert_eq!(grant["error"]["code"], "capability_unavailable");
 }
+
+// ----------------------------------------------------------------------------------------------
+// Issue #191: security behaviours with no pinning test.
+// ----------------------------------------------------------------------------------------------
+
+#[test]
+fn conflicting_content_length_is_refused_and_identical_duplicates_coalesce() {
+    let (h, _) = start();
+    // Control: a single framing succeeds.
+    let ok = call(&h, HELLO);
+    assert_eq!(ok.status, 200);
+    assert_eq!(ok.json()["ok"], true);
+    // Identical duplicated values frame the body the same way: RFC 9112 section 6.3 lets a
+    // recipient treat them as one, and hyper coalesces them before the adapter sees them.
+    let dup_same = format!("\r\nContent-Length: {}", HELLO.len());
+    let r = exchange(
+        h.addr(),
+        &call_head(&h, HELLO.len(), &dup_same),
+        HELLO.as_bytes(),
+    );
+    assert_eq!(r.status, 200);
+    // Conflicting values are the smuggling case: hyper refuses them with a bare 400 before the
+    // adapter runs, so no body is framed two ways.
+    let dup_diff = format!("\r\nContent-Length: {}", HELLO.len() + 1);
+    let r = exchange(
+        h.addr(),
+        &call_head(&h, HELLO.len(), &dup_diff),
+        HELLO.as_bytes(),
+    );
+    assert_eq!(r.status, 400);
+}
+
+#[test]
+fn symlink_inside_static_root_pointing_outside_is_refused() {
+    let base = static_tree("symlink-escape");
+    let outside = base.join("secret.txt");
+    let link = base.join("dist").join("escape.txt");
+    let _ = std::fs::remove_file(&link);
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(&outside, &link);
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_file(&outside, &link);
+    made.expect("security regression requires a real symlink fixture; setup failure is not a pass");
+    let (h, _) = start_with(
+        fixture(),
+        Options {
+            static_dir: Some(base.join("dist")),
+            ..Options::default()
+        },
+    );
+    // Control: a real file under the root is still served.
+    let js = exchange(
+        h.addr(),
+        &format!("GET /assets/app.js HTTP/1.1\r\n{}", host(&h)),
+        b"",
+    );
+    assert_eq!(js.status, 200);
+    assert_eq!(js.body, b"console.log(1)");
+    // The link resolves outside the root, so it is refused and never leaks.
+    let r = exchange(
+        h.addr(),
+        &format!("GET /escape.txt HTTP/1.1\r\n{}", host(&h)),
+        b"",
+    );
+    assert_eq!(r.status, 404);
+    assert_eq!(r.json()["error"], "not found");
+    assert!(
+        !String::from_utf8_lossy(&r.body).contains("TOPSECRET"),
+        "link leaked: {:?}",
+        String::from_utf8_lossy(&r.body)
+    );
+    drop(h);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn session_token_is_64_lowercase_hex_and_unique_per_handle() {
+    let (h1, _) = start();
+    let (h2, _) = start();
+    for token in [h1.token(), h2.token()] {
+        assert_eq!(token.len(), 64, "token {token}");
+        assert_eq!(
+            token
+                .bytes()
+                .filter(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
+                .count(),
+            64,
+            "token {token} is not 64 lowercase hex"
+        );
+    }
+    assert_ne!(h1.token(), h2.token(), "two Handles shared a token");
+    // Boundary: a non-hex byte is never accepted.
+    let mut bad = h1.token().to_string().into_bytes();
+    bad[0] = b'G';
+    let bad = String::from_utf8(bad).unwrap();
+    let head = call_head(&h1, HELLO.len(), "").replace(h1.token(), &bad);
+    assert_eq!(
+        exchange(h1.addr(), &head, HELLO.as_bytes()).status,
+        403,
+        "non-hex token accepted"
+    );
+    // Boundary: a truncated token is never accepted.
+    let short = h1.token()[..32].to_string();
+    let head = call_head(&h1, HELLO.len(), "").replace(h1.token(), &short);
+    assert_eq!(
+        exchange(h1.addr(), &head, HELLO.as_bytes()).status,
+        403,
+        "truncated token accepted"
+    );
+}
+
+#[test]
+fn handle_url_carries_token_in_fragment_never_query() {
+    let (h, _) = start();
+    let url = h.url();
+    assert_eq!(url, format!("http://{}/#token={}", h.addr(), h.token()));
+    assert_eq!(url.split('?').count(), 1, "query present in {url}");
+    assert_eq!(
+        url.split('#').nth(1).unwrap(),
+        format!("token={}", h.token())
+    );
+    assert!(!url.contains('?'), "{url}");
+    // Negative: a token in the query without the header never authorises.
+    let with_query = format!(
+        "GET /api/v3/call?token={} HTTP/1.1\r\n{}",
+        h.token(),
+        host(&h)
+    );
+    assert_eq!(exchange(h.addr(), &with_query, b"").status, 403);
+    // Negative: no header at all is refused even though the fragment never reaches the server.
+    let bare = format!("GET /api/v3/call HTTP/1.1\r\n{}", host(&h));
+    assert_eq!(exchange(h.addr(), &bare, b"").status, 403);
+}
+
+#[test]
+fn corp_and_coop_are_same_origin_on_every_response() {
+    let dir = static_tree("corp-coop");
+    let (h, _) = start_with(
+        fixture(),
+        Options {
+            static_dir: Some(dir.join("dist")),
+            ..Options::default()
+        },
+    );
+    let ok = call(&h, HELLO);
+    assert_eq!(ok.status, 200);
+    let malformed = call(&h, "{");
+    assert_eq!(malformed.status, 200);
+    let bad_token = exchange(
+        h.addr(),
+        &call_head(&h, HELLO.len(), "").replace(h.token(), &"0".repeat(64)),
+        HELLO.as_bytes(),
+    );
+    assert_eq!(bad_token.status, 403);
+    let bad_type = exchange(
+        h.addr(),
+        &call_head(&h, HELLO.len(), "").replace("application/json", "text/plain"),
+        HELLO.as_bytes(),
+    );
+    assert_eq!(bad_type.status, 415);
+    let unknown = exchange(
+        h.addr(),
+        &format!(
+            "GET /api/v3/other HTTP/1.1\r\n{}\r\nX-Loomward-Token: {}",
+            host(&h),
+            h.token()
+        ),
+        b"",
+    );
+    assert_eq!(unknown.status, 404);
+    let wrong_method = exchange(
+        h.addr(),
+        &format!(
+            "GET /api/v3/call HTTP/1.1\r\n{}\r\nX-Loomward-Token: {}",
+            host(&h),
+            h.token()
+        ),
+        b"",
+    );
+    assert_eq!(wrong_method.status, 405);
+    let page = exchange(h.addr(), &format!("GET / HTTP/1.1\r\n{}", host(&h)), b"");
+    assert_eq!(page.status, 200);
+    let missing = exchange(
+        h.addr(),
+        &format!("GET /nope HTTP/1.1\r\n{}", host(&h)),
+        b"",
+    );
+    assert_eq!(missing.status, 404);
+    for (name, r) in [
+        ("ok", &ok),
+        ("malformed", &malformed),
+        ("bad_token", &bad_token),
+        ("bad_type", &bad_type),
+        ("unknown", &unknown),
+        ("wrong_method", &wrong_method),
+        ("page", &page),
+        ("missing", &missing),
+    ] {
+        assert_eq!(
+            r.header("cross-origin-resource-policy").as_deref(),
+            Some("same-origin"),
+            "{name}"
+        );
+        assert_eq!(
+            r.header("cross-origin-opener-policy").as_deref(),
+            Some("same-origin"),
+            "{name}"
+        );
+    }
+    // The streaming response carries the same pair.
+    let mut s = connect(h.addr());
+    write!(
+        s,
+        "GET /api/v3/events HTTP/1.1\r\n{}\r\nX-Loomward-Token: {}\r\nAccept: text/event-stream\r\n\r\n",
+        host(&h),
+        h.token()
+    )
+    .unwrap();
+    let mut reader = BufReader::new(s);
+    let mut head = String::new();
+    loop {
+        let mut line = String::new();
+        let bytes = reader.read_line(&mut line).unwrap();
+        assert_ne!(
+            bytes, 0,
+            "EOF before SSE response headers completed: {head}"
+        );
+        head.push_str(&line);
+        if line == "\r\n" {
+            break;
+        }
+    }
+    let lower = head.to_ascii_lowercase();
+    assert!(
+        lower.contains("cross-origin-resource-policy: same-origin"),
+        "{head}"
+    );
+    assert!(
+        lower.contains("cross-origin-opener-policy: same-origin"),
+        "{head}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn duplicated_last_event_id_resyncs_as_epoch_changed() {
+    let service = fixture().with_stream_limits(Duration::from_secs(15), 1024);
+    let (h, svc) = start_with(service, Options::default());
+    svc.publish((1..=3).map(health_warning)).unwrap();
+    let epoch = svc.epoch().to_string();
+    // Control: a single header resumes within the buffer.
+    let mut sse = open_events(&h, &format!("\r\nLast-Event-ID: {epoch}.1"))
+        .ok()
+        .unwrap();
+    assert_eq!(sse.next().event, "stream.hello");
+    assert_eq!(sse.next().id, format!("{epoch}.2"));
+    assert_eq!(sse.next().id, format!("{epoch}.3"));
+    drop(sse);
+    // Duplicated identical headers resync instead of resuming.
+    let mut sse = open_events(
+        &h,
+        &format!("\r\nLast-Event-ID: {epoch}.1\r\nLast-Event-ID: {epoch}.1"),
+    )
+    .ok()
+    .unwrap();
+    assert_eq!(sse.next().event, "stream.hello");
+    let lagged = sse.next();
+    assert_eq!(lagged.event, "stream.lagged");
+    assert_eq!(lagged.data["data"]["reason"], "epoch_changed");
+    drop(sse);
+    // Boundary: duplicated differing headers also resync.
+    let mut sse = open_events(
+        &h,
+        &format!("\r\nLast-Event-ID: {epoch}.1\r\nLast-Event-ID: {epoch}.2"),
+    )
+    .ok()
+    .unwrap();
+    assert_eq!(sse.next().event, "stream.hello");
+    assert_eq!(sse.next().data["data"]["reason"], "epoch_changed");
+    drop(sse);
+}
+
+#[test]
+fn declared_length_above_drain_limit_is_refused_without_reading_body() {
+    let (h, _) = start();
+    let over = loomward_http::DRAIN_LIMIT as u64 + 1;
+    let huge = loomward_http::DRAIN_LIMIT as u64 * 2;
+    for declared in [over, huge] {
+        let head = call_head(&h, declared as usize, "");
+        let mut tcp = connect(h.addr());
+        tcp.write_all(format!("{head}\r\nConnection: close\r\n\r\n").as_bytes())
+            .unwrap();
+        // No body bytes follow; a correct server refuses from the headers alone.
+        let t = Instant::now();
+        let mut raw = Vec::new();
+        tcp.read_to_end(&mut raw).unwrap();
+        let r = Response::parse(&raw);
+        assert_eq!(r.status, 413, "declared {declared}");
+        assert_eq!(
+            r.json()["error"],
+            "the request body exceeds 64 KiB or has no valid Content-Length",
+            "declared {declared}"
+        );
+        assert!(
+            t.elapsed() < Duration::from_secs(5),
+            "declared {declared} waited {:?} for a body that was never sent",
+            t.elapsed()
+        );
+    }
+    // Boundary: valid framing still succeeds.
+    assert_eq!(call(&h, HELLO).status, 200);
+    // Error path: a huge declaration with a bad token is refused without the body.
+    let bad = call_head(&h, huge as usize, "").replace(h.token(), &"0".repeat(64));
+    let mut tcp = connect(h.addr());
+    tcp.write_all(format!("{bad}\r\nConnection: close\r\n\r\n").as_bytes())
+        .unwrap();
+    let mut raw = Vec::new();
+    tcp.read_to_end(&mut raw).unwrap();
+    assert_eq!(Response::parse(&raw).status, 403);
+}
+
+#[test]
+fn api_errors_carry_json_content_type_and_connection_close() {
+    let (h, _) = start();
+    // Without asking for close, an error still closes: the close comes from the
+    // handler, not from the request.
+    let head_no_close = format!(
+        "POST /api/v3/call HTTP/1.1\r\n{}\r\nX-Loomward-Token: {}\r\nContent-Type: application/json\r\nContent-Length: {}",
+        host(&h),
+        "0".repeat(64),
+        HELLO.len()
+    );
+    let mut tcp = connect(h.addr());
+    tcp.write_all(format!("{head_no_close}\r\n\r\n{HELLO}").as_bytes())
+        .unwrap();
+    let mut raw = Vec::new();
+    tcp.read_to_end(&mut raw).unwrap();
+    let r = Response::parse(&raw);
+    assert_eq!(r.status, 403);
+    assert_eq!(
+        r.header("content-type").as_deref(),
+        Some("application/json; charset=utf-8")
+    );
+    assert_eq!(r.header("connection").as_deref(), Some("close"));
+    assert_eq!(r.json()["error"], "a valid local session token is required");
+    // Wrong media type.
+    let r = exchange(
+        h.addr(),
+        &call_head(&h, HELLO.len(), "").replace("application/json", "text/plain"),
+        HELLO.as_bytes(),
+    );
+    assert_eq!(r.status, 415);
+    assert_eq!(
+        r.header("content-type").as_deref(),
+        Some("application/json; charset=utf-8"),
+        "wrong-type"
+    );
+    assert_eq!(
+        r.header("connection").as_deref(),
+        Some("close"),
+        "wrong-type"
+    );
+    assert_eq!(r.json()["error"], "use application/json");
+    // Oversized body.
+    let big = vec![b'x'; 70_000];
+    let r = exchange(h.addr(), &call_head(&h, big.len(), ""), &big);
+    assert_eq!(r.status, 413);
+    assert_eq!(
+        r.header("content-type").as_deref(),
+        Some("application/json; charset=utf-8"),
+        "oversized"
+    );
+    assert_eq!(
+        r.header("connection").as_deref(),
+        Some("close"),
+        "oversized"
+    );
+    assert_eq!(
+        r.json()["error"],
+        "the request body exceeds 64 KiB or has no valid Content-Length"
+    );
+    // Unknown API path.
+    let r = exchange(
+        h.addr(),
+        &format!(
+            "GET /api/v3/other HTTP/1.1\r\n{}\r\nX-Loomward-Token: {}",
+            host(&h),
+            h.token()
+        ),
+        b"",
+    );
+    assert_eq!(r.status, 404);
+    assert_eq!(
+        r.header("content-type").as_deref(),
+        Some("application/json; charset=utf-8"),
+        "unknown-api"
+    );
+    assert_eq!(
+        r.header("connection").as_deref(),
+        Some("close"),
+        "unknown-api"
+    );
+    assert_eq!(r.json()["error"], "not found");
+    // Known API path with the wrong method.
+    let r = exchange(
+        h.addr(),
+        &format!(
+            "GET /api/v3/call HTTP/1.1\r\n{}\r\nX-Loomward-Token: {}",
+            host(&h),
+            h.token()
+        ),
+        b"",
+    );
+    assert_eq!(r.status, 405);
+    assert_eq!(
+        r.header("content-type").as_deref(),
+        Some("application/json; charset=utf-8"),
+        "wrong-method"
+    );
+    assert_eq!(
+        r.header("connection").as_deref(),
+        Some("close"),
+        "wrong-method"
+    );
+    assert_eq!(r.json()["error"], "method not allowed");
+    // Control: success is JSON too.
+    let ok = call(&h, HELLO);
+    assert_eq!(
+        ok.header("content-type").as_deref(),
+        Some("application/json; charset=utf-8")
+    );
+    assert_eq!(ok.json()["ok"], true);
+}
