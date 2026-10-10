@@ -55,9 +55,9 @@
     "enumeration": "GetFileInformationByHandleEx(FileIdExtdDirectoryInfo), 8 workers: 3M files in 0.558 s warm (5.38M files/s, 9.2 MiB RSS); cold cache unmeasured"
   },
   "learning": {
-    "student": "weighted multinomial Naive Bayes reference, unchanged",
+    "student": "weighted Naive Bayes; Rust port loomward-learn with exact Python parity (#113)",
     "teacher_mock_http_tested": true,
-    "actual_model_tested": false,
+    "actual_model_tested": "synthetic-only: GPT-6.1 Sol through codex exec, 10/10 schema-valid 25-item batches, median 21.8 s (#116); no personal data",
     "personal_dataset_evaluated": false
   },
   "experiments": {
@@ -68,17 +68,17 @@
     "windows_performance_claim": false
   },
   "next_local_issues": [
-    "LW-005",
-    "LW-006",
     "LW-103",
-    "LW-104",
-    "LW-106"
+    "LW-005",
+    "LW-106",
+    "LW-105",
+    "LW-101"
   ],
   "optional_independent_starts": [
     "LW-065",
     "LW-068"
   ],
-  "backlog_count": 100,
+  "backlog_count": 112,
   "remote_publication": true,
   "independent_subagents_used": false,
   "hard_gates": [
@@ -111,8 +111,15 @@
     "app_shell": "Svelte 5 shell in review (#114)"
   },
   "architecture": {
-    "docs": "docs/41-43, contracts/v3 (PR #110)",
-    "status": "revising after a cross-vendor review: 1 critical (teacher confinement), 18 high (catalogue identity/refresh/aggregates, durability, accounting)"
+    "docs": "docs/41-43 and contracts/v3 merged (#110), revision 2 after a cross-vendor review",
+    "errata": "binding verification findings for implementing lanes: issue #117",
+    "owner_decisions_2026_10_10": [
+      "whole-volume roots via native grant",
+      "L15b teacher sandbox authorised",
+      "10M lab tier on E: only",
+      "T1 and Muse proxy network confirmed"
+    ]
   },
-  "backlog_github_map": "backlog/github-issues.json (#4-#105)"
+  "backlog_github_map": "backlog/github-issues.json (#4-#105)",
+  "teacher_confinement": "partially achievable with CLI flags; synthetic-only until LW-111 enforcement canaries pass (#116)"
 }

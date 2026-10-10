@@ -9,7 +9,7 @@ class BacklogIntegrityTests(unittest.TestCase):
     def test_unique_local_ids_and_original_critical_path(self):
         self.assertEqual(len(self.items),len({x['id'] for x in self.items}))
         self.assertEqual([x['id'] for x in self.items[:3]],['LW-001','LW-002','LW-064'])
-        self.assertTrue(all(x['status']=='planned' for x in self.items))
+        self.assertTrue(all(x['status'] in {'planned','in_progress','done'} for x in self.items))
     def test_each_body_has_one_exact_durable_import_marker(self):
         for item in self.items:
             path=ROOT/item['body_file']

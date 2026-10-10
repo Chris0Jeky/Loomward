@@ -114,7 +114,7 @@ disable, skip or weaken a failing test to advance a milestone.
 ## Pitfalls
 
 - `LW-*` IDs are the local backlog (`backlog/issues.json`, the source of truth), not GitHub numbers;
-  they are mirrored as issues #4-#105 (`backlog/github-issues.json` maps them). New IDs mint there first.
+  they are mirrored as issues #4-#105 and #120-#131 (`backlog/github-issues.json` maps them). New IDs mint there first.
 - Taskdeck is proprietary: never copy its code into this MIT repository.
 - Public repo: synthetic fixtures only; no real filenames, inventories or training exports.
   Personal diagnostics and `.loomward/` state or database files never enter Git.
