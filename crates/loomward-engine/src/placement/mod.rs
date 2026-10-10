@@ -148,20 +148,53 @@ impl Engine {
     ) -> EngineResult<TierModel> {
         check_deadline(deadline)?;
         let snapshot = input.snapshot(None, deadline)?;
-        let _ = planner_volumes(&snapshot)?;
+        if snapshot.volumes.len() > 64
+            || snapshot.subtrees.len() > 10_000
+            || snapshot.root_generations.len() > 64
+        {
+            return Err(EngineError::ResourceBudget {
+                message: "placement snapshot bounds".into(),
+            });
+        }
+        {
+            let mut ids = BTreeSet::new();
+            for observed in &snapshot.volumes {
+                if !ids.insert(observed.volume.volume_id.as_str()) {
+                    return Err(invalid("duplicate volume"));
+                }
+            }
+        }
         let mut volumes = Vec::new();
         for observed in snapshot.volumes {
             check_deadline(deadline)?;
-            let v = observed.volume;
-            let fraction = match (v.capacity_bytes, v.free_bytes) {
-                (Some(capacity), Some(free))
-                    if v.online && capacity.get() > 0 && free <= capacity =>
-                {
-                    Some(bounded(Fraction::new(
-                        free.get() as f64 / capacity.get() as f64,
-                    ))?)
+            let VolumeObservation {
+                volume: v,
+                reserve_bytes,
+                cluster_bytes,
+                ..
+            } = observed;
+            // #159-5: unusable numbers stay visible as Unknown instead of
+            // failing the whole tier view.
+            let unusable = v.online
+                && (matches!(
+                    (v.capacity_bytes, v.free_bytes),
+                    (Some(cap), Some(free)) if free.get() > cap.get()
+                ) || matches!(v.capacity_bytes, Some(cap) if reserve_bytes.get() > cap.get())
+                    || matches!(v.capacity_bytes, Some(cap) if cap.get() == 0)
+                    || cluster_bytes == Some(0));
+            let fraction = if unusable {
+                None
+            } else {
+                match (v.capacity_bytes, v.free_bytes) {
+                    (Some(capacity), Some(free))
+                        if v.online && capacity.get() > 0 && free <= capacity =>
+                    {
+                        Some(bounded(Fraction::new(
+                            free.get() as f64 / capacity.get() as f64,
+                        ))?)
+                    }
+                    _ => None,
                 }
-                _ => None,
             };
             let pressure = match fraction {
                 Some(f) if f.get() <= 0.05 => TierVolumePressure::Pressure,
@@ -178,7 +211,7 @@ impl Engine {
                 writable: v.read_only.map(|ro| !ro),
                 capacity_bytes: v.capacity_bytes,
                 free_bytes: v.free_bytes,
-                reserve_bytes: observed.reserve_bytes,
+                reserve_bytes,
                 free_fraction: fraction,
                 pressure,
             });
@@ -199,7 +232,7 @@ impl Engine {
         let snapshot = input.snapshot(Some(&request.source_volume_id), deadline)?;
         let _ = planner_volumes(&snapshot)?;
         require_source(&snapshot, &request.source_volume_id)?;
-        let cluster = target_cluster(&snapshot, &request.source_volume_id);
+        let (cluster, _) = target_cluster(&snapshot, &request.source_volume_id);
         Ok(candidates(
             input,
             &snapshot,
@@ -331,7 +364,7 @@ pub fn build_scenario(
             message: "reference planner supports 32 volumes".into(),
         });
     }
-    let cluster = target_cluster(&snapshot, &request.source_volume_id);
+    let (cluster, unknown_clusters) = target_cluster(&snapshot, &request.source_volume_id);
     let candidates = candidates(
         input,
         &snapshot,
@@ -355,6 +388,14 @@ pub fn build_scenario(
         }
     }
     let mut assumptions = vec![Text::new("Destination estimates round each default-stream EOF to the largest known eligible target cluster; sparse, compressed and alternate streams are not predicted.").expect("bounded note")];
+    if unknown_clusters > 0 {
+        assumptions.push(
+            Text::new(format!(
+                "Destination estimates assumed 4 KiB clusters for {unknown_clusters} target(s) with unknown cluster size."
+            ))
+            .expect("bounded note"),
+        );
+    }
     if request.relief_policy == PlacementSimulateRequestReliefPolicy::EntryAllocationWhatif {
         assumptions.push(Text::new("Entry allocation is assumed reclaimable for this what-if; hard links outside a group may prevent relief.").expect("bounded note"));
     }
@@ -366,6 +407,7 @@ pub fn build_scenario(
     }
     let mut groups = Vec::new();
     let mut pre_rejected = Vec::new();
+    let mut zero_excluded = 0usize;
     let shared = shared_groups(&candidates);
     for candidate in candidates.view.groups.iter() {
         check_deadline(deadline)?;
@@ -430,6 +472,14 @@ pub fn build_scenario(
         } else {
             g.estimated_relief_bytes.expect("verified above")
         };
+        // #159-1: a verified zero relief would make the core planner reject
+        // the whole request ("invalid or duplicate group"). No existing
+        // pre-rejection reason honestly fits known zero relief, so exclude
+        // the group and disclose the count; the rest still plans.
+        if relief.get() == 0 {
+            zero_excluded += 1;
+            continue;
+        }
         let mut group = json!({"id": g.group_id, "volume_id": request.source_volume_id,
             "source_bytes": safe(relief.get())?, "destination_bytes": safe(g.destination_bytes.get())?,
             "transfer_bytes": safe(g.transfer_bytes.get())?});
@@ -449,6 +499,63 @@ pub fn build_scenario(
             group["days_since_move"] = json!(v.get());
         }
         groups.push(group);
+    }
+    if zero_excluded > 0 {
+        assumptions.push(
+            Text::new(format!(
+                "Excluded {zero_excluded} group(s) with zero relief; the remaining groups were still planned."
+            ))
+            .expect("bounded note"),
+        );
+    }
+    // #159-3: the greedy antichain hides children of a selected parent. When
+    // that parent is later pre-rejected, its descendants are in neither
+    // `groups` nor `pre_rejected`, so disclose the count. They are not re-planned.
+    let pre_rejected_nodes: BTreeSet<&str> = pre_rejected
+        .iter()
+        .filter_map(|pr| {
+            candidates
+                .view
+                .groups
+                .iter()
+                .find(|g| g.group_id == pr.group_id)
+                .map(|g| g.node_id.as_str())
+        })
+        .collect();
+    if !pre_rejected_nodes.is_empty() {
+        let selected_ids: BTreeSet<&str> = candidates
+            .view
+            .groups
+            .iter()
+            .map(|g| g.group_id.as_str())
+            .collect();
+        let mut hidden_descendants = 0usize;
+        for s in &snapshot.subtrees {
+            if request.candidate_basis == CandidateBasis::RootChildren && !s.root_child {
+                continue;
+            }
+            if s.totals.logical_bytes.get() == 0 {
+                continue;
+            }
+            if selected_ids.contains(s.group_id.as_str()) {
+                continue;
+            }
+            if s
+                .ancestors
+                .iter()
+                .any(|a| pre_rejected_nodes.contains(a.as_str()))
+            {
+                hidden_descendants += 1;
+            }
+        }
+        if hidden_descendants > 0 {
+            assumptions.push(
+                Text::new(format!(
+                    "{hidden_descendants} descendant group(s) not considered because their ancestor was pre-rejected."
+                ))
+                .expect("bounded note"),
+            );
+        }
     }
     check_deadline(deadline)?;
     Ok(BuiltScenario {
@@ -521,13 +628,19 @@ fn tier_info(v: &Volume) -> TierInfo {
     }
 }
 
-fn target_cluster(snapshot: &Snapshot, source: &VolumeId) -> Option<u64> {
-    let source_tier = snapshot
+/// Largest eligible target cluster, keeping targets whose cluster size is
+/// unknown: they assume a stated 4 KiB lower bound (#159-2). Returns the
+/// cluster and the count of eligible targets with unknown cluster size.
+fn target_cluster(snapshot: &Snapshot, source: &VolumeId) -> (Option<u64>, usize) {
+    let Some(source_tier) = snapshot
         .volumes
         .iter()
         .find(|v| v.volume.volume_id == *source)
-        .and_then(|v| tier_info(&v.volume).tier)?;
-    snapshot
+        .and_then(|v| tier_info(&v.volume).tier)
+    else {
+        return (None, 0);
+    };
+    let eligible: Vec<_> = snapshot
         .volumes
         .iter()
         .filter(|v| {
@@ -540,8 +653,19 @@ fn target_cluster(snapshot: &Snapshot, source: &VolumeId) -> Option<u64> {
                     .tier
                     .is_some_and(|tier| tier.get() >= source_tier.get())
         })
-        .filter_map(|v| v.cluster_bytes)
-        .max()
+        .collect();
+    let unknown = eligible
+        .iter()
+        .filter(|v| v.cluster_bytes.is_none())
+        .count();
+    let max_known = eligible.iter().filter_map(|v| v.cluster_bytes).max();
+    let cluster = match (max_known, unknown) {
+        (Some(known), 0) => Some(known),
+        (Some(known), _) => Some(known.max(4096)),
+        (None, 0) => None,
+        (None, _) => Some(4096),
+    };
+    (cluster, unknown)
 }
 
 fn require_source(snapshot: &Snapshot, source: &VolumeId) -> EngineResult<()> {
