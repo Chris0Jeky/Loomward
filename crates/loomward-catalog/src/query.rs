@@ -298,10 +298,18 @@ impl<'a> WorkGuard<'a> {
         conn.progress_handler(
             granularity,
             Some(move || {
-                let old = rem.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                    n.checked_sub(granularity as u64)
-                });
-                if old.is_err() {
+                // A CAS loop rather than fetch_update, which newer stable toolchains deprecate.
+                let mut n = rem.load(Ordering::Relaxed);
+                let exhausted = loop {
+                    let Some(next) = n.checked_sub(granularity as u64) else {
+                        break true;
+                    };
+                    match rem.compare_exchange_weak(n, next, Ordering::Relaxed, Ordering::Relaxed) {
+                        Ok(_) => break false,
+                        Err(current) => n = current,
+                    }
+                };
+                if exhausted {
                     h.store(true, Ordering::Relaxed);
                     true
                 } else {
