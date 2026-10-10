@@ -598,16 +598,10 @@ impl Inner {
         id: &str,
         reader: &mut loomward_catalog::Reader,
     ) -> Result<NodeKey, ErrorBody> {
-        let (key, born) = self.ids.open(id, &self.instance).map_err(|r| match r {
-            ids::Refusal::Foreign => fail(ErrorCode::NotFound, "unknown node"),
-            ids::Refusal::InstanceChanged => with_reason(
-                fail(
-                    ErrorCode::NotFound,
-                    "the catalogue was rebuilt; refetch from the root",
-                ),
-                "catalog_instance_changed",
-            ),
-        })?;
+        let (key, born) = self
+            .ids
+            .open(id, &self.instance)
+            .map_err(|r| id_refusal(r, "unknown node"))?;
         match key {
             NodeKey::Dir(_) | NodeKey::File(_) => reader
                 .check_incarnation(key, &self.instance, born)
@@ -618,6 +612,24 @@ impl Inner {
             NodeKey::Other(_) => return Err(fail(ErrorCode::NotFound, "unknown node")),
         }
         Ok(key)
+    }
+
+    /// The wire ID of a catalogue root row, bound to this catalogue instance.
+    pub(crate) fn root_id(&self, row: i64) -> String {
+        ids::row_id("rt_", row, &self.instance)
+    }
+
+    pub(crate) fn volume_id(&self, row: i64) -> String {
+        ids::row_id("vo_", row, &self.instance)
+    }
+
+    /// The root row a wire ID names; one minted for a rebuilt catalogue never names a row here.
+    pub(crate) fn root_row(&self, id: &str) -> Result<i64, ErrorBody> {
+        ids::open_row_id("rt_", id, &self.instance).map_err(|r| id_refusal(r, "unknown root"))
+    }
+
+    pub(crate) fn volume_row(&self, id: &str) -> Result<i64, ErrorBody> {
+        ids::open_row_id("vo_", id, &self.instance).map_err(|r| id_refusal(r, "unknown volume"))
     }
 
     /// Replaces the catalogue's internal references with sealed node IDs, and its collection
@@ -663,10 +675,37 @@ impl Inner {
                 }
             } else if (key == "collection_id" || key == "collection_ids") && s.starts_with("cl_") {
                 *s = format!("co_{}", &s[3..]);
+            } else if let Some(row) = bare_row(s, "rt_").filter(|_| key == "root_id") {
+                *s = self.root_id(row);
+            } else if let Some(row) = bare_row(s, "vo_").filter(|_| key == "volume_id") {
+                *s = self.volume_id(row);
             }
         });
         Ok(())
     }
+}
+
+/// `not_found`; an ID minted for an earlier catalogue instance also carries
+/// `catalog_instance_changed`. Malformed or foreign spellings get no detail (no oracle).
+fn id_refusal(r: ids::Refusal, unknown: &str) -> ErrorBody {
+    match r {
+        ids::Refusal::Foreign => fail(ErrorCode::NotFound, unknown),
+        ids::Refusal::InstanceChanged => with_reason(
+            fail(
+                ErrorCode::NotFound,
+                "the catalogue was rebuilt; refetch from the root",
+            ),
+            "catalog_instance_changed",
+        ),
+    }
+}
+
+/// The catalogue's internal root or volume spelling (`rt_5`), never a wire ID.
+fn bare_row(s: &str, prefix: &str) -> Option<i64> {
+    let n = s.strip_prefix(prefix)?;
+    n.bytes()
+        .all(|b| b.is_ascii_digit())
+        .then(|| n.parse().ok())?
 }
 
 fn is_ref_key(key: &str) -> bool {

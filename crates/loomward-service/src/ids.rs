@@ -94,6 +94,40 @@ fn instance_tag(instance: &str) -> [u8; 4] {
     [d[0], d[1], d[2], d[3]]
 }
 
+fn tag_hex(instance: &str) -> String {
+    instance_tag(instance)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Root and volume IDs: `prefix` + catalogue row + `_` + the catalogue instance tag. A rebuilt
+/// catalogue reassigns row numbers, so an ID minted for another instance must never select the
+/// row that now has its number (a retried revocation, an old tier declaration).
+pub fn row_id(prefix: &str, row: i64, instance: &str) -> String {
+    format!("{prefix}{row}_{}", tag_hex(instance))
+}
+
+/// The row a [`row_id`] names in `instance`. Any other spelling is [`Refusal::Foreign`].
+pub fn open_row_id(prefix: &str, id: &str, instance: &str) -> Result<i64, Refusal> {
+    let (row, tag) = id
+        .strip_prefix(prefix)
+        .and_then(|r| r.split_once('_'))
+        .ok_or(Refusal::Foreign)?;
+    let n = row
+        .parse::<i64>()
+        .ok()
+        .filter(|n| *n > 0 && n.to_string() == row)
+        .ok_or(Refusal::Foreign)?;
+    if tag.len() != 8 || !tag.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        return Err(Refusal::Foreign);
+    }
+    if tag != tag_hex(instance) {
+        return Err(Refusal::InstanceChanged);
+    }
+    Ok(n)
+}
+
 impl NodeIds {
     pub fn new(key: [u8; 32]) -> Self {
         Self { key }
@@ -197,6 +231,36 @@ mod tests {
         );
         assert!(b64url_decode("A").is_none());
         assert!(b64url_decode("ab+/").is_none());
+    }
+
+    #[test]
+    fn row_ids_are_bound_to_their_catalogue_instance() {
+        let id = row_id("rt_", 5, "inst-a");
+        assert!(loomward_protocol::RootId::new(&id).is_ok());
+        assert!(loomward_protocol::VolumeId::new(row_id("vo_", i64::MAX, "inst-a")).is_ok());
+        assert_eq!(open_row_id("rt_", &id, "inst-a"), Ok(5));
+        // Minted for another instance: refused with the reason, never row 5 of this one.
+        assert_eq!(
+            open_row_id("rt_", &id, "inst-b"),
+            Err(Refusal::InstanceChanged)
+        );
+        let tag = &id[id.len() - 8..];
+        for bad in [
+            "rt_5".to_string(),
+            format!("rt_05_{tag}"),
+            format!("rt_+5_{tag}"),
+            format!("rt_0_{tag}"),
+            format!("rt_-1_{tag}"),
+            "rt_5_ABCDEF12".to_string(),
+            format!("rt_5_{tag}0"),
+            format!("vo_5_{tag}"),
+        ] {
+            assert_eq!(
+                open_row_id("rt_", &bad, "inst-a"),
+                Err(Refusal::Foreign),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

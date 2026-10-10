@@ -44,13 +44,6 @@ fn basis(b: Basis) -> CBasis {
     }
 }
 
-/// `rt_<catalogue root id>`; any other spelling names nothing.
-fn root_number(id: &str) -> Result<i64, ErrorBody> {
-    id.strip_prefix("rt_")
-        .and_then(|n| n.parse().ok())
-        .ok_or_else(|| fail(ErrorCode::NotFound, "unknown root"))
-}
-
 fn grant_number(id: &str) -> Result<i64, ErrorBody> {
     id.strip_prefix("gr_")
         .and_then(|n| n.parse().ok())
@@ -90,7 +83,7 @@ impl Inner {
             RootsRequestGrant => self.request_grant(ctx),
             RootsRevoke => {
                 let r: RootRevokeRequest = req.decode_payload()?;
-                let grant = self.grant_of_root(root_number(&r.root_id)?)?;
+                let grant = self.grant_of_root(self.root_row(&r.root_id)?)?;
                 let (at, revs) = self.revoke(grant)?;
                 Ok(out(json!({"root_id": r.root_id, "revoked_at": at, "purged": false}), Some(revs)))
             }
@@ -250,11 +243,11 @@ impl Inner {
         };
         let display: String = r.display_path.chars().take(1024).collect();
         Ok(json!({
-            "root_id": format!("rt_{}", r.root),
+            "root_id": self.root_id(r.root),
             "display_path": {"text": display, "truncated": r.display_path.chars().count() > 1024},
             "origin": r.origin,
             "dataset_class": self.dataset,
-            "volume_id": r.volume.map(|v| format!("vo_{v}")),
+            "volume_id": r.volume.map(|v| self.volume_id(v)),
             "granted_at": ts_ns(r.granted_at_ns),
             "granted_via": r.granted_via,
             "grant_state": r.grant_state,
@@ -324,7 +317,7 @@ impl Inner {
             })
             .map_err(catalog_error)?;
         if let Some(root) = db::root_for_grant(&self.db(), grant).map_err(sql_error)? {
-            let id = RootId::new(format!("rt_{root}")).expect("rt_ id");
+            let id = RootId::new(self.root_id(root)).expect("rt_ id");
             // The revocation is durable whatever happens next; a missing scan writer or job only
             // means there is nothing to cancel or fence.
             let _ = self.engine.scan_cancel_root(&id);
@@ -346,7 +339,7 @@ impl Inner {
                 json!({
                     "grant_id": format!("gr_{}", r.grant),
                     "kind": "metadata_root",
-                    "root_id": format!("rt_{}", r.root),
+                    "root_id": self.root_id(r.root),
                     "granted_at": ts_ns(r.granted_at_ns),
                     "granted_via": r.granted_via,
                     "revoked_at": r.revoked_at_ns.map(ts_ns),
@@ -424,7 +417,7 @@ impl Inner {
             .map(|v| {
                 let declared = v.declared.flatten();
                 json!({
-                    "volume_id": format!("vo_{}", v.id),
+                    "volume_id": self.volume_id(v.id),
                     "display_name": v.display_name.chars().take(64).collect::<String>(),
                     "mount_points": [],
                     "filesystem": v.filesystem.as_ref().map(|f| f.chars().take(32).collect::<String>()),
@@ -453,11 +446,7 @@ impl Inner {
     /// (section 3 step 3): a mismatch writes nothing and is `stale_generation` /
     /// `state_rev_changed`.
     fn declare_tier(&self, r: DeclareTierRequest, expected: Option<Generation>) -> Handled {
-        let volume: i64 = r
-            .volume_id
-            .strip_prefix("vo_")
-            .and_then(|n| n.parse().ok())
-            .ok_or_else(|| fail(ErrorCode::NotFound, "unknown volume"))?;
+        let volume = self.volume_row(&r.volume_id)?;
         let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
         let key = db::volumes(&self.db(), Some(volume))
             .map_err(sql_error)?
@@ -564,7 +553,7 @@ impl Inner {
         let anchor = match &r.anchor {
             Anchor::Atlas {} => NodeKey::Atlas,
             Anchor::Root { root_id } => {
-                let dir = db::active_root_dir(&self.db(), root_number(root_id)?)
+                let dir = db::active_root_dir(&self.db(), self.root_row(root_id)?)
                     .map_err(sql_error)?
                     .ok_or_else(|| fail(ErrorCode::NotFound, "unknown root"))?;
                 NodeKey::Dir(dir)
@@ -652,7 +641,7 @@ impl Inner {
     fn search(&self, req: &RequestEnvelope) -> Handled {
         let r: SearchRequest = req.decode_payload()?;
         let revs = self.revisions()?;
-        let root = r.root_id.as_ref().map(|id| root_number(id)).transpose()?;
+        let root = r.root_id.as_ref().map(|id| self.root_row(id)).transpose()?;
         let bind = binding(req);
         let cursor = match &r.cursor {
             None => None,

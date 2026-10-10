@@ -175,7 +175,7 @@ fn relist(svc: &Service, grant: i64, dir: i64, files: u64) {
 fn root_slice(svc: &Service, root: i64) -> Payload {
     ok(
         "tree.slice",
-        call(svc, "tree.slice", json!({"anchor": {"kind": "root", "root_id": format!("rt_{root}")}, "depth": 2, "max_nodes": 64, "min_share": 0.0, "basis": "logical", "include_files": true})),
+        call(svc, "tree.slice", json!({"anchor": {"kind": "root", "root_id": svc.inner.root_id(root)}, "depth": 2, "max_nodes": 64, "min_share": 0.0, "basis": "logical", "include_files": true})),
     )
     .0
 }
@@ -223,7 +223,7 @@ fn every_command_answers_a_complete_envelope_and_core_reads_serve_the_catalogue(
         ),
         (
             "search.query",
-            json!({"root_id": format!("rt_{root}"), "text": "report", "extension": null, "min_bytes": null, "kind": "file", "limit": 10, "cursor": null}),
+            json!({"root_id": svc.inner.root_id(root), "text": "report", "extension": null, "min_bytes": null, "kind": "file", "limit": 10, "cursor": null}),
         ),
         (
             "tree.slice",
@@ -712,13 +712,13 @@ fn revocation_commits_first_then_fences_then_emits_and_is_monotone() {
         call(
             &svc,
             "roots.revoke",
-            json!({"root_id": format!("rt_{root}"), "purge_catalog": false}),
+            json!({"root_id": svc.inner.root_id(root), "purge_catalog": false}),
         ),
     );
     // The fence ran after the durable commit: it already saw the grant revoked.
     assert_eq!(
         *probe.seen.lock().unwrap(),
-        vec![format!("rt_{root}:revoked")]
+        vec![format!("{}:revoked", svc.inner.root_id(root))]
     );
     // The event follows the commit and carries its revision.
     let event = loop {
@@ -737,7 +737,7 @@ fn revocation_commits_first_then_fences_then_emits_and_is_monotone() {
         call(
             &svc,
             "roots.revoke",
-            json!({"root_id": format!("rt_{root}"), "purge_catalog": false}),
+            json!({"root_id": svc.inner.root_id(root), "purge_catalog": false}),
         ),
     );
     assert_eq!(r1["revoked_at"], r2["revoked_at"]);
@@ -760,4 +760,115 @@ fn revocation_commits_first_then_fences_then_emits_and_is_monotone() {
         1,
         "a no-op revoke does not fence again"
     );
+}
+
+/// A fixture root with its own identity, no listing.
+fn register(svc: &Service, file_id: u8) -> (i64, i64) {
+    let WriteReply::Root {
+        grant_id, root_id, ..
+    } = svc
+        .inner
+        .catalog
+        .writer()
+        .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_key: "fixture".into(),
+            display_name: format!("Synthetic {file_id}"),
+            display_path: format!("Synthetic root {file_id}"),
+            root_file_id: Some(vec![file_id; 16]),
+            filesystem: Some("NTFS".into()),
+            origin: "fixture".into(),
+            granted_via: "fixture".into(),
+            observed_at_ns: 0,
+        }))
+        .unwrap()
+    else {
+        panic!()
+    };
+    (root_id, grant_id)
+}
+
+/// H1: a rebuilt catalogue reassigns root and volume rows. An ID minted before the rebuild is
+/// refused with `catalog_instance_changed` and never selects the row that now has its number.
+#[test]
+fn root_and_volume_ids_from_a_rebuilt_catalogue_never_select_a_new_row() {
+    let tmp = tempfile::tempdir().unwrap();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (a, _) = register(&svc, 1);
+    register(&svc, 2);
+    let old_a = svc.inner.root_id(a);
+    let (volumes, _) = ok("volumes.list", call(&svc, "volumes.list", json!({})));
+    let old_volume = volumes["volumes"][0]["volume_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let old_volume_row = svc.inner.volume_row(&old_volume).unwrap();
+    ok(
+        "roots.revoke",
+        call(
+            &svc,
+            "roots.revoke",
+            json!({"root_id": old_a, "purge_catalog": false}),
+        ),
+    );
+    drop(svc);
+    for name in ["catalog.db", "catalog.db-wal", "catalog.db-shm"] {
+        let _ = std::fs::remove_file(tmp.path().join(name));
+    }
+    assert!(!tmp.path().join("catalog.db").exists());
+
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (roots, _) = ok("roots.list", call(&svc, "roots.list", json!({})));
+    let roots = roots["roots"].as_array().unwrap();
+    assert_eq!(roots.len(), 1, "only the active grant is derived again");
+    let new_b = roots[0]["root_id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        svc.inner.root_row(&new_b).unwrap(),
+        a,
+        "the surviving root now has revoked root A's row number"
+    );
+    // A retried revocation of A must not revoke B.
+    let e = err(call(
+        &svc,
+        "roots.revoke",
+        json!({"root_id": old_a, "purge_catalog": false}),
+    ));
+    assert_eq!(
+        (e.code, reason(&e)),
+        (ErrorCode::NotFound, Some("catalog_instance_changed"))
+    );
+    let (roots, _) = ok("roots.list", call(&svc, "roots.list", json!({})));
+    assert_eq!(roots["roots"][0]["grant_state"], "active");
+    // An old tier declaration must not change the volume that now has its row number.
+    let (volumes, _) = ok("volumes.list", call(&svc, "volumes.list", json!({})));
+    let new_volume = volumes["volumes"][0]["volume_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(svc.inner.volume_row(&new_volume).unwrap(), old_volume_row);
+    assert_ne!(new_volume, old_volume);
+    let e = err(declare(&svc, "old-tier", &old_volume, 2, None, None));
+    assert_eq!(
+        (e.code, reason(&e)),
+        (ErrorCode::NotFound, Some("catalog_instance_changed"))
+    );
+    assert_eq!(
+        crate::db::declarations(&svc.inner.db(), "fixture").unwrap(),
+        Vec::<Option<i64>>::new()
+    );
+    // Bare row numbers and malformed spellings name nothing and carry no reason.
+    for bad in [format!("rt_{a}"), "rt_x".into()] {
+        let e = err(call(
+            &svc,
+            "roots.revoke",
+            json!({"root_id": bad, "purge_catalog": false}),
+        ));
+        assert_eq!(
+            (e.code, e.detail.clone()),
+            (ErrorCode::NotFound, None),
+            "{bad}"
+        );
+    }
+    // Catalogue projections carry the bound spelling too.
+    let slice = root_slice(&svc, svc.inner.root_row(&new_b).unwrap());
+    assert_eq!(slice["root_generations"][0]["root_id"], new_b.as_str());
 }
