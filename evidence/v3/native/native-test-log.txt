@@ -6,7 +6,7 @@
 [✔] Environment
     - OS: Windows 10.0.26300 x86_64 (X64)
     ✔ WebView2: 154.0.4258.62
-    ✔ MSVC: 
+    ✔ MSVC:
         - Visual Studio Build Tools 2019
         - Visual Studio Build Tools 2022
         - Visual Studio Community 2019
