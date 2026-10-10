@@ -2,6 +2,10 @@ use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 
 pub const HARDLINK_SUSPECTED: u32 = 1 << 2;
+/// `cloud_placeholder`, `reparse_not_followed` and `excluded_state_dir`: an entry the scan saw
+/// but deliberately did not follow. It stays visible (listing state `excluded` for a directory)
+/// and is never counted in totals.
+pub const EXCLUDED_FLAGS: u32 = (1 << 3) | (1 << 4) | (1 << 5);
 pub const FLAG_NAMES: [&str; 10] = [
     "sensitive_name",
     "protected_context",
@@ -221,6 +225,11 @@ pub enum WriteCommand {
     RevokeGrant {
         grant_id: i64,
         revoked_at_ns: i64,
+    },
+    /// The granted root no longer has the grant's native identity (docs/41 section 7 step 1):
+    /// the grant ends `identity_changed` and its root's run is cancelled, as a revocation does.
+    GrantIdentityChanged {
+        grant_id: i64,
     },
     Repair {
         root_id: i64,

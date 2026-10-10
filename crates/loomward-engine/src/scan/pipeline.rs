@@ -140,8 +140,35 @@ struct Shared<'a, S: DirSource> {
     limit_hit: AtomicBool,
     excluded: Vec<OpenedIdentity>,
     max_dirs: usize,
+    /// Child directories sighted by a listing but not yet adopted, across all workers:
+    /// `(count, name bytes)`. Their names are charged to the arena reservation.
+    held: Mutex<(usize, usize)>,
+    arena_bytes: usize,
+    node_bytes: usize,
+}
+/// One held child's share of [`Shared::held`], returned when the child is adopted or dropped.
+struct Held<'a>(&'a Mutex<(usize, usize)>, usize);
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        let mut held = self.0.lock().unwrap();
+        held.0 -= 1;
+        held.1 -= self.1;
+    }
 }
 impl<S: DirSource> Shared<'_, S> {
+    /// Hold one more sighted child if the arena reservation still covers every slot and held
+    /// child at the per-node estimate plus every held name, and the directory cap allows it.
+    fn hold(&self, name_bytes: usize) -> Option<Held<'_>> {
+        let slots = self.arena.lock().unwrap().len();
+        let mut held = self.held.lock().unwrap();
+        let fits = slots + held.0 < self.max_dirs
+            && (slots + held.0 + 1) * self.node_bytes + held.1 + name_bytes <= self.arena_bytes;
+        fits.then(|| {
+            held.0 += 1;
+            held.1 += name_bytes;
+            Held(&self.held, name_bytes)
+        })
+    }
     fn stopping(&self) -> bool {
         self.cancel.load(Ordering::Acquire) || self.writer_failed.load(Ordering::Acquire)
     }
@@ -320,9 +347,10 @@ impl<S: DirSource> Shared<'_, S> {
             let mut traversal_error = None;
             if !excluded && raw.attributes & 0x10 != 0 {
                 if task.depth >= MAX_DEPTH {
+                    // Not opened, but not an exclusion either: it stays a plain, unlisted entry.
                     complete = false;
                     stopped = Some(IncompleteReason::Limit);
-                    excluded = true;
+                    self.skipped.fetch_add(1, Ordering::Relaxed);
                 } else {
                     match self.source.open_child(&task.dir, &raw) {
                         Ok((dir, identity)) => {
@@ -425,14 +453,14 @@ impl<S: DirSource> Shared<'_, S> {
                 }
                 // Children are prepared only after this listing's ListingDone: a durable writer
                 // creates child rows when the parent listing publishes, so a child ticket must not
-                // be requested before then. Held handles count against the arena reservation.
-                let available = self.arena.lock().unwrap().len() + children.len() < self.max_dirs;
-                if !available {
+                // be requested before then. Held handles and names, across all workers, count
+                // against the arena reservation.
+                let Some(held) = self.hold(raw.name.len() * 2) else {
                     complete = false;
                     stopped = Some(IncompleteReason::Limit);
                     return Flow::Stop;
-                }
-                children.push((raw.name.to_vec(), dir, identity, key));
+                };
+                children.push((raw.name.to_vec(), dir, identity, key, held));
             }
             Flow::Continue
         });
@@ -476,7 +504,7 @@ impl<S: DirSource> Shared<'_, S> {
         }) {
             return Err(cancelled());
         }
-        for (name, dir, identity, key) in children {
+        for (name, dir, identity, key, _held) in children {
             if !self.adopt(&task, ticket, listing, &name, dir, identity, key)? {
                 complete = false;
             }
@@ -499,8 +527,17 @@ impl<S: DirSource> Shared<'_, S> {
         let child_ticket = match self.prepare(Some(ticket.dir), name, identity) {
             Ok(t) => t,
             // The parent's publication was rejected as obsolete: the child is unknown to the
-            // writer this epoch, and the dirty parent is relisted.
-            Err(EngineError::StaleGeneration { .. }) => return Ok(false),
+            // writer this epoch, and the writer marked the parent dirty for a relist. Release
+            // the sighting so the relist adopts the child instead of seeing it as moved.
+            Err(e) if listing_revision_changed(&e) => {
+                if let Some(key) = key {
+                    let mut discovered = self.discovered.lock().unwrap();
+                    if discovered.get(&key) == Some(&PENDING) {
+                        discovered.remove(&key);
+                    }
+                }
+                return Ok(false);
+            }
             Err(e) => return Err(e),
         };
         if let Some(old_parent) = child_ticket.old_parent {
@@ -621,6 +658,10 @@ fn directory_key(identity: OpenedIdentity) -> Option<(Option<u64>, FileIdObs)> {
         None
     }
 }
+fn listing_revision_changed(e: &EngineError) -> bool {
+    matches!(e, EngineError::StaleGeneration { detail: Some(detail), .. }
+        if detail.get("reason") == Some(&serde_json::json!("listing_revision_changed")))
+}
 fn writer(
     root: &RootId,
     run: u64,
@@ -655,7 +696,15 @@ fn writer(
                 reply,
             } => {
                 let r = sink.prepare_listing(root, run, parent, &name, identity);
-                let failed = r.as_ref().err().cloned();
+                let failed = match (&r, parent) {
+                    // The parent's publication was obsolete, so the writer does not know this
+                    // child yet: relist the parent; the worker leaves the child unclaimed.
+                    (Err(e), Some(parent)) if listing_revision_changed(e) => {
+                        dirty.insert(parent);
+                        None
+                    }
+                    (r, _) => r.as_ref().err().cloned(),
+                };
                 let _ = reply.send(r);
                 failed.map_or(Ok(()), Err)
             }
@@ -671,13 +720,7 @@ fn writer(
                     continue;
                 }
                 match sink.consume(root, m) {
-                    Err(EngineError::StaleGeneration {
-                        detail: Some(detail),
-                        ..
-                    }) if ticket.is_some()
-                        && detail.get("reason")
-                            == Some(&serde_json::json!("listing_revision_changed")) =>
-                    {
+                    Err(e) if ticket.is_some() && listing_revision_changed(&e) => {
                         dirty.insert(ticket.unwrap().dir);
                         Ok(())
                     }
@@ -751,6 +794,7 @@ pub fn run_scan<S: DirSource>(
         .expected
         .is_some_and(|e| e.id != identity.id || e.volume_serial != identity.volume_serial)
     {
+        sink.root_identity_changed(root.root_id());
         return Err(EngineError::PermissionDenied {
             message: "root_identity_changed".into(),
         });
@@ -820,6 +864,9 @@ pub fn run_scan<S: DirSource>(
         limit_hit: AtomicBool::new(false),
         excluded,
         max_dirs,
+        held: Mutex::new((0, 0)),
+        arena_bytes,
+        node_bytes,
     };
     shared.arena.lock().unwrap().push(Slot {
         parent: None,
