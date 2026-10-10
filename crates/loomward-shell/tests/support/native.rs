@@ -9,18 +9,7 @@ fn link(flags: u32) -> Vec<u8> {
     bytes
 }
 
-fn junction(path: &Path, target: &Path) {
-    let output = std::process::Command::new("cmd.exe")
-        .args(["/d", "/c", "mklink", "/J"])
-        .arg(path)
-        .arg(target)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "synthetic junction creation failed"
-    );
-}
+use crate::junction_fixture::junction;
 
 fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
@@ -60,10 +49,13 @@ fn removable_and_optical_targets_do_not_touch_media() {
 
 #[test]
 fn junction_ancestor_is_refused_with_reason() {
+    let (_dir, parent, outside) = fixture();
+    let path = parent.join("child").join("synthetic.lnk");
     if loomward_windows::enumerate::running_elevated() {
+        assert!(read(&path).is_err());
+        assert_eq!(metadata(path.to_str().unwrap()), MetadataState::Unknown);
         return;
     }
-    let (_dir, parent, outside) = fixture();
     let alias = parent.with_file_name("alias");
     junction(&alias, &outside);
     let path = alias.join("child").join("synthetic.lnk");
@@ -82,51 +74,45 @@ fn junction_ancestor_is_refused_with_reason() {
 
 #[test]
 fn walk_stays_relative_after_junction_swap() {
-    if loomward_windows::enumerate::running_elevated() {
-        return;
-    }
     for contents in [false, true] {
         let (_dir, parent, outside) = fixture();
         let path = parent.join("child").join("synthetic.lnk");
+        if loomward_windows::enumerate::running_elevated() {
+            assert!(read(&path).is_err());
+            assert_eq!(metadata(path.to_str().unwrap()), MetadataState::Unknown);
+            return;
+        }
         let parent_index = parent.to_str().unwrap()[3..].split('\\').count();
         let mut swapped = false;
-        let mut handles = pins(path.to_str().unwrap(), contents, |index| {
+        let mut after_open = |index| {
             if index == parent_index {
                 std::fs::rename(&parent, parent.with_file_name("moved")).unwrap();
                 junction(&parent, &outside);
                 swapped = true;
             }
-        })
-        .unwrap();
-        assert!(swapped);
-        let file = handles.pop().unwrap();
+        };
         if contents {
-            assert_eq!(read_file(file).unwrap().flags, 0);
+            assert_eq!(read_with(&path, &mut after_open).unwrap().flags, 0);
         } else {
+            let mut handles = pins(path.to_str().unwrap(), &mut after_open).unwrap();
+            let file = handles.pop().unwrap();
             assert_eq!(file.metadata().unwrap().len(), 80);
+            drop(handles);
         }
-        drop(handles);
+        assert!(swapped);
         std::fs::remove_dir(&parent).unwrap();
     }
 }
 
 #[test]
 fn reader_uses_final_pinned_handle_after_leaf_swap() {
-    if loomward_windows::enumerate::running_elevated() {
-        return;
-    }
+    // The handle-swap proof lives beside the private capped reader in loomward-windows.
     let (_dir, parent, _outside) = fixture();
     let path = parent.join("child").join("synthetic.lnk");
-    let final_index = path.to_str().unwrap()[3..].split('\\').count();
-    let mut swapped = false;
-    let shortcut = read_with(&path, |index| {
-        if index == final_index {
-            std::fs::rename(&path, path.with_file_name("moved.lnk")).unwrap();
-            std::fs::write(&path, link(0x80)).unwrap();
-            swapped = true;
-        }
-    })
-    .unwrap();
-    assert!(swapped);
-    assert_eq!(shortcut.flags, 0);
+    if loomward_windows::enumerate::running_elevated() {
+        assert!(read(&path).is_err());
+        assert_eq!(metadata(path.to_str().unwrap()), MetadataState::Unknown);
+    } else {
+        assert_eq!(read(&path).unwrap().flags, 0);
+    }
 }

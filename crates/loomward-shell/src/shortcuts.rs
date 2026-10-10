@@ -543,10 +543,11 @@ pub fn read(path: &Path) -> io::Result<Shortcut> {
 #[cfg(windows)]
 mod native {
     use super::*;
-    use loomward_windows::enumerate::{open_readonly_child, open_readonly_directory};
+    use loomward_windows::enumerate::{
+        open_metadata_child, open_readonly_directory, read_capped_regular_file,
+    };
     use std::{
         fs::File,
-        io::Read,
         mem::{size_of, zeroed},
         os::windows::io::AsRawHandle,
         ptr,
@@ -608,11 +609,7 @@ mod native {
     }
 
     /// Every child opens relative to the previous handle; path renames cannot redirect the walk.
-    fn pins(
-        path: &str,
-        contents: bool,
-        mut after_open: impl FnMut(usize),
-    ) -> io::Result<Vec<File>> {
+    fn pins(path: &str, mut after_open: impl FnMut(usize)) -> io::Result<Vec<File>> {
         let drive = local_drive(path)
             .ok_or_else(|| invalid("only ordinary absolute local paths supported"))?;
         if volume(drive, None) != VolumeState::Available {
@@ -623,10 +620,9 @@ mod native {
         after_open(0);
         let parts: Vec<_> = path[3..].split('\\').filter(|s| !s.is_empty()).collect();
         for (i, part) in parts.iter().enumerate() {
-            let file = open_readonly_child(
+            let file = open_metadata_child(
                 files.last().unwrap(),
                 &part.encode_utf16().collect::<Vec<_>>(),
-                contents && i + 1 == parts.len(),
             )?;
             if i + 1 < parts.len() && attributes(&file)? & FILE_ATTRIBUTE_DIRECTORY == 0 {
                 return Err(invalid("ancestor is not a directory"));
@@ -655,7 +651,7 @@ mod native {
         Ok(info.FileAttributes)
     }
     pub(super) fn metadata(path: &str) -> MetadataState {
-        match pins(path, false, |_| {}) {
+        match pins(path, |_| {}) {
             Ok(_) => MetadataState::Present,
             Err(e) if matches!(e.raw_os_error(), Some(2 | 3)) => MetadataState::Missing,
             Err(_) => MetadataState::Unknown,
@@ -668,19 +664,24 @@ mod native {
         let text = path
             .to_str()
             .ok_or_else(|| invalid("path is not Unicode"))?;
-        let mut pins = pins(text, true, after_open)?;
-        read_file(pins.pop().unwrap())
-    }
-    fn read_file(file: File) -> io::Result<Shortcut> {
-        if attributes(&file)? & FILE_ATTRIBUTE_DIRECTORY != 0 {
-            return Err(invalid("shortcut is a directory"));
+        local_drive(text).ok_or_else(|| invalid("only ordinary absolute local paths supported"))?;
+        let (parent, name) = text
+            .rsplit_once('\\')
+            .ok_or_else(|| invalid("file name required"))?;
+        if name.is_empty() {
+            return Err(invalid("file name required"));
         }
-        if file.metadata()?.len() > MAX_FILE_BYTES as u64 {
-            return Err(invalid("file size exceeds cap"));
-        }
-        let mut bytes = Vec::new();
-        file.take((MAX_FILE_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)?;
+        let parent = if parent.len() == 2 {
+            format!("{parent}\\")
+        } else {
+            parent.to_owned()
+        };
+        let pins = pins(&parent, after_open)?;
+        let bytes = read_capped_regular_file(
+            pins.last().unwrap(),
+            &name.encode_utf16().collect::<Vec<_>>(),
+            MAX_FILE_BYTES,
+        )?;
         parse(&bytes).map_err(|e| invalid(e.0))
     }
 

@@ -532,9 +532,9 @@ fn known_folders_preserve_redirection_ownership_unicode_and_failures() {
 }
 #[test]
 fn source_has_no_execution_com_initialisation_or_library_loading() {
-    assert!(guard_tree(
-        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")
-    ));
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    assert!(guard_tree(&root.join("src")));
+    assert!(guard_tree(&root.join("tests/support")));
 }
 
 fn guard_tree(dir: &std::path::Path) -> bool {
@@ -549,6 +549,7 @@ fn guard_tree(dir: &std::path::Path) -> bool {
 }
 
 fn guard_source(src: &str) -> bool {
+    // A source tripwire, not an execution boundary.
     if src
         .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
         .any(|word| matches!(word, "process" | "Command"))
@@ -561,8 +562,10 @@ fn guard_source(src: &str) -> bool {
         "LoadLibrary",
         "IShellLink",
         "IPersistFile",
-        "ShellExecuteW",
-        "CreateProcessW",
+        "ShellExecute",
+        "CreateProcess",
+        "WinExec",
+        "NtCreateUserProcess",
         "CoCreateInstance",
         "SHGetFileInfo",
         "ExtractIcon",
@@ -593,6 +596,10 @@ fn source_guard_covers_nested_files_and_import_forms() {
         "Command :: new(\"inert\");",
         "process :: id();",
         "ShellExecuteW",
+        "ShellExecuteExW",
+        "CreateProcessA",
+        "WinExec",
+        "NtCreateUserProcess",
         "CreateProcessW",
         "CoCreateInstance",
         "SHGetFileInfoW",
@@ -607,6 +614,29 @@ fn source_guard_covers_nested_files_and_import_forms() {
     ] {
         std::fs::write(&path, source).unwrap();
         assert!(!guard_tree(dir.path()), "guard missed {source}");
+    }
+}
+#[cfg(windows)]
+#[test]
+fn windows_shortcut_paths_ignore_user_text_case() {
+    let dir = tempfile::tempdir().unwrap();
+    let parent = dir.path().join("MiXeDAncestor");
+    std::fs::create_dir(&parent).unwrap();
+    let path = parent.join("SyNtHeTiC.LnK");
+    std::fs::write(&path, finish(header(0))).unwrap();
+    let lowercase = parent.with_file_name("mixedancestor").join("synthetic.lnk");
+    if loomward_windows::enumerate::running_elevated() {
+        assert!(read(&lowercase).is_err());
+        assert_eq!(
+            WindowsProbe.metadata(lowercase.to_str().unwrap()),
+            MetadataState::Unknown
+        );
+    } else {
+        assert_eq!(
+            WindowsProbe.metadata(lowercase.to_str().unwrap()),
+            MetadataState::Present
+        );
+        assert_eq!(read(&lowercase).unwrap().flags, 0);
     }
 }
 #[cfg(windows)]
