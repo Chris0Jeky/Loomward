@@ -7,9 +7,9 @@
     "target_dataset_rows": 10000000
   },
   "P4": {
-    "insert_seconds": 66.6474833,
+    "insert_seconds": 56.7708906,
     "met": false,
-    "rows_per_second": 15019.336821680106,
+    "rows_per_second": 17632.293406367662,
     "target_rows_per_second": 250000
   },
   "P6": {
@@ -21,10 +21,10 @@
     "target_ms": 60,
     "target_payload_bytes": 1500000,
     "timing": {
-      "max_ms": 37.602700000000006,
-      "min_ms": 28.8086,
-      "p50_ms": 31.1598,
-      "p95_ms": 33.1568,
+      "max_ms": 85.3715,
+      "min_ms": 55.352199999999996,
+      "p50_ms": 63.9536,
+      "p95_ms": 81.9186,
       "runs": 21
     }
   },
@@ -32,10 +32,10 @@
     "limit": 200,
     "target_ms": 20,
     "timing": {
-      "max_ms": 1.3014999999999999,
-      "min_ms": 0.5668,
-      "p50_ms": 0.6069,
-      "p95_ms": 0.9071,
+      "max_ms": 1.5428,
+      "min_ms": 1.0074999999999998,
+      "p50_ms": 1.1478,
+      "p95_ms": 1.4416,
       "runs": 21
     }
   },
@@ -43,10 +43,10 @@
     "budget_hits": 21,
     "target_ms": 300,
     "timing": {
-      "max_ms": 16.6016,
-      "min_ms": 11.068,
-      "p50_ms": 11.3917,
-      "p95_ms": 14.5812,
+      "max_ms": 40.0872,
+      "min_ms": 17.1472,
+      "p50_ms": 22.3947,
+      "p95_ms": 27.915300000000002,
       "runs": 21
     },
     "work_budget_sqlite_ops": 2000000
@@ -55,7 +55,7 @@
   "dataset_class": "synthetic",
   "directories": 1001,
   "files": 1000000,
-  "finalise_seconds": 1.1713845,
+  "finalise_seconds": 3.2437315,
   "insert_includes_generation_and_queue_backpressure": true,
   "limitations": [
     "single warm run on this Windows host; no cold-cache claim",
@@ -73,11 +73,11 @@
   "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
   "temporary_directory_removed": true,
   "writer_timings": {
-    "commit_seconds": 43.005923199999984,
+    "commit_seconds": 32.995789900000005,
     "dirty_updates": 3001,
-    "file_insert_seconds": 19.821371200000016,
+    "file_insert_seconds": 20.092741900000043,
     "file_seen_seconds": 0.0,
-    "listing_seconds": 22.482647,
-    "name_validation_seconds": 0.6289020000000025
+    "listing_seconds": 22.71152809999998,
+    "name_validation_seconds": 0.5830621000000024
   }
 }

@@ -1,3 +1,81 @@
+# Issue #171: durable publication before reference confirmation - 2026-10-10
+
+## Changed
+
+Uncommitted on `feat/l2-catalog-durable`, starting HEAD `75d6dce`.
+The driver commits. This section supersedes the preceding receipt's blanket
+NORMAL durability and unchanged-reader-predicate claims.
+
+1. Prepare pending reference intents in a state.db-only FULL transaction.
+2. If intents exist, set main.synchronous=FULL before the catalogue transaction.
+3. Commit the publication and witness atomically to catalog.db; FULL fsyncs its WAL
+   commit before any reference confirmation. Restore NORMAL after commit or rollback.
+4. Confirm the matching witness and clear intents in a state.db-only FULL transaction
+   before acknowledgment. Recovery still confirms matching or discards unmatched intents.
+
+No transaction writes both files. Publications without intents retain NORMAL under
+ADR-V3-22. A pragma error follows the writer's existing failure/close path.
+Membership inspection accepts either the confirmed binding or the pending binding
+only when its catalogue instance and publication token match the committed witness.
+Surviving hard links therefore retain membership between publication and confirmation;
+unpublished pending bindings cannot leak into the old listing.
+Module documentation records the same ordering; no schema or public API changes.
+
+## Verified
+
+Windows 11: `cargo fmt --all --check`, `cargo test --workspace`,
+`cargo clippy --workspace --all-targets -- -D warnings` and `git diff --check` passed.
+All 57 catalogue tests passed, including the existing publication/recovery tests.
+
+Both new tests were independently mutation-tested on the final test source:
+
+- `publication_sync_is_full_only_with_intents_and_normal_is_restored`: replacing
+  the targeted FULL switch with NORMAL failed (exit 101, observed 1 instead of 2).
+  A test hook reads the pragma immediately before COMMIT and after restoration,
+  before confirmation; with no intents it stays NORMAL. state.db stays FULL.
+- `hardlink_membership_survives_publication_before_confirmation`: removing the
+  pending-binding alternative failed (exit 101, surviving membership was empty).
+  The test also rejects the unpublished pending binding, preserves the old listing's
+  memberships, and checks the surviving membership after recovery confirmation.
+
+The deferred-FK COMMIT-failure test additionally checks NORMAL restoration after
+rollback. Both mutations were restored and all eight publication tests passed again.
+
+The required synthetic 1M staged benchmark passed its oracle and all-index checks;
+its temporary database was removed:
+`cargo run -p loomward-catalog --release --example bench -- --rows 1000000`.
+P4: **66.647 s, 15,019 rows/s**, target 250,000 still missed (#148).
+These publications carry no intents and remain NORMAL. The previous receipt was
+60.960 s, 16,421 rows/s; independent single warm runs do not isolate regression.
+[Current benchmark receipt](../../evidence/v3/bench/catalog-1m.json).
+
+One same-host control temporarily removed only durability selection/restoration,
+returning the writer to its original NORMAL transaction path; the fixed source and
+current receipt were then restored. Control P4: **56.771 s, 17,632 rows/s**.
+The fixed run was 14.8% slower in throughput; unchanged P4 performance is **not proven**
+by these single, sequential warm measurements. Commit time differed by 10.010 s
+(43.006 s fixed / 32.996 s control), while listing time stayed close
+(22.483 s / 22.712 s); this does not establish the cause of the difference.
+Both oracles/index checks passed and both temporary databases were removed.
+[Control receipt](evidence/issue171-no-intent-control.json).
+
+## NOT verified
+
+Physical power loss, storage-device fsync behaviour, 10M/cold-cache performance,
+Python/UI and hosted CI. No commit or push.
+
+## Residual risk
+
+Power-loss ordering is pinned through SQLite's actual connection mode and transaction
+boundary; destructive hardware fault injection was not performed. The existing P4
+throughput miss remains separate from this correctness fix.
+NORMAL without intents is verified; identical no-intent throughput is not established.
+[HUMAN_TODO.md](../../HUMAN_TODO.md) was read and preserved; no new owner decision.
+
+Recommended commit: `fix(catalog): make reference publications durable before confirmation`.
+
+---
+
 # PR #147 final fix round - 2026-10-10
 
 ## Changed
