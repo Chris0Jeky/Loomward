@@ -86,6 +86,52 @@ fn call(svc: &Service, command: &str, payload: Value) -> ResponseEnvelope {
     svc.call(request(command, payload), &CallContext::http())
 }
 
+#[test]
+fn job_counters_round_trip_through_service_handlers() {
+    let dir = tempfile::tempdir().unwrap();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (ready, started) = std::sync::mpsc::channel();
+    svc.inner.engine.register_job_runner(
+        JobKind::Scan,
+        Arc::new(move |ctx, _| {
+            ready.send(()).unwrap();
+            while !ctx.is_cancelled() {
+                std::thread::yield_now();
+            }
+            Ok(CoverageState::Cancelled)
+        }),
+    );
+    let submitted = svc
+        .inner
+        .engine
+        .job_submit(loomward_engine::jobs::JobSpec::new(
+            JobKind::Scan,
+            Some(RootId::new("rt_fixture").unwrap()),
+        ))
+        .unwrap();
+    assert_eq!(submitted.seq.get(), 1);
+    assert_eq!(submitted.rev.get(), 0);
+    started.recv_timeout(Duration::from_secs(2)).unwrap();
+    let (get, _) = ok(
+        "jobs.get",
+        call(&svc, "jobs.get", json!({"job_id": submitted.job_id})),
+    );
+    let observed: JobResult = serde_json::from_value(json!(get)).unwrap();
+    assert_eq!(observed.job.seq, submitted.seq);
+    assert_eq!(observed.job.rev.get(), 1);
+    let (list, _) = ok("jobs.list", call(&svc, "jobs.list", json!({"limit": 50})));
+    let listed: JobList = serde_json::from_value(json!(list)).unwrap();
+    assert_eq!(listed.jobs[0].seq, submitted.seq);
+    assert_eq!(listed.jobs[0].rev, observed.job.rev);
+    let (cancel, _) = ok(
+        "scan.cancel",
+        call(&svc, "scan.cancel", json!({"job_id": submitted.job_id})),
+    );
+    let cancelled: JobResult = serde_json::from_value(json!(cancel)).unwrap();
+    assert_eq!(cancelled.job.seq, submitted.seq);
+    assert_eq!(cancelled.job.rev.get(), 2);
+}
+
 /// Complete-envelope check (semantics section 10): the response round-trips through the wire
 /// type, and an ok result decodes exactly as the command's result type.
 fn checked(command: &str, r: &ResponseEnvelope) {

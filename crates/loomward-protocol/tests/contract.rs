@@ -167,6 +167,39 @@ fn example_directories_hold_exactly_the_expected_files() {
 }
 
 #[test]
+fn job_counters_are_required_unsigned_exact_integers() {
+    let mut schema = Schema::load();
+    let job = read(&contracts().join("examples/commands/jobs.get.result.json"))["job"].clone();
+    for field in ["seq", "rev"] {
+        for valid in [0, 9_007_199_254_740_991_u64] {
+            let mut value = job.clone();
+            value[field] = json!(valid);
+            assert!(schema.errors("Job", &value).is_empty());
+            assert_eq!(roundtrip("Job", &value).unwrap().unwrap(), value);
+            assert!(serde_json::from_value::<loomward_protocol::Job>(value).is_ok());
+        }
+        let mut missing = job.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(!schema.errors("Job", &missing).is_empty());
+        assert!(roundtrip("Job", &missing).unwrap().is_err());
+        assert!(serde_json::from_value::<loomward_protocol::Job>(missing).is_err());
+        for invalid in [
+            json!(-1),
+            json!(1.5),
+            json!(null),
+            json!("1"),
+            json!(9_007_199_254_740_992_u64),
+        ] {
+            let mut value = job.clone();
+            value[field] = invalid;
+            assert!(!schema.errors("Job", &value).is_empty());
+            assert!(roundtrip("Job", &value).unwrap().is_err());
+            assert!(serde_json::from_value::<loomward_protocol::Job>(value).is_err());
+        }
+    }
+}
+
+#[test]
 fn every_def_has_a_rust_type() {
     let schema = Schema::load();
     for def in schema.defs().keys() {

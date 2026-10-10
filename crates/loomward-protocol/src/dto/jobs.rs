@@ -101,6 +101,8 @@ pub struct ScanProgress {
 #[serde(deny_unknown_fields)]
 pub struct Job {
     pub job_id: JobId,
+    pub seq: Count,
+    pub rev: Count,
     pub kind: JobKind,
     pub state: JobState,
     #[serde(deserialize_with = "crate::types::required_nullable")]

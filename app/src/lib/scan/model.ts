@@ -19,10 +19,10 @@ const TERMINAL = 3;
 export const isActive = (s: JobState): boolean => RANK[s] < TERMINAL;
 
 /**
- * The same job seen twice in the same state (a replay, a late event, a list row): what the newer snapshot
- * knows is added, nothing already known is erased by a null, and the larger counters win (they only grow).
+ * Revisions choose one authoritative snapshot; legacy snapshots without rev preserve known fields.
  */
 function merge(cur: Job, job: Job): Job {
+  if (cur.rev !== undefined && job.rev !== undefined) return job.rev > cur.rev ? job : cur;
   let progress = job.progress ?? cur.progress;
   if (cur.progress && job.progress) {
     const a = cur.progress, b = job.progress;
@@ -53,39 +53,20 @@ function merge(cur: Job, job: Job): Job {
   };
 }
 
-const stamp = (iso: string | null): number => (iso === null ? NaN : Date.parse(iso));
-/** Larger is later; an unreadable time sorts first. */
-const order = (a: number, b: number): number => (Number.isNaN(a) ? -Infinity : a) - (Number.isNaN(b) ? -Infinity : b);
-
-/**
- * Whether `job` is a later scan of the root than `cur` (two different jobs). The contract has no sequence number
- * (job ids are random), so the order is: creation time; then a job still active (a root has only one active scan, so
- * it began after any finished one); then finish time; then the job id, which is arbitrary but is the same whichever
- * snapshot arrives first. It is a total order, so arrival order never decides.
- */
+/** Submission order within one engine lifetime, independent of clocks and random IDs. */
 function newerJob(job: Job, cur: Job): boolean {
-  const steps = [
-    order(stamp(job.created_at), stamp(cur.created_at)),
-    Number(isActive(job.state)) - Number(isActive(cur.state)),
-    order(stamp(job.finished_at), stamp(cur.finished_at)),
-    job.created_at < cur.created_at ? -1 : job.created_at > cur.created_at ? 1 : 0, // same millisecond: the full timestamp text
-    job.job_id < cur.job_id ? -1 : job.job_id > cur.job_id ? 1 : 0,
-  ];
-  return (steps.find((d) => d !== 0 && !Number.isNaN(d)) ?? 0) > 0;
+  return job.seq > cur.seq;
 }
 
-/**
- * Applies a job snapshot (event, command result or list row). A state never moves backwards and a terminal
- * state is final, so a replayed or late event cannot undo a newer one (semantics.md section 7), nor erase what
- * is known with a null; an older job never replaces a newer one for the same root.
- */
+/** Applies snapshots by submission and revision; legacy jobs retain the state and null guards. */
 export function applyJob(book: Book, job: Job): Book {
   const root = job.root_id;
   if (job.kind !== 'scan' || !root) return book;
   const cur = book[root];
   if (cur) {
     if (cur.job_id === job.job_id) {
-      if (RANK[job.state] < RANK[cur.state] || (RANK[cur.state] === TERMINAL && job.state !== cur.state)) return book;
+      if ((cur.rev === undefined || job.rev === undefined) &&
+        (RANK[job.state] < RANK[cur.state] || (RANK[cur.state] === TERMINAL && job.state !== cur.state))) return book;
       return { ...book, [root]: merge(cur, job) };
     }
     if (!newerJob(job, cur)) return book;
@@ -93,10 +74,10 @@ export function applyJob(book: Book, job: Job): Book {
   return { ...book, [root]: job };
 }
 
-/** A `scan.progress` event: attached to the root's current job when it is that job, else dropped (jobs.list will bring the job). */
+/** Bare progress has no revision; versioned jobs get authoritative progress from job.state. */
 export function applyProgress(book: Book, rootId: string, jobId: string, progress: ScanProgress): Book {
   const cur = book[rootId];
-  return cur && cur.job_id === jobId ? { ...book, [rootId]: { ...cur, progress } } : book;
+  return cur && cur.job_id === jobId && cur.rev === undefined ? { ...book, [rootId]: { ...cur, progress } } : book;
 }
 
 /** A running scan the service no longer knows (not in `jobs.list`, `jobs.get` says not found): its end is unknown, never "still scanning". */

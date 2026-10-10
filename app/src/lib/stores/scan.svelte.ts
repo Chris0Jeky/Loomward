@@ -22,6 +22,7 @@ class Scans {
   settled = $state(0);
   change = $state<Change | null>(null);
   private n = 0;
+  private streamEpoch: string | null = null;
 
   view(rootId: string, nowMs: number): ScanView | null {
     const job = this.book[rootId];
@@ -33,6 +34,8 @@ class Scans {
   }
 
   onEvent(ev: EventEnvelope): void {
+    if (this.streamEpoch !== null && this.streamEpoch !== ev.epoch) this.book = {};
+    this.streamEpoch = ev.epoch;
     if (ev.event === 'job.state') this.apply((ev.data as unknown as JobResult).job);
     else if (ev.event === 'scan.progress') {
       const d = ev.data as unknown as ScanProgressEvent;
@@ -63,7 +66,10 @@ class Scans {
         this.clearConfirmationProblem(job.root_id!);
       } catch (e) {
         if (e instanceof LoomwardError && e.code === 'not_found') {
-          this.apply(lostJob(job, new Date().toISOString()));
+          // This is a local observation, not a new engine revision; don't overwrite a newer snapshot.
+          if (this.book[job.root_id!]?.job_id === job.job_id && this.book[job.root_id!]?.rev === job.rev) {
+            this.commit({ ...this.book, [job.root_id!]: lostJob(job, new Date().toISOString()) });
+          }
           this.clearConfirmationProblem(job.root_id!);
         } else {
           this.setProblem(job.root_id!, `Could not confirm this scan's state: ${e instanceof Error ? e.message : 'unexpected failure'}`);

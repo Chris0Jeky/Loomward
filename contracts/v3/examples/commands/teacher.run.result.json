@@ -1,6 +1,8 @@
 {
   "job": {
     "job_id": "jb_0010",
+    "seq": 10,
+    "rev": 1,
     "kind": "teacher",
     "state": "running",
     "root_id": null,

@@ -2,13 +2,14 @@ import { describe, expect, it } from 'vitest';
 import type { ErrorCode, Job, JobState, ScanProgress } from '../../src/lib/contracts.gen';
 import { announcement, applyJob, applyProgress, fromList, isActive, refusalText, viewOf, type Book } from '../../src/lib/scan/model';
 
+const LEGACY_REV = undefined as unknown as number; // Older responses omitted rev.
 const T0 = Date.parse('2026-10-10T10:00:00Z');
 const progress = (over: Partial<ScanProgress> = {}): ScanProgress => ({
   phase: 'done', strategy: 'std_read_dir', examined: 100, indexed_files: 80, indexed_dirs: 20, skipped: 0, failed: 0, logical_bytes: '2048', allocated_bytes: '4096',
   pending_dirs: 0, writer_queue_depth: 0, entries_per_second: 100, elapsed_ms: 3200, limit_hit: false, ...over,
 });
 const job = (state: JobState, over: Partial<Job> = {}): Job => ({
-  job_id: 'jb_1', kind: 'scan', state, root_id: 'rt_a', created_at: '2026-10-10T10:00:00Z',
+  job_id: 'jb_1', seq: 1, rev: { queued: 0, running: 1, cancel_requested: 2, completed: 3, failed: 3, cancelled: 3 }[state], kind: 'scan', state, root_id: 'rt_a', created_at: '2026-10-10T10:00:00Z',
   started_at: state === 'queued' ? null : '2026-10-10T10:00:01Z', finished_at: null, progress: null, coverage: null, error: null, ...over,
 });
 const done = (over: Partial<Job> = {}) => job('completed', { finished_at: '2026-10-10T10:00:05Z', coverage: 'complete', progress: progress(), ...over });
@@ -37,35 +38,28 @@ describe('applying job snapshots', () => {
 
   it('lets a newer job replace the root\'s last one, and never an older one', () => {
     const first = applyJob({}, done());
-    const second = applyJob(first, job('queued', { job_id: 'jb_2', created_at: '2026-10-10T11:00:00Z' }));
+    const second = applyJob(first, job('queued', { job_id: 'jb_2', seq: 2, created_at: '2026-10-10T11:00:00Z' }));
     expect(second.rt_a?.job_id).toBe('jb_2');
-    expect(applyJob(second, done({ job_id: 'jb_0', created_at: '2026-10-10T09:00:00Z' })).rt_a?.job_id).toBe('jb_2');
+    expect(applyJob(second, done({ job_id: 'jb_0', seq: 0, created_at: '2026-10-10T09:00:00Z' })).rt_a?.job_id).toBe('jb_2');
   });
 
-  describe('when two jobs of one root were created at the same instant', () => {
-    const A = done({ job_id: 'jb_a', finished_at: '2026-10-10T10:00:05Z' });
-    const both = (x: Job, y: Job) => [applyJob(applyJob({}, x), y).rt_a, applyJob(applyJob({}, y), x).rt_a];
+  it('orders submissions by seq despite equal times, clock rollback, state and random IDs', () => {
+    const older = done({ job_id: 'jb_z', seq: 4, created_at: '2026-10-10T12:00:00Z' });
+    const newer = job('queued', { job_id: 'jb_a', seq: 5 });
+    for (const pair of [[older, newer], [newer, older]]) expect(fromList(pair).rt_a).toEqual(newer);
+    const equalTime = done({ ...older, created_at: newer.created_at });
+    for (const pair of [[equalTime, newer], [newer, equalTime]]) expect(fromList(pair).rt_a).toEqual(newer);
+  });
 
-    it('the one still running is the later one, whichever arrives first (a root has one active scan)', () => {
-      const B = job('running', { job_id: 'jb_0', started_at: '2026-10-10T10:00:06Z' });
-      expect(both(A, B).map((j) => j?.job_id)).toEqual(['jb_0', 'jb_0']);
-    });
-
-    it('between two finished ones the later finish wins, whichever arrives first', () => {
-      const late = done({ job_id: 'jb_b', finished_at: '2026-10-10T10:00:09Z', coverage: 'partial' });
-      expect(both(done({ job_id: 'jb_z', finished_at: '2026-10-10T10:00:05Z' }), late).map((j) => j?.job_id)).toEqual(['jb_b', 'jb_b']); // the smaller id, the later finish
-    });
-
-    it('creation time still comes first: an older job never wins on id or finish time', () => {
-      const newer = done({ job_id: 'jb_a', created_at: '2026-10-10T11:00:00Z', finished_at: '2026-10-10T11:00:05Z' });
-      const older = done({ job_id: 'jb_z', created_at: '2026-10-10T09:00:00Z', finished_at: '2026-10-10T12:00:00Z' });
-      expect(both(newer, older).map((j) => j?.job_id)).toEqual(['jb_a', 'jb_a']);
-    });
-
-    it('with nothing else to tell them apart the larger job id wins, the same either way', () => {
-      const B = done({ job_id: 'jb_z' });
-      expect(both(A, B).map((j) => j?.job_id)).toEqual(['jb_z', 'jb_z']);
-    });
+  it('accepts only higher revisions in either delivery order, without merging stale fields', () => {
+    const older = done({ rev: 4, progress: progress({ examined: 120 }), coverage: 'complete' });
+    const newer = done({ rev: 5, progress: progress({ examined: 100 }), coverage: null });
+    for (const pair of [[older, newer], [newer, older]]) expect(fromList(pair).rt_a).toEqual(newer);
+    const book = applyJob({}, newer);
+    expect(applyJob(book, { ...older, rev: 5 }).rt_a).toEqual(newer);
+    expect(applyJob(book, job('failed', { rev: 3 })).rt_a).toEqual(newer);
+    expect(applyProgress(book, 'rt_a', 'jb_1', progress({ examined: 120 }))).toBe(book);
+    expect(applyJob(applyJob({}, job('running', { rev: 10 })), done({ rev: 9 })).rt_a?.state).toBe('running');
   });
 
   it('ignores jobs that are not scans or have no root', () => {
@@ -74,8 +68,8 @@ describe('applying job snapshots', () => {
   });
 
   it('never erases known coverage with a replayed same-state snapshot that carries none', () => {
-    const finished = applyJob({}, done());
-    const replay = applyJob(finished, job('completed', { finished_at: '2026-10-10T10:00:05Z', coverage: null, progress: null }));
+    const finished = applyJob({}, done({ rev: LEGACY_REV }));
+    const replay = applyJob(finished, job('completed', { rev: LEGACY_REV, finished_at: '2026-10-10T10:00:05Z', coverage: null, progress: null }));
     expect(replay.rt_a?.coverage).toBe('complete');
     expect(viewOf(replay.rt_a!, T0).activity).toBe('completed');
     expect(viewOf(replay.rt_a!, T0).headline).toBe('Finished, complete coverage');
@@ -83,22 +77,22 @@ describe('applying job snapshots', () => {
 
   it('never erases a known error, start or finish time with a null from a same-state snapshot', () => {
     const error = { code: 'internal_error', message: 'catalogue writer stopped', retryable: false, detail: null } as const;
-    const failed = applyJob({}, job('failed', { error, finished_at: '2026-10-10T10:00:04Z' }));
-    const replay = applyJob(failed, job('failed', { error: null, started_at: null, finished_at: null }));
+    const failed = applyJob({}, job('failed', { rev: LEGACY_REV, error, finished_at: '2026-10-10T10:00:04Z' }));
+    const replay = applyJob(failed, job('failed', { rev: LEGACY_REV, error: null, started_at: null, finished_at: null }));
     expect(replay.rt_a).toMatchObject({ error, started_at: '2026-10-10T10:00:01Z', finished_at: '2026-10-10T10:00:04Z' });
     expect(viewOf(replay.rt_a!, T0).detail).toBe('catalogue writer stopped');
   });
 
   it('keeps the newer counts when an older snapshot of the same job arrives late', () => {
-    const newer = applyJob({}, done({ progress: progress({ examined: 100, indexed_files: 80 }) }));
-    const stale = applyJob(newer, done({ progress: progress({ examined: 40, indexed_files: 30 }) }));
+    const newer = applyJob({}, done({ rev: LEGACY_REV, progress: progress({ examined: 100, indexed_files: 80 }) }));
+    const stale = applyJob(newer, done({ rev: LEGACY_REV, progress: progress({ examined: 40, indexed_files: 30 }) }));
     expect(stale.rt_a?.progress?.indexed_files).toBe(80);
   });
 
   it('merges every monotonic progress counter independently in either arrival order', () => {
-    const a = done({ progress: progress({ examined: 100, indexed_files: 80, indexed_dirs: 20, skipped: 8, failed: 4,
+    const a = done({ rev: LEGACY_REV, progress: progress({ examined: 100, indexed_files: 80, indexed_dirs: 20, skipped: 8, failed: 4,
       logical_bytes: '9007199254740993', allocated_bytes: '9007199254740995', elapsed_ms: 4000, limit_hit: true }) });
-    const b = done({ progress: progress({ examined: 120, indexed_files: 70, indexed_dirs: 10, skipped: 2, failed: 1,
+    const b = done({ rev: LEGACY_REV, progress: progress({ examined: 120, indexed_files: 70, indexed_dirs: 10, skipped: 2, failed: 1,
       logical_bytes: '9007199254740992', allocated_bytes: null, elapsed_ms: 3000, pending_dirs: 2, writer_queue_depth: 3 }) });
     for (const [first, second] of [[a, b], [b, a]]) {
       expect(applyJob(applyJob({}, first!), second!).rt_a?.progress).toMatchObject({
@@ -110,9 +104,9 @@ describe('applying job snapshots', () => {
   });
 
   it('keeps the progress already seen when a later snapshot carries none', () => {
-    let b = applyJob({}, job('running'));
+    let b = applyJob({}, job('running', { rev: LEGACY_REV }));
     b = applyProgress(b, 'rt_a', 'jb_1', progress());
-    b = applyJob(b, done({ progress: null }));
+    b = applyJob(b, done({ rev: LEGACY_REV, progress: null }));
     expect(b.rt_a?.progress?.indexed_files).toBe(80);
   });
 
@@ -123,8 +117,8 @@ describe('applying job snapshots', () => {
   });
 
   it('rebuilds from a jobs.list in any order', () => {
-    const old = done({ job_id: 'jb_0', created_at: '2026-10-10T09:00:00Z' });
-    const fresh = job('running', { job_id: 'jb_2', created_at: '2026-10-10T11:00:00Z' });
+    const old = done({ job_id: 'jb_0', seq: 0, created_at: '2026-10-10T09:00:00Z' });
+    const fresh = job('running', { job_id: 'jb_2', seq: 2, created_at: '2026-10-10T11:00:00Z' });
     expect(fromList([fresh, old]).rt_a?.job_id).toBe('jb_2');
     expect(fromList([old, fresh]).rt_a?.job_id).toBe('jb_2');
     expect(isActive('running') && isActive('queued') && isActive('cancel_requested') && !isActive('completed')).toBe(true);

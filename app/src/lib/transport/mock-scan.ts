@@ -50,6 +50,7 @@ export function createScanMock(o: ScanMockOptions): ScanMock {
   const active = (j: Job) => j.state === 'queued' || j.state === 'running' || j.state === 'cancel_requested';
   const set = (j: Job, patch: Partial<Job>) => {
     Object.assign(j, patch);
+    j.rev++;
     o.emit('job.state', { job: { ...j } } satisfies JobResult);
   };
 
@@ -64,6 +65,7 @@ export function createScanMock(o: ScanMockOptions): ScanMock {
     const started = Date.parse(j.started_at ?? j.created_at);
     const progress = progressOf(s, Math.max(0, o.now().getTime() - started));
     o.emit('scan.progress', { job_id: j.job_id, root_id: s.id, progress });
+    set(j, { progress });
     o.emit('tree.invalidated', { root_id: s.id, generation: String(++generation), scope: 'all', node_ids: [] });
     set(j, { state: 'completed', finished_at: iso(), progress, coverage: s.coverage });
     done.set(s.id, { job: j, seed: s });
@@ -78,7 +80,7 @@ export function createScanMock(o: ScanMockOptions): ScanMock {
     if (!seed) o.fail('permission_denied', 'a synthetic session scans registered lab roots only', { reason: 'synthetic_session_requires_lab_root' });
     const running = jobs.find((j) => j.root_id === id && active(j));
     if (running) o.fail('busy', 'a scan of this root is already running', { job_id: running.job_id });
-    const job: Job = { job_id: `jb_mock_${++n}`, kind: 'scan', state: 'queued', root_id: id, created_at: iso(), started_at: null, finished_at: null, progress: null, coverage: null, error: null };
+    const job: Job = { job_id: `jb_mock_${++n}`, seq: n, rev: 0, kind: 'scan', state: 'queued', root_id: id, created_at: iso(), started_at: null, finished_at: null, progress: null, coverage: null, error: null };
     jobs.unshift(job);
     o.emit('job.state', { job: { ...job } });
     later(QUEUE_MS, () => {

@@ -4,12 +4,12 @@ use crate::{
     Component, Engine, EngineError, EngineResult,
 };
 use loomward_protocol::{
-    CoverageState, EventName, Job, JobId, JobKind, JobList, JobListRequest, JobState, RootId,
+    Count, CoverageState, EventName, Job, JobId, JobKind, JobList, JobListRequest, JobState, RootId,
 };
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, Weak,
     },
     time::{Duration, Instant},
@@ -61,7 +61,11 @@ impl JobContext {
         let progress=serde_json::from_value(serde_json::json!({"phase":"done","strategy":strategy,"examined":report.examined,"indexed_files":report.totals.files,"indexed_dirs":report.totals.dirs,"skipped":report.skipped,"failed":report.failed,"logical_bytes":report.totals.logical.to_string(),"allocated_bytes":report.totals.allocated.map(|n|n.to_string()),"pending_dirs":0,"writer_queue_depth":0,"entries_per_second":report.examined as f64/report.elapsed_seconds.max(0.000001),"elapsed_ms":(report.elapsed_seconds*1000.) as u64,"limit_hit":report.limit_hit})).expect("bounded scan progress");
         if let Some(registry) = self.registry.upgrade() {
             if let Some(r) = registry.records.lock().unwrap().get_mut(&self.job_id) {
+                if r.job.progress.as_ref() == Some(&progress) {
+                    return;
+                }
                 r.job.progress = Some(progress);
+                revise(&mut r.job);
                 if let Some(root_id) = &r.job.root_id {
                     let _=self.events.publish(EventName::ScanProgress,serde_json::json!({"job_id":self.job_id,"root_id":root_id,"progress":r.job.progress}).as_object().unwrap().clone(),None,None);
                 }
@@ -78,7 +82,6 @@ impl JobContext {
 pub type JobRunner = Arc<dyn Fn(JobContext, JobSpec) -> EngineResult<CoverageState> + Send + Sync>;
 struct Record {
     job: Job,
-    created: Instant,
     cancel: Arc<AtomicBool>,
     terminal: Option<Instant>,
     interrupt: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -87,6 +90,7 @@ struct Record {
 pub(crate) struct Registry {
     records: Mutex<HashMap<JobId, Record>>,
     runners: Mutex<HashMap<JobKind, JobRunner>>,
+    seq: AtomicU64,
 }
 impl Registry {
     fn prune(records: &mut HashMap<JobId, Record>) {
@@ -108,6 +112,7 @@ impl Registry {
             }
             .to_body(),
         );
+        revise(&mut r.job);
         emit(events, &r.job);
         EngineError::Internal {
             message: "job thread unavailable".into(),
@@ -121,8 +126,10 @@ impl Registry {
         events: Arc<Bus>,
         interrupt: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> EngineResult<Job> {
-        let job = Job {
+        let mut job = Job {
             job_id: JobId::new(random_id("jb_")).unwrap(),
+            seq: Count::ZERO,
+            rev: Count::ZERO,
             kind: spec.kind,
             state: JobState::Queued,
             root_id: spec.root_id.clone(),
@@ -155,11 +162,22 @@ impl Registry {
                     });
                 }
             }
+            // Allocate under the records lock so submission events and listing order agree.
+            let seq = self
+                .seq
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                    n.checked_add(1).filter(|next| Count::new(*next).is_ok())
+                })
+                .map_err(|_| EngineError::Internal {
+                    message: "job sequence exhausted".into(),
+                    detail: None,
+                })?
+                + 1;
+            job.seq = Count::new(seq).unwrap();
             records.insert(
                 job.job_id.clone(),
                 Record {
                     job: job.clone(),
-                    created: Instant::now(),
                     cancel: cancel.clone(),
                     terminal: None,
                     interrupt,
@@ -181,9 +199,11 @@ impl Registry {
                         // already published by `cancel`, so only record the start
                         // attempt without re-emitting the same state.
                         r.job.started_at = Some(timestamp());
+                        revise(&mut r.job);
                     } else {
                         r.job.state = JobState::Running;
                         r.job.started_at = Some(timestamp());
+                        revise(&mut r.job);
                         emit(&thread_events, &r.job);
                     }
                 }
@@ -222,6 +242,7 @@ impl Registry {
                 }
                 r.job.finished_at = Some(timestamp());
                 r.terminal = Some(Instant::now());
+                revise(&mut r.job);
                 emit(&thread_events, &r.job);
             });
         if spawn.is_err() {
@@ -242,6 +263,7 @@ impl Registry {
             }
             r.cancel.store(true, Ordering::Release);
             r.job.state = JobState::CancelRequested;
+            revise(&mut r.job);
             emit(events, &r.job);
             (r.job.clone(), r.interrupt.clone())
         };
@@ -263,6 +285,9 @@ impl Registry {
             .map(|r| r.job.job_id.clone())
             .collect()
     }
+}
+fn revise(job: &mut Job) {
+    job.rev = Count::new(job.rev.get() + 1).expect("job revision exhausted");
 }
 fn emit(events: &Bus, job: &Job) {
     let data = serde_json::json!({"job":job}).as_object().unwrap().clone();
@@ -314,7 +339,7 @@ impl Engine {
                     .is_none_or(|k| k.contains(&r.job.kind))
             })
             .collect();
-        recent.sort_by_key(|r| std::cmp::Reverse(r.created));
+        recent.sort_by_key(|r| std::cmp::Reverse(r.job.seq));
         let jobs = recent
             .into_iter()
             .take(request.limit.get() as usize)
@@ -328,6 +353,141 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn concurrent_submissions_have_unique_monotonic_sequences() {
+        let e = Arc::new(engine());
+        e.register_job_runner(JobKind::Refit, Arc::new(|_, _| Ok(CoverageState::Complete)));
+        e.register_job_runner(
+            JobKind::Teacher,
+            Arc::new(|_, _| Ok(CoverageState::Complete)),
+        );
+        let barrier = Arc::new(std::sync::Barrier::new(16));
+        let mut stream = e.subscribe_events(None).unwrap();
+        let handles: Vec<_> = (0..16)
+            .map(|i| {
+                let e = e.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    e.job_submit(JobSpec::new(
+                        if i % 2 == 0 {
+                            JobKind::Refit
+                        } else {
+                            JobKind::Teacher
+                        },
+                        None,
+                    ))
+                    .unwrap()
+                })
+            })
+            .collect();
+        let mut seqs: Vec<_> = handles
+            .into_iter()
+            .map(|h| h.join().unwrap().seq.get())
+            .collect();
+        seqs.sort_unstable();
+        assert_eq!(seqs, (1..=16).collect::<Vec<_>>());
+        let mut published = Vec::new();
+        while let loomward_protocol::RecvOutcome::Event(event) = stream.recv_timeout(Duration::ZERO)
+        {
+            if event.event == EventName::JobState && event.data["job"]["state"] == "queued" {
+                published.push(event.data["job"]["seq"].as_u64().unwrap());
+            }
+        }
+        assert_eq!(published, seqs);
+        let list = e
+            .job_list(&JobListRequest {
+                kinds: None,
+                limit: loomward_protocol::Int::new(50).unwrap(),
+            })
+            .unwrap();
+        assert_eq!(
+            list.jobs.iter().map(|j| j.seq.get()).collect::<Vec<_>>(),
+            (1..=16).rev().collect::<Vec<_>>()
+        );
+        e.jobs
+            .seq
+            .store(loomward_protocol::MAX_SAFE_INTEGER - 1, Ordering::Relaxed);
+        assert_eq!(
+            e.job_submit(JobSpec::new(JobKind::Refit, None))
+                .unwrap()
+                .seq
+                .get(),
+            loomward_protocol::MAX_SAFE_INTEGER
+        );
+        assert!(e.job_submit(JobSpec::new(JobKind::Refit, None)).is_err());
+        let fresh = engine();
+        fresh.register_job_runner(JobKind::Refit, Arc::new(|_, _| Ok(CoverageState::Complete)));
+        assert_eq!(
+            fresh
+                .job_submit(JobSpec::new(JobKind::Refit, None))
+                .unwrap()
+                .seq
+                .get(),
+            1
+        );
+    }
+
+    #[test]
+    fn revisions_track_state_and_progress_changes_not_reads_or_repeated_reports() {
+        let e = engine();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (finish, wait) = std::sync::mpsc::channel();
+        let wait = Mutex::new(wait);
+        e.register_job_runner(
+            JobKind::Scan,
+            Arc::new(move |ctx, _| {
+                tx.send(ctx.clone()).unwrap();
+                wait.lock().unwrap().recv().unwrap();
+                Ok(CoverageState::Complete)
+            }),
+        );
+        let job = e
+            .job_submit(JobSpec::new(
+                JobKind::Scan,
+                Some(RootId::new("rt_fixture").unwrap()),
+            ))
+            .unwrap();
+        assert_eq!(job.rev.get(), 0);
+        let ctx = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(e.job_status(&job.job_id).unwrap().rev.get(), 1);
+        let mut report = crate::scan::ScanReport {
+            totals: Default::default(),
+            complete: true,
+            strategy: crate::scan::source::Strategy::Portable,
+            limit_hit: false,
+            examined: 1,
+            skipped: 0,
+            failed: 0,
+            elapsed_seconds: 1.,
+            enumeration_worker_seconds: 0.,
+            enumeration_wall_seconds: 0.,
+            staging_seconds: 0.,
+            aggregation_seconds: 0.,
+            persistence_seconds: 0.,
+        };
+        ctx.set_scan_report(&report);
+        assert_eq!(e.job_status(&job.job_id).unwrap().rev.get(), 2);
+        ctx.set_scan_report(&report);
+        assert_eq!(e.job_status(&job.job_id).unwrap().rev.get(), 2);
+        report.examined = 2;
+        ctx.set_scan_report(&report);
+        assert_eq!(e.job_status(&job.job_id).unwrap().rev.get(), 3);
+        finish.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let current = e.job_status(&job.job_id).unwrap();
+            if current.state == JobState::Completed {
+                assert_eq!(current.rev.get(), 4);
+                assert_eq!(current.seq, job.seq);
+                assert_eq!(e.job_cancel(&job.job_id).unwrap().rev, current.rev);
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+    }
+
     #[test]
     fn cancel_complete_race_never_publishes_nonterminal_after_terminal() {
         // The interrupt callback lets completion win before cancellation returns.
