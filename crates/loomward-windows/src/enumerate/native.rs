@@ -380,7 +380,7 @@ pub(crate) fn open_watch_root(
     let mut pins = root_handles_mode(
         path,
         FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         true,
     )?;
     let (dir, identity) = opened(pins.pop().unwrap(), None, Strategy::Extended)?;
