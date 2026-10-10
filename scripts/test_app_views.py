@@ -47,6 +47,7 @@ class FakeEngine:
     def __init__(self) -> None:
         self.fail_children = False
         self.stale_once = False
+        self.slice_queue: list[tuple[float, str]] = []  # (delay, root name) per tree.slice call, then the default
         self.events: queue.Queue[dict] = queue.Queue()
         self.seq = 0
         self.server: ThreadingHTTPServer | None = None
@@ -72,8 +73,10 @@ class FakeEngine:
                 'limits': {'max_request_bytes': 65536, 'max_slice_nodes': 6000, 'max_page_items': 200},
             }
         if cmd == 'tree.slice':
+            delay, root = self.slice_queue.pop(0) if self.slice_queue else (0.0, 'Fake Root')
+            time.sleep(delay)
             return {'anchor_node_id': 'nd_atlas', 'basis': 'logical', 'root_generations': [], 'complete': True, 'live': False, 'ordering': 'exact', 'truncated': False,
-                    'nodes': [{'node_id': 'nd_atlas', 'parent': None, 'name': 'Atlas'}, {'node_id': 'nd_root', 'parent': 0, 'name': 'Fake Root'}]}
+                    'nodes': [{'node_id': 'nd_atlas', 'parent': None, 'name': 'Atlas'}, {'node_id': 'nd_' + root.replace(' ', '_'), 'parent': 0, 'name': root}]}
         if cmd == 'tree.children':
             if self.fail_children:
                 return ('internal_error', 'fake engine: refresh failed')
@@ -255,6 +258,19 @@ def check_explorer_engine(page: Page, engine: FakeEngine) -> None:
     print('PASS the next successful refresh brings the rows back and clears the error')
 
 
+def check_explorer_starts(page: Page, engine: FakeEngine) -> None:
+    # the first tree.slice is slow and a tree.invalidated starts a second, fast one: the old answer must not win
+    engine.slice_queue = [(1.5, 'Old Root'), (0.0, 'Fake Root')]
+    page.goto(f'{engine.base}/#token={TOKEN}')
+    page.evaluate("location.hash = '#/explorer'")
+    expect(page.get_by_role('status', name='Session status')).to_contain_text('Connected')
+    page.wait_for_timeout(300)
+    engine.invalidate()
+    expect(page.locator('main nav[aria-label="Location"]')).to_contain_text('Fake Root')
+    page.wait_for_timeout(2000)
+    ok(page.locator('main nav[aria-label="Location"]').inner_text().strip() == 'Fake Root' and page.get_by_text('Old Root').count() == 0, 'a slow starting-point reply for an older session state is dropped')
+
+
 # --- Tiers ------------------------------------------------------------------------------------------
 
 def check_tiers(page: Page, base: str, shoot) -> None:
@@ -421,6 +437,7 @@ def run_views(page: Page, base: str, shots: Path | None) -> None:
     engine.start()
     try:
         check_explorer_engine(page, engine)
+        check_explorer_starts(page, engine)
     finally:
         engine.stop()
     check_tiers(page, base, shoot)

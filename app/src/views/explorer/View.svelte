@@ -121,16 +121,20 @@
 
   async function loadStarts(): Promise<void> {
     const c = session.client!;
+    // Same guard as show(): a newer view or a newer starting-point request supersedes this one.
+    abort?.abort();
+    const mine = ++gen;
+    const ctl = (abort = new AbortController());
     try {
-      const { result } = await c.call('tree.slice', { anchor: { kind: 'atlas' }, depth: 1, max_nodes: 16, min_share: 0, basis: 'logical', include_files: false });
+      const { result } = await c.call('tree.slice', { anchor: { kind: 'atlas' }, depth: 1, max_nodes: 16, min_share: 0, basis: 'logical', include_files: false }, { signal: ctl.signal });
+      if (mine !== gen) return;
       starts = result.nodes.filter((n) => n.parent === 0).map((n) => ({ id: n.node_id, name: n.name }));
       trail = starts[0] ? [starts[0]] : [];
       error = '';
       if (trail.length) await show();
       else { rows = []; total = null; next = null; }
     } catch (e) {
-      abort?.abort();
-      gen++;
+      if (mine !== gen) return;
       rows = [];
       total = null;
       next = null;
