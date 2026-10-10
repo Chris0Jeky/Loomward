@@ -50,4 +50,3 @@ CREATE TABLE file (
 CREATE INDEX file_by_logical ON file(dir_id, logical DESC);
 CREATE INDEX file_by_ext     ON file(ext_id, logical DESC);
 CREATE INDEX file_identity   ON file(file_id) WHERE file_id IS NOT NULL; -- hard links share an ID
-
