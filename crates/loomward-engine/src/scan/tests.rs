@@ -609,7 +609,219 @@ fn oversized_stress_is_separate_with_partial_oracle_n6() {
     assert!(!sink.sweep_allowed(root.root_id()));
 }
 struct FailedWriter(MemorySink);
+struct MovingTree {
+    x_listings: std::sync::atomic::AtomicUsize,
+    unique: bool,
+}
+impl DirSource for MovingTree {
+    type Dir = u64;
+    fn strategy(&self) -> Strategy {
+        Strategy::Portable
+    }
+    fn open_root(&self, path: &std::path::Path) -> Result<(u64, OpenedIdentity), SourceError> {
+        Tree.open_root(path)
+    }
+    fn open_child(
+        &self,
+        parent: &u64,
+        entry: &RawEntry<'_>,
+    ) -> Result<(u64, OpenedIdentity), SourceError> {
+        let (dir, mut identity) = Tree.open_child(parent, entry)?;
+        if !self.unique && dir == 4 {
+            identity.basis = IdBasis::NonUnique;
+        }
+        Ok((dir, identity))
+    }
+    fn list(&self, dir: &u64, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+        let children: &[(u64, u32, u64)] = match dir {
+            1 => &[(2, 0x10, 0), (3, 0x10, 0)],
+            // x moves after A's listing and before B's: both see the same opened identity.
+            2 | 3 => &[(4, 0x10, 0)],
+            4 => {
+                self.x_listings
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                &[(5, 0, 123)]
+            }
+            _ => unreachable!(),
+        };
+        for &(id, attributes, size) in children {
+            if sink(RawEntry {
+                name: &[id as u16],
+                file_id: Some(FileIdObs::Id64(id)),
+                attributes,
+                reparse_tag: None,
+                end_of_file: size,
+                allocation_size: Some(4096),
+                creation: None,
+                last_write: None,
+                change: None,
+                last_access: None,
+            }) == Flow::Stop
+            {
+                return ListOutcome::Incomplete(IncompleteReason::Cancelled);
+            }
+        }
+        ListOutcome::Complete
+    }
+}
+#[test]
+fn moved_directory_is_discovered_once_and_scan_completes() {
+    for workers in [1, 8] {
+        for unique in [true, false] {
+            let copies = if unique { 1 } else { 2 };
+            let source = MovingTree {
+                x_listings: Default::default(),
+                unique,
+            };
+            let sink = Arc::new(MemorySink::default());
+            let root = root();
+            let report = run_scan(
+                &source,
+                &root,
+                1,
+                sink.clone(),
+                Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+                Arc::new(AtomicBool::new(false)),
+                ScanOptions {
+                    workers,
+                    ..ScanOptions::default()
+                },
+            )
+            .unwrap();
+            assert!(report.complete);
+            assert_eq!(
+                report.totals,
+                Sums {
+                    files: copies,
+                    dirs: 2 + copies,
+                    logical: 123 * copies,
+                    allocated: Some(4096 * copies)
+                }
+            );
+            assert_eq!(
+                source.x_listings.load(std::sync::atomic::Ordering::Relaxed),
+                copies as usize
+            );
+            assert_eq!(sink.totals(root.root_id()), Some(report.totals));
+        }
+    }
+}
+
+struct DirtyWriter {
+    sink: MemorySink,
+    dirtied: AtomicBool,
+    on_final: bool,
+    always: bool,
+}
+impl ScanSink for DirtyWriter {
+    fn refresh_listing(
+        &self,
+        root: &RootId,
+        run: u64,
+        ticket: ListingTicket,
+    ) -> crate::EngineResult<ListingTicket> {
+        self.sink.refresh_listing(root, run, ticket)
+    }
+
+    fn recover_interrupted(&self) -> crate::EngineResult<()> {
+        self.sink.recover_interrupted()
+    }
+    fn begin_run(&self, root: &RootId, run: u64, scope: &RunScope) -> crate::EngineResult<()> {
+        self.sink.begin_run(root, run, scope)
+    }
+    fn prepare_listing(
+        &self,
+        root: &RootId,
+        run: u64,
+        parent: Option<u64>,
+        name: &[u16],
+        identity: OpenedIdentity,
+    ) -> crate::EngineResult<ListingTicket> {
+        self.sink.prepare_listing(root, run, parent, name, identity)
+    }
+    fn consume(&self, root: &RootId, message: ScanMessage) -> crate::EngineResult<()> {
+        let ticket = match &message {
+            ScanMessage::DirListing { ticket, .. } if !self.on_final => Some(*ticket),
+            ScanMessage::DirFinal { ticket, .. } if self.on_final => Some(*ticket),
+            _ => None,
+        };
+        if let Some(ticket) = ticket {
+            if !self.dirtied.swap(true, std::sync::atomic::Ordering::AcqRel) || self.always {
+                self.sink.dirty_again(root, ticket.dir);
+            }
+        }
+        self.sink.consume(root, message)
+    }
+    fn finish_run(
+        &self,
+        root: &RootId,
+        run: u64,
+        scope: &RunScope,
+        complete: bool,
+    ) -> crate::EngineResult<()> {
+        self.sink.finish_run(root, run, scope, complete)
+    }
+    fn fence_root(&self, root: &RootId) -> crate::EngineResult<()> {
+        self.sink.fence_root(root)
+    }
+}
+#[test]
+fn stale_listing_and_final_relist_the_dirty_directory() {
+    for (on_final, always) in [(false, false), (true, false), (false, true), (true, true)] {
+        let sink = Arc::new(DirtyWriter {
+            sink: MemorySink::default(),
+            dirtied: AtomicBool::new(false),
+            on_final,
+            always,
+        });
+        let root = root();
+        let bytes = Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES));
+        let report = run_scan(
+            &Tree,
+            &root,
+            1,
+            sink.clone(),
+            bytes.clone(),
+            Arc::new(AtomicBool::new(false)),
+            ScanOptions {
+                workers: 1,
+                ..ScanOptions::default()
+            },
+        )
+        .unwrap();
+        if always {
+            assert!(!report.complete);
+            assert!(!sink.sink.sweep_allowed(root.root_id()));
+            assert!(sink.sink.totals(root.root_id()).is_none());
+            assert!(report.examined <= 6, "at most three dirty epochs");
+            assert_eq!(bytes.used(), 0);
+            continue;
+        }
+        assert!(report.complete);
+        assert_eq!(
+            report.totals,
+            Sums {
+                files: 1,
+                dirs: 1,
+                logical: 123,
+                allocated: Some(4096)
+            }
+        );
+        assert_eq!(sink.sink.totals(root.root_id()), Some(report.totals));
+        assert!(report.examined > 2, "dirty directory must be relisted");
+        assert_eq!(bytes.used(), 0);
+    }
+}
 impl ScanSink for FailedWriter {
+    fn refresh_listing(
+        &self,
+        root: &RootId,
+        run: u64,
+        ticket: ListingTicket,
+    ) -> crate::EngineResult<ListingTicket> {
+        self.0.refresh_listing(root, run, ticket)
+    }
+
     fn recover_interrupted(&self) -> crate::EngineResult<()> {
         self.0.recover_interrupted()
     }
@@ -649,6 +861,48 @@ impl ScanSink for FailedWriter {
     fn fence_root(&self, root: &RootId) -> crate::EngineResult<()> {
         self.0.fence_root(root)
     }
+}
+#[cfg(windows)]
+#[test]
+fn native_dirty_epoch_relists_the_retained_handle() {
+    if skip_elevated() {
+        return;
+    }
+    let temp = canonical_tempdir();
+    std::fs::create_dir(temp.path().join("child")).unwrap();
+    std::fs::write(temp.path().join("child").join("synthetic"), [0u8; 123]).unwrap();
+    let source = loomward_windows::enumerate::NativeSource::default();
+    let (_, identity) = source.open_root(temp.path()).unwrap();
+    let root = GrantedRoot::new(
+        RootId::new("rt_native_relist").unwrap(),
+        temp.path().to_path_buf(),
+        DatasetClass::Synthetic,
+        identity,
+    );
+    let sink = Arc::new(DirtyWriter {
+        sink: MemorySink::default(),
+        dirtied: AtomicBool::new(false),
+        on_final: true,
+        always: false,
+    });
+    let bytes = Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES));
+    let report = run_scan(
+        &source,
+        &root,
+        1,
+        sink.clone(),
+        bytes.clone(),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions::default(),
+    )
+    .unwrap();
+    assert!(report.complete);
+    assert_eq!(report.totals.files, 1);
+    assert_eq!(report.totals.dirs, 1);
+    assert_eq!(report.totals.logical, 123);
+    assert_eq!(report.examined, 3);
+    assert_eq!(sink.sink.totals(root.root_id()), Some(report.totals));
+    assert_eq!(bytes.used(), 0);
 }
 #[test]
 fn writer_failure_unblocks_producers_and_releases_shared_bytes() {

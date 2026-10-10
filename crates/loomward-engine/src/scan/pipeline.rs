@@ -5,7 +5,7 @@ use crate::{
 };
 use loomward_protocol::RootId;
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -71,9 +71,12 @@ pub struct ScanReport {
     /// Sum of writer time inside sink staging/publication methods.
     pub persistence_seconds: f64,
 }
-struct Slot {
+struct Slot<D> {
     parent: Option<usize>,
-    pending: u32,
+    dir: Arc<D>,
+    depth: usize,
+    own: Sums,
+    listed: bool,
     sums: Sums,
     complete: bool,
     ticket: ListingTicket,
@@ -97,6 +100,7 @@ enum Command {
         reply: SyncSender<EngineResult<ListingTicket>>,
     },
     Message(ScanMessage),
+    Barrier(SyncSender<Vec<u64>>),
 }
 struct Envelope {
     command: Command,
@@ -108,7 +112,9 @@ struct Shared<'a, S: DirSource> {
     options: ScanOptions,
     tasks: Mutex<Tasks<S::Dir>>,
     ready: Condvar,
-    arena: Mutex<Vec<Slot>>,
+    arena: Mutex<Vec<Slot<S::Dir>>>,
+    discovered: Mutex<HashSet<(Option<u64>, FileIdObs)>>,
+    catalog_dirs: Mutex<HashMap<u64, usize>>,
     tx: SyncSender<Envelope>,
     bytes: Arc<ByteBudget>,
     cancel: Arc<AtomicBool>,
@@ -180,45 +186,58 @@ impl<S: DirSource> Shared<'_, S> {
         })
     }
     fn finish_slot(&self, index: usize, own: Sums, complete: bool) -> EngineResult<()> {
-        let finals = {
-            let mut arena = self.arena.lock().unwrap();
-            let slot = &mut arena[index];
-            slot.sums = slot.sums.checked_add(own)?;
-            slot.complete &= complete;
-            slot.pending -= 1;
-            let mut index = index;
-            let mut finals = Vec::new();
-            loop {
-                let slot = &arena[index];
-                if slot.pending != 0 {
-                    break;
-                }
-                let (parent, ticket, sums, complete) =
-                    (slot.parent, slot.ticket, slot.sums, slot.complete);
-                finals.push(ScanMessage::DirFinal {
-                    run: self.run,
-                    ticket,
-                    sums,
-                    complete,
-                });
-                let Some(parent) = parent else { break };
+        let mut arena = self.arena.lock().unwrap();
+        arena[index].own = own;
+        arena[index].listed = complete;
+        Ok(())
+    }
+    fn finalize(&self) -> EngineResult<()> {
+        let mut arena = self.arena.lock().unwrap();
+        for slot in arena.iter_mut() {
+            slot.sums = slot.own;
+            slot.complete = slot.listed;
+        }
+        for index in (0..arena.len()).rev() {
+            let slot = &arena[index];
+            let (parent, ticket, sums, complete) =
+                (slot.parent, slot.ticket, slot.sums, slot.complete);
+            if !self.message(ScanMessage::DirFinal {
+                run: self.run,
+                ticket,
+                sums,
+                complete,
+            }) {
+                return Err(cancelled());
+            }
+            if let Some(parent) = parent {
                 let p = &mut arena[parent];
                 p.sums = p.sums.checked_add(sums.checked_add(Sums {
                     dirs: 1,
                     ..Sums::ZERO
                 })?)?;
                 p.complete &= complete;
-                p.pending -= 1;
-                index = parent;
-            }
-            finals
-        };
-        for f in finals {
-            if !self.message(f) {
-                return Err(cancelled());
             }
         }
         Ok(())
+    }
+    fn dirty_directories(&self) -> EngineResult<Vec<u64>> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        if !self.send(Envelope {
+            command: Command::Barrier(tx),
+            _permit: None,
+        }) {
+            return Err(cancelled());
+        }
+        loop {
+            if self.stopping() {
+                return Err(cancelled());
+            }
+            match rx.recv_timeout(Duration::from_millis(5)) {
+                Ok(dirs) => return Ok(dirs),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(_) => return Err(cancelled()),
+            }
+        }
     }
     fn flush(
         &self,
@@ -349,6 +368,11 @@ impl<S: DirSource> Shared<'_, S> {
             chunk_bytes += size;
             entries.push(entry);
             if let Some((dir, identity)) = child {
+                if let Some(key) = directory_key(identity) {
+                    if !self.discovered.lock().unwrap().insert(key) {
+                        return Flow::Continue;
+                    }
+                }
                 // Drop the parent's chunk reservation before waiting for a writer reply.
                 if !self.flush(ticket, &mut entries, &mut permit) {
                     return Flow::Stop;
@@ -378,26 +402,44 @@ impl<S: DirSource> Shared<'_, S> {
                 }
                 let slot = {
                     let mut arena = self.arena.lock().unwrap();
+                    if let Some(&index) = self.catalog_dirs.lock().unwrap().get(&child_ticket.dir) {
+                        // Name-only identities can recur when their parent is relisted.
+                        arena[index].ticket = child_ticket;
+                        self.tasks.lock().unwrap().queue.push_back(Task {
+                            dir: arena[index].dir.clone(),
+                            slot: index,
+                            depth: arena[index].depth,
+                        });
+                        self.ready.notify_one();
+                        return Flow::Continue;
+                    }
                     if arena.len() >= self.max_dirs {
                         complete = false;
                         stopped = Some(IncompleteReason::Limit);
                         return Flow::Stop;
                     }
                     let index = arena.len();
-                    arena[task.slot].pending += 1;
                     arena.push(Slot {
                         parent: Some(task.slot),
-                        pending: 1,
+                        dir: Arc::new(dir),
+                        depth: task.depth + 1,
+                        own: Sums::ZERO,
+                        listed: false,
                         sums: Sums::ZERO,
-                        complete: true,
+                        complete: false,
                         ticket: child_ticket,
                     });
+                    self.catalog_dirs
+                        .lock()
+                        .unwrap()
+                        .insert(child_ticket.dir, index);
                     index
                 };
                 // The arena reservation also covers every queued handle/task: no recursive
                 // enumeration retains another native buffer or parent callback on the stack.
+                let dir = self.arena.lock().unwrap()[slot].dir.clone();
                 self.tasks.lock().unwrap().queue.push_back(Task {
-                    dir: Arc::new(dir),
+                    dir,
                     slot,
                     depth: task.depth + 1,
                 });
@@ -487,6 +529,16 @@ fn cancelled() -> EngineError {
         message: "scan cancelled or writer stopped".into(),
     }
 }
+fn directory_key(identity: OpenedIdentity) -> Option<(Option<u64>, FileIdObs)> {
+    if matches!(identity.basis, IdBasis::Listed | IdBasis::PostOpen) {
+        identity
+            .id
+            .and_then(FileIdObs::nonzero)
+            .map(|id| (identity.volume_serial, id))
+    } else {
+        None
+    }
+}
 fn writer(
     root: &RootId,
     run: u64,
@@ -496,6 +548,7 @@ fn writer(
 ) -> EngineResult<f64> {
     let mut seconds = 0.;
     let mut first_error = None;
+    let mut dirty = HashSet::new();
     for e in rx {
         if matches!(e.command, Command::Stop) {
             break;
@@ -516,7 +569,35 @@ fn writer(
                 let _ = reply.send(r);
                 failed.map_or(Ok(()), Err)
             }
-            Command::Message(m) => sink.consume(root, m),
+            Command::Message(m) => {
+                let ticket = match &m {
+                    ScanMessage::DirListing { ticket, .. }
+                    | ScanMessage::ListingDone { ticket, .. }
+                    | ScanMessage::DirFinal { ticket, .. } => Some(*ticket),
+                    _ => None,
+                };
+                // Once a final is rejected, later ancestor finals belong to the same dirty epoch.
+                if !dirty.is_empty() && matches!(m, ScanMessage::DirFinal { .. }) {
+                    continue;
+                }
+                match sink.consume(root, m) {
+                    Err(EngineError::StaleGeneration {
+                        detail: Some(detail),
+                        ..
+                    }) if ticket.is_some()
+                        && detail.get("reason")
+                            == Some(&serde_json::json!("listing_revision_changed")) =>
+                    {
+                        dirty.insert(ticket.unwrap().dir);
+                        Ok(())
+                    }
+                    result => result,
+                }
+            }
+            Command::Barrier(reply) => {
+                let _ = reply.send(dirty.drain().collect());
+                Ok(())
+            }
             Command::Stop => unreachable!(),
         };
         seconds += start.elapsed().as_secs_f64();
@@ -560,10 +641,11 @@ pub fn run_scan<S: DirSource>(
     let _arena_permit = bytes
         .acquire(reservation, &cancel, &failed)
         .ok_or_else(cancelled)?;
-    let node_bytes = std::mem::size_of::<Slot>()
+    let node_bytes = std::mem::size_of::<Slot<S::Dir>>()
         + std::mem::size_of::<Task<S::Dir>>()
         + std::mem::size_of::<S::Dir>()
-        + 2 * std::mem::size_of::<usize>();
+        + 2 * std::mem::size_of::<usize>()
+        + 128; // Identity-set buckets and the retained handle's Arc allocation.
     let max_dirs = options.max_dirs.min(arena_bytes / node_bytes);
     let (dir, identity) =
         source
@@ -608,8 +690,9 @@ pub fn run_scan<S: DirSource>(
     };
     let (tx, rx) = mpsc::sync_channel(32);
     let mut queue = VecDeque::with_capacity(max_dirs);
+    let dir = Arc::new(dir);
     queue.push_back(Task {
-        dir: Arc::new(dir),
+        dir: dir.clone(),
         slot: 0,
         depth: 0,
     });
@@ -624,6 +707,8 @@ pub fn run_scan<S: DirSource>(
         }),
         ready: Condvar::new(),
         arena: Mutex::new(Vec::with_capacity(max_dirs)),
+        discovered: Mutex::new(directory_key(identity).into_iter().collect()),
+        catalog_dirs: Mutex::new(HashMap::from([(ticket.dir, 0)])),
         tx,
         bytes: bytes.clone(),
         cancel: cancel.clone(),
@@ -639,39 +724,101 @@ pub fn run_scan<S: DirSource>(
     };
     shared.arena.lock().unwrap().push(Slot {
         parent: None,
-        pending: 1,
+        dir,
+        depth: 0,
+        own: Sums::ZERO,
+        listed: false,
         sums: Sums::ZERO,
-        complete: true,
+        complete: false,
         ticket,
     });
     let (worker_result, writer_result) = std::thread::scope(|scope| {
         let write = scope.spawn(|| writer(root.root_id(), run, sink.as_ref(), rx, &failed));
-        let workers: Vec<_> = (0..options.workers)
-            .map(|_| {
-                scope.spawn(|| {
-                    let result =
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| shared.worker()))
-                            .unwrap_or_else(|_| {
-                                Err(EngineError::Internal {
-                                    message: "scan worker panicked".into(),
-                                    detail: None,
-                                })
-                            });
-                    if result.is_err() {
-                        failed.store(true, Ordering::Release);
-                        shared.ready.notify_all();
-                    }
-                    result
-                })
-            })
-            .collect();
         let mut result = Ok(());
-        for w in workers {
-            if let Err(e) = w.join().expect("worker catches panic") {
-                if result.is_ok() {
-                    result = Err(e);
+        let mut reconciled = false;
+        for attempt in 0..3 {
+            let workers: Vec<_> = (0..options.workers)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            shared.worker()
+                        }))
+                        .unwrap_or_else(|_| {
+                            Err(EngineError::Internal {
+                                message: "scan worker panicked".into(),
+                                detail: None,
+                            })
+                        });
+                        if result.is_err() {
+                            failed.store(true, Ordering::Release);
+                            shared.ready.notify_all();
+                        }
+                        result
+                    })
+                })
+                .collect();
+            for w in workers {
+                if let Err(e) = w.join().expect("worker catches panic") {
+                    if result.is_ok() {
+                        result = Err(e);
+                    }
                 }
             }
+            if result.is_err() || shared.stopping() {
+                break;
+            }
+            let dirty = match (|| {
+                let mut dirty = shared.dirty_directories()?;
+                if dirty.is_empty() {
+                    shared.finalize()?;
+                    dirty = shared.dirty_directories()?;
+                }
+                Ok::<_, EngineError>(dirty)
+            })() {
+                Ok(dirs) => dirs,
+                Err(e) => {
+                    result = Err(e);
+                    break;
+                }
+            };
+            if dirty.is_empty() {
+                reconciled = true;
+                break;
+            }
+            if attempt == 2 {
+                break;
+            }
+            let mut arena = shared.arena.lock().unwrap();
+            let mut tasks = shared.tasks.lock().unwrap();
+            tasks.done = false;
+            for dir in dirty {
+                let Some(&index) = shared.catalog_dirs.lock().unwrap().get(&dir) else {
+                    result = Err(EngineError::Internal {
+                        message: "unknown dirty directory".into(),
+                        detail: None,
+                    });
+                    break;
+                };
+                let slot = &mut arena[index];
+                slot.ticket = match sink.refresh_listing(root.root_id(), run, slot.ticket) {
+                    Ok(ticket) => ticket,
+                    Err(e) => {
+                        result = Err(e);
+                        break;
+                    }
+                };
+                tasks.queue.push_back(Task {
+                    dir: slot.dir.clone(),
+                    slot: index,
+                    depth: slot.depth,
+                });
+            }
+            if result.is_err() {
+                break;
+            }
+        }
+        if !reconciled {
+            shared.arena.lock().unwrap()[0].complete = false;
         }
         let _ = shared.tx.send(Envelope {
             command: Command::Stop,
@@ -688,8 +835,7 @@ pub fn run_scan<S: DirSource>(
         )
     });
     let slot = &shared.arena.lock().unwrap()[0];
-    let complete = slot.pending == 0
-        && slot.complete
+    let complete = slot.complete
         && !cancel.load(Ordering::Acquire)
         && worker_result.is_ok()
         && writer_result.is_ok();
