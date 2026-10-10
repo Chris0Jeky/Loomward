@@ -1,20 +1,17 @@
-//! Remaining skeleton entry points answer `Unavailable` for their own component.
-//! A lane that lands an entry point must change its line here; a lane that forgets one stays
-//! visible because the skeleton answer is still asserted.
+//! Smoke tests for implemented infrastructure and explicitly unavailable future lanes.
 
 use loomward_engine::events::EventResume;
 use loomward_engine::jobs::JobSpec;
-use loomward_engine::scan::GrantedRoot;
 use loomward_engine::{Component, Engine, EngineConfig, EngineError, EngineResult};
-use loomward_protocol::{DatasetClass, ErrorCode, JobId, JobKind, RootId};
+use loomward_protocol::{DatasetClass, ErrorCode, JobId, JobKind};
 use serde_json::{from_value, json};
 use std::path::PathBuf;
 
 fn engine(dataset_class: DatasetClass) -> Engine {
-    Engine::open(EngineConfig {
-        state_dir: PathBuf::from("unused-state-dir"),
+    Engine::open(EngineConfig::new(
+        PathBuf::from("unused-state-dir"),
         dataset_class,
-    })
+    ))
     .expect("the skeleton opens without touching the filesystem")
 }
 
@@ -36,41 +33,25 @@ fn open_touches_nothing_and_keeps_config() {
 }
 
 #[test]
-fn remaining_skeleton_entry_points_are_unavailable() {
+fn implemented_infrastructure_and_unavailable_future_lanes() {
     let e = engine(DatasetClass::Synthetic);
     let job_id = JobId::new("jb_smoke").unwrap();
-    let root = GrantedRoot::new(
-        RootId::new("rt_smoke").unwrap(),
-        PathBuf::from("unused-root"),
-        DatasetClass::Synthetic,
-    );
-
-    // jobs
-    assert_unavailable(
-        e.job_submit(JobSpec::new(JobKind::Scan, Some(root.root_id.clone()))),
-        Component::Jobs,
-    );
-    assert_unavailable(e.job_cancel(&job_id), Component::Jobs);
-    assert_unavailable(e.job_status(&job_id), Component::Jobs);
-    assert_unavailable(
-        e.job_list(&from_value(json!({ "limit": 10 })).unwrap()),
-        Component::Jobs,
-    );
-
-    // scan
-    assert_unavailable(e.scan_start(&root, None), Component::Scan);
-    assert_unavailable(e.scan_refresh(&root, None), Component::Scan);
-    assert_unavailable(e.scan_cancel(&job_id), Component::Scan);
-
-    // events
-    assert_unavailable(e.subscribe_events(None), Component::Events);
-    assert_unavailable(
-        e.subscribe_events(Some(EventResume {
-            epoch: "epoch-smoke".to_string(),
-            last_seq: 7,
-        })),
-        Component::Events,
-    );
+    assert!(e.job_submit(JobSpec::new(JobKind::Refit, None)).is_err());
+    assert!(e.job_cancel(&job_id).is_err());
+    assert!(e.job_status(&job_id).is_err());
+    assert!(e
+        .job_list(&from_value(json!({"limit":10})).unwrap())
+        .unwrap()
+        .jobs
+        .is_empty());
+    assert!(e.scan_cancel(&job_id).is_err());
+    assert!(e.subscribe_events(None).is_ok());
+    assert!(e
+        .subscribe_events(Some(EventResume {
+            epoch: "epoch-smoke".into(),
+            last_seq: 7
+        }))
+        .is_ok());
 
     // L11b telemetry is live; detailed lifecycle/schema/Windows checks live in telemetry.rs.
     assert!(matches!(
@@ -123,12 +104,10 @@ fn remaining_skeleton_entry_points_are_unavailable() {
         Component::Teacher,
     );
 
-    // budgets
-    assert_unavailable(e.budgets_get(), Component::Budgets);
-    assert_unavailable(
-        e.budgets_set(&from_value(json!({ "pool": "learning", "max_workers": 2 })).unwrap()),
-        Component::Budgets,
-    );
+    assert!(e.budgets_get().is_ok());
+    assert!(e
+        .budgets_set(&from_value(json!({ "pool": "learning", "max_workers": 2 })).unwrap())
+        .is_ok());
 }
 
 #[test]
@@ -180,7 +159,10 @@ fn errors_map_to_protocol_codes() {
             false,
         ),
         (
-            EngineError::StaleGeneration { message: m("x") },
+            EngineError::StaleGeneration {
+                message: m("x"),
+                detail: None,
+            },
             ErrorCode::StaleGeneration,
             true,
         ),
@@ -199,7 +181,14 @@ fn errors_map_to_protocol_codes() {
             ErrorCode::ResourceBudget,
             true,
         ),
-        (EngineError::Busy { message: m("x") }, ErrorCode::Busy, true),
+        (
+            EngineError::Busy {
+                message: m("x"),
+                detail: None,
+            },
+            ErrorCode::Busy,
+            true,
+        ),
         (
             EngineError::Cancelled { message: m("x") },
             ErrorCode::Cancelled,
@@ -211,7 +200,10 @@ fn errors_map_to_protocol_codes() {
             true,
         ),
         (
-            EngineError::Internal { message: m("x") },
+            EngineError::Internal {
+                message: m("x"),
+                detail: None,
+            },
             ErrorCode::InternalError,
             false,
         ),

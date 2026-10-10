@@ -19,6 +19,10 @@ pub(crate) fn wide(path: &Path) -> io::Result<Vec<u16>> {
     Ok(text)
 }
 
+pub(crate) fn metadata_open_flags() -> u32 {
+    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_OPEN_NO_RECALL
+}
+
 pub(crate) fn open(path: &Path, access: u32, share: u32) -> io::Result<Handle> {
     let text = wide(path)?;
     let handle = unsafe {
@@ -28,7 +32,7 @@ pub(crate) fn open(path: &Path, access: u32, share: u32) -> io::Result<Handle> {
             share,
             ptr::null(),
             OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            metadata_open_flags(),
             ptr::null_mut(),
         )
     };

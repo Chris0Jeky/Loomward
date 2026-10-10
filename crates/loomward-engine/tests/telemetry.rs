@@ -7,10 +7,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 fn engine() -> Engine {
-    Engine::open(EngineConfig {
-        state_dir: PathBuf::from("unused-telemetry-state"),
-        dataset_class: DatasetClass::Personal,
-    })
+    Engine::open(EngineConfig::new(
+        PathBuf::from("unused-telemetry-state"),
+        DatasetClass::Personal,
+    ))
     .unwrap()
 }
 

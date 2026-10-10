@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 
 from playwright.sync_api import expect
 
@@ -28,6 +29,16 @@ FILLTEXT_RECORDER = """(() => {
   CanvasRenderingContext2D.prototype.fillText = function (t, ...rest) { if (seen.size < 50000) seen.add(String(t)); return orig.call(this, t, ...rest); };
 })()"""
 
+
+
+def wait_until(page, expression: str, arg=None, timeout_ms: int = 9000) -> None:
+    # page.wait_for_function polls through page-side eval, which the app's CSP (no
+    # 'unsafe-eval') blocks whenever the predicate is not already true; page.evaluate is not.
+    deadline = time.monotonic() + timeout_ms / 1000
+    while not page.evaluate(expression, arg):
+        if time.monotonic() > deadline:
+            raise AssertionError(f'timed out waiting for: {expression}')
+        time.sleep(0.05)
 
 def drawn_texts(page) -> list[str]:
     return page.evaluate('[...(window.__fillTexts ?? [])]')
@@ -98,7 +109,7 @@ def run(ctx) -> dict:
     expect(page.get_by_role('heading', name='Atlas', level=1)).to_be_visible()
     canvas = page.locator('main canvas').first
     expect(canvas).to_be_visible()
-    page.wait_for_function("performance.getEntriesByName('loomward:atlas:slice-to-paint').length > 0")
+    wait_until(page, "performance.getEntriesByName('loomward:atlas:slice-to-paint').length > 0")
     expect(page.locator('main .status')).to_contain_text('2,500 nodes')
     expect(page.locator('main .status')).to_contain_text('synthetic')
 
@@ -232,7 +243,8 @@ def run(ctx) -> dict:
     # --- provisional slice: a scanning root is woven loose and says so ---------------------------
     page.locator('main details.as-text button', has_text='Synthetic Beta').click()
     expect(page.locator('main .status')).to_contain_text('provisional')
-    check('provisional' in page.locator('#atlas-live').inner_text().lower(), 'aria-live says the slice is provisional')
+    expect(page.locator('#atlas-live')).to_contain_text('provisional')  # the live text lands a beat after the slice (see Say)
+    print('PASS aria-live says the slice is provisional')
     page.wait_for_timeout(800)
     ctx.view_shot('atlas-provisional-1440.png')
     crumbs(page).first.click()
@@ -242,7 +254,7 @@ def run(ctx) -> dict:
     page.emulate_media(reduced_motion='reduce')
     page.reload()
     expect(page.get_by_role('heading', name='Atlas', level=1)).to_be_visible()
-    page.wait_for_function("performance.getEntriesByName('loomward:atlas:slice-to-paint').length > 0")
+    wait_until(page, "performance.getEntriesByName('loomward:atlas:slice-to-paint').length > 0")
     canvas.focus()
     page.keyboard.press('Enter')
     expect(crumbs(page)).to_have_count(2)

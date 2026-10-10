@@ -284,6 +284,7 @@ impl Engine {
         let plan: PlacementPlan =
             serde_json::from_value(value).map_err(|_| EngineError::Internal {
                 message: "core plan violates placement wire contract".into(),
+                detail: None,
             })?;
         check_deadline(deadline)?;
         if request.save {

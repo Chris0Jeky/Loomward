@@ -9,6 +9,7 @@
   import { formatCount, formatTime } from '../../lib/format/time';
   import { session } from '../../lib/stores/session.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
+  import { Say } from '../../lib/ui/say.svelte';
   import { firstTrusted, isSound, type Outcome } from './plan';
   import type { CandidateGroup, GroupOverride, PlacementCandidates, PlacementPlan, TierInfo, TierModel, TierVolume } from '../../lib/contracts.gen';
   import type { HeatPolicy, PreRejectReason, RejectReason, ReliefPolicy } from '../../lib/derived';
@@ -52,6 +53,7 @@
   let shown = $state<'none' | HeatPolicy>('unknown_is_ineligible');
   let simulating = $state(false);
   let formError = $state('');
+  const say = new Say(); // result announcements; the Simulate button keeps focus
   let modelTicket = 0;
   let candTicket = 0;
   let simTicket = 0;
@@ -132,8 +134,10 @@
     if (transferGiB === null || !(transferGiB >= 0 && transferGiB <= 100000)) { formError = 'The transfer cap must be between 0 and 100,000 GiB.'; return; }
     const target = (cap * BigInt(Math.round(pct * 10))) / 1000n;
     const cap_ = BigInt(Math.round(transferGiB)) * 2n ** 30n;
+    if (simulating) return;
     const mine = ++simTicket;
     simulating = true;
+    say.say('Simulating.');
     const base = { source_volume_id: src.volume_id, target_free_bytes: target.toString(), max_transfer_bytes: cap_.toString(), relief_policy: relief, candidate_basis: 'largest_dirs' as const, max_groups: 50, overrides: overrides(), node_budget: 100000, save: false };
     const settled = await Promise.allSettled(HEAT.map((h) => c.call('placement.simulate', { ...base, heat_policy: h.id })));
     if (mine !== simTicket) return;
@@ -143,6 +147,23 @@
       return [h.id, s.status === 'fulfilled' ? { plan: s.value.result } : { error: session.handle(s.reason) }];
     })) as Record<HeatPolicy, Outcome>;
     shown = 'unknown_is_ineligible';
+    say.say(`Simulation finished. ${summary()}`);
+  }
+
+  /** One sentence about the plan on show, for the live region (the tables hold the detail). */
+  function summary(): string {
+    if (!outcomes) return '';
+    if (shown === 'none') return baseline === null ? 'Do nothing: no trustworthy plan to compare.' : baseline > 0n ? `Do nothing: ${formatBytes(baseline.toString())} short of the target.` : 'Do nothing: the target is already met.';
+    const label = HEAT.find((h) => h.id === shown)?.label ?? '';
+    const o = outcomes[shown];
+    if ('error' in o) return `${label}: this simulation failed. ${o.error}`;
+    if (!isSound(o.plan)) return `${label}: the reply was not a simulation that leaves files unchanged, so it is not shown.`;
+    return `${label}: ${o.plan.satisfied ? 'target met' : `still ${formatBytes(o.plan.shortfall_bytes)} short`}, ${formatCount(o.plan.proposals.length)} proposed moves, ${formatBytes(o.plan.transfer_bytes)} in all. Nothing is moved.`;
+  }
+
+  function show(id: 'none' | HeatPolicy) {
+    shown = id;
+    say.say(summary());
   }
 
   const detail = $derived(outcomes && shown !== 'none' ? outcomes[shown] : null);
@@ -153,7 +174,8 @@
 
 <h1>Tiers</h1>
 <p class="simbanner" role="note"><strong>Simulation only.</strong> This page shows what a placement plan could look like. Nothing is moved, and Loomward v0.3 cannot move anything.</p>
-{#if error}<p class="bad" role="alert">{error}</p>{/if}
+<p class="bad live" class:has={!!error} role="alert">{error}</p>
+<p class="sr-only" role="status">{say.text}</p>
 
 <section class="panel" aria-labelledby="h-vol">
   <h2 id="h-vol">Volumes</h2>
@@ -175,7 +197,7 @@
           <p class="num">{formatBytes(v.free_bytes)} free of {formatBytes(v.capacity_bytes)} · {percent(v.free_fraction)} <span class={`tag pr-${v.pressure}`}>{PRESSURE[v.pressure]}</span></p>
           <p class="muted small">{v.tier.note}</p>
           <button class="btn" type="button" aria-pressed={v.volume_id === source} disabled={v.tier.tier === null || !v.online} onclick={() => choose(v.volume_id)}>
-            {v.volume_id === source ? 'Source volume' : 'Use as source'}
+            {v.volume_id === source ? 'Source volume' : 'Use as source'}<span class="sr-only">: {escapedName(v.display_name)}</span>
           </button>
         </article>
       {/each}
@@ -202,7 +224,7 @@
           {#each cands.groups as g (g.group_id)}
             {@const a = assume[g.group_id] ?? { heat: '', free: false }}
             <tr>
-              <td><VisibleName name={g.name} />{#if g.coverage !== 'complete'} <span class="tag warn">{g.coverage}</span>{/if}</td>
+              <th scope="row"><VisibleName name={g.name} />{#if g.coverage !== 'complete'} <span class="tag warn">{g.coverage}</span>{/if}</th>
               <td class="r num">{formatBytes(g.source_bytes)}<div class="small"><span class="tag" class:warn={g.estimate_basis !== 'allocated_entries'}>{g.estimate_basis.replaceAll('_', ' ')}</span></div></td>
               <td class="r num">
                 {#if g.estimated_relief_bytes === null}<span class="unknown">unknown</span>{:else}{formatBytes(g.estimated_relief_bytes)}{/if}
@@ -220,7 +242,7 @@
                 <select aria-label={`Assumed heat for ${escapedName(g.name)}`} value={a.heat} onchange={(e) => (assume[g.group_id] = { ...a, heat: e.currentTarget.value as Assumption['heat'] })}>
                   <option value="">Heat: as observed</option><option value="0.1">Assume cold (0.1)</option><option value="0.5">Assume warm (0.5)</option><option value="0.9">Assume hot (0.9)</option>
                 </select>
-                <label class="chk"><input type="checkbox" checked={a.free} onchange={(e) => (assume[g.group_id] = { ...a, free: e.currentTarget.checked })} /> Assume not pinned, active or protected</label>
+                <label class="chk"><input type="checkbox" checked={a.free} onchange={(e) => (assume[g.group_id] = { ...a, free: e.currentTarget.checked })} /> Assume not pinned, active or protected<span class="sr-only"> for {escapedName(g.name)}</span></label>
               </td>
             </tr>
           {:else}
@@ -244,9 +266,9 @@
         <option value="entry_allocation_whatif">Entry allocation (what-if)</option>
       </select>
     </label>
-    <button class="btn primary" type="submit" disabled={simulating || !cands || !cands.groups.length}>{simulating ? 'Simulating' : 'Simulate'}</button>
+    <button class="btn primary" type="submit" disabled={!cands || !cands.groups.length} aria-disabled={simulating}>{simulating ? 'Simulating' : 'Simulate'}</button>
   </form>
-  {#if formError}<p class="bad" role="alert">{formError}</p>{/if}
+  <p class="bad live" class:has={!!formError} role="alert">{formError}</p>
 
   {#if outcomes}
     {@const none = baseline}
@@ -265,7 +287,7 @@
               <td class="r num">{formatBytes(none.toString())}</td>
               <td>{none === 0n ? 'Already met' : 'Not met'}</td>
             {/if}
-            <td><button class="btn" type="button" aria-pressed={shown === 'none'} onclick={() => (shown = 'none')}>Show</button></td>
+            <td><button class="btn" type="button" aria-pressed={shown === 'none'} onclick={() => show('none')}>Show<span class="sr-only"> Do nothing</span></button></td>
           </tr>
           {#each HEAT as h (h.id)}
             {@const o = outcomes[h.id]}
@@ -277,7 +299,7 @@
               {:else}
                 <td colspan="4" class="bad">{'plan' in o ? 'Not shown: the reply was not a no-change simulation.' : o.error}</td>
               {/if}
-              <td><button class="btn" type="button" aria-pressed={shown === h.id} onclick={() => (shown = h.id)}>Show</button></td>
+              <td><button class="btn" type="button" aria-pressed={shown === h.id} onclick={() => show(h.id)}>Show<span class="sr-only"> {h.label}</span></button></td>
             </tr>
           {/each}
         </tbody>
@@ -374,7 +396,7 @@
   .vol h3 { margin: 0; font-size: 1.1rem; }
   .vol p { margin: 6px 0; }
   .tag.tier { color: var(--residency); border: 1px dashed var(--residency); }
-  .meter { position: relative; height: 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--raised); overflow: hidden; }
+  .meter { position: relative; height: 12px; border: 1px solid var(--control-line); border-radius: 6px; background: var(--raised); overflow: hidden; }
   .used { height: 100%; background: var(--residency); opacity: 0.75; }
   .used.watch { background: var(--warn); }
   .used.pressure { background: repeating-linear-gradient(135deg, var(--danger) 0 4px, color-mix(in srgb, var(--danger) 45%, transparent) 4px 8px); }
@@ -388,9 +410,10 @@
   .params { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: end; margin-bottom: 12px; }
   .field { display: flex; flex-direction: column; gap: 4px; font-size: 0.9rem; }
   .field .inline { display: inline-flex; align-items: center; gap: 6px; }
-  .field input[type='number'] { width: 7rem; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); padding: 6px 10px; }
+  .field input[type='number'] { width: 7rem; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--control-line); border-radius: var(--radius); padding: 6px 10px; }
   .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
   .alts tr.current th, .alts tr.current td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  @media (forced-colors: active) { .alts tr.current { outline: 2px solid Highlight; outline-offset: -2px; } }
   .alts th[scope='row'] { text-align: left; font-weight: 600; text-transform: none; letter-spacing: 0; font-size: inherit; color: var(--text); }
   .list { margin: 0 0 12px; padding-left: 1.1em; }
   .list li { margin-bottom: 4px; overflow-wrap: anywhere; }

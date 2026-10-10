@@ -4,7 +4,11 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Loomward v0.3 engine: jobs, scan, events, telemetry, placement, learning and the teacher runner behind the view service (docs/41 section 4). C2 skeleton: every entry point answers Unavailable until its lane lands."
+description = "Loomward v0.3 engine: jobs, scan, events, telemetry, placement, learning and the teacher runner behind the view service (docs/41 section 4). Scan, jobs, budgets and events are implemented; other lane entry points remain unavailable."
+
+[features]
+# Explicit fixture-only grant constructor; absent from production builds.
+lab = []
 
 [dependencies]
 loomward-protocol = { path = "../loomward-protocol" }
@@ -13,6 +17,7 @@ loomward-telemetry = { path = "../loomward-telemetry" }
 loomward-windows = { path = "../loomward-windows" }
 serde_json.workspace = true
 sha2.workspace = true
+getrandom = "0.4"
 
 [dev-dependencies]
 jsonschema = { version = "0.58.6", default-features = false }

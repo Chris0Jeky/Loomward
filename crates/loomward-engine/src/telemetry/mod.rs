@@ -81,6 +81,7 @@ pub(crate) struct Telemetry {
 fn lock<T>(mutex: &Mutex<T>) -> EngineResult<MutexGuard<'_, T>> {
     mutex.lock().map_err(|_| EngineError::Internal {
         message: "telemetry state poisoned".into(),
+        detail: None,
     })
 }
 
@@ -131,6 +132,7 @@ impl Telemetry {
                 .duration_since(UNIX_EPOCH)
                 .map_err(|_| EngineError::Internal {
                     message: "system clock before Unix epoch".into(),
+                    detail: None,
                 })?;
         let expires_at = mapping::timestamp((unix + LEASE_DURATION).as_nanos() as i128 / 100)?;
         state.leases.insert(
@@ -161,6 +163,7 @@ impl Telemetry {
                     state.leases.remove(&id);
                     return Err(EngineError::Internal {
                         message: "telemetry sampler thread could not start".into(),
+                        detail: None,
                     });
                 }
             }
@@ -191,6 +194,7 @@ impl Telemetry {
             if let Some(handle) = worker.take() {
                 handle.join().map_err(|_| EngineError::Internal {
                     message: "telemetry sampler panicked".into(),
+                    detail: None,
                 })?;
             }
         }

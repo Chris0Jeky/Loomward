@@ -7,6 +7,7 @@ use std::hash::{Hash, Hasher};
 pub(super) fn invalid(error: Invalid) -> EngineError {
     EngineError::Internal {
         message: format!("telemetry contract: {error}"),
+        detail: None,
     }
 }
 

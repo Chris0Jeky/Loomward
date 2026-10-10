@@ -4,7 +4,7 @@ import { Client } from '../../src/lib/transport/client';
 import { createMockTransport } from '../../src/lib/transport/mock';
 import { session } from '../../src/lib/stores/session.svelte';
 import { SliceNav, pathTo } from '../../src/views/atlas/shared.svelte';
-import type { NodeInfo } from '../../viz/types.js';
+import type { NodeInfo, SliceLike } from '../../viz/types.js';
 
 describe('SliceNav', () => {
   it('a failed drill leaves the trail where it was and drops the slice; a good one commits both', async () => {
@@ -53,17 +53,42 @@ describe('SliceNav retry', () => {
 });
 
 describe('pathTo', () => {
-  const info = (id: string, name: string, parentId: string | null) => ({ id, name, parentId }) as NodeInfo;
-  const all = new Map([['r', info('r', 'Root', null)], ['a', info('a', 'A', 'r')], ['b', info('b', 'B', 'a')], ['c', info('c', 'C', 'b')]]);
-  const lookup = (id: string) => all.get(id) ?? null;
+  /** A slice from [id, name, parent index] triples; index 0 is the anchor. */
+  const slice = (...rows: [string, string, number | null][]) => ({ nodes: rows.map(([node_id, name, parent]) => ({ node_id, name, parent })) }) as unknown as SliceLike;
+  const real = (id: string, name: string, parentId: string | null) => ({ id, name, parentId, src: {} }) as unknown as NodeInfo;
+  const deep = slice(['r', 'Root', null], ['a', 'A', 0], ['b', 'B', 1], ['c', 'C', 2]);
 
-  it('lists every ancestor of a deep descendant, not just the trail and the node', () => {
-    expect(pathTo(all.get('c')!, lookup, ['Elsewhere', 'Root'])).toEqual(['Elsewhere', 'Root', 'A', 'B', 'C']);
+  it('lists every ancestor of a deep descendant, from the slice parents', () => {
+    expect(pathTo(real('c', 'C', 'b'), deep, ['Elsewhere', 'Root'])).toEqual(['Elsewhere', 'Root', 'A', 'B', 'C']);
   });
   it('does not repeat the slice root when the node is the root', () => {
-    expect(pathTo(all.get('r')!, lookup, ['All roots'])).toEqual(['All roots']);
+    expect(pathTo(real('r', 'Root', null), deep, ['All roots'])).toEqual(['All roots']);
   });
-  it('a synthetic cell (not in the lookup) still gets its parents', () => {
-    expect(pathTo({ ...info('b#rest', 'Not in this slice', 'b') } as NodeInfo, lookup, ['Root'])).toEqual(['Root', 'A', 'B', 'Not in this slice']);
+  it('a synthetic cell (not in the slice) is named after the real node it sits in', () => {
+    expect(pathTo({ id: 'b#rest', name: 'Not in this slice', parentId: 'b', src: null }, deep, ['Root'])).toEqual(['Root', 'A', 'B', 'Not in this slice']);
+  });
+  it('click then drill: a node selected before it became the anchor is not repeated (the stale info says its parent is elsewhere)', () => {
+    const afterDrill = slice(['x', 'X', null], ['y', 'Y', 0]);
+    const staleX = real('x', 'X', 'p'); // taken from the previous slice, where X had a parent
+    expect(pathTo(staleX, afterDrill, ['All roots', 'P', 'X'])).toEqual(['All roots', 'P', 'X']);
+    expect(pathTo(real('y', 'Y', 'x'), afterDrill, ['All roots', 'P', 'X'])).toEqual(['All roots', 'P', 'X', 'Y']);
+  });
+  it('a node the slice does not hold is named under its parent if the slice has it, else under the trail, never invented parents', () => {
+    expect(pathTo(real('gone', 'Gone', 'b'), deep, ['Root'])).toEqual(['Root', 'A', 'B', 'Gone']);
+    expect(pathTo(real('gone', 'Gone', 'elsewhere'), deep, ['Root'])).toEqual(['Root', 'Gone']);
+    expect(pathTo(real('x', 'X', null), null, ['Root'])).toEqual(['Root', 'X']);
+  });
+  it('cycle guard: a parent at or after its child, or a second root, ends the walk', () => {
+    const selfLoop = slice(['r', 'Root', null], ['a', 'A', 1], ['b', 'B', 2]);
+    expect(pathTo(real('b', 'B', 'a'), selfLoop, ['T'])).toEqual(['T', 'B']);
+    const forward = slice(['r', 'Root', null], ['a', 'A', 2], ['b', 'B', 1]);
+    expect(pathTo(real('a', 'A', 'b'), forward, ['T'])).toEqual(['T', 'A']);
+    const twoRoots = slice(['r', 'Root', null], ['s', 'S', null], ['c', 'C', 1]);
+    expect(pathTo(real('c', 'C', 's'), twoRoots, ['T'])).toEqual(['T', 'S', 'C']);
+  });
+  it('duplicate node ids still terminate and stay bounded by the slice size', () => {
+    const dup = slice(['r', 'Root', null], ['d', 'D1', 0], ['d', 'D2', 1], ['d', 'D3', 2]);
+    const path = pathTo(real('d', 'D', null), dup, ['T']);
+    expect(path.length).toBeLessThanOrEqual(1 + dup.nodes.length);
   });
 });
