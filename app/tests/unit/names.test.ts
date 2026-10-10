@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hasHiddenCharacters, nameSegments } from '../../src/lib/format/names';
+import { escapedName, hasHiddenCharacters, nameSegments } from '../../src/lib/format/names';
 
 const plain = (s: string) => nameSegments(s).filter((x) => !x.code).map((x) => x.text).join('');
 const codes = (s: string) => nameSegments(s).flatMap((x) => (x.code ? [x.code] : []));
@@ -32,5 +32,26 @@ describe('visible names', () => {
 
   it('shows a plain space as a plain space', () => {
     expect(nameSegments('two words')).toEqual([{ text: 'two words' }]);
+  });
+});
+
+describe('invisible characters that must not pass as plain text', () => {
+  const cps = (s: string) => codes(s);
+  it('badges every variation selector that is not an emoji presentation selector', () => {
+    expect(cps('a' + String.fromCodePoint(0xfe00) + 'b' + String.fromCodePoint(0xfe0d))).toEqual(['U+FE00', 'U+FE0D']);
+    expect(cps('a' + String.fromCodePoint(0xfe0f))).toEqual(['U+FE0F']); // not after an emoji base
+    expect(cps('a' + String.fromCodePoint(0xfe0e))).toEqual(['U+FE0E']);
+    expect(cps('x' + String.fromCodePoint(0xe0100) + String.fromCodePoint(0xe01ef))).toEqual(['U+E0100', 'U+E01EF']);
+  });
+  it('keeps emoji and keycap presentation selectors', () => {
+    for (const n of ['I \u2764\uFE0F you', '1\uFE0F\u20E3.png', '\u2764\uFE0E.txt', '\u{1F44D}\uFE0F']) expect(codes(n)).toEqual([]);
+  });
+  it('badges Mongolian selectors, Hangul and other invisible fillers, invisible operators and the grapheme joiner', () => {
+    const list = [0x180b, 0x180c, 0x180d, 0x180e, 0x180f, 0x115f, 0x1160, 0x3164, 0xffa0, 0x2060, 0x2061, 0x2062, 0x2063, 0x2064, 0x034f];
+    for (const cp of list) expect(codes('a' + String.fromCodePoint(cp) + 'b'), cp.toString(16)).toEqual(['U+' + cp.toString(16).toUpperCase().padStart(4, '0')]);
+  });
+  it('gives an escaped form for accessible names', () => {
+    expect(escapedName('invoice\u202Etxt.exe')).toBe('invoiceU+202E RLOtxt.exe');
+    expect(escapedName('plain.txt')).toBe('plain.txt');
   });
 });
