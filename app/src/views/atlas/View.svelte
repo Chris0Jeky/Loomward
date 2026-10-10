@@ -12,7 +12,8 @@
   import { createWovenTreemap, drawSwatch } from '../../../viz/woven-treemap.js';
   import Inspector from './Inspector.svelte';
   import RegionList from './RegionList.svelte';
-  import { SliceNav, canvasLabel, formatApprox, readPalette } from './shared.svelte';
+  import { SliceNav, canvasLabel, formatApprox, pathTo, readPalette } from './shared.svelte';
+  import LoadError from './LoadError.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
 
   // 2,500 nodes is the P9 budget (docs/41 section 15); the renderer nests three levels and folds the rest.
@@ -32,7 +33,7 @@
 
   const shown = $derived(hovered ?? selected);
   const provisional = $derived(nav.slice?.aggregate_state === 'provisional_live');
-  const pathNames = $derived(nav.trail.map((c) => c.name));
+  const pathNames = $derived(shown ? pathTo(shown, (id) => tm?.info(id) ?? null, nav.trail.map((c) => c.name)) : []);
 
   onMount(() => {
     if (!canvas) return;
@@ -182,7 +183,7 @@
   </p>
 </div>
 
-{#if nav.error}<p class="bad" role="alert">Could not load this view: {nav.error} Nothing is drawn until a load succeeds; the breadcrumb shows where you still are.</p>{/if}
+<LoadError {nav} />
 
 <div class="stage">
   <section class="map" aria-label="Woven atlas">
@@ -245,7 +246,6 @@
   .toggles input { accent-color: var(--accent); }
   .status { margin: 0 0 0 auto; font-size: 0.85rem; color: var(--muted); }
   .warn { color: var(--warn); }
-  .bad { color: var(--danger); }
   .stage { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 340px); gap: 24px; }
   .map { min-width: 0; }
   .well { position: relative; height: clamp(380px, 62vh, 640px); border-radius: var(--radius); background: var(--cloth-ink); box-shadow: 0 0 0 1px var(--line); overflow: hidden; }

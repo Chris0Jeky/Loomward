@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Client, LoomwardError } from '../../src/lib/transport/client';
 import { createMockTransport } from '../../src/lib/transport/mock';
 import { HOSTILE_NAMES } from '../../src/lib/transport/synth';
-import type { EntryPage, EntryRow } from '../../src/lib/types';
+import type { EntryPage, EntryRow } from '../../src/lib/contracts.gen';
 
 const now = () => new Date('2026-10-01T00:00:00Z');
 const client = (o = {}) => new Client(createMockTransport({ now, ...o }));
@@ -78,5 +78,50 @@ describe('mock transport', () => {
     const err = await client().call('learning.status' as never, {} as never).catch((e) => e);
     expect(err).toBeInstanceOf(LoomwardError);
     expect(err.code).toBe('capability_unavailable');
+  });
+
+  describe('revision fields (semantics.md section 5)', () => {
+    it('stamps responses with the scopes they were read at, null where the command touches neither', async () => {
+      const c = client();
+      expect((await slice(c, 16)).meta).toMatchObject({ catalog_rev: '1', state_rev: '1' }); // threads read state.db
+      expect((await c.call('tree.children', { node_id: 'nd_1', sort: 'size_desc', basis: 'logical', limit: 5, cursor: null })).meta).toMatchObject({ catalog_rev: '1', state_rev: null });
+      expect((await c.call('volumes.list', {})).meta).toMatchObject({ catalog_rev: null, state_rev: '1' });
+      expect((await c.call('processes.list', { sort: 'name_asc', limit: 5 })).meta).toMatchObject({ catalog_rev: null, state_rev: null });
+    });
+
+    it('names the root generations a slice was read at', async () => {
+      const { result } = await slice(client(), 16);
+      expect(result.root_generations.length).toBeGreaterThan(0);
+      expect(result.root_generations.every((g) => g.generation === '1' && /^rt_mock_\d+$/.test(g.root_id))).toBe(true);
+    });
+
+    it('moves state_rev only when a revocation commits, and reports the committed revision', async () => {
+      const c = client();
+      const revoke = () => c.call('grants.revoke', { grant_id: 'gr_mock_teacher_0' });
+      expect((await revoke()).meta.state_rev).toBe('2');
+      expect((await revoke()).meta.state_rev).toBe('2'); // monotone: revoking again changes nothing
+      expect((await c.call('grants.list', {})).meta.state_rev).toBe('2');
+      expect((await c.call('roots.revoke', { root_id: 'rt_mock_1', purge_catalog: false })).meta.state_rev).toBe('3');
+      expect((await c.call('roots.list', {})).meta).toMatchObject({ catalog_rev: '1', state_rev: '3' });
+    });
+
+    it('opens the stream with a stream.hello that names the epoch; a resume from another epoch gets epoch_changed', async () => {
+      const t = createMockTransport({ now });
+      const seen: string[] = [];
+      const run = async (resume?: { epoch: string; seq: number }) => {
+        seen.length = 0;
+        const stop = t.subscribe((e) => seen.push(`${e.event}:${e.epoch}`), () => {}, resume);
+        await Promise.resolve();
+        stop();
+      };
+      await run();
+      expect(seen).toEqual(['stream.hello:e_mock_epoch']);
+      // StreamEpoch in contracts/v3/view-service.schema.json.
+      expect(seen[0]?.split(':')[1]).toMatch(/^[A-Za-z0-9_-]{8,64}$/);
+      await run({ epoch: 'e_mock_epoch', seq: 0 });
+      expect(seen).toEqual(['stream.hello:e_mock_epoch']);
+      await run({ epoch: 'e_old', seq: 9 });
+      expect(seen).toEqual(['stream.hello:e_mock_epoch', 'stream.lagged:e_mock_epoch']);
+    });
   });
 });
