@@ -665,7 +665,7 @@ impl DirSource for MovingTree {
     }
 }
 #[test]
-fn moved_directory_is_discovered_once_and_scan_completes() {
+fn moved_directory_is_discovered_once_and_marks_the_run_partial() {
     for workers in [1, 8] {
         for unique in [true, false] {
             let copies = if unique { 1 } else { 2 };
@@ -688,7 +688,11 @@ fn moved_directory_is_discovered_once_and_scan_completes() {
                 },
             )
             .unwrap();
-            assert!(report.complete);
+            // A unique identity sighted under a second parent moved during the run: neither
+            // parent's aggregate is trustworthy, so the run is partial (no sweep). Name-only
+            // identities are indistinguishable from two directories and count twice.
+            assert_eq!(report.complete, !unique);
+            assert_eq!(sink.sweep_allowed(root.root_id()), !unique);
             assert_eq!(
                 report.totals,
                 Sums {
@@ -793,6 +797,17 @@ fn stale_listing_and_final_relist_the_dirty_directory() {
             assert!(!report.complete);
             assert!(!sink.sink.sweep_allowed(root.root_id()));
             assert!(sink.sink.totals(root.root_id()).is_none());
+            // No final was ever accepted, yet the report keeps the partial sums of what was
+            // listed instead of a zero standing in for unknown.
+            assert_eq!(
+                report.totals,
+                Sums {
+                    files: 1,
+                    dirs: 1,
+                    logical: 123,
+                    allocated: Some(4096)
+                }
+            );
             assert!(report.examined <= 6, "at most three dirty epochs");
             assert_eq!(bytes.used(), 0);
             continue;
@@ -810,6 +825,61 @@ fn stale_listing_and_final_relist_the_dirty_directory() {
         assert_eq!(sink.sink.totals(root.root_id()), Some(report.totals));
         assert!(report.examined > 2, "dirty directory must be relisted");
         assert_eq!(bytes.used(), 0);
+    }
+}
+/// `Tree`, except that the root's subdirectory is gone from every listing after the first.
+struct VanishingChild(std::sync::atomic::AtomicUsize);
+impl DirSource for VanishingChild {
+    type Dir = u64;
+    fn strategy(&self) -> Strategy {
+        Strategy::Portable
+    }
+    fn open_root(&self, path: &std::path::Path) -> Result<(u64, OpenedIdentity), SourceError> {
+        Tree.open_root(path)
+    }
+    fn open_child(&self, p: &u64, e: &RawEntry<'_>) -> Result<(u64, OpenedIdentity), SourceError> {
+        Tree.open_child(p, e)
+    }
+    fn list(&self, dir: &u64, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+        if *dir == 1 && self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed) > 0 {
+            return ListOutcome::Complete;
+        }
+        Tree.list(dir, sink)
+    }
+}
+#[test]
+fn relist_without_a_child_directory_marks_the_run_partial() {
+    for workers in [1, 8] {
+        let sink = Arc::new(DirtyWriter {
+            sink: MemorySink::default(),
+            dirtied: AtomicBool::new(false),
+            on_final: false,
+            always: false,
+        });
+        let source = VanishingChild(Default::default());
+        let root = root();
+        let report = run_scan(
+            &source,
+            &root,
+            1,
+            sink.clone(),
+            Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+            Arc::new(AtomicBool::new(false)),
+            ScanOptions {
+                workers,
+                ..ScanOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            source.0.load(std::sync::atomic::Ordering::Relaxed) > 1,
+            "root relisted"
+        );
+        assert!(
+            !report.complete,
+            "a vanished child cannot leave the root complete"
+        );
+        assert!(!sink.sink.sweep_allowed(root.root_id()));
     }
 }
 impl ScanSink for FailedWriter {

@@ -71,8 +71,14 @@ pub struct ScanReport {
     /// Sum of writer time inside sink staging/publication methods.
     pub persistence_seconds: f64,
 }
+/// `discovered` value while a sighted directory's slot is still being created.
+const PENDING: usize = usize::MAX;
 struct Slot<D> {
     parent: Option<usize>,
+    /// Listings of this directory started so far.
+    listings: u32,
+    /// The parent's listing number in which this directory was last sighted.
+    seen: u32,
     dir: Arc<D>,
     depth: usize,
     own: Sums,
@@ -113,7 +119,7 @@ struct Shared<'a, S: DirSource> {
     tasks: Mutex<Tasks<S::Dir>>,
     ready: Condvar,
     arena: Mutex<Vec<Slot<S::Dir>>>,
-    discovered: Mutex<HashSet<(Option<u64>, FileIdObs)>>,
+    discovered: Mutex<HashMap<(Option<u64>, FileIdObs), usize>>,
     catalog_dirs: Mutex<HashMap<u64, usize>>,
     tx: SyncSender<Envelope>,
     bytes: Arc<ByteBudget>,
@@ -191,7 +197,8 @@ impl<S: DirSource> Shared<'_, S> {
         arena[index].listed = complete;
         Ok(())
     }
-    fn finalize(&self) -> EngineResult<()> {
+    /// Aggregate every slot bottom-up; `send` also publishes each directory's final.
+    fn finalize(&self, send: bool) -> EngineResult<()> {
         let mut arena = self.arena.lock().unwrap();
         for slot in arena.iter_mut() {
             slot.sums = slot.own;
@@ -199,14 +206,21 @@ impl<S: DirSource> Shared<'_, S> {
         }
         for index in (0..arena.len()).rev() {
             let slot = &arena[index];
-            let (parent, ticket, sums, complete) =
-                (slot.parent, slot.ticket, slot.sums, slot.complete);
-            if !self.message(ScanMessage::DirFinal {
-                run: self.run,
-                ticket,
-                sums,
-                complete,
-            }) {
+            let (parent, seen, ticket, sums, complete) = (
+                slot.parent,
+                slot.seen,
+                slot.ticket,
+                slot.sums,
+                slot.complete,
+            );
+            if send
+                && !self.message(ScanMessage::DirFinal {
+                    run: self.run,
+                    ticket,
+                    sums,
+                    complete,
+                })
+            {
                 return Err(cancelled());
             }
             if let Some(parent) = parent {
@@ -215,7 +229,9 @@ impl<S: DirSource> Shared<'_, S> {
                     dirs: 1,
                     ..Sums::ZERO
                 })?)?;
-                p.complete &= complete;
+                // A child missing from its parent's latest listing was deleted or moved during
+                // the run: the parent's aggregate cannot claim to be complete.
+                p.complete &= complete && seen == p.listings;
             }
         }
         Ok(())
@@ -259,7 +275,12 @@ impl<S: DirSource> Shared<'_, S> {
         })
     }
     fn visit(&self, task: Task<S::Dir>) -> EngineResult<()> {
-        let ticket = self.arena.lock().unwrap()[task.slot].ticket;
+        let (ticket, listing) = {
+            let mut arena = self.arena.lock().unwrap();
+            let slot = &mut arena[task.slot];
+            slot.listings += 1;
+            (slot.ticket, slot.listings)
+        };
         let mut own = Sums::ZERO;
         let mut complete = true;
         let mut entries = Vec::new();
@@ -368,8 +389,23 @@ impl<S: DirSource> Shared<'_, S> {
             chunk_bytes += size;
             entries.push(entry);
             if let Some((dir, identity)) = child {
-                if let Some(key) = directory_key(identity) {
-                    if !self.discovered.lock().unwrap().insert(key) {
+                let key = directory_key(identity);
+                if let Some(key) = key {
+                    let known = {
+                        let mut discovered = self.discovered.lock().unwrap();
+                        let known = discovered.get(&key).copied();
+                        discovered.entry(key).or_insert(PENDING);
+                        known
+                    };
+                    if let Some(index) = known {
+                        let mut arena = self.arena.lock().unwrap();
+                        if index != PENDING && arena[index].parent == Some(task.slot) {
+                            arena[index].seen = listing;
+                        } else {
+                            // Already sighted under another parent: it moved during the run,
+                            // and this listing's aggregate cannot attribute it.
+                            complete = false;
+                        }
                         return Flow::Continue;
                     }
                 }
@@ -404,7 +440,15 @@ impl<S: DirSource> Shared<'_, S> {
                     let mut arena = self.arena.lock().unwrap();
                     if let Some(&index) = self.catalog_dirs.lock().unwrap().get(&child_ticket.dir) {
                         // Name-only identities can recur when their parent is relisted.
+                        if arena[index].parent == Some(task.slot) {
+                            arena[index].seen = listing;
+                        } else {
+                            complete = false;
+                        }
                         arena[index].ticket = child_ticket;
+                        if let Some(key) = key {
+                            self.discovered.lock().unwrap().insert(key, index);
+                        }
                         self.tasks.lock().unwrap().queue.push_back(Task {
                             dir: arena[index].dir.clone(),
                             slot: index,
@@ -421,6 +465,8 @@ impl<S: DirSource> Shared<'_, S> {
                     let index = arena.len();
                     arena.push(Slot {
                         parent: Some(task.slot),
+                        listings: 0,
+                        seen: listing,
                         dir: Arc::new(dir),
                         depth: task.depth + 1,
                         own: Sums::ZERO,
@@ -435,6 +481,9 @@ impl<S: DirSource> Shared<'_, S> {
                         .insert(child_ticket.dir, index);
                     index
                 };
+                if let Some(key) = key {
+                    self.discovered.lock().unwrap().insert(key, slot);
+                }
                 // The arena reservation also covers every queued handle/task: no recursive
                 // enumeration retains another native buffer or parent callback on the stack.
                 let dir = self.arena.lock().unwrap()[slot].dir.clone();
@@ -707,7 +756,12 @@ pub fn run_scan<S: DirSource>(
         }),
         ready: Condvar::new(),
         arena: Mutex::new(Vec::with_capacity(max_dirs)),
-        discovered: Mutex::new(directory_key(identity).into_iter().collect()),
+        discovered: Mutex::new(
+            directory_key(identity)
+                .into_iter()
+                .map(|k| (k, 0))
+                .collect(),
+        ),
         catalog_dirs: Mutex::new(HashMap::from([(ticket.dir, 0)])),
         tx,
         bytes: bytes.clone(),
@@ -724,6 +778,8 @@ pub fn run_scan<S: DirSource>(
     };
     shared.arena.lock().unwrap().push(Slot {
         parent: None,
+        listings: 0,
+        seen: 0,
         dir,
         depth: 0,
         own: Sums::ZERO,
@@ -770,7 +826,7 @@ pub fn run_scan<S: DirSource>(
             let dirty = match (|| {
                 let mut dirty = shared.dirty_directories()?;
                 if dirty.is_empty() {
-                    shared.finalize()?;
+                    shared.finalize(true)?;
                     dirty = shared.dirty_directories()?;
                 }
                 Ok::<_, EngineError>(dirty)
@@ -818,6 +874,13 @@ pub fn run_scan<S: DirSource>(
             }
         }
         if !reconciled {
+            // Finals were never accepted: still report the partial sums of what was listed,
+            // never a zero standing in for unknown.
+            if let Err(e) = shared.finalize(false) {
+                if result.is_ok() {
+                    result = Err(e);
+                }
+            }
             shared.arena.lock().unwrap()[0].complete = false;
         }
         let _ = shared.tx.send(Envelope {

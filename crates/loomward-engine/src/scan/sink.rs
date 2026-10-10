@@ -156,6 +156,8 @@ pub trait ScanSink: Send + Sync {
         identity: OpenedIdentity,
     ) -> EngineResult<ListingTicket>;
     /// Reserve a fresh dirty epoch for a rejected listing without changing its identity or parent.
+    /// Called on the scan coordinator thread while the writer is idle after a barrier, not on
+    /// the writer thread: an implementation must not rely on writer-thread affinity.
     fn refresh_listing(
         &self,
         root: &RootId,
