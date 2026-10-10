@@ -108,6 +108,9 @@ fn placeholders_and_reparse_attributes_are_refused() {
 #[cfg(windows)]
 #[test]
 fn native_handle_relative_open_and_all_strategy_widths() {
+    if skip_elevated() {
+        return;
+    }
     use std::fs;
     let temp = canonical_tempdir();
     fs::create_dir(temp.path().join("child")).unwrap();
@@ -141,6 +144,9 @@ fn native_handle_relative_open_and_all_strategy_widths() {
 #[cfg(windows)]
 #[test]
 fn child_open_remains_bound_to_renamed_parent_handle() {
+    if skip_elevated() {
+        return;
+    }
     let temp = canonical_tempdir();
     let a = temp.path().join("a");
     std::fs::create_dir(&a).unwrap();
@@ -173,6 +179,9 @@ fn child_open_remains_bound_to_renamed_parent_handle() {
 #[cfg(windows)]
 #[test]
 fn junction_never_opened_or_followed() {
+    if skip_elevated() {
+        return;
+    }
     let temp = canonical_tempdir();
     let target = temp.path().join("target");
     std::fs::create_dir(&target).unwrap();
@@ -202,6 +211,9 @@ fn junction_never_opened_or_followed() {
 #[cfg(windows)]
 #[test]
 fn root_with_intermediate_junction_is_refused() {
+    if skip_elevated() {
+        return;
+    }
     let temp = canonical_tempdir();
     let target = temp.path().join("outside");
     std::fs::create_dir_all(target.join("root")).unwrap();
@@ -226,6 +238,9 @@ fn root_with_intermediate_junction_is_refused() {
 #[cfg(windows)]
 #[test]
 fn post_open_attributes_and_id_replacement_are_rejected() {
+    if skip_elevated() {
+        return;
+    }
     let temp = canonical_tempdir();
     let child = temp.path().join("child");
     std::fs::create_dir(&child).unwrap();
@@ -258,6 +273,9 @@ fn post_open_attributes_and_id_replacement_are_rejected() {
 #[cfg(windows)]
 #[test]
 fn post_open_offline_race_is_refused_before_listing() {
+    if skip_elevated() {
+        return;
+    }
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{
         SetFileAttributesW, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_OFFLINE,
@@ -316,4 +334,23 @@ fn absent_zero_ids_do_not_become_unique_observations() {
 #[cfg(windows)]
 fn canonical_tempdir() -> tempfile::TempDir {
     tempfile::tempdir_in(std::fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap()
+}
+
+/// Hosted CI runners hold an elevated token, and the native scan refuses elevation by design
+/// (AGENTS.md invariant 2). There, pin the refusal and skip; elsewhere run the native test.
+#[cfg(windows)]
+fn skip_elevated() -> bool {
+    if !crate::enumerate::running_elevated() {
+        return false;
+    }
+    let temp = canonical_tempdir();
+    assert!(
+        matches!(
+            NativeSource::default().open_root(temp.path()),
+            Err(SourceError::Refused)
+        ),
+        "an elevated token must be refused before any open"
+    );
+    eprintln!("skipped: elevated token; the native scan refuses elevation (invariant 2)");
+    true
 }

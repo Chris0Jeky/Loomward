@@ -345,6 +345,10 @@ fn opened(
         },
     ))
 }
+/// True when this process holds an elevated token, which every native open refuses.
+pub fn running_elevated() -> bool {
+    matches!(non_elevated(), Err(SourceError::Refused))
+}
 fn non_elevated() -> Result<(), SourceError> {
     let mut token = null_mut();
     if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {

@@ -513,6 +513,9 @@ fn writer_install_is_startup_only() {
 #[cfg(windows)]
 #[test]
 fn native_scan_job_reports_exact_final_progress() {
+    if skip_elevated() {
+        return;
+    }
     let temp = canonical_tempdir();
     std::fs::write(temp.path().join("synthetic"), [0u8; 123]).unwrap();
     let source = loomward_windows::enumerate::NativeSource::default();
@@ -697,6 +700,9 @@ fn busy_scan_preserves_job_id_wire_detail() {
 #[cfg(windows)]
 #[test]
 fn native_state_root_is_excluded_by_handle_identity() {
+    if skip_elevated() {
+        return;
+    }
     let temp = canonical_tempdir();
     let source = loomward_windows::enumerate::NativeSource::default();
     let (_, identity) = source
@@ -790,4 +796,23 @@ fn explain(path: &std::path::Path) -> String {
         })
         .collect::<Vec<_>>()
         .join(" | ")
+}
+
+/// Hosted CI runners hold an elevated token, and the native scan refuses elevation by design
+/// (AGENTS.md invariant 2). There, pin the refusal and skip; elsewhere run the native test.
+#[cfg(windows)]
+fn skip_elevated() -> bool {
+    if !loomward_windows::enumerate::running_elevated() {
+        return false;
+    }
+    let temp = canonical_tempdir();
+    assert!(
+        matches!(
+            loomward_windows::enumerate::NativeSource::default().open_root(temp.path()),
+            Err(loomward_windows::enumerate::SourceError::Refused)
+        ),
+        "an elevated token must be refused before any open"
+    );
+    eprintln!("skipped: elevated token; the native scan refuses elevation (invariant 2)");
+    true
 }
