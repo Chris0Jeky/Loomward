@@ -21,12 +21,36 @@ use loomward_protocol::{
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Event streams one webview may hold open at once, as for HTTP (`semantics.md` section 7).
 pub const MAX_STREAMS_PER_WEBVIEW: usize = 4;
+pub const MAX_CALLS: usize = 4;
+
+pub struct CallPermit(Arc<AtomicUsize>);
+impl Drop for CallPermit {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+struct SlotGuard(Arc<Slot>);
+impl Drop for SlotGuard {
+    fn drop(&mut self) {
+        self.0.done.store(true, Ordering::SeqCst);
+    }
+}
+struct Pump {
+    slot: SlotGuard,
+    stream: Box<dyn loomward_protocol::EventStream>,
+}
+impl Drop for Pump {
+    fn drop(&mut self) {
+        self.stream.close();
+    }
+}
 /// How long the first event (`stream.hello`) may take before `lw_events` fails.
 const FIRST_EVENT_TIMEOUT: Duration = Duration::from_secs(5);
 /// How often an idle pump rechecks for teardown.
@@ -45,6 +69,7 @@ pub struct Desktop {
     dialogs: Arc<dyn NativeDialogs>,
     /// Open streams by webview label.
     streams: Mutex<HashMap<String, Vec<Arc<Slot>>>>,
+    calls: Arc<AtomicUsize>,
 }
 
 impl Desktop {
@@ -58,18 +83,35 @@ impl Desktop {
             dataset,
             dialogs,
             streams: Mutex::new(HashMap::new()),
+            calls: Arc::new(AtomicUsize::new(0)),
         }
     }
 
     /// `lw_call`. `Err` is a transport fault (the invoke promise rejects); every protocol outcome,
     /// refusals included, is an `Ok` envelope. The request enters only through
-    /// [`RequestEnvelope::from_slice`], as over HTTP.
+    /// [`RequestEnvelope::from_slice`]. This convenience entry is for already-parsed test values;
+    /// the IPC binding requires raw bytes to preserve duplicate keys and the encoded size.
     pub fn call(&self, request: &Value) -> Result<ResponseEnvelope, String> {
         let bytes = serde_json::to_vec(request).map_err(|e| e.to_string())?;
+        let _permit = self.begin_call()?;
+        self.dispatch_bytes(&bytes)
+    }
+
+    /// Acquire before spawning blocking work, so overload cannot queue unbounded workers.
+    pub fn begin_call(&self) -> Result<CallPermit, String> {
+        self.calls
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                (n < MAX_CALLS).then_some(n + 1)
+            })
+            .map_err(|_| "at most four calls in flight".to_string())?;
+        Ok(CallPermit(self.calls.clone()))
+    }
+
+    pub fn dispatch_bytes(&self, bytes: &[u8]) -> Result<ResponseEnvelope, String> {
         if bytes.len() > MAX_REQUEST_BYTES {
             return Err("the request exceeds 64 KiB".into());
         }
-        let request = match RequestEnvelope::from_slice(&bytes) {
+        let request = match RequestEnvelope::from_slice(bytes) {
             Ok(r) => r,
             Err(rejected) => return Ok(rejected.into_response()),
         };
@@ -127,36 +169,34 @@ impl Desktop {
             let open = streams.entry(webview.to_string()).or_default();
             open.retain(|s| !s.done.load(Ordering::SeqCst));
             if open.len() >= MAX_STREAMS_PER_WEBVIEW {
-                return Err("at most four event streams per window".into());
+                open[0].stop.store(true, Ordering::SeqCst);
+                return Err("busy: at most four event streams; retry after teardown".into());
             }
             open.push(slot.clone());
         }
-        let release = |slot: &Slot| slot.done.store(true, Ordering::SeqCst);
-        let mut stream = self.service.subscribe(resume(last_epoch, last_seq));
-        let first = match stream.recv_timeout(FIRST_EVENT_TIMEOUT) {
+        // Own both resources before calling the service/sink; unwinding releases the slot too.
+        let guard = SlotGuard(slot);
+        let mut pump = Pump {
+            slot: guard,
+            stream: self.service.subscribe(resume(last_epoch, last_seq)),
+        };
+        let first = match pump.stream.recv_timeout(FIRST_EVENT_TIMEOUT) {
             RecvOutcome::Event(e) => e,
             RecvOutcome::Closed(CloseReason::TooManyStreams) => {
-                stream.close();
-                release(&slot);
                 return Err("at most four event streams".into());
             }
             _ => {
-                stream.close();
-                release(&slot);
                 return Err("the event stream did not open".into());
             }
         };
         if !sink(first) {
-            stream.close();
-            release(&slot);
             return Err("the window cannot receive events".into());
         }
-        let pump_slot = slot.clone();
         let spawned = std::thread::Builder::new()
             .name("loomward-channel".into())
             .spawn(move || {
-                while !pump_slot.stop.load(Ordering::SeqCst) {
-                    match stream.recv_timeout(PUMP_POLL) {
+                while !pump.slot.0.stop.load(Ordering::SeqCst) {
+                    match pump.stream.recv_timeout(PUMP_POLL) {
                         RecvOutcome::Event(e) => {
                             if !sink(e) {
                                 break;
@@ -166,11 +206,8 @@ impl Desktop {
                         RecvOutcome::Closed(_) => break,
                     }
                 }
-                stream.close();
-                pump_slot.done.store(true, Ordering::SeqCst);
             });
         if spawned.is_err() {
-            release(&slot);
             return Err("the event stream did not open".into());
         }
         Ok(())
@@ -180,7 +217,12 @@ impl Desktop {
     /// page can never receive on its old channels). Each pump stops within [`PUMP_POLL`].
     /// Returns how many were still running.
     pub fn close_webview(&self, webview: &str) -> usize {
-        let open = self.lock().remove(webview).unwrap_or_default();
+        let mut streams = self.lock();
+        let Some(open) = streams.get_mut(webview) else {
+            return 0;
+        };
+        // Stopping is not release: a new document must still count the old pumps.
+        open.retain(|s| !s.done.load(Ordering::SeqCst));
         open.iter()
             .filter(|s| !s.stop.swap(true, Ordering::SeqCst) && !s.done.load(Ordering::SeqCst))
             .count()

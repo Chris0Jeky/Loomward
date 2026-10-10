@@ -154,6 +154,12 @@ fn rows(conn: &Connection, only: Option<i64>, limit: i64) -> Sql<Vec<RootRow>> {
 
 pub const MAX_ACTIVE_ROOTS: i64 = 64;
 
+pub fn active_root_paths(conn: &Connection) -> Sql<Vec<std::path::PathBuf>> {
+    conn.prepare_cached("SELECT display_path FROM st.root_grant WHERE state='active'")?
+        .query_map([], |r| r.get::<_, String>(0).map(Into::into))?
+        .collect()
+}
+
 pub fn active_grants(conn: &Connection) -> Sql<i64> {
     conn.query_row(
         "SELECT count(*) FROM st.root_grant WHERE state='active'",

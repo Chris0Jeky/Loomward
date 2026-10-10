@@ -277,6 +277,8 @@ mod native;
 #[cfg(windows)]
 pub(crate) use native::{non_elevated, open_watch_root};
 #[cfg(windows)]
+pub(crate) use native::{open_relative_mode, root_handles};
+#[cfg(windows)]
 pub use native::{running_elevated, IoCancellation, NativeDir, NativeSource};
 #[cfg(test)]
 mod tests;

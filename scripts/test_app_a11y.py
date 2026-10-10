@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 
 from playwright.sync_api import Browser, Page, expect
+from test_app_views import wait_until
 
 ROOT = Path(__file__).resolve().parents[1]
 TOKENS = ROOT / 'app' / 'src' / 'styles' / 'tokens.css'
@@ -443,13 +444,46 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     seq = lambda: page.locator('.res-note .seq').inner_text()
     expect(page.locator('.res-note .seq')).to_be_attached()
     page.get_by_role('button', name='Pause updates').click()
-    expect(page.get_by_role('status').filter(has_text='Paused')).to_be_visible()
+    expect(page.locator('.res-note [role=status]')).to_contain_text('Paused')
     before = seq()
     page.wait_for_timeout(2600)
     check(seq() == before, f'2.2.2 paused: the sample number holds ({before})')
     page.get_by_role('button', name='Resume updates').click()
     page.wait_for_timeout(2600)
     check(seq() != before, f'2.2.2 resumed: samples arrive again ({before} -> {seq()})')
+
+    # Process strip: a persistent live region, ordinary links, and sequential keyboard order.
+    strip = page.get_by_role('region', name='Processes', exact=True)
+    expect(strip.get_by_role('link')).to_have_count(5)
+    strip_status = strip.get_by_role('status').element_handle()
+    check(strip_status.evaluate('e => e.getAttribute("aria-live") === "polite" && e.getAttribute("aria-atomic") === "true"'),
+          '4.1.3 the process strip has a persistent polite, atomic live region')
+    page.get_by_label('Process lens').focus()
+    page.keyboard.press('Tab')
+    expect(strip.get_by_role('link').first).to_be_focused()
+    page.keyboard.press('Tab')
+    expect(strip.get_by_role('link').nth(1)).to_be_focused()
+    names = strip.get_by_role('link').evaluate_all('(links) => links.map(e => e.getAttribute("aria-label"))')
+    check(all(re.fullmatch(r'Explain .+, process \d+, in Companion', name or '') for name in names), '2.4.6 each strip link names the process, PID and Companion destination')
+    page.get_by_role('button', name='Pause updates').click()
+    expect(strip.get_by_role('status')).to_contain_text('Paused')
+    check(strip_status.evaluate('e => e.isConnected && e.textContent.includes("Paused")'), '4.1.3 pause updates the existing process status node')
+    page.get_by_role('button', name='Resume updates').click()
+    wait_until(page, '() => !document.querySelector("#strip-status").textContent.includes("Paused")')
+    for label in ('Woven atlas', 'Observatory'):
+        page.get_by_role('group', name='Theme').get_by_role('button', name=label).click()
+        for selector in ('.process-name', '.process-detail', '.metric-label', '#strip-status'):
+            fg = css_rgb(page.evaluate('(s) => getComputedStyle(document.querySelector(s)).color', selector))
+            bg = css_rgb(page.evaluate('getComputedStyle(document.documentElement).backgroundColor'))
+            check(ratio(fg, bg) >= 4.5, f'1.4.3 strip {selector} in {label}: {ratio(fg, bg):.2f}:1')
+    page.set_viewport_size({'width': 320, 'height': 844})
+    check(page.evaluate('document.documentElement.scrollWidth <= innerWidth'), '1.4.10 process strip reflows at 320 px')
+    page.get_by_label('Process lens').focus()
+    page.keyboard.press('Tab')
+    focus = strip.get_by_role('link').first
+    expect(focus).to_be_focused()
+    check(focus.evaluate('e => { const r = e.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.width >= 24 && r.height >= 24 && getComputedStyle(e).outlineStyle !== "none"; }'),
+          '2.4.7/2.5.8 strip links have visible focus and 24 px targets at 320 px')
     page.context.close()
 
     # --- Companion: no re-sort under focus, pause ------------------------------------------------------------------------------------
@@ -511,6 +545,12 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     goto(page, base, 'observatory', 'Observatory')
     check(css(".seg button[aria-checked='true']", 'backgroundColor') != css(".seg button[aria-checked='false']", 'backgroundColor'), '1.4.1 forced colours: the checked basis has its own background in the Observatory')
     check('underline' in css(".crumb[aria-current='location']", 'textDecorationLine'), '1.4.1 forced colours: the current crumb is underlined in the Observatory')
+    expect(page.locator('.process-strip a').first).to_be_visible()
+    check('underline' in css('.process-strip a', 'textDecorationLine'), '1.4.1 forced colours: process explanation links retain an underline')
+    page.get_by_label('Process lens').focus()
+    page.keyboard.press('Tab')
+    expect(page.locator('.process-strip a').first).to_be_focused()
+    check(css('.process-strip a', 'outlineStyle') != 'none', '2.4.7 forced colours: process explanation links retain their focus outline')
     goto(page, base, 'explorer', 'Explorer')
     check('underline' in css('th.basis', 'textDecorationLine') and 'underline' not in css('thead th:first-child', 'textDecorationLine'), '1.4.1 forced colours: the sorted size column is underlined')
     goto(page, base, 'tiers', 'Tiers')

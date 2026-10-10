@@ -586,6 +586,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "loomward-apps"
+version = "0.1.0"
+dependencies = [
+ "windows-sys",
+]
+
+[[package]]
 name = "loomward-catalog"
 version = "0.3.0"
 dependencies = [
@@ -644,6 +651,7 @@ dependencies = [
  "hyper-util",
  "loomward-protocol",
  "loomward-service",
+ "loomward-windows",
  "serde_json",
  "socket2",
  "subtle",
@@ -717,6 +725,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "windows-sys",
 ]

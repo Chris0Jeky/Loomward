@@ -6,7 +6,7 @@ Read in order: `AGENTS.md`, this file, `CHECKPOINT.json`, `docs/23-expansion-ove
 
 Run `python scripts/verify.py` before editing. The authored gate is 184 Python tests, both JavaScript syntax checks, nine JS boundary assertions and 80 cross-language fixtures. Optional schema validation ran in the authoring environment; an absent jsonschema validator is a skip. Browser integration is separate: 14 Chromium checks using a Python HTTP bridge. No native compilation, Windows, real MCP host or actual model validation occurred.
 
-The three new UI pages are functional references. Review notes are session-only, integration tiles are not connected, admission has no OS effect, and standalone tier planning is a labelled greedy preview. The live Python tier route uses v2. The native Rust planner is still v1 and uncompiled.
+The three new UI pages are functional references. Review notes are session-only, integration tiles are not connected, admission has no OS effect, and standalone tier planning is a labelled greedy preview. The live Python tier route uses v2. The native Rust planner was v1 and uncompiled at the bundle pass (superseded: Rust now carries both the v1 planner and the v2 port (#107), neither a mover, and the workspace compiles and tests on Windows).
 
 The first native pack remains LW-001/LW-002/LW-064. An independent protocol lane may start LW-065 on installed hosts, and a reference UI lane may start LW-068. Do not interpret the 100 planned backlog tasks as already delivered features. Do not enable effects through MCP or add arbitrary file/process endpoints.
 

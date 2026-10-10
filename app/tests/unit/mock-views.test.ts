@@ -72,6 +72,21 @@ describe('mock tiers and placement', () => {
 });
 
 describe('mock companion', () => {
+  it('never reuses subscription IDs or lets a stale unsubscribe stop another lease', async () => {
+    const c = client();
+    const subscribe = () => c.call('telemetry.subscribe', { subscription_id: null, channels: ['system'], interval_ms: 1000 });
+    const a = (await subscribe()).result.subscription_id;
+    const b = (await subscribe()).result.subscription_id;
+    await c.call('telemetry.unsubscribe', { subscription_id: a });
+    const d = (await subscribe()).result.subscription_id;
+    expect(new Set([a, b, d]).size).toBe(3);
+    expect((await c.call('telemetry.unsubscribe', { subscription_id: a })).result.stopped).toBe(false);
+    expect((await c.call('telemetry.unsubscribe', { subscription_id: b })).result.stopped).toBe(true);
+    expect((await c.call('telemetry.unsubscribe', { subscription_id: d })).result.stopped).toBe(true);
+    const e = (await subscribe()).result.subscription_id;
+    expect([a, b, d]).not.toContain(e);
+  });
+
   it('bounds the process list and reports coverage totals', async () => {
     const c = client();
     const { result: top } = await c.call('processes.list', { sort: 'private_desc', limit: 10 });

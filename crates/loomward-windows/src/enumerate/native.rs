@@ -154,7 +154,7 @@ fn open_relative(
 ) -> Result<File, SourceError> {
     open_relative_mode(parent, name, access, share, false)
 }
-fn open_relative_mode(
+pub(crate) fn open_relative_mode(
     parent: &File,
     name: &[u16],
     access: u32,
@@ -222,7 +222,7 @@ fn validate_directory_attributes(
     }
     Ok(attr)
 }
-fn root_handles(path: &Path, access: u32, share: u32) -> Result<Vec<File>, SourceError> {
+pub(crate) fn root_handles(path: &Path, access: u32, share: u32) -> Result<Vec<File>, SourceError> {
     root_handles_mode(path, access, share, false)
 }
 fn root_handles_mode(
@@ -826,6 +826,25 @@ mod cancellation_tests {
         }
         TEST_ELEVATED.set(true);
         let _reset = Reset;
+        assert_eq!(
+            crate::duplicate_reader::inspect(
+                temp.path(),
+                &OpenedIdentity {
+                    id: None,
+                    basis: IdBasis::None,
+                    volume_serial: None,
+                    attributes: 0x10,
+                    reparse_tag: None
+                },
+                &[],
+                crate::duplicate_reader::Budget {
+                    bytes: 100,
+                    time: Duration::from_secs(1)
+                },
+            )
+            .unwrap_err(),
+            crate::duplicate_reader::Reason::Elevated
+        );
         assert!(matches!(crate::identity::observe(temp.path()),
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied));
         assert!(matches!(
