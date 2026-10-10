@@ -274,11 +274,16 @@ pub fn query_stop(code: u32, cancelled: bool) -> ListOutcome {
 }
 #[cfg(windows)]
 mod native;
+#[cfg(all(windows, feature = "shortcut-read"))]
+pub use native::read_capped_regular_file;
 #[cfg(windows)]
 pub(crate) use native::{non_elevated, open_watch_root};
+#[cfg(windows)]
+pub use native::{
+    open_metadata_child, open_readonly_directory, running_elevated, IoCancellation, NativeDir,
+    NativeSource,
+};
 #[cfg(all(windows, any(feature = "content-read", test)))]
 pub(crate) use native::{open_relative_mode, root_handles};
-#[cfg(windows)]
-pub use native::{running_elevated, IoCancellation, NativeDir, NativeSource};
 #[cfg(test)]
 mod tests;
