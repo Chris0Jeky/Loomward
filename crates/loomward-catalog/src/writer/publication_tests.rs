@@ -160,6 +160,21 @@ fn bindings(dir: &std::path::Path) -> Vec<(i64, String, bool, i64, i64)> {
     .unwrap()
 }
 
+type DirMark = (i64, Option<i64>, Option<i64>, Option<i64>, i64);
+
+fn dir_marks(dir: &std::path::Path) -> Vec<DirMark> {
+    let db = Connection::open(dir.join("catalog.db")).unwrap();
+    let mut s = db
+        .prepare("SELECT id,dirty_rev,subtree_rev,dirty_run,sub_complete FROM dir ORDER BY id")
+        .unwrap();
+    s.query_map([], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+    })
+    .unwrap()
+    .collect::<rusqlite::Result<Vec<_>>>()
+    .unwrap()
+}
+
 fn old_listing(dir: &std::path::Path) -> (i64, Vec<(i64, String)>) {
     let db = Connection::open(dir.join("catalog.db")).unwrap();
     let rev = db
@@ -339,6 +354,7 @@ fn auto_rollback_never_commits_a_failed_receipt_or_acknowledges_lost_rows() {
             );
         }
         let before = old_listing(temp.path());
+        let marks = dir_marks(temp.path());
         let (tx, rx) = bounded(3);
         let mut replies = Vec::new();
         for name in ["before", "fault", "after"] {
@@ -401,6 +417,11 @@ fn auto_rollback_never_commits_a_failed_receipt_or_acknowledges_lost_rows() {
             old_listing(temp.path()),
             before,
             "failed caller's listing persisted"
+        );
+        assert_eq!(
+            dir_marks(temp.path()),
+            marks,
+            "dirty marks written after the auto-rollback"
         );
         drop(crate::db::open_pair(temp.path(), "synthetic").unwrap());
         assert_eq!(old_listing(temp.path()).1, before.1);

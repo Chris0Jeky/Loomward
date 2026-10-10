@@ -439,13 +439,21 @@ fn work(
                             save.query_row("SELECT catalog_rev FROM revision", [], |r| r.get(0))?;
                         let dirty_start = context.dirty.len();
                         let result = apply(&save, &p.command, &mut context, prepared);
+                        // The witness commits atomically with the catalogue publication.
+                        let result = result.and_then(|reply| {
+                            save.execute("INSERT INTO meta(key,value) SELECT 'reference_publication',publication_token FROM st.pending_reference LIMIT 1 ON CONFLICT(key) DO UPDATE SET value=excluded.value", [])?;
+                            Ok(reply)
+                        });
                         match result {
-                            Ok(reply) => {
-                                // The witness commits atomically with the catalogue publication.
-                                save.execute("INSERT INTO meta(key,value) SELECT 'reference_publication',publication_token FROM st.pending_reference LIMIT 1 ON CONFLICT(key) DO UPDATE SET value=excluded.value", [])?;
-                                save.commit()?;
-                                Ok(reply)
-                            }
+                            Ok(reply) => match save.commit() {
+                                Ok(()) => Ok(reply),
+                                Err(e) => {
+                                    context.dirty.truncate(dirty_start);
+                                    context.extensions.clear();
+                                    context.parents.clear();
+                                    Err(Error::Sql(e))
+                                }
+                            },
                             Err(e) => {
                                 drop(save);
                                 context.dirty.truncate(dirty_start);
@@ -493,9 +501,15 @@ fn work(
                 if let Some(PublicationCrash::Observe(observe)) = crash {
                     observe(&tx, false);
                 }
-                let committed = context
-                    .flush_dirty(&tx)
-                    .and_then(|()| tx.commit().map_err(Error::Sql));
+                // After an auto-rollback the connection is in autocommit mode: flushing dirty marks
+                // would commit them one by one for a batch that never happened. COMMIT then fails.
+                let committed = if tx.is_autocommit() {
+                    tx.commit().map_err(Error::Sql)
+                } else {
+                    context
+                        .flush_dirty(&tx)
+                        .and_then(|()| tx.commit().map_err(Error::Sql))
+                };
                 context.timings.lock().expect("timing lock").commit_seconds +=
                     commit_start.elapsed().as_secs_f64();
                 {
