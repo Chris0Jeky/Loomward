@@ -401,6 +401,13 @@ impl Engine {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *revoked = true;
+        // Watch teardown can terminate a queued runner before it reaches the byte budget.
+        let cancelled = self
+            .jobs
+            .root_jobs(root)
+            .iter()
+            .map(|id| self.job_cancel(id))
+            .collect();
         #[cfg(windows)]
         {
             let watch = self.scan_watches.lock().unwrap().remove(root);
@@ -408,11 +415,7 @@ impl Engine {
                 watch.stop();
             }
         }
-        self.jobs
-            .root_jobs(root)
-            .iter()
-            .map(|id| self.job_cancel(id))
-            .collect()
+        cancelled
     }
     /// Writer-fence hook, called after durable revocation and root cancellation by L8.
     pub fn scan_writer_fence(&self, root: &RootId) -> EngineResult<()> {
