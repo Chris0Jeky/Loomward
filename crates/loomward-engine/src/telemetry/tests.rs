@@ -8,6 +8,8 @@ fn raw() -> Snapshot {
         status: "observed".into(),
         platform: "synthetic".into(),
         captured_at_unix_ms: 1_709_251_199_123,
+        processes_observed_at_unix_ms: Some(1_709_251_199_123),
+        sampled_channels: loomward_telemetry::SampleChannels::ALL,
         snapshot_cost_ms: 1.0,
         sample_interval_seconds: None,
         logical_processor_count: Some(8),
@@ -78,7 +80,7 @@ fn mapping_preserves_exact_bytes_units_and_distinct_quantities() {
         pid: std::process::id(),
         private_commit_bytes: Some(777),
         working_set_bytes: Some(333),
-        thread_count: 3,
+        thread_count: Some(3),
         cpu_user_100ns: Some(10_000_000),
         cpu_kernel_100ns: Some(5_000_000),
         rates: Rates {
@@ -200,11 +202,11 @@ fn sorting_puts_missing_values_last_and_explains_denial_without_actions() {
         ProcessListRequestSort::CpuDesc,
         ProcessListRequestSort::IoDesc,
     ] {
-        let rows = mapping::sorted_rows(&raw, 1, sort);
+        let rows = mapping::sorted_rows(&raw, 1, sort).unwrap();
         assert_eq!(rows[0].pid.get(), 7);
     }
     assert_eq!(
-        mapping::sorted_rows(&raw, 1, ProcessListRequestSort::NameAsc)[0]
+        mapping::sorted_rows(&raw, 1, ProcessListRequestSort::NameAsc).unwrap()[0]
             .pid
             .get(),
         8
@@ -217,7 +219,12 @@ fn sorting_puts_missing_values_last_and_explains_denial_without_actions() {
     });
     raw.processes[denied_index].protected_or_unknown = true;
     assert_eq!(
-        mapping::process_row(&raw.processes[denied_index], 1).access,
+        mapping::process_row(
+            &raw.processes[denied_index],
+            1,
+            &mapping::processes_observed_at(&raw).unwrap()
+        )
+        .access,
         ProcessRowAccess::Denied
     );
     let e = Engine::open(crate::EngineConfig {
@@ -549,14 +556,19 @@ fn sorting_reorders_known_values_and_pid_ties() {
         ProcessListRequestSort::NameAsc,
         ProcessListRequestSort::GpuDesc,
     ] {
-        assert_eq!(mapping::sorted_rows(&snapshot, 1, sort)[0].pid.get(), 8);
+        assert_eq!(
+            mapping::sorted_rows(&snapshot, 1, sort).unwrap()[0]
+                .pid
+                .get(),
+            8
+        );
     }
     snapshot.processes[0] = Process {
         pid: 99,
         ..snapshot.processes[1].clone()
     };
     assert_eq!(
-        mapping::sorted_rows(&snapshot, 1, ProcessListRequestSort::CpuDesc)[0]
+        mapping::sorted_rows(&snapshot, 1, ProcessListRequestSort::CpuDesc).unwrap()[0]
             .pid
             .get(),
         8
@@ -634,6 +646,112 @@ fn expired_session_cannot_supply_the_next_lease() {
     telemetry
         .release(&SubscriptionRefRequest {
             subscription_id: next.subscription_id,
+        })
+        .unwrap();
+}
+
+#[test]
+fn requested_but_unsampled_channel_is_partial_coverage() {
+    let mut snapshot = raw();
+    for channel in CHANNELS {
+        snapshot.sampled_channels = loomward_telemetry::SampleChannels::ALL;
+        match channel {
+            TelemetryChannel::System => snapshot.sampled_channels.system = false,
+            TelemetryChannel::Processes => snapshot.sampled_channels.processes = false,
+            TelemetryChannel::Gpu => snapshot.sampled_channels.gpu = false,
+            TelemetryChannel::Disks => snapshot.sampled_channels.disks = false,
+            TelemetryChannel::Engine => snapshot.sampled_channels.engine = false,
+        }
+        assert!(matches!(
+            mapping::sample(&snapshot, None, 1, &[*channel], false),
+            Err(EngineError::PartialCoverage { .. })
+        ));
+    }
+    snapshot.sampled_channels = loomward_telemetry::SampleChannels::ALL;
+    snapshot.sampled_channels.system = true;
+    snapshot.memory = Observation::Unknown {
+        reason: "hardware query failed".into(),
+    };
+    assert!(mapping::sample(&snapshot, None, 1, &[TelemetryChannel::System], false).is_ok());
+    snapshot.processes_observed_at_unix_ms = None;
+    assert!(matches!(
+        mapping::sample(&snapshot, None, 1, &[TelemetryChannel::Processes], false),
+        Err(EngineError::PartialCoverage { .. })
+    ));
+}
+
+#[test]
+fn retained_process_rows_keep_their_older_observation_time() {
+    let mut snapshot = raw();
+    snapshot.captured_at_unix_ms += 4000;
+    let expected_at = mapping::processes_observed_at(&snapshot).unwrap();
+    let e = Engine::open(crate::EngineConfig::new(
+        "unused-state".into(),
+        DatasetClass::Personal,
+    ))
+    .unwrap();
+    lock(&e.telemetry.shared.state).unwrap().latest = Some(Latest {
+        raw: snapshot.clone(),
+        own: None,
+        sequence: 1,
+    });
+    let list = e
+        .processes_list(&serde_json::from_value(json!({"sort":"name_asc","limit":10})).unwrap())
+        .unwrap();
+    assert_eq!(list.observed_at, expected_at);
+    let explanation = e
+        .processes_explain(&ProcessRefRequest {
+            process_ref: list.rows[0].process_ref.clone(),
+        })
+        .unwrap();
+    assert_eq!(explanation.observed_at, expected_at);
+    let sample = mapping::sample(&snapshot, None, 1, CHANNELS, false).unwrap();
+    let row = &sample.processes.unwrap().top[0];
+    assert_eq!(
+        row.observed_at,
+        mapping::processes_observed_at(&snapshot).unwrap()
+    );
+    assert_ne!(row.observed_at, sample.observed_at);
+}
+
+#[test]
+fn renewal_during_mapping_discards_the_old_shape() {
+    let telemetry = Telemetry::default();
+    let (mapped_tx, mapped_rx) = std::sync::mpsc::channel();
+    let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+    {
+        let mut state = lock(&telemetry.shared.state).unwrap();
+        state.sample_override = Some(raw());
+        state.mapping_pause = Some((mapped_tx, resume_rx));
+    }
+    let request: TelemetrySubscribeRequest = serde_json::from_value(
+        json!({"subscription_id":null,"channels":["system"],"interval_ms":10000}),
+    )
+    .unwrap();
+    let lease = telemetry.lease(&request).unwrap();
+    mapped_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    telemetry
+        .lease(&TelemetrySubscribeRequest {
+            subscription_id: Some(lease.subscription_id.clone()),
+            channels: vec![TelemetryChannel::Gpu].try_into().unwrap(),
+            ..request
+        })
+        .unwrap();
+    resume_tx.send(()).unwrap();
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        let state = lock(&telemetry.shared.state).unwrap();
+        if state.sequence > 0 {
+            assert!(state.events.is_empty());
+            break;
+        }
+        drop(state);
+        assert!(Instant::now() < until);
+        thread::sleep(Duration::from_millis(10));
+    }
+    telemetry
+        .release(&SubscriptionRefRequest {
+            subscription_id: lease.subscription_id,
         })
         .unwrap();
 }

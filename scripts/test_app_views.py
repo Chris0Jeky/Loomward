@@ -378,6 +378,10 @@ def check_companion(page: Page, base: str, shoot) -> None:
     main = page.locator('main')
     expect(main.get_by_text('Observation only')).to_be_visible()
     expect(rows(page).first).to_be_visible()
+    observed = page.locator('table.procs tbody tr').first.locator('time[datetime]')
+    expect(observed).to_be_visible()
+    expect(observed).to_have_text(observed.get_attribute('datetime'))
+    ok(bool(re.fullmatch(r'\d{4}-\d{2}-\d{2}T.*Z', observed.get_attribute('datetime') or '')), 'each process row exposes its own observation time')
     ok(main.get_by_role('button', name=FORBIDDEN_BUTTONS).count() == 0, 'no control to end, pause, re-prioritise or trim anything')
 
     plist = lambda: page.locator('table.procs tbody tr')

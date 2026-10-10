@@ -156,11 +156,11 @@ fn memory() -> Memory {
     result
 }
 
-fn process(entry: &PROCESSENTRY32W) -> (Process, bool) {
+fn process(entry: &PROCESSENTRY32W, name: &mut [u16]) -> (Process, bool) {
     let mut result = Process {
         pid: entry.th32ProcessID,
         parent_pid: entry.th32ParentProcessID,
-        thread_count: entry.cntThreads,
+        thread_count: (entry.dwSize != 0).then_some(entry.cntThreads),
         ..Default::default()
     };
     // Only observation rights are requested; no elevation or mutation fallback.
@@ -197,7 +197,6 @@ fn process(entry: &PROCESSENTRY32W) -> (Process, bool) {
                 .unknowns
                 .push(failure("start_and_cpu_times", GetLastError()));
         }
-        let mut name = vec![0u16; 32768];
         let mut length = name.len() as u32;
         if QueryFullProcessImageNameW(handle.0, 0, name.as_mut_ptr(), &mut length) != 0 {
             let path = String::from_utf16_lossy(&name[..length as usize]);
@@ -272,9 +271,12 @@ pub(super) fn collect(
     pdh: &mut PdhSampler,
     costs: &mut SamplingCosts,
     channels: SampleChannels,
+    refresh_processes: bool,
+    image_name_buffer: &mut Vec<u16>,
 ) -> Snapshot {
     let mut snapshot = unsupported_snapshot();
     snapshot.status = "observed".into();
+    let system_started = Instant::now();
     snapshot.memory = if channels.system {
         Observation::Observed { value: memory() }
     } else {
@@ -290,6 +292,7 @@ pub(super) fn collect(
     };
     let cores = unsafe { GetActiveProcessorCount(u16::MAX) };
     snapshot.logical_processor_count = (cores > 0).then_some(cores);
+    costs.system_counters_ms = system_started.elapsed().as_secs_f64() * 1000.0;
     let pdh_started = Instant::now();
     if channels.system || channels.gpu || channels.disks {
         pdh.sample(&mut snapshot, costs, channels);
@@ -308,10 +311,30 @@ pub(super) fn collect(
             .push(unknown("process_enumeration", "not_requested"));
     }
     if !channels.processes && !channels.engine {
-        return snapshot;
+        return finish(snapshot);
     }
+    image_name_buffer.resize(32768, 0);
+    if !channels.processes || !refresh_processes {
+        if channels.engine {
+            let query_started = Instant::now();
+            let (own, _) = process(
+                &PROCESSENTRY32W {
+                    th32ProcessID: std::process::id(),
+                    ..Default::default()
+                },
+                image_name_buffer,
+            );
+            costs.process_queries_ms = query_started.elapsed().as_secs_f64() * 1000.0;
+            costs.process_enumeration_ms = costs.process_queries_ms;
+            snapshot.processes.push(own);
+        }
+        return finish(snapshot);
+    }
+    snapshot.processes_observed_at_unix_ms = Some(snapshot.captured_at_unix_ms);
     let process_started = Instant::now();
+    costs.process_snapshots += 1;
     let raw = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    costs.process_snapshot_ms = process_started.elapsed().as_secs_f64() * 1000.0;
     if raw == INVALID_HANDLE_VALUE {
         snapshot
             .process_totals
@@ -319,7 +342,7 @@ pub(super) fn collect(
             .push(failure("process_enumeration", unsafe { GetLastError() }));
         snapshot.status = "partial".into();
         costs.process_enumeration_ms = process_started.elapsed().as_secs_f64() * 1000.0;
-        return snapshot;
+        return finish(snapshot);
     }
     let handle = Handle(raw);
     let mut entry = PROCESSENTRY32W {
@@ -329,11 +352,9 @@ pub(super) fn collect(
     let mut has_entry = unsafe { Process32FirstW(handle.0, &mut entry) };
     while has_entry != 0 && snapshot.process_totals.enumerated < MAX_ENUMERATED_PROCESSES {
         snapshot.process_totals.enumerated += 1;
-        if !channels.processes && entry.th32ProcessID != std::process::id() {
-            has_entry = unsafe { Process32NextW(handle.0, &mut entry) };
-            continue;
-        }
-        let (row, opened) = process(&entry);
+        let query_started = Instant::now();
+        let (row, opened) = process(&entry, image_name_buffer);
+        costs.process_queries_ms += query_started.elapsed().as_secs_f64() * 1000.0;
         let totals = &mut snapshot.process_totals;
         totals.opened += usize::from(opened);
         totals.access_denied += usize::from(
@@ -365,6 +386,13 @@ pub(super) fn collect(
         }
     }
     costs.process_enumeration_ms = process_started.elapsed().as_secs_f64() * 1000.0;
+    costs.process_walk_ms =
+        (costs.process_enumeration_ms - costs.process_snapshot_ms - costs.process_queries_ms)
+            .max(0.0);
+    finish(snapshot)
+}
+
+fn finish(mut snapshot: Snapshot) -> Snapshot {
     if snapshot.process_totals.partial_or_unknown > 0
         || snapshot.process_totals.enumeration_truncated
         || !snapshot.process_totals.enumeration_unknowns.is_empty()
@@ -395,10 +423,13 @@ mod tests {
             .unwrap();
         let pid = child.id();
         child.wait().unwrap();
-        let (row, _) = process(&PROCESSENTRY32W {
-            th32ProcessID: pid,
-            ..Default::default()
-        });
+        let (row, _) = process(
+            &PROCESSENTRY32W {
+                th32ProcessID: pid,
+                ..Default::default()
+            },
+            &mut vec![0; 32768],
+        );
         assert!(row.protected_or_unknown);
         assert!(row.working_set_bytes.is_none());
         assert!(row.cpu_user_100ns.is_none());

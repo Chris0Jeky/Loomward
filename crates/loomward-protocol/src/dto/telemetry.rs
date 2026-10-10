@@ -240,6 +240,8 @@ pub enum ProcessRowAccess {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProcessRow {
+    /// Process enumeration time, independent of the containing system sample.
+    pub observed_at: Timestamp,
     pub process_ref: ProcessRef,
     pub pid: Int<0, 4294967295>,
     pub name: Text<260>,
@@ -254,7 +256,7 @@ pub struct ProcessRow {
     /// Total working set, including shared pages.
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub working_set_bytes: Option<Bytes>,
-    /// Machine-normalised over the sample interval; null on the first sample.
+    /// Machine-normalised between process enumerations; null on the first process sample.
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub cpu_fraction: Option<Fraction>,
     #[serde(deserialize_with = "crate::types::required_nullable")]

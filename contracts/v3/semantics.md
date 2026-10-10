@@ -204,3 +204,11 @@ is not a `JobResult` fails. Implementations MUST enable `format` validation for 
 A subscription lives 60 seconds from its last `telemetry.subscribe` call. Renewal with the same
 `subscription_id` extends it and may change channels and interval. When no lease is live the sampler stops. An
 expired subscription produces no further events and its ID is `not_found`.
+
+System and own-process counters follow the fastest live lease. Process enumeration refreshes at
+most every fifteen seconds, on a lease tick; coarser ticks can extend that interval.
+`ProcessRow.observed_at` retains the
+process enumeration time, including in newer `TelemetrySample`s; process list and explanation
+timestamps refer to that enumeration too. Rates use the interval between process observations.
+An engine thread count not observed on the current tick is null. Requests for channels outside
+the sampled lease union return `partial_coverage` (not sampled), distinct from hardware unavailable.

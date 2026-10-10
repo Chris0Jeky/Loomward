@@ -89,7 +89,7 @@ pub struct Process {
     pub io_write_bytes: Option<u64>,
     pub io_other_bytes: Option<u64>,
     pub handle_count: Option<u32>,
-    pub thread_count: u32,
+    pub thread_count: Option<u32>,
     /// Any failed observation, including denial or exit; not a protection diagnosis.
     pub protected_or_unknown: bool,
     pub unknowns: Vec<Unknown>,
@@ -154,6 +154,9 @@ pub struct Snapshot {
     pub status: String,
     pub platform: String,
     pub captured_at_unix_ms: u64,
+    /// Time of the retained process enumeration, independent of system counters.
+    pub processes_observed_at_unix_ms: Option<u64>,
+    pub sampled_channels: SampleChannels,
     pub snapshot_cost_ms: f64,
     pub sample_interval_seconds: Option<f64>,
     pub logical_processor_count: Option<u32>,
@@ -204,7 +207,7 @@ pub fn own_usage() -> Observation<OwnUsage> {
 }
 
 /// Native work requested by the current lease union.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SampleChannels {
     pub system: bool,
     pub processes: bool,
@@ -228,6 +231,11 @@ impl SampleChannels {
 pub struct SamplingCosts {
     pub samples: u64,
     pub process_enumeration_ms: f64,
+    pub process_snapshot_ms: f64,
+    pub process_snapshots: u64,
+    pub process_queries_ms: f64,
+    pub process_walk_ms: f64,
+    pub system_counters_ms: f64,
     pub pdh_collection_ms: f64,
     pub wildcard_expansion_ms: f64,
     pub wildcard_expansions: u64,
@@ -242,6 +250,11 @@ impl SamplingCosts {
     pub fn add(&mut self, other: &Self) {
         self.samples += other.samples;
         self.process_enumeration_ms += other.process_enumeration_ms;
+        self.process_snapshot_ms += other.process_snapshot_ms;
+        self.process_snapshots += other.process_snapshots;
+        self.process_queries_ms += other.process_queries_ms;
+        self.process_walk_ms += other.process_walk_ms;
+        self.system_counters_ms += other.system_counters_ms;
         self.pdh_collection_ms += other.pdh_collection_ms;
         self.wildcard_expansion_ms += other.wildcard_expansion_ms;
         self.wildcard_expansions += other.wildcard_expansions;
@@ -258,8 +271,12 @@ pub struct Sampler {
     previous: Option<(Instant, Snapshot)>,
     costs: SamplingCosts,
     channels: Option<SampleChannels>,
+    process_sample_at: Option<Instant>,
+    own: Option<Process>,
     #[cfg(windows)]
     pdh: windows::PdhSampler,
+    #[cfg(windows)]
+    image_name_buffer: Vec<u16>,
 }
 
 impl Sampler {
@@ -269,12 +286,7 @@ impl Sampler {
 
     /// The engine's own row before display truncation; no new OS observation is performed.
     pub fn own_process(&self) -> Option<&Process> {
-        self.previous
-            .as_ref()?
-            .1
-            .processes
-            .iter()
-            .find(|p| p.pid == std::process::id())
+        self.own.as_ref()
     }
 
     pub fn sample(&mut self, max_processes: usize) -> Snapshot {
@@ -282,6 +294,24 @@ impl Sampler {
     }
 
     pub fn sample_channels(&mut self, max_processes: usize, channels: SampleChannels) -> Snapshot {
+        self.sample_with_process_interval(max_processes, channels, std::time::Duration::ZERO)
+    }
+
+    /// Leases refresh process metadata at most every fifteen seconds; system/own counters keep their cadence.
+    pub fn sample_leased(&mut self, max_processes: usize, channels: SampleChannels) -> Snapshot {
+        self.sample_with_process_interval(
+            max_processes,
+            channels,
+            std::time::Duration::from_secs(15),
+        )
+    }
+
+    fn sample_with_process_interval(
+        &mut self,
+        max_processes: usize,
+        channels: SampleChannels,
+        process_interval: std::time::Duration,
+    ) -> Snapshot {
         if self.channels != Some(channels) {
             #[cfg(windows)]
             {
@@ -289,45 +319,100 @@ impl Sampler {
             }
             self.channels = Some(channels);
             self.previous = None;
+            self.process_sample_at = None;
+            self.own = None;
         }
         let now = Instant::now();
         self.costs = SamplingCosts {
             samples: 1,
             ..SamplingCosts::default()
         };
+        let refresh_processes = self
+            .process_sample_at
+            .is_none_or(|at| now.duration_since(at) >= process_interval);
         #[cfg(windows)]
-        let mut current = windows::collect(&mut self.pdh, &mut self.costs, channels);
+        let mut current = windows::collect(
+            &mut self.pdh,
+            &mut self.costs,
+            channels,
+            refresh_processes,
+            &mut self.image_name_buffer,
+        );
         #[cfg(not(windows))]
         let mut current = unsupported_snapshot();
+        current.sampled_channels = channels;
         let native_ms = now.elapsed().as_secs_f64() * 1000.0;
         self.costs.native_other_ms = (native_ms
+            - self.costs.system_counters_ms
             - self.costs.process_enumeration_ms
             - self.costs.pdh_collection_ms
             - self.costs.wildcard_expansion_ms
             - self.costs.pdh_decode_ms)
             .max(0.0);
         let rates_started = Instant::now();
+        let mut own = current
+            .processes
+            .iter()
+            .find(|p| p.pid == std::process::id())
+            .cloned();
         if let Some((previous_at, previous)) = &self.previous {
             let seconds = now.duration_since(*previous_at).as_secs_f64();
             current.sample_interval_seconds = Some(seconds);
-            let prior: std::collections::HashMap<_, _> =
-                previous.processes.iter().map(|p| (p.pid, p)).collect();
-            for process in &mut current.processes {
-                process.rates = match prior.get(&process.pid) {
-                    Some(old) => derive_rates(
-                        process,
-                        old,
-                        seconds,
-                        current.logical_processor_count.unwrap_or(0),
-                    ),
-                    None => unknown_rates("no_previous_process_instance"),
-                };
+            if let Some(own) = &mut own {
+                own.rates = self.own.as_ref().map_or_else(
+                    || unknown_rates("requires_two_samples"),
+                    |old| {
+                        derive_rates(
+                            own,
+                            old,
+                            seconds,
+                            current.logical_processor_count.unwrap_or(0),
+                        )
+                    },
+                );
+            }
+            if refresh_processes {
+                let process_seconds = self
+                    .process_sample_at
+                    .map_or(seconds, |at| now.duration_since(at).as_secs_f64());
+                let prior: std::collections::HashMap<_, _> =
+                    previous.processes.iter().map(|p| (p.pid, p)).collect();
+                for process in &mut current.processes {
+                    process.rates = prior.get(&process.pid).map_or_else(
+                        || unknown_rates("no_previous_process_instance"),
+                        |old| {
+                            derive_rates(
+                                process,
+                                old,
+                                process_seconds,
+                                current.logical_processor_count.unwrap_or(0),
+                            )
+                        },
+                    );
+                }
+            } else if channels.processes {
+                current.processes = previous.processes.clone();
+                current.process_totals = previous.process_totals.clone();
+                current.processes_observed_at_unix_ms = previous.processes_observed_at_unix_ms;
+                if current.process_totals.partial_or_unknown > 0
+                    || current.process_totals.enumeration_truncated
+                    || !current.process_totals.enumeration_unknowns.is_empty()
+                {
+                    current.status = "partial".into();
+                }
             }
         } else {
             for process in &mut current.processes {
                 process.rates = unknown_rates("requires_two_samples");
             }
+            if let Some(own) = &mut own {
+                own.rates = unknown_rates("requires_two_samples");
+            }
         }
+        if refresh_processes {
+            self.process_sample_at = Some(now);
+        }
+        self.own = own;
         self.previous = Some((now, current.clone()));
         current
             .processes
@@ -455,6 +540,8 @@ fn unsupported_snapshot() -> Snapshot {
         schema_version: 2,
         status: "unsupported".into(),
         platform: std::env::consts::OS.into(),
+        processes_observed_at_unix_ms: None,
+        sampled_channels: SampleChannels::ALL,
         captured_at_unix_ms: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -498,6 +585,54 @@ mod tests {
             private_commit_bytes: Some(500),
             ..Process::default()
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn leased_process_cadence_preserves_rows_time_and_resets_on_union_change() {
+        let mut sampler = Sampler::default();
+        let first = sampler.sample_leased(1024, SampleChannels::ALL);
+        assert!(sampler.phase_costs().process_snapshot_ms > 0.0);
+        let second = sampler.sample_leased(1024, SampleChannels::ALL);
+        assert_eq!(sampler.phase_costs().process_snapshot_ms, 0.0);
+        assert_eq!(sampler.phase_costs().process_walk_ms, 0.0);
+        assert_eq!(
+            first.processes_observed_at_unix_ms,
+            second.processes_observed_at_unix_ms
+        );
+        assert_eq!(
+            serde_json::to_value(&first.processes).unwrap(),
+            serde_json::to_value(&second.processes).unwrap()
+        );
+        let own = sampler.own_process().unwrap();
+        assert!(own.private_commit_bytes.is_some());
+        assert!(own.rates.cpu_fraction.is_some());
+        assert!(own.thread_count.is_none());
+        sampler.process_sample_at = Some(Instant::now() - std::time::Duration::from_secs(16));
+        let refreshed = sampler.sample_leased(1024, SampleChannels::ALL);
+        assert!(sampler.phase_costs().process_snapshot_ms > 0.0);
+        assert!(refreshed.processes_observed_at_unix_ms >= second.processes_observed_at_unix_ms);
+        let own = sampler.own_process().unwrap();
+        assert!(own.thread_count.is_some());
+        assert!(own.rates.cpu_fraction.is_some());
+        let gpu_only = SampleChannels {
+            system: false,
+            processes: false,
+            gpu: true,
+            disks: false,
+            engine: false,
+        };
+        let gpu_sample = sampler.sample_leased(1024, gpu_only);
+        assert!(gpu_sample.processes.is_empty());
+        assert!(gpu_sample.processes_observed_at_unix_ms.is_none());
+        assert!(sampler.own_process().is_none());
+        let restarted = sampler.sample_leased(1024, SampleChannels::ALL);
+        assert!(sampler.phase_costs().process_snapshot_ms > 0.0);
+        assert!(restarted.sample_interval_seconds.is_none());
+        assert!(restarted
+            .processes
+            .iter()
+            .all(|p| p.rates.cpu_fraction.is_none()));
     }
 
     #[test]
