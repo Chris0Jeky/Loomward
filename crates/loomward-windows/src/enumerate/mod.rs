@@ -78,7 +78,9 @@ pub enum IncompleteReason {
     Io(i32),
     /// A record failed buffer validation, or a zero-byte success could not grow the buffer.
     Malformed,
-    /// Directory containment could not be proved, or listing is outside targeted reconciliation.
+    /// The queried handle path is outside the granted root.
+    ContainmentUnproven,
+    /// The pipeline downgraded a successful listing outside targeted reconciliation.
     OutsideScope,
     /// A scan budget was hit.
     Limit,

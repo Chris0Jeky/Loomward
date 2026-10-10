@@ -271,11 +271,12 @@ fn native_relist_containment(mode: u8) {
                     if allowed {
                         ListOutcome::Complete
                     } else {
-                        ListOutcome::Incomplete(IncompleteReason::OutsideScope)
+                        ListOutcome::Incomplete(IncompleteReason::ContainmentUnproven)
                     }
                 ]
             );
             assert_eq!(report.totals.files, if allowed { 2 } else { 0 });
+            assert_eq!(report.failed, if allowed { 0 } else { 1 });
             assert_eq!(bytes.used(), 0);
         }
     }

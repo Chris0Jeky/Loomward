@@ -94,6 +94,8 @@ impl IoCancellation {
 pub struct NativeSource {
     cancel: IoCancellation,
     preferred: Option<Strategy>,
+    #[cfg(any(test, feature = "fixtures"))]
+    path_query_error: Option<i32>,
 }
 impl NativeSource {
     /// A source sharing this run's cancellation.
@@ -101,6 +103,8 @@ impl NativeSource {
         Self {
             cancel,
             preferred: None,
+            #[cfg(any(test, feature = "fixtures"))]
+            path_query_error: None,
         }
     }
     /// Select a starting class for fallback fixture tests and measurements.
@@ -108,7 +112,15 @@ impl NativeSource {
         Self {
             cancel: IoCancellation::default(),
             preferred: Some(strategy),
+            #[cfg(any(test, feature = "fixtures"))]
+            path_query_error: None,
         }
+    }
+    /// Inject a normalised handle-path query failure in disposable fixture scans only.
+    #[cfg(any(test, feature = "fixtures"))]
+    pub fn with_path_query_failure(mut self, code: i32) -> Self {
+        self.path_query_error = Some(code);
+        self
     }
 }
 /// Validated directory. The file owns the native handle until every call has returned.
@@ -682,66 +694,90 @@ impl DirSource for NativeSource {
             Ok(h) => h,
             Err(_) => return ListOutcome::Incomplete(IncompleteReason::Io(-1)),
         };
-        // shortcut: this is a pre-list observation; atomic rename exclusion needs namespace pins.
-        if !contained(dir) {
-            return ListOutcome::Incomplete(IncompleteReason::OutsideScope);
+        // Find proves containment after taking its namespace pins.
+        if dir.strategy() != Strategy::Find {
+            // shortcut: handle enumeration observes containment before listing; atomic exclusion needs pins.
+            if let Err(reason) = self.containment(dir) {
+                return ListOutcome::Incomplete(reason);
+            }
         }
         self.list_validated(dir, sink, directory_attributes(&dir.file).map(|_| ()))
     }
 }
 
-fn normalized_path(file: &File) -> Option<Vec<u16>> {
-    let mut path = vec![0u16; 32768];
-    let n = unsafe {
-        GetFinalPathNameByHandleW(
-            file.as_raw_handle(),
-            path.as_mut_ptr(),
-            path.len() as u32,
-            FILE_NAME_NORMALIZED | VOLUME_NAME_DOS,
-        )
-    } as usize;
-    if n == 0 || n >= path.len() {
-        return None;
+fn normalized_path(file: &File) -> Result<Vec<u16>, i32> {
+    let mut path = vec![0u16; 256];
+    let flags = FILE_NAME_NORMALIZED | VOLUME_NAME_NT;
+    loop {
+        #[cfg(test)]
+        PATH_QUERIES.with_borrow_mut(|queries| queries.push((flags, path.len())));
+        let n = unsafe {
+            GetFinalPathNameByHandleW(
+                file.as_raw_handle(),
+                path.as_mut_ptr(),
+                path.len() as u32,
+                flags,
+            )
+        } as usize;
+        if n == 0 {
+            return Err(unsafe { GetLastError() } as i32);
+        }
+        if n < path.len() {
+            path.truncate(n);
+            return Ok(path);
+        }
+        if n >= 32768 {
+            return Err(ERROR_FILENAME_EXCED_RANGE as i32);
+        }
+        path.resize(n + 1, 0);
     }
-    path.truncate(n);
-    Some(path)
 }
 
 fn path_beneath(root: &[u16], path: &[u16]) -> bool {
-    use windows_sys::Win32::Globalization::{CompareStringOrdinal, CSTR_EQUAL};
     let mut path = path.split(|c| *c == 92).filter(|c| !c.is_empty());
     root.split(|c| *c == 92)
         .filter(|c| !c.is_empty())
-        .all(|component| {
-            path.next().is_some_and(|next| unsafe {
-                CompareStringOrdinal(
-                    component.as_ptr(),
-                    component.len() as i32,
-                    next.as_ptr(),
-                    next.len() as i32,
-                    1,
-                ) == CSTR_EQUAL
-            })
-        })
+        .all(|component| path.next() == Some(component))
 }
 
-fn contained(dir: &NativeDir) -> bool {
-    normalized_path(&dir.root)
-        .zip(normalized_path(&dir.file))
-        .is_some_and(|(root, path)| path_beneath(&root, &path))
+impl NativeSource {
+    fn handle_path(&self, file: &File) -> Result<Vec<u16>, i32> {
+        #[cfg(any(test, feature = "fixtures"))]
+        if let Some(code) = self.path_query_error {
+            return Err(code);
+        }
+        normalized_path(file)
+    }
+
+    fn containment(&self, dir: &NativeDir) -> Result<(), IncompleteReason> {
+        let root = self.handle_path(&dir.root).map_err(IncompleteReason::Io)?;
+        if Arc::ptr_eq(&dir.root, &dir.file) {
+            return Ok(());
+        }
+        let path = self.handle_path(&dir.file).map_err(IncompleteReason::Io)?;
+        if path_beneath(&root, &path) {
+            Ok(())
+        } else {
+            Err(IncompleteReason::ContainmentUnproven)
+        }
+    }
 }
 
+#[cfg(test)]
+thread_local! {
+    static PATH_QUERIES: std::cell::RefCell<Vec<(u32, usize)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
 #[cfg(test)]
 mod containment_tests {
     use super::*;
 
     #[test]
-    fn normalized_containment_compares_components_and_windows_case() {
+    fn normalized_containment_compares_exact_components() {
         for (root, path, expected) in [
             (
                 r"\\?\X:\Synthetic\Root",
                 r"\\?\x:\synthetic\ROOT\child",
-                true,
+                false,
             ),
             (
                 r"\\?\X:\Synthetic\Root",
@@ -751,7 +787,8 @@ mod containment_tests {
             (r"\\?\X:\Synthetic\Root", r"\\?\X:\Synthetic", false),
             (r"\\?\X:\Synthetic\Root", r"\\?\X:\Synthetic\Root", true),
             (r"\\?\X:\", r"\\?\X:\Synthetic", true),
-            (r"\\?\X:\Synthetic\Å", r"\\?\X:\Synthetic\å\child", true),
+            (r"\\?\X:\Synthetic\Å", r"\\?\X:\Synthetic\å\child", false),
+            (r"\Device\Volume\proj", r"\Device\Volume\PROJ\child", false),
             (r"\\?\X:\Synthetic", r"\\?\Y:\Synthetic\child", false),
         ] {
             assert_eq!(
@@ -837,11 +874,64 @@ mod containment_tests {
         );
         let _writer = unsafe { File::from_raw_handle(write) };
         dir.root = Arc::new(unsafe { File::from_raw_handle(read) });
-        assert!(normalized_path(&dir.root).is_none());
-        assert_eq!(
+        assert!(normalized_path(&dir.root).is_err());
+        assert!(matches!(
             source.list(&dir, &mut |_| panic!("failed containment emitted metadata")),
-            ListOutcome::Incomplete(IncompleteReason::OutsideScope)
+            ListOutcome::Incomplete(IncompleteReason::Io(_))
+        ));
+    }
+
+    #[test]
+    fn native_containment_queries_nt_paths_once_for_root_and_retries_long_paths() {
+        let temp = super::super::tests::canonical_tempdir();
+        let source = NativeSource::default();
+        if running_elevated() {
+            assert!(matches!(
+                source.open_root(temp.path()),
+                Err(SourceError::Refused)
+            ));
+            return;
+        }
+        std::fs::create_dir(temp.path().join("child")).unwrap();
+        let (root, _) = source.open_root(temp.path()).unwrap();
+        PATH_QUERIES.with_borrow_mut(Vec::clear);
+        let mut child = None;
+        assert_eq!(
+            source.list(&root, &mut |e| {
+                child = Some(source.open_child(&root, &e).unwrap().0);
+                Flow::Continue
+            }),
+            ListOutcome::Complete
         );
+        assert_eq!(
+            PATH_QUERIES.with_borrow(Clone::clone),
+            [(VOLUME_NAME_NT, 256)]
+        );
+        for _ in 0..2 {
+            PATH_QUERIES.with_borrow_mut(Vec::clear);
+            assert_eq!(
+                source.list(child.as_ref().unwrap(), &mut |_| panic!("empty child")),
+                ListOutcome::Complete
+            );
+            assert_eq!(
+                PATH_QUERIES.with_borrow(Clone::clone),
+                [(VOLUME_NAME_NT, 256); 2]
+            );
+        }
+        let mut long = temp.path().to_path_buf();
+        for _ in 0..6 {
+            long.push("synthetic-long-component-for-path-query-buffer-retry");
+        }
+        std::fs::create_dir_all(&long).unwrap();
+        let (long, _) = source.open_root(&long).unwrap();
+        PATH_QUERIES.with_borrow_mut(Vec::clear);
+        let path = normalized_path(&long.file).unwrap();
+        assert!(path.len() > 256);
+        let queries = PATH_QUERIES.with_borrow(Clone::clone);
+        assert_eq!(queries.len(), 2);
+        assert_eq!(queries[0], (VOLUME_NAME_NT, 256));
+        assert!(queries[1].1 > path.len());
+        assert_eq!(queries[1].0, VOLUME_NAME_NT);
     }
 }
 fn incomplete(error: SourceError) -> ListOutcome {
@@ -1011,6 +1101,9 @@ impl NativeSource {
         } as usize;
         if length == 0 || length >= current.len() || current[..length] != path {
             return ListOutcome::Incomplete(IncompleteReason::Io(ERROR_FILE_INVALID as i32));
+        }
+        if let Err(reason) = self.containment(dir) {
+            return ListOutcome::Incomplete(reason);
         }
         path.extend([92, 42, 0]);
         let mut data: WIN32_FIND_DATAW = unsafe { zeroed() };
