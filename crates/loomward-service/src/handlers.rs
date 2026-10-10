@@ -76,7 +76,7 @@ impl Inner {
         #[cfg(test)]
         self.hooks.before(command);
         use Command::*;
-        match command {
+        let handled = match command {
             SessionHello => self.hello(ctx),
             HealthGet => self.health(),
             RootsList => self.roots_list(),
@@ -119,7 +119,10 @@ impl Inner {
             BudgetsGet => engine(self.engine.budgets_get()),
             BudgetsSet => engine(self.engine.budgets_set(&req.decode_payload()?)),
             _ => unavailable("this command arrives with wave 3 (lane L20)"),
-        }
+        };
+        #[cfg(test)]
+        self.hooks.gate(command, "after");
+        handled
     }
 
     fn hello(&self, ctx: &CallContext) -> Handled {
@@ -332,7 +335,7 @@ impl Inner {
 
     fn grants_list(&self) -> Handled {
         let revs = self.revisions()?;
-        let rows = db::roots(&self.db(), None).map_err(sql_error)?;
+        let rows = db::grant_rows(&self.db()).map_err(sql_error)?;
         let grants: Vec<Value> = rows
             .iter()
             .map(|r| {
@@ -390,7 +393,16 @@ impl Inner {
         };
         let (root, fresh) = match self.grant(&path, "desktop_picker") {
             Ok(g) => g,
-            Err(r) => return refused(r),
+            Err(crate::Refused::Rule(r)) => return refused(r),
+            Err(crate::Refused::RootLimit) => {
+                return Err(with_reason(
+                    fail(
+                        ErrorCode::ResourceBudget,
+                        "64 roots are already granted; revoke one before granting another",
+                    ),
+                    "root_limit_reached",
+                ))
+            }
         };
         if !fresh {
             return refused(RootGrantResultRefusal::AlreadyGranted);
@@ -448,6 +460,8 @@ impl Inner {
     fn declare_tier(&self, r: DeclareTierRequest, expected: Option<Generation>) -> Handled {
         let volume = self.volume_row(&r.volume_id)?;
         let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
+        #[cfg(test)]
+        self.hooks.gate(Command::VolumesDeclareTier, "locked");
         let key = db::volumes(&self.db(), Some(volume))
             .map_err(sql_error)?
             .first()
