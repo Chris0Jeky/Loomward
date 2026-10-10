@@ -13,10 +13,16 @@ pub use sink::{Entry, ListingTicket, MemorySink, RunScope, ScanMessage, ScanSink
 use std::{
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
 };
+
+#[derive(Default)]
+pub(crate) struct RootGate {
+    revoked: bool,
+    duplicate_cancel: Arc<AtomicBool>,
+}
 
 /// Trusted root resolved from an active durable grant by the service, never from wire paths.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,25 +117,101 @@ impl GrantedRoot {
     pub fn dataset_class(&self) -> DatasetClass {
         self.dataset_class
     }
-    /// Content equality evidence for a trusted listing under this grant; never effect authority.
-    /// Personal grants remain metadata-only until a separate owner content-read decision.
-    pub fn inspect_duplicates(
-        &self,
-        entries: &[loomward_windows::duplicate_reader::Entry],
-        budget: loomward_windows::duplicate_reader::Budget,
-    ) -> Result<
-        loomward_windows::duplicate_reader::Report,
-        loomward_windows::duplicate_reader::Reason,
-    > {
-        use loomward_windows::duplicate_reader::{self, Reason};
-        if self.dataset_class != DatasetClass::Synthetic {
-            return Err(Reason::ContentReadGated);
-        }
-        let expected = self.expected.as_ref().ok_or(Reason::Unsupported)?;
-        duplicate_reader::inspect(&self.path, expected, entries, budget)
-    }
 }
 impl Engine {
+    /// Content equality evidence under a freshly checked active synthetic grant.
+    /// Personal grants remain metadata-only; root revocation cancels pending content reads.
+    pub fn inspect_duplicates(
+        &self,
+        root: &GrantedRoot,
+        entries: &[loomward_windows::duplicate_reader::Entry],
+        budget: loomward_windows::duplicate_reader::Budget,
+    ) -> EngineResult<loomward_windows::duplicate_reader::Report> {
+        let cancel = self.duplicate_read_admission(root)?;
+        let report = loomward_windows::duplicate_reader::inspect(
+            &root.path,
+            root.expected.as_ref().unwrap(),
+            entries,
+            budget,
+            cancel.clone(),
+        )
+        .map_err(|reason| EngineError::PermissionDenied {
+            message: reason.as_str().into(),
+        })?;
+        // A revoked observation never escapes as equality evidence.
+        let gate = self.scan_root_gate(root.root_id());
+        let revoked = gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if revoked.revoked || cancel.load(Ordering::Acquire) {
+            return Err(EngineError::PermissionDenied {
+                message: "cancelled".into(),
+            });
+        }
+        Ok(report)
+    }
+    fn duplicate_read_admission(&self, root: &GrantedRoot) -> EngineResult<Arc<AtomicBool>> {
+        use rusqlite::OpenFlags;
+        let denied = |message: &str| EngineError::PermissionDenied {
+            message: message.into(),
+        };
+        self.check_root(root)?;
+        if root.dataset_class != DatasetClass::Synthetic {
+            return Err(denied("content_read_gated"));
+        }
+        let gate = self.scan_root_gate(root.root_id());
+        let revoked = match gate.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(EngineError::Busy {
+                    message: "root already starting or revoking".into(),
+                    detail: None,
+                })
+            }
+        };
+        if revoked.revoked {
+            return Err(denied("root revoked"));
+        }
+        let expected = root
+            .expected
+            .as_ref()
+            .ok_or_else(|| denied("unsupported"))?;
+        let id = match expected.id {
+            Some(source::FileIdObs::Id128(id)) => id.to_vec(),
+            Some(source::FileIdObs::Id64(id)) => id.to_le_bytes().to_vec(),
+            None => return Err(denied("unsupported")),
+        };
+        let volume = expected
+            .volume_serial
+            .ok_or_else(|| denied("unsupported"))?;
+        let conn = rusqlite::Connection::open_with_flags(
+            self.config.state_dir.join("state.db"),
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|_| denied("grant store unavailable"))?;
+        // GrantedRoot carries native identity, not a durable row id: ambiguous matches fail closed.
+        let (count, active, class): (i64, i64, String) = conn
+            .query_row(
+                "SELECT count(*),count(CASE WHEN state='active' THEN 1 END),
+                    (SELECT value FROM meta WHERE key='dataset_class')
+             FROM root_grant WHERE display_path=?1 AND volume_key=?2 AND root_file_id=?3",
+                rusqlite::params![
+                    root.path.to_str().ok_or_else(|| denied("invalid_path"))?,
+                    format!("vsn_{volume}"),
+                    id
+                ],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .map_err(|_| denied("grant store unavailable"))?;
+        if class != "synthetic" {
+            return Err(denied("dataset_class_mismatch"));
+        }
+        if count != 1 || active != 1 {
+            return Err(denied("grant_not_active"));
+        }
+        Ok(revoked.duplicate_cancel.clone())
+    }
     /// The only production way to mint a [`GrantedRoot`] (#144): read grant `grant_id` from this
     /// engine's own `state.db`, require it `active`, take the path and dataset class from that
     /// durable row (never from a caller), and require the opened native root to carry the
@@ -155,6 +237,22 @@ impl Engine {
             .optional()
             .map_err(|_| denied("grant store unavailable"))?;
         let (path, volume_key, file_id, class) = row.ok_or_else(|| denied("grant_not_active"))?;
+        // The root ID must name this grant's catalogue root (`rt_<root row>_<instance tag>`).
+        let paired = rusqlite::Connection::open_with_flags(
+            self.config.state_dir.join("catalog.db"),
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .and_then(|c| {
+            c.query_row("SELECT id FROM root WHERE grant_id=?1", [grant_id], |r| {
+                r.get::<_, i64>(0)
+            })
+            .optional()
+        })
+        .map_err(|_| denied("grant store unavailable"))?
+        .is_some_and(|row| root_id.as_str().starts_with(&format!("rt_{row}_")));
+        if !paired {
+            return Err(denied("grant_root_mismatch"));
+        }
         let dataset_class = match class.as_str() {
             "synthetic" => DatasetClass::Synthetic,
             "personal" => DatasetClass::Personal,
@@ -216,7 +314,7 @@ impl Engine {
     ) -> EngineResult<Job> {
         self.start_scan(root, budget, RunScope::FullRoot)
     }
-    fn scan_root_gate(&self, root: &RootId) -> Arc<std::sync::Mutex<bool>> {
+    fn scan_root_gate(&self, root: &RootId) -> Arc<std::sync::Mutex<RootGate>> {
         self.scan_roots
             .lock()
             .unwrap()
@@ -250,7 +348,7 @@ impl Engine {
                 })
             }
         };
-        if *revoked {
+        if revoked.revoked {
             return Err(EngineError::PermissionDenied {
                 message: "root revoked".into(),
             });
@@ -417,7 +515,8 @@ impl Engine {
         let mut revoked = gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *revoked = true;
+        revoked.revoked = true;
+        revoked.duplicate_cancel.store(true, Ordering::Release);
         // Watch teardown can terminate a queued runner before it reaches the byte budget.
         let cancelled = self
             .jobs

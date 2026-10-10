@@ -8,6 +8,8 @@ license.workspace = true
 [features]
 # Explicit opt-in: disposable laboratory effects are absent from the default library.
 fixtures = []
+# Internal content-read boundary: only loomward-engine enables this in the workspace.
+content-read = []
 
 [dependencies]
 serde.workspace = true

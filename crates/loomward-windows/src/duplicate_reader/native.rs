@@ -22,6 +22,16 @@ use windows_sys::Win32::{
 const BLOCK: usize = 64 * 1024;
 const SHARE: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
 
+pub(super) fn non_elevated() -> Result<(), Reason> {
+    crate::win::non_elevated().map_err(|e| {
+        if e.kind() == io::ErrorKind::PermissionDenied {
+            Reason::Elevated
+        } else {
+            error(e)
+        }
+    })
+}
+
 pub(super) struct Reader<F> {
     pins: Vec<File>,
     hook: F,
@@ -65,13 +75,7 @@ fn signature(current: &ObservedIdentity, expected: &ObservedIdentity) -> bool {
 }
 impl<F: FnMut(Event, usize)> Reader<F> {
     pub(super) fn new(root: &Path, expected: &OpenedIdentity, hook: F) -> Result<Self, Reason> {
-        crate::win::non_elevated().map_err(|e| {
-            if e.kind() == io::ErrorKind::PermissionDenied {
-                Reason::Elevated
-            } else {
-                error(e)
-            }
-        })?;
+        non_elevated()?;
         let pins = enumerate::root_handles(
             root,
             FILE_READ_ATTRIBUTES | SYNCHRONIZE,
@@ -91,9 +95,13 @@ impl<F: FnMut(Event, usize)> Reader<F> {
         meter.check()?;
         let components: Vec<_> = entry.relative.components().collect();
         if components.is_empty()
-            || components
-                .iter()
-                .any(|c| !matches!(c, Component::Normal(_)))
+            || components.iter().any(|c| match c {
+                Component::Normal(name) => {
+                    name.encode_wide().any(|c| matches!(c, 0 | 58))
+                        || name.encode_wide().count() > 32767
+                }
+                _ => true,
+            })
         {
             return Err(Reason::InvalidPath);
         }
@@ -150,7 +158,7 @@ impl<F: FnMut(Event, usize)> Reader<F> {
                 parent,
                 &name,
                 FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-                SHARE,
+                FILE_SHARE_READ | FILE_SHARE_DELETE,
                 true,
             )
             .map_err(source)?
@@ -220,22 +228,30 @@ impl<F: FnMut(Event, usize)> Reader<F> {
         if ok == 0 && unsafe { GetLastError() } != ERROR_IO_PENDING {
             return Err(error(io::Error::last_os_error()));
         }
-        let remaining = meter.deadline.saturating_duration_since(Instant::now());
-        let millis = remaining.as_millis().min(u128::from(u32::MAX - 1)) as u32;
-        let wait = unsafe { WaitForSingleObject(event.0, millis) };
+        if ok == 0 {
+            (self.hook)(Event::PendingRead, index);
+        }
+        let stopped = loop {
+            if let Err(reason) = meter.check() {
+                break Some(reason);
+            }
+            let remaining = meter.deadline.saturating_duration_since(Instant::now());
+            let millis = remaining.as_millis().min(10) as u32;
+            match unsafe { WaitForSingleObject(event.0, millis) } {
+                WAIT_OBJECT_0 => break None,
+                WAIT_TIMEOUT => {}
+                _ => break Some(Reason::Io),
+            }
+        };
         let mut count = 0;
-        if wait != WAIT_OBJECT_0 {
+        if let Some(reason) = stopped {
             // Drain cancelled I/O before dropping its OVERLAPPED, event or buffer.
             unsafe {
                 CancelIoEx(file.as_raw_handle(), &overlapped);
                 GetOverlappedResult(file.as_raw_handle(), &overlapped, &mut count, 1);
             }
             meter.consumed(count as usize);
-            return Err(if wait == WAIT_TIMEOUT {
-                Reason::TimeBudget
-            } else {
-                Reason::Io
-            });
+            return Err(reason);
         }
         let result =
             unsafe { GetOverlappedResult(file.as_raw_handle(), &overlapped, &mut count, 0) };
@@ -333,6 +349,64 @@ mod tests {
     use super::*;
     use std::os::windows::io::FromRawHandle;
     use windows_sys::Win32::System::Pipes::CreateNamedPipeW;
+
+    #[test]
+    fn pending_content_read_is_cancelled_and_drained() {
+        use std::io::Write;
+        let name = format!(
+            r"\\.\pipe\loomward-duplicate-cancel-fixture-{}",
+            std::process::id()
+        );
+        let wide: Vec<_> = name.encode_utf16().chain(Some(0)).collect();
+        let handle = unsafe {
+            CreateNamedPipeW(
+                wide.as_ptr(),
+                PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED,
+                0,
+                1,
+                0,
+                64,
+                0,
+                ptr::null(),
+            )
+        };
+        assert_ne!(handle, INVALID_HANDLE_VALUE);
+        let file = unsafe { File::from_raw_handle(handle) };
+        let mut writer = File::options().write(true).open(name).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut pending = false;
+        let mut reader = Reader {
+            pins: vec![],
+            hook: |event, _| {
+                if event == Event::PendingRead {
+                    pending = true;
+                    cancel.store(true, Ordering::Release);
+                }
+            },
+        };
+        let mut meter = Meter::new(Budget {
+            bytes: 100,
+            time: Duration::from_millis(100),
+        });
+        meter.cancel = Some(cancel.clone());
+        assert_eq!(
+            reader.read(0, &file, 0, &mut [0; 4], &mut meter),
+            Err(Reason::Cancelled)
+        );
+        assert!(pending);
+        assert_eq!(meter.read, 0);
+        // Cancellation drains the old OVERLAPPED; the same handle remains usable.
+        writer.write_all(b"same").unwrap();
+        let mut reader = Reader {
+            pins: vec![],
+            hook: |_, _| {},
+        };
+        let mut buffer = [0; 4];
+        reader
+            .read(0, &file, 0, &mut buffer, &mut Meter::new(Budget::test()))
+            .unwrap();
+        assert_eq!(&buffer, b"same");
+    }
 
     #[test]
     fn named_pipe_handle_is_a_visible_special_file_refusal() {

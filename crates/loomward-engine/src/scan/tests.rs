@@ -6,8 +6,10 @@ use loomward_protocol::{DatasetClass, RootId};
 fn duplicate_content_is_gated_for_personal_grants() {
     let mut grant = root();
     grant.dataset_class = DatasetClass::Personal;
-    let err = grant
+    let engine = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Personal)).unwrap();
+    let err = engine
         .inspect_duplicates(
+            &grant,
             &[],
             loomward_windows::duplicate_reader::Budget {
                 bytes: 100,
@@ -15,7 +17,7 @@ fn duplicate_content_is_gated_for_personal_grants() {
             },
         )
         .unwrap_err();
-    assert_eq!(err.as_str(), "content_read_gated");
+    assert_eq!(err.to_body().message.as_str(), "content_read_gated");
 }
 
 #[cfg(windows)]
@@ -50,8 +52,16 @@ fn duplicate_synthetic_grant_returns_evidence() {
         relative: name.into(),
         expected: identity::observe(&temp.path().join(name)).unwrap(),
     });
-    let report = grant
+    let state = canonical_tempdir();
+    let conn = duplicate_grant_store(state.path(), &grant);
+    let engine = Engine::open(EngineConfig::new(
+        state.path().to_owned(),
+        DatasetClass::Synthetic,
+    ))
+    .unwrap();
+    let report = engine
         .inspect_duplicates(
+            &grant,
             &entries,
             Budget {
                 bytes: 100,
@@ -61,6 +71,161 @@ fn duplicate_synthetic_grant_returns_evidence() {
         .unwrap();
     assert_eq!(report.groups, vec![vec![0, 1]]);
     assert!(!report.partial);
+    conn.execute("UPDATE root_grant SET state='revoked'", [])
+        .unwrap();
+    let err = engine
+        .inspect_duplicates(&grant.clone(), &entries, duplicate_budget())
+        .unwrap_err();
+    assert_eq!(err.to_body().message.as_str(), "grant_not_active");
+}
+
+fn duplicate_budget() -> loomward_windows::duplicate_reader::Budget {
+    loomward_windows::duplicate_reader::Budget {
+        bytes: 100,
+        time: std::time::Duration::from_secs(10),
+    }
+}
+
+fn duplicate_grant_store(state: &std::path::Path, root: &GrantedRoot) -> rusqlite::Connection {
+    let conn = rusqlite::Connection::open(state.join("state.db")).unwrap();
+    conn.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);
+        INSERT INTO meta VALUES('dataset_class','synthetic');
+        CREATE TABLE root_grant(id INTEGER PRIMARY KEY,display_path TEXT,volume_key TEXT,root_file_id BLOB,state TEXT);").unwrap();
+    let expected = root.expected.unwrap();
+    let id = match expected.id.unwrap() {
+        FileIdObs::Id128(id) => id.to_vec(),
+        FileIdObs::Id64(id) => id.to_le_bytes().to_vec(),
+    };
+    conn.execute(
+        "INSERT INTO root_grant VALUES(1,?1,?2,?3,'active')",
+        rusqlite::params![
+            root.path.to_str().unwrap(),
+            format!("vsn_{}", expected.volume_serial.unwrap()),
+            id
+        ],
+    )
+    .unwrap();
+    conn
+}
+
+#[test]
+fn duplicate_inspection_checks_engine_dataset_class() {
+    let engine = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Personal)).unwrap();
+    let err = engine
+        .inspect_duplicates(&root(), &[], duplicate_budget())
+        .unwrap_err();
+    assert_eq!(err.to_body().message.as_str(), "dataset_class_mismatch");
+}
+
+#[test]
+fn duplicate_inspection_refuses_revoked_root_before_open() {
+    let engine = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Synthetic)).unwrap();
+    let grant = root();
+    engine.scan_cancel_root(grant.root_id()).unwrap();
+    let err = engine
+        .inspect_duplicates(&grant, &[], duplicate_budget())
+        .unwrap_err();
+    assert_eq!(err.to_body().message.as_str(), "root revoked");
+}
+
+#[test]
+fn duplicate_admission_uses_the_root_gate_and_cancellation() {
+    let state = tempfile::tempdir().unwrap();
+    let grant = root();
+    let _conn = duplicate_grant_store(state.path(), &grant);
+    let engine = Engine::open(EngineConfig::new(
+        state.path().to_owned(),
+        DatasetClass::Synthetic,
+    ))
+    .unwrap();
+    let gate = engine.scan_root_gate(grant.root_id());
+    let held = gate.lock().unwrap();
+    assert!(matches!(
+        engine.duplicate_read_admission(&grant),
+        Err(EngineError::Busy { .. })
+    ));
+    drop(held);
+    let cancel = engine.duplicate_read_admission(&grant).unwrap();
+    assert!(!cancel.load(Ordering::Acquire));
+    assert!(Arc::ptr_eq(
+        &cancel,
+        &engine.duplicate_read_admission(&grant.clone()).unwrap()
+    ));
+    engine.scan_cancel_root(grant.root_id()).unwrap();
+    assert!(cancel.load(Ordering::Acquire));
+    assert_eq!(
+        engine
+            .duplicate_read_admission(&grant)
+            .unwrap_err()
+            .to_body()
+            .message
+            .as_str(),
+        "root revoked"
+    );
+}
+
+#[test]
+fn duplicate_admission_rechecks_durable_class_identity_and_ambiguity() {
+    let state = tempfile::tempdir().unwrap();
+    let grant = root();
+    let conn = duplicate_grant_store(state.path(), &grant);
+    let engine = Engine::open(EngineConfig::new(
+        state.path().to_owned(),
+        DatasetClass::Synthetic,
+    ))
+    .unwrap();
+    engine.duplicate_read_admission(&grant).unwrap();
+    conn.execute("UPDATE meta SET value='personal'", [])
+        .unwrap();
+    assert_eq!(
+        engine
+            .duplicate_read_admission(&grant)
+            .unwrap_err()
+            .to_body()
+            .message
+            .as_str(),
+        "dataset_class_mismatch"
+    );
+    conn.execute("UPDATE meta SET value='synthetic'", [])
+        .unwrap();
+    for field in ["path", "volume", "identity"] {
+        let mut stale = grant.clone();
+        match field {
+            "path" => stale.path = "other-synthetic".into(),
+            "volume" => stale.expected.as_mut().unwrap().volume_serial = Some(43),
+            _ => stale.expected.as_mut().unwrap().id = Some(FileIdObs::Id64(2)),
+        }
+        assert_eq!(
+            engine
+                .duplicate_read_admission(&stale)
+                .unwrap_err()
+                .to_body()
+                .message
+                .as_str(),
+            "grant_not_active"
+        );
+    }
+    conn.execute("INSERT INTO root_grant SELECT 2,display_path,volume_key,root_file_id,'active' FROM root_grant WHERE id=1", []).unwrap();
+    assert_eq!(
+        engine
+            .duplicate_read_admission(&grant)
+            .unwrap_err()
+            .to_body()
+            .message
+            .as_str(),
+        "grant_not_active"
+    );
+    conn.execute("UPDATE root_grant SET state='revoked' WHERE id=1", [])
+        .unwrap();
+    assert_eq!(
+        engine
+            .duplicate_read_admission(&grant.clone())
+            .unwrap_err()
+            .to_body()
+            .message
+            .as_str(),
+        "grant_not_active"
+    );
 }
 use source::*;
 use std::{
@@ -701,6 +866,10 @@ fn root_identity_mismatch_never_enters_writer() {
     .unwrap_err();
     assert_eq!(error.to_body().message.as_str(), "root_identity_changed");
     assert!(sink.totals(root.root_id()).is_none());
+    assert!(
+        sink.identity_changed(root.root_id()),
+        "the writer is told, so it can record the transition (#206)"
+    );
 }
 
 struct BlockingSource {
@@ -1497,27 +1666,44 @@ fn granted_root_comes_only_from_an_active_durable_grant() {
     insert(1, &file_id, "active");
     insert(2, &file_id, "revoked");
     insert(3, &[9; 16], "active");
+    // Catalogue root row `g` observes grant `g`.
+    rusqlite::Connection::open(state.path().join("catalog.db"))
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE root(id INTEGER PRIMARY KEY,grant_id INTEGER);
+             INSERT INTO root VALUES(1,1),(2,2),(3,3),(4,4);",
+        )
+        .unwrap();
     let engine = Engine::open(EngineConfig::new(
         state.path().to_path_buf(),
         DatasetClass::Synthetic,
     ))
     .unwrap();
-    let id = || RootId::new("rt_granted").unwrap();
+    let rt = |row: i64| RootId::new(format!("rt_{row}_0a1b2c3d")).unwrap();
     let message =
         |r: EngineResult<GrantedRoot>| r.unwrap_err().to_body().message.as_str().to_owned();
-    let root = engine.granted_root(id(), 1).unwrap();
+    let root = engine.granted_root(rt(1), 1).unwrap();
     assert_eq!(root.path(), root_dir.path());
     assert_eq!(root.dataset_class(), DatasetClass::Synthetic);
-    assert_eq!(message(engine.granted_root(id(), 2)), "grant_not_active");
-    assert_eq!(message(engine.granted_root(id(), 4)), "grant_not_active");
+    assert_eq!(message(engine.granted_root(rt(2), 2)), "grant_not_active");
+    assert_eq!(message(engine.granted_root(rt(4), 4)), "grant_not_active");
     assert_eq!(
-        message(engine.granted_root(id(), 3)),
+        message(engine.granted_root(rt(3), 3)),
         "root_identity_changed"
+    );
+    // #206: a root ID and an active grant that do not belong together are refused.
+    assert_eq!(
+        message(engine.granted_root(rt(3), 1)),
+        "grant_root_mismatch"
+    );
+    assert_eq!(
+        message(engine.granted_root(RootId::new("rt_granted").unwrap(), 1)),
+        "grant_root_mismatch"
     );
     // The row's class, not the caller's, reaches the engine's class check.
     conn.execute("UPDATE meta SET value='personal'", [])
         .unwrap();
-    let personal = engine.granted_root(id(), 1).unwrap();
+    let personal = engine.granted_root(rt(1), 1).unwrap();
     assert_eq!(personal.dataset_class(), DatasetClass::Personal);
     engine
         .set_scan_sink(Arc::new(MemorySink::default()))
@@ -1609,4 +1795,164 @@ fn a_sink_without_watch_support_scans_unwatched() {
     assert_eq!(sink.0.totals(root.root_id()).unwrap().logical, 7);
     // No watch pin outlives the scan: the user can rename the scanned folder.
     std::fs::rename(temp.path().join("child"), temp.path().join("renamed")).unwrap();
+}
+/// One wide directory of near-limit (32,767-unit) child names: the names its listing holds until
+/// the children are adopted are charged to the arena reservation, so the held set stops at a
+/// limit instead of growing past the scan's byte budget (#206).
+struct WideNames;
+impl DirSource for WideNames {
+    type Dir = u64;
+    fn strategy(&self) -> Strategy {
+        Strategy::Portable
+    }
+    fn open_root(&self, _: &std::path::Path) -> Result<(u64, OpenedIdentity), SourceError> {
+        Ok((1, identity(1)))
+    }
+    fn open_child(&self, _: &u64, e: &RawEntry<'_>) -> Result<(u64, OpenedIdentity), SourceError> {
+        let Some(FileIdObs::Id64(id)) = e.file_id else {
+            unreachable!()
+        };
+        Ok((id, identity(id)))
+    }
+    fn list(&self, dir: &u64, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+        if *dir != 1 {
+            return ListOutcome::Complete;
+        }
+        let mut name = vec![u16::from(b'n'); 32767];
+        for i in 0..400u64 {
+            name[..3].copy_from_slice(&[
+                0x41 + (i / 26 / 26) as u16,
+                0x41 + (i / 26 % 26) as u16,
+                0x41 + (i % 26) as u16,
+            ]);
+            if sink(RawEntry {
+                name: &name,
+                file_id: Some(FileIdObs::Id64(i + 2)),
+                attributes: 0x10,
+                reparse_tag: None,
+                end_of_file: 0,
+                allocation_size: Some(0),
+                creation: None,
+                last_write: None,
+                change: None,
+                last_access: None,
+            }) == Flow::Stop
+            {
+                return ListOutcome::Incomplete(IncompleteReason::Cancelled);
+            }
+        }
+        ListOutcome::Complete
+    }
+}
+#[test]
+fn held_child_names_are_charged_to_the_scan_byte_budget() {
+    let bytes = Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES));
+    let arena = (bytes.capacity() / 4).min(16 * 1024 * 1024);
+    let report = run_scan(
+        &WideNames,
+        &root(),
+        1,
+        Arc::new(MemorySink::default()),
+        bytes,
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions::default(),
+    )
+    .unwrap();
+    assert!(report.limit_hit && !report.complete, "{report:?}");
+    let held = report.totals.dirs as usize * 32767 * 2;
+    assert!(
+        report.totals.dirs > 0 && held <= arena,
+        "{} held names ({held} bytes) exceed the {arena}-byte arena",
+        report.totals.dirs
+    );
+}
+/// A writer whose first child prepare is obsolete (the parent's publication was rejected).
+struct StalePrepare {
+    sink: MemorySink,
+    refused: AtomicBool,
+}
+impl ScanSink for StalePrepare {
+    fn refresh_listing(
+        &self,
+        root: &RootId,
+        run: u64,
+        ticket: ListingTicket,
+    ) -> crate::EngineResult<ListingTicket> {
+        self.sink.refresh_listing(root, run, ticket)
+    }
+    fn recover_interrupted(&self) -> crate::EngineResult<()> {
+        self.sink.recover_interrupted()
+    }
+    fn begin_run(&self, root: &RootId, run: u64, scope: &RunScope) -> crate::EngineResult<()> {
+        self.sink.begin_run(root, run, scope)
+    }
+    fn prepare_listing(
+        &self,
+        root: &RootId,
+        run: u64,
+        parent: Option<u64>,
+        name: &[u16],
+        identity: OpenedIdentity,
+    ) -> crate::EngineResult<ListingTicket> {
+        if parent.is_some() && !self.refused.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return Err(crate::EngineError::StaleGeneration {
+                message: "obsolete scan writer message".into(),
+                detail: loomward_protocol::Detail::new(std::collections::BTreeMap::from([(
+                    "reason".to_string(),
+                    serde_json::json!("listing_revision_changed"),
+                )]))
+                .ok(),
+            });
+        }
+        self.sink.prepare_listing(root, run, parent, name, identity)
+    }
+    fn consume(&self, root: &RootId, message: ScanMessage) -> crate::EngineResult<()> {
+        self.sink.consume(root, message)
+    }
+    fn finish_run(
+        &self,
+        root: &RootId,
+        run: u64,
+        scope: &RunScope,
+        complete: bool,
+    ) -> crate::EngineResult<()> {
+        self.sink.finish_run(root, run, scope, complete)
+    }
+    fn fence_root(&self, root: &RootId) -> crate::EngineResult<()> {
+        self.sink.fence_root(root)
+    }
+}
+/// #206 MEDIUM-2: an obsolete child prepare relists its parent instead of failing the run.
+#[test]
+fn stale_child_prepare_relists_the_parent() {
+    let sink = Arc::new(StalePrepare {
+        sink: MemorySink::default(),
+        refused: AtomicBool::new(false),
+    });
+    let root = root();
+    let report = run_scan(
+        &Tree,
+        &root,
+        1,
+        sink.clone(),
+        Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions {
+            workers: 1,
+            ..ScanOptions::default()
+        },
+    )
+    .expect("a stale prepare is not a run failure");
+    assert!(sink.refused.load(std::sync::atomic::Ordering::Acquire));
+    assert!(report.complete, "{report:?}");
+    assert_eq!(
+        report.totals,
+        Sums {
+            files: 1,
+            dirs: 1,
+            logical: 123,
+            allocated: Some(4096)
+        }
+    );
+    assert_eq!(sink.sink.totals(root.root_id()), Some(report.totals));
 }

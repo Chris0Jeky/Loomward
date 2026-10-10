@@ -416,9 +416,14 @@ def check_process_strip_failures(browser) -> None:
             if len(engine.telemetry_calls) >= 3:
                 break
             page.wait_for_timeout(100)
-        ok([r['command'] for r in engine.telemetry_calls[:3]] == ['telemetry.subscribe', 'telemetry.unsubscribe', 'telemetry.subscribe'],
-           'process strip: session epoch change releases the old lease before subscribing again')
-        ok(engine.telemetry_calls[1]['payload']['subscription_id'] == 'sub_fake_1', 'process strip: epoch change releases the correct subscription')
+        # The release is issued before the new subscribe, but both are separate requests, so their
+        # arrival order at the engine is not guaranteed: check the set, not the order.
+        first = engine.telemetry_calls[:3]
+        ok(first and first[0]['command'] == 'telemetry.subscribe'
+           and sorted(r['command'] for r in first) == ['telemetry.subscribe', 'telemetry.subscribe', 'telemetry.unsubscribe'],
+           'process strip: session epoch change releases the old lease and subscribes once again')
+        ok([r['payload']['subscription_id'] for r in first if r['command'] == 'telemetry.unsubscribe'] == ['sub_fake_1'],
+           'process strip: epoch change releases the correct subscription')
         page.evaluate("""() => {
           window.__stripStatus = document.querySelector('#strip-status');
           window.__stripAnnouncements = [];

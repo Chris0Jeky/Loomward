@@ -276,7 +276,7 @@ pub fn query_stop(code: u32, cancelled: bool) -> ListOutcome {
 mod native;
 #[cfg(windows)]
 pub(crate) use native::{non_elevated, open_watch_root};
-#[cfg(windows)]
+#[cfg(all(windows, any(feature = "content-read", test)))]
 pub(crate) use native::{open_relative_mode, root_handles};
 #[cfg(windows)]
 pub use native::{running_elevated, IoCancellation, NativeDir, NativeSource};
