@@ -1481,17 +1481,20 @@ fn absence_is_decided_by_identity_when_a_directory_is_replaced_at_its_name() {
     );
 }
 
-/// Excluded entries (here a junction, a reparse point) are never followed and never present.
+/// #206 MEDIUM-1, invariant 4: a directory replaced by a junction (a reparse point) between two
+/// scans stays visible as an `excluded` entry flagged `reparse_not_followed`. It is never
+/// followed and never counted, the replaced directory's old row retires, and the root's coverage
+/// is not complete while the job still reports the skip.
 #[cfg(windows)]
 #[test]
-fn excluded_entries_never_count_as_present() {
+fn a_junction_replacing_a_directory_stays_visible_as_excluded() {
     let Some(lab) = lab() else { return };
     let svc = &lab.svc;
     assert_eq!(
         settle(svc, &start(svc, &lab.root, "full"))["state"],
         "completed"
     );
-    assert!(child_named(&lab_slice(svc, &lab.root), "b").is_some());
+    let old = child_named(&lab_slice(svc, &lab.root), "b").unwrap();
     std::fs::remove_dir(lab.path.join("b")).unwrap();
     let made = std::process::Command::new("cmd")
         .args(["/C", "mklink", "/J", "b", "a"])
@@ -1503,12 +1506,99 @@ fn excluded_entries_never_count_as_present() {
     assert_eq!(done["state"], "completed", "{done:?}");
     assert!(done["progress"]["skipped"].as_u64().unwrap() >= 1);
     let slice = lab_slice(svc, &lab.root);
-    assert!(
-        child_named(&slice, "b").is_none(),
-        "an excluded entry is not present"
+    let b = slice["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["parent"] == json!(0) && n["name"] == "b")
+        .expect("the junction stays visible");
+    assert_eq!(b["coverage"], "excluded", "{b:?}");
+    assert_eq!(b["threads"]["permission"]["state"], "excluded", "{b:?}");
+    assert_eq!(
+        b["threads"]["permission"]["reason"], "reparse_not_followed",
+        "{b:?}"
     );
+    assert_eq!(
+        (b["files"].as_u64(), b["dirs"].as_u64()),
+        (Some(0), Some(0))
+    );
+    assert_ne!(
+        slice["nodes"][0]["coverage"], "complete",
+        "an excluded child keeps the root from claiming complete coverage"
+    );
+    let (roots, _) = ok("roots.list", call(svc, "roots.list", json!({})));
+    assert_eq!(
+        roots["roots"][0]["scan"]["coverage"], "partial",
+        "roots.list agrees with the tree"
+    );
+    // Never followed and never counted: the totals still equal a walk that skips reparse points.
     assert_eq!(slice_totals(&slice), walk(&lab.path));
     assert_eq!(slice_totals(&slice), (5, 2, 165));
+    assert_eq!(
+        err(call(svc, "node.inspect", json!({"node_id": old}))).code,
+        ErrorCode::NotFound,
+        "the replaced directory's row retired"
+    );
+    // A second scan keeps the same excluded row (no churn) and still completes.
+    let kept = child_named(&lab_slice(svc, &lab.root), "b").unwrap();
+    assert_eq!(
+        settle(svc, &start(svc, &lab.root, "refresh"))["state"],
+        "completed"
+    );
+    let again = lab_slice(svc, &lab.root);
+    assert_eq!(child_named(&again, "b"), Some(kept));
+    assert_eq!(slice_totals(&again), (5, 2, 165));
+}
+
+/// #206: a granted folder replaced at its path fails the identity check at scan start; the
+/// grant is recorded `identity_changed` in `state.db` and `roots.changed` says so, so the UI
+/// stops advertising a dead grant. Nothing is scanned and the grant is never active again.
+#[cfg(windows)]
+#[test]
+fn a_replaced_root_records_identity_changed_and_emits_roots_changed() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    std::fs::rename(&lab.path, lab.path.with_file_name("lab-moved")).unwrap();
+    std::fs::create_dir(&lab.path).unwrap();
+    let mut events = svc.subscribe(None);
+    let e = err(call(
+        svc,
+        "scan.start",
+        json!({"root_id": lab.root, "mode": "full"}),
+    ));
+    assert_eq!(
+        (e.code, e.message.as_str()),
+        (ErrorCode::PermissionDenied, "root_identity_changed")
+    );
+    let state: String = svc
+        .inner
+        .db()
+        .query_row("SELECT state FROM st.root_grant", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(state, "identity_changed");
+    let event = loop {
+        match events.recv_timeout(Duration::from_secs(2)) {
+            RecvOutcome::Event(e) if e.event == EventName::RootsChanged => break e,
+            RecvOutcome::Event(_) => continue,
+            other => panic!("{other:?}"),
+        }
+    };
+    event.validate().unwrap();
+    assert_eq!(event.data["roots"][0]["grant_state"], "identity_changed");
+    let (roots, _) = ok("roots.list", call(svc, "roots.list", json!({})));
+    assert_eq!(roots["roots"][0]["grant_state"], "identity_changed");
+    assert_eq!(roots["roots"][0]["scan"]["state"], "stale");
+    assert_eq!(
+        crate::db::counts(&svc.inner.db()).unwrap().0,
+        0,
+        "nothing scanned"
+    );
+    let again = err(call(
+        svc,
+        "scan.start",
+        json!({"root_id": lab.root, "mode": "full"}),
+    ));
+    assert_eq!(again.code, ErrorCode::PermissionDenied);
 }
 
 /// Revocation mid-scan: the grant commits revoked first, the run is cancelled and the writer
@@ -1611,6 +1701,11 @@ fn scan_start_is_refused_outside_registered_lab_roots() {
     ));
     assert_eq!(e.code, ErrorCode::CapabilityUnavailable);
     assert_eq!(reason(&e), Some("personal_scan_gated_184"));
+    assert!(
+        !e.message.contains("  ") && !e.message.contains("MEDIUM"),
+        "plain words on the wire: {}",
+        e.message.as_str()
+    );
     let synthetic = open(&tmp.path().join("synthetic"), DatasetClass::Synthetic);
     let (root, _) = fixture(&synthetic, 1);
     let e = err(call(
@@ -1733,4 +1828,142 @@ fn a_wide_lab_tree_matches_the_walk_under_parallel_workers() {
     assert_eq!(done["state"], "completed", "{done:?}");
     assert_eq!(done["coverage"], "complete");
     assert_eq!(slice_totals(&lab_slice(svc, &lab.root)), walk(&lab.path));
+}
+
+/// #206 LOW: a failed `EndRun` aborts the catalogue run, so the root is released instead of
+/// answering busy to every later scan until a restart.
+#[test]
+fn a_failed_end_run_releases_the_root() {
+    use loomward_engine::scan::source::{IdBasis, ListOutcome, OpenedIdentity};
+    let tmp = tempfile::tempdir().unwrap();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (root, grant) = register(&svc, 9);
+    let dir = crate::db::active_root_dir(&svc.inner.db(), root)
+        .unwrap()
+        .unwrap();
+    let id = RootId::new(svc.inner.root_id(root)).unwrap();
+    let sink = &svc.inner.scan;
+    sink.bind(&id, grant, dir);
+    svc.inner
+        .db()
+        .execute_batch(
+            "CREATE TRIGGER main.fail_end BEFORE UPDATE OF state ON scan_run
+             WHEN NEW.state='completed' BEGIN SELECT RAISE(ABORT,'injected'); END;",
+        )
+        .unwrap();
+    sink.begin_run(&id, 51, &RunScope::FullRoot).unwrap();
+    let identity = OpenedIdentity {
+        id: None,
+        basis: IdBasis::None,
+        volume_serial: None,
+        attributes: 0x10,
+        reparse_tag: None,
+    };
+    let ticket = sink.prepare_listing(&id, 51, None, &[], identity).unwrap();
+    sink.consume(
+        &id,
+        ScanMessage::ListingDone {
+            run: 51,
+            ticket,
+            outcome: ListOutcome::Complete,
+        },
+    )
+    .unwrap();
+    let mut events = svc.subscribe(None);
+    assert!(sink.finish_run(&id, 51, &RunScope::FullRoot, true).is_err());
+    let announced = loop {
+        match events.recv_timeout(Duration::from_millis(500)) {
+            RecvOutcome::Event(e) if e.event == EventName::TreeInvalidated => break true,
+            RecvOutcome::Event(_) => continue,
+            _ => break false,
+        }
+    };
+    assert!(announced, "a failed end still announces what was published");
+    let (run_state, active): (String, Option<i64>) = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT s.state,r.active_run FROM main.scan_run s JOIN main.root r ON r.id=s.root_id",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((run_state.as_str(), active), ("failed", None));
+    svc.inner
+        .db()
+        .execute_batch("DROP TRIGGER main.fail_end")
+        .unwrap();
+    sink.begin_run(&id, 52, &RunScope::FullRoot)
+        .expect("the root is not busy after a failed end");
+}
+
+/// #206 LOW: no `tree.invalidated` follows a revocation that fenced the root's writer.
+#[test]
+fn no_tree_invalidated_after_the_writer_is_fenced() {
+    let tmp = tempfile::tempdir().unwrap();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (root, grant) = register(&svc, 11);
+    let dir = crate::db::active_root_dir(&svc.inner.db(), root)
+        .unwrap()
+        .unwrap();
+    let id = RootId::new(svc.inner.root_id(root)).unwrap();
+    svc.inner.scan.bind(&id, grant, dir);
+    let mut events = svc.subscribe(None);
+    let mut next_tree = || loop {
+        match events.recv_timeout(Duration::from_millis(500)) {
+            RecvOutcome::Event(e) if e.event == EventName::TreeInvalidated => return true,
+            RecvOutcome::Event(_) => continue,
+            RecvOutcome::Timeout => return false,
+            other => panic!("{other:?}"),
+        }
+    };
+    svc.inner.scan.invalidated(&id, true);
+    assert!(next_tree(), "an unfenced root publishes");
+    svc.inner.scan.fence_root(&id).unwrap();
+    svc.inner.scan.invalidated(&id, true);
+    assert!(!next_tree(), "a fenced root never publishes");
+}
+
+/// #206: a root swapped after `granted_root` passed is caught by the scan itself; the writer
+/// records `identity_changed` and `roots.changed` follows, exactly as at scan start.
+#[test]
+fn a_scan_that_finds_the_root_swapped_records_identity_changed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (root, grant) = register(&svc, 12);
+    let dir = crate::db::active_root_dir(&svc.inner.db(), root)
+        .unwrap()
+        .unwrap();
+    let id = RootId::new(svc.inner.root_id(root)).unwrap();
+    svc.inner.scan.bind(&id, grant, dir);
+    let mut events = svc.subscribe(None);
+    svc.inner.scan.root_identity_changed(&id);
+    let state: String = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT state FROM st.root_grant WHERE id=?1",
+            [grant],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(state, "identity_changed");
+    let event = loop {
+        match events.recv_timeout(Duration::from_secs(2)) {
+            RecvOutcome::Event(e) if e.event == EventName::RootsChanged => break e,
+            RecvOutcome::Event(_) => continue,
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(event.data["roots"][0]["grant_state"], "identity_changed");
+    assert_eq!(
+        svc.inner
+            .scan
+            .begin_run(&id, 1, &RunScope::FullRoot)
+            .unwrap_err()
+            .to_body()
+            .code,
+        ErrorCode::PermissionDenied,
+        "the writer is fenced"
+    );
 }

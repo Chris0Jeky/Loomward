@@ -682,6 +682,26 @@ fn prepare_state(
             tx.commit()?;
             Ok(None)
         }
+        WriteCommand::GrantIdentityChanged { grant_id } => {
+            let tx = conn.transaction()?;
+            if !tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM st.root_grant WHERE id=?1)",
+                [grant_id],
+                |r| r.get::<_, bool>(0),
+            )? {
+                return Err(Error::NotFound);
+            }
+            // Only an active grant changes; a revoked one keeps its revocation.
+            if tx.execute(
+                "UPDATE st.root_grant SET state='identity_changed' WHERE id=?1 AND state='active'",
+                [grant_id],
+            )? > 0
+            {
+                state_revision(&tx)?;
+            }
+            tx.commit()?;
+            Ok(None)
+        }
         WriteCommand::ObjectReference {
             node,
             observed_at_ns,
@@ -866,7 +886,7 @@ fn retire_files(
     Ok(true)
 }
 fn full_traversal(conn: &Connection, run: i64, root: i64) -> Result<bool> {
-    Ok(conn.query_row("WITH RECURSIVE visible(id) AS (SELECT id FROM dir WHERE root_id=?2 AND parent_id IS NULL UNION ALL SELECT d.id FROM dir d JOIN visible v ON d.parent_id=v.id WHERE d.listing_state!='absent_pending') SELECT mode!='targeted' AND NOT EXISTS(SELECT 1 FROM dir WHERE id IN (SELECT id FROM visible) AND (seen_run!=?1 OR listing_state!='complete')) FROM scan_run WHERE id=?1",params![run,root],|r|r.get(0))?)
+    Ok(conn.query_row("WITH RECURSIVE visible(id) AS (SELECT id FROM dir WHERE root_id=?2 AND parent_id IS NULL UNION ALL SELECT d.id FROM dir d JOIN visible v ON d.parent_id=v.id WHERE d.listing_state!='absent_pending') SELECT mode!='targeted' AND NOT EXISTS(SELECT 1 FROM dir WHERE id IN (SELECT id FROM visible) AND (seen_run!=?1 OR listing_state NOT IN ('complete','excluded'))) FROM scan_run WHERE id=?1",params![run,root],|r|r.get(0))?)
 }
 fn retire_pending(conn: &mut Connection, run: i64) -> Result<()> {
     let root = active_run(conn, run, None)?;
@@ -1007,14 +1027,18 @@ fn apply(
                 ctx.parents.clear();
             }
             conn.execute("DELETE FROM stage_entry WHERE run_id=?1", [run_id])?;
-            let started = Instant::now();
-            rebuild_multilink(conn, root)?;
-            ctx.timings.lock().expect("timing lock").multilink_seconds +=
-                started.elapsed().as_secs_f64();
-            let started = Instant::now();
-            rollup(conn, root, full)?;
-            ctx.timings.lock().expect("timing lock").rollup_seconds +=
-                started.elapsed().as_secs_f64();
+            // A failed run is an abort that must always release the root: it skips the rollup
+            // (which may be what failed) and leaves aggregates dirty for a reader's repair.
+            if state != "failed" {
+                let started = Instant::now();
+                rebuild_multilink(conn, root)?;
+                ctx.timings.lock().expect("timing lock").multilink_seconds +=
+                    started.elapsed().as_secs_f64();
+                let started = Instant::now();
+                rollup(conn, root, full)?;
+                ctx.timings.lock().expect("timing lock").rollup_seconds +=
+                    started.elapsed().as_secs_f64();
+            }
             conn.execute(
                 "UPDATE scan_run SET state=?2,finished_at_ns=?3 WHERE id=?1",
                 params![run_id, state, finished_at_ns],
@@ -1024,7 +1048,8 @@ fn apply(
             ctx.fenced_listings.retain(|(run, _)| run != run_id);
             Ok(WriteReply::Done)
         }
-        WriteCommand::RevokeGrant { grant_id, .. } => {
+        WriteCommand::RevokeGrant { grant_id, .. }
+        | WriteCommand::GrantIdentityChanged { grant_id } => {
             conn.execute("UPDATE scan_run SET state='cancelled' WHERE root_id IN (SELECT id FROM root WHERE grant_id=?1) AND state='running'",[grant_id])?;
             conn.execute(
                 "UPDATE root SET active_run=NULL,state='stale' WHERE grant_id=?1",
@@ -1162,13 +1187,17 @@ fn publish(
         let mut values = Vec::with_capacity(128 * 17);
         let mut tuples = Vec::with_capacity(128);
         for o in files {
-            own.files += 1;
-            own.logical = checked(own.logical, o.logical)?;
-            own.allocated = checked(own.allocated, o.allocated.unwrap_or(0))?;
-            own.allocation_unknown += u64::from(o.allocated.is_none());
-            own.newest_ft = own.newest_ft.max(o.modified_ft);
             let identity = native_id(o, fs.as_deref());
-            noid += i64::from(identity.is_none());
+            // An excluded entry is listed, never counted (the engine's sums agree).
+            if o.flags & EXCLUDED_FLAGS == 0 {
+                own.files += 1;
+                own.logical = checked(own.logical, o.logical)?;
+                own.allocated = checked(own.allocated, o.allocated.unwrap_or(0))?;
+                own.allocation_unknown += u64::from(o.allocated.is_none());
+                own.newest_ft = own.newest_ft.max(o.modified_ft);
+                noid += i64::from(identity.is_none());
+            }
+            // Prepared continuity rows line up one-to-one with every listed file, excluded or not.
             let matched = if let Some(matches) = &mut matches {
                 let row = matches.next()?.ok_or(Error::CorruptDatabase)?;
                 row.get::<_, Option<i64>>(0)?
@@ -1259,12 +1288,22 @@ fn publish(
                 return Err(Error::Invalid("tree depth limit"));
             }
             let identity = native_id(o, fs.as_deref());
+            let excluded = o.flags & EXCLUDED_FLAGS != 0;
             let mut old_dir: Option<DirectoryMatch> = if let Some(id) = identity {
                 conn.prepare_cached("SELECT id,parent_id,name,name_utf16,listing_state,created_ft FROM dir WHERE root_id=?1 AND file_id=?2")?.query_row(params![root,id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()?
             } else {
                 conn.prepare_cached("SELECT id,parent_id,name,name_utf16,listing_state,created_ft FROM dir WHERE parent_id=?1 AND name=?2 AND name_utf16 IS ?3 AND file_id IS NULL AND listing_state!='absent_pending'")?.query_row(params![dir,o.name,o.name_utf16],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()?
             };
-            if let Some((id, parent, _, _, _, created)) = &old_dir {
+            if let Some((id, parent, _, _, state, created)) = &old_dir {
+                if *created == o.created_ft && excluded && state != "excluded" {
+                    // Same directory, now excluded (an attribute change: reparse, offline,
+                    // recall). Its row stays; its descendants become absent like any unseen
+                    // child, keeping their identities, so a returning directory revives them
+                    // with their references, and only a completed full traversal retires them.
+                    conn.execute("UPDATE dir SET listing_state='absent_pending' WHERE parent_id=?1 AND listing_state!='absent_pending'", [id])?;
+                    ctx.dirty(*id, run);
+                    members_changed = true;
+                }
                 if *created != o.created_ft {
                     let parent = parent.ok_or(Error::Invalid("cannot replace root"))?;
                     ctx.dirty(parent, run);
@@ -1294,7 +1333,7 @@ fn publish(
                 }
                 members_changed |=
                     name != o.name || utf16 != o.name_utf16 || state == "absent_pending";
-                conn.prepare_cached("UPDATE dir SET parent_id=?2,name=?3,name_utf16=?4,attrs=?5,reparse_tag=?6,flags=?7,created_ft=?8,modified_ft=?9,changed_ft=?10,listing_outcome=CASE WHEN listing_state='absent_pending' THEN NULL ELSE listing_outcome END,listing_state=CASE WHEN listing_state='absent_pending' THEN 'unlisted' ELSE listing_state END WHERE id=?1")?.execute(params![id,dir,o.name,o.name_utf16,o.attrs,o.reparse_tag,o.flags,o.created_ft,o.modified_ft,o.changed_ft])?;
+                conn.prepare_cached("UPDATE dir SET parent_id=?2,name=?3,name_utf16=?4,attrs=?5,reparse_tag=?6,flags=?7,created_ft=?8,modified_ft=?9,changed_ft=?10,listing_outcome=CASE WHEN ?11 OR listing_state IN ('absent_pending','excluded') THEN NULL ELSE listing_outcome END,listing_state=CASE WHEN ?11 THEN 'excluded' WHEN listing_state IN ('absent_pending','excluded') THEN 'unlisted' ELSE listing_state END,seen_run=CASE WHEN ?11 THEN ?12 ELSE seen_run END WHERE id=?1")?.execute(params![id,dir,o.name,o.name_utf16,o.attrs,o.reparse_tag,o.flags,o.created_ft,o.modified_ft,o.changed_ft,excluded,run])?;
                 id
             } else {
                 let quality = identity.map_or("path_observation", |id| {
@@ -1304,7 +1343,7 @@ fn publish(
                         "native_file_id_64"
                     }
                 });
-                conn.prepare_cached("INSERT INTO dir(root_id,parent_id,name,name_utf16,file_id,id_quality,id_basis,depth,attrs,reparse_tag,flags,created_ft,modified_ft,changed_ft,listing_state,born_run,seen_run) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,'unlisted',?15,0)")?.execute(params![root,dir,o.name,o.name_utf16,identity,quality,if identity.is_some(){o.id_basis.as_str()}else{"none"},depth+1,o.attrs,o.reparse_tag,o.flags,o.created_ft,o.modified_ft,o.changed_ft,run])?;
+                conn.prepare_cached("INSERT INTO dir(root_id,parent_id,name,name_utf16,file_id,id_quality,id_basis,depth,attrs,reparse_tag,flags,created_ft,modified_ft,changed_ft,listing_state,born_run,seen_run) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?16,?15,?17)")?.execute(params![root,dir,o.name,o.name_utf16,identity,quality,if identity.is_some(){o.id_basis.as_str()}else{"none"},depth+1,o.attrs,o.reparse_tag,o.flags,o.created_ft,o.modified_ft,o.changed_ft,run,if excluded {"excluded"} else {"unlisted"},if excluded {run} else {0}])?;
                 let id = conn.last_insert_rowid();
                 ctx.parents.insert(id, Some(dir));
                 ctx.dirty(id, run);
@@ -1342,7 +1381,7 @@ fn publish(
         let missing=conn.execute("UPDATE dir SET listing_state='absent_pending' WHERE parent_id=?1 AND listing_state!='absent_pending' AND id NOT IN (SELECT id FROM listing_seen WHERE kind=0)",[dir])?;
         members_changed |= missing > 0;
     } else {
-        let sums:(i64,i64,i64,i64,i64,Option<i64>)=conn.query_row("SELECT count(*),coalesce(sum(logical),0),coalesce(sum(allocated),0),coalesce(sum(allocated IS NULL),0),coalesce(sum(file_id IS NULL),0),max(modified_ft) FROM file WHERE dir_id=?1",[dir],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?;
+        let sums:(i64,i64,i64,i64,i64,Option<i64>)=conn.query_row("SELECT count(*),coalesce(sum(logical),0),coalesce(sum(allocated),0),coalesce(sum(allocated IS NULL),0),coalesce(sum(file_id IS NULL),0),max(modified_ft) FROM file WHERE dir_id=?1 AND flags & ?2 = 0",params![dir,EXCLUDED_FLAGS],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?;
         own.files = sums.0 as u64;
         own.logical = sums.1 as u64;
         own.allocated = sums.2 as u64;
@@ -1414,6 +1453,7 @@ pub(crate) fn rollup(conn: &Connection, root: i64, clean: bool) -> Result<()> {
         parent: Option<i64>,
         totals: Totals,
         noid: i64,
+        excluded: bool,
         children: Vec<usize>,
     }
     let mut items = {
@@ -1438,12 +1478,18 @@ pub(crate) fn rollup(conn: &Connection, root: i64, clean: bool) -> Result<()> {
                         ..Totals::default()
                     },
                     noid: r.get(10)?,
+                    excluded: r.get::<_, String>(9)? == "excluded",
                     children: Vec::new(),
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows
     };
+    for item in items.iter_mut().filter(|d| d.excluded) {
+        // An excluded directory's own totals predate its exclusion: never count them.
+        item.totals = Totals::default();
+        item.noid = 0;
+    }
     let by_id: HashMap<_, _> = items.iter().enumerate().map(|(i, d)| (d.id, i)).collect();
     let Some(start) = items.iter().position(|d| d.parent.is_none()) else {
         return Err(Error::NotFound);
@@ -1483,10 +1529,12 @@ pub(crate) fn rollup(conn: &Connection, root: i64, clean: bool) -> Result<()> {
             t.complete,
             noid
         ])?;
+        // A visible excluded directory is not counted, like an excluded file.
+        let counted = u64::from(!items[i].excluded);
         if let Some(p) = items[i].parent.and_then(|p| by_id.get(&p).copied()) {
             let a = &mut items[p];
             a.totals.files = checked(a.totals.files, t.files)?;
-            a.totals.dirs = checked(a.totals.dirs, t.dirs + 1)?;
+            a.totals.dirs = checked(a.totals.dirs, t.dirs + counted)?;
             a.totals.logical = checked(a.totals.logical, t.logical)?;
             a.totals.allocated = checked(a.totals.allocated, t.allocated)?;
             a.totals.allocation_unknown =
