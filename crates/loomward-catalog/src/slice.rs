@@ -276,8 +276,8 @@ fn slice(
         let mut unknown = 0_u64;
         let mut counted = 0_u64;
         for child in children {
-            // An excluded entry is shown but never counted in its parent's totals.
-            if child.flags & EXCLUDED_FLAGS == 0 {
+            // An excluded entry, or anything left inside one, is shown but never counted.
+            if (child.flags | parent_row.flags) & EXCLUDED_FLAGS == 0 {
                 counted += 1;
                 logical = add(logical, child.totals.logical)?;
                 allocated = add(allocated, child.totals.allocated)?;

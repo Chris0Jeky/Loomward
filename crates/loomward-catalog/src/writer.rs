@@ -822,7 +822,7 @@ fn retire_files(
             .validation_dry_run_seconds += started.elapsed().as_secs_f64();
         result?;
     }
-    conn.execute_batch("CREATE TEMP TABLE IF NOT EXISTS continuity_entry(kind INTEGER,name TEXT,raw BLOB,identity BLOB,created_ft INTEGER,excluded INTEGER);CREATE INDEX IF NOT EXISTS continuity_by_identity ON continuity_entry(kind,identity,created_ft);CREATE INDEX IF NOT EXISTS continuity_by_name ON continuity_entry(kind,name,raw);DELETE FROM continuity_entry")?;
+    conn.execute_batch("CREATE TEMP TABLE IF NOT EXISTS continuity_entry(kind INTEGER,name TEXT,raw BLOB,identity BLOB,created_ft INTEGER);CREATE INDEX IF NOT EXISTS continuity_by_identity ON continuity_entry(kind,identity,created_ft);CREATE INDEX IF NOT EXISTS continuity_by_name ON continuity_entry(kind,name,raw);DELETE FROM continuity_entry")?;
     old_files(conn, dir)?;
     let fs: Option<String> = conn.query_row("SELECT v.filesystem FROM dir d JOIN root r ON r.id=d.root_id JOIN volume v ON v.id=r.volume_id WHERE d.id=?1", [dir], |r| r.get(0))?;
     let mut direct = incoming;
@@ -832,7 +832,7 @@ fn retire_files(
         )?;
         let mut rows = chunks.query(params![run, dir])?;
         let mut insert =
-            conn.prepare_cached("INSERT INTO continuity_entry VALUES(?1,?2,?3,?4,?5,?6)")?;
+            conn.prepare_cached("INSERT INTO continuity_entry VALUES(?1,?2,?3,?4,?5)")?;
         loop {
             let decoded;
             let (files, dirs) = if let Some(direct) = direct.take() {
@@ -848,14 +848,7 @@ fn retire_files(
             for (kind, entries) in [(1, files), (0, dirs)] {
                 for o in entries {
                     let identity = native_id(o, fs.as_deref());
-                    insert.execute(params![
-                        kind,
-                        o.name,
-                        o.name_utf16,
-                        identity,
-                        o.created_ft,
-                        o.flags & EXCLUDED_FLAGS != 0
-                    ])?;
+                    insert.execute(params![kind, o.name, o.name_utf16, identity, o.created_ft])?;
                     if kind == 1 {
                         match_file(
                             conn,
@@ -879,7 +872,7 @@ fn retire_files(
             FROM st.object_ref o WHERE o.kind='file' AND o.state='resolved' AND o.catalog_instance=(SELECT value FROM meta WHERE key='instance_id') AND EXISTS(SELECT 1 FROM file f JOIN old_file x ON x.id=f.id WHERE f.id=o.row_id AND f.born_run=o.born_run AND x.used=0 AND EXISTS(SELECT 1 FROM old_file s WHERE s.used=1 AND s.identity=f.file_id AND s.created_ft IS f.created_ft))", [token])?;
         tx.commit()?;
     }
-    retire_selected(conn,"WITH RECURSIVE replaced(id) AS (SELECT d.id FROM dir d JOIN continuity_entry e ON e.kind=0 AND e.identity IS d.file_id AND (e.created_ft IS NOT d.created_ft OR (e.excluded AND d.listing_state!='excluded')) AND (d.file_id IS NOT NULL OR (d.parent_id=?1 AND e.name=d.name AND e.raw IS d.name_utf16)) WHERE d.root_id=(SELECT root_id FROM dir WHERE id=?1) UNION ALL SELECT d.id FROM dir d JOIN replaced x ON d.parent_id=x.id) SELECT o.id FROM st.object_ref o JOIN file f ON f.id=o.row_id WHERE o.kind='file' AND o.state='resolved' AND f.dir_id=?1 AND o.catalog_instance=(SELECT value FROM meta WHERE key='instance_id') AND o.born_run=f.born_run AND NOT EXISTS(SELECT 1 FROM continuity_entry e WHERE e.kind=1 AND e.identity=f.file_id AND e.created_ft IS f.created_ft) AND (?2 OR EXISTS(SELECT 1 FROM continuity_entry e WHERE e.kind=1 AND ((e.name=f.name AND e.raw IS f.name_utf16) OR e.identity=f.file_id))) UNION SELECT o.id FROM st.object_ref o WHERE o.state='resolved' AND o.catalog_instance=(SELECT value FROM meta WHERE key='instance_id') AND ((o.kind='dir' AND o.row_id IN (SELECT id FROM replaced)) OR (o.kind='file' AND o.row_id IN (SELECT id FROM file WHERE dir_id IN (SELECT id FROM replaced))))",params![dir,complete])
+    retire_selected(conn,"WITH RECURSIVE replaced(id) AS (SELECT d.id FROM dir d JOIN continuity_entry e ON e.kind=0 AND e.identity IS d.file_id AND e.created_ft IS NOT d.created_ft AND (d.file_id IS NOT NULL OR (d.parent_id=?1 AND e.name=d.name AND e.raw IS d.name_utf16)) WHERE d.root_id=(SELECT root_id FROM dir WHERE id=?1) UNION ALL SELECT d.id FROM dir d JOIN replaced x ON d.parent_id=x.id) SELECT o.id FROM st.object_ref o JOIN file f ON f.id=o.row_id WHERE o.kind='file' AND o.state='resolved' AND f.dir_id=?1 AND o.catalog_instance=(SELECT value FROM meta WHERE key='instance_id') AND o.born_run=f.born_run AND NOT EXISTS(SELECT 1 FROM continuity_entry e WHERE e.kind=1 AND e.identity=f.file_id AND e.created_ft IS f.created_ft) AND (?2 OR EXISTS(SELECT 1 FROM continuity_entry e WHERE e.kind=1 AND ((e.name=f.name AND e.raw IS f.name_utf16) OR e.identity=f.file_id))) UNION SELECT o.id FROM st.object_ref o WHERE o.state='resolved' AND o.catalog_instance=(SELECT value FROM meta WHERE key='instance_id') AND ((o.kind='dir' AND o.row_id IN (SELECT id FROM replaced)) OR (o.kind='file' AND o.row_id IN (SELECT id FROM file WHERE dir_id IN (SELECT id FROM replaced))))",params![dir,complete])
 }
 fn full_traversal(conn: &Connection, run: i64, root: i64) -> Result<bool> {
     Ok(conn.query_row("WITH RECURSIVE visible(id) AS (SELECT id FROM dir WHERE root_id=?2 AND parent_id IS NULL UNION ALL SELECT d.id FROM dir d JOIN visible v ON d.parent_id=v.id WHERE d.listing_state!='absent_pending') SELECT mode!='targeted' AND NOT EXISTS(SELECT 1 FROM dir WHERE id IN (SELECT id FROM visible) AND (seen_run!=?1 OR listing_state NOT IN ('complete','excluded'))) FROM scan_run WHERE id=?1",params![run,root],|r|r.get(0))?)
@@ -1275,9 +1268,16 @@ fn publish(
                 conn.prepare_cached("SELECT id,parent_id,name,name_utf16,listing_state,created_ft FROM dir WHERE parent_id=?1 AND name=?2 AND name_utf16 IS ?3 AND file_id IS NULL AND listing_state!='absent_pending'")?.query_row(params![dir,o.name,o.name_utf16],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()?
             };
             if let Some((id, parent, _, _, state, created)) = &old_dir {
-                // A directory that is now excluded (a junction, a placeholder) is replaced: its
-                // old subtree is no longer observable, so it never stays claimed behind the entry.
-                if *created != o.created_ft || (excluded && state != "excluded") {
+                if *created == o.created_ft && excluded && state != "excluded" {
+                    // Same directory, now excluded (an attribute change: reparse, offline,
+                    // recall). Its row stays; its descendants become absent like any unseen
+                    // child, keeping their identities, so a returning directory revives them
+                    // with their references, and only a completed full traversal retires them.
+                    conn.execute("UPDATE dir SET listing_state='absent_pending' WHERE parent_id=?1 AND listing_state!='absent_pending'", [id])?;
+                    ctx.dirty(conn, *id, run)?;
+                    members_changed = true;
+                }
+                if *created != o.created_ft {
                     let parent = parent.ok_or(Error::Invalid("cannot replace root"))?;
                     ctx.dirty(conn, parent, run)?;
                     conn.execute("WITH RECURSIVE replaced(id) AS (SELECT ?1 UNION ALL SELECT d.id FROM dir d JOIN replaced x ON d.parent_id=x.id) UPDATE dir SET listing_state='absent_pending',file_id=NULL,id_quality='path_observation',id_basis='none' WHERE id IN (SELECT id FROM replaced)", [id])?;
@@ -1306,7 +1306,7 @@ fn publish(
                 }
                 members_changed |=
                     name != o.name || utf16 != o.name_utf16 || state == "absent_pending";
-                conn.prepare_cached("UPDATE dir SET parent_id=?2,name=?3,name_utf16=?4,attrs=?5,reparse_tag=?6,flags=?7,created_ft=?8,modified_ft=?9,changed_ft=?10,listing_outcome=CASE WHEN listing_state IN ('absent_pending','excluded') THEN NULL ELSE listing_outcome END,listing_state=CASE WHEN ?11 THEN 'excluded' WHEN listing_state IN ('absent_pending','excluded') THEN 'unlisted' ELSE listing_state END,seen_run=CASE WHEN ?11 THEN ?12 ELSE seen_run END WHERE id=?1")?.execute(params![id,dir,o.name,o.name_utf16,o.attrs,o.reparse_tag,o.flags,o.created_ft,o.modified_ft,o.changed_ft,excluded,run])?;
+                conn.prepare_cached("UPDATE dir SET parent_id=?2,name=?3,name_utf16=?4,attrs=?5,reparse_tag=?6,flags=?7,created_ft=?8,modified_ft=?9,changed_ft=?10,listing_outcome=CASE WHEN ?11 OR listing_state IN ('absent_pending','excluded') THEN NULL ELSE listing_outcome END,listing_state=CASE WHEN ?11 THEN 'excluded' WHEN listing_state IN ('absent_pending','excluded') THEN 'unlisted' ELSE listing_state END,seen_run=CASE WHEN ?11 THEN ?12 ELSE seen_run END WHERE id=?1")?.execute(params![id,dir,o.name,o.name_utf16,o.attrs,o.reparse_tag,o.flags,o.created_ft,o.modified_ft,o.changed_ft,excluded,run])?;
                 id
             } else {
                 let quality = identity.map_or("path_observation", |id| {
@@ -1458,6 +1458,11 @@ pub(crate) fn rollup(conn: &Connection, root: i64, clean: bool) -> Result<()> {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows
     };
+    for item in items.iter_mut().filter(|d| d.excluded) {
+        // An excluded directory's own totals predate its exclusion: never count them.
+        item.totals = Totals::default();
+        item.noid = 0;
+    }
     let by_id: HashMap<_, _> = items.iter().enumerate().map(|(i, d)| (d.id, i)).collect();
     let Some(start) = items.iter().position(|d| d.parent.is_none()) else {
         return Err(Error::NotFound);
