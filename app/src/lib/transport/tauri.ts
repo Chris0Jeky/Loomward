@@ -30,8 +30,16 @@ export async function createTauriTransport(api?: TauriApi, opts: TauriOptions = 
 
     async call(request: RequestEnvelope): Promise<ResponseEnvelope> {
       try {
+        const bytes = new TextEncoder().encode(JSON.stringify(request));
         // In-process IPC: the envelope comes back as-is; the client validates its shape.
-        return (await invoke('lw_call', new TextEncoder().encode(JSON.stringify(request)))) as ResponseEnvelope;
+        try {
+          return (await invoke('lw_call', bytes)) as ResponseEnvelope;
+        } catch (e) {
+          // Busy rejects before dispatch: retrying these bytes cannot repeat a service call.
+          if (typeof e !== 'string' || !e.startsWith('busy:')) throw e;
+          await sleep(BACKOFF_START_MS);
+          return (await invoke('lw_call', bytes)) as ResponseEnvelope;
+        }
       } catch (e) {
         throw new TransportError(`desktop engine not reachable: ${typeof e === 'string' ? e : e instanceof Error ? e.message : 'invoke failed'}`);
       }
@@ -55,12 +63,20 @@ export async function createTauriTransport(api?: TauriApi, opts: TauriOptions = 
           });
           const channel = new Channel<EventEnvelope>();
           let lagged = false;
+          let firstHello = true;
+          let replayThrough: { epoch: string; seq: number } | null = null;
           channel.onmessage = (m) => {
             if (!attemptLive || stopped) return;
             beat(); // any message, even a malformed one, proves the channel is alive
             const ev = asEvent(m);
+            if (ev?.event === 'stream.hello' && firstHello) {
+              firstHello = false;
+              const last = (ev.data as { last_seq?: unknown }).last_seq;
+              if (tracker.point?.epoch === ev.epoch && Number.isSafeInteger(last)) replayThrough = { epoch: ev.epoch, seq: last as number };
+            }
             // Channel.send is fire-and-forget: discard queued stale data after a renderer stall.
-            if (ev && Date.now() - Date.parse(ev.at) > 5000) {
+            const replay = ev && replayThrough !== null && ev.epoch === replayThrough.epoch && ev.seq <= replayThrough.seq;
+            if (ev && !replay && Date.now() - Date.parse(ev.at) > 5000) {
               if (!lagged) {
                 const gap: EventEnvelope = { ...ev, event: 'stream.lagged', at: new Date().toISOString(),
                   data: { reason: 'subscriber_overflow', dropped: null, resync: ['roots', 'volumes', 'jobs', 'tree', 'learning'] } };

@@ -103,7 +103,7 @@ impl Desktop {
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
                 (n < MAX_CALLS).then_some(n + 1)
             })
-            .map_err(|_| "at most four calls in flight".to_string())?;
+            .map_err(|_| "busy: at most four calls in flight".to_string())?;
         Ok(CallPermit(self.calls.clone()))
     }
 
