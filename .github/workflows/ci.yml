@@ -77,7 +77,14 @@ jobs:
       # Hosted Windows supports real Tauri windows; CDP drives WebView2 without human input.
       # This is windowed automation (including WM_CLOSE), not Chromium's headless mode.
       # https://v2.tauri.app/develop/tests/webdriver/ci/
+      - name: WebView2 runtime present
+        run: |
+          $keys = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}', 'HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          $keys | ForEach-Object { Get-ItemProperty $_ -ErrorAction SilentlyContinue } | Select-Object -First 1 pv | Format-List
       - run: python native/tests/webview2_probe.py --out .loomward/ci-webview2
+      - name: Desktop shell log on failure
+        if: failure()
+        run: Get-ChildItem .loomward/ci-webview2 -Filter *.log | ForEach-Object { "== $($_.Name)"; Get-Content -Raw $_.FullName }
   app:
     strategy:
       fail-fast: false
