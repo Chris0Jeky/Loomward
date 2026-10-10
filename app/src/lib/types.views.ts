@@ -146,10 +146,21 @@ export interface PoolUse { pool: PoolName; max_workers: number; busy_workers: nu
 export interface EngineSample { private_commit_bytes: NullableBytes; working_set_bytes: NullableBytes; cpu_fraction: Fraction; threads: number | null; pools: PoolUse[] }
 export type TelemetryChannel = 'system' | 'processes' | 'gpu' | 'disks' | 'engine';
 export interface TelemetrySnapshotRequest { channels: TelemetryChannel[] }
-/** Only the channels this lane reads are typed; gpu, disks and processes stay `unknown` here. */
+export type NullableRate = number | null;
+/** Read by the Observatory gauges (lane L10). */
+export interface GpuSample {
+  state: 'observed' | 'unavailable' | 'denied';
+  basis: 'pdh_gpu_counters' | 'unavailable';
+  adapters: { adapter_id: string; name: string; dedicated_total_bytes: NullableBytes; dedicated_used_bytes: NullableBytes; shared_used_bytes: NullableBytes; engine_busy_fraction: Fraction }[];
+}
+export interface DiskSample {
+  state: 'observed' | 'unavailable';
+  disks: { disk_label: string; volume_ids: string[]; read_bytes_per_s: NullableRate; write_bytes_per_s: NullableRate; busy_fraction: Fraction; queue_length: NullableRate }[];
+}
+/** The channels the views read are typed; processes stays `unknown` here (processes.list serves rows). */
 export interface TelemetrySample {
   sample_seq: number; observed_at: Timestamp; elapsed_ms: number | null;
-  system: SystemSample | null; gpu: unknown; disks: unknown; engine: EngineSample | null; processes: unknown;
+  system: SystemSample | null; gpu: GpuSample | null; disks: DiskSample | null; engine: EngineSample | null; processes: unknown;
 }
 export interface TelemetrySubscribeRequest { subscription_id: string | null; channels: TelemetryChannel[]; interval_ms: 1000 | 2000 | 5000 | 10000 }
 export interface TelemetrySubscription { subscription_id: string; channels: TelemetryChannel[]; interval_ms: number; expires_at: Timestamp }

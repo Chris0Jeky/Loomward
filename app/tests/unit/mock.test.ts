@@ -71,7 +71,7 @@ describe('mock transport', () => {
     expect(meta.dataset_class).toBe('synthetic');
     expect(result.dataset_class).toBe('synthetic');
     expect(Object.values(result.capabilities.effects).every((v) => v === false)).toBe(true);
-    expect({ ...result.features, telemetry_available: false }).toEqual(Object.fromEntries(Object.keys(result.features).map((k) => [k, false]))); // only telemetry is served
+    expect({ ...result.features, telemetry_available: false, gpu_available: false }).toEqual(Object.fromEntries(Object.keys(result.features).map((k) => [k, false]))); // only (synthetic) telemetry, GPU included, is served
   });
 
   it('answers unimplemented commands with an error, never invented data', async () => {
