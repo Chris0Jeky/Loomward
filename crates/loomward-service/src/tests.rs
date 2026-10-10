@@ -999,3 +999,26 @@ fn a_malformed_node_id_key_refuses_to_open() {
         );
     }
 }
+
+/// #185 item 2: a mutation whose thread could not be spawned never ran, so its request_id is
+/// free: a protocol-following retry runs instead of replaying `no worker`.
+#[test]
+fn a_failed_spawn_leaves_the_request_id_free_for_a_retry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    svc.inner
+        .hooks
+        .fail_spawn
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let e = err(declare(&svc, "retry-me", "vo_unknown", 2, None, None));
+    assert_eq!((e.code, e.retryable), (ErrorCode::ResourceBudget, true));
+    assert_eq!(
+        err(declare(&svc, "retry-me", "vo_unknown", 2, None, None)).code,
+        ErrorCode::NotFound,
+        "the retry ran"
+    );
+    assert_eq!(
+        svc.inner.hooks.runs.lock().unwrap()[&Command::VolumesDeclareTier],
+        1
+    );
+}

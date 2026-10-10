@@ -433,12 +433,10 @@ impl Service {
                         })
                 };
                 if spawned.is_err() {
-                    // No thread: the ticket is never issued, so the queue order is untouched.
-                    let e = fail(ErrorCode::ResourceBudget, "no worker");
-                    self.inner.idem.finish(
-                        &id,
-                        ResponseEnvelope::error(Some(id.clone()), e.clone(), None),
-                    );
+                    // No thread: nothing ran. The ticket is never issued (queue order untouched)
+                    // and the key is freed, so a retry with the same request_id runs.
+                    self.inner.idem.release(&id);
+                    let e = retry_flag(command, fail(ErrorCode::ResourceBudget, "no worker"));
                     return ResponseEnvelope::error(Some(id), e, None);
                 }
                 if let Some(q) = queue.as_mut() {
