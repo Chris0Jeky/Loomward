@@ -96,6 +96,60 @@ fn failed_or_partial_providers_keep_coverage_and_evidence() {
 }
 
 #[test]
+fn denied_and_unavailable_readers_cannot_publish_entries() {
+    for state in [ProviderState::Denied, ProviderState::Unavailable] {
+        let providers = inventory(&Fake(RegistryRead {
+            state,
+            reason: Some("synthetic provider failure".into()),
+            entries: vec![RegistryEntry {
+                key: "synthetic".into(),
+                values: BTreeMap::new(),
+            }],
+        }));
+        for provider in &providers[..REGISTRY_VIEWS.len()] {
+            assert_eq!(provider.state, state);
+            assert_eq!(
+                provider.reason.as_deref(),
+                Some("synthetic provider failure")
+            );
+            assert!(provider.applications.is_empty());
+        }
+    }
+}
+
+#[test]
+fn coverage_reasons_are_normalised_for_any_reader() {
+    for state in [
+        ProviderState::Available,
+        ProviderState::Partial,
+        ProviderState::Denied,
+        ProviderState::Unavailable,
+    ] {
+        for reason in [None, Some(""), Some(" \t"), Some("synthetic reason")] {
+            let providers = inventory(&Fake(RegistryRead {
+                state,
+                reason: reason.map(String::from),
+                entries: Vec::new(),
+            }));
+            for provider in &providers[..REGISTRY_VIEWS.len()] {
+                assert_eq!(provider.state, state);
+                if state == ProviderState::Available {
+                    assert!(provider.reason.is_none());
+                } else {
+                    assert!(provider
+                        .reason
+                        .as_ref()
+                        .is_some_and(|r| !r.trim().is_empty()));
+                    if reason == Some("synthetic reason") {
+                        assert_eq!(provider.reason.as_deref(), reason);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn packaged_and_portable_are_explicitly_unavailable() {
     let providers = rows(&[]);
     assert_eq!(providers.len(), 5);
@@ -217,7 +271,7 @@ fn system_and_child_entries_are_retained() {
 }
 
 #[test]
-fn runtime_source_has_no_process_or_installer_api() {
+fn runtime_source_has_no_effect_or_discovery_api() {
     for source in [
         include_str!("../inventory.rs"),
         include_str!("../lib.rs"),
@@ -230,6 +284,36 @@ fn runtime_source_has_no_process_or_installer_api() {
             "Win32_Product",
             "MsiConfigureProduct",
             "Command::",
+            "std::fs",
+            "std::path",
+            "tokio::fs",
+            "Storage::FileSystem",
+            "CreateFile",
+            "FindFirstFile",
+            "FindNextFile",
+            "GetFileAttributes",
+            "ReadFile",
+            "WriteFile",
+            "DeleteFile",
+            "MoveFile",
+            "CopyFile",
+            "canonicalize",
+            "read_dir",
+            ".exists(",
+            ".metadata(",
+            "symlink_metadata",
+            "std::env",
+            "ExpandEnvironmentStrings",
+            "System::Wmi",
+            "IWbem",
+            "SWbem",
+            "WmiQuery",
+            "System::Com",
+            "CoCreateInstance",
+            "CoInitialize",
+            "OleInitialize",
+            "GetActiveObject",
+            "CLSIDFrom",
         ] {
             assert!(
                 !source.contains(forbidden),
