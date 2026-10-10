@@ -1386,7 +1386,9 @@ fn granted_root_comes_only_from_an_active_durable_grant() {
 }
 
 /// A sink without watch support (the trait default) scans with no watcher and no lasting pins.
+#[cfg(windows)]
 struct Unwatched(MemorySink);
+#[cfg(windows)]
 impl ScanSink for Unwatched {
     fn recover_interrupted(&self) -> crate::EngineResult<()> {
         self.0.recover_interrupted()
