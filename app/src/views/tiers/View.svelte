@@ -257,9 +257,13 @@
         <tbody>
           <tr class:current={shown === 'none'}>
             <th scope="row">Do nothing<div class="muted small">Always a valid outcome. Nothing changes.</div></th>
-            <td class="r num">0</td><td class="r num">0 B</td>
-            <td class="r num">{none === null ? 'unknown' : formatBytes(none.toString())}</td>
-            <td>{none === 0n ? 'Already met' : 'Not met'}</td>
+            {#if none === null}
+              <td colspan="4" class="muted">No trustworthy plan: nothing to compare</td>
+            {:else}
+              <td class="r num">0</td><td class="r num">0 B</td>
+              <td class="r num">{formatBytes(none.toString())}</td>
+              <td>{none === 0n ? 'Already met' : 'Not met'}</td>
+            {/if}
             <td><button class="btn" type="button" aria-pressed={shown === 'none'} onclick={() => (shown = 'none')}>Show</button></td>
           </tr>
           {#each HEAT as h (h.id)}
@@ -284,8 +288,12 @@
 {#if outcomes && shown === 'none'}
   <section class="panel" aria-labelledby="h-none">
     <h2 id="h-none">Do nothing</h2>
+    {#if baseline === null}
+      <p class="bad" role="status">No trustworthy plan: nothing to compare. Every simulation reply was refused, so no figure is shown. Doing nothing still changes nothing.</p>
+    {:else}
     <p class="simlabel">Simulation · executable: false · filesystem_changed: false</p>
     <p>Leaving everything as it is keeps {src ? vname(src.volume_id) : 'the source'} at {formatBytes(src?.free_bytes)} free. {baseline && baseline > 0n ? `That is ${formatBytes(baseline.toString())} short of the target.` : 'The target is already met.'}</p>
+    {/if}
   </section>
 {:else if detail && 'error' in detail}
   <section class="panel"><p class="bad" role="alert">{detail.error}</p></section>

@@ -47,6 +47,7 @@ class FakeEngine:
     def __init__(self) -> None:
         self.fail_children = False
         self.stale_once = False
+        self.plan_mode = 'executable'  # 'executable' or 'malformed': how placement.simulate misbehaves
         self.slice_queue: list[tuple[float, str]] = []  # (delay, root name) per tree.slice call, then the default
         self.events: queue.Queue[dict] = queue.Queue()
         self.seq = 0
@@ -86,6 +87,24 @@ class FakeEngine:
                 return ('stale_generation', 'fake engine: the folder changed under the cursor')
             end = min(start + p['limit'], 120)
             return {'anchor': p['node_id'], 'generation': '7', 'items': [row(f'item-{i:03d}.txt', i) for i in range(start, end)], 'next_cursor': f'c_{end}' if end < 120 else None, 'total': 120, 'budget_hit': False}
+        if cmd == 'tiers.model':
+            tier = {'tier': 1, 'basis': 'device_hint', 'declared_tier': None, 'hint_tier': 1, 'note': 'hint'}
+            return {'volumes': [{'volume_id': 'vo_x', 'display_name': 'X:', 'tier': tier, 'online': True, 'writable': True, 'capacity_bytes': '1000000000000', 'free_bytes': '90000000000', 'reserve_bytes': '1', 'free_fraction': 0.09, 'pressure': 'pressure'}],
+                    'policy': {'watch_free_fraction': 0.2, 'pressure_free_fraction': 0.1, 'reserve_note': 'r', 'note': 'n'}}
+        if cmd == 'placement.candidates':
+            g = {'group_id': 'cg_a', 'node_id': 'nd_a', 'root_id': 'rt_a', 'name': 'group-a', 'source_bytes': '5000', 'destination_bytes': '5000', 'transfer_bytes': '5000', 'estimate_basis': 'allocated_entries',
+                 'estimated_relief_bytes': '5000', 'relief_basis': 'verified_unique_allocation', 'heat': None, 'heat_basis': 'unknown', 'newest_modified_at': None, 'pinned': False, 'active': False, 'protected': False, 'days_since_move': 30, 'coverage': 'complete'}
+            return {'source_volume_id': 'vo_x', 'root_generations': [], 'groups': [g], 'note': 'n'}
+        if cmd == 'placement.simulate':
+            plan = {'mode': 'simulation', 'algorithm': 'bounded_portfolio_search_v2', 'optimality_claim': False, 'optimality_scope': 's', 'shortfall_optimal': True,
+                    'search': {'complete': True, 'nodes_visited': 1, 'node_budget': 10, 'reason': 'exhausted', 'eligible_groups': 1, 'eligible_targets': 1, 'lower_bound_shortfall_bytes': '0'},
+                    'proposals': [{'group_id': 'cg_a', 'source_id': 'vo_x', 'target_id': 'vo_y', 'source_bytes_relieved': '5000', 'destination_bytes_required': '5000', 'transfer_bytes': '5000', 'reason': 'bounded_capacity_budget_allocation', 'requires_consent': True, 'executable': True}],
+                    'rejected': [], 'pre_rejected': [], 'excluded_volumes': [], 'relief_policy': 'verified_only', 'projected_free_bytes': {}, 'target_free_bytes': '1', 'shortfall_bytes': '0', 'satisfied': True,
+                    'transfer_bytes': '5000', 'filesystem_changed': False, 'baseline_shortfall_bytes': '777', 'shortfall_improvement_bytes': '777', 'assumption': 'a', 'heat_policy': p['heat_policy'],
+                    'assumptions': [], 'root_generations': [], 'proposal_id': None}
+            if self.plan_mode == 'malformed':
+                plan['proposals'] = 'none'
+            return plan
         if cmd == 'search.query':
             text = p.get('text', '')
             if text == 'slow':
@@ -271,6 +290,25 @@ def check_explorer_starts(page: Page, engine: FakeEngine) -> None:
     ok(page.locator('main nav[aria-label="Location"]').inner_text().strip() == 'Fake Root' and page.get_by_text('Old Root').count() == 0, 'a slow starting-point reply for an older session state is dropped')
 
 
+def check_tiers_refused(page: Page, engine: FakeEngine) -> None:
+    # every reply is unsound: the page must refuse them whole, show no figure from them, and not crash
+    for mode, note in (('executable', 'an executable proposal'), ('malformed', 'a malformed plan')):
+        engine.plan_mode = mode
+        page.goto(f'{engine.base}/#token={TOKEN}')
+        page.evaluate("location.hash = '#/tiers'")
+        expect(page.get_by_role('heading', name='Tiers', level=1)).to_be_visible()
+        expect(rows(page).first).to_be_visible()
+        page.get_by_role('button', name='Simulate', exact=True).click()
+        expect(page.get_by_role('heading', name='Alternatives')).to_be_visible()
+        expect(page.get_by_text('No trustworthy plan: nothing to compare').first).to_be_visible()
+        text = page.locator('main').inner_text()
+        ok('777' not in text and 'Already met' not in text and 'Not met' not in text, f'{note} is refused: no baseline or result figure is shown from it')
+        page.get_by_role('row', name=re.compile('^Do nothing')).get_by_role('button', name='Show').click()
+        expect(page.get_by_role('heading', name='Do nothing', level=2)).to_be_visible()
+        expect(page.get_by_text('No trustworthy plan: nothing to compare').first).to_be_visible()
+        ok('short of the target' not in page.locator('main').inner_text(), f'{note}: the do-nothing section makes no claim about the target')
+
+
 # --- Tiers ------------------------------------------------------------------------------------------
 
 def check_tiers(page: Page, base: str, shoot) -> None:
@@ -438,6 +476,7 @@ def run_views(page: Page, base: str, shots: Path | None) -> None:
     try:
         check_explorer_engine(page, engine)
         check_explorer_starts(page, engine)
+        check_tiers_refused(page, engine)
     finally:
         engine.stop()
     check_tiers(page, base, shoot)
