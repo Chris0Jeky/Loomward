@@ -63,13 +63,10 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let desktop = Arc::new(Desktop::new(
-        Arc::new(service),
-        dataset,
-        Arc::new(DesktopDialogs::new(dataset)),
-    ));
-    let result =
-        shell::configure(tauri::Builder::default(), desktop).run(tauri::generate_context!());
+    let dialogs = Arc::new(DesktopDialogs::new(dataset));
+    let desktop = Arc::new(Desktop::new(Arc::new(service), dataset, dialogs.clone()));
+    let result = shell::configure(tauri::Builder::default().manage(dialogs), desktop)
+        .run(tauri::generate_context!());
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

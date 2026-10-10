@@ -1,12 +1,12 @@
 // The Companion's process table: polling, the sampler lease, and what holds a row still (WCAG 2.2.2).
 // Lives outside the component so the call pattern can be tested: which commands a sort change makes,
 // and when a new sample is shown or kept waiting.
-import { LoomwardError, type Client } from '../../lib/transport/client';
+import type { Client } from '../../lib/transport/client';
 import type { OwnBudgets, ProcessList, TelemetrySample } from '../../lib/contracts.gen';
 import type { ProcessSort } from '../../lib/derived';
+import { readProcesses, TelemetryLease } from './telemetry';
 
 export const POLL_MS = 3000;
-export const LEASE_RENEW_MS = 20000;
 
 export interface TableDeps {
   client(): Client | null;
@@ -30,8 +30,7 @@ export class ProcessTable {
   paused = $state(false);
 
   private ticket = 0;
-  private sub: string | null = null;
-  private renewAt = 0;
+  private lease: TelemetryLease | null = null;
 
   constructor(private readonly deps: TableDeps) {}
 
@@ -39,6 +38,9 @@ export class ProcessTable {
 
   /** Poll until the returned function is called, which also releases the sampler lease. */
   run(): () => void {
+    const c = this.deps.client();
+    const lease = c ? new TelemetryLease(c, ['system', 'processes', 'engine'], 2000, () => this.now) : null;
+    this.lease = lease;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let alive = true;
     const loop = async () => {
@@ -46,13 +48,12 @@ export class ProcessTable {
       if (alive) timer = setTimeout(loop, POLL_MS);
     };
     void loop();
-    const c = this.deps.client();
     return () => {
       alive = false;
       clearTimeout(timer);
       this.ticket++;
-      if (c && this.sub !== null) void c.call('telemetry.unsubscribe', { subscription_id: this.sub }).catch(() => {});
-      this.sub = null;
+      lease?.close();
+      if (this.lease === lease) this.lease = null;
     };
   }
 
@@ -61,15 +62,11 @@ export class ProcessTable {
     if (!c || !this.deps.available()) return;
     const mine = ++this.ticket;
     try {
-      // The sampler runs only while a 60 s lease is live: take one, renew it well inside the window.
-      if (this.sub === null || this.now >= this.renewAt) {
-        const lease = await c.call('telemetry.subscribe', { subscription_id: this.sub, channels: ['system', 'processes', 'engine'], interval_ms: 2000 });
-        this.sub = lease.result.subscription_id;
-        this.renewAt = this.now + LEASE_RENEW_MS;
-      }
+      await this.lease?.ensure();
+      if (mine !== this.ticket) return;
       const [s, p, b] = await Promise.all([
         c.call('telemetry.snapshot', { channels: ['system', 'engine'] }),
-        c.call('processes.list', { sort: this.sort, limit: this.limit }),
+        readProcesses(c, this.sort, this.limit),
         this.budgets ? Promise.resolve(null) : c.call('budgets.get', {}),
       ]);
       if (mine !== this.ticket) return;
@@ -79,7 +76,6 @@ export class ProcessTable {
       this.error = '';
     } catch (e) {
       if (mine !== this.ticket) return;
-      if (e instanceof LoomwardError && e.code === 'not_found') { this.sub = null; this.renewAt = 0; }
       this.error = this.deps.handle(e);
     }
   }
@@ -95,7 +91,7 @@ export class ProcessTable {
     if (!c || !this.deps.available()) return;
     const mine = ++this.ticket;
     try {
-      const p = await c.call('processes.list', { sort: this.sort, limit: this.limit });
+      const p = await readProcesses(c, this.sort, this.limit);
       if (mine !== this.ticket) return;
       this.list = p.result;
       this.waiting = null;

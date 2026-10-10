@@ -9,7 +9,8 @@ Checks, in the shipped window and its real IPC:
   * core/plugin commands (event, window, webview, app, path, dialog, fs, shell) are refused by the ACL;
   * the CSP is in force (an injected inline script is refused);
   * a page reload and a window close each tear the window's event streams down (the shell logs it);
-  * P9: Atlas layout + first draw of the 2,500-node mock slice, from the app's performance marks.
+  * raw IPC bounds and duplicate keys, blocked navigation/popups, production mock denial, renderer lag.
+  * P9: 2,500-node Atlas layout + first draw in a separate development fixture shell build.
 Writes webview2-probe.json, the shell's stderr (webview2-shell.log) and screenshots. The remote
 debugging port is opened only for this run, through WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS.
 """
@@ -20,9 +21,11 @@ import ctypes
 import json
 import os
 import socket
+import shutil
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 from ctypes import wintypes
 from pathlib import Path
@@ -55,6 +58,68 @@ DENIED = [
 P9_MARKS = """() => ['layout', 'first-paint', 'slice-to-paint'].map((k) =>
   performance.getEntriesByName(`loomward:atlas:${k}`).map((m) => ({ name: k, ms: m.duration, nodes: m.detail?.nodes, cells: m.detail?.cells }))).flat()"""
 
+
+def fixture_shell() -> Path:
+    """Embed development fixtures without changing app/dist or leaving a fixture production binary."""
+    fixture = ROOT / '.loomward/webview2-fixture'
+    dist = fixture / 'app'
+    subprocess.run(
+        ['npm.cmd' if os.name == 'nt' else 'npm', '--prefix', 'app', 'run', 'build', '--', '--outDir', str(dist)],
+        cwd=ROOT, env=dict(os.environ, NODE_ENV='development'), check=True,
+    )
+    build = ['cargo', 'build', '--manifest-path', 'native/Cargo.toml', '--target-dir', 'native/target']
+    # Tauri can parse a Windows drive prefix as a URL; use its config-relative directory form.
+    env = dict(os.environ, TAURI_CONFIG=json.dumps({'build': {'frontendDist': os.path.relpath(dist, ROOT / 'native')}}))
+    exe = fixture / 'loomward-desktop.exe'
+    try:
+        subprocess.run(build, cwd=ROOT, env=env, check=True)
+        shutil.copy2(ROOT / 'native/target/debug/loomward-desktop.exe', exe)
+    finally:
+        subprocess.run(build, cwd=ROOT, check=True)
+    return exe
+
+
+def connect_webview(pw, port: int):
+    for _ in range(60):
+        try:
+            return pw.chromium.connect_over_cdp(f'http://127.0.0.1:{port}')
+        except Exception:
+            time.sleep(0.5)
+    raise RuntimeError('could not reach the WebView2 DevTools endpoint')
+
+
+def p9(exe: Path, out: Path, count: int) -> dict:
+    port = free_port()
+    profile = Path(tempfile.mkdtemp(prefix='p9-profile-', dir=out))
+    env = dict(os.environ, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=f'--remote-debugging-port={port}',
+               WEBVIEW2_USER_DATA_FOLDER=str(profile.resolve()))
+    with open(out / 'webview2-p9-shell.log', 'w', encoding='utf-8') as log:
+        shell = subprocess.Popen([str(exe)], env=env, stdout=log, stderr=subprocess.STDOUT)
+        try:
+            with sync_playwright() as pw:
+                browser = connect_webview(pw, port)
+                page = next(p for c in browser.contexts for p in c.pages)
+                runs = []
+                for i in range(count):
+                    page.goto(f'http://tauri.localhost/index.html?transport=mock&run={i}#/atlas')
+                    page.wait_for_function("() => performance.getEntriesByName('loomward:atlas:slice-to-paint').length > 0", timeout=15000)
+                    assert page.locator('[data-mode=mock]').count() == 1, 'P9 requires the development fixture transport'
+                    marks = {m['name']: m for m in page.evaluate(P9_MARKS) if m['nodes'] == 2500}
+                    assert {'layout', 'first-paint', 'slice-to-paint'} <= marks.keys(), 'P9 requires all 2,500-node timing marks'
+                    runs.append({'layout_ms': marks['layout']['ms'], 'first_paint_ms': marks['first-paint']['ms'],
+                                 'layout_plus_paint_ms': marks['layout']['ms'] + marks['first-paint']['ms'],
+                                 'slice_to_paint_wall_ms': marks['slice-to-paint']['ms'], 'cells': marks['layout']['cells']})
+                page.screenshot(path=str(out / 'desktop-atlas-p9.png'))
+                result = {'nodes': 2500, 'runs': runs, 'median_layout_plus_paint_ms': statistics.median(r['layout_plus_paint_ms'] for r in runs),
+                          'budget_ms': 50, 'viewport': page.evaluate('[innerWidth, innerHeight, devicePixelRatio]')}
+                assert close_window(shell.pid), 'P9 window did not close'
+                shell.wait(timeout=20)
+                assert shell.returncode == 0, 'P9 shell did not exit cleanly'
+                return result
+        finally:
+            if shell.poll() is None:
+                shell.kill()
+                shell.wait(timeout=20)
 
 def free_port() -> int:
     with socket.socket() as s:
@@ -91,9 +156,14 @@ def main() -> int:
     ap.add_argument('--out', type=Path, default=ROOT / 'evidence/v3/native')
     ap.add_argument('--p9-runs', type=int, default=5)
     a = ap.parse_args()
+    if a.p9_runs < 1:
+        ap.error('--p9-runs must be positive')
     a.out.mkdir(parents=True, exist_ok=True)
     port = free_port()
-    env = dict(os.environ, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=f'--remote-debugging-port={port}')
+    # Each run owns its profile: debug options must not collide with another WebView2 environment.
+    profile = Path(tempfile.mkdtemp(prefix='profile-', dir=a.out))
+    env = dict(os.environ, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=f'--remote-debugging-port={port}',
+               WEBVIEW2_USER_DATA_FOLDER=str(profile.resolve()))
     log_path = a.out / 'webview2-shell.log'
     results: dict = {'checks': []}
     failed = 0
@@ -108,15 +178,7 @@ def main() -> int:
         shell = subprocess.Popen([str(a.exe)], env=env, stdout=log, stderr=subprocess.STDOUT)
         try:
             with sync_playwright() as pw:
-                browser = None
-                for _ in range(60):
-                    try:
-                        browser = pw.chromium.connect_over_cdp(f'http://127.0.0.1:{port}')
-                        break
-                    except Exception:
-                        time.sleep(0.5)
-                if browser is None:
-                    raise SystemExit('could not reach the WebView2 DevTools endpoint')
+                browser = connect_webview(pw, port)
                 results['webview2'] = browser.version
                 page = next(p for c in browser.contexts for p in c.pages)
                 page.wait_for_load_state('load')
@@ -132,14 +194,35 @@ def main() -> int:
                 })""")
                 check(inline.startswith('script-src'), 'the CSP blocks an injected inline script', violated=inline)
 
-                hello = page.evaluate("""() => window.__TAURI_INTERNALS__.invoke('lw_call', { request:
-                    { protocol: 'loomward/3', request_id: 'r_probe', command: 'session.hello', payload: {} } })""")
+                hello = page.evaluate("""() => window.__TAURI_INTERNALS__.invoke('lw_call', new TextEncoder().encode(JSON.stringify(
+                    { protocol: 'loomward/3', request_id: 'r_probe', command: 'session.hello', payload: {} })))""")
                 check(hello.get('ok') is True and hello['result']['adapter'] == 'tauri' and hello['result']['dataset_class'] == 'synthetic',
                       'lw_call session.hello over real IPC', adapter=hello.get('result', {}).get('adapter'))
-                refused = page.evaluate("""() => window.__TAURI_INTERNALS__.invoke('lw_call', { request:
-                    { protocol: 'loomward/3', request_id: 'r_probe2', command: 'roots.request_grant', payload: { purpose: 'metadata_scan' } } })""")
+                refused = page.evaluate("""() => window.__TAURI_INTERNALS__.invoke('lw_call', new TextEncoder().encode(JSON.stringify(
+                    { protocol: 'loomward/3', request_id: 'r_probe2', command: 'roots.request_grant', payload: { purpose: 'metadata_scan' } })))""")
                 check(refused['result']['refusal'] == 'synthetic_session_requires_lab_root',
                       'roots.request_grant refused in the synthetic session (no picker)', refusal=refused['result']['refusal'])
+
+                raw = page.evaluate("""async () => {
+                  const invoke = window.__TAURI_INTERNALS__.invoke;
+                  const base = JSON.stringify({protocol:'loomward/3',request_id:'r_raw',command:'session.hello',payload:{}});
+                  const bytes = (s) => new TextEncoder().encode(s);
+                  const exact = await invoke('lw_call', bytes(base.padEnd(65536, ' ')));
+                  let oversized = false, parsed = false;
+                  try { await invoke('lw_call', bytes(base.padEnd(65537, ' '))); } catch { oversized = true; }
+                  try { await invoke('lw_call', {request:JSON.parse(base)}); } catch { parsed = true; }
+                  const dup = await invoke('lw_call', bytes(base.replace('"payload":{}', '"payload":{"x":1,"x":2}')));
+                  return {exact:exact.ok,oversized,parsed,duplicate:!dup.ok && dup.error.message.includes('duplicate')};
+                }""")
+                check(all(raw.values()), 'raw IPC: exact 64 KiB accepted, excess/parsed bodies/duplicates refused', **raw)
+
+                page.evaluate("location.href = 'https://remote.invalid/'")
+                page.wait_for_timeout(300)
+                check(page.url.startswith('http://tauri.localhost/'), 'navigation to a remote origin is denied')
+                pages_before = sum(len(c.pages) for c in browser.contexts)
+                page.evaluate("window.open('https://remote.invalid/', '_blank')")
+                page.wait_for_timeout(300)
+                check(sum(len(c.pages) for c in browser.contexts) == pages_before, 'new windows are denied')
 
                 denied = {}
                 for cmd, args in DENIED:
@@ -164,21 +247,25 @@ def main() -> int:
                 log.flush()
                 check('page load: closed' in log_path.read_text(encoding='utf-8'), 'a page reload tears down the old document\'s streams')
 
-                # P9 inside WebView2: the mock transport's 2,500-node slice, as in app/tests/e2e/test_atlas.py.
-                runs = []
-                for i in range(a.p9_runs):
-                    page.goto(f'http://tauri.localhost/index.html?transport=mock&run={i}#/atlas')
-                    page.wait_for_function("() => performance.getEntriesByName('loomward:atlas:slice-to-paint').length > 0", timeout=15000)
-                    marks = {m['name']: m for m in page.evaluate(P9_MARKS) if m['nodes'] == 2500}
-                    runs.append({'layout_ms': round(marks['layout']['ms'], 2), 'first_paint_ms': round(marks['first-paint']['ms'], 2),
-                                 'layout_plus_paint_ms': round(marks['layout']['ms'] + marks['first-paint']['ms'], 2),
-                                 'slice_to_paint_wall_ms': round(marks['slice-to-paint']['ms'], 2), 'cells': marks['layout']['cells']})
-                page.wait_for_timeout(2000)
-                page.screenshot(path=str(a.out / 'desktop-atlas-p9.png'))
-                med = statistics.median(r['layout_plus_paint_ms'] for r in runs)
-                results['p9'] = {'nodes': 2500, 'runs': runs, 'median_layout_plus_paint_ms': med, 'budget_ms': 50,
-                                 'viewport': page.evaluate('[innerWidth, innerHeight, devicePixelRatio]')}
-                check(med <= 50, 'P9 layout + first draw of 2,500 nodes within 50 ms in WebView2 (median)', median_ms=med)
+                page.goto('http://tauri.localhost/index.html?transport=mock')
+                page.wait_for_function("() => document.querySelector('[data-mode=tauri]')", timeout=5000)
+                check(page.locator('[data-mode=tauri]').count() == 1, 'production ignores the mock transport override')
+
+                # Exercise the compiled transport, then stall this renderer across a heartbeat.
+                module = next((ROOT / 'app/dist/assets').glob('tauri-*.js')).name
+                page.evaluate("""async (module) => {
+                  const exports = await import('/assets/' + module);
+                  const create = Object.values(exports).find((v) => typeof v === 'function');
+                  const transport = await create();
+                  window.__stall = [];
+                  window.__stallStop = transport.subscribe((e) => window.__stall.push(e), () => {});
+                }""", module)
+                page.wait_for_function('() => window.__stall.length > 0', timeout=5000)
+                page.evaluate('() => { const end = performance.now() + 22000; while (performance.now() < end) {} }')
+                page.wait_for_function("() => window.__stall.some((e) => e.event === 'stream.lagged')", timeout=5000)
+                check(page.evaluate("window.__stall.some((e) => e.event === 'stream.lagged' && e.data.reason === 'subscriber_overflow')"),
+                      'stalled renderer receives stream.lagged and refetch instructions')
+                page.evaluate('window.__stallStop()')
 
                 # Back on the tauri transport with a probe stream open, then close the window.
                 page.goto('http://tauri.localhost/index.html')
@@ -196,6 +283,12 @@ def main() -> int:
     text = log_path.read_text(encoding='utf-8')
     check(text.count('window close: closed') > before, 'window close tears down the open streams')
     results['shell_log'] = text.splitlines()
+    try:
+        results['p9'] = p9(fixture_shell(), a.out, a.p9_runs)
+        med = results['p9']['median_layout_plus_paint_ms']
+        check(med <= 50, 'P9 layout + first draw of 2,500 nodes within 50 ms in WebView2 (median)', median_ms=round(med, 2))
+    except Exception as e:
+        check(False, 'P9 development fixture measurement completed', error=type(e).__name__)
     (a.out / 'webview2-probe.json').write_text(json.dumps(results, indent=2) + '\n', encoding='utf-8')
     print(f'{len(results["checks"]) - failed}/{len(results["checks"])} passed')
     return 1 if failed else 0

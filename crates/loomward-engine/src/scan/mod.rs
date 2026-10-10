@@ -111,6 +111,23 @@ impl GrantedRoot {
     pub fn dataset_class(&self) -> DatasetClass {
         self.dataset_class
     }
+    /// Content equality evidence for a trusted listing under this grant; never effect authority.
+    /// Personal grants remain metadata-only until a separate owner content-read decision.
+    pub fn inspect_duplicates(
+        &self,
+        entries: &[loomward_windows::duplicate_reader::Entry],
+        budget: loomward_windows::duplicate_reader::Budget,
+    ) -> Result<
+        loomward_windows::duplicate_reader::Report,
+        loomward_windows::duplicate_reader::Reason,
+    > {
+        use loomward_windows::duplicate_reader::{self, Reason};
+        if self.dataset_class != DatasetClass::Synthetic {
+            return Err(Reason::ContentReadGated);
+        }
+        let expected = self.expected.as_ref().ok_or(Reason::Unsupported)?;
+        duplicate_reader::inspect(&self.path, expected, entries, budget)
+    }
 }
 impl Engine {
     /// The only production way to mint a [`GrantedRoot`] (#144): read grant `grant_id` from this
@@ -401,6 +418,13 @@ impl Engine {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *revoked = true;
+        // Watch teardown can terminate a queued runner before it reaches the byte budget.
+        let cancelled = self
+            .jobs
+            .root_jobs(root)
+            .iter()
+            .map(|id| self.job_cancel(id))
+            .collect();
         #[cfg(windows)]
         {
             let watch = self.scan_watches.lock().unwrap().remove(root);
@@ -408,11 +432,7 @@ impl Engine {
                 watch.stop();
             }
         }
-        self.jobs
-            .root_jobs(root)
-            .iter()
-            .map(|id| self.job_cancel(id))
-            .collect()
+        cancelled
     }
     /// Writer-fence hook, called after durable revocation and root cancellation by L8.
     pub fn scan_writer_fence(&self, root: &RootId) -> EngineResult<()> {
