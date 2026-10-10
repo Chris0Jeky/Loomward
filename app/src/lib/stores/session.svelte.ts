@@ -25,6 +25,7 @@ class Session {
   epoch = $state(0);
   client: Client | null = null;
 
+  private listeners = new Set<(ev: EventEnvelope) => void>();
   private transport: Transport | null = null;
   private stopStream: (() => void) | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -32,6 +33,12 @@ class Session {
   private busy = false;
   /** Epoch of the event stream (`stream.hello`), not to be confused with `epoch` above; a change means the engine restarted. */
   private streamEpoch: string | null = null;
+
+  /** Other stores (jobs) see every event after the resync rules below have run. Returns the unsubscribe. */
+  listen(fn: (ev: EventEnvelope) => void): () => void {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  }
 
   /** Dataset class of the connected session, or null when unknown. */
   get datasetClass(): DatasetClass | null {
@@ -113,6 +120,7 @@ class Session {
     } else if (ev.event === 'stream.lagged' || ev.event === 'tree.invalidated' || ev.event === 'roots.changed') {
       this.epoch++; // lagged: epoch_changed, replay_gap and subscriber_overflow all mean refetch
     }
+    for (const fn of this.listeners) fn(ev);
   }
 }
 
