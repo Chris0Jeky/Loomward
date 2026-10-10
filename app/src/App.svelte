@@ -167,6 +167,9 @@
   .thread.residency i { background: repeating-linear-gradient(0deg, var(--residency) 0 3px, transparent 3px 5px); }
   .thread.permission i { border: 2px dashed var(--permission); }
 
+  @media (forced-colors: active) {
+    .rail a[aria-current='page'] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
+  }
   @media (max-width: 760px), (max-height: 500px) {
     :global(html) { scroll-padding-top: 0; }
     .masthead, .rail { position: static; }

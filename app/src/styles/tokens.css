@@ -31,6 +31,7 @@
   --raised: #191a22;
   --line: #2a2a31;
   --line-strong: #3b3a40;
+  --control-line: #716c64; /* edge of a control or a meter: 3.2:1 or more against bg, surface and raised (WCAG 1.4.11) */
   --text: #ece5d6;
   --muted: #ada595;
   --faint: #918a7d;
@@ -96,6 +97,7 @@
   --raised: #0e151d;
   --line: #15212c;
   --line-strong: #22323f;
+  --control-line: #4f6a7e;
   --text: #d9e8f3;
   --muted: #8aa2b5;
   --faint: #6f879a;

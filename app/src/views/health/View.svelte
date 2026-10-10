@@ -29,6 +29,8 @@
   let working = $state(false);
   let done = $state('');
   let confirmEl = $state<HTMLElement>();
+  let doneEl = $state<HTMLElement>();
+  let opener: HTMLElement | null = null; // the Revoke… button that opened the confirmation: focus goes back to it
   let ticket = 0;
 
   async function load(): Promise<void> {
@@ -55,11 +57,20 @@
   const rootLabel = (id: string) => roots?.roots.find((r) => r.root_id === id)?.display_path.text ?? id;
 
   async function ask(p: Pending) {
+    opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     pending = p;
     purge = false;
     done = '';
     await tick();
     confirmEl?.focus();
+  }
+
+  /** Keep it: the confirmation closes and focus returns to the button that opened it. */
+  async function cancel() {
+    pending = null;
+    await tick();
+    if (opener?.isConnected) opener.focus();
+    opener = null;
   }
 
   async function confirm() {
@@ -77,6 +88,9 @@
       }
       pending = null;
       await load();
+      // the confirmation (and, for a root, its now disabled button) is gone: focus the result, which is announced
+      await tick();
+      doneEl?.focus();
     } catch (e) {
       error = session.handle(e);
     } finally {
@@ -93,8 +107,9 @@
 
 <h1>Grants &amp; health</h1>
 <p class="muted">What Loomward may read, and how it is doing. Grants come from the desktop folder picker or the server's command line; this page can only ask to end one.</p>
-{#if error}<p class="bad" role="alert">{error}</p>{/if}
-{#if done}<p class="ok" role="status">{done}</p>{/if}
+<!-- live regions stay in the page and only their text changes: one inserted already filled is often not announced -->
+<p class="bad live" class:has={!!error} role="alert">{error}</p>
+<p class="ok live" class:has={!!done} role="status" tabindex="-1" bind:this={doneEl}>{done}</p>
 
 {#if pending}
   <section class="panel confirm" role="group" aria-labelledby="h-confirm" bind:this={confirmEl} tabindex="-1">
@@ -108,7 +123,7 @@
     {/if}
     <div class="row">
       <button class="btn danger" type="button" disabled={working} onclick={() => void confirm()}>{working ? 'Revoking' : 'Revoke'}</button>
-      <button class="btn" type="button" disabled={working} onclick={() => (pending = null)}>Keep it</button>
+      <button class="btn" type="button" disabled={working} onclick={() => void cancel()}>Keep it</button>
     </div>
   </section>
 {/if}
@@ -173,7 +188,7 @@
               <td class="r num">{formatCount(r.totals?.files)}</td>
               <td class="r num">{formatBytes(r.totals?.logical_bytes)}</td>
               <td class="r num">{formatBytes(r.totals?.allocated_bytes)}</td>
-              <td><button class="btn" type="button" disabled={!rootActive(r)} aria-label={`Revoke ${escapedName(r.display_path.text)}`} onclick={() => void ask({ kind: 'root', id: r.root_id, label: r.display_path.text })}>Revoke…</button></td>
+              <td><button class="btn" type="button" disabled={!rootActive(r)} aria-label={`Revoke… ${escapedName(r.display_path.text)}`} onclick={() => void ask({ kind: 'root', id: r.root_id, label: r.display_path.text })}>Revoke…</button></td>
             </tr>
           {:else}
             <tr><td colspan="9" class="muted">No roots granted.</td></tr>
@@ -198,7 +213,7 @@
           {/if}
           <span class="tag" class:warn={!grantActive(g)}>{g.revoked_at ? `revoked ${formatTime(g.revoked_at)}` : 'active'}</span>
           {#if g.kind === 'teacher_disclosure' && grantActive(g)}
-            <button class="btn small" type="button" aria-label={`Revoke teacher disclosure to ${escapedName(g.recipient)}`} onclick={() => void ask({ kind: 'grant', id: g.grant_id, label: `Teacher disclosure to ${g.recipient}` })}>Revoke…</button>
+            <button class="btn small" type="button" aria-label={`Revoke… teacher disclosure to ${escapedName(g.recipient)}`} onclick={() => void ask({ kind: 'grant', id: g.grant_id, label: `Teacher disclosure to ${g.recipient}` })}>Revoke…</button>
           {/if}
         </li>
       {:else}
@@ -228,6 +243,7 @@
 <style>
   .bad { color: var(--danger); }
   .ok { color: var(--ok); }
+  .live:focus-visible { outline-offset: 4px; }
   .small { font-size: 0.8rem; }
   .head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
   .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 8px 32px; }
@@ -238,7 +254,7 @@
   .kv dd { margin: 0; }
   .caps { list-style: none; margin: 0 0 12px; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 6px; }
   .tag.ok-tag { color: var(--ok); border-color: var(--ok); }
-  .meter { display: inline-block; width: 90px; height: 8px; margin-left: 10px; border: 1px solid var(--line); border-radius: 4px; vertical-align: middle; overflow: hidden; }
+  .meter { display: inline-block; width: 90px; height: 8px; margin-left: 10px; border: 1px solid var(--control-line); border-radius: 4px; vertical-align: middle; overflow: hidden; }
   .meter i { display: block; height: 100%; background: var(--residency); }
   .confirm { border-color: var(--permission); border-style: dashed; margin-bottom: 16px; outline: none; }
   .confirm:focus-visible { outline: 2px solid var(--focus); }

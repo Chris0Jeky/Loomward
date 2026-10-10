@@ -298,7 +298,7 @@ def main() -> None:
         expect(page.locator('main nav[aria-label="Location"]')).to_be_visible()
 
         # drill down, then breadcrumb back
-        page.locator('main table tbody tr td button.crumb').first.click()
+        page.locator('main table tbody tr th button.crumb').first.click()
         expect(page.locator('main nav[aria-label="Location"] button')).to_have_count(2)
         page.locator('main nav[aria-label="Location"] button').first.click()
         expect(page.locator('main nav[aria-label="Location"] button')).to_have_count(1)
