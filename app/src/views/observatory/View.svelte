@@ -21,7 +21,7 @@
   import { createGauge, type GaugeTheme } from '../../../viz/gauges.js';
   import Inspector from '../atlas/Inspector.svelte';
   import RegionList from '../atlas/RegionList.svelte';
-  import { SliceNav, announceSlice, canvasLabel, describeNode, formatApprox, pathTo, readPalette, type SliceKey } from '../atlas/shared.svelte';
+  import { SliceNav, announceSlice, canvasLabel, deniedBelow, describeNode, formatApprox, pathTo, readPalette, type SliceKey } from '../atlas/shared.svelte';
   import { Say } from '../../lib/ui/say.svelte';
   import LoadError from '../atlas/LoadError.svelte';
   import { Poller } from './poller';
@@ -39,6 +39,7 @@
   let shownKey: SliceKey | null = null; // what the last "Showing ..." announced: a refetch of the same view stays silent
   const shown = $derived(hovered ?? selected);
   const provisional = $derived(nav.slice?.aggregate_state === 'provisional_live');
+  const denied = $derived(deniedBelow(nav.slice));
   const pathNames = $derived(shown ? pathTo(shown, nav.slice, nav.trail.map((c) => c.name)) : []);
 
   // --- telemetry ---------------------------------------------------------------------------
@@ -127,8 +128,8 @@
     const s = createSunburst(canvas, { palette, reducedMotion: () => reducedMQ.matches, format: formatApprox, label: canvasLabel });
     sb = s;
     const off = [
-      s.on('hover', (e: { node: NodeInfo | null; viaKeyboard: boolean }) => { hovered = e.node; if (e.node && e.viaKeyboard) say.say(describeNode(e.node)); }),
-      s.on('select', (n: NodeInfo) => { selected = n; say.say(describeNode(n)); }),
+      s.on('hover', (e: { node: NodeInfo | null; viaKeyboard: boolean }) => { hovered = e.node; if (e.node && e.viaKeyboard) say.say(describeNode(e.node, denied)); }),
+      s.on('select', (n: NodeInfo) => { selected = n; say.say(describeNode(n, denied)); }),
       s.on('drill', (n: NodeInfo) => { hovered = null; void nav.drill(n.id, n.name); }),
       s.on('back', () => {
         hovered = null;
@@ -202,7 +203,7 @@
 
   function inspectById(id: string) {
     const n = sb?.info(id) ?? null;
-    if (n) { selected = n; hovered = null; say.say(describeNode(n)); }
+    if (n) { selected = n; hovered = null; say.say(describeNode(n, denied)); }
   }
 
   function togglePause() {

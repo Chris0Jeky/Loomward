@@ -149,23 +149,25 @@ def run_a11y(browser: Browser, base: str, check) -> None:
         check(m['rail'] not in ('sticky', 'fixed'), f"1.4.10 the rail does not pin at {w}x{h}")
         page.context.close()
 
-    page = new_page(1280, 800)
-    goto(page, base, 'tiers', 'Tiers')
-    m = page.evaluate("() => ({ p: getComputedStyle(document.querySelector('.masthead')).position, h: document.querySelector('.masthead').getBoundingClientRect().height })")
-    check(m['p'] == 'sticky' and m['h'] / 800 < 0.30, f"the masthead stays sticky on a roomy window and takes {m['h'] / 800:.0%} of it")
-    # 2.4.11: a focused control is never under the sticky masthead (scroll-padding on the root)
-    hidden_under = page.evaluate("""() => {
-      const mh = document.querySelector('.masthead').getBoundingClientRect().bottom, out = [];
-      for (const el of document.querySelectorAll('main button:not(:disabled), main input, main select, main a[href], .rail a')) {
-        const r0 = el.getBoundingClientRect(); if (!r0.width || !r0.height) continue;
-        window.scrollTo(0, window.scrollY + r0.top - 20); // the control sits just below the top edge, under a sticky masthead
-        el.focus(); const r = el.getBoundingClientRect();
-        if (r.top < mh - 0.5 && r.bottom > 0) out.push(`${el.tagName} ${(el.textContent || el.getAttribute('aria-label') || '').trim().slice(0, 30)} top ${r.top.toFixed(0)} < ${mh.toFixed(0)}`);
-      }
-      return out;
-    }""")
-    check(not hidden_under, f'2.4.11 no focused control sits under the sticky masthead: {hidden_under[:3]}')
-    page.context.close()
+    # 2.4.11: a focused control is never under the sticky masthead (scroll-padding and the rail offset follow its measured
+    # height). The masthead wraps to ~160 px between 761 and 999 px wide, which a fixed 112 px did not cover (#169).
+    for w, h in ((1280, 800), (900, 600), (800, 700)):
+        page = new_page(w, h)
+        goto(page, base, 'tiers', 'Tiers')
+        m = page.evaluate("() => ({ p: getComputedStyle(document.querySelector('.masthead')).position, h: document.querySelector('.masthead').getBoundingClientRect().height })")
+        check(m['p'] == 'sticky' and m['h'] / h < 0.30, f"the masthead stays sticky at {w}x{h} and takes {m['h'] / h:.0%} of it ({m['h']:.0f}px)")
+        hidden_under = page.evaluate("""() => {
+          const mh = document.querySelector('.masthead').getBoundingClientRect().bottom, out = [];
+          for (const el of document.querySelectorAll('main button:not(:disabled), main input, main select, main a[href], .rail a')) {
+            const r0 = el.getBoundingClientRect(); if (!r0.width || !r0.height) continue;
+            window.scrollTo(0, window.scrollY + r0.top - 20); // the control sits just below the top edge, under a sticky masthead
+            el.focus(); const r = el.getBoundingClientRect();
+            if (r.top < mh - 0.5 && r.bottom > 0) out.push(`${el.tagName} ${(el.textContent || el.getAttribute('aria-label') || '').trim().slice(0, 30)} top ${r.top.toFixed(0)} < ${mh.toFixed(0)}`);
+          }
+          return out;
+        }""")
+        check(not hidden_under, f'2.4.11 no focused control sits under the sticky masthead at {w}x{h}: {hidden_under[:3]}')
+        page.context.close()
 
     # --- unique names, row headers, dangling references (2.4.6, 4.1.2, 1.3.1) ---------------------------------------
     page = new_page()
@@ -311,7 +313,7 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     check('hidden character' not in page.locator('main .ctl').first.inner_text(), 'badge: the visible text is still only the code')
 
     # --- 2.5.8: target size ---------------------------------------------------------------------------------------------
-    for view, heading in (('explorer', 'Explorer'), ('atlas', 'Atlas'), ('tiers', 'Tiers'), ('companion', 'Companion'), ('health', 'Grants & health')):
+    for view, heading in (('explorer', 'Explorer'), ('atlas', 'Atlas'), ('observatory', 'Observatory'), ('tiers', 'Tiers'), ('companion', 'Companion'), ('health', 'Grants & health')):
         goto(page, base, view, heading)
         page.wait_for_timeout(300)
         small = page.evaluate("""() => [...document.querySelectorAll('button, a[href], select, input')].filter((el) => !el.closest('.skip') && !el.classList.contains('skip')).flatMap((el) => {
@@ -332,6 +334,8 @@ def run_a11y(browser: Browser, base: str, check) -> None:
 
     # click then drill through the text list: select X, then open X. The old inspector path repeated the last part.
     page.locator('main details.as-text summary').click()
+    listed = page.locator('main details.as-text li').first.inner_text()
+    check(re.search(r'root folder.*tier \d.*meaning .*at least \d+ access denied below', listed, re.S) is not None, f'1.1.1 the text list gives kind, thread states and denied count below: "{listed[:200]}"')
     row = page.locator('main details.as-text li', has=page.locator('button.open')).first
     name = row.locator('button.open').inner_text().strip()
     row.locator('button.inspect').click()
@@ -365,6 +369,10 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     expect(live).to_contain_text('Enter opens it')
     first = live.inner_text().split(', ')[0]
     check(bool(first), f'4.1.3 focusing the cloth announces the active region: "{live.inner_text()[:70]}"')
+    said = live.inner_text()
+    check(re.search(r'^[^,]+, (root folder|folder|file|volume|all roots|folded items), ', said) is not None, f'1.1.1 the announcement names the kind: "{said[:90]}"')
+    check(re.search(r'(tier \d|residency unknown)', said) is not None and 'meaning' in said and re.search(r'at least \d+ access denied below', said) is not None,
+          f'1.1.1 the announcement carries the thread states and the denied count below: "{said}"')
     # edge feedback: from the first region, one direction has no neighbour
     page.keyboard.press('Home')
     page.keyboard.press('ArrowLeft')
@@ -385,6 +393,31 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     check(page.locator('main .tip').count() == 1, 'hovering a region shows the tooltip')
     page.keyboard.press('Escape')
     check(page.locator('main .tip').count() == 0, '1.4.13 Escape dismisses the tooltip')
+
+    # ... and inside a region, the Escape that dismisses a tooltip does not also go back up a level (#169)
+    drilled = False
+    for k in range(1, 6):
+        page.keyboard.press('Home')
+        for _ in range(k):
+            page.keyboard.press('ArrowRight')
+        page.wait_for_timeout(200)
+        page.keyboard.press('Enter')
+        page.wait_for_timeout(300)
+        if crumbs.count() == 2:
+            drilled = True
+            break
+    check(drilled, 'a region could be opened with the keyboard for the tooltip check')
+    page.wait_for_timeout(1000)
+    box = page.locator('main canvas').first.bounding_box()
+    page.mouse.move(box['x'] + box['width'] * 0.3, box['y'] + box['height'] * 0.4)
+    page.wait_for_timeout(300)
+    check(page.locator('main .tip').count() == 1, 'hovering a region of the drilled view shows the tooltip')
+    page.keyboard.press('Escape')
+    check(page.locator('main .tip').count() == 0 and crumbs.count() == 2, f'1.4.13 Escape over a tooltip dismisses it and stays in the region ({crumbs.count()} crumbs)')
+    page.mouse.move(0, 0)
+    page.keyboard.press('Escape')
+    expect(crumbs).to_have_count(1)
+    check(True, '1.4.13 with no tooltip showing, Escape goes back as before')
     page.context.close()
 
     # --- Observatory: announcements, pause, gauge text -----------------------------------------------------------------------------
@@ -426,18 +459,46 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     page.get_by_label('Largest by').select_option('cpu_desc')
     page.wait_for_timeout(500)
     order = lambda: page.locator('main table.procs tbody th button').all_inner_texts()
+    sample = lambda: int(re.search(r'Rows from sample ([\d,]+)', page.locator('main section[aria-labelledby="h-proc"]').text_content()).group(1).replace(',', ''))
+    # 4.1.3 persistent status regions: the node is in the page, empty, before its text arrives, and is the same node after
+    paused_h, waiting_h = page.locator('#proc-paused').element_handle(), page.locator('#proc-waiting').element_handle()
+    check(paused_h.text_content() == '' and waiting_h.text_content() == '', '4.1.3 the Paused and newer-sample status regions are in the page, empty, before they speak')
     page.get_by_role('button', name=re.compile('^Explain')).nth(2).focus()
     held = order()
     page.wait_for_timeout(3600)
     check(order() == held, '2.2.2 rows do not re-sort while a control inside the table has focus')
-    expect(page.get_by_text('A newer sample is waiting')).to_be_visible()
+    expect(page.locator('#proc-waiting')).to_contain_text('A newer sample is waiting')
+    check(waiting_h.evaluate('e => e.isConnected && e.getAttribute("role") === "status"'), '4.1.3 "A newer sample is waiting" is spoken by the region that was already there')
     page.get_by_role('heading', name='Companion', level=1).evaluate('el => { el.tabIndex = -1; el.focus(); }')
-    expect(page.get_by_text('A newer sample is waiting')).to_have_count(0)
-    page.get_by_role('button', name='Pause updates').click()
-    expect(page.get_by_text('Paused: the table shows the last sample')).to_be_visible()
-    held = order()
+    expect(page.locator('#proc-waiting')).to_have_text('')
+    check(waiting_h.evaluate('e => e.isConnected'), '4.1.3 the waiting note is emptied, not removed')
+
+    # 2.2.2 focus held by a table that goes without a focusout (some browsers fire none when a focused element is hidden or
+    # removed): the flag-based hold stuck for good. Focus is asked at each sample, so the next one is shown (#169).
+    page.evaluate("window.addEventListener('focusout', (e) => e.stopImmediatePropagation(), true)")
+    page.get_by_role('button', name=re.compile('^Explain')).nth(1).focus()
     page.wait_for_timeout(3600)
-    check(order() == held, '2.2.2 paused: the table holds')
+    expect(page.locator('#proc-waiting')).to_contain_text('A newer sample is waiting')
+    before = sample()
+    page.locator('main .tbl-wrap').nth(1).evaluate('e => { e.hidden = true; }')
+    page.wait_for_timeout(3600)
+    check(sample() > before, f'2.2.2 a table that vanished under focus, with no focusout, no longer holds the rows ({before} -> {sample()})')
+    page.locator('main .tbl-wrap').nth(1).evaluate('e => { e.hidden = false; }')
+
+    page.get_by_role('button', name='Pause updates').click()
+    expect(page.locator('#proc-paused')).to_contain_text('Paused: the table keeps sample')
+    check(paused_h.evaluate('e => e.isConnected && e.getAttribute("role") === "status"'), '4.1.3 "Paused" is spoken by the region that was already there')
+    held, held_sample = order(), sample()
+    page.wait_for_timeout(3600)
+    check(order() == held and sample() == held_sample, '2.2.2 paused: the table holds')
+    # #169: a sort change while paused re-orders the held sample; it does not fetch a newer one (and takes no lease)
+    page.get_by_label('Largest by').select_option('name_asc')
+    expect(page.locator('main table.procs tbody th button').first).not_to_have_text(held[0])
+    page.wait_for_timeout(3600)
+    check(sample() == held_sample, f'2.2.2 paused: a sort change keeps the sample the pause was taken on ({held_sample} -> {sample()})')
+    expect(page.locator('#proc-paused')).to_contain_text(f'keeps sample {held_sample}')
+    page.get_by_role('button', name='Resume updates').click()
+    expect(page.locator('#proc-paused')).to_have_text('')
     page.context.close()
 
     # --- forced colours: current and checked states carry more than colour ---------------------------------------------------------------
@@ -447,6 +508,9 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     check(css(".rail a[aria-current='page']", 'backgroundColor') != css('.rail a:not([aria-current])', 'backgroundColor'), '1.4.1 forced colours: the current rail link has its own background')
     check(css(".seg button[aria-checked='true']", 'backgroundColor') != css(".seg button[aria-checked='false']", 'backgroundColor'), '1.4.1 forced colours: the checked basis has its own background')
     check('underline' in css(".crumb[aria-current='location']", 'textDecorationLine'), '1.4.1 forced colours: the current crumb is underlined')
+    goto(page, base, 'observatory', 'Observatory')
+    check(css(".seg button[aria-checked='true']", 'backgroundColor') != css(".seg button[aria-checked='false']", 'backgroundColor'), '1.4.1 forced colours: the checked basis has its own background in the Observatory')
+    check('underline' in css(".crumb[aria-current='location']", 'textDecorationLine'), '1.4.1 forced colours: the current crumb is underlined in the Observatory')
     goto(page, base, 'explorer', 'Explorer')
     check('underline' in css('th.basis', 'textDecorationLine') and 'underline' not in css('thead th:first-child', 'textDecorationLine'), '1.4.1 forced colours: the sorted size column is underlined')
     goto(page, base, 'tiers', 'Tiers')
