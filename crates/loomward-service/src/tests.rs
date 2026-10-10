@@ -966,3 +966,26 @@ fn a_failed_mutation_spawn_keeps_queue_order_and_liveness() {
         "the queue is still live"
     );
 }
+
+/// A malformed stored node-ID key refuses to open the service instead of becoming zero bytes.
+#[test]
+fn a_malformed_node_id_key_refuses_to_open() {
+    let tmp = tempfile::tempdir().unwrap();
+    drop(open(tmp.path(), DatasetClass::Synthetic));
+    for bad in ["zz".repeat(32), "00".repeat(31), "+0".repeat(32)] {
+        rusqlite::Connection::open(tmp.path().join("state.db"))
+            .unwrap()
+            .execute("UPDATE meta SET value=?1 WHERE key='node_id_key'", [&bad])
+            .unwrap();
+        let opened = Service::open(Config {
+            state_dir: tmp.path().to_path_buf(),
+            dataset: DatasetClass::Synthetic,
+            allow_personal: false,
+            grant_roots: vec![],
+        });
+        assert!(
+            opened.err().is_some_and(|e| e.contains("malformed")),
+            "{bad}"
+        );
+    }
+}

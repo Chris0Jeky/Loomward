@@ -63,9 +63,17 @@ pub fn install_key(conn: &Connection) -> Sql<[u8; 32]> {
             read(conn)?.unwrap_or(fresh)
         }
     };
+    // A damaged key must stop the service, never silently become a weaker (zeroed) key.
+    if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            "the stored node-ID key is malformed".into(),
+        ));
+    }
     let mut key = [0u8; 32];
     for (i, b) in key.iter_mut().enumerate() {
-        *b = u8::from_str_radix(hex.get(2 * i..2 * i + 2).unwrap_or("00"), 16).unwrap_or(0);
+        *b = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).expect("checked hex");
     }
     Ok(key)
 }
