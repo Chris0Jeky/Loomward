@@ -69,6 +69,12 @@ pub struct ScanReport {
     pub elapsed_seconds: f64,
     /// Sum of worker time spent enumerating and handing off chunks (not exclusive CPU time).
     pub enumeration_worker_seconds: f64,
+    /// Wall time through the final drained ListingDone (overlaps writer staging).
+    pub enumeration_wall_seconds: f64,
+    /// Writer time in listing preparation/staging/publication, excluding DirFinal and barriers.
+    pub staging_seconds: f64,
+    /// Coordinator time in bottom-up finalization and root finish, including writer waits.
+    pub aggregation_seconds: f64,
     /// Sum of writer time inside sink staging/publication methods.
     pub persistence_seconds: f64,
 }
@@ -456,7 +462,9 @@ impl<S: DirSource> Shared<'_, S> {
         }
         if outcome != ListOutcome::Complete {
             complete = false;
-            self.failures.fetch_add(1, Ordering::Relaxed);
+            if outcome != ListOutcome::Incomplete(IncompleteReason::Limit) {
+                self.failures.fetch_add(1, Ordering::Relaxed);
+            }
         }
         if !self.flush(ticket, &mut entries, &mut permit) {
             return Err(cancelled());
@@ -619,8 +627,9 @@ fn writer(
     sink: &dyn ScanSink,
     rx: Receiver<Envelope>,
     failed: &AtomicBool,
-) -> EngineResult<f64> {
+) -> EngineResult<(f64, f64)> {
     let mut seconds = 0.;
+    let mut staging_seconds = 0.;
     let mut first_error = None;
     let mut dirty = HashSet::new();
     for e in rx {
@@ -631,6 +640,13 @@ fn writer(
             continue;
         }
         let start = Instant::now();
+        let staging = matches!(
+            &e.command,
+            Command::Prepare { .. }
+                | Command::Message(
+                    ScanMessage::DirListing { .. } | ScanMessage::ListingDone { .. }
+                )
+        );
         let result = match e.command {
             Command::Prepare {
                 parent,
@@ -674,13 +690,17 @@ fn writer(
             }
             Command::Stop => unreachable!(),
         };
-        seconds += start.elapsed().as_secs_f64();
+        let elapsed = start.elapsed().as_secs_f64();
+        seconds += elapsed;
+        if staging {
+            staging_seconds += elapsed;
+        }
         if let Err(error) = result {
             failed.store(true, Ordering::Release);
             first_error = Some(error);
         }
     }
-    first_error.map_or(Ok(seconds), Err)
+    first_error.map_or(Ok((seconds, staging_seconds)), Err)
 }
 /// Scan one granted root into a bounded sink. No real metadata is exported or retained by this API.
 pub fn run_scan<S: DirSource>(
@@ -813,6 +833,8 @@ pub fn run_scan<S: DirSource>(
         complete: false,
         ticket,
     });
+    let mut enumeration_wall_seconds = 0.;
+    let mut aggregation_seconds = 0.;
     let (worker_result, writer_result) = std::thread::scope(|scope| {
         let write = scope.spawn(|| writer(root.root_id(), run, sink.as_ref(), rx, &failed));
         let mut result = Ok(());
@@ -850,9 +872,13 @@ pub fn run_scan<S: DirSource>(
             }
             let dirty = match (|| {
                 let mut dirty = shared.dirty_directories()?;
+                enumeration_wall_seconds = start.elapsed().as_secs_f64();
                 if dirty.is_empty() {
-                    shared.finalize(true)?;
+                    let aggregation = Instant::now();
+                    let finalization = shared.finalize(true);
+                    finalization?;
                     dirty = shared.dirty_directories()?;
+                    aggregation_seconds += aggregation.elapsed().as_secs_f64();
                 }
                 Ok::<_, EngineError>(dirty)
             })() {
@@ -901,7 +927,10 @@ pub fn run_scan<S: DirSource>(
         if !reconciled {
             // Finals were never accepted: still report the partial sums of what was listed,
             // never a zero standing in for unknown.
-            if let Err(e) = shared.finalize(false) {
+            let aggregation = Instant::now();
+            let finalization = shared.finalize(false);
+            aggregation_seconds += aggregation.elapsed().as_secs_f64();
+            if let Err(e) = finalization {
                 if result.is_ok() {
                     result = Err(e);
                 }
@@ -927,8 +956,10 @@ pub fn run_scan<S: DirSource>(
         && !cancel.load(Ordering::Acquire)
         && worker_result.is_ok()
         && writer_result.is_ok();
+    let aggregation = Instant::now();
     let finish = sink.finish_run(root.root_id(), run, &options.scope, complete);
-    let persistence_seconds = writer_result?;
+    aggregation_seconds += aggregation.elapsed().as_secs_f64();
+    let (persistence_seconds, staging_seconds) = writer_result?;
     if !cancel.load(Ordering::Acquire) {
         worker_result?;
     }
@@ -947,6 +978,9 @@ pub fn run_scan<S: DirSource>(
         failed: shared.failures.load(Ordering::Relaxed),
         elapsed_seconds: start.elapsed().as_secs_f64(),
         enumeration_worker_seconds: shared.enumeration_ns.load(Ordering::Relaxed) as f64 / 1e9,
+        enumeration_wall_seconds,
+        staging_seconds,
+        aggregation_seconds,
         persistence_seconds,
     })
 }

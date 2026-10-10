@@ -84,6 +84,16 @@ handle-lifetime test uses a deliberately blocked synthetic directory source. Nei
 |---|---:|---:|---:|---:|---:|---:|
 | S | 100,000 | 0.024259 | 4,122,266 | 0.137167 | 0.009219 | 20/20 |
 | M | 1,000,000 | 0.205443 | 4,867,530 | 1.321334 | 0.129974 | 20/20 |
+| L oversized, E: scale lab | 10,000,000 fixture; 9,843,584 observed | 18.012287 | 546,530 observed | 96.704864 | 14.169436 | 0/20 complete; 20/20 N6 partial |
+
+L17a: 20 fresh processes, shared-host/uncontrolled and warm/uncontrolled; p95 wall 27.076304 s,
+maximum peak private commit/working set 37.523/37.711 MiB. The unchanged arena limit leaves
+48,769 observed directories, incomplete coverage, unknown full allocation and no sweep.
+Generation's exact 10M manifest passed. The initial first-after-generate attempt was rejected
+before timing capture; a regression reproduced limits counted as errors, corrected without hiding
+real I/O failures. The first accepted run (971.988312 s) remains in the summary.
+[Raw L results](bench/scan-10m.json) and [methodology](../../experiments/windows-benchmarks/scan-10m.md).
+The historical S/M results below retain their original qualification boundaries.
 
 Eight workers, 16 KiB native buffers, existing generated lab trees. Logical bytes, allocation bytes,
 file and descendant-directory counts match the independent manifests on every trial.

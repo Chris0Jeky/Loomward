@@ -1,6 +1,7 @@
 use loomward_lab::{
-    bucket_path, decode_records, disagreements, expected, file_spec, invalid, real_root, root_name,
-    CrossTotals, Manifest, Profile, Totals, MARKER, MAX_DEPTH, QUEUE_LIMIT,
+    bucket_path, decode_records, disagreements, expected, file_spec, generation_limits, invalid,
+    real_root, root_name, CrossTotals, Manifest, Profile, Totals, L_FILES, MARKER, MAX_DEPTH,
+    QUEUE_LIMIT, RESERVE_BYTES,
 };
 use serde::Serialize;
 use std::{
@@ -38,7 +39,7 @@ use windows_sys::Win32::{
     },
 };
 
-const MIN_FREE: u64 = 20_000_000_000;
+const MIN_FREE: u64 = RESERVE_BYTES;
 const REJECT_ATTRS: u32 = FILE_ATTRIBUTE_REPARSE_POINT
     | FILE_ATTRIBUTE_OFFLINE
     | FILE_ATTRIBUTE_RECALL_ON_OPEN
@@ -147,6 +148,18 @@ impl Scope {
         if manifest.schema_version != 1 || !manifest.complete {
             return Err(invalid("incomplete or unsupported manifest"));
         }
+        let limit = generation_limits(
+            self.root.to_str().unwrap().trim_start_matches(r"\\?\"),
+            manifest.expected.files,
+        )?;
+        if manifest.file_data_allocation_bytes > limit
+            || manifest
+                .volume_free_before
+                .saturating_sub(manifest.volume_free_after)
+                > limit
+        {
+            return Err(invalid("manifest exceeds allocation/volume-delta cap"));
+        }
         if manifest.expected != expected(manifest.expected.files, manifest.seed, manifest.profile)?
         {
             return Err(invalid("manifest disagrees with deterministic plan"));
@@ -217,6 +230,7 @@ fn generate(
     profile: Profile,
     threads: usize,
 ) -> io::Result<()> {
+    let allocation_limit = generation_limits(input, files)?;
     let totals = expected(files, seed, profile)?;
     let scope = Scope::open(input, true)?;
     let _busy = Busy::take(&scope)?;
@@ -275,7 +289,7 @@ fn generate(
         error.map_or(Ok(()), Err)
     })?;
     let actual = walk(&data, Strategy::Handle, threads, 64)?;
-    if actual.totals != totals || actual.allocation_bytes > MIN_FREE {
+    if actual.totals != totals || actual.allocation_bytes > allocation_limit {
         return Err(invalid(format!(
             "generated tree failed oracle/allocation check: {actual:?}"
         )));
@@ -284,9 +298,9 @@ fn generate(
     manifest.complete = true;
     manifest.generation_seconds = start.elapsed().as_secs_f64();
     manifest.volume_free_after = free_bytes(&scope.root)?;
-    if before.saturating_sub(manifest.volume_free_after) > MIN_FREE {
+    if before.saturating_sub(manifest.volume_free_after) > allocation_limit {
         return Err(invalid(
-            "volume free-space delta exceeded 20 GB; partial marked tree retained",
+            "volume free-space delta exceeded scoped cap; partial marked tree retained",
         ));
     }
     save_manifest(&scope.root, &manifest)?;
@@ -997,7 +1011,8 @@ fn scan_tier_files(tier: &str) -> io::Result<u64> {
     match tier {
         "S" => Ok(100_000),
         "M" => Ok(1_000_000),
-        _ => Err(invalid("tier must be S or M; oversized stress is separate")),
+        "L" => Ok(L_FILES),
+        _ => Err(invalid("tier must be S, M or L; L is oversized stress")),
     }
 }
 
@@ -1011,8 +1026,11 @@ fn bench_scan(args: &[String]) -> io::Result<()> {
     use std::sync::atomic::AtomicBool;
     let mut tier = None;
     let mut runs = None;
-    if args.len() != 4 {
-        return Err(invalid("bench scan --tier S|M --runs N"));
+    let mut cache_label = "warm/uncontrolled";
+    if args.len() != 4 && args.len() != 6 {
+        return Err(invalid(
+            "bench scan --tier S|M|L --runs N [--cache-label LABEL]",
+        ));
     }
     for pair in args.chunks_exact(2) {
         match pair[0].as_str() {
@@ -1024,6 +1042,14 @@ fn bench_scan(args: &[String]) -> io::Result<()> {
                         .map_err(|_| invalid("invalid runs"))?,
                 )
             }
+            "--cache-label" if cache_label == "warm/uncontrolled" => {
+                cache_label = pair[1].as_str();
+                if !["warm/uncontrolled", "first-after-generate"].contains(&cache_label) {
+                    return Err(invalid(
+                        "scan cache label must be warm/uncontrolled or first-after-generate",
+                    ));
+                }
+            }
             _ => return Err(invalid("unknown or duplicate scan bench option")),
         }
     }
@@ -1033,7 +1059,48 @@ fn bench_scan(args: &[String]) -> io::Result<()> {
     if !(1..=100).contains(&runs) {
         return Err(invalid("runs must be 1..=100"));
     }
-    let input = format!(r"G:\loomward-lab\scale\mixed-{files}");
+    if runs > 1 {
+        let mut measurements = Vec::new();
+        for run in 1..=runs {
+            let label = if run == 1 {
+                cache_label
+            } else {
+                "warm/uncontrolled"
+            };
+            let child = std::process::Command::new(std::env::current_exe()?)
+                .args([
+                    "bench",
+                    "scan",
+                    "--tier",
+                    tier,
+                    "--runs",
+                    "1",
+                    "--cache-label",
+                    label,
+                ])
+                .output()?;
+            io::stderr().write_all(&child.stderr)?;
+            if !child.status.success() {
+                return Err(invalid("fresh-process scan child failed"));
+            }
+            let mut result: serde_json::Value = serde_json::from_slice(&child.stdout)?;
+            let mut measurement = result["runs"][0].take();
+            measurement["run"] = serde_json::json!(run);
+            eprintln!(
+                "scan {tier} fresh process {run}/{runs}: {}s",
+                measurement["wall_seconds"]
+            );
+            measurements.push(measurement);
+            if run == runs {
+                result["runs"] = serde_json::json!(measurements);
+                summarize_scans(&mut result);
+                println!("{}", serde_json::to_string_pretty(&result)?);
+                return Ok(());
+            }
+        }
+    }
+    let drive = if tier == "L" { "E" } else { "G" };
+    let input = format!(r"{drive}:\loomward-lab\scale\mixed-{files}");
     let scope = Scope::open(&input, false)?;
     let _busy = Busy::take(&scope)?;
     let manifest = scope.manifest()?;
@@ -1055,47 +1122,103 @@ fn bench_scan(args: &[String]) -> io::Result<()> {
             ScanOptions::default(),
         )
         .map_err(|e| invalid(e.to_string()))?;
-        if !report.complete
-            || report.totals.files != manifest.expected.files
-            || report.totals.dirs != manifest.expected.directories
-            || report.totals.logical != manifest.expected.logical_bytes
-            || report.totals.allocated != Some(manifest.file_data_allocation_bytes)
-            || sink.totals(root.root_id()) != Some(report.totals)
-        {
-            return Err(invalid(format!(
-                "scan disagrees with complete manifest: {:?}",
-                report.totals
-            )));
+        let oracle = scan_oracle(
+            &report,
+            &manifest,
+            tier == "L",
+            sink.sweep_allowed(root.root_id()),
+            sink.is_repairing(root.root_id()),
+            sink.totals(root.root_id()),
+        )?;
+        let mut counters: PROCESS_MEMORY_COUNTERS = unsafe { zeroed() };
+        counters.cb = size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+        if unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) } == 0 {
+            return Err(io::Error::last_os_error());
         }
-        measurements.push(serde_json::json!({"run":run,"wall_seconds":report.elapsed_seconds,"files_per_second":files as f64/report.elapsed_seconds,"enumeration_worker_seconds":report.enumeration_worker_seconds,"persistence_seconds":report.persistence_seconds,"files":report.totals.files,"directories":report.totals.dirs,"logical_bytes":report.totals.logical.to_string(),"allocated_bytes":report.totals.allocated.map(|n|n.to_string()),"complete":report.complete}));
+        measurements.push(serde_json::json!({"run":run,"cache":cache_label,"host":"shared-host/uncontrolled","wall_seconds":report.elapsed_seconds,"files_per_second":report.totals.files as f64/report.elapsed_seconds,"enumeration_worker_seconds":report.enumeration_worker_seconds,"enumeration_wall_seconds":report.enumeration_wall_seconds,"staging_seconds":report.staging_seconds,"aggregation_seconds":report.aggregation_seconds,"persistence_seconds":report.persistence_seconds,"peak_private_commit_bytes":counters.PeakPagefileUsage,"peak_working_set_bytes":counters.PeakWorkingSetSize,"files":report.totals.files,"directories":report.totals.dirs,"logical_bytes":report.totals.logical.to_string(),"allocated_bytes":if report.complete { report.totals.allocated.map(|n|n.to_string()) } else { None },"observed_allocated_bytes":report.totals.allocated.map(|n|n.to_string()),"complete":report.complete,"limit_hit":report.limit_hit,"strategy":format!("{:?}",report.strategy),"examined":report.examined,"skipped":report.skipped,"failed":report.failed,"sweep_allowed":sink.sweep_allowed(root.root_id()),"oracle":oracle,"process_id":std::process::id()}));
         eprintln!(
             "scan {tier} {run}/{runs}: {:.3}s, {:.0} files/s, sink {:.3}s",
             report.elapsed_seconds,
-            files as f64 / report.elapsed_seconds,
+            report.totals.files as f64 / report.elapsed_seconds,
             report.persistence_seconds
         );
     }
-    let median_wall = scan_median(
-        measurements
-            .iter()
-            .map(|m| m["wall_seconds"].as_f64().unwrap())
-            .collect(),
-    );
-    let median_enumeration = scan_median(
-        measurements
-            .iter()
-            .map(|m| m["enumeration_worker_seconds"].as_f64().unwrap())
-            .collect(),
-    );
-    let median_persistence = scan_median(
-        measurements
-            .iter()
-            .map(|m| m["persistence_seconds"].as_f64().unwrap())
-            .collect(),
-    );
-    let result = serde_json::json!({"schema_version":1,"platform":"Windows 11","tier":tier,"root":input,"source":"native production enumerator","sink":"aggregate-only in-memory staging; no SQLite","cache":"warm/uncontrolled; existing generated fixture","workers":8,"buffer_kib":16,"shared_byte_budget":SCAN_BYTES,"manifest_matched_all_runs":true,"median_wall_seconds":median_wall,"median_enumeration_worker_seconds":median_enumeration,"median_persistence_seconds":median_persistence,"runs":measurements});
+    let root_label = if tier == "L" {
+        "10M lab tier (E: scale lab)".to_string()
+    } else {
+        format!("lab:mixed-{files}")
+    };
+    let mut result = serde_json::json!({"schema_version":1,"platform":"Windows 11","tier":tier,"root":root_label,"source":"native production enumerator","sink":"aggregate-only in-memory staging; no SQLite","cache":"warm/uncontrolled","host":"shared-host/uncontrolled","fresh_process_per_run":true,"workers":8,"buffer_kib":16,"shared_byte_budget":SCAN_BYTES,"expected":manifest.expected,"runs":measurements});
+    summarize_scans(&mut result);
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
+}
+
+fn scan_oracle(
+    report: &loomward_engine::scan::ScanReport,
+    manifest: &Manifest,
+    oversized: bool,
+    sweep: bool,
+    repairing: bool,
+    sink_totals: Option<loomward_engine::scan::Sums>,
+) -> io::Result<&'static str> {
+    let t = report.totals;
+    if report.skipped != 0 || report.failed != 0 || sink_totals != Some(t) {
+        return Err(invalid(format!("scan oracle rejected: failed={} skipped={} complete={} limit={} totals={:?} sink={:?} sweep={sweep} repairing={repairing}", report.failed, report.skipped, report.complete, report.limit_hit, t, sink_totals)));
+    }
+    if report.complete {
+        if !report.limit_hit
+            && sweep
+            && !repairing
+            && t.files == manifest.expected.files
+            && t.dirs == manifest.expected.directories
+            && t.logical == manifest.expected.logical_bytes
+            && t.allocated == Some(manifest.file_data_allocation_bytes)
+        {
+            return Ok("exact-manifest");
+        }
+    } else if oversized
+        && report.limit_hit
+        && !sweep
+        && repairing
+        && t.files <= manifest.expected.files
+        && t.dirs <= manifest.expected.directories
+        && t.logical <= manifest.expected.logical_bytes
+        && t.allocated
+            .is_none_or(|n| n <= manifest.file_data_allocation_bytes)
+    {
+        return Ok("N6-partial-invariants; full totals and allocation unknown; no sweep");
+    }
+    Err(invalid("scan failed exact/oversized partial oracle"))
+}
+
+fn summarize_scans(result: &mut serde_json::Value) {
+    let runs = result["runs"].as_array().unwrap().clone();
+    result["run_count"] = serde_json::json!(runs.len());
+    result["manifest_matched_all_runs"] =
+        serde_json::json!(runs.iter().all(|r| r["oracle"] == "exact-manifest"));
+    result["oracle_passed_all_runs"] = serde_json::json!(true);
+    result["p95_method"] = serde_json::json!("nearest rank; null with fewer than 20 runs");
+    for metric in [
+        "wall_seconds",
+        "files_per_second",
+        "enumeration_worker_seconds",
+        "enumeration_wall_seconds",
+        "staging_seconds",
+        "aggregation_seconds",
+        "persistence_seconds",
+        "peak_private_commit_bytes",
+        "peak_working_set_bytes",
+    ] {
+        let mut values: Vec<f64> = runs.iter().map(|r| r[metric].as_f64().unwrap()).collect();
+        values.sort_by(f64::total_cmp);
+        result[format!("median_{metric}")] = serde_json::json!(scan_median(values.clone()));
+        result[format!("p95_{metric}")] = if values.len() >= 20 {
+            serde_json::json!(values[(values.len() * 95).div_ceil(100) - 1])
+        } else {
+            serde_json::Value::Null
+        };
+    }
 }
 
 pub fn run() -> io::Result<()> {
@@ -1199,9 +1322,83 @@ mod tests {
     fn m_tier_stays_one_million_n6() {
         assert_eq!(scan_tier_files("M").unwrap(), 1_000_000);
         assert_eq!(scan_tier_files("S").unwrap(), 100_000);
+        assert_eq!(scan_tier_files("L").unwrap(), 10_000_000);
         assert!(scan_tier_files("oversized").is_err());
         assert_eq!(scan_median(vec![1., 4., 2., 3.]), 2.5);
         assert_eq!(scan_median(vec![1., 3., 2.]), 2.);
+    }
+
+    #[test]
+    fn scan_oracle_accepts_exact_or_limited_oversized_never_false_complete() {
+        use loomward_engine::scan::{source::Strategy, ScanReport, Sums};
+        let totals = Sums {
+            files: 10,
+            dirs: 2,
+            logical: 100,
+            allocated: Some(8),
+        };
+        let manifest = Manifest {
+            schema_version: 1,
+            complete: true,
+            seed: 42,
+            profile: Profile::Mixed,
+            expected: Totals {
+                files: 10,
+                directories: 2,
+                logical_bytes: 100,
+                skipped_reparse: 0,
+            },
+            file_data_allocation_bytes: 8,
+            generation_seconds: 0.,
+            volume_free_before: 0,
+            volume_free_after: 0,
+        };
+        let mut report = ScanReport {
+            totals,
+            complete: true,
+            strategy: Strategy::Portable,
+            limit_hit: false,
+            examined: 12,
+            skipped: 0,
+            failed: 0,
+            elapsed_seconds: 1.,
+            enumeration_worker_seconds: 1.,
+            enumeration_wall_seconds: 1.,
+            staging_seconds: 0.,
+            aggregation_seconds: 0.,
+            persistence_seconds: 0.,
+        };
+        assert_eq!(
+            scan_oracle(&report, &manifest, false, true, false, Some(totals)).unwrap(),
+            "exact-manifest"
+        );
+        report.totals.files = 9;
+        assert!(scan_oracle(&report, &manifest, true, true, false, Some(report.totals)).is_err());
+        report.complete = false;
+        report.limit_hit = true;
+        assert!(scan_oracle(&report, &manifest, true, false, true, Some(report.totals)).is_ok());
+        assert!(scan_oracle(&report, &manifest, false, false, true, Some(report.totals)).is_err());
+        assert!(scan_oracle(&report, &manifest, true, true, true, Some(report.totals)).is_err());
+        report.limit_hit = false;
+        assert!(scan_oracle(&report, &manifest, true, false, true, Some(report.totals)).is_err());
+        report.limit_hit = true;
+        report.failed = 1;
+        assert!(scan_oracle(&report, &manifest, true, false, true, Some(report.totals)).is_err());
+        report.failed = 0;
+        report.totals.logical = 101;
+        assert!(scan_oracle(&report, &manifest, true, false, true, Some(report.totals)).is_err());
+    }
+
+    #[test]
+    fn p95_requires_twenty_runs_and_uses_nearest_rank() {
+        let runs: Vec<_> = (1..=20).map(|n| serde_json::json!({"oracle":"exact-manifest","wall_seconds":n,"files_per_second":n,"enumeration_worker_seconds":n,"enumeration_wall_seconds":n,"staging_seconds":n,"aggregation_seconds":n,"persistence_seconds":n,"peak_private_commit_bytes":n,"peak_working_set_bytes":n})).collect();
+        let mut result = serde_json::json!({"runs":runs});
+        summarize_scans(&mut result);
+        assert_eq!(result["median_wall_seconds"], 10.5);
+        assert_eq!(result["p95_wall_seconds"], 19.);
+        result["runs"].as_array_mut().unwrap().pop();
+        summarize_scans(&mut result);
+        assert!(result["p95_wall_seconds"].is_null());
     }
 
     struct LogScope(PathBuf);
