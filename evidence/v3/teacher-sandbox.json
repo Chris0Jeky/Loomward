@@ -1,0 +1,134 @@
+{
+  "cases": [
+    {
+      "capabilities": [],
+      "child_alive_before_job_close": null,
+      "child_exited_after_job_close": null,
+      "job": false,
+      "launch": {
+        "create_process": {
+          "error_code": 2,
+          "kind": "NotFound",
+          "ok": false
+        }
+      },
+      "probe": null
+    },
+    {
+      "capabilities": [
+        "internetClient"
+      ],
+      "job": false,
+      "not_run": "stopped after first AppContainer launch failure"
+    },
+    {
+      "capabilities": [],
+      "job": true,
+      "not_run": "stopped after first AppContainer launch failure"
+    },
+    {
+      "capabilities": [
+        "internetClient"
+      ],
+      "job": true,
+      "not_run": "stopped after first AppContainer launch failure"
+    }
+  ],
+  "cleanup": {
+    "error_code": null,
+    "ok": true,
+    "root_removed": true
+  },
+  "codex": {
+    "blocked": "container_launch_failed",
+    "sha256": "9e7c59c05cc1ce5677b1f94e835b2ac038ca3be14504e78d558eacdb0ea3f55d"
+  },
+  "container_sid": "S-1-15-2-305187231-2395927936-1495967934-2617162714-3177857376-3101909138-3005906261",
+  "controls": {
+    "documents_listing": {
+      "error_code": null,
+      "ok": true
+    },
+    "granted_canary": {
+      "error_code": null,
+      "ok": true
+    },
+    "identity": {
+      "appcontainer": false,
+      "container_sid": null,
+      "in_job": true
+    },
+    "network": [
+      {
+        "endpoint": "1.1.1.1:443",
+        "result": {
+          "error_code": null,
+          "ok": true
+        }
+      },
+      {
+        "endpoint": "162.159.140.245:443",
+        "result": {
+          "error_code": null,
+          "ok": true
+        }
+      },
+      {
+        "endpoint": "127.0.0.1:9699",
+        "result": {
+          "error_code": null,
+          "ok": true
+        }
+      }
+    ],
+    "process_launch": {
+      "create_process": {
+        "error_code": null,
+        "ok": true
+      },
+      "exit_code": 0,
+      "timed_out": false
+    },
+    "stderr": "",
+    "ungranted_canary": {
+      "error_code": null,
+      "ok": true
+    }
+  },
+  "elevated": false,
+  "diagnostics": [
+    {
+      "role": "earlier ordinary child report-file control",
+      "create_process": { "ok": true, "error_code": null },
+      "exit_code": 1,
+      "identity": { "appcontainer": false, "container_sid": null, "in_job": true },
+      "report_file_write": { "ok": false, "error_code": 5 },
+      "interpretation": "Not AppContainer enforcement; final ordinary control reports over inherited stdout"
+    }
+  ],
+  "blocked_questions": {
+    "filesystem": "No contained probe executed",
+    "network": "No contained probe executed with either capability set",
+    "process_and_job": "No contained probe executed",
+    "codex_startup": "Container launch failed before codex launch",
+    "tool_canaries": "blocked-by-design: no authenticated contained runner"
+  },
+  "context": {
+    "source_head": "35f020850e282f223aa37bc29475f9b9b1158f2a",
+    "source_changes": "uncommitted spike",
+    "windows_version": "10.0.26300",
+    "architecture": "64-bit",
+    "rustc": "1.97.1 (8bab26f4f 2026-07-14)",
+    "cargo": "1.97.1 (c980f4866 2026-06-30)",
+    "note": "Context, diagnostic and blocked-question annotations added to the final launcher receipt from local measurements"
+  },
+  "measured_at_unix_seconds": 1791640625,
+  "platform": "Windows",
+  "profile_lookup": {
+    "api": "GetAppContainerFolderPath",
+    "folder_exists": null,
+    "hresult": "0x80070002"
+  },
+  "profile_registered": false,
+  "schema": 1
+}
