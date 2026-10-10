@@ -42,6 +42,32 @@ describe('applying job snapshots', () => {
     expect(applyJob(second, done({ job_id: 'jb_0', created_at: '2026-10-10T09:00:00Z' })).rt_a?.job_id).toBe('jb_2');
   });
 
+  describe('when two jobs of one root were created at the same instant', () => {
+    const A = done({ job_id: 'jb_a', finished_at: '2026-10-10T10:00:05Z' });
+    const both = (x: Job, y: Job) => [applyJob(applyJob({}, x), y).rt_a, applyJob(applyJob({}, y), x).rt_a];
+
+    it('the one still running is the later one, whichever arrives first (a root has one active scan)', () => {
+      const B = job('running', { job_id: 'jb_0', started_at: '2026-10-10T10:00:06Z' });
+      expect(both(A, B).map((j) => j?.job_id)).toEqual(['jb_0', 'jb_0']);
+    });
+
+    it('between two finished ones the later finish wins, whichever arrives first', () => {
+      const late = done({ job_id: 'jb_b', finished_at: '2026-10-10T10:00:09Z', coverage: 'partial' });
+      expect(both(done({ job_id: 'jb_z', finished_at: '2026-10-10T10:00:05Z' }), late).map((j) => j?.job_id)).toEqual(['jb_b', 'jb_b']); // the smaller id, the later finish
+    });
+
+    it('creation time still comes first: an older job never wins on id or finish time', () => {
+      const newer = done({ job_id: 'jb_a', created_at: '2026-10-10T11:00:00Z', finished_at: '2026-10-10T11:00:05Z' });
+      const older = done({ job_id: 'jb_z', created_at: '2026-10-10T09:00:00Z', finished_at: '2026-10-10T12:00:00Z' });
+      expect(both(newer, older).map((j) => j?.job_id)).toEqual(['jb_a', 'jb_a']);
+    });
+
+    it('with nothing else to tell them apart the larger job id wins, the same either way', () => {
+      const B = done({ job_id: 'jb_z' });
+      expect(both(A, B).map((j) => j?.job_id)).toEqual(['jb_z', 'jb_z']);
+    });
+  });
+
   it('ignores jobs that are not scans or have no root', () => {
     expect(applyJob({}, job('running', { kind: 'refit' }))).toEqual({});
     expect(applyJob({}, job('running', { root_id: null }))).toEqual({});

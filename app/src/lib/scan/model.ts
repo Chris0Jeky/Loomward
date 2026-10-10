@@ -34,6 +34,27 @@ function merge(cur: Job, job: Job): Job {
   };
 }
 
+const stamp = (iso: string | null): number => (iso === null ? NaN : Date.parse(iso));
+/** Larger is later; an unreadable time sorts first. */
+const order = (a: number, b: number): number => (Number.isNaN(a) ? -Infinity : a) - (Number.isNaN(b) ? -Infinity : b);
+
+/**
+ * Whether `job` is a later scan of the root than `cur` (two different jobs). The contract has no sequence number
+ * (job ids are random), so the order is: creation time; then a job still active (a root has only one active scan, so
+ * it began after any finished one); then finish time; then the job id, which is arbitrary but is the same whichever
+ * snapshot arrives first. It is a total order, so arrival order never decides.
+ */
+function newerJob(job: Job, cur: Job): boolean {
+  const steps = [
+    order(stamp(job.created_at), stamp(cur.created_at)),
+    Number(isActive(job.state)) - Number(isActive(cur.state)),
+    order(stamp(job.finished_at), stamp(cur.finished_at)),
+    job.created_at < cur.created_at ? -1 : job.created_at > cur.created_at ? 1 : 0, // same millisecond: the full timestamp text
+    job.job_id < cur.job_id ? -1 : job.job_id > cur.job_id ? 1 : 0,
+  ];
+  return (steps.find((d) => d !== 0 && !Number.isNaN(d)) ?? 0) > 0;
+}
+
 /**
  * Applies a job snapshot (event, command result or list row). A state never moves backwards and a terminal
  * state is final, so a replayed or late event cannot undo a newer one (semantics.md section 7), nor erase what
@@ -48,7 +69,7 @@ export function applyJob(book: Book, job: Job): Book {
       if (RANK[job.state] < RANK[cur.state] || (RANK[cur.state] === TERMINAL && job.state !== cur.state)) return book;
       return { ...book, [root]: merge(cur, job) };
     }
-    if (Date.parse(job.created_at) < Date.parse(cur.created_at)) return book;
+    if (!newerJob(job, cur)) return book;
   }
   return { ...book, [root]: job };
 }

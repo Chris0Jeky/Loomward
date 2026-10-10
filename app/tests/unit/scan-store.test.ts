@@ -55,12 +55,12 @@ describe('the scan store follows the event stream', () => {
 
 type Reply = unknown | { error: { code: ErrorCode; message: string; detail?: Record<string, unknown> | null } };
 /** A client whose engine is a function; `calls` records the commands it was asked. */
-function clientWith(handler: (command: string, payload: Record<string, unknown>) => Reply) {
+function clientWith(handler: (command: string, payload: Record<string, unknown>) => Reply | Promise<Reply>) {
   const calls: string[] = [];
   const transport = {
     call: async (r: { request_id: string; command: string; payload: Record<string, unknown> }) => {
       calls.push(r.command);
-      const h = handler(r.command, r.payload) as { error?: object } | null;
+      const h = (await handler(r.command, r.payload)) as { error?: object } | null;
       const base = { protocol: 'loomward/3', request_id: r.request_id };
       return h && typeof h === 'object' && 'error' in h ? { ...base, ok: false, error: { retryable: false, detail: null, ...h.error } } : { ...base, ok: true, result: h, meta: {} };
     },
@@ -118,6 +118,18 @@ describe('settling and syncing keep what was known', () => {
     expect(v.active).toBe(false);
     expect(v.detail).toContain('no longer lists this scan');
     expect(scans.change?.text).toContain('no longer lists this scan');
+  });
+
+  it('keeps a newer state that arrived on the stream while jobs.list was in flight', async () => {
+    scans.onEvent(ev('job.state', { job: job('running', { started_at: '2026-10-10T10:00:01Z' }) }));
+    let answer!: (r: Reply) => void;
+    const { client } = clientWith(() => new Promise<Reply>((resolve) => { answer = resolve; }));
+    session.client = client;
+    const syncing = scans.sync();
+    scans.onEvent(ev('job.state', { job: job('completed', { coverage: 'complete', started_at: '2026-10-10T10:00:01Z', finished_at: '2026-10-10T10:00:05Z' }) }));
+    answer({ jobs: [job('running', { started_at: '2026-10-10T10:00:01Z' })] }); // the list was read before the job ended
+    await syncing;
+    expect(scans.view('rt_a', 0)?.activity).toBe('completed');
   });
 
   it('does not claim a scan is running when the service is busy for another reason', async () => {
