@@ -34,7 +34,7 @@ const ease = (/** @type {number} */ t) => (t >= 1 ? 1 : 1 - Math.pow(2, -10 * t)
 
 /**
  * @param {HTMLCanvasElement} canvas
- * @param {{ palette: Palette, reducedMotion?: () => boolean, format?: (n: number) => string, rings?: number }} options
+ * @param {{ palette: Palette, reducedMotion?: () => boolean, format?: (n: number) => string, rings?: number, label?: (name: string) => string }} options
  */
 export function createSunburst(canvas, options) {
   const c0 = canvas.getContext('2d');
@@ -244,7 +244,7 @@ export function createSunburst(canvas, options) {
     for (const a of arcs) {
       const span = a.a1 - a.a0, th = a.ro - a.ri, rm = (a.ri + a.ro) / 2, L = span * rm;
       if (L < 12 || th < 11) continue;
-      let text = a.n.name;
+      let text = a.n.label;
       const am = (a.a0 + a.a1) / 2;
       const norm = ((am % TAU) + TAU) % TAU;
       let tw = widths.get(a.n);
@@ -294,7 +294,7 @@ export function createSunburst(canvas, options) {
     ctx.strokeStyle = palette.track; ctx.lineWidth = 1; ctx.stroke();
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.font = palette.fontHead; ctx.fillStyle = palette.label;
-    let name = n.name;
+    let name = n.label;
     if (ctx.measureText(name).width > r0 * 1.6) ctx.font = palette.fontLabel;
     while (ctx.measureText(name).width > r0 * 1.6 && name.length > 3) name = name.slice(0, -2) + '…';
     ctx.fillText(name, cx, cy - 9);
@@ -473,7 +473,7 @@ export function createSunburst(canvas, options) {
   return {
     /** @param {SliceLike} s @param {{ animate?: boolean }} [opts] */
     setSlice(s, opts = {}) {
-      const next = buildTree(s);
+      const next = buildTree(s, options.label);
       const prevRoot = root, prevIds = byId;
       provisional = s.aggregate_state === 'provisional_live';
       cursor = 0; hover = null; widths = new Map();
@@ -509,6 +509,10 @@ export function createSunburst(canvas, options) {
     },
     /** @param {number} a */
     rotateBy(a) { theta += a; schedule(); },
+    /** @param {string} id */
+    info(id) { const v = byId.get(id); return v ? nodeInfo(v) : null; },
+    /** Drop the cloth: after a failed load nothing stale stays drawn or clickable. */
+    clear() { root = null; byId = new Map(); part = new Map(); depthOf = new Map(); anim = null; hover = null; layer = null; schedule(); },
     resize,
     /** @param {VizEvent} name @param {(e: any) => void} handler @returns {() => void} */
     on(name, handler) {

@@ -68,7 +68,7 @@ describe('fold into "smaller"', () => {
     const fold = cells.find((c) => c.node.synthetic === 'fold');
     expect(fold).toBeDefined();
     const drawn = cells.filter((c) => !c.node.synthetic).length;
-    expect(fold!.node.folded + drawn).toBe(n);
+    expect(fold!.node.folded! + drawn).toBe(n);
     // the fold keeps its bytes: total area is still the whole canvas
     expect(cells.reduce((s, c) => s + c.w * c.h, 0)).toBeCloseTo(W * H, -1);
   });
@@ -78,6 +78,36 @@ describe('fold into "smaller"', () => {
     const cells = layoutTreemap(buildTree(slice(nodes)).root, 300, 200, { minArea: 16 });
     expect(cells.some((c) => c.node.synthetic === 'fold')).toBe(false);
     expect(cells.filter((c) => c.depth === 0)).toHaveLength(2);
+  });
+});
+
+describe('fold counts are honest', () => {
+  it('an engine "other" with an unknown count makes the fold count unknown, never 0', () => {
+    const nodes = [node(0, null, 1_000_100), node(1, 0, 1_000_000), node(2, 0, 50, { kind: 'other', folded_count: null }), node(3, 0, 50)];
+    const cells = layoutTreemap(buildTree(slice(nodes)).root, 300, 200, { minArea: 16 });
+    const fold = cells.find((c) => c.node.synthetic === 'fold')!;
+    expect(fold.node.folded).toBeNull();
+    expect(fold.node.name).not.toMatch(/^0 /);
+    expect(fold.node.name).toBe('1+ smaller');
+  });
+
+  it('an unlisted remainder adds bytes to a fold but is not counted as an item', () => {
+    // parent 1,000,100 with listed children 1,000,000 + 30 + 30: the remainder (40 B) and both 30 B nodes fold
+    const nodes = [node(0, null, 1_000_100), node(1, 0, 1_000_000), node(2, 0, 30), node(3, 0, 30)];
+    const cells = layoutTreemap(buildTree(slice(nodes)).root, 300, 200, { minArea: 16 });
+    const fold = cells.find((c) => c.node.synthetic === 'fold')!;
+    expect(fold.node.folded).toBe(2);
+    expect(fold.node.name).toBe('2 smaller');
+  });
+});
+
+describe('labels', () => {
+  it('escapes names once at the slice boundary and keeps the raw name for the host', () => {
+    const rlo = 'reports‮txt.exe';
+    const nodes = [node(0, null, 10), node(1, 0, 10, { name: rlo })];
+    const { root } = buildTree(slice(nodes), (n) => n.replace('‮', '[U+202E RLO]'));
+    expect(root.children[0]!.name).toBe(rlo);
+    expect(root.children[0]!.label).toBe('reports[U+202E RLO]txt.exe');
   });
 });
 

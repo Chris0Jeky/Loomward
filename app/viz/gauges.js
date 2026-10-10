@@ -3,6 +3,8 @@
  *
  *   const g = createGauge(canvas, { kind: 'arc' | 'spark', unit, min, max, label })
  *   g.push(value | null)   null is drawn as "unknown" (a dashed track, no needle, no zero)
+ *   g.setRange(min, max)   e.g. VRAM from the adapter's total, disk I/O from an auto-ranging scale
+ *   g.clear()              forget the history (after a failed read nothing stale stays drawn)
  *   g.setTheme(theme)  g.resize()  g.destroy()
  *
  * 'arc': a 240° dial with a soft glow on the value stroke and a numeric readout.
@@ -33,7 +35,8 @@ export function createGauge(canvas, o) {
   if (!g0) throw new Error('2d canvas unavailable');
   const g = g0;
   let theme = o.theme;
-  const min = o.min ?? 0;
+  let min = o.min ?? 0;
+  let maxOpt = o.max;
   const length = o.length ?? 90;
   const format = o.format ?? ((/** @type {number} */ v) => (Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(1)));
   /** @type {(number | null)[]} */
@@ -50,7 +53,7 @@ export function createGauge(canvas, o) {
 
   function drawArc() {
     const v = data.length ? data[data.length - 1] : null;
-    const max = o.max ?? 100;
+    const max = maxOpt ?? 100;
     const cx = W / 2, cy = H * 0.56, r = Math.max(10, Math.min(W / 2, H * 0.56) - 10);
     const start = Math.PI * (150 / 180), sweep = (240 / 360) * Math.PI * 2;
     g.lineCap = 'round';
@@ -82,7 +85,7 @@ export function createGauge(canvas, o) {
 
   function drawSpark() {
     const known = /** @type {number[]} */ (data.filter((d) => d !== null));
-    const max = o.max ?? Math.max(1, ...known) * 1.15;
+    const max = maxOpt ?? Math.max(1, ...known) * 1.15;
     /** @param {number} i */
     const x = (i) => (i / (length - 1)) * W;
     /** @param {number} v */
@@ -119,6 +122,9 @@ export function createGauge(canvas, o) {
   return {
     /** @param {number | null} v */
     push(v) { data.push(v === null || !Number.isFinite(v) ? null : v); if (data.length > length) data.shift(); draw(); },
+    /** @param {number} lo @param {number | undefined} hi  undefined = auto (sparklines) */
+    setRange(lo, hi) { min = lo; maxOpt = hi; draw(); },
+    clear() { data.length = 0; draw(); },
     /** @param {GaugeTheme} t */
     setTheme(t) { theme = t; draw(); },
     resize,

@@ -35,6 +35,7 @@ import { weaveTile, fringeTile, looseTile, hatchTile, strokeStitch } from './wea
  * @property {() => boolean} [reducedMotion]
  * @property {(n: number) => string} [format]   bytes for labels
  * @property {number} [maxDepth]
+ * @property {(name: string) => string} [label]  escape for canvas text (hidden characters spelled out)
  * @property {string} [marks]   performance-mark prefix: records `<prefix>:layout`, `<prefix>:first-paint`
  *   (CPU ms) and `<prefix>:slice-to-paint` (wall clock) for every slice (docs/41 P9)
  */
@@ -55,7 +56,7 @@ export function nodeInfo(v) {
   const src = v.src;
   const drillable = !v.synthetic && !!src && src.kind !== 'file' && src.kind !== 'other' && src.coverage !== 'denied'
     && (v.children.length > 0 || (src.child_count ?? 0) > 0);
-  return { id: v.id, name: v.name, size: v.size, src, synthetic: v.synthetic, folded: v.folded, zero: v.zero, parentId: v.parent ? v.parent.id : null, drillable };
+  return { id: v.id, name: v.name, label: v.label, size: v.size, src, synthetic: v.synthetic, folded: v.folded, zero: v.zero, parentId: v.parent ? v.parent.id : null, drillable };
 }
 
 /** Zero-area children by reason, for the label band and the inspector. @param {{ zero: import('./types.js').SliceNodeLike[] }} v */
@@ -85,6 +86,8 @@ export function createWovenTreemap(canvas, options) {
   let dpr = 1, W = 0, H = 0;
   /** @type {SliceLike | null} */
   let slice = null;
+  /** @type {Map<string, VNode>} */
+  let treeById = new Map();
   /** @type {ReturnType<typeof build> | null} */
   let view = null;
   /** @type {Map<string, CanvasPattern>} */
@@ -181,18 +184,19 @@ export function createWovenTreemap(canvas, options) {
       // labels
       const size = fmt(v.size);
       if (folded) {
-        if (w > 70 && h > 22) labels.push({ cell: c, x, y, w, h, kind: 'fold', name: `${v.folded.toLocaleString('en-GB')} smaller`, size, note: '', text: null, sizeText: null });
+        const name = v.synthetic === 'fold' ? v.label : v.folded === null ? 'Some smaller (count unknown)' : `${v.folded.toLocaleString('en-GB')} folded`;
+        if (w > 70 && h > 22) labels.push({ cell: c, x, y, w, h, kind: 'fold', name, size, note: '', text: null, sizeText: null });
       } else if (v.synthetic === 'remainder') {
-        if (w > 70 && h > 26) labels.push({ cell: c, x, y, w, h, kind: 'rest', name: v.name, size, note: '', text: null, sizeText: null });
+        if (w > 70 && h > 26) labels.push({ cell: c, x, y, w, h, kind: 'rest', name: v.label, size, note: '', text: null, sizeText: null });
       } else if (!c.leaf && c.header) {
         const z = zeroCounts(v);
         const parts = [];
         if (z.denied) parts.push(`${z.denied} access denied`);
         if (z.unmeasured) parts.push(`${z.unmeasured} unmeasured`);
         if (basis === 'allocated' && src && src.size_unknown_files > 0) parts.push(`${src.size_unknown_files} alloc unknown`);
-        labels.push({ cell: c, x, y, w, h, kind: c.depth === 0 ? 'head0' : 'head', name: v.name, size, note: parts.join(' · '), text: null, sizeText: null });
+        labels.push({ cell: c, x, y, w, h, kind: c.depth === 0 ? 'head0' : 'head', name: v.label, size, note: parts.join(' · '), text: null, sizeText: null });
       } else if (c.leaf && w > 54 && h > 26) {
-        labels.push({ cell: c, x, y, w, h, kind: c.depth === 0 && w > 190 && h > 110 ? 'display' : 'leaf', name: v.name, size, note: '', text: null, sizeText: null });
+        labels.push({ cell: c, x, y, w, h, kind: c.depth === 0 && w > 190 && h > 110 ? 'display' : 'leaf', name: v.label, size, note: '', text: null, sizeText: null });
       }
     }
     /** @param {string} k */
@@ -509,7 +513,8 @@ export function createWovenTreemap(canvas, options) {
       const start = performance.now();
       const prev = view;
       slice = s;
-      const { root } = buildTree(s);
+      const { root, byId: ids } = buildTree(s, options.label);
+      treeById = ids;
       const next = build(root);
       pendingMark = { start, layout: performance.now() - start, nodes: s.nodes.length };
       cursor = 0; hover = null;
@@ -551,6 +556,10 @@ export function createWovenTreemap(canvas, options) {
       set.add(handler);
       return () => { set.delete(handler); };
     },
+    /** What the renderer knows about a node of the current slice (for a text list or a test). @param {string} id */
+    info(id) { const v = treeById.get(id); return v ? nodeInfo(v) : null; },
+    /** Drop the cloth: after a failed load nothing stale stays drawn or clickable. */
+    clear() { treeById = new Map(); view = null; slice = null; anim = null; hover = null; selected = null; ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = palette.ink; ctx.fillRect(0, 0, canvas.width, canvas.height); },
     /** Paint the settled view synchronously (for timing inside a rAF loop). */
     renderFrame() { revealT = 1; anim = null; frame(performance.now()); },
     /** Layout time for the current slice, ms. */

@@ -88,11 +88,12 @@
  * What the renderers report about a node in events and to the inspector.
  * @typedef {object} NodeInfo
  * @property {string} id
- * @property {string} name
+ * @property {string} name                 the raw name: show it through the host's hidden-character handling
+ * @property {string} label                the escaped name the canvas draws
  * @property {number} size                 lossy number for layout and shares
  * @property {SliceNodeLike | null} src    the slice node, or null for a synthetic cell
  * @property {'remainder' | 'fold' | null} synthetic
- * @property {number} folded              count folded into a "smaller" cell (0 otherwise)
+ * @property {number | null} folded       count folded into a "smaller" cell (0 otherwise, null when unknown)
  * @property {SliceNodeLike[]} zero        children with no area: zero bytes, denied, unmeasured
  * @property {string | null} parentId
  * @property {boolean} drillable

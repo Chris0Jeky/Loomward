@@ -12,14 +12,15 @@
  * 'remainder' = the part of a parent not listed in this slice; 'fold' = siblings too small to draw.
  * @typedef {object} VNode
  * @property {string} id
- * @property {string} name
+ * @property {string} name     the raw name (shown through the host's hidden-character handling)
+ * @property {string} label    the name as drawn on canvas: the host's escaped form
  * @property {number} size
  * @property {SliceNodeLike | null} src
  * @property {VNode | null} parent
  * @property {VNode[]} children
  * @property {SliceNodeLike[]} zero    children with no area (0 bytes, denied, unmeasured): listed, never drawn as zero-size cells
  * @property {'remainder' | 'fold' | null} synthetic
- * @property {number} folded
+ * @property {number | null} folded  items folded into this cell; null when the count is unknown
  */
 
 /** @param {string | null | undefined} s */
@@ -32,16 +33,19 @@ export const REMAINDER_MIN_SHARE = 0.002;
  * Build the render tree from a slice. Children with zero size get no area and are kept on their
  * parent's `zero` list; when listed children do not add up to the parent, the rest becomes a
  * 'remainder' cell, so the treemap never pretends a slice is the whole subtree.
- * @param {SliceLike} slice @returns {{ root: VNode, byId: Map<string, VNode> }}
+ * `label` turns an untrusted name into canvas text once, here at the slice boundary (the host passes
+ * its hidden-character escape, so a right-to-left override or zero-width space is drawn as a badge).
+ * @param {SliceLike} slice @param {(name: string) => string} [label]
+ * @returns {{ root: VNode, byId: Map<string, VNode> }}
  */
-export function buildTree(slice) {
+export function buildTree(slice, label = (n) => n) {
   /** @type {VNode[]} */
   const at = [];
   /** @type {Map<string, VNode>} */
   const byId = new Map();
   slice.nodes.forEach((n, i) => {
     /** @type {VNode} */
-    const v = { id: n.node_id, name: n.name, size: toNumber(n.size_bytes), src: n, parent: null, children: [], zero: [], synthetic: null, folded: n.kind === 'other' ? (n.folded_count ?? 0) : 0 };
+    const v = { id: n.node_id, name: n.name, label: label(n.name), size: toNumber(n.size_bytes), src: n, parent: null, children: [], zero: [], synthetic: null, folded: n.kind === 'other' ? n.folded_count : 0 };
     at[i] = v;
     byId.set(v.id, v);
     if (n.parent === null) return;
@@ -58,7 +62,7 @@ export function buildTree(slice) {
     const listed = v.children.reduce((s, c) => s + c.size, 0);
     const rest = v.size - listed;
     if (rest > v.size * REMAINDER_MIN_SHARE) {
-      v.children.push({ id: `${v.id}#rest`, name: 'Not in this slice', size: rest, src: null, parent: v, children: [], zero: [], synthetic: 'remainder', folded: 0 });
+      v.children.push({ id: `${v.id}#rest`, name: 'Not in this slice', label: 'Not in this slice', size: rest, src: null, parent: v, children: [], zero: [], synthetic: 'remainder', folded: 0 });
     }
     v.children.sort((a, b) => b.size - a.size || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   }
@@ -139,18 +143,27 @@ export function layoutTreemap(focus, W, H, opts = {}) {
     const scale = (w * h) / total;
     /** @type {{ v: number, item: VNode }[]} */
     const items = [];
-    let rest = 0, restN = 0;
+    // Count what folds: a listed node is one item, an engine 'other' is its folded_count (unknown when
+    // null), and the unlisted remainder is bytes, not an item.
+    let rest = 0, restN = 0, restKids = 0, countUnknown = false;
     for (const c of kids) {
       const v = c.size * scale;
-      if (v >= minArea || items.length === 0) items.push({ v, item: c });
-      else { rest += v; restN += c.folded > 0 ? c.folded : 1; }
+      if (v >= minArea || items.length === 0) { items.push({ v, item: c }); continue; }
+      rest += v; restKids++;
+      if (c.synthetic === 'remainder') continue;
+      if (c.src?.kind === 'other' || c.synthetic === 'fold') { if (c.folded === null) countUnknown = true; else restN += c.folded; }
+      else restN += 1;
     }
-    if (restN === 1) {
-      // a single straggler is shown as itself, not as "1 smaller item"
+    if (restKids === 1) {
+      // a single straggler is shown as itself, not folded
       const c = /** @type {VNode} */ (kids[items.length]);
-      items.push({ v: c.size * scale, item: c }); rest = 0; restN = 0;
+      items.push({ v: c.size * scale, item: c }); rest = 0; restKids = 0;
     }
-    if (restN) items.push({ v: rest, item: { id: `${node.id}#fold`, name: `${restN} smaller`, size: rest / scale, src: null, parent: node, children: [], zero: [], synthetic: 'fold', folded: restN } });
+    if (restKids) {
+      const folded = countUnknown ? null : restN;
+      const name = folded === null ? (restN ? `${restN}+ smaller` : 'Some smaller') : `${folded} smaller`;
+      items.push({ v: rest, item: { id: `${node.id}#fold`, name, label: name, size: rest / scale, src: null, parent: node, children: [], zero: [], synthetic: 'fold', folded } });
+    }
     items.sort((a, b) => b.v - a.v);
     /** @type {[VNode, number, number, number, number][]} */
     const out = [];
