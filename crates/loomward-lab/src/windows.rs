@@ -962,7 +962,10 @@ fn destroy(input: &str) -> io::Result<()> {
     }
     // Keep the marker until payload removal succeeds, leaving partial failures identifiable.
     let marker = scope.root.join(".loomward-lab-marker");
-    for path in files.iter().filter(|p| **p != marker && **p != busy.0) {
+    for path in files
+        .iter()
+        .filter(|p| !loomward_lab::is_keeper(p, &scope.root))
+    {
         fs::remove_file(path)?;
     }
     while directories.len() > 1 {
