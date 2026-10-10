@@ -1,3 +1,90 @@
+# Catalogue hidden multilink rows (#254) - 2026-10-10
+
+## Changed
+
+Uncommitted on `fix/multilink-hidden-254`, based on
+`55c4df76b3d7f8246a44c46002f20d627061e5e2`. The driver owns commits and integration.
+
+- `rebuild_multilink` joins the existing `visible_dir` walk, which stops at an
+  `absent_pending` ancestor (including the children hidden by exclusion), and omits
+  files directly inside excluded directories. No second visibility walk was added.
+- `SHIELDED` uses `UNION` so nested exclusions visit each directory once. Retirement
+  and deletion continue to use the same shielding set.
+- Regression coverage includes a matching file identity two directory levels below
+  an exclusion, a retained absent ancestor, direct excluded contents, visible-link
+  positive controls, a deep reference's preservation and revival, and an absent
+  parent whose excluded child is both retired and deleted.
+
+### Contract and optional-state decisions
+
+Leave excluded-directory breakdowns unchanged: `unknown: {bytes: "0", files: 0}`
+and `complete: false`. In `contracts/v3/view-service.schema.json`, `Breakdown`
+references `BytesAndFiles`, whose `bytes` and `files` require non-null `ByteCount`
+and `Count`; additional properties are forbidden. There is no explicit marker for
+unknown subtree extent. This bucket counts observed unclassified entries, not
+unobserved contents; `complete: false` carries the coverage limitation. Inventing
+nulls or a new field would change the contract. Unique totals still return null.
+
+Defer separating "hidden by exclusion" from "observed absent": it needs a durable
+state/schema change plus reconciliation, read and retirement changes. That is not
+a small errata-safe fix. Previously observed absence can therefore remain shielded
+until rediscovery or an observed absent ancestor outside the exclusion.
+
+## Verified
+
+Windows proving gates all exit 0:
+
+```text
+cargo fmt --all --check
+cargo test --workspace                         # 588 passed, 0 failed, 1 existing ignore (#246)
+cargo clippy --workspace --all-targets -- -D warnings
+git diff --check
+```
+
+The multilink regression fails with main's counting statement: flag/link count
+`(4, 1)` instead of `(0, 0)`. Main's `UNION ALL` fails the nested-exclusion test:
+five visits instead of three. Six production mutations fail executed assertions
+(exit 101), with the fixed source restored after each mutation pass:
+
+| Mutation | Regression |
+| --- | --- |
+| Main's directory-local multilink filter | Hidden multilink count |
+| Include excluded directory's own files | Hidden multilink count |
+| Restore `UNION ALL` | Nested shielding visits |
+| Stop shielding after the excluded directory | Deep referenced-file preservation |
+| Prune excluded child from retirement recursion | Absent parent's reference retirement |
+| Skip EndRun's absent-directory deletion | Absent parent's subtree deletion |
+
+Raw local test and mutation logs stay in ignored `.loomward/254/`.
+
+One benchmark run, exit 0:
+
+```text
+cargo run -p loomward-catalog --release --example bench -- --rows 1000000
+```
+
+**Shared-host, warm synthetic workload:** P4 **55,879 rows/s**, insertion
+**17.914 s**, finalisation **1.225 s**. Accounting oracle matched and all indexes
+remained. The preceding receipt measured 41,811 rows/s (23.941 s); this single run
+shows no observed P4 slowdown, not controlled-host throughput equivalence. The
+250,000 rows/s target is still unmet. This run's receipt stays in ignored
+`.loomward/254/bench.json`; the previous tracked benchmark receipt is preserved.
+
+## NOT verified
+
+Hosted CI, Linux execution, controlled-host performance and cold-cache behavior.
+No commit or push.
+
+## Residual risk
+
+Exclusion and observed absence still share `absent_pending`; the deferred state
+distinction above remains. Breakdown unknown extent still requires a future
+contract change. These are read-only catalogue observations, never file effects.
+
+Recommended commit: `fix(catalog): count multilinks only in the visible tree`.
+
+---
+
 # Catalogue P4d (#148): single publication and transaction-wide dirtying - 2026-10-10
 
 ## Changed
