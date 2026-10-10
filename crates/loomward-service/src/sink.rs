@@ -610,12 +610,18 @@ impl ScanSink for CatalogScanSink {
         };
         // Only an engine-complete run may let the writer finalise absence and the generation;
         // the writer still requires its own full traversal for that.
-        self.call(WriteCommand::EndRun {
-            run_id: catalog_run,
-            state: if complete { "completed" } else { "cancelled" }.into(),
-            finished_at_ns: now_ns(),
-        })
-        .map_err(listing_error)?;
+        let end = |state: &str| {
+            self.call(WriteCommand::EndRun {
+                run_id: catalog_run,
+                state: state.into(),
+                finished_at_ns: now_ns(),
+            })
+        };
+        if let Err(e) = end(if complete { "completed" } else { "cancelled" }) {
+            // Release the catalogue run, or every later begin_run answers busy until restart.
+            let _ = end("failed");
+            return Err(listing_error(e));
+        }
         self.invalidated(root, true);
         Ok(())
     }

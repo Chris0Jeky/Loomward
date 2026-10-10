@@ -1807,3 +1807,61 @@ fn a_wide_lab_tree_matches_the_walk_under_parallel_workers() {
     assert_eq!(done["coverage"], "complete");
     assert_eq!(slice_totals(&lab_slice(svc, &lab.root)), walk(&lab.path));
 }
+
+/// #206 LOW: a failed `EndRun` aborts the catalogue run, so the root is released instead of
+/// answering busy to every later scan until a restart.
+#[test]
+fn a_failed_end_run_releases_the_root() {
+    use loomward_engine::scan::source::{IdBasis, ListOutcome, OpenedIdentity};
+    let tmp = tempfile::tempdir().unwrap();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (root, grant) = register(&svc, 9);
+    let dir = crate::db::active_root_dir(&svc.inner.db(), root)
+        .unwrap()
+        .unwrap();
+    let id = RootId::new(svc.inner.root_id(root)).unwrap();
+    let sink = &svc.inner.scan;
+    sink.bind(&id, grant, dir);
+    svc.inner
+        .db()
+        .execute_batch(
+            "CREATE TRIGGER main.fail_end BEFORE UPDATE OF state ON scan_run
+             WHEN NEW.state='completed' BEGIN SELECT RAISE(ABORT,'injected'); END;",
+        )
+        .unwrap();
+    sink.begin_run(&id, 51, &RunScope::FullRoot).unwrap();
+    let identity = OpenedIdentity {
+        id: None,
+        basis: IdBasis::None,
+        volume_serial: None,
+        attributes: 0x10,
+        reparse_tag: None,
+    };
+    let ticket = sink.prepare_listing(&id, 51, None, &[], identity).unwrap();
+    sink.consume(
+        &id,
+        ScanMessage::ListingDone {
+            run: 51,
+            ticket,
+            outcome: ListOutcome::Complete,
+        },
+    )
+    .unwrap();
+    assert!(sink.finish_run(&id, 51, &RunScope::FullRoot, true).is_err());
+    let (run_state, active): (String, Option<i64>) = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT s.state,r.active_run FROM main.scan_run s JOIN main.root r ON r.id=s.root_id",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((run_state.as_str(), active), ("failed", None));
+    svc.inner
+        .db()
+        .execute_batch("DROP TRIGGER main.fail_end")
+        .unwrap();
+    sink.begin_run(&id, 52, &RunScope::FullRoot)
+        .expect("the root is not busy after a failed end");
+}

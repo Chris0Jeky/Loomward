@@ -1014,14 +1014,18 @@ fn apply(
                 ctx.parents.clear();
             }
             conn.execute("DELETE FROM stage_entry WHERE run_id=?1", [run_id])?;
-            let started = Instant::now();
-            rebuild_multilink(conn, root)?;
-            ctx.timings.lock().expect("timing lock").multilink_seconds +=
-                started.elapsed().as_secs_f64();
-            let started = Instant::now();
-            rollup(conn, root, full)?;
-            ctx.timings.lock().expect("timing lock").rollup_seconds +=
-                started.elapsed().as_secs_f64();
+            // A failed run is an abort that must always release the root: it skips the rollup
+            // (which may be what failed) and leaves aggregates dirty for a reader's repair.
+            if state != "failed" {
+                let started = Instant::now();
+                rebuild_multilink(conn, root)?;
+                ctx.timings.lock().expect("timing lock").multilink_seconds +=
+                    started.elapsed().as_secs_f64();
+                let started = Instant::now();
+                rollup(conn, root, full)?;
+                ctx.timings.lock().expect("timing lock").rollup_seconds +=
+                    started.elapsed().as_secs_f64();
+            }
             conn.execute(
                 "UPDATE scan_run SET state=?2,finished_at_ns=?3 WHERE id=?1",
                 params![run_id, state, finished_at_ns],
