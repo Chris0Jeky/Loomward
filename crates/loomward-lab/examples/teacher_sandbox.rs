@@ -71,7 +71,7 @@ fn main() {
         #[cfg(not(windows))]
         {
             let _ = (role, command_line(&[]), capability_names(false));
-            Err(io::Error::other("Windows required; no measurements made"))
+            Err::<(), _>(io::Error::other("Windows required; no measurements made"))
         }
     });
     if let Err(error) = result {
