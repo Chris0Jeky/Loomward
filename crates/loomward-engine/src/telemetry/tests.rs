@@ -333,12 +333,17 @@ fn leases_reuse_one_thread_and_enforce_a_bounded_60_second_lifetime() {
     let until = Instant::now() + Duration::from_secs(10);
     loop {
         let state = lock(&telemetry.shared.state).unwrap();
-        if state.events.len() >= 2 {
-            assert!(state.events.iter().all(|e| e.sample.system.is_none()));
-            assert!(state
-                .events
-                .iter()
-                .all(|e| e.sample.sample_seq == state.events[0].sample.sample_seq));
+        assert!(state.events.iter().all(|e| e.sample.system.is_none()));
+        // One sampler serves both leases: some sample reaches both subscriptions. (The first sample
+        // may predate the second lease and reach only the first; slow CI runners showed that.)
+        let shared = state.events.iter().any(|a| {
+            a.subscription_id == second.subscription_id
+                && state.events.iter().any(|b| {
+                    b.subscription_id == first.subscription_id
+                        && b.sample.sample_seq == a.sample.sample_seq
+                })
+        });
+        if shared {
             break;
         }
         drop(state);
