@@ -52,7 +52,7 @@ GitHub account access and naming were inspected. The connector did not expose a 
 
 Use handoff/LOCAL-AGENT-PROMPT.md and the first critical-path pack. Establish real Windows behavior and native compilation, then native identities/capabilities/protocol. Do not skip directly to unattended cleanup, source deletion or broad process control.
 
-## v0.3 status (9 October 2026, Windows 11, rustc 1.97.1, Python 3.14.3)
+## v0.3 status (10 October 2026, Windows 11, rustc 1.97.1, Python 3.14.3)
 
 The v0.2 bundle is on the public `main` with its history (#2). Everything below ran on Windows; hosted CI
 runs Python 3.11/3.13 and the Rust workspace on ubuntu and windows.
@@ -62,9 +62,21 @@ runs Python 3.11/3.13 and the Rust workspace on ubuntu and windows.
 | Python reference | 212 tests (1 symlink-privilege skip); two Windows bugs and eleven review findings fixed test-first (#2, #106) | `evidence/v3/README.md` |
 | `loomward-core` | v1 planner plus the v2 allocator port; 222 parity cases equal Python field by field (#107) | `evidence/v3/planner-v2-rust.md` |
 | `loomward-windows` | handle-derived identity, volume capabilities, opt-in disposable fixture lab; read-only (#108) | `evidence/v3/windows-native.md` |
-| `loomward-telemetry` | read-only memory, process and disk observations with honest unknowns (#109) | `evidence/v3/telemetry.md` |
-| `loomward-lab` | deterministic synthetic scale trees and the enumeration spike: 3M files in 0.558 s warm (#111) | `docs/research/enumeration-spike.md` |
+| `loomward-telemetry` | schema v2: memory ledger (standby, modified, free), machine-normalised CPU, disk busy separate from queue, PDH GPU aggregated by LUID with churn kept unknown (#109, #139) | `evidence/v3/telemetry.md` |
+| `loomward-lab` | deterministic synthetic scale trees and the enumeration spike: 3M files in 0.558 s warm (#111); hardened real-root guards (#118) | `docs/research/enumeration-spike.md`, `docs/research/real-folder-stress.md` |
+| `loomward-learn` | the student model in Rust with exact Python parity (#113) | `crates/loomward-learn/tests/parity.rs` |
+| `loomward-protocol` | v3 envelopes with complete per-command validation and duplicate-key refusal; `ViewService` trait (#133) | `crates/loomward-protocol/tests/` |
+| `loomward-engine` | C2 skeleton: each lane's entry points answer `capability_unavailable` until it lands (#140) | `crates/loomward-engine/tests/smoke.rs` |
+| `loomward-http` | `loomward-serve`, the loopback HTTP + SSE adapter: token, Host and Origin checks, bounded bodies, static files that cannot escape; synthetic fixtures until L8 (#143) | `crates/loomward-http/tests/serve.rs` |
+| Change tracking (spike) | non-elevated: watcher overflow arrives as zero-byte completions; unprivileged USN catch-up works through directory handles but strips names (#138) | `docs/research/change-tracking.md` |
+| `app/` | Svelte 5 app: shell (#114), Explorer/Tiers/Companion/Health (#119), Atlas and Observatory over bounded slices (#136) | `evidence/v3/app-views/` |
 | `app/prototype` | woven atlas + Observatory signature prototype on synthetic data (#112) | `evidence/v3/ui-prototype/` |
 
-Not established: a persistent native catalogue, the scan engine, the view service, the desktop shell, any real-disk
-scan, cold-cache or HDD timings, a WinDirStat comparison, a connected teacher. No file or process effect exists.
+Rust: 155 tests on Windows (core 30, engine 4, http 30, lab 14, learn 8, protocol 35, telemetry 24, windows 10).
+
+In review or in flight on 10 October 2026: the SQLite catalogue on revision 2 with the #117 errata (#147; P4 is
+15.5k rows/s against 250k, tracked in #148), the scan pipeline (L7), placement (L12), engine telemetry (L11b),
+app contract conformance (#149).
+
+Not established: the scan engine, the view service, the desktop shell, cold-cache or HDD timings, a WinDirStat
+comparison, a connected teacher. No file or process effect exists.
