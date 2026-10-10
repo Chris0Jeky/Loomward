@@ -714,6 +714,20 @@ fn validated_root_log(root: &Path, log_path: &Path) -> io::Result<PathBuf> {
     ))
 }
 
+/// Runs the syntactic guard on the input AND on its resolved long-name path, so an 8.3 alias or a
+/// junction cannot name a refused profile, credential or browser location.
+fn resolved_real_root(input: &str) -> io::Result<String> {
+    real_root(input)?;
+    let canonical = fs::canonicalize(input)?;
+    let canonical = canonical.to_string_lossy();
+    let long = canonical
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&canonical)
+        .to_string();
+    real_root(&long)?;
+    Ok(long)
+}
+
 fn cross_check(
     input: &str,
     name: Option<&str>,
@@ -722,7 +736,8 @@ fn cross_check(
     cache_label: &str,
     root_log: &str,
 ) -> io::Result<()> {
-    real_root(input)?;
+    let resolved = resolved_real_root(input)?;
+    let input = resolved.as_str();
     if let Some(name) = name {
         let strategy = match name {
             "std-single" | "std-parallel" => Strategy::Std,
@@ -1108,6 +1123,21 @@ mod tests {
         let log = fs::canonicalize(scope.root()).unwrap().join("unsafe.log");
         assert!(log.to_str().unwrap().starts_with(r"\\?\"));
         assert!(validated_root_log(&scope.root(), &log).is_err());
+    }
+
+    #[test]
+    fn real_root_guard_sees_the_resolved_long_name() {
+        let short = r"C:\PROGRA~1";
+        if !Path::new(short).exists() {
+            eprintln!("UNVERIFIED: no 8.3 alias for Program Files on this host");
+            return;
+        }
+        let long = resolved_real_root(short).unwrap();
+        assert!(
+            long.to_ascii_lowercase().ends_with(r"\program files"),
+            "{long}"
+        );
+        assert!(resolved_real_root(r"C:\Users").is_err());
     }
 
     #[test]
