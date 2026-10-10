@@ -19,9 +19,25 @@ const TERMINAL = 3;
 export const isActive = (s: JobState): boolean => RANK[s] < TERMINAL;
 
 /**
+ * The same job seen twice in the same state (a replay, a late event, a list row): what the newer snapshot
+ * knows is added, nothing already known is erased by a null, and the larger counters win (they only grow).
+ */
+function merge(cur: Job, job: Job): Job {
+  const progress = cur.progress && job.progress ? (job.progress.examined >= cur.progress.examined ? job.progress : cur.progress) : (job.progress ?? cur.progress);
+  return {
+    ...job,
+    started_at: job.started_at ?? cur.started_at,
+    finished_at: job.finished_at ?? cur.finished_at,
+    coverage: job.coverage ?? cur.coverage,
+    error: job.error ?? cur.error,
+    progress,
+  };
+}
+
+/**
  * Applies a job snapshot (event, command result or list row). A state never moves backwards and a terminal
- * state is final, so a replayed or late event cannot undo a newer one (semantics.md section 7); an older job
- * never replaces a newer one for the same root.
+ * state is final, so a replayed or late event cannot undo a newer one (semantics.md section 7), nor erase what
+ * is known with a null; an older job never replaces a newer one for the same root.
  */
 export function applyJob(book: Book, job: Job): Book {
   const root = job.root_id;
@@ -30,7 +46,7 @@ export function applyJob(book: Book, job: Job): Book {
   if (cur) {
     if (cur.job_id === job.job_id) {
       if (RANK[job.state] < RANK[cur.state] || (RANK[cur.state] === TERMINAL && job.state !== cur.state)) return book;
-      return { ...book, [root]: { ...job, progress: job.progress ?? cur.progress } };
+      return { ...book, [root]: merge(cur, job) };
     }
     if (Date.parse(job.created_at) < Date.parse(cur.created_at)) return book;
   }
@@ -42,6 +58,12 @@ export function applyProgress(book: Book, rootId: string, jobId: string, progres
   const cur = book[rootId];
   return cur && cur.job_id === jobId ? { ...book, [rootId]: { ...cur, progress } } : book;
 }
+
+/** A running scan the service no longer knows (not in `jobs.list`, `jobs.get` says not found): its end is unknown, never "still scanning". */
+export const lostJob = (job: Job, at: string): Job => ({
+  ...job, state: 'failed', finished_at: at,
+  error: { code: 'not_found', message: 'The service no longer lists this scan, so how it ended is unknown.', retryable: false, detail: null },
+});
 
 /** Rebuilds the book from a `jobs.list` answer (any order). */
 export const fromList = (jobs: readonly Job[]): Book => jobs.reduce<Book>(applyJob, {});
@@ -112,7 +134,10 @@ export function refusalText(code: ErrorCode, detail: Record<string, unknown> | n
       return 'This synthetic session scans registered lab roots only, and this root is not one. Nothing was read.';
   }
   switch (code) {
-    case 'busy': return 'A scan of this root is already running.';
+    // `busy` is also the service's answer for a root that is starting or being revoked, a busy writer and too many
+    // pending mutations: only a named running job (`job_id`) means this root is already being scanned.
+    case 'busy':
+      return typeof detail?.job_id === 'string' ? 'A scan of this root is already running.' : `The service is busy and did not start the scan${message ? `: ${message}` : ''}. Try again shortly.`;
     case 'permission_denied': return "This root's grant is not active, so Loomward may not scan it.";
     case 'not_found': return 'The service no longer knows this root. Reload this page and try again.';
     default: return message || 'The service refused the scan without giving a reason.';

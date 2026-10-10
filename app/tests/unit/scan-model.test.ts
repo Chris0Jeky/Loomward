@@ -47,6 +47,28 @@ describe('applying job snapshots', () => {
     expect(applyJob({}, job('running', { root_id: null }))).toEqual({});
   });
 
+  it('never erases known coverage with a replayed same-state snapshot that carries none', () => {
+    const finished = applyJob({}, done());
+    const replay = applyJob(finished, job('completed', { finished_at: '2026-10-10T10:00:05Z', coverage: null, progress: null }));
+    expect(replay.rt_a?.coverage).toBe('complete');
+    expect(viewOf(replay.rt_a!, T0).activity).toBe('completed');
+    expect(viewOf(replay.rt_a!, T0).headline).toBe('Finished, complete coverage');
+  });
+
+  it('never erases a known error, start or finish time with a null from a same-state snapshot', () => {
+    const error = { code: 'internal_error', message: 'catalogue writer stopped', retryable: false, detail: null } as const;
+    const failed = applyJob({}, job('failed', { error, finished_at: '2026-10-10T10:00:04Z' }));
+    const replay = applyJob(failed, job('failed', { error: null, started_at: null, finished_at: null }));
+    expect(replay.rt_a).toMatchObject({ error, started_at: '2026-10-10T10:00:01Z', finished_at: '2026-10-10T10:00:04Z' });
+    expect(viewOf(replay.rt_a!, T0).detail).toBe('catalogue writer stopped');
+  });
+
+  it('keeps the newer counts when an older snapshot of the same job arrives late', () => {
+    const newer = applyJob({}, done({ progress: progress({ examined: 100, indexed_files: 80 }) }));
+    const stale = applyJob(newer, done({ progress: progress({ examined: 40, indexed_files: 30 }) }));
+    expect(stale.rt_a?.progress?.indexed_files).toBe(80);
+  });
+
   it('keeps the progress already seen when a later snapshot carries none', () => {
     let b = applyJob({}, job('running'));
     b = applyProgress(b, 'rt_a', 'jb_1', progress());
@@ -151,8 +173,18 @@ describe('refusals in plain language', () => {
     expect(words('permission_denied', 'synthetic_session_requires_lab_root')).toContain('registered lab roots only');
   });
 
-  it('words busy, a revoked grant and an unknown root', () => {
-    expect(words('busy', null)).toContain('already running');
+  it('says a root is already scanning only when the service names the running job', () => {
+    const withJob = refusalText('busy', { job_id: 'jb_9' }, 'root already scanning');
+    expect(withJob).toContain('already running');
+    // the service also answers busy for other reasons: a root starting or revoking, a writer busy, too many mutations pending
+    for (const m of ['root already starting or revoking', 'root writer busy', 'too many mutations are pending; retry shortly']) {
+      const t = refusalText('busy', null, m);
+      expect(t).not.toContain('already running');
+      expect(t).toContain(m);
+    }
+  });
+
+  it('words a revoked grant and an unknown root', () => {
     expect(words('permission_denied', null)).toContain('grant is not active');
     expect(words('not_found', null)).toContain('no longer knows this root');
   });
