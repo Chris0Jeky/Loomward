@@ -80,7 +80,7 @@ re-send as stated.
 ## 4. Idempotency
 
 - **Session cache.** For every mutating command the service keeps, for 10 minutes, the response keyed by
-  `(stream epoch, request_id)`. Replaying the same `request_id` with a byte-identical canonical payload returns
+  `request_id` alone, scoped to the session. Replaying the same `request_id` with a byte-identical canonical payload returns
   the cached response. The same `request_id` with a different payload is `invalid_request` with
   `detail.reason = "idempotency_conflict"`. The cache does not survive a restart; durable keys below do.
 - **Durable keys.** `client_event_id` (feedback, forever), `preview_id` (one grant), `grant_id` (one teacher
