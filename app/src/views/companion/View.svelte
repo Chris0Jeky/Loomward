@@ -10,7 +10,8 @@
   import { LoomwardError } from '../../lib/transport/client';
   import { session } from '../../lib/stores/session.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
-  import type { OwnBudgets, ProcessExplanation, ProcessList, ProcessRow, ProcessSort, TelemetrySample } from '../../lib/types.views';
+  import type { OwnBudgets, ProcessExplanation, ProcessList, ProcessRow, TelemetrySample } from '../../lib/contracts.gen';
+  import type { ProcessSort } from '../../lib/derived';
 
   const POLL_MS = 3000;
   const LEASE_RENEW_MS = 20000;

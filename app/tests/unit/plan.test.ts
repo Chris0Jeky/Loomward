@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Client } from '../../src/lib/transport/client';
 import { createMockTransport } from '../../src/lib/transport/mock';
-import type { PlacementPlan } from '../../src/lib/types.views';
+import type { PlacementPlan } from '../../src/lib/contracts.gen';
 import { firstTrusted, isSound, type Outcome } from '../../src/views/tiers/plan';
 
 const GiB = 2 ** 30;

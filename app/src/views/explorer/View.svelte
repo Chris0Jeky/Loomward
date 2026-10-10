@@ -10,7 +10,7 @@
   import { LoomwardError } from '../../lib/transport/client';
   import { session } from '../../lib/stores/session.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
-  import type { Basis, EntryPage, EntryRow, NodeId } from '../../lib/types';
+  import type { Basis, EntryPage, EntryRow, NodeId } from '../../lib/contracts.gen';
 
   type Sort = 'size_desc' | 'name_asc' | 'modified_desc';
   interface Crumb { id: NodeId; name: string }

@@ -2,7 +2,7 @@
 import { formatBytes } from '../../lib/format/bytes';
 import { escapedName } from '../../lib/format/names';
 import { session } from '../../lib/stores/session.svelte';
-import type { Anchor, Basis, TreeSlice } from '../../lib/types';
+import type { Anchor, Basis, TreeSlice } from '../../lib/contracts.gen';
 import type { Palette } from '../../../viz/types.js';
 
 /** Read the viz palette from the CSS tokens of the current theme (styles/tokens.css is the only source). */

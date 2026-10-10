@@ -2,9 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { Client, LoomwardError } from '../../src/lib/transport/client';
 import { createHttpTransport } from '../../src/lib/transport/http';
 import { TransportError } from '../../src/lib/transport/transport';
-import type { EventEnvelope } from '../../src/lib/types';
+import type { EventEnvelope } from '../../src/lib/contracts.gen';
 
-const meta = { served_at: '2026-10-01T00:00:00Z', elapsed_ms: 1, dataset_class: 'synthetic', budget_hit: false };
+const meta = { served_at: '2026-10-01T00:00:00Z', elapsed_ms: 1, dataset_class: 'synthetic', budget_hit: false, catalog_rev: '1', state_rev: null };
+const env = (epoch: string, seq: number, event: EventEnvelope['event'], data: Record<string, unknown>): EventEnvelope =>
+  ({ protocol: 'loomward/3', epoch, seq, event, at: '2026-10-01T00:00:00Z', catalog_rev: null, state_rev: null, data });
+const ev = (seq: number, epoch = 'e1') => env(epoch, seq, 'roots.changed', {});
+/** `stream.hello` is unsequenced: its envelope seq is the current last_seq. */
+const hello = (epoch: string, last: number) => env(epoch, last, 'stream.hello', { session_started_at: '2026-10-01T00:00:00Z', epoch, last_seq: last, oldest_replayable_seq: 1, dataset_class: 'synthetic' });
+const lagged = (epoch: string, reason: string) => env(epoch, 0, 'stream.lagged', { reason, dropped: null, resync: ['roots'] });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 const asFetch = (f: (url: string, init: RequestInit) => Promise<Response>) => f as unknown as typeof fetch;
 const idOf = (init: RequestInit) => (JSON.parse(init.body as string) as { request_id: string }).request_id;
@@ -53,9 +59,8 @@ describe('http transport', () => {
   });
 
   it('streams events, drops garbled frames, and reconnects with Last-Event-ID', async () => {
-    const ev = (seq: number): EventEnvelope => ({ protocol: 'loomward/3', seq, event: 'roots.changed', at: '2026-10-01T00:00:00Z', data: {} });
-    const frame = (e: unknown, id: number) => `id: ${id}\nevent: roots.changed\ndata: ${JSON.stringify(e)}\n\n`;
-    const bodies = [frame(ev(1), 1) + 'data: {not json\n\n' + frame({ protocol: 'other' }, 2) + frame(ev(3), 3), frame(ev(4), 4)];
+    const frame = (e: EventEnvelope) => `id: ${e.epoch}.${e.seq}\nevent: ${e.event}\ndata: ${JSON.stringify(e)}\n\n`;
+    const bodies = [frame(ev(1)) + 'data: {not json\n\n' + frame({ protocol: 'other' } as unknown as EventEnvelope) + frame(ev(3)), frame(ev(4))];
     const headersSeen: Record<string, string>[] = [];
     const got: number[] = [];
     const states: string[] = [];
@@ -77,9 +82,61 @@ describe('http transport', () => {
     stop();
     expect(got).toEqual([1, 3, 4]);
     expect(headersSeen[0]!['Last-Event-ID']).toBeUndefined();
-    expect(headersSeen[1]!['Last-Event-ID']).toBe('3');
+    expect(headersSeen[1]!['Last-Event-ID']).toBe('e1.3'); // the frame id `<epoch>.<seq>`, never a bare seq
     expect(headersSeen[0]!['X-Loomward-Token']).toBe('t');
     expect(states.slice(0, 3)).toEqual(['open', 'closed', 'open']);
+  });
+
+  /** Runs the transport over canned SSE bodies; resolves with what each request sent and what was delivered. */
+  async function replay(bodies: EventEnvelope[][], resume?: { epoch: string; seq: number }) {
+    const frames = bodies.map((evs) => evs.map((e) => `id: ${e.epoch}.${e.seq}\nevent: ${e.event}\ndata: ${JSON.stringify(e)}\n\n`).join(''));
+    const ids: (string | undefined)[] = [];
+    const got: string[] = [];
+    let n = 0;
+    let release!: () => void;
+    const done = new Promise<void>((r) => (release = r));
+    const t = createHttpTransport({
+      base: 'http://x',
+      token: 't',
+      sleep: async () => {},
+      fetchImpl: asFetch(async (_u, init) => {
+        ids.push((init.headers as Record<string, string>)['Last-Event-ID']);
+        const i = n++;
+        if (i < frames.length) return new Response(frames[i]);
+        release();
+        return hang(init);
+      }),
+    });
+    const stop = t.subscribe((e) => got.push(`${e.event}:${e.epoch}.${e.seq}`), () => {}, resume);
+    await done;
+    stop();
+    return { ids, got };
+  }
+
+  it('records the epoch from stream.hello and does not let the unsequenced hello skip a replay', async () => {
+    const { ids } = await replay([
+      [hello('e1', 5), ev(6)], // first connection: hello carries last_seq 5, then seq 6 arrives
+      [hello('e1', 9)],        // reconnect drops after the hello, before the replay of 7..9
+      [hello('e1', 9)],
+    ]);
+    expect(ids).toEqual([undefined, 'e1.6', 'e1.6', 'e1.6']);
+  });
+
+  it('jumps to the new epoch on epoch_changed and drops duplicates inside an epoch', async () => {
+    const { ids, got } = await replay(
+      [
+        [hello('e2', 3), lagged('e2', 'epoch_changed'), ev(4, 'e2'), ev(4, 'e2'), ev(2, 'e2')],
+        [],
+      ],
+      { epoch: 'e1', seq: 40 },
+    );
+    expect(ids).toEqual(['e1.40', 'e2.4', 'e2.4']);
+    expect(got).toEqual(['stream.hello:e2.3', 'stream.lagged:e2.0', 'roots.changed:e2.4']);
+  });
+
+  it('after replay_gap resumes from the hello last_seq, not from the stale seq or the lagged seq 0', async () => {
+    const { ids } = await replay([[hello('e1', 500), lagged('e1', 'replay_gap')], []], { epoch: 'e1', seq: 40 });
+    expect(ids).toEqual(['e1.40', 'e1.500', 'e1.500']);
   });
 
   it('reports closed when the stream cannot open', async () => {

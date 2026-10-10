@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Client, LoomwardError } from '../../src/lib/transport/client';
 import { createMockTransport } from '../../src/lib/transport/mock';
-import type { PlacementSimulateRequest } from '../../src/lib/types.views';
+import type { PlacementSimulateRequest } from '../../src/lib/contracts.gen';
 
 const now = () => new Date('2026-10-01T00:00:00Z');
 const client = () => new Client(createMockTransport({ now }));

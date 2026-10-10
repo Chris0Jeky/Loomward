@@ -5,7 +5,7 @@
   import { formatBytes, parseBytes } from '../../lib/format/bytes';
   import { formatCount } from '../../lib/format/time';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
-  import type { SliceNode, TreeSlice } from '../../lib/types';
+  import type { SliceNode, TreeSlice } from '../../lib/contracts.gen';
 
   interface Props {
     slice: TreeSlice | null;

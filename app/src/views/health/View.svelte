@@ -8,7 +8,8 @@
   import { formatCount, formatTime } from '../../lib/format/time';
   import { session } from '../../lib/stores/session.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
-  import type { Grant, GrantList, Health, Root, RootList } from '../../lib/types';
+  import type { GrantList, Health, Root, RootList } from '../../lib/contracts.gen';
+  import type { Grant } from '../../lib/derived';
 
   /** A revocation the owner has asked for and not yet confirmed. */
   type Pending = { kind: 'root'; id: string; label: string } | { kind: 'grant'; id: string; label: string };
