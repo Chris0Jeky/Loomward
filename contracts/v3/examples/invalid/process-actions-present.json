@@ -1,0 +1,14 @@
+{
+  "def": "ProcessExplanation",
+  "reason": "available_actions must stay empty",
+  "value": {
+    "process_ref": "pc_1a2b-3c4d",
+    "observed_at": "2026-10-09T12:00:00Z",
+    "facts": [],
+    "summary": "s",
+    "caveats": [],
+    "available_actions": [
+      "end_task"
+    ]
+  }
+}

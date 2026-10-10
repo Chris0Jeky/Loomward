@@ -1,0 +1,9 @@
+{
+  "root_id": "rt_synth1",
+  "text": "report",
+  "extension": "docx",
+  "min_bytes": "1024",
+  "kind": "file",
+  "limit": 50,
+  "cursor": null
+}

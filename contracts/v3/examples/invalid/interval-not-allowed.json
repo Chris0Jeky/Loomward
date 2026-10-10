@@ -1,0 +1,11 @@
+{
+  "def": "TelemetrySubscribeRequest",
+  "reason": "interval_ms is 1000, 2000, 5000 or 10000",
+  "value": {
+    "subscription_id": null,
+    "channels": [
+      "system"
+    ],
+    "interval_ms": 1500
+  }
+}

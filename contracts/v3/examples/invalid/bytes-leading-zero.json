@@ -1,0 +1,8 @@
+{
+  "def": "BytesAndFiles",
+  "reason": "decimal string with a leading zero",
+  "value": {
+    "bytes": "007",
+    "files": 1
+  }
+}

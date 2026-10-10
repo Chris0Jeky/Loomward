@@ -455,6 +455,40 @@ def check_narrow(page: Page, base: str) -> None:
     page.set_viewport_size({'width': 1360, 'height': 900})
 
 
+WIDE_FONTS = {'Courier New': '"Courier New", monospace', 'Verdana': 'Verdana, sans-serif'}
+FONT_CSS = ':root, :root[data-theme] { --font-ui: %(f)s !important; --font-display: %(f)s !important; --font-mono: %(f)s !important; } * { font-family: %(f)s !important; }'
+
+
+def check_narrow_wide_fonts(page: Page, base: str) -> None:
+    """Hosted CI has none of the Windows fonts, and users have other fonts and text scaling: wide fallback
+    faces must never push a view past the viewport. Fonts are forced with a constructed stylesheet (the
+    page's CSP forbids inline <style>)."""
+    for width in (390, 320):
+        page.set_viewport_size({'width': width, 'height': 844})
+        for label, family in WIDE_FONTS.items():
+            page.goto(f'{base}/?transport=mock#/explorer')
+            page.reload()  # a same-URL goto is only a hash change: reload for a fresh mock (earlier checks revoked roots)
+            expect(page.locator('main h1')).to_be_visible()
+            page.evaluate('(css) => { const s = new CSSStyleSheet(); s.replaceSync(css); document.adoptedStyleSheets = [s]; }', FONT_CSS % {'f': family})
+            for view in ('explorer', 'tiers', 'companion', 'health'):
+                page.evaluate(f"location.hash = '#/{view}'")
+                expect(page.locator('main h1')).to_be_visible()
+                page.wait_for_timeout(500)
+                if view == 'tiers':
+                    page.get_by_role('button', name='Simulate', exact=True).click()
+                    expect(page.get_by_role('heading', name='Alternatives')).to_be_visible()
+                if view == 'companion':
+                    page.locator('table.procs tbody tr').first.get_by_role('button').click()
+                    expect(page.get_by_role('region', name='Explanation')).to_be_visible()
+                if view == 'health':
+                    page.get_by_role('button', name='Revoke…').first.click()
+                    expect(page.get_by_role('group', name=re.compile('Revoke root access'))).to_be_visible()
+                page.wait_for_timeout(150)
+                over = page.evaluate('document.documentElement.scrollWidth - window.innerWidth')
+                ok(over <= 0, f'no horizontal page scroll at {width} px in {label} on {view} (over by {over})')
+    page.set_viewport_size({'width': 1360, 'height': 900})
+
+
 def run_views(page: Page, base: str, shots: Path | None) -> None:
     """Runs every L13 scenario. `shots` is the evidence directory, or None to skip screenshots."""
     if shots:
@@ -483,3 +517,4 @@ def run_views(page: Page, base: str, shots: Path | None) -> None:
     check_companion(page, base, shoot)
     check_health(page, base, shoot)
     check_narrow(page, base)
+    check_narrow_wide_fonts(page, base)

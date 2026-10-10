@@ -1,0 +1,30 @@
+{
+  "def": "EventEnvelope",
+  "value": {
+    "protocol": "loomward/3",
+    "epoch": "e_k3J9x2Qa",
+    "seq": 4212,
+    "event": "learning.updated",
+    "at": "2026-10-09T12:00:01.000Z",
+    "catalog_rev": null,
+    "state_rev": "312",
+    "data": {
+      "status": {
+        "model_id": "md_0001",
+        "algorithm": "weighted_multinomial_nb_v1",
+        "taxonomy_version": 1,
+        "training_count": 42,
+        "human_events": 40,
+        "teacher_labels": 2,
+        "human_support": {
+          "Project": 25,
+          "Archive": 15
+        },
+        "fitted_at": "2026-10-09T11:58:30Z",
+        "dataset_class": "synthetic",
+        "calibrated": false,
+        "autonomy_allowed": false
+      }
+    }
+  }
+}

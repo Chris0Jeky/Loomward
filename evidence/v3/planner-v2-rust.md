@@ -50,11 +50,10 @@ parity test.
 
 ## Python/Rust discrepancies
 
-1. **Missing `groups` key.** Python `plan_tiers_v2` raises `KeyError('groups')` (it reads
-   `scenario['groups']`; v1 uses `.get('groups', [])`). The Rust port follows v1 and treats the
-   key as empty. The fixture case `edge-missing-groups` carries a `python_discrepancy` note and
-   Python's output for `groups: []`. `planner_v2.py` was not edited; if the parallel Muse fix
-   lands, rerun the exporter and the note disappears.
+1. **Missing `groups` key (fixed).** Python `plan_tiers_v2` now treats a missing `groups`
+   key as empty (`.get('groups', [])`), like v1 and like the Rust port's `scenario_from_value`.
+   The fixture case `edge-missing-groups` records Python's real output with no
+   `python_discrepancy` note; the exporter's former `KeyError` special case is removed.
 2. **Heat arithmetic ceiling.** Python scores heat as `Fraction(str(heat)) * source_bytes`
    (unbounded). Rust keeps the same exact decimal as a u128 scaled by a shared power of ten and
    fails closed with an error if a scenario mixes heat scales so far apart that the sum leaves

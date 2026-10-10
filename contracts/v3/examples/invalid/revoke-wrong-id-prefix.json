@@ -1,0 +1,8 @@
+{
+  "def": "RootRevokeRequest",
+  "reason": "a volume id where a root id is required",
+  "value": {
+    "root_id": "vo_lab1",
+    "purge_catalog": false
+  }
+}

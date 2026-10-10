@@ -1,0 +1,15 @@
+{
+  "def": "PlacementProposal",
+  "reason": "a simulated proposal is never executable",
+  "value": {
+    "group_id": "cg_0001",
+    "source_id": "vo_lab1",
+    "target_id": "vo_lab2",
+    "source_bytes_relieved": "500000000",
+    "destination_bytes_required": "470000000",
+    "transfer_bytes": "470000000",
+    "reason": "bounded_capacity_budget_allocation",
+    "requires_consent": true,
+    "executable": true
+  }
+}

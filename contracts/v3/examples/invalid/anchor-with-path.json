@@ -1,0 +1,8 @@
+{
+  "def": "Anchor",
+  "reason": "unknown field on a tagged variant",
+  "value": {
+    "kind": "atlas",
+    "path": "x"
+  }
+}
