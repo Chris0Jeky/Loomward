@@ -1,6 +1,10 @@
 //! Deterministic synthetic plans and a checked Windows directory-buffer decoder.
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, io, path::PathBuf};
+use std::{
+    collections::BTreeSet,
+    io,
+    path::{Path, PathBuf},
+};
 
 pub const MARKER: &str = "Loomward disposable scale lab v1\n";
 pub const MAX_FILES: u64 = 3_000_000;
@@ -180,6 +184,29 @@ pub fn disagreements(
     .collect()
 }
 
+fn is_reserved_device_component(component: &str) -> bool {
+    let trimmed = component.trim_end_matches([' ', '.']);
+    let stem = trimmed
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches([' ', '.']);
+    if stem.is_empty() {
+        return false;
+    }
+    let lower = stem.to_ascii_lowercase();
+    if lower.len() == 4
+        && (lower.starts_with("com") || lower.starts_with("lpt"))
+        && matches!(lower.as_bytes()[3], b'1'..=b'9')
+    {
+        return true;
+    }
+    matches!(
+        lower.as_str(),
+        "con" | "prn" | "aux" | "nul" | "com¹" | "com²" | "com³" | "lpt¹" | "lpt²" | "lpt³"
+    )
+}
+
 /// Real observation scopes are explicit local paths, never profile or credential stores.
 pub fn real_root(input: &str) -> io::Result<()> {
     let bytes = input.as_bytes();
@@ -212,12 +239,27 @@ pub fn real_root(input: &str) -> io::Result<()> {
             ".gnupg",
         ]
         .contains(&p.to_ascii_lowercase().as_str())
-    }) {
+    }) || parts.iter().any(|p| is_reserved_device_component(p))
+    {
         return Err(invalid(
             "profile, credential, browser, or ambiguous real root refused",
         ));
     }
     Ok(())
+}
+
+/// Direct children of `root` kept until last during teardown: the lab marker
+/// and the busy file. NTFS resolves names case-insensitively, so the match is
+/// by file name rather than case-sensitive path equality.
+pub fn is_keeper(path: &Path, root: &Path) -> bool {
+    if path.parent() != Some(root) {
+        return false;
+    }
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name.eq_ignore_ascii_case(".loomward-lab-marker") || name.eq_ignore_ascii_case(".busy")
+        })
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -404,6 +446,35 @@ mod tests {
         }
     }
     #[test]
+    fn real_root_refuses_reserved_device_names() {
+        for path in [
+            r"G:\lab\COM1",
+            r"G:\lab\con",
+            r"G:\lab\NUL",
+            r"G:\lab\nul.txt",
+            r"G:\lab\Aux\x",
+            r"G:\lab\com1.tar.gz",
+            r"G:\lab\COM9\deep",
+            r"G:\lab\deep\LPT1",
+            r"G:\lab\con.tar.gz",
+            r"G:\lab\COM¹",
+            r"G:\lab\lpt³.txt",
+            r"G:\lab\COM1 ",
+            r"G:\lab\aux.",
+        ] {
+            assert!(real_root(path).is_err(), "{path}");
+        }
+        for path in [
+            r"G:\lab\COM10",
+            r"G:\lab\COM0",
+            r"G:\lab\console",
+            r"G:\lab\nullable",
+            r"G:\lab\com1x",
+        ] {
+            assert!(real_root(path).is_ok(), "{path}");
+        }
+    }
+    #[test]
     fn deterministic_profiles_and_independent_small_oracle() {
         for profile in [Profile::Dev, Profile::Mixed, Profile::Media] {
             let totals = expected(3, 42, profile).unwrap();
@@ -468,6 +539,112 @@ mod tests {
         assert!(decode_records(&buffer, |_| Err(invalid("consumer failed"))).is_err());
         buffer[96 + 48..96 + 56].copy_from_slice(&u64::MAX.to_le_bytes());
         assert!(decode_records(&buffer, |_| Ok(())).is_err());
+    }
+
+    fn dir_record(
+        next: u32,
+        name: &[u16],
+        logical: u64,
+        allocation: u64,
+        attributes: u32,
+        reparse_tag: u32,
+        file_id: [u8; 16],
+    ) -> Vec<u8> {
+        let mut buf = vec![0u8; 88 + name.len() * 2];
+        buf[0..4].copy_from_slice(&next.to_le_bytes());
+        buf[40..48].copy_from_slice(&logical.to_le_bytes());
+        buf[48..56].copy_from_slice(&allocation.to_le_bytes());
+        buf[56..60].copy_from_slice(&attributes.to_le_bytes());
+        buf[60..64].copy_from_slice(&(name.len() as u32 * 2).to_le_bytes());
+        buf[68..72].copy_from_slice(&reparse_tag.to_le_bytes());
+        buf[72..88].copy_from_slice(&file_id);
+        for (i, unit) in name.iter().enumerate() {
+            buf[88 + i * 2..90 + i * 2].copy_from_slice(&unit.to_le_bytes());
+        }
+        buf
+    }
+
+    fn chain_records(first: Vec<u8>, stride: usize, second: Vec<u8>) -> Vec<u8> {
+        let mut buf = first;
+        assert!(buf.len() <= stride);
+        buf.resize(stride, 0);
+        buf.extend(second);
+        buf
+    }
+
+    #[test]
+    fn decode_records_emits_two_record_chain_with_fields() {
+        let first = dir_record(96, &[0x41], 10, 20, 0x10, 0, [1; 16]);
+        let second = dir_record(0, &[0x48, 0x69], 30, 40, 0x20, 7, [2; 16]);
+        let buffer = chain_records(first, 96, second);
+        let mut seen = Vec::new();
+        decode_records(&buffer, |r| {
+            seen.push((
+                r.name.clone(),
+                r.logical_bytes,
+                r.allocation_bytes,
+                r.attributes,
+                r.reparse_tag,
+                r.file_id,
+            ));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0], (vec![0x41], 10, 20, 0x10, 0, [1; 16]));
+        assert_eq!(seen[1], (vec![0x48, 0x69], 30, 40, 0x20, 7, [2; 16]));
+    }
+
+    #[test]
+    fn decode_records_rejects_bad_name_lengths() {
+        let empty = dir_record(0, &[], 1, 1, 0, 0, [0; 16]);
+        assert!(decode_records(&empty, |_| Ok(())).is_err());
+        let mut odd = dir_record(0, &[0x41], 1, 1, 0, 0, [0; 16]);
+        odd[60..64].copy_from_slice(&3u32.to_le_bytes());
+        odd.push(0);
+        assert!(decode_records(&odd, |_| Ok(())).is_err());
+        let mut overrun = dir_record(0, &[0x41], 1, 1, 0, 0, [0; 16]);
+        overrun[60..64].copy_from_slice(&1000u32.to_le_bytes());
+        assert!(decode_records(&overrun, |_| Ok(())).is_err());
+    }
+
+    #[test]
+    fn decode_records_rejects_bad_next_offsets() {
+        let mut unaligned = dir_record(92, &[0x41], 1, 1, 0, 0, [0; 16]);
+        unaligned.resize(104, 0);
+        assert!(decode_records(&unaligned, |_| Ok(())).is_err());
+        let mut overlap = dir_record(88, &[0x41], 1, 1, 0, 0, [0; 16]);
+        overlap.resize(184, 0);
+        assert!(decode_records(&overlap, |_| Ok(())).is_err());
+        let past_end = dir_record(96, &[0x41], 1, 1, 0, 0, [0; 16]);
+        assert!(decode_records(&past_end, |_| Ok(())).is_err());
+    }
+
+    #[test]
+    fn decode_records_rejects_reserved_name_characters() {
+        for bad in [0x0000u16, 0x002F, 0x005C, 0x003A] {
+            let buffer = dir_record(0, &[bad], 1, 1, 0, 0, [0; 16]);
+            assert!(decode_records(&buffer, |_| Ok(())).is_err());
+        }
+    }
+
+    #[test]
+    fn decode_records_rejects_sizes_above_i64_max() {
+        let huge = i64::MAX as u64 + 1;
+        let logical = dir_record(0, &[0x41], huge, 1, 0, 0, [0; 16]);
+        assert!(decode_records(&logical, |_| Ok(())).is_err());
+        let allocation = dir_record(0, &[0x41], 1, huge, 0, 0, [0; 16]);
+        assert!(decode_records(&allocation, |_| Ok(())).is_err());
+        let boundary = dir_record(0, &[0x41], i64::MAX as u64, i64::MAX as u64, 0, 0, [0; 16]);
+        assert!(decode_records(&boundary, |_| Ok(())).is_ok());
+    }
+
+    #[test]
+    fn decode_records_rejects_short_header() {
+        for len in [0usize, 10, 87] {
+            let buffer = vec![0u8; len];
+            assert!(decode_records(&buffer, |_| Ok(())).is_err());
+        }
     }
 
     #[cfg(windows)]
