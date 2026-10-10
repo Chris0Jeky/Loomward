@@ -142,6 +142,15 @@ pub enum ScanMessage {
 }
 /// Catalogue writer contract. Implementations must fence before accepting any later message.
 pub trait ScanSink: Send + Sync {
+    /// Resolve a root-relative dirty directory to a catalogue identity; unknown means full relist.
+    fn resolve_watch_directory(&self, _root: &RootId, _path: &[Vec<u16>]) -> Option<u64> {
+        None
+    }
+    /// Mark watched coverage stale without changing in-flight listing revisions.
+    /// Durable adapters must implement this before enabling native watchers.
+    fn watch_dirty(&self, _root: &RootId) -> EngineResult<()> {
+        Err(EngineError::unavailable(crate::Component::Scan))
+    }
     /// Recover durable running jobs to failed/repairing before any root serves slices.
     fn recover_interrupted(&self) -> EngineResult<()>;
     /// Begin one active root run; record its reconciliation scope.
@@ -174,6 +183,7 @@ struct MemoryState {
     next_rev: u64,
     roots: HashMap<RootId, MemoryRoot>,
 }
+type StagedListing = (Sums, HashSet<Vec<u16>>);
 #[derive(Debug, Default)]
 struct MemoryRoot {
     active: Option<u64>,
@@ -181,7 +191,7 @@ struct MemoryRoot {
     repairing: bool,
     sweep: bool,
     dirs: HashMap<u64, MemoryDir>,
-    stages: HashMap<(u64, u64, u64), Sums>,
+    stages: HashMap<(u64, u64, u64), StagedListing>,
     invalidated: HashSet<u64>,
 }
 #[derive(Debug)]
@@ -194,6 +204,7 @@ struct MemoryDir {
     valid: u64,
     own: Sums,
     sums: Sums,
+    absent: bool,
 }
 /// In-memory fixture writer; retains aggregates and directories, never a million-entry snapshot.
 #[derive(Debug, Default)]
@@ -292,6 +303,31 @@ fn invalidate(r: &mut MemoryRoot, mut dir: u64, revision: Option<u64>) {
     }
 }
 impl ScanSink for MemorySink {
+    fn resolve_watch_directory(&self, root: &RootId, path: &[Vec<u16>]) -> Option<u64> {
+        let s = self.state.lock().unwrap();
+        let r = s.roots.get(root)?;
+        let mut dir = *r.dirs.iter().find(|(_, d)| d.parent.is_none())?.0;
+        for name in path {
+            dir = *r
+                .dirs
+                .iter()
+                .find(|(_, d)| d.parent == Some(dir) && d.name == *name)?
+                .0;
+        }
+        Some(dir)
+    }
+    fn watch_dirty(&self, root: &RootId) -> EngineResult<()> {
+        let mut s = self.state.lock().unwrap();
+        let r = s.roots.entry(root.clone()).or_default();
+        if r.fenced {
+            return Err(EngineError::PermissionDenied {
+                message: "root revoked".into(),
+            });
+        }
+        r.repairing = true;
+        r.sweep = false;
+        Ok(())
+    }
     fn recover_interrupted(&self) -> EngineResult<()> {
         let mut s = self.state.lock().unwrap();
         for r in s.roots.values_mut() {
@@ -322,6 +358,7 @@ impl ScanSink for MemorySink {
         }
         r.active = Some(run);
         r.sweep = false;
+        r.repairing = true;
         Ok(())
     }
     fn prepare_listing(
@@ -368,12 +405,14 @@ impl ScanSink for MemorySink {
             valid: 0,
             own: Sums::ZERO,
             sums: Sums::ZERO,
+            absent: false,
         });
         d.parent = parent;
         d.dirty = revision;
         d.dirty_run = run;
         d.name = name.to_vec();
         d.id = id;
+        d.absent = false;
         Ok(ListingTicket {
             dir,
             input_revision: revision,
@@ -399,10 +438,13 @@ impl ScanSink for MemorySink {
                 let staged = r
                     .stages
                     .entry((run, ticket.dir, ticket.input_revision))
-                    .or_insert(Sums::ZERO);
+                    .or_insert_with(|| (Sums::ZERO, HashSet::new()));
                 for e in entries {
+                    if e.attributes & 0x10 != 0 {
+                        staged.1.insert(e.name.clone());
+                    }
                     if !e.excluded && e.attributes & 0x10 == 0 {
-                        *staged = staged.checked_add(Sums {
+                        staged.0 = staged.0.checked_add(Sums {
                             files: 1,
                             dirs: 0,
                             logical: e.logical,
@@ -414,7 +456,7 @@ impl ScanSink for MemorySink {
             ScanMessage::ListingDone {
                 run,
                 ticket,
-                outcome: _,
+                outcome,
             } => {
                 active(r, run)?;
                 if r.dirs[&ticket.dir].dirty != ticket.input_revision {
@@ -423,8 +465,13 @@ impl ScanSink for MemorySink {
                 let staged = r
                     .stages
                     .remove(&(run, ticket.dir, ticket.input_revision))
-                    .unwrap_or(Sums::ZERO);
-                r.dirs.get_mut(&ticket.dir).unwrap().own = staged;
+                    .unwrap_or_else(|| (Sums::ZERO, HashSet::new()));
+                r.dirs.get_mut(&ticket.dir).unwrap().own = staged.0;
+                if outcome == ListOutcome::Complete {
+                    for d in r.dirs.values_mut().filter(|d| d.parent == Some(ticket.dir)) {
+                        d.absent = !staged.1.contains(&d.name);
+                    }
+                }
                 // Publishing this listing does not change the inputs reserved by its ticket.
                 invalidate(r, ticket.dir, None);
             }
@@ -467,9 +514,66 @@ impl ScanSink for MemorySink {
         let mut s = self.state.lock().unwrap();
         let r = s.roots.get_mut(root).ok_or_else(stale)?;
         active(r, run)?;
+        if complete {
+            // Resolve tombstones only after all complete scoped listings have reconciled moves.
+            let mut removed: HashSet<u64> = r
+                .dirs
+                .iter()
+                .filter(|(_, d)| d.absent && (matches!(scope, RunScope::FullRoot)
+                    || matches!(scope, RunScope::Targeted(ids) if d.parent.is_some_and(|p| ids.contains(&p)))))
+                .map(|(id, _)| *id)
+                .collect();
+            for _ in 0..129 {
+                let before = removed.len();
+                removed.extend(
+                    r.dirs
+                        .iter()
+                        .filter(|(_, d)| d.parent.is_some_and(|p| removed.contains(&p)))
+                        .map(|(id, _)| *id)
+                        .collect::<Vec<_>>(),
+                );
+                if removed.len() == before {
+                    break;
+                }
+            }
+            r.dirs.retain(|id, _| !removed.contains(id));
+            let mut order: Vec<(u64, usize)> = r
+                .dirs
+                .keys()
+                .map(|id| {
+                    let mut depth = 0;
+                    let mut parent = r.dirs[id].parent;
+                    while let Some(p) = parent {
+                        depth += 1;
+                        if depth > 128 {
+                            break;
+                        }
+                        parent = r.dirs.get(&p).and_then(|d| d.parent);
+                    }
+                    (*id, depth)
+                })
+                .collect();
+            order.sort_unstable_by_key(|(_, depth)| std::cmp::Reverse(*depth));
+            let mut totals: HashMap<u64, Sums> =
+                r.dirs.iter().map(|(id, d)| (*id, d.own)).collect();
+            for (id, _) in order {
+                let sums = totals[&id];
+                if let Some(parent) = r.dirs[&id].parent {
+                    if let Some(total) = totals.get_mut(&parent) {
+                        *total = total.checked_add(sums.checked_add(Sums {
+                            dirs: 1,
+                            ..Sums::ZERO
+                        })?)?;
+                    }
+                }
+                let d = r.dirs.get_mut(&id).unwrap();
+                d.sums = sums;
+                d.valid = d.dirty;
+            }
+        }
         r.active = None;
         r.sweep = complete && matches!(scope, RunScope::FullRoot);
-        r.repairing = !complete;
+        r.repairing = !complete || r.dirs.values().any(|d| d.absent);
         r.stages.clear();
         Ok(())
     }
@@ -481,5 +585,110 @@ impl ScanSink for MemorySink {
         r.active = None;
         r.stages.clear();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod watch_tests {
+    use super::super::source::IdBasis;
+    use super::*;
+    fn identity(id: u64) -> OpenedIdentity {
+        OpenedIdentity {
+            id: Some(FileIdObs::Id64(id)),
+            basis: IdBasis::Listed,
+            volume_serial: Some(42),
+            attributes: 0x10,
+            reparse_tag: None,
+        }
+    }
+    #[test]
+    fn repair_rollup_preserves_tombstones_outside_targeted_scope() {
+        let root = RootId::new("rt_rollup").unwrap();
+        let sink = MemorySink::default();
+        sink.begin_run(&root, 1, &RunScope::FullRoot).unwrap();
+        let r = sink
+            .prepare_listing(&root, 1, None, &[], identity(1))
+            .unwrap();
+        let a = sink
+            .prepare_listing(&root, 1, Some(r.dir), &[97], identity(2))
+            .unwrap();
+        let b = sink
+            .prepare_listing(&root, 1, Some(r.dir), &[98], identity(3))
+            .unwrap();
+        sink.prepare_listing(&root, 1, Some(a.dir), &[120], identity(4))
+            .unwrap();
+        // A complete listing of a makes x a tombstone; interrupted root runs retain it.
+        sink.consume(
+            &root,
+            ScanMessage::ListingDone {
+                run: 1,
+                ticket: a,
+                outcome: ListOutcome::Complete,
+            },
+        )
+        .unwrap();
+        sink.finish_run(&root, 1, &RunScope::FullRoot, false)
+            .unwrap();
+        let scope = RunScope::Targeted(vec![b.dir]);
+        sink.begin_run(&root, 2, &scope).unwrap();
+        let b = sink
+            .prepare_listing(&root, 2, Some(r.dir), &[98], identity(3))
+            .unwrap();
+        sink.consume(
+            &root,
+            ScanMessage::DirListing {
+                run: 2,
+                ticket: b,
+                entries: vec![Entry {
+                    name: vec![102],
+                    file_id: Some(FileIdObs::Id64(5)),
+                    identity_eligible: true,
+                    attributes: 0,
+                    reparse_tag: None,
+                    logical: 7,
+                    allocated: Some(4096),
+                    creation: None,
+                    last_write: None,
+                    change: None,
+                    last_access: None,
+                    excluded: false,
+                    traversal_error: None,
+                }],
+            },
+        )
+        .unwrap();
+        sink.consume(
+            &root,
+            ScanMessage::ListingDone {
+                run: 2,
+                ticket: b,
+                outcome: ListOutcome::Complete,
+            },
+        )
+        .unwrap();
+        sink.finish_run(&root, 2, &scope, true).unwrap();
+        assert!(
+            sink.resolve_watch_directory(&root, &[vec![97], vec![120]])
+                .is_some(),
+            "N2 retains unrelated tombstones"
+        );
+        assert_eq!(
+            sink.totals(&root),
+            Some(Sums {
+                files: 1,
+                dirs: 3,
+                logical: 7,
+                allocated: Some(4096)
+            })
+        );
+        assert!(!sink.sweep_allowed(&root));
+        assert!(sink.is_repairing(&root));
+        sink.begin_run(&root, 3, &RunScope::FullRoot).unwrap();
+        sink.finish_run(&root, 3, &RunScope::FullRoot, true)
+            .unwrap();
+        assert!(sink
+            .resolve_watch_directory(&root, &[vec![97], vec![120]])
+            .is_none());
+        assert_eq!(sink.totals(&root).unwrap().dirs, 2);
     }
 }

@@ -4,6 +4,8 @@ pub mod sink;
 pub mod source;
 #[cfg(test)]
 mod tests;
+#[cfg(windows)]
+pub mod watch;
 use crate::{Component, Engine, EngineError, EngineResult};
 use loomward_protocol::{DatasetClass, Job, JobId, JobKind, RootId, ScanBudget};
 pub use pipeline::{run_scan, ScanOptions, ScanReport};
@@ -136,7 +138,7 @@ impl Engine {
     pub fn scan_start(&self, root: &GrantedRoot, budget: Option<ScanBudget>) -> EngineResult<Job> {
         self.start_scan(root, budget, RunScope::FullRoot)
     }
-    /// Conservative refresh: until watcher targets are supplied, relist the full granted root.
+    /// Reconcile accumulated watcher hints, falling back to a full relist on lost coverage.
     pub fn scan_refresh(
         &self,
         root: &GrantedRoot,
@@ -195,6 +197,24 @@ impl Engine {
         let run = NEXT_RUN.fetch_add(1, Ordering::Relaxed);
         #[cfg(windows)]
         {
+            let watch = {
+                let mut watches = self.scan_watches.lock().unwrap();
+                if let Some(watch) = watches.get(root.root_id()) {
+                    watch.validate(&root)?;
+                    if !watch.healthy() {
+                        watches.remove(root.root_id()).unwrap().stop();
+                    }
+                }
+                if !watches.contains_key(root.root_id()) {
+                    watches.insert(
+                        root.root_id().clone(),
+                        watch::RootWatch::start(&root, sink.clone())?,
+                    );
+                }
+                let watch = watches[root.root_id()].clone();
+                watch.validate(&root)?;
+                watch
+            };
             let io = source::native_cancel();
             let interrupt = io.clone();
             let root_id = root.root_id().clone();
@@ -206,7 +226,7 @@ impl Engine {
                     .take()
                     .expect("scan runner executes once");
                 let source = loomward_windows::enumerate::NativeSource::new(io.clone());
-                let report = run_scan(
+                let report = watch::run_watched(
                     &source,
                     &root,
                     run,
@@ -214,6 +234,7 @@ impl Engine {
                     bytes.clone(),
                     ctx.cancel.clone(),
                     options.clone(),
+                    &watch,
                 )?;
                 ctx.set_scan_report(&report);
                 Ok(if report.complete {
@@ -246,6 +267,10 @@ impl Engine {
     }
     /// Cancel all active scan jobs for a revoked root. Commit revocation before calling this.
     pub fn scan_cancel_root(&self, root: &RootId) -> EngineResult<Vec<Job>> {
+        #[cfg(windows)]
+        if let Some(watch) = self.scan_watches.lock().unwrap().remove(root) {
+            watch.stop();
+        }
         self.jobs
             .root_jobs(root)
             .iter()
