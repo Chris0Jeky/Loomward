@@ -43,7 +43,7 @@ Python 3.14.3 (`py -3`), cargo/rustc 1.97.1, rustup 1.29.0, Node 24.13.1, npm 11
 a first measurement and must be reported as such. On Windows use `codex.cmd`, `npm.cmd` and
 `npx.cmd`; the unsigned `.ps1` shims are blocked by this machine's execution policy.
 
-## Proving checks by seam (measured on Windows 2026-10-09, `evidence/v3/`)
+## Proving checks by seam (measured on Windows 2026-10-09; counts refreshed 2026-10-10, `evidence/v3/`)
 
 | You changed | Run |
 |---|---|
