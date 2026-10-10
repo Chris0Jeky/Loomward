@@ -103,7 +103,7 @@ enum Work {
     Barrier(std::sync::mpsc::SyncSender<()>),
 }
 
-/// A granted-root watcher retained between scans, stopped on revocation and engine shutdown.
+/// A granted-root watcher for one scan, stopped on completion, revocation or engine shutdown.
 #[cfg(windows)]
 pub(crate) struct RootWatch {
     root: GrantedRoot,
@@ -184,7 +184,8 @@ impl RootWatch {
         }
         Ok(())
     }
-    pub(crate) fn healthy(&self) -> bool {
+    #[cfg(test)]
+    fn healthy(&self) -> bool {
         !self.stop.load(Ordering::Acquire)
             && self.checkpoint()
             && !self.dirty.lock().unwrap().failed
@@ -194,6 +195,9 @@ impl RootWatch {
             sync::mpsc,
             time::{Duration, Instant},
         };
+        if self.stop.load(Ordering::Acquire) {
+            return false;
+        }
         if self.native.checkpoint().is_err() {
             let mut state = self.dirty.lock().unwrap();
             state.record(vec![Change::RootDirty]);
@@ -341,6 +345,13 @@ pub(crate) fn run_watched<S: DirSource>(
     options: ScanOptions,
     watch: &RootWatch,
 ) -> EngineResult<ScanReport> {
+    struct StopOnExit<'a>(&'a RootWatch);
+    impl Drop for StopOnExit<'_> {
+        fn drop(&mut self) {
+            self.0.stop();
+        }
+    }
+    let _stop = StopOnExit(watch);
     watch.validate(root)?;
     if watch.stop.load(Ordering::Acquire) {
         return Err(EngineError::PermissionDenied {
@@ -379,7 +390,7 @@ fn reconcile<S: DirSource>(
         reparented: AtomicBool::new(false),
         outside_scope: AtomicU64::new(0),
     });
-    // Restart/first scan always needs a full baseline: watcher history does not survive exit.
+    // Every scan needs a full baseline: no watcher history survives between scans.
     options.scope = RunScope::FullRoot;
     checkpoint();
     let mut covered = dirty.lock().unwrap().epoch;
@@ -746,6 +757,152 @@ mod native_tests {
 
     use super::tests::RecordingSink;
     #[test]
+    fn completed_scan_releases_pins_and_refreshes_full_baseline() {
+        let tree = fixture();
+        let parent = tree.path().join("parent");
+        let path = parent.join("root");
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::create_dir(parent.join("sibling")).unwrap();
+        std::fs::write(path.join("before"), b"before").unwrap();
+        let Some(root) = grant(&path) else { return };
+        let engine = Engine::open(crate::EngineConfig::new(
+            tree.path().join("state"),
+            root.dataset_class(),
+        ))
+        .unwrap();
+        let sink = Arc::new(RecordingSink::default());
+        engine.set_scan_sink(sink.clone()).unwrap();
+        for refresh in [false, true] {
+            let job = if refresh {
+                engine.scan_refresh(&root, None)
+            } else {
+                engine.scan_start(&root, None)
+            }
+            .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                let status = engine.job_status(&job.job_id).unwrap();
+                if status.state == loomward_protocol::JobState::Completed {
+                    assert_eq!(
+                        status.coverage,
+                        Some(loomward_protocol::CoverageState::Complete)
+                    );
+                    break;
+                }
+                assert!(Instant::now() < deadline, "{status:?}");
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            let watch = engine
+                .scan_watches
+                .lock()
+                .unwrap()
+                .get(root.root_id())
+                .unwrap()
+                .clone();
+            let renamed = tree.path().join("renamed");
+            std::fs::rename(&parent, &renamed).unwrap();
+            std::fs::rename(&renamed, &parent).unwrap();
+            assert!(watch.dirty.lock().unwrap().stopped);
+            assert!(watch.native.checkpoint().is_err());
+            if !refresh {
+                std::fs::remove_dir(parent.join("sibling")).unwrap();
+                let epoch = watch.dirty.lock().unwrap().epoch;
+                std::fs::write(path.join("between-scans"), b"unknown until refresh").unwrap();
+                assert_eq!(watch.dirty.lock().unwrap().epoch, epoch);
+                assert_eq!(sink.memory.totals(root.root_id()).unwrap().files, 1);
+            } else {
+                assert_eq!(sink.memory.totals(root.root_id()).unwrap().files, 2);
+            }
+        }
+        assert!(sink
+            .scopes
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|scope| *scope == RunScope::FullRoot));
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn complete_partial_cancelled_and_failed_scans_release_watch() {
+        for outcome in ["complete", "partial", "cancelled", "failed"] {
+            let tree = fixture();
+            let parent = tree.path().join("parent");
+            let path = parent.join("root");
+            std::fs::create_dir_all(&path).unwrap();
+            let Some(root) = grant(&path) else { return };
+            let sink = Arc::new(MemorySink::default());
+            let watch = RootWatch::start(&root, sink.clone()).unwrap();
+            let mut opts = options();
+            if outcome == "partial" {
+                opts.max_entries = 1;
+            }
+            if outcome != "failed" {
+                for name in ["one", "two"] {
+                    std::fs::write(path.join(name), b"fixture").unwrap();
+                }
+            }
+            let source = BurstSource {
+                native: NativeSource::default(),
+                path: path.clone(),
+                mutated: AtomicBool::new(false),
+                watch: watch.clone(),
+                move_sub: false,
+                delete_root: outcome == "failed",
+            };
+            let result = run_watched(
+                &source,
+                &root,
+                1,
+                sink,
+                bytes(),
+                Arc::new(AtomicBool::new(outcome == "cancelled")),
+                opts,
+                &watch,
+            );
+            if outcome == "failed" {
+                assert!(result.is_err());
+                assert!(watch.native.failed());
+                let state = watch.dirty.lock().unwrap();
+                assert!(state.failed && state.root.is_some());
+                assert!(source.mutated.load(Ordering::Acquire));
+            } else if outcome == "cancelled" {
+                assert!(matches!(result, Err(EngineError::Cancelled { .. })));
+            } else {
+                assert_eq!(result.unwrap().complete, outcome == "complete");
+            }
+            assert!(watch.dirty.lock().unwrap().stopped, "{outcome}");
+            assert!(watch.native.checkpoint().is_err(), "{outcome}");
+            std::fs::rename(parent, tree.path().join("renamed")).unwrap();
+        }
+    }
+
+    #[test]
+    fn engine_teardown_stops_watch_with_an_outstanding_runner_reference() {
+        let tree = fixture();
+        let Some(root) = grant(tree.path()) else {
+            return;
+        };
+        let engine = Engine::open(crate::EngineConfig::new(
+            tree.path().join("state"),
+            root.dataset_class(),
+        ))
+        .unwrap();
+        let watch = RootWatch::start(&root, Arc::new(MemorySink::default())).unwrap();
+        engine
+            .scan_watches
+            .lock()
+            .unwrap()
+            .insert(root.root_id().clone(), watch.clone());
+        drop(engine);
+        assert!(watch.dirty.lock().unwrap().stopped);
+        assert!(watch.native.checkpoint().is_err());
+        let moved = tree.path().with_extension("moved-fixture");
+        std::fs::rename(tree.path(), &moved).unwrap();
+        std::fs::rename(&moved, tree.path()).unwrap();
+    }
+
+    #[test]
     fn watcher_start_error_preserves_native_cause() {
         assert!(
             matches!(watch_error(SourceError::Io(1234)), EngineError::Internal { message, .. } if message == "watch_io_error_1234")
@@ -776,7 +933,7 @@ mod native_tests {
         );
     }
     #[test]
-    fn native_attribute_change_after_complete_scan_hints_parent() {
+    fn native_attribute_change_during_armed_scan_hints_parent() {
         let tree = fixture();
         let Some(root) = grant(tree.path()) else {
             return;
@@ -786,20 +943,7 @@ mod native_tests {
         std::fs::write(&file, b"synthetic").unwrap();
         let sink = Arc::new(RecordingSink::default());
         let watch = RootWatch::start(&root, sink.clone()).unwrap();
-        assert!(
-            run_watched(
-                &NativeSource::default(),
-                &root,
-                1,
-                sink.clone(),
-                bytes(),
-                Arc::new(AtomicBool::new(false)),
-                options(),
-                &watch
-            )
-            .unwrap()
-            .complete
-        );
+        assert!(watch.checkpoint());
         assert!(watch.dirty.lock().unwrap().clean());
         assert!(std::process::Command::new("attrib")
             .arg("+h")
@@ -891,6 +1035,7 @@ mod native_tests {
         mutated: AtomicBool,
         watch: Arc<RootWatch>,
         move_sub: bool,
+        delete_root: bool,
     }
     impl DirSource for BurstSource {
         type Dir = MarkedDir;
@@ -904,6 +1049,10 @@ mod native_tests {
             self.native.is_refs(&dir.native)
         }
         fn open_root(&self, path: &Path) -> Result<(MarkedDir, OpenedIdentity), SourceError> {
+            if self.delete_root && !self.mutated.swap(true, Ordering::AcqRel) {
+                std::fs::remove_dir(path).unwrap();
+                assert!(!self.watch.checkpoint());
+            }
             let (native, id) = self.native.open_root(path)?;
             Ok((
                 MarkedDir {
@@ -1000,6 +1149,7 @@ mod native_tests {
                 mutated: AtomicBool::new(false),
                 watch: watch.clone(),
                 move_sub,
+                delete_root: false,
             };
             let report = run_watched(
                 &source,
@@ -1047,11 +1197,14 @@ mod native_tests {
             );
             assert!(sink.memory.sweep_allowed(root.root_id()));
             assert!(!sink.memory.is_repairing(root.root_id()));
-            // Notifications between runs keep catalogue coverage visibly stale.
+            // Completed coverage is historical; between-run changes are unknown.
+            let epoch = watch.dirty.lock().unwrap().epoch;
             std::fs::write(tree.path().join("a/idle-change"), b"idle").unwrap();
-            assert!(watch.checkpoint());
-            assert!(sink.memory.is_repairing(root.root_id()));
-            assert!(!sink.memory.sweep_allowed(root.root_id()));
+            assert!(watch.dirty.lock().unwrap().stopped);
+            assert!(watch.native.checkpoint().is_err());
+            assert_eq!(watch.dirty.lock().unwrap().epoch, epoch);
+            assert!(!sink.memory.is_repairing(root.root_id()));
+            assert!(sink.memory.sweep_allowed(root.root_id()));
             drop(source);
             watch.stop();
         }

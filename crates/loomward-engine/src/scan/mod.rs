@@ -138,7 +138,7 @@ impl Engine {
     pub fn scan_start(&self, root: &GrantedRoot, budget: Option<ScanBudget>) -> EngineResult<Job> {
         self.start_scan(root, budget, RunScope::FullRoot)
     }
-    /// Reconcile accumulated watcher hints, falling back to a full relist on lost coverage.
+    /// Refresh with a full baseline and reconcile hints collected during this scan only.
     pub fn scan_refresh(
         &self,
         root: &GrantedRoot,
@@ -204,34 +204,23 @@ impl Engine {
                     .unwrap()
                     .get(root.root_id())
                     .cloned();
-                let healthy = if let Some(watch) = &existing {
-                    watch.validate(&root)?;
-                    watch.healthy()
-                } else {
-                    false
-                };
-                let watch = if healthy {
-                    existing.unwrap()
-                } else {
-                    if let Some(watch) = existing {
-                        watch.stop();
-                    }
-                    let watch = watch::RootWatch::start(&root, sink.clone())?;
-                    let replaced = self
-                        .scan_watches
-                        .lock()
-                        .unwrap()
-                        .insert(root.root_id().clone(), watch.clone());
-                    drop(replaced);
-                    watch
-                };
-                watch.validate(&root)?;
+                if let Some(watch) = existing {
+                    watch.stop();
+                }
+                let watch = watch::RootWatch::start(&root, sink.clone())?;
+                let replaced = self
+                    .scan_watches
+                    .lock()
+                    .unwrap()
+                    .insert(root.root_id().clone(), watch.clone());
+                drop(replaced);
                 watch
             };
             let io = source::native_cancel();
             let interrupt = io.clone();
             let root_id = root.root_id().clone();
             let workers = std::sync::Mutex::new(Some(worker_permit));
+            let submit_watch = watch.clone();
             let runner: crate::jobs::JobRunner = Arc::new(move |ctx, _| {
                 let _workers = workers
                     .lock()
@@ -256,12 +245,16 @@ impl Engine {
                     loomward_protocol::CoverageState::Partial
                 })
             });
-            self.jobs.submit(
+            let job = self.jobs.submit(
                 crate::jobs::JobSpec::new(JobKind::Scan, Some(root_id)),
                 runner,
                 self.events.clone(),
                 Some(Arc::new(move || interrupt.cancel())),
-            )
+            );
+            if job.is_err() {
+                submit_watch.stop();
+            }
+            job
         }
         #[cfg(not(windows))]
         {

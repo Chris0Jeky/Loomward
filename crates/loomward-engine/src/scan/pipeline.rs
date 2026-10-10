@@ -53,6 +53,7 @@ pub struct ScanReport {
     /// Final root totals (allocation can remain unknown).
     pub totals: Sums,
     /// Every traversed listing reached native EOF, no errors or limits occurred.
+    /// Coverage describes this run's observations; changes after its final drain are unknown.
     pub complete: bool,
     /// Least capable actual strategy observed across this traversal.
     pub strategy: Strategy,

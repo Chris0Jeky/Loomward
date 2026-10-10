@@ -146,7 +146,7 @@ pub trait ScanSink: Send + Sync {
     fn resolve_watch_directory(&self, _root: &RootId, _path: &[Vec<u16>]) -> Option<u64> {
         None
     }
-    /// Mark watched coverage stale without changing in-flight listing revisions.
+    /// Mark coverage dirty during an armed scan without changing in-flight listing revisions.
     /// Durable adapters must implement this before enabling native watchers.
     fn watch_dirty(&self, _root: &RootId) -> EngineResult<()> {
         Err(EngineError::unavailable(crate::Component::Scan))

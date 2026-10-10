@@ -1,5 +1,8 @@
 # L16 change tracking receipt
 
+Current result: the 2026-10-10 #184 Part 2 addendum below scopes watches to each scan and
+passes the requested local gates. Earlier receipts retain their historical behavior and failures.
+
 Measured 2026-10-10 on Windows, non-elevated native fixture runs, in
 the `lw-l16` worktree, branch `feat/l16-change-tracking`, starting HEAD
 `06750477fafb431afd0330fc721bb0bb2fb8c265`. The implementation was handed to the driver as a working-tree
@@ -132,6 +135,9 @@ instantaneous filesystem snapshots or durable catalogue crash consistency.
 
 ## 2026-10-10 - scan.start gates (#184)
 
+The following Part 1 measurements are historical; Part 2 below supersedes the unresolved
+ancestor-rename and stalled-consumer outcomes. The earlier failures remain evidence.
+
 Measured on Windows, non-elevated, synthetic disposable fixtures, on a shared host with other
 CPU/disk lanes running. Working-tree changes on `fix/l16-scan-start-gates`, base HEAD
 `42a346a5c23b75fc0b263bd11fcfb7f5afd2588c`. No commit or push was made.
@@ -262,3 +268,136 @@ startup, not a simultaneous revoke/health race. Checkpoint starvation under cont
 the already reported grant-revocation/start race remain #184 follow-ups. Runs still bound entry
 counts and reconciliation passes, so continuous churn stays partial. No file/process executor,
 new network request, install, elevation, release or scan-start endpoint was added.
+
+### Part 2 - scan-scoped watch lifetime and stalled-consumer condition
+
+Measured 2026-10-10 on Windows, non-elevated, on NTFS, with synthetic disposable fixtures.
+All timings are **shared-host** timings; other lanes share CPU and disk. Starting HEAD is
+`097035306a262eccddb600d7f13df05c05472f4f`, after `9363059`, on
+`fix/l16-scan-start-gates`. Changes remain uncommitted; no push was made.
+
+**Lifetime decision:** arm before enumeration, retain the watch through reconciliation and
+the final post-publication drain, then stop and join it on every exit. Persistent watching
+between scans was an extension, not required by docs/41 section 7 item 10. NTFS list-access
+handles block ancestor renames despite delete sharing, so this extension interfered with the
+owner's files. A future per-grant opt-in could revisit the decision; this implementation has none.
+
+#### Changed / per-item status
+
+| Requested item | Result and code | Discriminating tests |
+| --- | --- | --- |
+| 1. Arm and stop | DONE. `crates/loomward-engine/src/scan/watch.rs:348` installs an exit guard before validation; it stops/joins on complete, partial, cancelled, failed and unwinding exits. Reconciliation still owns publication and final draining before return. `scan/mod.rs:254` also stops on failed job submission. Revocation remains immediate (`scan/mod.rs:278`); `src/lib.rs:96` explicitly stops watches on engine teardown even when a runner retains an Arc. | `completed_scan_releases_pins_and_refreshes_full_baseline`; `complete_partial_cancelled_and_failed_scans_release_watch`; `engine_teardown_stops_watch_with_an_outstanding_runner_reference`; retained `revocation_stops_native_io_and_late_hints_cannot_reactivate_it`. |
+| 2. Honest freshness | DONE. Native and dispatcher threads join in `scan/watch.rs:229`; no idle sink invalidation survives. A stopped checkpoint returns without manufacturing failed coverage (`:198`). Sink/report comments (`scan/sink.rs:149`, `scan/pipeline.rs:56`) describe run observations rather than live tracking. | The completed-scan test observes unchanged one-file totals after an idle creation, then two files after refresh. `armed_before_scan_burst_reconciles_names_moves_and_sums_like_a_fresh_scan` asserts a stopped native channel, unchanged dirty epoch and no idle repair transition. |
+| 3. Full baseline | DONE. `scan/mod.rs:210` starts a fresh watch every time; stopped history is never reused. `scan/watch.rs:394` retains FullRoot as the first pass. `MAX_RELISTS = 4` and aggregate entry bounds are unchanged. | `completed_scan_releases_pins_and_refreshes_full_baseline` checks both start and refresh scopes and discovers the between-run file. Both unsettled-full-pass tests and the native burst oracle still pass. |
+| 4. Native lifecycle regressions | DONE. The former armed-parent-rename test is rewritten at engine level (`scan/watch.rs:760`) so the real rename occurs after the completed job, before stopped-state assertions. Parent rename, sibling deletion and eventual root removal succeed. The fake-source root-open hook (`:1051`) deletes the root after the scan coordinator has started, while the watch is armed, then asserts failed checkpoint/RootDirty/native failure. Attribute coverage is checked while armed (`:936`), rather than implying an idle watcher. | `completed_scan_releases_pins_and_refreshes_full_baseline`; `complete_partial_cancelled_and_failed_scans_release_watch`; `native_attribute_change_during_armed_scan_hints_parent`; retained `armed_watch_allows_root_delete_and_fails_closed`, identity-refusal and revocation tests. Elevated-host branches assert refusal instead of claiming a native run. |
+| 5. Stalled-consumer timeout | DONE. `crates/loomward-windows/src/watch.rs:485` waits for the producer's release condition, not a timer started before generation. `:493` places the release sender after the watcher in drop order: producer unwinding disconnects the callback before watcher join. Remaining readiness/observation deadlines and the 10,000-create overflow assertion are unchanged. | `stalled_native_consumer_reports_real_overflow`: 20/20 dedicated repetitions, plus 10/10 native-suite repetitions; controlled slow-generation experiment below. |
+
+The UI can say **"Coverage as of the last completed scan; changes since then are unknown."**
+A partial/cancelled/failed run must retain its partial/cancelled/repairing disclosure. Complete
+means this run reconciled its observed window, not a live guarantee or an instantaneous snapshot.
+No wire fields, schemas or contracts were changed. No UI implementation or disclosure was tested.
+
+#### Verified gates
+
+These exact commands ran against the final Rust changes, without skipping or weakening tests.
+Wall times include Cargo/test execution and are shared-host observations, not performance claims.
+
+| Command | Result | Shared-host wall time |
+| --- | --- | --- |
+| `cargo fmt --all --check` | PASS, exit 0 | 0.77 s |
+| `cargo test --workspace` | PASS, exit 0; 347 passed, 0 failed, 0 ignored | 43.22 s |
+| `cargo test -p loomward-windows -p loomward-engine --all-features` | PASS, exit 0; 129 passed, 0 failed, 0 ignored | 16.56 s |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | PASS, exit 0 | 4.99 s |
+| `git diff --check` | PASS, exit 0; repeated after this receipt edit | 1.38 s before receipt edit |
+
+The first run of the new terminal-outcome test incorrectly expected cancellation to return a
+partial report; the actual API returned `EngineError::Cancelled`. The assertion was corrected to
+pin that existing cancellation behavior. The final test and all gates passed.
+
+#### Ten native watch-suite repetitions
+
+Each command ran ten times, on the final Rust source:
+
+- `cargo test -p loomward-engine --all-features --lib scan::watch::native_tests:: -- --nocapture`
+- `cargo test -p loomward-windows --all-features --lib watch::native::tests:: -- --nocapture`
+
+Engine: **10/10 suite passes, 100 case passes** (10 cases per run).
+Windows: **10/10 suite passes, 60 case passes** (6 cases per run).
+Aggregate: **160 case passes, 0 failures**. Both subtree variants of the burst oracle, the
+post-publication mutation, root deletion, attributes, identity refusal, revocation and lifecycle
+release checks passed in every relevant repetition. Native execution, rather than the elevated
+refusal branches, ran on this host.
+
+#### Stalled-consumer diagnosis and twenty repetitions
+
+The earlier failing gate records callback `Timeout`, followed by producer `SendError`. The
+callback's ten-second deadline began before the producer generated 10,000 files; the release
+send could not happen until generation finished. Thus the fixture could expire precisely while
+it was deliberately stalled. The old timer measured producer progress, not watcher failure.
+
+Discriminating experiment: temporarily insert an eleven-second pause into generation, identically
+in the fixed and old-wait versions. The fixed condition wait passed with generation **14,062.978 ms**;
+restoring only the original ten-second wait reproduced callback `Timeout` and producer `SendError`
+(exit 101). Restoring the condition wait passed with generation **13,911.495 ms**. The injected
+pause was removed, source bytes were restored, and the unmodified fixture passed again.
+This proves the premature-deadline mechanism. The precise disk/scheduler bottleneck in the earlier
+gate was not instrumented and remains unknown; no flaky classification or timeout increase is used.
+
+Dedicated command, run twenty times:
+
+`cargo test -p loomward-windows --all-features --lib stalled_native_consumer_reports_real_overflow -- --nocapture`
+
+**20/20 passes**, each producing a real root invalidation after 10,000 creates. Shared-host
+generation min / median / max: **2,131.820 / 2,415.084 / 3,336.610 ms**.
+Detection since burst start min / median / max: **2,167.226 / 2,447.978 / 3,373.869 ms**.
+These include deliberate consumer stalling and fixture generation; they are not overflow
+thresholds or kernel-event latency estimates. The native-suite repetitions add ten further
+passes of this fixture; the dedicated pass count remains 20/20.
+
+#### Mutation results
+
+Each final mutation passed first, failed at a runtime test assertion after removing only its
+fix, and passed after restoration: **7/7 final discriminating checks**, no compilation-failure
+substitutes. The parent-rename mutation failed at the real filesystem rename with Win32 error 5.
+
+| Fix removed | Test | Green / removed / restored exits |
+| --- | --- | --- |
+| Run exit stop guard | `completed_scan_releases_pins_and_refreshes_full_baseline` | 0 / 101 / 0 |
+| Run exit stop guard | `complete_partial_cancelled_and_failed_scans_release_watch` | 0 / 101 / 0 |
+| Run exit stop guard | `armed_before_scan_burst_reconciles_names_moves_and_sums_like_a_fresh_scan` | 0 / 101 / 0 |
+| Engine teardown stop | `engine_teardown_stops_watch_with_an_outstanding_runner_reference` | 0 / 101 / 0 |
+| Native failed flag | `complete_partial_cancelled_and_failed_scans_release_watch` | 0 / 101 / 0 |
+| Attribute filter | `native_attribute_change_during_armed_scan_hints_parent` | 0 / 101 / 0 |
+| Condition release wait, with identical slow-generation injection | `stalled_native_consumer_reports_real_overflow` | 0 / 101 / 0 |
+
+The first native-failed-flag mutation survived the engine-only assertion: a disconnected checkpoint
+already made the engine fail closed. The test was strengthened to assert the native flag as well;
+its final mutation failed. All temporary mutations and injected delays were restored.
+
+#### Driver handoff
+
+Recommended commit messages:
+
+- `Scope native watches to each scan`
+- `Wait for stalled-consumer fixture generation to finish`
+
+Raw gate, repetition and mutation logs/scripts remain gitignored under `.loomward/l16g2-proof/`.
+They contain local diagnostic context and are not publication artifacts. The evidence addendum and
+Rust changes are ready for the driver's review and commit; this worker made no commit or push.
+The requested MEDIUM-2 lifetime and timeout repairs are locally proved. This receipt does not enable
+a scan-start endpoint or settle other #184 follow-ups.
+
+#### NOT verified / residual risk
+
+No hosted CI, Linux run, elevated-host execution, durable catalogue/L8 integration, UI disclosure,
+real personal roots, cloud-placeholder hydration, ACL mutation, sustained scale or reboot/restart
+experiment was run here. Job-thread creation failure cleanup and the exit guard's panic-unwind
+path are implemented but were not fault-injected. Engine teardown was tested with an outstanding
+runner reference, not a blocked enumeration syscall. The earlier grant-revocation/start race and
+checkpoint starvation under continuous churn remain separate #184 follow-ups.
+
+While a scan is actively armed, NTFS ancestor rename can still be blocked by its list-access
+handle. Pins are released before terminal job publication, which the real parent-rename test
+proves. Changes between scans are unknown; a new explicit scan starts with full baseline coverage.
+Bounded reconciliation under continuous churn can remain partial. No persistent watch, executor,
+new network request, installation, elevation, release or real-root scan was introduced.
