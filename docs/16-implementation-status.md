@@ -66,17 +66,17 @@ runs Python 3.11/3.13 and the Rust workspace on ubuntu and windows.
 | `loomward-lab` | deterministic synthetic scale trees and the enumeration spike: 3M files in 0.558 s warm (#111); hardened real-root guards (#118) | `docs/research/enumeration-spike.md`, `docs/research/real-folder-stress.md` |
 | `loomward-learn` | the student model in Rust with exact Python parity (#113) | `crates/loomward-learn/tests/parity.rs` |
 | `loomward-protocol` | v3 envelopes with complete per-command validation and duplicate-key refusal; `ViewService` trait (#133) | `crates/loomward-protocol/tests/` |
-| `loomward-engine` | C2 skeleton: each lane's entry points answer `capability_unavailable` until it lands (#140) | `crates/loomward-engine/tests/smoke.rs` |
+| `loomward-engine` | C2 skeleton (#140); native scan pipeline: strategy chain, handle-relative no-recall opens, junction-refusing root walk, staged sink with revision fences, jobs, events (L7, #162); placement: antichain candidates, verified relief, planner parity (L12, #158); lease-driven read-only telemetry (L11b, #161) | `evidence/v3/scan-l7.md`, `evidence/v3/placement-engine-l12.md`, `evidence/v3/telemetry-engine.md` |
 | `loomward-http` | `loomward-serve`, the loopback HTTP + SSE adapter: token, Host and Origin checks, bounded bodies, static files that cannot escape; synthetic fixtures until L8 (#143) | `crates/loomward-http/tests/serve.rs` |
 | Change tracking (spike) | non-elevated: watcher overflow arrives as zero-byte completions; unprivileged USN catch-up works through directory handles but strips names (#138) | `docs/research/change-tracking.md` |
-| `app/` | Svelte 5 app: shell (#114), Explorer/Tiers/Companion/Health (#119), Atlas and Observatory over bounded slices (#136) | `evidence/v3/app-views/` |
+| `app/` | Svelte 5 app: shell (#114), Explorer/Tiers/Companion/Health (#119), Atlas and Observatory over bounded slices (#136, #155), contract conformance (#149), WCAG 2.2 AA fixes with an `--a11y` leg (L18, #168) | `evidence/v3/app-views/` |
+| `native/` | first Tauri 2 desktop shell: `lw_call` and `lw_events` only, CSP, Rust-only dialogs, `--self-test`; WebView2 probe 13/13, Atlas P9 17.5 ms (L9, #164) | `evidence/v3/native/` |
 | `app/prototype` | woven atlas + Observatory signature prototype on synthetic data (#112) | `evidence/v3/ui-prototype/` |
 
-Rust: 155 tests on Windows (core 30, engine 4, http 30, lab 14, learn 8, protocol 35, telemetry 24, windows 10).
+Rust: 240 tests on Windows (core 30, engine 61, http 30, lab 22, learn 8, protocol 35, telemetry 25, windows 29), plus the desktop shell's 7; app: 154 vitest plus Playwright e2e and `--a11y`; Python: 216.
 
-In review or in flight on 10 October 2026: the SQLite catalogue on revision 2 with the #117 errata (#147; P4 is
-15.5k rows/s against 250k, tracked in #148), the scan pipeline (L7), placement (L12), engine telemetry (L11b),
-app contract conformance (#149).
+Measured: M-tier scan 1M files at about 4.9M files/s warm with 20/20 exact manifest matches (#162); telemetry P13 idle 0% CPU and 0.94 MiB commit, P12 lease overhead 3.1% of a core against 1% (#160).
 
-Not established: the scan engine, the view service, the desktop shell, cold-cache or HDD timings, a WinDirStat
-comparison, a connected teacher. No file or process effect exists.
+In review or in flight on 10 October 2026 (afternoon): the SQLite catalogue (#147, parked after two review rounds; a superseding durability fix for #171 is in progress; P4 is about 16k rows/s against 250k, #148), the service (L8, after the catalogue), engine telemetry follow-ups (#160, #163), and the L15b teacher sandbox spike.
+
+Not established: the view service, a persistent native catalogue on main, cold-cache or HDD timings, a WinDirStat comparison, a connected teacher. No file or process effect exists.
