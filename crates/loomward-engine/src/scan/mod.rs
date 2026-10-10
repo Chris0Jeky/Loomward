@@ -4,7 +4,7 @@ pub mod sink;
 pub mod source;
 #[cfg(test)]
 mod tests;
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 pub mod watch;
 use crate::{Component, Engine, EngineError, EngineResult};
 use loomward_protocol::{DatasetClass, Job, JobId, JobKind, RootId, ScanBudget};
@@ -138,7 +138,7 @@ impl Engine {
     pub fn scan_start(&self, root: &GrantedRoot, budget: Option<ScanBudget>) -> EngineResult<Job> {
         self.start_scan(root, budget, RunScope::FullRoot)
     }
-    /// Reconcile accumulated watcher hints, falling back to a full relist on lost coverage.
+    /// Refresh with a full baseline and reconcile hints collected during this scan only.
     pub fn scan_refresh(
         &self,
         root: &GrantedRoot,
@@ -198,27 +198,29 @@ impl Engine {
         #[cfg(windows)]
         {
             let watch = {
-                let mut watches = self.scan_watches.lock().unwrap();
-                if let Some(watch) = watches.get(root.root_id()) {
-                    watch.validate(&root)?;
-                    if !watch.healthy() {
-                        watches.remove(root.root_id()).unwrap().stop();
-                    }
+                let existing = self
+                    .scan_watches
+                    .lock()
+                    .unwrap()
+                    .get(root.root_id())
+                    .cloned();
+                if let Some(watch) = existing {
+                    watch.stop();
                 }
-                if !watches.contains_key(root.root_id()) {
-                    watches.insert(
-                        root.root_id().clone(),
-                        watch::RootWatch::start(&root, sink.clone())?,
-                    );
-                }
-                let watch = watches[root.root_id()].clone();
-                watch.validate(&root)?;
+                let watch = watch::RootWatch::start(&root, sink.clone())?;
+                let replaced = self
+                    .scan_watches
+                    .lock()
+                    .unwrap()
+                    .insert(root.root_id().clone(), watch.clone());
+                drop(replaced);
                 watch
             };
             let io = source::native_cancel();
             let interrupt = io.clone();
             let root_id = root.root_id().clone();
             let workers = std::sync::Mutex::new(Some(worker_permit));
+            let submit_watch = watch.clone();
             let runner: crate::jobs::JobRunner = Arc::new(move |ctx, _| {
                 let _workers = workers
                     .lock()
@@ -243,12 +245,16 @@ impl Engine {
                     loomward_protocol::CoverageState::Partial
                 })
             });
-            self.jobs.submit(
+            let job = self.jobs.submit(
                 crate::jobs::JobSpec::new(JobKind::Scan, Some(root_id)),
                 runner,
                 self.events.clone(),
                 Some(Arc::new(move || interrupt.cancel())),
-            )
+            );
+            if job.is_err() {
+                submit_watch.stop();
+            }
+            job
         }
         #[cfg(not(windows))]
         {
@@ -268,8 +274,11 @@ impl Engine {
     /// Cancel all active scan jobs for a revoked root. Commit revocation before calling this.
     pub fn scan_cancel_root(&self, root: &RootId) -> EngineResult<Vec<Job>> {
         #[cfg(windows)]
-        if let Some(watch) = self.scan_watches.lock().unwrap().remove(root) {
-            watch.stop();
+        {
+            let watch = self.scan_watches.lock().unwrap().remove(root);
+            if let Some(watch) = watch {
+                watch.stop();
+            }
         }
         self.jobs
             .root_jobs(root)
