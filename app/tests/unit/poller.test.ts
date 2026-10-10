@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Client } from '../../src/lib/transport/client';
 import { createMockTransport } from '../../src/lib/transport/mock';
 import { Poller } from '../../src/views/observatory/poller';
-import type { TelemetrySample } from '../../src/lib/types.views';
+import type { TelemetrySample } from '../../src/lib/contracts.gen';
 
 const now = () => new Date('2026-10-01T00:00:00Z');
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import re
 import subprocess
 from types import SimpleNamespace
 import sys
@@ -32,6 +33,7 @@ from test_app_views import run_views
 
 ROOT = Path(__file__).resolve().parents[1]
 TOKEN = 'a1b2c3d4e5f60718293a4b5c6d7e8f90'
+EPOCH = 'e_fake_epoch'
 HOSTILE = '<img src=x onerror=alert(1)>.png'
 MIME = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json'}
 
@@ -44,13 +46,14 @@ class Engine:
         self.tokens_seen: set[str] = set()
         self.dataset = 'personal'
         self.calls: list[str] = []
+        self.resume_ids: list[str] = []  # Last-Event-ID of every event-stream request
 
 
 def envelope(req: dict, result=None, error=None) -> dict:
     base = {'protocol': 'loomward/3', 'request_id': req['request_id']}
     if error:
         return {**base, 'ok': False, 'error': {'code': error, 'message': f"fake engine: {req['command']} not implemented", 'retryable': False, 'detail': None}}
-    return {**base, 'ok': True, 'result': result, 'meta': {'served_at': '2026-10-01T00:00:00Z', 'elapsed_ms': 0, 'dataset_class': engine.dataset, 'budget_hit': False}}
+    return {**base, 'ok': True, 'result': result, 'meta': {'served_at': '2026-10-01T00:00:00Z', 'elapsed_ms': 0, 'dataset_class': engine.dataset, 'budget_hit': False, 'catalog_rev': None, 'state_rev': None}}
 
 
 def fake_result(command: str):
@@ -101,6 +104,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         path = urlsplit(self.path).path
         if path == '/api/v3/events':
+            if 'Last-Event-ID' in self.headers:
+                engine.resume_ids.append(self.headers['Last-Event-ID'])
             if engine.down:
                 return self._send(503, b'{}', 'application/json')
             if not self._authorised():
@@ -110,7 +115,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('Cache-Control', 'no-store')
             self.end_headers()
             try:
-                self.wfile.write(b'id: 0\nevent: stream.hello\ndata: ' + json.dumps({'protocol': 'loomward/3', 'seq': 0, 'event': 'stream.hello', 'at': '2026-10-01T00:00:00Z', 'data': {}}).encode() + b'\n\n')
+                hello = {'protocol': 'loomward/3', 'epoch': EPOCH, 'seq': 0, 'event': 'stream.hello', 'at': '2026-10-01T00:00:00Z', 'catalog_rev': None, 'state_rev': None,
+                         'data': {'session_started_at': '2026-10-01T00:00:00Z', 'epoch': EPOCH, 'last_seq': 0, 'oldest_replayable_seq': 1, 'dataset_class': engine.dataset}}
+                self.wfile.write(f'id: {EPOCH}.0\nevent: stream.hello\ndata: '.encode() + json.dumps(hello).encode() + b'\n\n')
                 self.wfile.flush()
                 while not engine.down:
                     self.wfile.write(b': heartbeat\n\n')
@@ -398,6 +405,8 @@ def main() -> None:
         expect(page.get_by_role('status', name='Session status')).to_contain_text('Connected', timeout=20000)
         expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
         print('PASS drop to unavailable and recover')
+        # the reconnect resumes with the full frame id `<epoch>.<seq>`; a bare seq makes the real service answer epoch_changed
+        check(bool(engine.resume_ids) and all(re.fullmatch(rf'{EPOCH}\.\d+', i) for i in engine.resume_ids), f'the event stream resumes with the epoch-qualified id: {engine.resume_ids[:2]}')
 
         # --- product views (lane L13): Explorer, Tiers, Companion, Grants & health ------------------
         run_views(page, base, a.view_shots)

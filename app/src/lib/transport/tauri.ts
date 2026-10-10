@@ -1,5 +1,5 @@
-import type { EventEnvelope, RequestEnvelope, ResponseEnvelope } from '../types';
-import { asEvent, TransportError, type Transport } from './transport';
+import type { EventEnvelope, RequestEnvelope, ResponseEnvelope } from '../contracts.gen';
+import { asEvent, ResumeTracker, TransportError, type Transport } from './transport';
 
 /** The two Tauri entry points this transport needs (`@tauri-apps/api/core`); injectable for tests. */
 export interface TauriApi {
@@ -37,9 +37,9 @@ export async function createTauriTransport(api?: TauriApi, opts: TauriOptions = 
       }
     },
 
-    subscribe(onEvent, onState, lastSeq) {
+    subscribe(onEvent, onState, resume) {
       let stopped = false;
-      let lastId: number | null = lastSeq ?? null;
+      const tracker = new ResumeTracker(resume ?? null);
       let delay = BACKOFF_START_MS;
       let cancelWait: (() => void) | undefined;
 
@@ -58,13 +58,10 @@ export async function createTauriTransport(api?: TauriApi, opts: TauriOptions = 
             if (!attemptLive || stopped) return;
             beat(); // any message, even a malformed one, proves the channel is alive
             const ev = asEvent(m);
-            if (ev) {
-              lastId = ev.seq;
-              onEvent(ev);
-            }
+            if (ev && tracker.accept(ev)) onEvent(ev);
           };
           try {
-            await invoke('lw_events', { channel, lastSeq: lastId });
+            await invoke('lw_events', { channel, lastEpoch: tracker.point?.epoch ?? null, lastSeq: tracker.point?.seq ?? null });
             if (stopped) return;
             onState('open');
             delay = BACKOFF_START_MS;

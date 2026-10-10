@@ -3,7 +3,7 @@
   // Describes only: there is no effect control here, by design.
   import { formatBytes } from '../../lib/format/bytes';
   import { formatCount, formatTime } from '../../lib/format/time';
-  import type { Basis } from '../../lib/types';
+  import type { Basis } from '../../lib/contracts.gen';
   import type { NodeInfo, Palette } from '../../../viz/types.js';
   import { drawSwatch, zeroCounts } from '../../../viz/woven-treemap.js';
   import { formatApprox } from './shared.svelte';
