@@ -112,14 +112,26 @@ pub fn validate_profile_root(root: &Path, profile: &Path) -> Result<(), String> 
     Ok(())
 }
 
+/// The OS profile folder; on Windows never the environment. Elsewhere (the Linux CI leg only) `HOME`.
+fn os_profile() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        use loomward_shell::known_folders::{Folder, FolderProvider, Location, WindowsFolders};
+        match WindowsFolders.location(Folder::Profile) {
+            Location::FileSystem { current, .. } => Some(current),
+            _ => None,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME").map(PathBuf::from)
+    }
+}
+
 fn check_profile(root: &Path) -> Result<(), Refusal> {
-    use loomward_shell::known_folders::{Folder, FolderProvider, Location, WindowsFolders};
-    let Location::FileSystem { current, .. } = WindowsFolders.location(Folder::Profile) else {
-        return Err(Refusal::ProtectedProfileOrStore);
-    };
-    let profile = current
-        .canonicalize()
-        .map_err(|_| Refusal::ProtectedProfileOrStore)?;
+    let profile = os_profile()
+        .and_then(|p| p.canonicalize().ok())
+        .ok_or(Refusal::ProtectedProfileOrStore)?;
     validate_profile_root(root, &profile).map_err(|_| Refusal::ProtectedProfileOrStore)
 }
 
