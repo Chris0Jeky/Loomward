@@ -1059,6 +1059,14 @@ fn apply(
                 "UPDATE root SET active_run=NULL,state='stale' WHERE grant_id=?1",
                 [grant_id],
             )?;
+            // Link counts cover visible rows only, and this grant's rows just stopped being visible.
+            let roots: Vec<i64> = conn
+                .prepare("SELECT id FROM root WHERE grant_id=?1")?
+                .query_map([grant_id], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            for root in roots {
+                rebuild_multilink(conn, root)?;
+            }
             Ok(WriteReply::Done)
         }
         WriteCommand::Repair { root_id } => {

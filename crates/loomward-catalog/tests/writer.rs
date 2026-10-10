@@ -1701,6 +1701,84 @@ fn rejected_staged_listing_preserves_references(conflicting_family: bool) {
 }
 
 #[test]
+fn revoking_one_root_clears_the_other_roots_cross_root_link_flag() {
+    let (temp, c, _, root, run) = setup();
+    let w = c.writer();
+    let WriteReply::Root {
+        dir_id: other,
+        grant_id: other_grant,
+        ..
+    } = w
+        .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_key: "fixture-volume".into(),
+            display_name: "Synthetic volume".into(),
+            display_path: "Second synthetic root".into(),
+            root_file_id: Some(vec![9; 16]),
+            filesystem: Some("NTFS".into()),
+            origin: "fixture".into(),
+            granted_via: "fixture".into(),
+            observed_at_ns: 3,
+        }))
+        .unwrap()
+    else {
+        panic!()
+    };
+    let WriteReply::Run(other_run) = w
+        .call(WriteCommand::BeginRun {
+            grant_id: other_grant,
+            mode: "full".into(),
+            strategy: "fixture".into(),
+            started_at_ns: 4,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    w.call(listing(run, root, vec![identified("first", 2, 10)], vec![]))
+        .unwrap();
+    w.call(listing(
+        other_run,
+        other,
+        vec![identified("second", 2, 10)],
+        vec![],
+    ))
+    .unwrap();
+    for run_id in [run, other_run] {
+        w.call(WriteCommand::EndRun {
+            run_id,
+            state: "completed".into(),
+            finished_at_ns: 5,
+        })
+        .unwrap();
+    }
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    let first_flag = || -> i64 {
+        db.query_row(
+            "SELECT flags & ?1 FROM file WHERE name='first'",
+            [HARDLINK_SUSPECTED],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_ne!(
+        first_flag(),
+        0,
+        "a cross-root link is flagged while both roots are visible"
+    );
+    w.call(WriteCommand::RevokeGrant {
+        grant_id: other_grant,
+        revoked_at_ns: 6,
+    })
+    .unwrap();
+    assert_eq!(first_flag(), 0, "the revoked root's copy no longer counts");
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM multilink", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
 fn multilink_flags_cover_both_roots_in_either_finalisation_order_and_clear_after_removal() {
     for reverse in [false, true] {
         let (temp, c, _, root, run) = setup();
