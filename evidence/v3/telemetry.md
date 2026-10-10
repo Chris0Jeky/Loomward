@@ -1,5 +1,10 @@
 # Native telemetry lane: Windows measurement and proof
 
+> Public-data correction, 10 October 2026: workstation RAM, CPU, process-count,
+> memory-usage, disk-rate and GPU-usage observations have been removed below.
+> Historical software timing/test receipts remain; no measurements were rerun.
+> This current-tree cleanup does not remove Git history, PR diffs or cached copies.
+
 2026-10-09, Windows 11, rustc/cargo 1.97.1, non-elevated token (administrator
 membership check returned false). Lane `feat/telemetry`, base/unchanged HEAD
 `42e34e749059a93637d8f43af10dad134bc61d5f`; implementation is uncommitted for
@@ -13,22 +18,7 @@ not edited. Schema and limitations: [crate README](../../crates/loomward-telemet
 in memory and not saved; this curated receipt contains no process names, PIDs,
 executable paths or disk-instance labels. Values are one observation, not fixtures.
 
-| Measurement | Observed value |
-|---|---:|
-| Physical total | 34,064,613,376 bytes |
-| Physical available (including reclaimable pages) | 11,142,094,848 bytes |
-| System commit charge / limit / peak | 33,219,547,136 / 102,784,090,112 / 42,685,349,888 bytes |
-| System cache | 12,236,759,040 bytes |
-| Kernel paged / nonpaged | 3,311,017,984 / 2,066,493,440 bytes |
-| Page size | 4,096 bytes |
-| Active logical processors | 20 |
-| Enumerated / opened processes | 559 / 388 |
-| Access denied / partial or unknown entries | 169 / 171 |
-| Observed working sets / private commits | 388 / 388 |
-| Observed working-set sum (shared pages can repeat) | 18,778,861,568 bytes |
-| Observed private-commit sum | 19,415,982,080 bytes |
-| Displayed rows / enumeration truncation | 200 / false |
-| Standalone snapshot cost, including PDH initialization | 802.90 ms |
+Workstation state values omitted from the public receipt.
 
 The root status was partial: normal permission gaps are visible. All nine memory
 fields were observed. CPU/I/O rates and disk throughput were unknown on the first
@@ -36,9 +26,7 @@ sample. GPU adapter and process telemetry reported unsupported with reasons.
 
 A separate optimized `watch --interval-ms 1000 --count 3 --json` run cost
 **387.65, 20.76, 23.97 ms** per snapshot. Actual process windows were null,
-1.0001633 and 1.0004729 seconds. Three physical-disk instances supplied valid
-rates in the second and third samples; their last PDH window was 1.0038639
-seconds. No disk labels or per-process values are retained here.
+1.0001633 and 1.0004729 seconds. Disk rate providers supplied valid later samples; host instance counts and exact sampling windows are omitted. No disk labels or per-process values are retained here.
 
 Cost includes enumeration, queries, rate calculation, retained previous data and
 top-N projection; it excludes JSON encoding, output, process startup and compiler
@@ -123,50 +111,19 @@ and clamps to one. Shared and dedicated memory remain separate.
 `target/release/loomward-telemetry.exe snapshot --json`; sample start `2026-10-10T09:33:19.490000+00:00`.
 Raw JSON was parsed in memory, never saved. A curated aggregate-only receipt is
 in gitignored `.loomward/telemetry-v2-summary.json`; this public evidence contains
-no process names, PIDs, paths, adapter LUIDs or disk labels. Labels A/B/C below are
-anonymous within this receipt.
+no process names, PIDs, paths, adapter LUIDs or disk labels. Per-adapter observations are omitted from this public receipt.
 
-| Measurement | Observed value |
-|---|---:|
-| Physical total / available | 34,064,613,376 / 3,189,833,728 bytes |
-| System commit / limit / peak | 41,003,528,192 / 102,784,090,112 / 102,784,090,112 bytes |
-| Standby / modified / free and zero | 2,158,632,960 / 806,461,440 / 1,167,319,040 bytes |
-| Physical load fraction | 0.9 |
-| System cache / kernel paged / nonpaged | 3,263,246,336 / 4,684,939,264 / 2,207,682,560 bytes |
-| Page size / active logical CPUs | 4,096 bytes / 20 |
-| Enumerated / opened / access denied / partial processes | 591 / 419 / 171 / 172 |
-| Working sets / private commits observed | 419 / 419 |
-| Observed working-set / private-commit sums | 25,626,333,184 / 25,604,018,176 bytes |
-| Display / enumeration truncated | 200 / false |
-| Memory-list unknowns / malformed PDH occurrences | 0 / 0 |
-| Standalone snapshot cost | 414.79 ms |
+Workstation state values omitted from the public receipt.
 
 The root was partial because inaccessible processes and first-sample rates remain
 unknown. All memory-list components were observed. CPU, disk rates/busy/queue and
 GPU utilisation require two samples; their first values were null with reasons.
-GPU global memory gauges were already observed on the standalone sample:
-
-| Anonymous adapter | Dedicated used bytes | Shared used bytes | Utilisation |
-|---|---:|---:|---|
-| A | 2,965,872,640 | 1,431,605,248 | unknown: requires two samples |
-| B | 0 | 8,192 | unknown: requires two samples |
-| C | 0 | 414,687,232 | unknown: requires two samples |
+GPU global memory gauges were observed on the standalone sample; host-specific values are omitted.
 
 A separate release `watch --interval-ms 1000 --count 3 --json` cost
 **397.77, 32.99, 27.10 ms**. Process sample intervals
 were null, 1.0004286 and 1.000308 seconds.
-On the last sample, 3 physical disks had valid separate read/write,
-busy and queue counters; aggregate throughput was 20323727.45
-read bytes/s and 160840484.74 write bytes/s. Busy fractions
-ranged 0.000000..1.000000; queue lengths
-ranged 0.000000..16.431141 outstanding requests.
-System CPU busy fraction was 0.618971.
-
-| Anonymous adapter (last watch sample) | Dedicated used bytes | Shared used bytes | Engine types | Max aggregated engine fraction |
-|---|---:|---:|---:|---|
-| A | 2,977,406,976 | 1,431,605,248 | 7 | 0.026077 |
-| B | 0 | 8,192 | 1 | 0.000000 |
-| C | 0 | 414,687,232 | 6 | unknown: provider returned an unnamed engine type |
+Host-specific CPU, disk and per-adapter usage values are omitted.
 
 The unnamed engine type is represented by null plus `engine_type_unavailable`;
 its adapter's maximum stays unknown, and other adapters remain observed. No
@@ -224,11 +181,7 @@ q-6 is not yet needed. This read-only lane adds no owner action.
 Final-source smoke receipt (after adding the explicit unnamed-type field reason
 and unscaled/uncapped PDH double formatting): release rebuilt successfully;
 standalone snapshot **655.92 ms**, three-sample watch
-**445.37, 36.83, 28.41 ms**. Memory lists were
-2,046,382,080 standby / 136,511,488
-modified / 2,022,612,992 free bytes, with no unknowns.
-3 GPU adapters and 3 disks were observed; the unnamed type
-remained an explicit per-adapter unknown. Formatting uses `PDH_FMT_NOSCALE` and
+**445.37, 36.83, 28.41 ms**. Host memory values and adapter/disk counts are omitted. The unnamed type remained an explicit per-adapter unknown. Formatting uses `PDH_FMT_NOSCALE` and
 `PDH_FMT_NOCAP100`, so queue lengths above 100 and byte/rate units are retained.
 All three required workspace gates passed again on this final source. The
 aggregate-only `.loomward/telemetry-v2-final-summary.json` holds the receipt and
