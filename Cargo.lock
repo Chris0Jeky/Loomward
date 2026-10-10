@@ -680,6 +680,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "loomward-service"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "loomward-catalog",
+ "loomward-engine",
+ "loomward-protocol",
+ "loomward-telemetry",
+ "loomward-windows",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tempfile",
+]
+
+[[package]]
 name = "loomward-telemetry"
 version = "0.1.0"
 dependencies = [
