@@ -169,7 +169,8 @@ impl Desktop {
             let open = streams.entry(webview.to_string()).or_default();
             open.retain(|s| !s.done.load(Ordering::SeqCst));
             if open.len() >= MAX_STREAMS_PER_WEBVIEW {
-                open.remove(0).stop.store(true, Ordering::SeqCst);
+                open[0].stop.store(true, Ordering::SeqCst);
+                return Err("busy: at most four event streams; retry after teardown".into());
             }
             open.push(slot.clone());
         }
@@ -216,7 +217,12 @@ impl Desktop {
     /// page can never receive on its old channels). Each pump stops within [`PUMP_POLL`].
     /// Returns how many were still running.
     pub fn close_webview(&self, webview: &str) -> usize {
-        let open = self.lock().remove(webview).unwrap_or_default();
+        let mut streams = self.lock();
+        let Some(open) = streams.get_mut(webview) else {
+            return 0;
+        };
+        // Stopping is not release: a new document must still count the old pumps.
+        open.retain(|s| !s.done.load(Ordering::SeqCst));
         open.iter()
             .filter(|s| !s.stop.swap(true, Ordering::SeqCst) && !s.done.load(Ordering::SeqCst))
             .count()

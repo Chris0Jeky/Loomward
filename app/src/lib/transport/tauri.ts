@@ -66,6 +66,7 @@ export async function createTauriTransport(api?: TauriApi, opts: TauriOptions = 
                   data: { reason: 'subscriber_overflow', dropped: null, resync: ['roots', 'volumes', 'jobs', 'tree', 'learning'] } };
                 if (tracker.accept(gap)) onEvent(gap);
               }
+              tracker.accept(ev);
               lagged = true;
               return;
             }

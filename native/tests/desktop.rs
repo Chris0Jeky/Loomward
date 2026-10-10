@@ -389,11 +389,71 @@ fn calls_are_capped_and_unwinding_releases_the_permit() {
 }
 
 #[test]
+fn stream_bursts_never_replace_a_pump_before_it_releases_its_slot() {
+    use std::sync::mpsc;
+    let (service, desktop) = fixture_desktop(Duration::from_millis(30)).unwrap();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let mut releases = Vec::new();
+    for _ in 0..loomward_desktop::MAX_STREAMS_PER_WEBVIEW {
+        let (release_tx, release_rx) = mpsc::channel();
+        releases.push(release_tx);
+        let entered_tx = entered_tx.clone();
+        let mut first = true;
+        desktop
+            .open_stream("main", None, None, move |_| {
+                if first {
+                    first = false;
+                } else {
+                    entered_tx.send(()).unwrap();
+                    // Hold the live pump even after its stop flag is set.
+                    let _ = release_rx.recv();
+                }
+                true
+            })
+            .unwrap();
+    }
+    for _ in 0..4 {
+        entered_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    }
+    for i in 0..32 {
+        if i == 16 {
+            desktop.close_webview("main");
+        }
+        let opened = desktop.open_stream("main", None, None, |_| true);
+        assert_eq!(
+            service.open_streams(),
+            4,
+            "burst {i}: a live subscription exceeded the cap"
+        );
+        assert_eq!(
+            desktop.open_streams("main"),
+            4,
+            "burst {i}: a live pump lost its slot"
+        );
+        assert!(opened.unwrap_err().contains("busy"));
+    }
+    releases.remove(0).send(()).unwrap();
+    assert!(wait_until(Duration::from_secs(3), || desktop
+        .open_streams("main")
+        == 3
+        && service.open_streams() == 3));
+    desktop.open_stream("main", None, None, |_| true).unwrap();
+    assert_eq!(desktop.open_streams("main"), 4);
+    assert_eq!(service.open_streams(), 4);
+    desktop.close_webview("main");
+    drop(releases);
+    assert!(wait_until(Duration::from_secs(3), || desktop
+        .open_streams("main")
+        == 0
+        && service.open_streams() == 0));
+}
+
+#[test]
 fn fifth_stream_evicts_only_the_oldest() {
     use std::sync::mpsc;
     let (service, desktop) = fixture_desktop(Duration::from_millis(30)).unwrap();
     let mut receivers = Vec::new();
-    for _ in 0..5 {
+    for _ in 0..4 {
         let (tx, rx) = mpsc::channel();
         desktop
             .open_stream("main", None, None, move |e| tx.send(e).is_ok())
@@ -401,6 +461,20 @@ fn fifth_stream_evicts_only_the_oldest() {
         rx.recv_timeout(Duration::from_secs(1)).unwrap();
         receivers.push(rx);
     }
+    assert!(desktop
+        .open_stream("main", None, None, |_| true)
+        .unwrap_err()
+        .contains("busy"));
+    assert!(wait_until(Duration::from_secs(3), || desktop
+        .open_streams("main")
+        == 3
+        && service.open_streams() == 3));
+    let (tx, rx) = mpsc::channel();
+    desktop
+        .open_stream("main", None, None, move |e| tx.send(e).is_ok())
+        .unwrap();
+    rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    receivers.push(rx);
     assert!(wait_until(Duration::from_secs(3), || service
         .open_streams()
         == 4));

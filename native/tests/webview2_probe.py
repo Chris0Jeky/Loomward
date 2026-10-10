@@ -1,7 +1,7 @@
 """Drives the real loomward-desktop window (WebView2) over the Chrome DevTools Protocol.
 
 Usage: py -3 native/tests/webview2_probe.py [--exe native/target/debug/loomward-desktop.exe]
-                                            [--out evidence/v3/native]
+                                            [--out evidence/v3/native] [--p9-runs 5]
 
 Checks, in the shipped window and its real IPC:
   * the app loads from the embedded app/dist at http://tauri.localhost and selects the tauri transport;
@@ -10,6 +10,7 @@ Checks, in the shipped window and its real IPC:
   * the CSP is in force (an injected inline script is refused);
   * a page reload and a window close each tear the window's event streams down (the shell logs it);
   * raw IPC bounds and duplicate keys, blocked navigation/popups, production mock denial, renderer lag.
+  * P9: 2,500-node Atlas layout + first draw in a separate development fixture shell build.
 Writes webview2-probe.json, the shell's stderr (webview2-shell.log) and screenshots. The remote
 debugging port is opened only for this run, through WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS.
 """
@@ -20,6 +21,8 @@ import ctypes
 import json
 import os
 import socket
+import shutil
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -51,6 +54,72 @@ DENIED = [
     ('plugin:shell|execute', {}),
     ('lw_delete', {}),
 ]
+
+P9_MARKS = """() => ['layout', 'first-paint', 'slice-to-paint'].map((k) =>
+  performance.getEntriesByName(`loomward:atlas:${k}`).map((m) => ({ name: k, ms: m.duration, nodes: m.detail?.nodes, cells: m.detail?.cells }))).flat()"""
+
+
+def fixture_shell() -> Path:
+    """Embed development fixtures without changing app/dist or leaving a fixture production binary."""
+    fixture = ROOT / '.loomward/webview2-fixture'
+    dist = fixture / 'app'
+    subprocess.run(
+        ['npm.cmd' if os.name == 'nt' else 'npm', '--prefix', 'app', 'run', 'build', '--', '--outDir', str(dist)],
+        cwd=ROOT, env=dict(os.environ, NODE_ENV='development'), check=True,
+    )
+    build = ['cargo', 'build', '--manifest-path', 'native/Cargo.toml', '--target-dir', 'native/target']
+    # Tauri can parse a Windows drive prefix as a URL; use its config-relative directory form.
+    env = dict(os.environ, TAURI_CONFIG=json.dumps({'build': {'frontendDist': os.path.relpath(dist, ROOT / 'native')}}))
+    exe = fixture / 'loomward-desktop.exe'
+    try:
+        subprocess.run(build, cwd=ROOT, env=env, check=True)
+        shutil.copy2(ROOT / 'native/target/debug/loomward-desktop.exe', exe)
+    finally:
+        subprocess.run(build, cwd=ROOT, check=True)
+    return exe
+
+
+def connect_webview(pw, port: int):
+    for _ in range(60):
+        try:
+            return pw.chromium.connect_over_cdp(f'http://127.0.0.1:{port}')
+        except Exception:
+            time.sleep(0.5)
+    raise RuntimeError('could not reach the WebView2 DevTools endpoint')
+
+
+def p9(exe: Path, out: Path, count: int) -> dict:
+    port = free_port()
+    profile = Path(tempfile.mkdtemp(prefix='p9-profile-', dir=out))
+    env = dict(os.environ, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=f'--remote-debugging-port={port}',
+               WEBVIEW2_USER_DATA_FOLDER=str(profile.resolve()))
+    with open(out / 'webview2-p9-shell.log', 'w', encoding='utf-8') as log:
+        shell = subprocess.Popen([str(exe)], env=env, stdout=log, stderr=subprocess.STDOUT)
+        try:
+            with sync_playwright() as pw:
+                browser = connect_webview(pw, port)
+                page = next(p for c in browser.contexts for p in c.pages)
+                runs = []
+                for i in range(count):
+                    page.goto(f'http://tauri.localhost/index.html?transport=mock&run={i}#/atlas')
+                    page.wait_for_function("() => performance.getEntriesByName('loomward:atlas:slice-to-paint').length > 0", timeout=15000)
+                    assert page.locator('[data-mode=mock]').count() == 1, 'P9 requires the development fixture transport'
+                    marks = {m['name']: m for m in page.evaluate(P9_MARKS) if m['nodes'] == 2500}
+                    assert {'layout', 'first-paint', 'slice-to-paint'} <= marks.keys(), 'P9 requires all 2,500-node timing marks'
+                    runs.append({'layout_ms': marks['layout']['ms'], 'first_paint_ms': marks['first-paint']['ms'],
+                                 'layout_plus_paint_ms': marks['layout']['ms'] + marks['first-paint']['ms'],
+                                 'slice_to_paint_wall_ms': marks['slice-to-paint']['ms'], 'cells': marks['layout']['cells']})
+                page.screenshot(path=str(out / 'desktop-atlas-p9.png'))
+                result = {'nodes': 2500, 'runs': runs, 'median_layout_plus_paint_ms': statistics.median(r['layout_plus_paint_ms'] for r in runs),
+                          'budget_ms': 50, 'viewport': page.evaluate('[innerWidth, innerHeight, devicePixelRatio]')}
+                assert close_window(shell.pid), 'P9 window did not close'
+                shell.wait(timeout=20)
+                assert shell.returncode == 0, 'P9 shell did not exit cleanly'
+                return result
+        finally:
+            if shell.poll() is None:
+                shell.kill()
+                shell.wait(timeout=20)
 
 def free_port() -> int:
     with socket.socket() as s:
@@ -85,7 +154,10 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--exe', type=Path, default=ROOT / 'native/target/debug/loomward-desktop.exe')
     ap.add_argument('--out', type=Path, default=ROOT / 'evidence/v3/native')
+    ap.add_argument('--p9-runs', type=int, default=5)
     a = ap.parse_args()
+    if a.p9_runs < 1:
+        ap.error('--p9-runs must be positive')
     a.out.mkdir(parents=True, exist_ok=True)
     port = free_port()
     # Each run owns its profile: debug options must not collide with another WebView2 environment.
@@ -106,15 +178,7 @@ def main() -> int:
         shell = subprocess.Popen([str(a.exe)], env=env, stdout=log, stderr=subprocess.STDOUT)
         try:
             with sync_playwright() as pw:
-                browser = None
-                for _ in range(60):
-                    try:
-                        browser = pw.chromium.connect_over_cdp(f'http://127.0.0.1:{port}')
-                        break
-                    except Exception:
-                        time.sleep(0.5)
-                if browser is None:
-                    raise SystemExit('could not reach the WebView2 DevTools endpoint')
+                browser = connect_webview(pw, port)
                 results['webview2'] = browser.version
                 page = next(p for c in browser.contexts for p in c.pages)
                 page.wait_for_load_state('load')
@@ -219,6 +283,12 @@ def main() -> int:
     text = log_path.read_text(encoding='utf-8')
     check(text.count('window close: closed') > before, 'window close tears down the open streams')
     results['shell_log'] = text.splitlines()
+    try:
+        results['p9'] = p9(fixture_shell(), a.out, a.p9_runs)
+        med = results['p9']['median_layout_plus_paint_ms']
+        check(med <= 50, 'P9 layout + first draw of 2,500 nodes within 50 ms in WebView2 (median)', median_ms=round(med, 2))
+    except Exception as e:
+        check(False, 'P9 development fixture measurement completed', error=type(e).__name__)
     (a.out / 'webview2-probe.json').write_text(json.dumps(results, indent=2) + '\n', encoding='utf-8')
     print(f'{len(results["checks"]) - failed}/{len(results["checks"])} passed')
     return 1 if failed else 0

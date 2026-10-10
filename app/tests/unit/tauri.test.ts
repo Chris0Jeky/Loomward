@@ -98,6 +98,23 @@ describe('tauri transport', () => {
       stop();
     });
 
+    it('resumes after every discarded stale event without replaying the collapsed backlog', async () => {
+      const { api, channels, resumes } = mk();
+      const t = await createTauriTransport(api, { idleMs: 40, sleep: async () => {} });
+      const got: string[] = [];
+      const stop = t.subscribe((e) => got.push(e.event), () => {}, { epoch: 'e1', seq: 0 });
+      try {
+        await until(() => channels.length === 1);
+        const old = new Date(Date.now() - 10_000).toISOString();
+        for (const seq of [1, 2, 9, 3]) channels[0]!.onmessage({ ...ev(seq), at: old });
+        await until(() => channels.length === 2);
+        expect(got).toEqual(['stream.lagged']);
+        expect(resumes[1]).toEqual(['e1', 9]);
+      } finally {
+        stop();
+      }
+    });
+
     it('resumes in the new epoch after a hello and an epoch_changed lagged, without trusting the unsequenced hello inside one epoch', async () => {
       const { api, channels, resumes } = mk();
       const t = await createTauriTransport(api, { idleMs: 40, sleep: async () => {} });

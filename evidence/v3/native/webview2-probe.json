@@ -26,6 +26,22 @@
     },
     {
       "pass": true,
+      "check": "raw IPC: exact 64 KiB accepted, excess/parsed bodies/duplicates refused",
+      "exact": true,
+      "oversized": true,
+      "parsed": true,
+      "duplicate": true
+    },
+    {
+      "pass": true,
+      "check": "navigation to a remote origin is denied"
+    },
+    {
+      "pass": true,
+      "check": "new windows are denied"
+    },
+    {
+      "pass": true,
       "check": "every non-lw command is refused by the ACL",
       "refusals": {
         "plugin:event|listen": "event.listen not allowed. Permissions associated with this command: core:event:allow-listen, core:event:default",
@@ -54,8 +70,11 @@
     },
     {
       "pass": true,
-      "check": "P9 layout + first draw of 2,500 nodes within 50 ms in WebView2 (median)",
-      "median_ms": 17.5
+      "check": "production ignores the mock transport override"
+    },
+    {
+      "pass": true,
+      "check": "stalled renderer receives stream.lagged and refetch instructions"
     },
     {
       "pass": true,
@@ -73,56 +92,10 @@
   ],
   "webview2": "154.0.4258.62",
   "origin": "http://tauri.localhost",
-  "p9": {
-    "nodes": 2500,
-    "runs": [
-      {
-        "layout_ms": 18.5,
-        "first_paint_ms": 6.2,
-        "layout_plus_paint_ms": 24.7,
-        "slice_to_paint_wall_ms": 27.1,
-        "cells": 353
-      },
-      {
-        "layout_ms": 7.1,
-        "first_paint_ms": 4,
-        "layout_plus_paint_ms": 11.1,
-        "slice_to_paint_wall_ms": 12.2,
-        "cells": 353
-      },
-      {
-        "layout_ms": 9.3,
-        "first_paint_ms": 8.2,
-        "layout_plus_paint_ms": 17.5,
-        "slice_to_paint_wall_ms": 19.3,
-        "cells": 353
-      },
-      {
-        "layout_ms": 8,
-        "first_paint_ms": 4,
-        "layout_plus_paint_ms": 12,
-        "slice_to_paint_wall_ms": 13.7,
-        "cells": 353
-      },
-      {
-        "layout_ms": 12,
-        "first_paint_ms": 7.4,
-        "layout_plus_paint_ms": 19.4,
-        "slice_to_paint_wall_ms": 20.9,
-        "cells": 353
-      }
-    ],
-    "median_layout_plus_paint_ms": 17.5,
-    "budget_ms": 50,
-    "viewport": [
-      1440,
-      1000,
-      1.25
-    ]
-  },
   "shell_log": [
     "loomward-desktop: page load: closed 2 event stream(s) of webview \"main\"",
     "loomward-desktop: page load: closed 1 event stream(s) of webview \"main\"",
+    "loomward-desktop: page load: closed 2 event stream(s) of webview \"main\"",
     "loomward-desktop: window close: closed 2 event stream(s) of webview \"main\""
   ]
 }
