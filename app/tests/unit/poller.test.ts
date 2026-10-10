@@ -62,4 +62,47 @@ describe('telemetry poller', () => {
     release!();
     p.stop();
   });
+
+  it('kick(true) keeps the backoff while failing, but still polls now when healthy', async () => {
+    let calls = 0, fail = true;
+    const p = new Poller<number>({
+      call: async () => { calls++; if (fail) throw new Error('down'); return calls; },
+      onSample: () => {}, onError: () => {}, intervalMs: 1000, backoffMs: [5000],
+    });
+    p.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toBe(1);
+    expect(p.consecutiveFailures).toBe(1);
+    p.kick(true); // e.g. a stream event during a live scan: the backoff holds
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(calls).toBe(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(calls).toBe(2);
+    fail = false;
+    p.kick(); // a reconnect forgets the backoff
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toBe(3);
+    expect(p.consecutiveFailures).toBe(0);
+    p.kick(true); // healthy: polls at once
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toBe(4);
+    p.stop();
+  });
+
+  it('a throwing onError does not stop the poller', async () => {
+    let calls = 0;
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const p = new Poller<number>({
+      call: async () => { calls++; throw new Error('down'); },
+      onSample: () => {}, onError: () => { throw new Error('reporter broke'); }, intervalMs: 1000, backoffMs: [2000],
+    });
+    p.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toBe(1);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(calls).toBe(2); // the next poll was still scheduled
+    expect(quiet).toHaveBeenCalled();
+    quiet.mockRestore();
+    p.stop();
+  });
 });

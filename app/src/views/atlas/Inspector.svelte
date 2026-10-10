@@ -15,6 +15,7 @@
     basis: Basis;
     provisional: boolean;
     palette: Palette;
+    /** Every name from the top of the trail down to `node` (see pathTo). */
     path: string[];
   }
   let { node, status, basis, provisional, palette, path }: Props = $props();
@@ -64,7 +65,7 @@
       {#if src}<canvas class="swatch" bind:this={swatch} aria-hidden="true"></canvas>{/if}
       <div>
         <h2 id="insp-name"><VisibleName name={node.name} /></h2>
-        <p class="path">{#each [...path, node.name] as part, i (i)}{#if i > 0} / {/if}<VisibleName name={part} />{/each}</p>
+        <p class="path">{#each path as part, i (i)}{#if i > 0} / {/if}<VisibleName name={part} />{/each}</p>
       </div>
     </div>
 
