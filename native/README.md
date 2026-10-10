@@ -36,6 +36,16 @@ Bundling is off (`bundle.active: false`); no installer is built.
 | Self test | `native/target/debug/loomward-desktop.exe --self-test` |
 | Real WebView2: raw IPC, ACL, CSP, navigation, heartbeat, renderer lag, teardown | `py -3 native/tests/webview2_probe.py` (Playwright over CDP; writes `evidence/v3/native/`) |
 
+CI runs the build, format, test, clippy and headless self-test checks in one cached
+`windows-latest` desktop job, after building `app/dist`. It also runs the WebView2 probe over
+CDP with its default five P9 samples and writes its outputs under ignored `.loomward/ci-webview2/`.
+[Tauri documents Windows GUI automation on GitHub Actions](https://v2.tauri.app/develop/tests/webdriver/ci/):
+the probe launches a real Win32 window and closes it with `WM_CLOSE`, without human input.
+It does not use Chromium's headless mode or establish headless WebView2 support on a
+service-only runner without a desktop. The interactive disclosure test remains excluded.
+The probe also enforces the existing 50 ms P9 median budget; hosted timings do not establish
+performance on the user's machine.
+
 ## IPC surface
 
 | Command | Arguments | Returns | Notes |

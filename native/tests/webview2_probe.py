@@ -101,6 +101,8 @@ def p9(exe: Path, out: Path, count: int) -> dict:
             with sync_playwright() as pw:
                 browser = connect_webview(pw, port)
                 page = next(p for c in browser.contexts for p in c.pages)
+                # Let Tauri's initial navigation finish before replacing it with the fixture URL.
+                page.wait_for_selector('[data-mode]')
                 runs = []
                 for i in range(count):
                     page.goto(f'http://tauri.localhost/index.html?transport=mock&run={i}#/atlas')
