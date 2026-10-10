@@ -147,12 +147,12 @@
       {/if}
     </div>
     <!-- persistent status regions: text put into a region that is already in the page is announced, a region inserted already filled often is not -->
-    <p id="proc-paused" class="warn small live" class:has={table.paused} role="status">{table.paused ? (list ? `Paused: the table keeps sample ${formatCount(list.sample_seq)}.` : 'Paused before the first sample arrived.') : ''}</p>
+    <p id="proc-paused" class="warn small live" class:has={table.paused} role="status">{table.paused ? (list ? `Paused: the table keeps sample ${formatCount(list.sample_seq)}. Sorting uses retained rows only; resume updates to fetch more processes.` : 'Paused before the first sample arrived.') : ''}</p>
     {#if list}
       <p id="proc-waiting" class="muted small live" class:has={!!table.waiting} role="status">{table.waiting ? 'A newer sample is waiting; it appears when focus leaves the table, so rows do not move under it.' : ''}</p>
       <div class="tbl-wrap" bind:this={tableEl} onfocusout={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) table.release(); }}>
         <table class="tbl procs">
-          <caption class="sr-only">Top processes by {SORTS.find(([id]) => id === table.sort)?.[1]}</caption>
+          <caption class="sr-only">{table.paused ? 'Retained' : 'Top'} processes by {SORTS.find(([id]) => id === table.sort)?.[1]}</caption>
           <thead>
             <tr>
               <th scope="col">Process</th><th scope="col" class="r">Private commit</th><th scope="col" class="r">Private working set</th><th scope="col" class="r">Working set</th>
