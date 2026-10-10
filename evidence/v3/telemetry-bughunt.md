@@ -1,8 +1,8 @@
 # Telemetry bug-hunt verification
 
 10 October 2026. Branch `fix/telemetry-bughunt`, tested HEAD
-`cf27a4ec6734026d1bb3a9d0b393c7e294e4eb60` plus uncommitted changes. Platform: Windows.
-All new regression inputs are synthetic. No commit, push, PR or benchmark was performed.
+`cf27a4e` with the lane diff, measured before it was committed. Platform: Windows.
+All new regression inputs are synthetic. No benchmark was performed.
 This receipt supplements the historical [engine telemetry evidence](telemetry-engine.md).
 
 ## Changed
@@ -88,8 +88,6 @@ instances with partial native coverage, not a complete adapter inventory. The ex
 has no per-field PDH coverage/reason channel; this lane adds none. Process rows can still describe
 an exited process until the next enumeration, carrying their original observation time.
 Consumers of native totals must read `sum_unknowns` before treating a saturated sum as exact.
-
-Recommended commit messages (driver owns committing):
 
 - `Preserve telemetry samples across unchanged lease renewals`
 - `Keep valid GPU observations when malformed instances appear`
