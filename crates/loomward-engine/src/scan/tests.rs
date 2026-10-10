@@ -225,6 +225,82 @@ fn staged_pipeline_has_exact_totals_and_releases_bytes() {
     assert_eq!(sink.totals(root.root_id()), Some(report.totals));
     assert_eq!(bytes.used(), 0);
 }
+/// Records which listings were published before each child ticket was requested.
+#[derive(Default)]
+struct OrderProbe {
+    sink: MemorySink,
+    published: std::sync::Mutex<Vec<u64>>,
+    early: std::sync::Mutex<Vec<u64>>,
+}
+impl ScanSink for OrderProbe {
+    fn recover_interrupted(&self) -> crate::EngineResult<()> {
+        self.sink.recover_interrupted()
+    }
+    fn begin_run(&self, root: &RootId, run: u64, scope: &RunScope) -> crate::EngineResult<()> {
+        self.sink.begin_run(root, run, scope)
+    }
+    fn prepare_listing(
+        &self,
+        root: &RootId,
+        run: u64,
+        parent: Option<u64>,
+        name: &[u16],
+        identity: OpenedIdentity,
+    ) -> crate::EngineResult<ListingTicket> {
+        if let Some(p) = parent {
+            if !self.published.lock().unwrap().contains(&p) {
+                self.early.lock().unwrap().push(p);
+            }
+        }
+        self.sink.prepare_listing(root, run, parent, name, identity)
+    }
+    fn refresh_listing(
+        &self,
+        root: &RootId,
+        run: u64,
+        ticket: ListingTicket,
+    ) -> crate::EngineResult<ListingTicket> {
+        self.sink.refresh_listing(root, run, ticket)
+    }
+    fn consume(&self, root: &RootId, message: ScanMessage) -> crate::EngineResult<()> {
+        if let ScanMessage::ListingDone { ticket, .. } = &message {
+            self.published.lock().unwrap().push(ticket.dir);
+        }
+        self.sink.consume(root, message)
+    }
+    fn finish_run(
+        &self,
+        root: &RootId,
+        run: u64,
+        scope: &RunScope,
+        complete: bool,
+    ) -> crate::EngineResult<()> {
+        self.sink.finish_run(root, run, scope, complete)
+    }
+    fn fence_root(&self, root: &RootId) -> crate::EngineResult<()> {
+        self.sink.fence_root(root)
+    }
+}
+/// A durable writer creates child rows when the parent listing publishes, so no child ticket may
+/// be requested before its parent's ListingDone reached the writer.
+#[test]
+fn child_tickets_follow_the_parent_publication() {
+    let sink = Arc::new(OrderProbe::default());
+    let report = run_scan(
+        &Tree,
+        &root(),
+        1,
+        sink.clone(),
+        Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions::default(),
+    )
+    .unwrap();
+    assert!(report.complete);
+    assert_eq!(report.totals.dirs, 1);
+    assert_eq!(sink.published.lock().unwrap().len(), 2);
+    assert!(sink.early.lock().unwrap().is_empty());
+}
 #[test]
 fn incomplete_listing_does_not_authorize_absence() {
     let root = root();
