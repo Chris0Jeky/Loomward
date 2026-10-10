@@ -1,0 +1,12 @@
+{
+  "collections": [
+    {
+      "collection_id": "co_proj1",
+      "name": "Current projects",
+      "kind": "human",
+      "member_count": 3,
+      "logical_bytes": "144639",
+      "created_at": "2026-10-09T11:58:30Z"
+    }
+  ]
+}

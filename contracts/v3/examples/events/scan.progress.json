@@ -1,0 +1,20 @@
+{
+  "job_id": "jb_0008",
+  "root_id": "rt_synth1",
+  "progress": {
+    "phase": "enumerating",
+    "strategy": "file_id_extd_directory_info",
+    "examined": 48210,
+    "indexed_files": 41880,
+    "indexed_dirs": 6120,
+    "skipped": 12,
+    "failed": 0,
+    "logical_bytes": "9437184000",
+    "allocated_bytes": "9663676416",
+    "pending_dirs": 310,
+    "writer_queue_depth": 4,
+    "entries_per_second": 182340.5,
+    "elapsed_ms": 264,
+    "limit_hit": false
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "def": "RequestEnvelope",
+  "value": {
+    "protocol": "loomward/3",
+    "request_id": "r_000017",
+    "command": "tree.slice",
+    "payload": {
+      "anchor": {
+        "kind": "root",
+        "root_id": "rt_synth1"
+      },
+      "depth": 3,
+      "max_nodes": 2500,
+      "min_share": 0.001,
+      "basis": "allocated",
+      "include_files": false
+    },
+    "deadline_ms": 2000,
+    "expected_generation": "12"
+  }
+}

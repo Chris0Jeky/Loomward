@@ -1,0 +1,60 @@
+{
+  "model_id": "md_0001",
+  "items": [
+    {
+      "row": {
+        "node_id": "nd_0020",
+        "kind": "file",
+        "name": "report_final.docx",
+        "extension": "docx",
+        "ext_family": "document",
+        "logical_bytes": "48213",
+        "allocated_bytes": "49152",
+        "files": null,
+        "dirs": null,
+        "modified_at": "2026-10-09T11:58:30Z",
+        "attributes": [
+          "archive"
+        ],
+        "flags": [],
+        "coverage": "complete",
+        "location_hint": null
+      },
+      "suggestion": {
+        "node_id": "nd_0020",
+        "model_id": "md_0001",
+        "ranked": [
+          {
+            "label": "Project",
+            "score": 0.62
+          },
+          {
+            "label": "Archive",
+            "score": 0.21
+          }
+        ],
+        "abstain": false,
+        "reasons": [],
+        "feature_coverage": 0.8,
+        "review_priority": 0.4,
+        "calibrated": false,
+        "autonomy_allowed": false,
+        "teacher": {
+          "node_id": "nd_0020",
+          "label": "Project",
+          "abstain": false,
+          "reason": "Name and extension suggest a project document.",
+          "evidence": [
+            "name",
+            "extension"
+          ],
+          "data_class": "teacher",
+          "weight": 0.2,
+          "requires_review": true,
+          "autonomy_allowed": false
+        }
+      }
+    }
+  ],
+  "next_cursor": null
+}

@@ -1,0 +1,22 @@
+{
+  "def": "EventEnvelope",
+  "reason": "job.state data must be a JobResult, not a TreeInvalidated",
+  "complete": true,
+  "value": {
+    "protocol": "loomward/3",
+    "epoch": "e_k3J9x2Qa",
+    "seq": 5,
+    "event": "job.state",
+    "at": "2026-10-09T12:00:00Z",
+    "catalog_rev": "8813",
+    "state_rev": null,
+    "data": {
+      "root_id": "rt_synth1",
+      "generation": "13",
+      "scope": "nodes",
+      "node_ids": [
+        "nd_0002"
+      ]
+    }
+  }
+}

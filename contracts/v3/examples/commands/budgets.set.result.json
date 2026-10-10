@@ -1,0 +1,19 @@
+{
+  "pools": [
+    {
+      "pool": "scan_enumerate",
+      "max_workers": 8,
+      "default_workers": 8,
+      "current_workers": 4,
+      "queue_capacity": 4096,
+      "scope": "loomward_own_threads"
+    }
+  ],
+  "teacher": {
+    "max_in_flight": 1,
+    "timeout_s": 120,
+    "memory_limit_bytes": "1073741824",
+    "enforcement": "job_object"
+  },
+  "enforcement_note": "Caps Loomward's own pools; no OS priority, affinity or memory call is made."
+}

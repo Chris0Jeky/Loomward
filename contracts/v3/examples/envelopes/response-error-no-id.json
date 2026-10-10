@@ -1,0 +1,14 @@
+{
+  "def": "ResponseEnvelope",
+  "value": {
+    "protocol": "loomward/3",
+    "request_id": null,
+    "ok": false,
+    "error": {
+      "code": "invalid_request",
+      "message": "The body is not a request envelope.",
+      "retryable": false,
+      "detail": null
+    }
+  }
+}

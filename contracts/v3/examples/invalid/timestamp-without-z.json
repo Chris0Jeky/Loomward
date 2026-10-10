@@ -1,0 +1,9 @@
+{
+  "def": "RootRevokeResult",
+  "reason": "timestamps carry a literal Z",
+  "value": {
+    "root_id": "rt_synth1",
+    "revoked_at": "2026-10-09T12:00:00",
+    "purged": false
+  }
+}

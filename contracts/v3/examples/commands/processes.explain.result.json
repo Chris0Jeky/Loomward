@@ -1,0 +1,15 @@
+{
+  "process_ref": "pc_1a2b-3c4d",
+  "observed_at": "2026-10-09T12:00:00Z",
+  "facts": [
+    {
+      "code": "high_private_memory",
+      "text": "Private memory is 700 MiB."
+    }
+  ],
+  "summary": "A synthetic application using moderate memory. Loomward only observes it.",
+  "caveats": [
+    "Memory use alone does not say whether a process is needed."
+  ],
+  "available_actions": []
+}

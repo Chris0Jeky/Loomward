@@ -1,0 +1,8 @@
+{
+  "def": "BytesAndFiles",
+  "reason": "negative byte quantity",
+  "value": {
+    "bytes": "-1",
+    "files": 1
+  }
+}

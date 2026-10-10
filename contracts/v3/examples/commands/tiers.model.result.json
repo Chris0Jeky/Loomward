@@ -1,0 +1,28 @@
+{
+  "volumes": [
+    {
+      "volume_id": "vo_lab1",
+      "display_name": "Lab fast",
+      "tier": {
+        "tier": 1,
+        "basis": "declared",
+        "declared_tier": 1,
+        "hint_tier": 0,
+        "note": "Declared by the owner; the device hint says NVMe."
+      },
+      "online": true,
+      "writable": true,
+      "capacity_bytes": "1000204886016",
+      "free_bytes": "412316860416",
+      "reserve_bytes": "53687091200",
+      "free_fraction": 0.41,
+      "pressure": "ok"
+    }
+  ],
+  "policy": {
+    "watch_free_fraction": 0.2,
+    "pressure_free_fraction": 0.1,
+    "reserve_note": "The reserve keeps free space for Windows; it is never planned into.",
+    "note": "Pressure is derived from observed free space only."
+  }
+}

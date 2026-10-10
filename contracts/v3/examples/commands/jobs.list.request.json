@@ -1,0 +1,7 @@
+{
+  "kinds": [
+    "scan",
+    "refit"
+  ],
+  "limit": 10
+}

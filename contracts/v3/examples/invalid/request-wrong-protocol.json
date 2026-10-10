@@ -1,0 +1,10 @@
+{
+  "def": "RequestEnvelope",
+  "reason": "protocol must be loomward/3",
+  "value": {
+    "protocol": "loomward/2",
+    "request_id": "r_1",
+    "command": "session.hello",
+    "payload": {}
+  }
+}
