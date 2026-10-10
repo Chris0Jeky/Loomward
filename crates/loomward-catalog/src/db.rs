@@ -119,17 +119,22 @@ fn migrate(path: &Path, schema: &str, version: i64, dataset: &str, precious: boo
                 ))?;
             }
             // Legacy labels/disclosures remain in their archived tables: no invented withdrawal or grant.
-        } else {
+        } else if version == 0 {
             tx.execute_batch(schema)?;
         }
-        tx.execute(
+        if precious {
+            tx.execute_batch(include_str!("reference-publication.sql"))?;
+        }
+        if version < 2 {
+            tx.execute(
             "INSERT INTO meta(key,value) VALUES ('dataset_class',?1),('engine_version','0.3.0')",
             [dataset],
         )?;
-        tx.execute(
-            "INSERT INTO meta(key,value) VALUES ('instance_id',lower(hex(randomblob(16))))",
-            [],
-        )?;
+            tx.execute(
+                "INSERT INTO meta(key,value) VALUES ('instance_id',lower(hex(randomblob(16))))",
+                [],
+            )?;
+        }
         tx.pragma_update(None, "application_id", APPLICATION_ID)?;
         tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         tx.commit()?;
@@ -262,6 +267,7 @@ pub(crate) fn open_pair(dir: &Path, dataset: &str) -> Result<Connection> {
         [state.to_string_lossy().as_ref()],
     )?;
     conn.execute_batch("PRAGMA st.synchronous=FULL;PRAGMA st.foreign_keys=ON")?;
+    reconcile_references(&mut conn)?;
     let instance: String =
         conn.query_row("SELECT value FROM meta WHERE key='instance_id'", [], |r| {
             r.get(0)
@@ -303,6 +309,40 @@ pub(crate) fn open_pair(dir: &Path, dataset: &str) -> Result<Connection> {
     tx.commit()?;
     grant_view(&conn)?;
     Ok(conn)
+}
+/// Only state.db is written; read the publication witness before recovery changes main.
+pub(crate) fn reconcile_references(conn: &mut Connection) -> Result<()> {
+    if !conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM st.pending_reference)",
+        [],
+        |r| r.get::<_, bool>(0),
+    )? {
+        return Ok(());
+    }
+    let instance: String =
+        conn.query_row("SELECT value FROM meta WHERE key='instance_id'", [], |r| {
+            r.get(0)
+        })?;
+    let token: Option<String> = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key='reference_publication'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let tx = conn.transaction()?;
+    let changed = tx.execute("UPDATE st.object_ref AS o SET
+        state=CASE WHEN p.row_id IS NULL THEN 'unresolved' ELSE 'resolved' END,
+        retired=(p.row_id IS NULL), row_id=coalesce(p.row_id,o.row_id), born_run=coalesce(p.born_run,o.born_run)
+        FROM st.pending_reference p WHERE o.id=p.object_ref_id AND p.catalog_instance=?1 AND p.publication_token=?2",
+        rusqlite::params![instance,token])?;
+    // An unmatched token never landed: discarding the intent preserves the original binding.
+    tx.execute("DELETE FROM st.pending_reference", [])?;
+    if changed > 0 {
+        tx.execute("UPDATE st.revision SET state_rev=state_rev+1", [])?;
+    }
+    tx.commit()?;
+    Ok(())
 }
 pub(crate) fn grant_view(conn: &Connection) -> Result<()> {
     conn.execute_batch("CREATE TEMP VIEW root_grant AS SELECT r.id,r.volume_id,g.volume_key,g.display_path,g.state,g.root_file_id,g.origin,g.granted_via,g.granted_at_ns,g.revoked_at_ns FROM main.root r JOIN st.root_grant g ON g.id=r.grant_id;

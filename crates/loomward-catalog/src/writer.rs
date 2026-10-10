@@ -84,7 +84,14 @@ impl Writer {
             .name("loomward-catalog".into())
             .spawn(move || {
                 let _scratch = scratch;
-                work(conn, rx, measured, alive);
+                work(
+                    conn,
+                    rx,
+                    measured,
+                    alive,
+                    #[cfg(test)]
+                    None,
+                );
             })?;
         Ok(Self {
             tx: Some(tx),
@@ -303,11 +310,18 @@ impl Context {
         Ok(())
     }
 }
+#[cfg(test)]
+#[derive(Clone, Copy)]
+enum PublicationCrash {
+    BeforeCatalog,
+    AfterCatalog,
+}
 fn work(
     mut conn: Connection,
     rx: Receiver<Pending>,
     timings: Arc<Mutex<WriterTimings>>,
     alive: Sender<()>,
+    #[cfg(test)] crash: Option<PublicationCrash>,
 ) {
     let mut alive = Some(alive);
     let mut pending = None;
@@ -372,6 +386,10 @@ fn work(
             .iter()
             .map(|p| prepare_state(&mut conn, &p.command))
             .collect();
+        #[cfg(test)]
+        if matches!(crash, Some(PublicationCrash::BeforeCatalog)) {
+            break;
+        }
         match conn.transaction() {
             Ok(mut tx) => {
                 for (p, ready) in batch.iter().zip(prepared) {
@@ -387,6 +405,8 @@ fn work(
                         let result = apply(&save, &p.command, &mut context, prepared);
                         match result {
                             Ok(reply) => {
+                                // The witness commits atomically with the catalogue publication.
+                                save.execute("INSERT INTO meta(key,value) SELECT 'reference_publication',publication_token FROM st.pending_reference LIMIT 1 ON CONFLICT(key) DO UPDATE SET value=excluded.value", [])?;
                                 save.commit()?;
                                 Ok(reply)
                             }
@@ -415,6 +435,16 @@ fn work(
                 failed = true;
                 results.push(Err(Error::Sql(e)));
             }
+        }
+        #[cfg(test)]
+        if matches!(crash, Some(PublicationCrash::AfterCatalog)) {
+            assert!(!failed);
+            break;
+        }
+        if let Err(e) = crate::db::reconcile_references(&mut conn) {
+            failed = true;
+            results.clear();
+            results.push(Err(e));
         }
         while results.len() < batch.len() {
             results.push(Err(Error::Closed));
@@ -615,7 +645,8 @@ fn retire_selected(
         values,
     )?;
     let tx = conn.transaction()?;
-    if tx.execute("UPDATE st.object_ref SET state='unresolved',retired=1 WHERE id IN (SELECT id FROM retiring_reference)",[])?>0{state_revision(&tx)?;}
+    let token: String = tx.query_row("SELECT coalesce((SELECT publication_token FROM st.pending_reference LIMIT 1),lower(hex(randomblob(16))))", [], |r| r.get(0))?;
+    tx.execute("INSERT OR REPLACE INTO st.pending_reference(object_ref_id,catalog_instance,publication_token) SELECT id,catalog_instance,?1 FROM st.object_ref WHERE id IN (SELECT id FROM retiring_reference)", [token])?;
     tx.commit()?;
     Ok(())
 }
@@ -700,12 +731,13 @@ fn retire_files(
         }
     }
     if complete {
-        // Predict the same row matching as publication, then commit bindings before deletion.
+        // Stage the same hard-link rebind as publication, preserving the old binding until commit.
         let tx = conn.transaction()?;
-        let changed = tx.execute("UPDATE st.object_ref AS o SET row_id=(SELECT s.id FROM old_file s JOIN file f ON f.id=o.row_id WHERE s.used=1 AND s.identity=f.file_id AND s.created_ft IS f.created_ft ORDER BY s.id LIMIT 1),born_run=(SELECT f.born_run FROM file f JOIN old_file s ON s.id=f.id WHERE s.used=1 AND s.identity=o.file_id AND s.created_ft IS o.creation_ft ORDER BY s.id LIMIT 1) WHERE o.kind='file' AND o.state='resolved' AND o.catalog_instance=(SELECT value FROM meta WHERE key='instance_id') AND EXISTS(SELECT 1 FROM file f JOIN old_file x ON x.id=f.id WHERE f.id=o.row_id AND f.born_run=o.born_run AND x.used=0 AND EXISTS(SELECT 1 FROM old_file s WHERE s.used=1 AND s.identity=f.file_id AND s.created_ft IS f.created_ft))", [])?;
-        if changed > 0 {
-            state_revision(&tx)?;
-        }
+        let token: String = tx.query_row("SELECT lower(hex(randomblob(16)))", [], |r| r.get(0))?;
+        tx.execute("INSERT INTO st.pending_reference(object_ref_id,catalog_instance,publication_token,row_id,born_run) SELECT o.id,o.catalog_instance,?1,
+            (SELECT s.id FROM old_file s JOIN file f ON f.id=o.row_id WHERE s.used=1 AND s.identity=f.file_id AND s.created_ft IS f.created_ft ORDER BY s.id LIMIT 1),
+            (SELECT f.born_run FROM file f JOIN old_file s ON s.id=f.id WHERE s.used=1 AND s.identity=o.file_id AND s.created_ft IS o.creation_ft ORDER BY s.id LIMIT 1)
+            FROM st.object_ref o WHERE o.kind='file' AND o.state='resolved' AND o.catalog_instance=(SELECT value FROM meta WHERE key='instance_id') AND EXISTS(SELECT 1 FROM file f JOIN old_file x ON x.id=f.id WHERE f.id=o.row_id AND f.born_run=o.born_run AND x.used=0 AND EXISTS(SELECT 1 FROM old_file s WHERE s.used=1 AND s.identity=f.file_id AND s.created_ft IS f.created_ft))", [token])?;
         tx.commit()?;
     }
     retire_selected(conn,"WITH RECURSIVE replaced(id) AS (SELECT d.id FROM dir d JOIN continuity_entry e ON e.kind=0 AND e.identity IS d.file_id AND e.created_ft IS NOT d.created_ft AND (d.file_id IS NOT NULL OR (d.parent_id=?1 AND e.name=d.name AND e.raw IS d.name_utf16)) WHERE d.root_id=(SELECT root_id FROM dir WHERE id=?1) UNION ALL SELECT d.id FROM dir d JOIN replaced x ON d.parent_id=x.id) SELECT o.id FROM st.object_ref o JOIN file f ON f.id=o.row_id WHERE o.kind='file' AND o.state='resolved' AND f.dir_id=?1 AND o.catalog_instance=(SELECT value FROM meta WHERE key='instance_id') AND o.born_run=f.born_run AND NOT EXISTS(SELECT 1 FROM continuity_entry e WHERE e.kind=1 AND e.identity=f.file_id AND e.created_ft IS f.created_ft) AND (?2 OR EXISTS(SELECT 1 FROM continuity_entry e WHERE e.kind=1 AND ((e.name=f.name AND e.raw IS f.name_utf16) OR e.identity=f.file_id))) UNION SELECT o.id FROM st.object_ref o WHERE o.state='resolved' AND o.catalog_instance=(SELECT value FROM meta WHERE key='instance_id') AND ((o.kind='dir' AND o.row_id IN (SELECT id FROM replaced)) OR (o.kind='file' AND o.row_id IN (SELECT id FROM file WHERE dir_id IN (SELECT id FROM replaced))))",params![dir,complete])
@@ -1303,6 +1335,8 @@ pub(crate) fn rollup(conn: &Connection, root: i64, clean: bool) -> Result<()> {
     Ok(())
 }
 #[cfg(test)]
+mod publication_tests;
+#[cfg(test)]
 mod tests {
     use super::*;
     #[test]
@@ -1361,6 +1395,7 @@ mod tests {
                 rx,
                 Arc::new(Mutex::new(WriterTimings::default())),
                 alive,
+                None,
             )
         });
         root.recv().unwrap().unwrap();
