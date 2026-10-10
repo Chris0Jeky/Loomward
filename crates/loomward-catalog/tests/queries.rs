@@ -1130,3 +1130,72 @@ fn atlas_arithmetic_is_checked_and_unscanned_generations_are_null() {
         Err(Error::Invalid("aggregate byte overflow"))
     ));
 }
+
+#[test]
+fn search_sql_error_survives_exhausted_budget() {
+    let (tmp, c, grant, _, _) = setup();
+    let mut reader = c.reader().unwrap();
+    let req = SearchRequest {
+        root_id: Some(grant),
+        text: "synthetic".into(),
+        extension: None,
+        min_bytes: None,
+        kind: "file".into(),
+        limit: 10,
+        cursor: None,
+        work_budget: 1,
+    };
+    let healthy = reader.search(&req).unwrap();
+    assert!(healthy.budget_hit, "tiny budget must exhaust");
+    let db = Connection::open(tmp.path().join("catalog.db")).unwrap();
+    db.execute_batch("ALTER TABLE file RENAME TO file_missing;")
+        .unwrap();
+    drop(db);
+    let res = reader.search(&req);
+    assert!(
+        matches!(res, Err(Error::Sql(_))),
+        "SQL error must not hide as budget cut: {res:?}"
+    );
+}
+
+#[test]
+fn breakdown_sql_error_survives_exhausted_budget() {
+    let (tmp, c, _, root, _) = setup();
+    let mut reader = c.reader().unwrap();
+    let healthy = reader
+        .breakdown(root, "extension", Basis::Allocated, 10, 1)
+        .unwrap();
+    assert!(!healthy.complete, "tiny budget must hit");
+    let db = Connection::open(tmp.path().join("catalog.db")).unwrap();
+    db.execute_batch("ALTER TABLE file RENAME TO file_missing;")
+        .unwrap();
+    drop(db);
+    let res = reader.breakdown(root, "extension", Basis::Allocated, 10, 1);
+    assert!(
+        matches!(res, Err(Error::Sql(_))),
+        "SQL error must not hide as budget cut: {res:?}"
+    );
+}
+
+#[test]
+fn pure_budget_interrupt_still_reports_budget_cut() {
+    let (_tmp, c, grant, root, _) = setup();
+    let mut reader = c.reader().unwrap();
+    let page = reader
+        .search(&SearchRequest {
+            root_id: Some(grant),
+            text: "no match".into(),
+            extension: None,
+            min_bytes: None,
+            kind: "any".into(),
+            limit: 10,
+            cursor: None,
+            work_budget: 1,
+        })
+        .unwrap();
+    assert!(page.budget_hit);
+    let b = reader
+        .breakdown(root, "extension", Basis::Allocated, 10, 1)
+        .unwrap();
+    assert!(!b.complete);
+}
