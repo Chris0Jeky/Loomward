@@ -498,6 +498,9 @@ fn reconcile<S: DirSource>(
         settled = !full || next.complete;
         examined += next.examined;
         report.enumeration_worker_seconds += next.enumeration_worker_seconds;
+        report.enumeration_wall_seconds += next.enumeration_wall_seconds;
+        report.staging_seconds += next.staging_seconds;
+        report.aggregation_seconds += next.aggregation_seconds;
         report.persistence_seconds += next.persistence_seconds;
         report.totals = next.totals;
         report.skipped += next.skipped;
