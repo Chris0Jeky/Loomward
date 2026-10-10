@@ -335,7 +335,12 @@ fn group(entries: &[Entry], reader: &mut impl ContentReader, meter: &mut Meter) 
                         Ok(false) => position += 1,
                         Err(failed) => {
                             skip(&mut report, failed.entry, failed.reason);
-                            if failed.entry == index || budget_reason(failed.reason) {
+                            // Only the representative's own failure dissolves its partition; any other
+                            // entry (a reader breaking the contract) drops the candidate, so the loop ends.
+                            if failed.entry == index
+                                || budget_reason(failed.reason)
+                                || failed.entry != partitions[position][0]
+                            {
                                 placed = true;
                                 break;
                             }
