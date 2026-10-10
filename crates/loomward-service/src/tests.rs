@@ -676,6 +676,11 @@ impl ScanSink for FenceProbe {
             loomward_engine::Component::Scan,
         ))
     }
+    fn refresh_listing(&self, _: &RootId, _: u64, _: ListingTicket) -> EngineResult<ListingTicket> {
+        Err(loomward_engine::EngineError::unavailable(
+            loomward_engine::Component::Scan,
+        ))
+    }
     fn consume(&self, _: &RootId, _: ScanMessage) -> EngineResult<()> {
         Ok(())
     }
