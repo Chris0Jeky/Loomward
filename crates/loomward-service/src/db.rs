@@ -101,6 +101,8 @@ pub struct RootRow {
     pub revoked_at_ns: Option<i64>,
     pub dir: Option<i64>,
     pub finished_at_ns: Option<i64>,
+    /// The root directory's subtree is complete: nothing excluded, denied, failed or skipped.
+    pub subtree_complete: bool,
 }
 
 /// At most [`MAX_ACTIVE_ROOTS`] rows (the contract's list cap): every active grant first, then the
@@ -119,7 +121,8 @@ fn rows(conn: &Connection, only: Option<i64>, limit: i64) -> Sql<Vec<RootRow>> {
         "SELECT r.id,r.grant_id,r.volume_id,r.generation,r.state,g.display_path,g.origin,g.granted_via,g.state,
                 g.granted_at_ns,g.revoked_at_ns,
                 (SELECT id FROM main.dir WHERE root_id=r.id AND parent_id IS NULL),
-                (SELECT max(finished_at_ns) FROM main.scan_run WHERE root_id=r.id AND state='completed')
+                (SELECT max(finished_at_ns) FROM main.scan_run WHERE root_id=r.id AND state='completed'),
+                coalesce((SELECT sub_complete FROM main.dir WHERE root_id=r.id AND parent_id IS NULL),0)
          FROM main.root r JOIN st.root_grant g ON g.id=r.grant_id
          WHERE ?1 IS NULL OR r.id=?1 ORDER BY g.state='active' DESC,r.id DESC LIMIT ?2",
     )?;
@@ -139,6 +142,7 @@ fn rows(conn: &Connection, only: Option<i64>, limit: i64) -> Sql<Vec<RootRow>> {
                 revoked_at_ns: r.get(10)?,
                 dir: r.get(11)?,
                 finished_at_ns: r.get(12)?,
+                subtree_complete: r.get(13)?,
             })
         })?
         .collect::<Sql<Vec<RootRow>>>();

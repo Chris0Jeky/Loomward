@@ -1526,6 +1526,11 @@ fn a_junction_replacing_a_directory_stays_visible_as_excluded() {
         slice["nodes"][0]["coverage"], "complete",
         "an excluded child keeps the root from claiming complete coverage"
     );
+    let (roots, _) = ok("roots.list", call(svc, "roots.list", json!({})));
+    assert_eq!(
+        roots["roots"][0]["scan"]["coverage"], "partial",
+        "roots.list agrees with the tree"
+    );
     // Never followed and never counted: the totals still equal a walk that skips reparse points.
     assert_eq!(slice_totals(&slice), walk(&lab.path));
     assert_eq!(slice_totals(&slice), (5, 2, 165));

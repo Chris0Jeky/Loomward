@@ -299,7 +299,10 @@ impl Inner {
         let (state, coverage) = match r.state.as_str() {
             "never_scanned" => ("never_scanned", "unscanned"),
             "scanning" => ("scanning", "partial"),
-            "complete" => ("complete", "complete"),
+            // A finished traversal with excluded, denied or skipped entries is not complete
+            // coverage: the root reads partial, as its tree does.
+            "complete" if r.subtree_complete => ("complete", "complete"),
+            "complete" => ("complete", "partial"),
             "partial" | "repairing" => ("partial", "partial"),
             "stale" => ("stale", "stale"),
             _ => ("failed", "unknown"),
