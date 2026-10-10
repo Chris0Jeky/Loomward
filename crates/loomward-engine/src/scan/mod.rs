@@ -199,6 +199,14 @@ impl Engine {
     ) -> EngineResult<Job> {
         self.start_scan(root, budget, RunScope::FullRoot)
     }
+    fn scan_root_gate(&self, root: &RootId) -> Arc<std::sync::Mutex<bool>> {
+        self.scan_roots
+            .lock()
+            .unwrap()
+            .entry(root.clone())
+            .or_default()
+            .clone()
+    }
     fn start_scan(
         &self,
         root: &GrantedRoot,
@@ -212,6 +220,17 @@ impl Engine {
             .unwrap()
             .clone()
             .ok_or_else(|| EngineError::unavailable(Component::Scan))?;
+        let gate = self.scan_root_gate(root.root_id());
+        // Reserve before any probe/stop/start, and retain through job submission.
+        let revoked = gate.try_lock().map_err(|_| EngineError::Busy {
+            message: "root already starting or revoking".into(),
+            detail: None,
+        })?;
+        if *revoked {
+            return Err(EngineError::PermissionDenied {
+                message: "root revoked".into(),
+            });
+        }
         if let Some(job_id) = self.jobs.root_jobs(root.root_id()).first() {
             return Err(EngineError::Busy {
                 message: "root already scanning".into(),
@@ -370,6 +389,9 @@ impl Engine {
     }
     /// Cancel all active scan jobs for a revoked root. Commit revocation before calling this.
     pub fn scan_cancel_root(&self, root: &RootId) -> EngineResult<Vec<Job>> {
+        let gate = self.scan_root_gate(root);
+        let mut revoked = gate.lock().unwrap();
+        *revoked = true;
         #[cfg(windows)]
         {
             let watch = self.scan_watches.lock().unwrap().remove(root);
