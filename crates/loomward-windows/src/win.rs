@@ -24,6 +24,7 @@ pub(crate) fn metadata_open_flags() -> u32 {
 }
 
 pub(crate) fn open(path: &Path, access: u32, share: u32) -> io::Result<Handle> {
+    non_elevated()?;
     let text = wide(path)?;
     let handle = unsafe {
         CreateFileW(
@@ -41,6 +42,16 @@ pub(crate) fn open(path: &Path, access: u32, share: u32) -> io::Result<Handle> {
     } else {
         Ok(Handle(handle))
     }
+}
+
+pub(crate) fn non_elevated() -> io::Result<()> {
+    crate::enumerate::non_elevated().map_err(|error| match error {
+        crate::enumerate::SourceError::Io(code) => io::Error::from_raw_os_error(code),
+        _ => io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "non-elevated access required",
+        ),
+    })
 }
 
 pub(crate) fn info<T: Default>(handle: &Handle, class: FILE_INFO_BY_HANDLE_CLASS) -> io::Result<T> {

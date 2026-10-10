@@ -96,6 +96,7 @@ fn one(_: &Entry) -> std::io::Result<Outcome> {
 
 #[cfg(windows)]
 fn one(entry: &Entry) -> std::io::Result<Outcome> {
+    crate::win::non_elevated()?;
     use windows_sys::Win32::Storage::FileSystem::{GetFileAttributesW, INVALID_FILE_ATTRIBUTES};
     // A fresh pre-open check complements the listed flags; the handle is checked again below.
     let path = crate::win::wide(&entry.path)?;
@@ -152,6 +153,15 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn linkcount_disposable_hardlinks_match_identity_and_refuse_replacement() {
+        if crate::enumerate::running_elevated() {
+            assert_eq!(
+                crate::identity::observe(std::path::Path::new("synthetic"))
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::PermissionDenied
+            );
+            return;
+        }
         let temp = tempfile::tempdir().unwrap();
         let a = temp.path().join("a");
         let b = temp.path().join("b");
