@@ -1,8 +1,8 @@
 # Observatory process strip — issue #142
 
 Windows 11, 10 October 2026. Branch `feat/observatory-process-strip`, tested over
-`f910c89372e827d42791b25a9de30b87720663fc` plus the uncommitted working diff.
-No commit or push was made. Screenshots contain only synthetic mock processes.
+`f910c89` with the working diff, measured before it was committed (PR on branch `feat/observatory-process-strip`).
+Screenshots contain only synthetic mock processes.
 
 ## Changed
 
