@@ -330,7 +330,9 @@ fn leases_reuse_one_thread_and_enforce_a_bounded_60_second_lifetime() {
             .thread()
             .id()
     );
-    let until = Instant::now() + Duration::from_secs(10);
+    // Longer than the 10 s interval: when the first collection predates the second lease, the first
+    // shared sample is the next interval tick.
+    let until = Instant::now() + Duration::from_secs(25);
     loop {
         let state = lock(&telemetry.shared.state).unwrap();
         assert!(state.events.iter().all(|e| e.sample.system.is_none()));
