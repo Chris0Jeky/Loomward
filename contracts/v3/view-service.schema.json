@@ -1,0 +1,1867 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:loomward:contracts:v3:view-service",
+  "title": "Loomward v0.3 view-model service contract",
+  "description": "Every request, response, result payload and streamed event of the v0.3 view-model service (docs/41-v03-architecture.md section 5). Command-to-payload bindings live in contracts/v3/commands.json. Status: proposed (docs/42 ADR-V3-03). A schema match is never permission: the service re-validates scope, grants and bounds. No definition here describes a file or process effect; every effect capability is the constant false.",
+  "anyOf": [
+    { "$ref": "#/$defs/RequestEnvelope" },
+    { "$ref": "#/$defs/ResponseEnvelope" },
+    { "$ref": "#/$defs/EventEnvelope" }
+  ],
+  "$defs": {
+    "Protocol": { "const": "loomward/3" },
+    "RequestId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$" },
+    "CommandName": { "type": "string", "pattern": "^[a-z]+(\\.[a-z_]+)+$", "maxLength": 64 },
+    "RootId": { "type": "string", "pattern": "^rt_[A-Za-z0-9_-]{1,64}$" },
+    "VolumeId": { "type": "string", "pattern": "^vo_[A-Za-z0-9_-]{1,64}$" },
+    "NodeId": { "type": "string", "pattern": "^nd_[A-Za-z0-9_-]{1,64}$", "$comment": "Opaque, session-tagged. Identifies a catalogue row for viewing only; never an effect operand (invariant 5)." },
+    "JobId": { "type": "string", "pattern": "^jb_[A-Za-z0-9_-]{1,64}$" },
+    "GrantId": { "type": "string", "pattern": "^gr_[A-Za-z0-9_-]{1,64}$" },
+    "CollectionId": { "type": "string", "pattern": "^co_[A-Za-z0-9_-]{1,64}$" },
+    "ProposalId": { "type": "string", "pattern": "^pp_[A-Za-z0-9_-]{1,64}$" },
+    "SubscriptionId": { "type": "string", "pattern": "^sb_[A-Za-z0-9_-]{1,64}$" },
+    "PreviewId": { "type": "string", "pattern": "^tp_[A-Za-z0-9_-]{1,64}$" },
+    "ProcessRef": { "type": "string", "pattern": "^pc_[A-Za-z0-9_-]{1,64}$", "$comment": "Encodes pid plus process start time so PID reuse cannot alias. Observation only." },
+    "ModelId": { "type": "string", "pattern": "^md_[A-Za-z0-9_-]{1,64}$" },
+    "EventId": { "type": "string", "pattern": "^fe_[A-Za-z0-9_-]{1,64}$" },
+    "GroupId": { "type": "string", "pattern": "^cg_[A-Za-z0-9_-]{1,64}$" },
+    "Cursor": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,512}$", "$comment": "Opaque; bound to command, query, anchor, generation and session. Not reusable for another scope." },
+    "Digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "ByteCount": { "type": "string", "pattern": "^(0|[1-9][0-9]{0,19})$", "$comment": "Exact unsigned decimal. All byte quantities on the wire use this, never JSON numbers (ADR-V3-04). Range 0..18446744073709551615 (u64::MAX) is enforced at runtime (semantics.md section 9); the pattern alone admits larger 20-digit strings." },
+    "NullableBytes": { "type": ["string", "null"], "pattern": "^(0|[1-9][0-9]{0,19})$", "$comment": "null means unknown, never zero (invariant 4). Same runtime range as ByteCount." },
+    "Generation": { "type": "string", "pattern": "^(0|[1-9][0-9]{0,19})$" },
+    "NullableGeneration": { "type": ["string", "null"], "pattern": "^(0|[1-9][0-9]{0,19})$" },
+    "Count": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "NullableCount": { "type": ["integer", "null"], "minimum": 0, "maximum": 9007199254740991 },
+    "Fraction": { "type": "number", "minimum": 0, "maximum": 1 },
+    "NullableFraction": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+    "NullableRate": { "type": ["number", "null"], "minimum": 0, "$comment": "Display-only per-second rate; null until two samples exist." },
+    "Timestamp": { "type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$", "maxLength": 40, "$comment": "RFC 3339 in UTC with a literal Z; display and chronology only. Servers emit millisecond precision." },
+    "NullableTimestamp": { "type": ["string", "null"], "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$", "maxLength": 40 },
+    "StreamEpoch": { "type": "string", "pattern": "^[A-Za-z0-9_-]{8,64}$", "$comment": "Random per service start; event seq is only comparable within one epoch (semantics.md section 7)." },
+    "Tier": { "type": "integer", "minimum": 0, "maximum": 9, "$comment": "0 is fastest, 9 slowest; demotion goes to an equal or higher number (planner v1/v2 rule)." },
+    "NullableTier": { "type": ["integer", "null"], "minimum": 0, "maximum": 9 },
+    "Label": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9 _-]{0,63}$" },
+    "DatasetClass": { "enum": ["synthetic", "personal"], "$comment": "One catalogue file per class; a session serves exactly one (ADR-V3-15)." },
+    "Basis": { "enum": ["logical", "allocated"] },
+    "CoverageState": { "enum": ["complete", "partial", "stale", "unscanned", "denied", "excluded", "cancelled", "unknown"] },
+    "EnumerationStrategy": {
+      "enum": ["file_id_extd_directory_info", "nt_query_directory_file_ex", "find_first_file_ex_large_fetch", "std_read_dir"],
+      "$comment": "Default pending the LW-101 spike: file_id_extd_directory_info (ADR-V3-05)."
+    },
+    "ExtFamily": { "enum": ["document", "spreadsheet", "presentation", "image", "video", "audio", "archive", "code", "data", "model", "executable", "system", "font", "other", "none"] },
+    "FileAttribute": { "enum": ["readonly", "hidden", "system", "archive", "compressed", "sparse", "encrypted", "offline", "not_content_indexed", "reparse_point", "recall_on_open", "recall_on_data_access", "pinned", "unpinned", "temporary"] },
+    "EntryFlag": { "enum": ["sensitive_name", "protected_context", "hardlink_suspected", "cloud_placeholder", "reparse_not_followed", "excluded_state_dir", "access_denied", "enumeration_error", "identity_unavailable", "name_lossy", "on_disk_only_listing", "listing_incomplete"] },
+    "DisplayPath": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "truncated"],
+      "properties": {
+        "text": { "type": "string", "maxLength": 1024 },
+        "truncated": { "type": "boolean" }
+      },
+      "$comment": "Display only. Never accepted back as input; no command takes a path string."
+    },
+
+    "ErrorCode": { "enum": ["invalid_request", "unsupported_protocol", "unknown_command", "not_found", "permission_denied", "capability_unavailable", "stale_generation", "device_offline", "partial_coverage", "resource_budget", "busy", "cancelled", "deadline_exceeded", "internal_error"] },
+    "ErrorBody": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable", "detail"],
+      "properties": {
+        "code": { "$ref": "#/$defs/ErrorCode" },
+        "message": { "type": "string", "maxLength": 1000 },
+        "retryable": { "type": "boolean" },
+        "detail": { "type": ["object", "null"], "maxProperties": 16 }
+      }
+    },
+    "RequestEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "request_id", "command", "payload"],
+      "properties": {
+        "protocol": { "$ref": "#/$defs/Protocol" },
+        "request_id": { "$ref": "#/$defs/RequestId" },
+        "command": { "$ref": "#/$defs/CommandName" },
+        "payload": { "type": "object", "$comment": "Validated against the request definition named for this command in commands.json." },
+        "deadline_ms": { "type": "integer", "minimum": 1, "maximum": 60000 },
+        "expected_generation": { "$ref": "#/$defs/Generation" }
+      }
+    },
+    "ResponseMeta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["served_at", "elapsed_ms", "dataset_class", "budget_hit", "catalog_rev"],
+      "properties": {
+        "served_at": { "$ref": "#/$defs/Timestamp" },
+        "elapsed_ms": { "$ref": "#/$defs/Count" },
+        "dataset_class": { "$ref": "#/$defs/DatasetClass" },
+        "budget_hit": { "type": "boolean" },
+        "catalog_rev": { "$ref": "#/$defs/NullableGeneration", "$comment": "Catalogue revision the response was read at, or committed at for a mutation (semantics.md section 5)." }
+      }
+    },
+    "ResponseOk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "request_id", "ok", "result", "meta"],
+      "properties": {
+        "protocol": { "$ref": "#/$defs/Protocol" },
+        "request_id": { "$ref": "#/$defs/RequestId" },
+        "ok": { "const": true },
+        "result": { "type": "object" },
+        "meta": { "$ref": "#/$defs/ResponseMeta" }
+      }
+    },
+    "ResponseError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "request_id", "ok", "error"],
+      "properties": {
+        "protocol": { "$ref": "#/$defs/Protocol" },
+        "request_id": { "anyOf": [{ "$ref": "#/$defs/RequestId" }, { "type": "null" }] },
+        "ok": { "const": false },
+        "error": { "$ref": "#/$defs/ErrorBody" },
+        "meta": { "$ref": "#/$defs/ResponseMeta" }
+      }
+    },
+    "ResponseEnvelope": { "oneOf": [{ "$ref": "#/$defs/ResponseOk" }, { "$ref": "#/$defs/ResponseError" }] },
+    "EventName": { "enum": ["stream.hello", "stream.lagged", "job.state", "scan.progress", "tree.invalidated", "telemetry.sample", "learning.updated", "roots.changed", "volumes.changed", "health.warning"] },
+    "EventEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "epoch", "seq", "event", "at", "catalog_rev", "data"],
+      "properties": {
+        "protocol": { "$ref": "#/$defs/Protocol" },
+        "epoch": { "$ref": "#/$defs/StreamEpoch" },
+        "seq": { "$ref": "#/$defs/Count" },
+        "event": { "$ref": "#/$defs/EventName" },
+        "at": { "$ref": "#/$defs/Timestamp" },
+        "catalog_rev": { "$ref": "#/$defs/NullableGeneration", "$comment": "Emitted only after the change it describes is committed (semantics.md section 6)." },
+        "data": { "type": "object", "$comment": "Validated against the event definition named in commands.json; L1 generates discriminated envelope validation from commands.json (semantics.md section 10)." }
+      }
+    },
+
+    "EmptyRequest": { "type": "object", "additionalProperties": false, "properties": {} },
+    "Capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observation", "effects"],
+      "properties": {
+        "observation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["metadata_scan", "process_observation", "gpu_observation", "disk_io_observation", "teacher_disclosure"],
+          "properties": {
+            "metadata_scan": { "type": "boolean" },
+            "process_observation": { "type": "boolean" },
+            "gpu_observation": { "type": "boolean" },
+            "disk_io_observation": { "type": "boolean" },
+            "teacher_disclosure": { "type": "boolean" }
+          }
+        },
+        "effects": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["file_move", "file_delete", "file_rename", "file_write", "content_read", "process_kill", "process_suspend", "process_priority", "memory_trim", "uninstall", "elevation"],
+          "properties": {
+            "file_move": { "const": false },
+            "file_delete": { "const": false },
+            "file_rename": { "const": false },
+            "file_write": { "const": false },
+            "content_read": { "const": false },
+            "process_kill": { "const": false },
+            "process_suspend": { "const": false },
+            "process_priority": { "const": false },
+            "memory_trim": { "const": false },
+            "uninstall": { "const": false },
+            "elevation": { "const": false }
+          }
+        }
+      }
+    },
+    "SessionInfo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "engine_version", "adapter", "dataset_class", "session_started_at", "enumeration_strategy", "capabilities", "features", "limits"],
+      "properties": {
+        "protocol": { "$ref": "#/$defs/Protocol" },
+        "engine_version": { "type": "string", "maxLength": 64 },
+        "adapter": { "enum": ["tauri", "http"] },
+        "dataset_class": { "$ref": "#/$defs/DatasetClass" },
+        "session_started_at": { "$ref": "#/$defs/Timestamp" },
+        "enumeration_strategy": { "$ref": "#/$defs/EnumerationStrategy" },
+        "capabilities": { "$ref": "#/$defs/Capabilities" },
+        "features": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["grant_picker", "disclosure_dialog", "teacher_available", "telemetry_available", "gpu_available"],
+          "properties": {
+            "grant_picker": { "type": "boolean" },
+            "disclosure_dialog": { "type": "boolean" },
+            "teacher_available": { "type": "boolean" },
+            "telemetry_available": { "type": "boolean" },
+            "gpu_available": { "type": "boolean" }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["max_request_bytes", "max_slice_nodes", "max_page_items"],
+          "properties": {
+            "max_request_bytes": { "$ref": "#/$defs/Count" },
+            "max_slice_nodes": { "$ref": "#/$defs/Count" },
+            "max_page_items": { "$ref": "#/$defs/Count" }
+          }
+        }
+      }
+    },
+    "HealthWarning": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "at"],
+      "properties": {
+        "code": { "enum": ["catalog_writer_backlog", "low_state_disk", "scan_throttled", "telemetry_unavailable", "teacher_failed", "root_identity_changed", "event_stream_lagging"] },
+        "message": { "type": "string", "maxLength": 512 },
+        "at": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+    "Health": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observed_at", "engine", "catalog", "jobs_running", "last_error", "warnings"],
+      "properties": {
+        "observed_at": { "$ref": "#/$defs/Timestamp" },
+        "engine": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["private_commit_bytes", "working_set_bytes", "cpu_seconds", "threads"],
+          "properties": {
+            "private_commit_bytes": { "$ref": "#/$defs/NullableBytes", "$comment": "PROCESS_MEMORY_COUNTERS_EX2.PrivateUsage." },
+            "working_set_bytes": { "$ref": "#/$defs/NullableBytes" },
+            "cpu_seconds": { "type": ["number", "null"], "minimum": 0 },
+            "threads": { "$ref": "#/$defs/NullableCount" }
+          }
+        },
+        "catalog": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema_version", "db_bytes", "wal_bytes", "files", "dirs", "writer_queue_depth", "writer_queue_capacity"],
+          "properties": {
+            "schema_version": { "type": "integer", "minimum": 1 },
+            "db_bytes": { "$ref": "#/$defs/NullableBytes" },
+            "wal_bytes": { "$ref": "#/$defs/NullableBytes" },
+            "files": { "$ref": "#/$defs/Count" },
+            "dirs": { "$ref": "#/$defs/Count" },
+            "writer_queue_depth": { "$ref": "#/$defs/Count" },
+            "writer_queue_capacity": { "$ref": "#/$defs/Count" }
+          }
+        },
+        "jobs_running": { "$ref": "#/$defs/Count" },
+        "last_error": { "anyOf": [{ "$ref": "#/$defs/ErrorBody" }, { "type": "null" }] },
+        "warnings": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/HealthWarning" } }
+      }
+    },
+
+    "RootScanState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "last_job_id", "generation", "finished_at", "coverage"],
+      "properties": {
+        "state": { "enum": ["never_scanned", "scanning", "complete", "partial", "stale", "failed"] },
+        "last_job_id": { "anyOf": [{ "$ref": "#/$defs/JobId" }, { "type": "null" }] },
+        "generation": { "$ref": "#/$defs/NullableGeneration" },
+        "finished_at": { "$ref": "#/$defs/NullableTimestamp" },
+        "coverage": { "$ref": "#/$defs/CoverageState" }
+      }
+    },
+    "SubtreeTotals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["files", "dirs", "logical_bytes", "allocated_bytes", "allocation_unknown_files", "skipped", "failed", "complete", "stream_coverage", "unique_objects", "unique_allocated_bytes", "multi_link_entries"],
+      "properties": {
+        "files": { "$ref": "#/$defs/Count", "$comment": "Directory entries (names), not objects." },
+        "dirs": { "$ref": "#/$defs/Count" },
+        "logical_bytes": { "$ref": "#/$defs/ByteCount", "$comment": "Bytes by directory entry: sum of default-stream end-of-file as listed. A hard-linked object counts once per observed name." },
+        "allocated_bytes": { "$ref": "#/$defs/NullableBytes", "$comment": "Bytes by directory entry: sum of default-stream allocation as listed." },
+        "allocation_unknown_files": { "$ref": "#/$defs/Count" },
+        "skipped": { "$ref": "#/$defs/Count" },
+        "failed": { "$ref": "#/$defs/Count" },
+        "complete": { "type": "boolean" },
+        "stream_coverage": { "const": "default_stream_only", "$comment": "Alternate data streams and filesystem metadata are not observed in v0.3." },
+        "unique_objects": { "$ref": "#/$defs/NullableCount", "$comment": "Distinct (volume_key, file_id) objects within this subtree; null when any entry lacks a native ID." },
+        "unique_allocated_bytes": { "$ref": "#/$defs/NullableBytes", "$comment": "Allocation counted once per unique object within this subtree; null when unique_objects is null or allocation is unknown." },
+        "multi_link_entries": { "$ref": "#/$defs/Count", "$comment": "Entries whose object has another observed name anywhere in the dataset or an observed link count above 1." }
+      }
+    },
+    "Root": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root_id", "display_path", "origin", "dataset_class", "volume_id", "granted_at", "granted_via", "grant_state", "scan", "totals"],
+      "properties": {
+        "root_id": { "$ref": "#/$defs/RootId" },
+        "display_path": { "$ref": "#/$defs/DisplayPath" },
+        "origin": { "enum": ["fixture", "lab_generated", "owner_granted"] },
+        "dataset_class": { "$ref": "#/$defs/DatasetClass" },
+        "volume_id": { "anyOf": [{ "$ref": "#/$defs/VolumeId" }, { "type": "null" }] },
+        "granted_at": { "$ref": "#/$defs/Timestamp" },
+        "granted_via": { "enum": ["desktop_picker", "cli_flag", "fixture"] },
+        "grant_state": { "enum": ["active", "revoked", "identity_changed"] },
+        "scan": { "$ref": "#/$defs/RootScanState" },
+        "totals": { "anyOf": [{ "$ref": "#/$defs/SubtreeTotals" }, { "type": "null" }] }
+      }
+    },
+    "RootList": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["roots"],
+      "properties": { "roots": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/Root" } } }
+    },
+    "RootGrantRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["purpose"],
+      "properties": { "purpose": { "const": "metadata_scan" } },
+      "$comment": "Tauri adapter only. Rust opens the native folder picker; the webview never supplies a path."
+    },
+    "RootGrantResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome", "root", "refusal"],
+      "properties": {
+        "outcome": { "enum": ["granted", "cancelled_by_user", "refused"] },
+        "root": { "anyOf": [{ "$ref": "#/$defs/Root" }, { "type": "null" }] },
+        "refusal": { "enum": [null, "volume_root", "reparse_or_placeholder", "not_a_directory", "contains_state_dir", "inside_state_dir", "already_granted", "network_or_removable_unsupported", "identity_unavailable", "synthetic_session_requires_lab_root"] }
+      }
+    },
+    "RootRevokeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root_id", "purge_catalog"],
+      "properties": {
+        "root_id": { "$ref": "#/$defs/RootId" },
+        "purge_catalog": { "type": "boolean", "$comment": "Deletes Loomward's own catalogue rows for the root. Never touches the scanned files." }
+      }
+    },
+    "RootRevokeResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root_id", "revoked_at", "purged"],
+      "properties": {
+        "root_id": { "$ref": "#/$defs/RootId" },
+        "revoked_at": { "$ref": "#/$defs/Timestamp" },
+        "purged": { "type": "boolean" }
+      }
+    },
+
+    "DeviceHint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bus_type", "seek_penalty", "multiple_disks", "basis"],
+      "properties": {
+        "bus_type": { "enum": ["nvme", "sata", "sas", "scsi", "usb", "raid", "virtual", "sd", "other", "unknown"] },
+        "seek_penalty": { "type": ["boolean", "null"] },
+        "multiple_disks": { "type": ["boolean", "null"] },
+        "basis": { "enum": ["ioctl_storage_query_property", "unavailable"] }
+      },
+      "$comment": "A hint about the device, not a measured speed (docs/07)."
+    },
+    "TierInfo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tier", "basis", "declared_tier", "hint_tier", "note"],
+      "properties": {
+        "tier": { "$ref": "#/$defs/NullableTier" },
+        "basis": { "enum": ["declared", "device_hint", "unknown"] },
+        "declared_tier": { "$ref": "#/$defs/NullableTier" },
+        "hint_tier": { "$ref": "#/$defs/NullableTier" },
+        "note": { "type": "string", "maxLength": 256 }
+      }
+    },
+    "VolumeFeatures": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file_ids_128", "hard_links", "sparse_files", "compression", "reparse_points", "usn_journal"],
+      "properties": {
+        "file_ids_128": { "type": ["boolean", "null"] },
+        "hard_links": { "type": ["boolean", "null"] },
+        "sparse_files": { "type": ["boolean", "null"] },
+        "compression": { "type": ["boolean", "null"] },
+        "reparse_points": { "type": ["boolean", "null"] },
+        "usn_journal": { "type": ["boolean", "null"] }
+      }
+    },
+    "Volume": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["volume_id", "display_name", "mount_points", "filesystem", "label", "online", "read_only", "removable", "capacity_bytes", "free_bytes", "device", "tier", "features", "observed_at"],
+      "properties": {
+        "volume_id": { "$ref": "#/$defs/VolumeId" },
+        "display_name": { "type": "string", "maxLength": 64 },
+        "mount_points": { "type": "array", "maxItems": 16, "items": { "type": "string", "maxLength": 260 } },
+        "filesystem": { "type": ["string", "null"], "maxLength": 32 },
+        "label": { "type": ["string", "null"], "maxLength": 64 },
+        "online": { "type": "boolean" },
+        "read_only": { "type": ["boolean", "null"] },
+        "removable": { "type": ["boolean", "null"] },
+        "capacity_bytes": { "$ref": "#/$defs/NullableBytes" },
+        "free_bytes": { "$ref": "#/$defs/NullableBytes" },
+        "device": { "$ref": "#/$defs/DeviceHint" },
+        "tier": { "$ref": "#/$defs/TierInfo" },
+        "features": { "$ref": "#/$defs/VolumeFeatures" },
+        "observed_at": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+    "VolumeList": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["volumes"],
+      "properties": { "volumes": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/Volume" } } }
+    },
+    "DeclareTierRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["volume_id", "tier"],
+      "properties": {
+        "volume_id": { "$ref": "#/$defs/VolumeId" },
+        "tier": { "$ref": "#/$defs/NullableTier" }
+      },
+      "$comment": "Records a human preference. null clears the declaration."
+    },
+    "DeclareTierResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["volume", "preference_recorded_at"],
+      "properties": {
+        "volume": { "$ref": "#/$defs/Volume" },
+        "preference_recorded_at": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+
+    "JobKind": { "enum": ["scan", "refit", "teacher", "placement_simulation"] },
+    "JobState": { "enum": ["queued", "running", "cancel_requested", "cancelled", "failed", "completed"] },
+    "ScanBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_entries": { "type": "integer", "minimum": 1, "maximum": 50000000 },
+        "max_dirs": { "type": "integer", "minimum": 1, "maximum": 8000000 },
+        "threads": { "type": "integer", "minimum": 1, "maximum": 32 }
+      }
+    },
+    "ScanStartRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root_id", "mode"],
+      "properties": {
+        "root_id": { "$ref": "#/$defs/RootId" },
+        "mode": { "enum": ["full", "refresh"] },
+        "budget": { "$ref": "#/$defs/ScanBudget" }
+      }
+    },
+    "ScanProgress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "strategy", "examined", "indexed_files", "indexed_dirs", "skipped", "failed", "logical_bytes", "allocated_bytes", "pending_dirs", "writer_queue_depth", "entries_per_second", "elapsed_ms", "limit_hit"],
+      "properties": {
+        "phase": { "enum": ["queued", "enumerating", "committing", "rolling_up", "sweeping", "finalising", "done"] },
+        "strategy": { "$ref": "#/$defs/EnumerationStrategy" },
+        "examined": { "$ref": "#/$defs/Count" },
+        "indexed_files": { "$ref": "#/$defs/Count" },
+        "indexed_dirs": { "$ref": "#/$defs/Count" },
+        "skipped": { "$ref": "#/$defs/Count" },
+        "failed": { "$ref": "#/$defs/Count" },
+        "logical_bytes": { "$ref": "#/$defs/ByteCount" },
+        "allocated_bytes": { "$ref": "#/$defs/NullableBytes" },
+        "pending_dirs": { "$ref": "#/$defs/Count" },
+        "writer_queue_depth": { "$ref": "#/$defs/Count" },
+        "entries_per_second": { "type": "number", "minimum": 0 },
+        "elapsed_ms": { "$ref": "#/$defs/Count" },
+        "limit_hit": { "type": "boolean" }
+      }
+    },
+    "Job": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["job_id", "kind", "state", "root_id", "created_at", "started_at", "finished_at", "progress", "coverage", "error"],
+      "properties": {
+        "job_id": { "$ref": "#/$defs/JobId" },
+        "kind": { "$ref": "#/$defs/JobKind" },
+        "state": { "$ref": "#/$defs/JobState" },
+        "root_id": { "anyOf": [{ "$ref": "#/$defs/RootId" }, { "type": "null" }] },
+        "created_at": { "$ref": "#/$defs/Timestamp" },
+        "started_at": { "$ref": "#/$defs/NullableTimestamp" },
+        "finished_at": { "$ref": "#/$defs/NullableTimestamp" },
+        "progress": { "anyOf": [{ "$ref": "#/$defs/ScanProgress" }, { "type": "null" }] },
+        "coverage": { "anyOf": [{ "$ref": "#/$defs/CoverageState" }, { "type": "null" }] },
+        "error": { "anyOf": [{ "$ref": "#/$defs/ErrorBody" }, { "type": "null" }] }
+      }
+    },
+    "JobRefRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["job_id"],
+      "properties": { "job_id": { "$ref": "#/$defs/JobId" } }
+    },
+    "JobResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["job"],
+      "properties": { "job": { "$ref": "#/$defs/Job" } }
+    },
+    "JobListRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["limit"],
+      "properties": {
+        "kinds": { "type": "array", "maxItems": 4, "uniqueItems": true, "items": { "$ref": "#/$defs/JobKind" } },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+      }
+    },
+    "JobList": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jobs"],
+      "properties": { "jobs": { "type": "array", "maxItems": 50, "items": { "$ref": "#/$defs/Job" } } }
+    },
+
+    "MeaningThread": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "label", "share", "source", "collection_ids"],
+      "properties": {
+        "state": { "enum": ["labelled", "suggested", "mixed", "none", "pending", "unknown"] },
+        "label": { "anyOf": [{ "$ref": "#/$defs/Label" }, { "type": "null" }] },
+        "share": { "$ref": "#/$defs/NullableFraction" },
+        "source": { "enum": [null, "human", "student", "teacher"] },
+        "collection_ids": { "type": "array", "maxItems": 8, "items": { "$ref": "#/$defs/CollectionId" } }
+      },
+      "$comment": "What the owner or a model thinks this is. A suggestion is not an approval (invariant 3)."
+    },
+    "ResidencyThread": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["volume_id", "tier", "tier_basis"],
+      "properties": {
+        "volume_id": { "anyOf": [{ "$ref": "#/$defs/VolumeId" }, { "type": "null" }] },
+        "tier": { "$ref": "#/$defs/NullableTier" },
+        "tier_basis": { "enum": ["declared", "device_hint", "unknown"] }
+      },
+      "$comment": "Where the bytes physically are."
+    },
+    "PermissionThread": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "reason"],
+      "properties": {
+        "state": { "enum": ["granted", "partial", "excluded", "denied", "revoked", "unknown"] },
+        "reason": { "enum": [null, "metadata_grant_active", "sensitive_name", "protected_context", "cloud_placeholder", "reparse_not_followed", "access_denied", "grant_revoked", "not_scanned", "mixed_children"] }
+      },
+      "$comment": "What Loomward may observe. In v0.3 no thread state ever implies an effect permission."
+    },
+    "Threads": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["meaning", "residency", "permission"],
+      "properties": {
+        "meaning": { "$ref": "#/$defs/MeaningThread" },
+        "residency": { "$ref": "#/$defs/ResidencyThread" },
+        "permission": { "$ref": "#/$defs/PermissionThread" }
+      }
+    },
+    "Anchor": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": { "kind": { "const": "atlas" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "root_id"],
+          "properties": { "kind": { "const": "root" }, "root_id": { "$ref": "#/$defs/RootId" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "node_id"],
+          "properties": { "kind": { "const": "node" }, "node_id": { "$ref": "#/$defs/NodeId" } }
+        }
+      ]
+    },
+    "TreeSliceRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["anchor", "depth", "max_nodes", "min_share", "basis", "include_files"],
+      "properties": {
+        "anchor": { "$ref": "#/$defs/Anchor" },
+        "depth": { "type": "integer", "minimum": 1, "maximum": 8 },
+        "max_nodes": { "type": "integer", "minimum": 16, "maximum": 6000 },
+        "min_share": { "type": "number", "minimum": 0, "maximum": 0.1 },
+        "basis": { "$ref": "#/$defs/Basis" },
+        "include_files": { "type": "boolean" }
+      }
+    },
+    "SliceNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "parent", "kind", "name", "depth", "size_bytes", "size_unknown_files", "logical_bytes", "allocated_bytes", "files", "dirs", "child_count", "folded_count", "coverage", "live", "ext_family", "modified_at", "threads"],
+      "properties": {
+        "node_id": { "$ref": "#/$defs/NodeId" },
+        "parent": { "type": ["integer", "null"], "minimum": 0, "maximum": 5999, "$comment": "Index into TreeSlice.nodes; null only for the anchor at index 0. Parents always precede children." },
+        "kind": { "enum": ["atlas", "volume", "root", "dir", "file", "other"] },
+        "name": { "type": "string", "maxLength": 260 },
+        "depth": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "size_bytes": { "$ref": "#/$defs/ByteCount", "$comment": "Size under the requested basis. Under allocated basis, entries with unknown allocation contribute 0 here and are counted in size_unknown_files." },
+        "size_unknown_files": { "$ref": "#/$defs/Count" },
+        "logical_bytes": { "$ref": "#/$defs/ByteCount" },
+        "allocated_bytes": { "$ref": "#/$defs/NullableBytes" },
+        "files": { "$ref": "#/$defs/Count" },
+        "dirs": { "$ref": "#/$defs/Count" },
+        "child_count": { "$ref": "#/$defs/NullableCount" },
+        "folded_count": { "$ref": "#/$defs/NullableCount", "$comment": "Only for kind=other: how many siblings were folded into this node." },
+        "coverage": { "$ref": "#/$defs/CoverageState" },
+        "live": { "type": "boolean", "$comment": "True while a scan is still adding to this subtree." },
+        "ext_family": { "anyOf": [{ "$ref": "#/$defs/ExtFamily" }, { "type": "null" }] },
+        "modified_at": { "$ref": "#/$defs/NullableTimestamp" },
+        "threads": { "$ref": "#/$defs/Threads" }
+      }
+    },
+    "RootGeneration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root_id", "generation"],
+      "properties": {
+        "root_id": { "$ref": "#/$defs/RootId" },
+        "generation": { "$ref": "#/$defs/NullableGeneration" }
+      }
+    },
+    "TreeSlice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["anchor_node_id", "basis", "root_generations", "complete", "live", "aggregate_state", "ordering", "truncated", "nodes"],
+      "properties": {
+        "anchor_node_id": { "$ref": "#/$defs/NodeId" },
+        "basis": { "$ref": "#/$defs/Basis" },
+        "root_generations": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/RootGeneration" } },
+        "complete": { "type": "boolean" },
+        "live": { "type": "boolean" },
+        "aggregate_state": { "enum": ["consistent", "provisional_live"], "$comment": "consistent: every directory sum was published at a revision covering its committed listings. provisional_live: sums come from the running scan's arena snapshot; 'other' nodes are clamped at zero. Inconsistent committed sums are repaired before serving, never sent." },
+        "ordering": { "enum": ["exact", "approximate_live"] },
+        "truncated": { "type": "boolean" },
+        "nodes": { "type": "array", "minItems": 1, "maxItems": 6000, "items": { "$ref": "#/$defs/SliceNode" } }
+      }
+    },
+    "MeaningRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_ids"],
+      "properties": { "node_ids": { "type": "array", "minItems": 1, "maxItems": 6000, "uniqueItems": true, "items": { "$ref": "#/$defs/NodeId" } } }
+    },
+    "MeaningResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model_id", "items", "budget_hit"],
+      "properties": {
+        "model_id": { "anyOf": [{ "$ref": "#/$defs/ModelId" }, { "type": "null" }] },
+        "items": {
+          "type": "array",
+          "maxItems": 6000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["node_id", "meaning"],
+            "properties": { "node_id": { "$ref": "#/$defs/NodeId" }, "meaning": { "$ref": "#/$defs/MeaningThread" } }
+          }
+        },
+        "budget_hit": { "type": "boolean" }
+      }
+    },
+    "EntryRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "kind", "name", "extension", "ext_family", "logical_bytes", "allocated_bytes", "files", "dirs", "modified_at", "attributes", "flags", "coverage", "location_hint"],
+      "properties": {
+        "node_id": { "$ref": "#/$defs/NodeId" },
+        "kind": { "enum": ["dir", "file"] },
+        "name": { "type": "string", "maxLength": 260 },
+        "extension": { "type": ["string", "null"], "maxLength": 32 },
+        "ext_family": { "anyOf": [{ "$ref": "#/$defs/ExtFamily" }, { "type": "null" }] },
+        "logical_bytes": { "$ref": "#/$defs/ByteCount" },
+        "allocated_bytes": { "$ref": "#/$defs/NullableBytes" },
+        "files": { "$ref": "#/$defs/NullableCount" },
+        "dirs": { "$ref": "#/$defs/NullableCount" },
+        "modified_at": { "$ref": "#/$defs/NullableTimestamp" },
+        "attributes": { "type": "array", "maxItems": 16, "uniqueItems": true, "items": { "$ref": "#/$defs/FileAttribute" } },
+        "flags": { "type": "array", "maxItems": 12, "uniqueItems": true, "items": { "$ref": "#/$defs/EntryFlag" } },
+        "coverage": { "$ref": "#/$defs/CoverageState" },
+        "location_hint": { "anyOf": [{ "$ref": "#/$defs/DisplayPath" }, { "type": "null" }], "$comment": "Search and collection results only: the parent's display path." }
+      }
+    },
+    "TreeChildrenRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "sort", "basis", "limit", "cursor"],
+      "properties": {
+        "node_id": { "$ref": "#/$defs/NodeId" },
+        "sort": { "enum": ["size_desc", "name_asc", "modified_desc"], "$comment": "size_desc is index-backed for both bases (ties broken by row id). name_asc and modified_desc are served only for directories with at most 10,000 direct children; larger ones return resource_budget with detail sort_requires_index." },
+        "basis": { "$ref": "#/$defs/Basis" },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
+        "cursor": { "anyOf": [{ "$ref": "#/$defs/Cursor" }, { "type": "null" }] }
+      }
+    },
+    "EntryPage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["anchor", "generation", "items", "next_cursor", "total", "budget_hit"],
+      "properties": {
+        "anchor": { "anyOf": [{ "$ref": "#/$defs/NodeId" }, { "$ref": "#/$defs/CollectionId" }, { "type": "null" }] },
+        "generation": { "$ref": "#/$defs/NullableGeneration" },
+        "items": { "type": "array", "maxItems": 200, "items": { "$ref": "#/$defs/EntryRow" } },
+        "next_cursor": { "anyOf": [{ "$ref": "#/$defs/Cursor" }, { "type": "null" }] },
+        "total": { "$ref": "#/$defs/NullableCount" },
+        "budget_hit": { "type": "boolean" }
+      }
+    },
+    "NodeRefRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id"],
+      "properties": { "node_id": { "$ref": "#/$defs/NodeId" } }
+    },
+    "NodePath": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root_id", "ancestors", "truncated"],
+      "properties": {
+        "root_id": { "anyOf": [{ "$ref": "#/$defs/RootId" }, { "type": "null" }] },
+        "ancestors": {
+          "type": "array",
+          "maxItems": 512,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["node_id", "kind", "name"],
+            "properties": {
+              "node_id": { "$ref": "#/$defs/NodeId" },
+              "kind": { "enum": ["atlas", "volume", "root", "dir", "file"] },
+              "name": { "type": "string", "maxLength": 260 }
+            }
+          }
+        },
+        "truncated": { "type": "boolean" }
+      }
+    },
+    "IdentityObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["quality", "volume_key", "file_id_hex", "observed_generation", "durable_reference", "authorises_effects"],
+      "properties": {
+        "quality": { "enum": ["native_file_id_128", "native_file_id_64", "path_observation", "unavailable"], "$comment": "Width is preserved: a 64-bit ID is never padded and reported as 128-bit." },
+        "durable_reference": { "enum": ["available", "unavailable_identity_quality", "unavailable_filesystem"], "$comment": "Whether labels and collection membership may bind to this object (docs/41 section 6.3). Without it, feedback.record returns capability_unavailable." },
+        "volume_key": { "type": ["string", "null"], "maxLength": 80 },
+        "file_id_hex": { "type": ["string", "null"], "pattern": "^[0-9a-f]{16,32}$" },
+        "observed_generation": { "$ref": "#/$defs/NullableGeneration" },
+        "authorises_effects": { "const": false }
+      }
+    },
+    "Suggestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "model_id", "ranked", "abstain", "reasons", "feature_coverage", "review_priority", "calibrated", "autonomy_allowed", "teacher"],
+      "properties": {
+        "node_id": { "$ref": "#/$defs/NodeId" },
+        "model_id": { "$ref": "#/$defs/ModelId" },
+        "ranked": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["label", "score"],
+            "properties": { "label": { "$ref": "#/$defs/Label" }, "score": { "$ref": "#/$defs/Fraction" } }
+          }
+        },
+        "abstain": { "type": "boolean" },
+        "reasons": {
+          "type": "array",
+          "maxItems": 5,
+          "uniqueItems": true,
+          "items": { "enum": ["no_training_examples", "insufficient_human_support", "unfamiliar_features", "ambiguous_model_scores", "sensitive_excluded"] }
+        },
+        "feature_coverage": { "$ref": "#/$defs/Fraction" },
+        "review_priority": { "$ref": "#/$defs/Fraction" },
+        "calibrated": { "const": false },
+        "autonomy_allowed": { "const": false },
+        "teacher": { "anyOf": [{ "$ref": "#/$defs/TeacherLabel" }, { "type": "null" }] }
+      },
+      "$comment": "Scores are uncalibrated relative scores, not probabilities (invariant 4)."
+    },
+    "CollectionRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["collection_id", "name"],
+      "properties": { "collection_id": { "$ref": "#/$defs/CollectionId" }, "name": { "type": "string", "maxLength": 64 } }
+    },
+    "NodeDetail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["row", "root_id", "volume_id", "display_path", "identity", "timestamps", "subtree", "threads", "exclusions", "denied_capabilities", "memberships", "suggestion"],
+      "properties": {
+        "row": { "$ref": "#/$defs/EntryRow" },
+        "root_id": { "$ref": "#/$defs/RootId" },
+        "volume_id": { "anyOf": [{ "$ref": "#/$defs/VolumeId" }, { "type": "null" }] },
+        "display_path": { "$ref": "#/$defs/DisplayPath" },
+        "identity": { "$ref": "#/$defs/IdentityObservation" },
+        "timestamps": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["created_at", "modified_at", "changed_at", "accessed_at", "accessed_note"],
+          "properties": {
+            "created_at": { "$ref": "#/$defs/NullableTimestamp" },
+            "modified_at": { "$ref": "#/$defs/NullableTimestamp" },
+            "changed_at": { "$ref": "#/$defs/NullableTimestamp" },
+            "accessed_at": { "$ref": "#/$defs/NullableTimestamp" },
+            "accessed_note": { "type": "string", "maxLength": 256 }
+          }
+        },
+        "subtree": { "anyOf": [{ "$ref": "#/$defs/SubtreeTotals" }, { "type": "null" }] },
+        "threads": { "$ref": "#/$defs/Threads" },
+        "exclusions": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["code", "explanation"],
+            "properties": { "code": { "$ref": "#/$defs/EntryFlag" }, "explanation": { "type": "string", "maxLength": 512 } }
+          }
+        },
+        "denied_capabilities": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["capability", "reason"],
+            "properties": {
+              "capability": { "enum": ["file_move", "file_delete", "file_rename", "content_read", "teacher_disclosure", "training"] },
+              "reason": { "enum": ["not_implemented_in_v03", "sensitive_name", "excluded", "no_grant", "cloud_placeholder"] }
+            }
+          }
+        },
+        "memberships": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/CollectionRef" } },
+        "suggestion": { "anyOf": [{ "$ref": "#/$defs/Suggestion" }, { "type": "null" }] }
+      }
+    },
+    "SearchRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root_id", "text", "extension", "min_bytes", "kind", "limit", "cursor"],
+      "properties": {
+        "root_id": { "anyOf": [{ "$ref": "#/$defs/RootId" }, { "type": "null" }] },
+        "text": { "type": "string", "maxLength": 256 },
+        "extension": { "type": ["string", "null"], "maxLength": 32 },
+        "min_bytes": { "$ref": "#/$defs/NullableBytes" },
+        "kind": { "enum": ["any", "file", "dir"] },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "cursor": { "anyOf": [{ "$ref": "#/$defs/Cursor" }, { "type": "null" }] }
+      }
+    },
+    "BreakdownRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "by", "basis", "limit"],
+      "properties": {
+        "node_id": { "$ref": "#/$defs/NodeId" },
+        "by": { "enum": ["ext_family", "extension", "age_band"] },
+        "basis": { "$ref": "#/$defs/Basis" },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 64 }
+      }
+    },
+    "BytesAndFiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bytes", "files"],
+      "properties": { "bytes": { "$ref": "#/$defs/ByteCount" }, "files": { "$ref": "#/$defs/Count" } }
+    },
+    "Breakdown": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "by", "basis", "generation", "complete", "buckets", "other", "unknown"],
+      "properties": {
+        "node_id": { "$ref": "#/$defs/NodeId" },
+        "by": { "enum": ["ext_family", "extension", "age_band"] },
+        "basis": { "$ref": "#/$defs/Basis" },
+        "generation": { "$ref": "#/$defs/NullableGeneration" },
+        "complete": { "type": "boolean" },
+        "buckets": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "label", "bytes", "files"],
+            "properties": {
+              "key": { "type": "string", "maxLength": 64 },
+              "label": { "type": "string", "maxLength": 64 },
+              "bytes": { "$ref": "#/$defs/ByteCount" },
+              "files": { "$ref": "#/$defs/Count" }
+            }
+          }
+        },
+        "other": { "$ref": "#/$defs/BytesAndFiles" },
+        "unknown": { "$ref": "#/$defs/BytesAndFiles" }
+      }
+    },
+
+    "Taxonomy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "labels"],
+      "properties": {
+        "version": { "type": "integer", "minimum": 1 },
+        "labels": { "type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": { "$ref": "#/$defs/Label" } }
+      }
+    },
+    "FeedbackRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "label", "retract", "client_event_id"],
+      "properties": {
+        "node_id": { "$ref": "#/$defs/NodeId" },
+        "label": { "anyOf": [{ "$ref": "#/$defs/Label" }, { "type": "null" }] },
+        "retract": { "type": "boolean" },
+        "client_event_id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{8,64}$" }
+      },
+      "$comment": "label is null only when retract is true (service-enforced); the service stores the withdrawn label internally (docs/41 section 9.1). client_event_id is a durable idempotency key: identical replay returns the original result, reuse with different content is invalid_request. Records a human label; never a grant."
+    },
+    "LearningStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model_id", "algorithm", "taxonomy_version", "training_count", "human_events", "teacher_labels", "human_support", "fitted_at", "dataset_class", "calibrated", "autonomy_allowed"],
+      "properties": {
+        "model_id": { "anyOf": [{ "$ref": "#/$defs/ModelId" }, { "type": "null" }] },
+        "algorithm": { "const": "weighted_multinomial_nb_v1" },
+        "taxonomy_version": { "type": "integer", "minimum": 1 },
+        "training_count": { "$ref": "#/$defs/Count" },
+        "human_events": { "$ref": "#/$defs/Count" },
+        "teacher_labels": { "$ref": "#/$defs/Count" },
+        "human_support": { "type": "object", "maxProperties": 32, "additionalProperties": { "$ref": "#/$defs/Count" } },
+        "fitted_at": { "$ref": "#/$defs/NullableTimestamp" },
+        "dataset_class": { "$ref": "#/$defs/DatasetClass" },
+        "calibrated": { "const": false },
+        "autonomy_allowed": { "const": false }
+      }
+    },
+    "FeedbackResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_id", "revision", "data_class", "idempotent_replay", "learning"],
+      "properties": {
+        "event_id": { "$ref": "#/$defs/EventId" },
+        "revision": { "type": "integer", "minimum": 1 },
+        "idempotent_replay": { "type": "boolean", "$comment": "True when client_event_id matched an already committed identical event; nothing new was written." },
+        "data_class": { "const": "human" },
+        "learning": { "$ref": "#/$defs/LearningStatus" }
+      }
+    },
+    "LearningQueueRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root_id", "limit", "cursor"],
+      "properties": {
+        "root_id": { "anyOf": [{ "$ref": "#/$defs/RootId" }, { "type": "null" }] },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "cursor": { "anyOf": [{ "$ref": "#/$defs/Cursor" }, { "type": "null" }] }
+      }
+    },
+    "LearningQueue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model_id", "items", "next_cursor"],
+      "properties": {
+        "model_id": { "anyOf": [{ "$ref": "#/$defs/ModelId" }, { "type": "null" }] },
+        "items": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["row", "suggestion"],
+            "properties": { "row": { "$ref": "#/$defs/EntryRow" }, "suggestion": { "$ref": "#/$defs/Suggestion" } }
+          }
+        },
+        "next_cursor": { "anyOf": [{ "$ref": "#/$defs/Cursor" }, { "type": "null" }] }
+      }
+    },
+    "Collection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["collection_id", "name", "kind", "member_count", "logical_bytes", "created_at"],
+      "properties": {
+        "collection_id": { "$ref": "#/$defs/CollectionId" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "kind": { "enum": ["human", "label_view"] },
+        "member_count": { "$ref": "#/$defs/Count" },
+        "logical_bytes": { "$ref": "#/$defs/ByteCount" },
+        "created_at": { "$ref": "#/$defs/Timestamp" }
+      },
+      "$comment": "Virtual membership in Loomward's own database. Never moves, links or renames a file."
+    },
+    "CollectionList": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["collections"],
+      "properties": { "collections": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/Collection" } } }
+    },
+    "CollectionCreateRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": { "name": { "type": "string", "pattern": "^[^\\u0000-\\u001f]{1,64}$" } }
+    },
+    "CollectionMembersUpdate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["collection_id", "add", "remove"],
+      "properties": {
+        "collection_id": { "$ref": "#/$defs/CollectionId" },
+        "add": { "type": "array", "maxItems": 500, "uniqueItems": true, "items": { "$ref": "#/$defs/NodeId" } },
+        "remove": { "type": "array", "maxItems": 500, "uniqueItems": true, "items": { "$ref": "#/$defs/NodeId" } }
+      }
+    },
+    "CollectionMembersRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["collection_id", "limit", "cursor"],
+      "properties": {
+        "collection_id": { "$ref": "#/$defs/CollectionId" },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
+        "cursor": { "anyOf": [{ "$ref": "#/$defs/Cursor" }, { "type": "null" }] }
+      }
+    },
+
+    "TeacherField": { "enum": ["name", "extension", "context", "size_bucket"] },
+    "TeacherRecipient": { "const": "codex_cli_gpt_6_1_sol", "$comment": "The only v0.3 teacher: GPT-6.1 Sol at medium effort via the owner's local Codex CLI. A cloud recipient." },
+    "TeacherPreviewRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_ids", "recipient"],
+      "properties": {
+        "node_ids": { "type": "array", "minItems": 1, "maxItems": 25, "uniqueItems": true, "items": { "$ref": "#/$defs/NodeId" } },
+        "recipient": { "$ref": "#/$defs/TeacherRecipient" }
+      }
+    },
+    "TeacherPreview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["preview_id", "recipient", "model", "reasoning_effort", "dataset_class", "serialization_version", "instructions", "allowed_labels", "output_schema_digest", "runner_profile_digest", "fields", "items", "excluded", "taxonomy_version", "payload_bytes", "payload_digest", "expires_at"],
+      "properties": {
+        "preview_id": { "$ref": "#/$defs/PreviewId" },
+        "serialization_version": { "const": "loomward-teacher-request/1" },
+        "instructions": { "type": "string", "maxLength": 4000, "$comment": "The exact system instructions sent." },
+        "allowed_labels": { "type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": { "$ref": "#/$defs/Label" } },
+        "output_schema_digest": { "$ref": "#/$defs/Digest" },
+        "runner_profile_digest": { "$ref": "#/$defs/Digest", "$comment": "Pinned Codex executable hash, version, argv and effective configuration overrides (docs/41 section 9.2)." },
+        "recipient": { "$ref": "#/$defs/TeacherRecipient" },
+        "model": { "const": "gpt-6.1-sol" },
+        "reasoning_effort": { "const": "medium" },
+        "dataset_class": { "$ref": "#/$defs/DatasetClass" },
+        "fields": { "type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true, "items": { "$ref": "#/$defs/TeacherField" } },
+        "items": {
+          "type": "array",
+          "maxItems": 25,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["handle", "metadata"],
+            "properties": {
+              "handle": { "type": "string", "pattern": "^i[0-9]{2}$", "$comment": "Request-local handle; catalogue IDs never leave the machine." },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name", "extension", "context", "size_bucket"],
+                "properties": {
+                  "name": { "type": "string", "maxLength": 256 },
+                  "extension": { "type": "string", "maxLength": 32 },
+                  "context": { "type": "string", "maxLength": 512 },
+                  "size_bucket": { "type": "integer", "minimum": 0, "maximum": 16 }
+                }
+              }
+            }
+          }
+        },
+        "excluded": {
+          "type": "array",
+          "maxItems": 25,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["node_id", "reason"],
+            "properties": {
+              "node_id": { "$ref": "#/$defs/NodeId" },
+              "reason": { "enum": ["sensitive_name", "sensitive_context", "excluded", "cloud_placeholder", "directory_not_supported"] }
+            }
+          }
+        },
+        "taxonomy_version": { "type": "integer", "minimum": 1 },
+        "payload_bytes": { "$ref": "#/$defs/Count" },
+        "payload_digest": { "$ref": "#/$defs/Digest", "$comment": "SHA-256 over the canonical serialization of the complete request: instructions, allowed labels, output schema, items and serialization version." },
+        "expires_at": { "$ref": "#/$defs/Timestamp" }
+      },
+      "$comment": "Immutable once created. Shows the complete request that would leave the machine. Creating a preview sends nothing."
+    },
+    "DisclosureSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["preview_id", "recipient", "model", "reasoning_effort", "dataset_class", "fields", "items", "excluded_count", "payload_digest", "runner_profile_digest", "expires_at"],
+      "properties": {
+        "preview_id": { "$ref": "#/$defs/PreviewId" },
+        "recipient": { "$ref": "#/$defs/TeacherRecipient" },
+        "model": { "const": "gpt-6.1-sol" },
+        "reasoning_effort": { "const": "medium" },
+        "dataset_class": { "$ref": "#/$defs/DatasetClass" },
+        "fields": { "type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true, "items": { "$ref": "#/$defs/TeacherField" } },
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 25,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["handle", "name", "extension", "context", "size_bucket"],
+            "properties": {
+              "handle": { "type": "string", "pattern": "^i[0-9]{2}$" },
+              "name": { "type": "string", "maxLength": 256 },
+              "extension": { "type": "string", "maxLength": 32 },
+              "context": { "type": "string", "maxLength": 512 },
+              "size_bucket": { "type": "integer", "minimum": 0, "maximum": 16 }
+            }
+          }
+        },
+        "excluded_count": { "type": "integer", "minimum": 0, "maximum": 25 },
+        "payload_digest": { "$ref": "#/$defs/Digest" },
+        "runner_profile_digest": { "$ref": "#/$defs/Digest" },
+        "expires_at": { "$ref": "#/$defs/Timestamp" }
+      },
+      "$comment": "Built by Rust from the stored immutable preview, never from UI input, and rendered by the native confirmation dialog item by item. Not sent over the wire; defined here so the Rust and dialog implementations agree."
+    },
+    "DisclosureGrantRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["preview_id", "payload_digest"],
+      "properties": {
+        "preview_id": { "$ref": "#/$defs/PreviewId" },
+        "payload_digest": { "$ref": "#/$defs/Digest" }
+      },
+      "$comment": "Personal dataset: the Tauri adapter shows a native confirmation dialog from Rust; the HTTP adapter refuses. Synthetic dataset: granted by policy."
+    },
+    "DisclosureGrant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["grant_id", "kind", "recipient", "dataset_class", "fields", "item_count", "payload_digest", "created_at", "expires_at", "revoked_at", "used", "confirmed_via"],
+      "properties": {
+        "grant_id": { "$ref": "#/$defs/GrantId" },
+        "kind": { "const": "teacher_disclosure" },
+        "recipient": { "$ref": "#/$defs/TeacherRecipient" },
+        "dataset_class": { "$ref": "#/$defs/DatasetClass" },
+        "fields": { "type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true, "items": { "$ref": "#/$defs/TeacherField" } },
+        "item_count": { "type": "integer", "minimum": 1, "maximum": 25 },
+        "payload_digest": { "$ref": "#/$defs/Digest" },
+        "created_at": { "$ref": "#/$defs/Timestamp" },
+        "expires_at": { "$ref": "#/$defs/Timestamp" },
+        "revoked_at": { "$ref": "#/$defs/NullableTimestamp" },
+        "used": { "type": "boolean", "$comment": "Single use: one grant authorises exactly one teacher request with exactly the previewed payload." },
+        "confirmed_via": { "enum": ["desktop_dialog", "synthetic_policy"] }
+      }
+    },
+    "DisclosureGrantResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome", "grant", "refusal"],
+      "properties": {
+        "outcome": { "enum": ["granted", "declined_by_user", "refused"] },
+        "grant": { "anyOf": [{ "$ref": "#/$defs/DisclosureGrant" }, { "type": "null" }] },
+        "refusal": { "enum": [null, "personal_requires_desktop_dialog", "preview_expired", "preview_already_used", "digest_mismatch", "teacher_unavailable", "runner_profile_mismatch", "confinement_not_enforced"] }
+      }
+    },
+    "RootGrantRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["grant_id", "kind", "root_id", "granted_at", "granted_via", "revoked_at"],
+      "properties": {
+        "grant_id": { "$ref": "#/$defs/GrantId" },
+        "kind": { "const": "metadata_root" },
+        "root_id": { "$ref": "#/$defs/RootId" },
+        "granted_at": { "$ref": "#/$defs/Timestamp" },
+        "granted_via": { "enum": ["desktop_picker", "cli_flag", "fixture"] },
+        "revoked_at": { "$ref": "#/$defs/NullableTimestamp" }
+      }
+    },
+    "GrantList": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["grants"],
+      "properties": {
+        "grants": {
+          "type": "array",
+          "maxItems": 256,
+          "items": { "oneOf": [{ "$ref": "#/$defs/RootGrantRecord" }, { "$ref": "#/$defs/DisclosureGrant" }] }
+        }
+      }
+    },
+    "GrantRevokeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["grant_id"],
+      "properties": { "grant_id": { "$ref": "#/$defs/GrantId" } }
+    },
+    "GrantRevokeResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["grant_id", "revoked_at"],
+      "properties": { "grant_id": { "$ref": "#/$defs/GrantId" }, "revoked_at": { "$ref": "#/$defs/Timestamp" } }
+    },
+    "TeacherRunRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["grant_id"],
+      "properties": { "grant_id": { "$ref": "#/$defs/GrantId" } },
+      "$comment": "Sends exactly the payload bound to the grant's digest. No node list is accepted here."
+    },
+    "TeacherLabel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "label", "abstain", "reason", "evidence", "data_class", "weight", "requires_review", "autonomy_allowed"],
+      "properties": {
+        "node_id": { "$ref": "#/$defs/NodeId" },
+        "label": { "anyOf": [{ "$ref": "#/$defs/Label" }, { "type": "null" }] },
+        "abstain": { "type": "boolean" },
+        "reason": { "type": "string", "maxLength": 512 },
+        "evidence": { "type": "array", "maxItems": 4, "uniqueItems": true, "items": { "$ref": "#/$defs/TeacherField" } },
+        "data_class": { "const": "teacher" },
+        "weight": { "const": 0.2 },
+        "requires_review": { "const": true },
+        "autonomy_allowed": { "const": false }
+      }
+    },
+    "TeacherResults": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["job_id", "state", "recipient", "payload_digest", "labels", "rejected_output", "rejection_reason"],
+      "properties": {
+        "job_id": { "$ref": "#/$defs/JobId" },
+        "state": { "$ref": "#/$defs/JobState" },
+        "recipient": { "$ref": "#/$defs/TeacherRecipient" },
+        "payload_digest": { "$ref": "#/$defs/Digest" },
+        "labels": { "type": "array", "maxItems": 25, "items": { "$ref": "#/$defs/TeacherLabel" } },
+        "rejected_output": { "type": "boolean" },
+        "rejection_reason": { "type": ["string", "null"], "maxLength": 512 }
+      }
+    },
+
+    "TierVolume": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["volume_id", "display_name", "tier", "online", "writable", "capacity_bytes", "free_bytes", "reserve_bytes", "free_fraction", "pressure"],
+      "properties": {
+        "volume_id": { "$ref": "#/$defs/VolumeId" },
+        "display_name": { "type": "string", "maxLength": 64 },
+        "tier": { "$ref": "#/$defs/TierInfo" },
+        "online": { "type": "boolean" },
+        "writable": { "type": ["boolean", "null"] },
+        "capacity_bytes": { "$ref": "#/$defs/NullableBytes" },
+        "free_bytes": { "$ref": "#/$defs/NullableBytes" },
+        "reserve_bytes": { "$ref": "#/$defs/ByteCount" },
+        "free_fraction": { "$ref": "#/$defs/NullableFraction" },
+        "pressure": { "enum": ["ok", "watch", "pressure", "unknown"] }
+      }
+    },
+    "TierModel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["volumes", "policy"],
+      "properties": {
+        "volumes": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/TierVolume" } },
+        "policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["watch_free_fraction", "pressure_free_fraction", "reserve_note", "note"],
+          "properties": {
+            "watch_free_fraction": { "$ref": "#/$defs/Fraction" },
+            "pressure_free_fraction": { "$ref": "#/$defs/Fraction" },
+            "reserve_note": { "type": "string", "maxLength": 256 },
+            "note": { "type": "string", "maxLength": 512 }
+          }
+        }
+      }
+    },
+    "HeatBasis": { "enum": ["unknown", "assumed", "mtime_proxy"], "$comment": "mtime_proxy is a labelled what-if only; modification age is not access heat." },
+    "CandidateBasis": { "enum": ["root_children", "largest_dirs"] },
+    "PlacementCandidatesRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_volume_id", "basis", "max_groups", "min_bytes"],
+      "properties": {
+        "source_volume_id": { "$ref": "#/$defs/VolumeId" },
+        "basis": { "$ref": "#/$defs/CandidateBasis" },
+        "max_groups": { "type": "integer", "minimum": 1, "maximum": 200 },
+        "min_bytes": { "$ref": "#/$defs/ByteCount" }
+      }
+    },
+    "CandidateGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["group_id", "node_id", "root_id", "name", "source_bytes", "destination_bytes", "transfer_bytes", "estimate_basis", "estimated_relief_bytes", "relief_basis", "heat", "heat_basis", "newest_modified_at", "pinned", "active", "protected", "days_since_move", "coverage"],
+      "properties": {
+        "group_id": { "$ref": "#/$defs/GroupId" },
+        "node_id": { "$ref": "#/$defs/NodeId" },
+        "root_id": { "$ref": "#/$defs/RootId" },
+        "name": { "type": "string", "maxLength": 260 },
+        "source_bytes": { "$ref": "#/$defs/ByteCount", "$comment": "Bytes by directory entry under estimate_basis (observation, not relief)." },
+        "destination_bytes": { "$ref": "#/$defs/ByteCount", "$comment": "Labelled estimate: per-file logical size rounded up to the destination cluster size where known." },
+        "transfer_bytes": { "$ref": "#/$defs/ByteCount" },
+        "estimate_basis": { "enum": ["allocated_entries", "logical_fallback", "unknown"] },
+        "estimated_relief_bytes": { "$ref": "#/$defs/NullableBytes", "$comment": "null unless relief_basis is verified_unique_allocation or an entry_allocation_whatif was requested." },
+        "relief_basis": { "enum": ["verified_unique_allocation", "entry_allocation_whatif", "unknown"], "$comment": "verified_unique_allocation: every entry has a native ID, every object's names are inside this group and link counts were observed; default stream only." },
+        "heat": { "$ref": "#/$defs/NullableFraction" },
+        "heat_basis": { "$ref": "#/$defs/HeatBasis" },
+        "newest_modified_at": { "$ref": "#/$defs/NullableTimestamp" },
+        "pinned": { "type": ["boolean", "null"] },
+        "active": { "type": ["boolean", "null"] },
+        "protected": { "type": ["boolean", "null"] },
+        "days_since_move": { "type": ["integer", "null"], "minimum": 0, "maximum": 36500 },
+        "coverage": { "$ref": "#/$defs/CoverageState" }
+      }
+    },
+    "PlacementCandidates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_volume_id", "root_generations", "groups", "note"],
+      "properties": {
+        "source_volume_id": { "$ref": "#/$defs/VolumeId" },
+        "root_generations": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/RootGeneration" } },
+        "groups": { "type": "array", "maxItems": 200, "items": { "$ref": "#/$defs/CandidateGroup" } },
+        "note": { "type": "string", "maxLength": 512 }
+      }
+    },
+    "GroupOverride": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["group_id"],
+      "properties": {
+        "group_id": { "$ref": "#/$defs/GroupId" },
+        "heat": { "$ref": "#/$defs/NullableFraction" },
+        "pinned": { "type": ["boolean", "null"] },
+        "active": { "type": ["boolean", "null"] },
+        "protected": { "type": ["boolean", "null"] },
+        "days_since_move": { "type": ["integer", "null"], "minimum": 0, "maximum": 36500 }
+      },
+      "$comment": "Owner what-if assumptions, recorded as assumed in the plan. They never change capacities or volumes; those come from observations only."
+    },
+    "PlacementSimulateRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_volume_id", "target_free_bytes", "max_transfer_bytes", "heat_policy", "relief_policy", "candidate_basis", "max_groups", "overrides", "node_budget", "save"],
+      "properties": {
+        "source_volume_id": { "$ref": "#/$defs/VolumeId" },
+        "target_free_bytes": { "$ref": "#/$defs/ByteCount" },
+        "max_transfer_bytes": { "$ref": "#/$defs/ByteCount" },
+        "heat_policy": { "enum": ["unknown_is_ineligible", "mtime_proxy_whatif", "assumed_only"] },
+        "relief_policy": { "enum": ["verified_only", "entry_allocation_whatif"], "$comment": "verified_only (default) pre-rejects groups whose relief is unknown; entry_allocation_whatif feeds entry allocation as an assumed relief and records it in assumptions." },
+        "candidate_basis": { "$ref": "#/$defs/CandidateBasis" },
+        "max_groups": { "type": "integer", "minimum": 1, "maximum": 200 },
+        "overrides": { "type": "array", "maxItems": 200, "items": { "$ref": "#/$defs/GroupOverride" } },
+        "node_budget": { "type": "integer", "minimum": 0, "maximum": 200000 },
+        "save": { "type": "boolean" }
+      }
+    },
+    "PlacementProposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["group_id", "source_id", "target_id", "source_bytes_relieved", "destination_bytes_required", "transfer_bytes", "reason", "requires_consent", "executable"],
+      "properties": {
+        "group_id": { "$ref": "#/$defs/GroupId" },
+        "source_id": { "$ref": "#/$defs/VolumeId" },
+        "target_id": { "$ref": "#/$defs/VolumeId" },
+        "source_bytes_relieved": { "$ref": "#/$defs/ByteCount" },
+        "destination_bytes_required": { "$ref": "#/$defs/ByteCount" },
+        "transfer_bytes": { "$ref": "#/$defs/ByteCount" },
+        "reason": { "const": "bounded_capacity_budget_allocation" },
+        "requires_consent": { "const": true },
+        "executable": { "const": false }
+      }
+    },
+    "PlacementPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "algorithm", "optimality_claim", "optimality_scope", "shortfall_optimal", "search", "proposals", "rejected", "pre_rejected", "excluded_volumes", "projected_free_bytes", "target_free_bytes", "shortfall_bytes", "satisfied", "transfer_bytes", "filesystem_changed", "baseline_shortfall_bytes", "shortfall_improvement_bytes", "assumption", "heat_policy", "relief_policy", "assumptions", "root_generations", "proposal_id"],
+      "properties": {
+        "mode": { "const": "simulation" },
+        "algorithm": { "const": "bounded_portfolio_search_v2" },
+        "optimality_claim": { "type": "boolean" },
+        "optimality_scope": { "type": "string", "maxLength": 512 },
+        "shortfall_optimal": { "type": "boolean" },
+        "search": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["complete", "nodes_visited", "node_budget", "reason", "eligible_groups", "eligible_targets", "lower_bound_shortfall_bytes"],
+          "properties": {
+            "complete": { "type": "boolean" },
+            "nodes_visited": { "$ref": "#/$defs/Count" },
+            "node_budget": { "$ref": "#/$defs/Count" },
+            "reason": { "enum": ["exhausted", "node_budget", "problem_size_limit"] },
+            "eligible_groups": { "$ref": "#/$defs/Count" },
+            "eligible_targets": { "$ref": "#/$defs/Count" },
+            "lower_bound_shortfall_bytes": { "$ref": "#/$defs/ByteCount" }
+          }
+        },
+        "proposals": { "type": "array", "maxItems": 200, "items": { "$ref": "#/$defs/PlacementProposal" } },
+        "rejected": {
+          "type": "array",
+          "maxItems": 200,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["group_id", "reason"],
+            "properties": {
+              "group_id": { "$ref": "#/$defs/GroupId" },
+              "reason": { "enum": ["not_on_source", "pinned_active_protected_or_unspecified", "heat_unknown", "not_cold", "cooldown_or_history_unknown", "source_offline_or_readonly", "not_selected_by_bounded_allocator"] }
+            }
+          },
+          "$comment": "Exactly the planner's own rejections (parity with planner_v2)."
+        },
+        "pre_rejected": {
+          "type": "array",
+          "maxItems": 200,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["group_id", "reason"],
+            "properties": {
+              "group_id": { "$ref": "#/$defs/GroupId" },
+              "reason": { "enum": ["relief_unknown", "shares_objects_with_other_group", "group_coverage_incomplete"] }
+            }
+          },
+          "$comment": "Service-level exclusions applied before the planner runs; these groups never reach it."
+        },
+        "excluded_volumes": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["volume_id", "reason"],
+            "properties": {
+              "volume_id": { "$ref": "#/$defs/VolumeId" },
+              "reason": { "enum": ["tier_unknown", "capacity_unknown", "offline"] }
+            }
+          }
+        },
+        "relief_policy": { "enum": ["verified_only", "entry_allocation_whatif"] },
+        "projected_free_bytes": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": { "pattern": "^vo_[A-Za-z0-9_-]{1,64}$" },
+          "additionalProperties": { "$ref": "#/$defs/ByteCount" }
+        },
+        "target_free_bytes": { "$ref": "#/$defs/ByteCount" },
+        "shortfall_bytes": { "$ref": "#/$defs/ByteCount" },
+        "satisfied": { "type": "boolean" },
+        "transfer_bytes": { "$ref": "#/$defs/ByteCount" },
+        "filesystem_changed": { "const": false },
+        "baseline_shortfall_bytes": { "$ref": "#/$defs/ByteCount" },
+        "shortfall_improvement_bytes": { "$ref": "#/$defs/ByteCount" },
+        "assumption": { "type": "string", "maxLength": 512 },
+        "heat_policy": { "enum": ["unknown_is_ineligible", "mtime_proxy_whatif", "assumed_only"] },
+        "assumptions": { "type": "array", "maxItems": 16, "items": { "type": "string", "maxLength": 256 } },
+        "root_generations": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/RootGeneration" } },
+        "proposal_id": { "anyOf": [{ "$ref": "#/$defs/ProposalId" }, { "type": "null" }] }
+      },
+      "$comment": "Field-for-field the planner_v2 output (python/loomward/planner_v2.py) with bytes as decimal strings, plus heat_policy, assumptions, root_generations and proposal_id."
+    },
+    "ProposalSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["proposal_id", "kind", "status", "created_at", "source_volume_id", "satisfied", "shortfall_bytes"],
+      "properties": {
+        "proposal_id": { "$ref": "#/$defs/ProposalId" },
+        "kind": { "const": "placement_simulation" },
+        "status": { "enum": ["simulation_only", "stale"] },
+        "created_at": { "$ref": "#/$defs/Timestamp" },
+        "source_volume_id": { "$ref": "#/$defs/VolumeId" },
+        "satisfied": { "type": "boolean" },
+        "shortfall_bytes": { "$ref": "#/$defs/ByteCount" }
+      }
+    },
+    "ProposalList": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["proposals"],
+      "properties": { "proposals": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/ProposalSummary" } } }
+    },
+    "ProposalRefRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["proposal_id"],
+      "properties": { "proposal_id": { "$ref": "#/$defs/ProposalId" } }
+    },
+    "ProposalDetail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "inputs_digest", "plan"],
+      "properties": {
+        "summary": { "$ref": "#/$defs/ProposalSummary" },
+        "inputs_digest": { "$ref": "#/$defs/Digest" },
+        "plan": { "$ref": "#/$defs/PlacementPlan" }
+      }
+    },
+
+    "TelemetryChannel": { "enum": ["system", "processes", "gpu", "disks", "engine"] },
+    "TelemetryInterval": { "enum": [1000, 2000, 5000, 10000] },
+    "TelemetrySubscribeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subscription_id", "channels", "interval_ms"],
+      "properties": {
+        "subscription_id": { "anyOf": [{ "$ref": "#/$defs/SubscriptionId" }, { "type": "null" }], "$comment": "null creates; an existing id renews and may change channels/interval." },
+        "channels": { "type": "array", "minItems": 1, "maxItems": 5, "uniqueItems": true, "items": { "$ref": "#/$defs/TelemetryChannel" } },
+        "interval_ms": { "$ref": "#/$defs/TelemetryInterval" }
+      }
+    },
+    "TelemetrySubscription": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subscription_id", "channels", "interval_ms", "expires_at"],
+      "properties": {
+        "subscription_id": { "$ref": "#/$defs/SubscriptionId" },
+        "channels": { "type": "array", "minItems": 1, "maxItems": 5, "uniqueItems": true, "items": { "$ref": "#/$defs/TelemetryChannel" } },
+        "interval_ms": { "$ref": "#/$defs/TelemetryInterval" },
+        "expires_at": { "$ref": "#/$defs/Timestamp", "$comment": "60 s lease; the sampler stops when no live subscription remains." }
+      }
+    },
+    "SubscriptionRefRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subscription_id"],
+      "properties": { "subscription_id": { "$ref": "#/$defs/SubscriptionId" } }
+    },
+    "TelemetryUnsubscribed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subscription_id", "stopped"],
+      "properties": { "subscription_id": { "$ref": "#/$defs/SubscriptionId" }, "stopped": { "type": "boolean" } }
+    },
+    "TelemetrySnapshotRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["channels"],
+      "properties": { "channels": { "type": "array", "minItems": 1, "maxItems": 5, "uniqueItems": true, "items": { "$ref": "#/$defs/TelemetryChannel" } } }
+    },
+    "SystemSample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["memory", "cpu"],
+      "properties": {
+        "memory": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["total_bytes", "available_bytes", "commit_bytes", "commit_limit_bytes", "load_fraction"],
+          "properties": {
+            "total_bytes": { "$ref": "#/$defs/NullableBytes" },
+            "available_bytes": { "$ref": "#/$defs/NullableBytes" },
+            "commit_bytes": { "$ref": "#/$defs/NullableBytes" },
+            "commit_limit_bytes": { "$ref": "#/$defs/NullableBytes" },
+            "load_fraction": { "$ref": "#/$defs/NullableFraction" }
+          }
+        },
+        "cpu": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["logical_cpus", "busy_fraction"],
+          "properties": {
+            "logical_cpus": { "$ref": "#/$defs/Count" },
+            "busy_fraction": { "$ref": "#/$defs/NullableFraction" }
+          }
+        }
+      }
+    },
+    "GpuSample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "basis", "adapters"],
+      "properties": {
+        "state": { "enum": ["observed", "unavailable", "denied"] },
+        "basis": { "enum": ["pdh_gpu_counters", "unavailable"] },
+        "adapters": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["adapter_id", "name", "dedicated_total_bytes", "dedicated_used_bytes", "shared_used_bytes", "engine_busy_fraction"],
+            "properties": {
+              "adapter_id": { "type": "string", "maxLength": 64 },
+              "name": { "type": "string", "maxLength": 128 },
+              "dedicated_total_bytes": { "$ref": "#/$defs/NullableBytes" },
+              "dedicated_used_bytes": { "$ref": "#/$defs/NullableBytes", "$comment": "Global, from the GPU Adapter Memory counter; never a sum of per-process values." },
+              "shared_used_bytes": { "$ref": "#/$defs/NullableBytes", "$comment": "Global, from the GPU Adapter Memory counter." },
+              "engine_busy_fraction": { "$ref": "#/$defs/NullableFraction", "$comment": "Maximum over engine types of the per-type utilisation summed across that adapter's engine instances, clamped to 1 (the Task Manager method)." }
+            }
+          }
+        }
+      }
+    },
+    "DiskSample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "disks"],
+      "properties": {
+        "state": { "enum": ["observed", "unavailable"] },
+        "disks": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["disk_label", "volume_ids", "read_bytes_per_s", "write_bytes_per_s", "busy_fraction", "queue_length"],
+            "properties": {
+              "disk_label": { "type": "string", "maxLength": 64 },
+              "volume_ids": { "type": "array", "maxItems": 16, "items": { "$ref": "#/$defs/VolumeId" } },
+              "read_bytes_per_s": { "$ref": "#/$defs/NullableRate" },
+              "write_bytes_per_s": { "$ref": "#/$defs/NullableRate" },
+              "busy_fraction": { "$ref": "#/$defs/NullableFraction", "$comment": "1 - (PhysicalDisk % Idle Time / 100), clamped to [0, 1]." },
+              "queue_length": { "$ref": "#/$defs/NullableRate", "$comment": "PhysicalDisk Avg. Disk Queue Length; a separate quantity from busy_fraction." }
+            }
+          }
+        }
+      }
+    },
+    "PoolName": { "enum": ["scan_enumerate", "catalog_write", "learning", "teacher", "telemetry"] },
+    "PoolUse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pool", "max_workers", "busy_workers", "queue_depth", "queue_capacity"],
+      "properties": {
+        "pool": { "$ref": "#/$defs/PoolName" },
+        "max_workers": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "busy_workers": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "queue_depth": { "$ref": "#/$defs/Count" },
+        "queue_capacity": { "$ref": "#/$defs/Count" }
+      }
+    },
+    "EngineSample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["private_commit_bytes", "working_set_bytes", "cpu_fraction", "threads", "pools"],
+      "properties": {
+        "private_commit_bytes": { "$ref": "#/$defs/NullableBytes" },
+        "working_set_bytes": { "$ref": "#/$defs/NullableBytes" },
+        "cpu_fraction": { "$ref": "#/$defs/NullableFraction", "$comment": "Machine-normalised: CPU time over the interval divided by (interval x logical CPUs)." },
+        "threads": { "$ref": "#/$defs/NullableCount" },
+        "pools": { "type": "array", "maxItems": 8, "items": { "$ref": "#/$defs/PoolUse" } }
+      }
+    },
+    "ProcessRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["process_ref", "pid", "name", "started_at", "private_commit_bytes", "private_working_set_bytes", "working_set_bytes", "cpu_fraction", "io_read_bytes_per_s", "io_write_bytes_per_s", "gpu_dedicated_bytes", "access", "loomward_owned"],
+      "properties": {
+        "process_ref": { "$ref": "#/$defs/ProcessRef" },
+        "pid": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+        "name": { "type": "string", "maxLength": 260 },
+        "started_at": { "$ref": "#/$defs/NullableTimestamp" },
+        "private_commit_bytes": { "$ref": "#/$defs/NullableBytes", "$comment": "PROCESS_MEMORY_COUNTERS_EX2.PrivateUsage (commit charge), not resident memory." },
+        "private_working_set_bytes": { "$ref": "#/$defs/NullableBytes", "$comment": "PROCESS_MEMORY_COUNTERS_EX2.PrivateWorkingSetSize where supported, else null." },
+        "working_set_bytes": { "$ref": "#/$defs/NullableBytes", "$comment": "Total working set, including shared pages." },
+        "cpu_fraction": { "$ref": "#/$defs/NullableFraction", "$comment": "Machine-normalised over the sample interval; null on the first sample." },
+        "io_read_bytes_per_s": { "$ref": "#/$defs/NullableRate" },
+        "io_write_bytes_per_s": { "$ref": "#/$defs/NullableRate" },
+        "gpu_dedicated_bytes": { "$ref": "#/$defs/NullableBytes", "$comment": "GPU Process Memory dedicated usage for this process; may include shared allocations, so rows are never summed into an adapter total." },
+        "access": { "enum": ["full", "limited", "denied"] },
+        "loomward_owned": { "type": "boolean" }
+      },
+      "$comment": "No command line, no environment, no window titles (privacy)."
+    },
+    "ProcessSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observed_count", "denied_count", "top"],
+      "properties": {
+        "observed_count": { "$ref": "#/$defs/Count" },
+        "denied_count": { "$ref": "#/$defs/Count" },
+        "top": { "type": "array", "maxItems": 20, "items": { "$ref": "#/$defs/ProcessRow" } }
+      }
+    },
+    "TelemetrySample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sample_seq", "observed_at", "elapsed_ms", "system", "gpu", "disks", "engine", "processes"],
+      "properties": {
+        "sample_seq": { "$ref": "#/$defs/Count" },
+        "observed_at": { "$ref": "#/$defs/Timestamp" },
+        "elapsed_ms": { "$ref": "#/$defs/NullableCount", "$comment": "Monotonic time since the previous sample; null on the first sample." },
+        "system": { "anyOf": [{ "$ref": "#/$defs/SystemSample" }, { "type": "null" }] },
+        "gpu": { "anyOf": [{ "$ref": "#/$defs/GpuSample" }, { "type": "null" }] },
+        "disks": { "anyOf": [{ "$ref": "#/$defs/DiskSample" }, { "type": "null" }] },
+        "engine": { "anyOf": [{ "$ref": "#/$defs/EngineSample" }, { "type": "null" }] },
+        "processes": { "anyOf": [{ "$ref": "#/$defs/ProcessSummary" }, { "type": "null" }] }
+      }
+    },
+    "ProcessListRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sort", "limit"],
+      "properties": {
+        "sort": { "enum": ["private_desc", "working_set_desc", "cpu_desc", "io_desc", "gpu_desc", "name_asc"] },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+      }
+    },
+    "ProcessList": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sample_seq", "observed_at", "rows", "observed_count", "denied_count", "truncated", "note"],
+      "properties": {
+        "sample_seq": { "$ref": "#/$defs/Count" },
+        "observed_at": { "$ref": "#/$defs/Timestamp" },
+        "rows": { "type": "array", "maxItems": 200, "items": { "$ref": "#/$defs/ProcessRow" } },
+        "observed_count": { "$ref": "#/$defs/Count" },
+        "denied_count": { "$ref": "#/$defs/Count" },
+        "truncated": { "type": "boolean" },
+        "note": { "type": "string", "maxLength": 512 }
+      }
+    },
+    "ProcessRefRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["process_ref"],
+      "properties": { "process_ref": { "$ref": "#/$defs/ProcessRef" } }
+    },
+    "ProcessExplanation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["process_ref", "observed_at", "facts", "summary", "caveats", "available_actions"],
+      "properties": {
+        "process_ref": { "$ref": "#/$defs/ProcessRef" },
+        "observed_at": { "$ref": "#/$defs/Timestamp" },
+        "facts": {
+          "type": "array",
+          "maxItems": 24,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["code", "text"],
+            "properties": { "code": { "type": "string", "pattern": "^[a-z_]{1,64}$" }, "text": { "type": "string", "maxLength": 256 } }
+          }
+        },
+        "summary": { "type": "string", "maxLength": 1024 },
+        "caveats": { "type": "array", "maxItems": 8, "items": { "type": "string", "maxLength": 256 } },
+        "available_actions": { "type": "array", "maxItems": 0, "$comment": "Always empty in v0.3 (invariant 1)." }
+      }
+    },
+    "PoolBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pool", "max_workers", "default_workers", "current_workers", "queue_capacity", "scope"],
+      "properties": {
+        "pool": { "$ref": "#/$defs/PoolName" },
+        "max_workers": { "type": "integer", "minimum": 1, "maximum": 64 },
+        "default_workers": { "type": "integer", "minimum": 1, "maximum": 64 },
+        "current_workers": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "queue_capacity": { "$ref": "#/$defs/Count" },
+        "scope": { "const": "loomward_own_threads" }
+      }
+    },
+    "OwnBudgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pools", "teacher", "enforcement_note"],
+      "properties": {
+        "pools": { "type": "array", "maxItems": 8, "items": { "$ref": "#/$defs/PoolBudget" } },
+        "teacher": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["max_in_flight", "timeout_s", "memory_limit_bytes", "enforcement"],
+          "properties": {
+            "max_in_flight": { "const": 1 },
+            "timeout_s": { "type": "integer", "minimum": 10, "maximum": 900 },
+            "memory_limit_bytes": { "$ref": "#/$defs/NullableBytes" },
+            "enforcement": { "enum": ["job_object", "not_available"] }
+          }
+        },
+        "enforcement_note": { "type": "string", "maxLength": 512 }
+      }
+    },
+    "BudgetSetRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pool", "max_workers"],
+      "properties": {
+        "pool": { "enum": ["scan_enumerate", "learning", "telemetry"] },
+        "max_workers": { "type": "integer", "minimum": 1, "maximum": 32 }
+      },
+      "$comment": "Caps Loomward's own in-process pools only. No OS priority, affinity or memory call is made."
+    },
+
+    "StreamHello": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["session_started_at", "epoch", "last_seq", "oldest_replayable_seq", "dataset_class"],
+      "properties": {
+        "session_started_at": { "$ref": "#/$defs/Timestamp" },
+        "epoch": { "$ref": "#/$defs/StreamEpoch" },
+        "last_seq": { "$ref": "#/$defs/Count" },
+        "oldest_replayable_seq": { "$ref": "#/$defs/Count" },
+        "dataset_class": { "$ref": "#/$defs/DatasetClass" }
+      }
+    },
+    "StreamLagged": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason", "dropped", "resync"],
+      "properties": {
+        "reason": { "enum": ["subscriber_overflow", "epoch_changed", "replay_gap"] },
+        "dropped": { "$ref": "#/$defs/NullableCount", "$comment": "null when unknown (epoch change or replay gap)." },
+        "resync": { "type": "array", "maxItems": 5, "uniqueItems": true, "items": { "enum": ["roots", "volumes", "jobs", "tree", "learning"] } }
+      }
+    },
+    "ScanProgressEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["job_id", "root_id", "progress"],
+      "properties": {
+        "job_id": { "$ref": "#/$defs/JobId" },
+        "root_id": { "$ref": "#/$defs/RootId" },
+        "progress": { "$ref": "#/$defs/ScanProgress" }
+      }
+    },
+    "TreeInvalidated": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root_id", "generation", "scope", "node_ids"],
+      "properties": {
+        "root_id": { "anyOf": [{ "$ref": "#/$defs/RootId" }, { "type": "null" }] },
+        "generation": { "$ref": "#/$defs/NullableGeneration" },
+        "scope": { "enum": ["all", "nodes"] },
+        "node_ids": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/NodeId" } }
+      }
+    },
+    "TelemetrySampleEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subscription_id", "sample"],
+      "properties": {
+        "subscription_id": { "$ref": "#/$defs/SubscriptionId" },
+        "sample": { "$ref": "#/$defs/TelemetrySample" }
+      }
+    },
+    "LearningUpdated": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": { "status": { "$ref": "#/$defs/LearningStatus" } }
+    }
+  }
+}
