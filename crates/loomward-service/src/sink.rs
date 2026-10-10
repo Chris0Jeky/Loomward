@@ -214,6 +214,7 @@ fn outcome(o: ListOutcome) -> ListingOutcome {
                 IncompleteReason::AccessDenied => "denied",
                 IncompleteReason::OutsideScope => "stale",
                 IncompleteReason::Io(_)
+                | IncompleteReason::ContainmentUnproven
                 | IncompleteReason::Malformed
                 | IncompleteReason::Limit
                 | IncompleteReason::Refused
@@ -222,6 +223,25 @@ fn outcome(o: ListOutcome) -> ListingOutcome {
             .into(),
         ),
     }
+}
+
+#[cfg(test)]
+#[test]
+fn containment_failures_are_partial_not_targeted_stale() {
+    for reason in [
+        IncompleteReason::Io(50),
+        IncompleteReason::ContainmentUnproven,
+    ] {
+        assert_eq!(
+            outcome(ListOutcome::Incomplete(reason)),
+            ListingOutcome::Incomplete("partial".into())
+        );
+    }
+    assert_eq!(
+        outcome(ListOutcome::Incomplete(IncompleteReason::OutsideScope)),
+        ListingOutcome::Incomplete("stale".into())
+    );
+    assert_eq!(outcome(ListOutcome::Complete), ListingOutcome::Complete);
 }
 
 impl CatalogScanSink {
