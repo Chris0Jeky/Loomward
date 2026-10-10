@@ -72,6 +72,200 @@ const CHANNELS: &[TelemetryChannel] = &[
     TelemetryChannel::Engine,
 ];
 
+fn live_lease(state: &mut State) -> SubscriptionId {
+    let id = SubscriptionId::new("sb_synthetic").unwrap();
+    let now = Instant::now();
+    state.leases.insert(
+        id.clone(),
+        Lease {
+            generation: 1,
+            channels: CHANNELS.to_vec().try_into().unwrap(),
+            interval: serde_json::from_value(json!(10000)).unwrap(),
+            expires: now + LEASE_DURATION,
+            next_event: now + Duration::from_secs(10),
+        },
+    );
+    state.next_generation = 1;
+    id
+}
+
+#[test]
+fn unchanged_channel_renewal_preserves_queued_samples_and_generation() {
+    let telemetry = Telemetry::default();
+    let (id, next_event) = {
+        let mut state = lock(&telemetry.shared.state).unwrap();
+        let id = live_lease(&mut state);
+        state.running = true; // Exercise renewal without starting native observation.
+        state.events.push_back(TelemetrySampleEvent {
+            subscription_id: id.clone(),
+            sample: mapping::sample(&raw(), None, 1, CHANNELS, false).unwrap(),
+        });
+        (id.clone(), state.leases[&id].next_event)
+    };
+    let mut channels = CHANNELS.to_vec();
+    channels.reverse(); // Channel order does not change the projection.
+    let request = TelemetrySubscribeRequest {
+        subscription_id: Some(id.clone()),
+        channels: channels.try_into().unwrap(),
+        interval_ms: serde_json::from_value(json!(10000)).unwrap(),
+    };
+    telemetry.lease(&request).unwrap();
+    {
+        let state = lock(&telemetry.shared.state).unwrap();
+        assert_eq!(state.events.len(), 1);
+        assert_eq!(state.leases[&id].generation, 1);
+        assert_eq!(state.leases[&id].next_event, next_event);
+    }
+    telemetry
+        .lease(&TelemetrySubscribeRequest {
+            interval_ms: serde_json::from_value(json!(1000)).unwrap(),
+            ..request.clone()
+        })
+        .unwrap();
+    assert_eq!(lock(&telemetry.shared.state).unwrap().events.len(), 1);
+    telemetry
+        .lease(&TelemetrySubscribeRequest {
+            channels: vec![TelemetryChannel::Gpu].try_into().unwrap(),
+            ..request
+        })
+        .unwrap();
+    let state = lock(&telemetry.shared.state).unwrap();
+    assert!(state.events.is_empty());
+    assert_ne!(state.leases[&id].generation, 1);
+}
+
+#[test]
+fn handle_denial_is_denied_and_field_denial_is_limited() {
+    let at = mapping::processes_observed_at(&raw()).unwrap();
+    for field in [
+        "process_handle_fields",
+        "io_counters",
+        "handle_count",
+        "session_id",
+        "private_working_set_bytes",
+        "memory",
+        "start_and_cpu_times",
+        "io_bytes",
+    ] {
+        let mut process = raw().processes.remove(0);
+        process.protected_or_unknown = true;
+        process.unknowns.push(Unknown {
+            field: field.into(),
+            reason: "access_denied".into(),
+            windows_error: Some(5),
+        });
+        if field == "process_handle_fields" {
+            process = Process {
+                unknowns: process.unknowns,
+                protected_or_unknown: true,
+                ..Process::default()
+            };
+        } else {
+            process.rates.cpu_fraction = Some(0.25);
+        }
+        let row = mapping::process_row(&process, 1, &at);
+        assert_eq!(
+            row.access,
+            if field == "process_handle_fields" {
+                ProcessRowAccess::Denied
+            } else {
+                ProcessRowAccess::Limited
+            }
+        );
+        if field != "process_handle_fields" {
+            assert_eq!(row.working_set_bytes, Some(Bytes::from(200)));
+            assert_eq!(row.cpu_fraction.unwrap().get(), 0.25);
+        }
+    }
+}
+
+#[test]
+fn expired_leases_make_all_retained_reads_unavailable_before_worker_wakes() {
+    let mut outcomes = vec![];
+    for read in 0..3 {
+        let e = Engine::open(crate::EngineConfig::new(
+            "unused-state".into(),
+            DatasetClass::Synthetic,
+        ))
+        .unwrap();
+        let reference = mapping::process_ref(&raw().processes[0], 1);
+        {
+            let mut state = lock(&e.telemetry.shared.state).unwrap();
+            let id = live_lease(&mut state);
+            state.leases.get_mut(&id).unwrap().expires = Instant::now();
+            state.latest = Some(Latest {
+                raw: raw(),
+                own: None,
+                sequence: 1,
+            });
+        }
+        let result = match read {
+            0 => e
+                .telemetry_snapshot(
+                    &serde_json::from_value(json!({"channels":["system"]})).unwrap(),
+                )
+                .map(|_| ()),
+            1 => e
+                .processes_list(
+                    &serde_json::from_value(json!({"sort":"name_asc","limit":10})).unwrap(),
+                )
+                .map(|_| ()),
+            _ => e
+                .processes_explain(&ProcessRefRequest {
+                    process_ref: reference,
+                })
+                .map(|_| ()),
+        };
+        outcomes.push((
+            matches!(result, Err(EngineError::PartialCoverage { .. })),
+            lock(&e.telemetry.shared.state).unwrap().latest.is_none(),
+        ));
+    }
+    assert_eq!(outcomes, vec![(true, true); 3]);
+}
+
+#[test]
+fn unchanged_renewal_during_mapping_preserves_the_pending_sample() {
+    let telemetry = Telemetry::default();
+    let (mapped_tx, mapped_rx) = std::sync::mpsc::channel();
+    let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+    {
+        let mut state = lock(&telemetry.shared.state).unwrap();
+        state.sample_override = Some(raw());
+        state.mapping_pause = Some((mapped_tx, resume_rx));
+    }
+    let request: TelemetrySubscribeRequest = serde_json::from_value(
+        json!({"subscription_id":null,"channels":["system"],"interval_ms":10000}),
+    )
+    .unwrap();
+    let lease = telemetry.lease(&request).unwrap();
+    mapped_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    telemetry
+        .lease(&TelemetrySubscribeRequest {
+            subscription_id: Some(lease.subscription_id.clone()),
+            ..request
+        })
+        .unwrap();
+    resume_tx.send(()).unwrap();
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        let state = lock(&telemetry.shared.state).unwrap();
+        if state.sequence > 0 {
+            assert_eq!(state.events.len(), 1);
+            assert_eq!(state.events[0].subscription_id, lease.subscription_id);
+            break;
+        }
+        drop(state);
+        assert!(Instant::now() < until);
+        thread::sleep(Duration::from_millis(10));
+    }
+    telemetry
+        .release(&SubscriptionRefRequest {
+            subscription_id: lease.subscription_id,
+        })
+        .unwrap();
+}
+
 #[test]
 fn mapping_preserves_exact_bytes_units_and_distinct_quantities() {
     let mut raw = raw();
@@ -233,11 +427,15 @@ fn sorting_puts_missing_values_last_and_explains_denial_without_actions() {
     })
     .unwrap();
     let reference = mapping::process_ref(&raw.processes[denied_index], 1);
-    lock(&e.telemetry.shared.state).unwrap().latest = Some(Latest {
-        raw,
-        own: None,
-        sequence: 1,
-    });
+    {
+        let mut state = lock(&e.telemetry.shared.state).unwrap();
+        live_lease(&mut state);
+        state.latest = Some(Latest {
+            raw,
+            own: None,
+            sequence: 1,
+        });
+    }
     let explanation = e
         .processes_explain(&ProcessRefRequest {
             process_ref: reference,
@@ -390,6 +588,7 @@ fn unknown_creation_ref_survives_list_to_explain_tick() {
     let mut snapshot = raw();
     snapshot.processes[0].start_time_windows_100ns = None;
     let mut state = lock(&e.telemetry.shared.state).unwrap();
+    live_lease(&mut state);
     state.latest = Some(Latest {
         raw: snapshot,
         own: None,
@@ -690,11 +889,15 @@ fn retained_process_rows_keep_their_older_observation_time() {
         DatasetClass::Personal,
     ))
     .unwrap();
-    lock(&e.telemetry.shared.state).unwrap().latest = Some(Latest {
-        raw: snapshot.clone(),
-        own: None,
-        sequence: 1,
-    });
+    {
+        let mut state = lock(&e.telemetry.shared.state).unwrap();
+        live_lease(&mut state);
+        state.latest = Some(Latest {
+            raw: snapshot.clone(),
+            own: None,
+            sequence: 1,
+        });
+    }
     let list = e
         .processes_list(&serde_json::from_value(json!({"sort":"name_asc","limit":10})).unwrap())
         .unwrap();

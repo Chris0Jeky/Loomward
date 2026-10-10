@@ -75,11 +75,7 @@ pub(super) fn process_row(process: &Process, sequence: u64, observed_at: &Timest
         .as_deref()
         .and_then(|v| v.parse::<u64>().ok())
         .and_then(|v| timestamp(i128::from(v) - 116_444_736_000_000_000).ok());
-    let denied = process
-        .unknowns
-        .iter()
-        .any(|u| u.field == "process_handle_fields" && u.reason == "access_denied");
-    let access = if denied {
+    let access = if process.access_denied() {
         ProcessRowAccess::Denied
     } else if process.protected_or_unknown || started_at.is_none() {
         ProcessRowAccess::Limited
