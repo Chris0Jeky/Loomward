@@ -5,7 +5,8 @@ the L2 errata in issue #117. Requires Rust 1.88; tested with Rust 1.97.1 on Wind
 
 `Catalog::open(state_dir, "synthetic" | "personal")` opens the dataset's two STRICT
 databases, checks ownership, dataset class, supported version and `quick_check`, and
-refuses UNC/device paths. Migration 2 applies the revised schema to existing v1 data.
+refuses UNC/device paths. Migration 2 applies the revised schema to existing v1 data;
+migration 3 adds the pending reference journal without changing existing bindings or instances.
 Derived catalogue corruption is archived with its sidecars and rebuilt. Precious
 state corruption is refused. `main.synchronous=NORMAL`, `st.synchronous=FULL` and
 foreign keys are enabled. No transaction writes both persistent files.
@@ -63,6 +64,14 @@ Observed deletion or creation-time change retires the binding. Even reuse of the
 same identity and creation time creates a new incarnation. `ReconcileReference` is
 the explicit engine-controlled operation for restoring a selected old reference;
 no automatic attachment occurs after continuity is lost.
+
+Retirements and surviving hard-link rebindings first commit as pending intents in
+`state.db`, leaving effective bindings and collection membership intact. The catalogue
+publication commits its random token in `meta` in the same main-only transaction.
+A separate state-only transaction confirms matching intents and removes the journal.
+Failure and startup recovery discard intents without a matching token and catalogue
+instance; recovery runs before any derived repair writes and is idempotent. A failed
+confirmation closes the writer with the journal intact for recovery to retry.
 
 ## Reader and engine integration
 

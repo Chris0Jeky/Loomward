@@ -7,9 +7,9 @@
     "target_dataset_rows": 10000000
   },
   "P4": {
-    "insert_seconds": 54.3066148,
+    "insert_seconds": 60.9601267,
     "met": false,
-    "rows_per_second": 18432.395458388986,
+    "rows_per_second": 16420.585949996064,
     "target_rows_per_second": 250000
   },
   "P6": {
@@ -21,10 +21,10 @@
     "target_ms": 60,
     "target_payload_bytes": 1500000,
     "timing": {
-      "max_ms": 51.7605,
-      "min_ms": 28.4029,
-      "p50_ms": 34.3399,
-      "p95_ms": 43.4434,
+      "max_ms": 48.9837,
+      "min_ms": 29.1113,
+      "p50_ms": 38.731,
+      "p95_ms": 48.850699999999996,
       "runs": 21
     }
   },
@@ -32,10 +32,10 @@
     "limit": 200,
     "target_ms": 20,
     "timing": {
-      "max_ms": 1.1857,
-      "min_ms": 0.5643,
-      "p50_ms": 0.6133,
-      "p95_ms": 1.0494,
+      "max_ms": 1.3397000000000001,
+      "min_ms": 0.6199,
+      "p50_ms": 0.7484,
+      "p95_ms": 1.0685,
       "runs": 21
     }
   },
@@ -43,10 +43,10 @@
     "budget_hits": 21,
     "target_ms": 300,
     "timing": {
-      "max_ms": 17.5689,
-      "min_ms": 10.1484,
-      "p50_ms": 11.494000000000002,
-      "p95_ms": 15.846800000000002,
+      "max_ms": 17.0701,
+      "min_ms": 10.829099999999999,
+      "p50_ms": 13.985199999999999,
+      "p95_ms": 16.7598,
       "runs": 21
     },
     "work_budget_sqlite_ops": 2000000
@@ -55,7 +55,7 @@
   "dataset_class": "synthetic",
   "directories": 1001,
   "files": 1000000,
-  "finalise_seconds": 1.4064155999999999,
+  "finalise_seconds": 1.4779284,
   "insert_includes_generation_and_queue_backpressure": true,
   "limitations": [
     "single warm run on this Windows host; no cold-cache claim",
@@ -69,15 +69,15 @@
   },
   "platform": "windows",
   "publication_path": "StageChunk + ListingDone; byte reservation before file generation",
-  "schema_version": 2,
+  "schema_version": 3,
   "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
   "temporary_directory_removed": true,
   "writer_timings": {
-    "commit_seconds": 30.973201499999995,
+    "commit_seconds": 34.4595623,
     "dirty_updates": 3001,
-    "file_insert_seconds": 19.80065809999999,
+    "file_insert_seconds": 22.514723300000014,
     "file_seen_seconds": 0.0,
-    "listing_seconds": 22.317530100000003,
-    "name_validation_seconds": 0.5704692000000023
+    "listing_seconds": 25.322148699999985,
+    "name_validation_seconds": 0.6426560000000007
   }
 }

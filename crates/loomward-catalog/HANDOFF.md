@@ -1,3 +1,72 @@
+# PR #147 final fix round - 2026-10-10
+
+## Changed
+
+Uncommitted on `feat/l2-catalog`, base `4ca83e9a1c114578bdf9146c8dfc06fdc15bd7ae`.
+The driver commits and pushes. This section supersedes the historical eager
+state-before-catalogue retirement/rebinding description and its failure limitation below.
+
+1. Commit pending retirements/rebindings to state.db with catalogue instance and publication token.
+2. Keep effective reference state, binding and collection membership unchanged while pending.
+3. Commit the publication and token atomically in a catalog.db-only transaction.
+4. Confirm matching intents and clear the journal in a state.db-only transaction before acknowledgment.
+5. On failure/startup, confirm matching tokens or discard unmatched intents before repair; repeat is a no-op.
+
+Schema 3 adds the journal with a backed-up v2 upgrade; existing bindings and instances
+survive. Pending references retain the existing reader predicates. Resolved references
+already force singleton writer publications, so one journal belongs to one savepoint.
+If confirmation fails, the actor closes without acknowledgment; recovery retries the
+intact journal. No transaction writes both persistent files. F1 hard-link rebinding
+uses the same protocol; F2 incarnation replacement and round-2 validation stay intact.
+
+## Verified
+
+Windows 11, rustc 1.97.1: `cargo fmt --all --check`, `cargo test --workspace`
+(239 passed, catalogue 55, zero failed/ignored),
+`cargo clippy --workspace --all-targets -- -D warnings`, `git diff --check`.
+Existing F1/F2, N1/N2/N3/#8/#10 and round-2 regressions pass.
+
+The four requested tests pass and each fails (exit 101, changed bindings versus the
+original resolved bindings) when committed eager retirement/rebinding is restored:
+
+- `catalogue_commit_failure_reverts_pending_references_and_preserves_listing`
+- `crash_before_catalogue_commit_recovery_discards_pending_references`
+- `crash_after_catalogue_commit_recovery_confirms_pending_references`
+- `pending_reference_recovery_twice_is_idempotent`
+
+Test-only stop points leave persisted databases at the two commit boundaries.
+The real COMMIT failure uses SQLite's deferred FK constraint, after state commits;
+the publication dry run cannot detect it. Membership, search and recovered slice
+checks use actual readers. Additional tests cover the v2 upgrade and confirmation
+failure followed by restart retry.
+[Mutation receipt](evidence/pr147-final-regression-mutations.json) and
+[final source/proof receipt](evidence/pr147-final-fix.json).
+
+The commit path changed, so the 1M staged benchmark was rerun:
+`cargo run -p loomward-catalog --release --example bench -- --rows 1000000`.
+Oracle and indexes passed; temporary database removed. P4: **60.960 s, 16,421 rows/s**
+against 250,000; still unmet (#148). Previous warm receipt: 18,432 rows/s;
+these are single warm host measurements, not an isolated performance comparison.
+[Benchmark receipt](../../evidence/v3/bench/catalog-1m.json).
+
+## NOT verified
+
+Hosted CI/review threads, physical power loss or actual OS termination at these new
+fault points, 10M/cold-cache, HTTP/native scanner integration, Python/UI.
+No commit, push or external action. Root status/checkpoint integration remains with the driver.
+
+## Residual risk
+
+P4 remains below target; 1M P6/P14 do not prove the 10M gates. Catalogue durability
+remains NORMAL under ADR-V3-22; physical power-loss durability is unmeasured.
+[HUMAN_TODO.md](../../HUMAN_TODO.md) was read and preserved: q-5 remains open for
+real metadata disclosure after sandbox canaries; q-6 is not yet needed. No new owner
+choice arises from this fix. Keep the worktree until the driver commits and pushes.
+
+Recommended commit: `fix(catalog): reconcile pending reference retirements after publication`.
+
+---
+
 # PR #147 fix-round receipt - 2026-10-10
 
 ## Changed
@@ -239,7 +308,7 @@ pushes before its own guarded cleanup. No worktree removal was attempted.
 
 # Round 1 historical receipt (superseded by round 2 above)
 
-# L2 catalogue receipt — 2026-10-09
+# L2 catalogue receipt â€” 2026-10-09
 
 Changed: uncommitted work in `C:/Users/jekyt/wt/lw-l2`, branch `feat/l2-catalog`, base and HEAD
 `f4c6f1ae28dd999f6654f9cb18dffdeedf970bf1` (`arch/v03-architecture`). The driver commits.
@@ -342,7 +411,7 @@ Worktree is deliberately **not removal-ready**: all work is uncommitted. Final i
 is `target/` (rebuildable Cargo output); no personal data or database is retained. The driver
 must commit/push before cleanup and run its integration/review gate. No deletion was attempted.
 
-## PR #147 connector fix round 2 — 2026-10-10
+## PR #147 connector fix round 2 â€” 2026-10-10
 
 ### Changed
 
