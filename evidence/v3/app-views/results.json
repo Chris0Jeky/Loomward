@@ -1,0 +1,25 @@
+{
+  "test_atlas": {
+    "p9_first_slice": {
+      "nodes": 2500,
+      "cells_drawn": 348,
+      "layout_ms": 31.7,
+      "first_paint_ms": 10.9,
+      "layout_plus_paint_ms": 42.6,
+      "slice_to_paint_wall_ms": 45.5
+    },
+    "p9_hover": {
+      "frames": 89,
+      "median_ms": 16.699999999999818,
+      "p95_ms": 16.700000000000728,
+      "fps_median": 59.88023952095874
+    },
+    "p9_zoom": {
+      "frames": 53,
+      "median_ms": 16.699999999999818,
+      "p95_ms": 16.800000000000182,
+      "fps_median": 59.88023952095874
+    }
+  },
+  "test_observatory": {}
+}

@@ -1,4 +1,4 @@
-import type { ExtFamily, CoverageState } from '../types';
+import type { ExtFamily, CoverageState } from '../contracts.gen';
 
 /**
  * Deterministic synthetic catalogue for the mock transport: up to 6,000 nodes, parents before
@@ -43,6 +43,10 @@ export const HOSTILE_NAMES = [
   'budget\u200B\u200Dfinal.xlsx', // zero-width space and joiner: invisible unless shown
   'long-'.repeat(48) + 'name.txt',
 ];
+
+/** A folder name with a right-to-left override, and a file inside it with zero-width characters. */
+export const HOSTILE_DIR = 'reports‮txt.exe';
+export const HOSTILE_DIR_FILE = 'scan​‍results.bin';
 
 const WORDS = ['alpha', 'basalt', 'cinder', 'delta', 'ember', 'fjord', 'garnet', 'harbour', 'indigo', 'juniper', 'kelp', 'lumen', 'marble', 'nimbus', 'onyx', 'pewter', 'quartz', 'russet', 'sable', 'tundra'];
 const EXTS: [string, ExtFamily][] = [
@@ -92,6 +96,12 @@ export function generateTree(count = 6000, seed = 1): SynthTree {
     const ext = dot > 0 && name.length - dot <= 5 ? name.slice(dot + 1) : null;
     add({ parent: alpha, kind: 'file', name: name.slice(0, 260), depth: 2, extension: ext, family: 'other', logical: BigInt(900 + i * 37), allocated: 4096n, coverage: 'complete', modified: new Date(T0 + i * 86400000).toISOString() });
   });
+  // A hostile *folder* big enough to be drawn and drilled, so canvases, breadcrumbs and inspectors meet
+  // a right-to-left override and zero-width characters too (lane L10).
+  if (nodes.length + 2 <= total) {
+    const dir = add({ parent: alpha, kind: 'dir', name: HOSTILE_DIR, depth: 2, extension: null, family: null, coverage: 'complete', modified: new Date(T0).toISOString() });
+    add({ parent: dir, kind: 'file', name: HOSTILE_DIR_FILE, depth: 3, extension: 'bin', family: 'other', logical: 6n * 2n ** 30n, allocated: 6n * 2n ** 30n, coverage: 'complete', modified: new Date(T0).toISOString() });
+  }
 
   const queue: number[] = [...rootIndexes];
   let q = 0;

@@ -21,6 +21,7 @@ from playwright.sync_api import Page, expect
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / 'app' / 'dist'
 TOKEN = '0f1e2d3c4b5a69788796a5b4c3d2e1f0'
+EPOCH = 'e_fake_epoch'
 MIME = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml'}
 VIEWPORTS = {'1440': (1440, 900), '390': (390, 844)}
 
@@ -60,7 +61,7 @@ class FakeEngine:
 
     def invalidate(self) -> None:
         self.seq += 1
-        self.events.put({'protocol': 'loomward/3', 'seq': self.seq, 'event': 'tree.invalidated', 'at': '2026-10-01T00:00:00Z', 'data': {'root_id': None, 'generation': None, 'scope': 'all', 'node_ids': []}})
+        self.events.put({'protocol': 'loomward/3', 'epoch': EPOCH, 'seq': self.seq, 'event': 'tree.invalidated', 'at': '2026-10-01T00:00:00Z', 'catalog_rev': str(self.seq + 1), 'state_rev': None, 'data': {'root_id': None, 'generation': None, 'scope': 'all', 'node_ids': []}})
 
     def result(self, req: dict):
         cmd, p = req['command'], req.get('payload') or {}
@@ -143,13 +144,14 @@ class FakeEngine:
                     self.send_header('Cache-Control', 'no-store')
                     self.end_headers()
                     try:
-                        hello = {'protocol': 'loomward/3', 'seq': 0, 'event': 'stream.hello', 'at': '2026-10-01T00:00:00Z', 'data': {}}
-                        self.wfile.write(b'id: 0\nevent: stream.hello\ndata: ' + json.dumps(hello).encode() + b'\n\n')
+                        hello = {'protocol': 'loomward/3', 'epoch': EPOCH, 'seq': engine.seq, 'event': 'stream.hello', 'at': '2026-10-01T00:00:00Z', 'catalog_rev': None, 'state_rev': None,
+                                 'data': {'session_started_at': '2026-10-01T00:00:00Z', 'epoch': EPOCH, 'last_seq': engine.seq, 'oldest_replayable_seq': 1, 'dataset_class': 'synthetic'}}
+                        self.wfile.write(f'id: {EPOCH}.{engine.seq}\nevent: stream.hello\ndata: '.encode() + json.dumps(hello).encode() + b'\n\n')
                         self.wfile.flush()
                         while True:
                             try:
                                 ev = engine.events.get(timeout=0.1)
-                                self.wfile.write(f"id: {ev['seq']}\nevent: {ev['event']}\ndata: {json.dumps(ev)}\n\n".encode())
+                                self.wfile.write(f"id: {ev['epoch']}.{ev['seq']}\nevent: {ev['event']}\ndata: {json.dumps(ev)}\n\n".encode())
                             except queue.Empty:
                                 self.wfile.write(b': heartbeat\n\n')
                             self.wfile.flush()
@@ -173,7 +175,7 @@ class FakeEngine:
                 if isinstance(res, tuple):
                     out = {**base, 'ok': False, 'error': {'code': res[0], 'message': res[1], 'retryable': res[0] == 'stale_generation', 'detail': None}}
                 else:
-                    out = {**base, 'ok': True, 'result': res, 'meta': {'served_at': '2026-10-01T00:00:00Z', 'elapsed_ms': 0, 'dataset_class': 'synthetic', 'budget_hit': False}}
+                    out = {**base, 'ok': True, 'result': res, 'meta': {'served_at': '2026-10-01T00:00:00Z', 'elapsed_ms': 0, 'dataset_class': 'synthetic', 'budget_hit': False, 'catalog_rev': '1', 'state_rev': None}}
                 self._send(200, json.dumps(out).encode(), 'application/json')
 
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
@@ -194,7 +196,7 @@ def check_explorer_mock(page: Page, base: str, shoot) -> None:
     main = page.locator('main')
 
     # hidden and bidi characters are shown as badges and never reach the DOM as themselves
-    expect(main.get_by_text('U+202E RLO', exact=True)).to_be_visible()
+    expect(main.get_by_text('U+202E RLO', exact=True).first).to_be_visible()  # the corpus also has an RLO folder (L10)
     expect(main.get_by_text('U+200B ZWSP', exact=True)).to_be_visible()
     expect(main.get_by_text('U+200D ZWJ', exact=True)).to_be_visible()
     ok(CONTROL_CHARS.search(main.inner_text()) is None, 'no bidi or zero-width character is left in the rendered text, only badges')

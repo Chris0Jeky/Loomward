@@ -80,35 +80,7 @@ fn implemented_infrastructure_and_unavailable_future_lanes() {
         Component::Telemetry,
     );
 
-    // placement
-    assert_unavailable(e.placement_model(), Component::Placement);
-    assert_unavailable(
-        e.placement_candidates(
-            &from_value(json!({
-                "source_volume_id": "vo_smoke", "basis": "root_children",
-                "max_groups": 5, "min_bytes": "0"
-            }))
-            .unwrap(),
-        ),
-        Component::Placement,
-    );
-    assert_unavailable(
-        e.placement_simulate(
-            &from_value(json!({
-                "source_volume_id": "vo_smoke", "target_free_bytes": "0",
-                "max_transfer_bytes": "0", "heat_policy": "unknown_is_ineligible",
-                "relief_policy": "verified_only", "candidate_basis": "root_children",
-                "max_groups": 5, "overrides": [], "node_budget": 1000, "save": false
-            }))
-            .unwrap(),
-        ),
-        Component::Placement,
-    );
-    assert_unavailable(e.proposals_list(), Component::Placement);
-    assert_unavailable(
-        e.proposals_get(&from_value(json!({ "proposal_id": "pp_smoke" })).unwrap()),
-        Component::Placement,
-    );
+    // Placement is implemented: its snapshot/store entry points are exercised in placement::tests.
 
     // learning
     assert_unavailable(

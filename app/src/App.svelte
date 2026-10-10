@@ -81,9 +81,9 @@
 
 <footer class="legend" aria-label="Thread legend">
   <span class="legend-title">Threads never blend</span>
-  <span class="thread meaning"><i></i>Meaning · solid</span>
-  <span class="thread residency"><i></i>Residency · dashed</span>
-  <span class="thread permission"><i></i>Permission · hatched</span>
+  <span class="thread meaning"><i></i><em>Warp</em> · meaning, vertical dyed threads</span>
+  <span class="thread residency"><i></i><em>Weft</em> · residency, crossing metal threads</span>
+  <span class="thread permission"><i></i><em>Selvedge</em> · permission, a stitched edge</span>
 </footer>
 
 <style>
@@ -138,12 +138,12 @@
   }
   .legend-title { letter-spacing: 0.1em; text-transform: uppercase; }
   .thread { display: inline-flex; align-items: center; gap: 8px; }
-  .thread i { width: 36px; height: 0; border-top: 3px solid currentColor; }
-  .thread.meaning { color: var(--meaning); }
-  .thread.residency { color: var(--residency); }
-  .thread.residency i { border-top-style: dashed; }
-  .thread.permission { color: var(--permission); }
-  .thread.permission i { height: 6px; border: 0; background: repeating-linear-gradient(135deg, currentColor 0 2px, transparent 2px 5px); }
+  /* the same structures the views weave: vertical warp, horizontal weft, a stitched selvedge */
+  .thread i { width: 22px; height: 14px; }
+  .thread em { font-style: normal; color: var(--text); }
+  .thread.meaning i { background: repeating-linear-gradient(90deg, var(--meaning) 0 3px, transparent 3px 5px); }
+  .thread.residency i { background: repeating-linear-gradient(0deg, var(--residency) 0 3px, transparent 3px 5px); }
+  .thread.permission i { border: 2px dashed var(--permission); }
 
   @media (max-width: 760px) {
     .frame { grid-template-columns: 1fr; gap: 12px; }

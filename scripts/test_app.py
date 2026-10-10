@@ -6,11 +6,20 @@ Serves the built app/dist from a tiny loopback static server and drives it with 
   - http mode against a small in-process fake engine: token header, fragment scrubbed, SSE held open,
     and a dropped engine flips the shell to "unavailable" and back.
 Run `npm.cmd --prefix app run build` first.
+
+`--live-serve` replaces the Python servers with the real `loomward-serve --static app/dist` binary
+(lane L6, its FixtureService answering from contracts/v3/examples): the static files under the
+server's own CSP header, the fragment-token handshake, calls and the SSE stream through the real
+security boundary, and "unavailable" once the process is gone.
 """
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
+import re
+import subprocess
+from types import SimpleNamespace
 import sys
 import threading
 import time
@@ -24,6 +33,7 @@ from test_app_views import run_views
 
 ROOT = Path(__file__).resolve().parents[1]
 TOKEN = 'a1b2c3d4e5f60718293a4b5c6d7e8f90'
+EPOCH = 'e_fake_epoch'
 HOSTILE = '<img src=x onerror=alert(1)>.png'
 MIME = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json'}
 
@@ -36,13 +46,14 @@ class Engine:
         self.tokens_seen: set[str] = set()
         self.dataset = 'personal'
         self.calls: list[str] = []
+        self.resume_ids: list[str] = []  # Last-Event-ID of every event-stream request
 
 
 def envelope(req: dict, result=None, error=None) -> dict:
     base = {'protocol': 'loomward/3', 'request_id': req['request_id']}
     if error:
         return {**base, 'ok': False, 'error': {'code': error, 'message': f"fake engine: {req['command']} not implemented", 'retryable': False, 'detail': None}}
-    return {**base, 'ok': True, 'result': result, 'meta': {'served_at': '2026-10-01T00:00:00Z', 'elapsed_ms': 0, 'dataset_class': engine.dataset, 'budget_hit': False}}
+    return {**base, 'ok': True, 'result': result, 'meta': {'served_at': '2026-10-01T00:00:00Z', 'elapsed_ms': 0, 'dataset_class': engine.dataset, 'budget_hit': False, 'catalog_rev': None, 'state_rev': None}}
 
 
 def fake_result(command: str):
@@ -93,6 +104,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         path = urlsplit(self.path).path
         if path == '/api/v3/events':
+            if 'Last-Event-ID' in self.headers:
+                engine.resume_ids.append(self.headers['Last-Event-ID'])
             if engine.down:
                 return self._send(503, b'{}', 'application/json')
             if not self._authorised():
@@ -102,7 +115,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('Cache-Control', 'no-store')
             self.end_headers()
             try:
-                self.wfile.write(b'id: 0\nevent: stream.hello\ndata: ' + json.dumps({'protocol': 'loomward/3', 'seq': 0, 'event': 'stream.hello', 'at': '2026-10-01T00:00:00Z', 'data': {}}).encode() + b'\n\n')
+                hello = {'protocol': 'loomward/3', 'epoch': EPOCH, 'seq': 0, 'event': 'stream.hello', 'at': '2026-10-01T00:00:00Z', 'catalog_rev': None, 'state_rev': None,
+                         'data': {'session_started_at': '2026-10-01T00:00:00Z', 'epoch': EPOCH, 'last_seq': 0, 'oldest_replayable_seq': 1, 'dataset_class': engine.dataset}}
+                self.wfile.write(f'id: {EPOCH}.0\nevent: stream.hello\ndata: '.encode() + json.dumps(hello).encode() + b'\n\n')
                 self.wfile.flush()
                 while not engine.down:
                     self.wfile.write(b': heartbeat\n\n')
@@ -151,14 +166,71 @@ def theme_snapshot(page: Page) -> dict:
     }""")
 
 
+def run_live_serve(browser_path: str | None) -> None:
+    """The app's http transport against the real loomward-serve binary (lane L6)."""
+    subprocess.run(['cargo', 'build', '-q', '-p', 'loomward-http', '--bin', 'loomward-serve'], cwd=ROOT, check=True)
+    exe = ROOT / 'target' / 'debug' / ('loomward-serve.exe' if sys.platform == 'win32' else 'loomward-serve')
+    proc = subprocess.Popen([str(exe), '--static', str(DIST)], stdout=subprocess.PIPE, text=True)
+    try:
+        url = (proc.stdout.readline() if proc.stdout else '').strip()
+        check(url.startswith('http://127.0.0.1:') and '/#token=' in url, 'loomward-serve printed the fragment-token URL')
+        base, token = url.split('/#token=')
+        check(len(token) == 64, 'the session token is 32 random bytes, hex encoded')
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(executable_path=browser_path, headless=True, args=['--no-sandbox'])
+            page = browser.new_context(viewport={'width': 1360, 'height': 900}).new_page()
+            page.set_default_timeout(8000)
+            errors: list[str] = []
+            hosts: set[str] = set()
+            page.on('pageerror', lambda e: errors.append(f'pageerror: {e}'))
+            page.on('console', lambda m: m.type == 'error' and errors.append(f'console: {m.text}'))
+            page.on('request', lambda r: hosts.add(urlsplit(r.url).hostname or r.url))
+
+            res = page.goto(f'{base}/?transport=mock')
+            headers = res.headers if res else {}
+            check("script-src 'self'" in headers.get('content-security-policy', '') and headers.get('x-content-type-options') == 'nosniff', 'static page carries the CSP and nosniff headers')
+            expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
+            print('PASS the built app runs under the server CSP (mock mode)')
+
+            page.evaluate('sessionStorage.clear()')
+            page.goto(url)
+            status = page.get_by_role('status', name='Session status')
+            expect(status).to_contain_text('Connected')
+            check('token' not in page.url, 'the token is scrubbed from the address bar')
+            expect(status).to_contain_text('Dataset synthetic')
+            expect(status).to_contain_text('Browser')
+            check(page.evaluate(f"""async () => (await fetch('/api/v3/call', {{method: 'POST', body: '{{}}', headers: {{'Content-Type': 'application/json'}}}})).status""") == 403, 'a call without the token header is refused')
+            page.wait_for_timeout(1500)  # the SSE stream stays open: still connected
+            expect(status).to_contain_text('Connected')
+            print('PASS http transport connected through loomward-serve')
+
+            proc.terminate()
+            proc.wait(timeout=10)
+            expect(page.get_by_role('alert')).to_contain_text('Unavailable', timeout=15000)
+            expect(status).to_contain_text('Dataset unknown')
+            print('PASS a stopped server flips the shell to unavailable')
+
+            check(hosts <= {'127.0.0.1'}, f'every request stayed on loopback: {sorted(hosts)}')
+            unexpected = [e for e in errors if 'Failed to load resource' not in e and 'ERR_CONNECTION_REFUSED' not in e]
+            check(not unexpected, f'no console errors or page errors: {unexpected}')
+            browser.close()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    print('ALL PASS (live serve)')
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--browser', default=None, help='path to a Chromium executable')
     ap.add_argument('--screenshots', type=Path)
-    ap.add_argument('--view-shots', type=Path, help='directory for the product-view screenshots (evidence/v3/app-views)')
+    ap.add_argument('--view-shots', type=Path, help='directory for view screenshots and results from both view lanes (evidence/v3/app-views); omitted = none')
+    ap.add_argument('--live-serve', action='store_true', help='run the http leg against the real loomward-serve binary')
     a = ap.parse_args()
     if not (DIST / 'index.html').exists():
         sys.exit('app/dist is missing: run `npm.cmd --prefix app run build` first')
+    if a.live_serve:
+        return run_live_serve(a.browser)
 
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     server.daemon_threads = True
@@ -244,6 +316,30 @@ def main() -> None:
         expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
         print('PASS routes: view, unknown view, back')
 
+        # --- view modules (lane L10): app/tests/e2e/test_<view>.py, each owned by its view's lane ----
+        if a.view_shots:
+            a.view_shots.mkdir(parents=True, exist_ok=True)
+
+        def view_shot(name: str, full: bool = True) -> None:
+            if not a.view_shots:
+                return
+            page.wait_for_timeout(200)
+            page.screenshot(path=str(a.view_shots / name), full_page=full)
+
+        ctx = SimpleNamespace(page=page, base=base, check=check, dialogs=dialogs, view_shot=view_shot)
+        view_results = {}
+        for mod_path in sorted((ROOT / 'app' / 'tests' / 'e2e').glob('test_*.py')):
+            spec = importlib.util.spec_from_file_location(mod_path.stem, mod_path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            print(f'--- {mod_path.name}')
+            view_results[mod_path.stem] = mod.run(ctx)
+        if a.view_shots:
+            (a.view_shots / 'results.json').write_text(json.dumps(view_results, indent=2) + chr(10), encoding='utf-8')
+        page.set_viewport_size({'width': 1360, 'height': 900})
+        page.goto(f'{base}/?transport=mock#/explorer')
+        expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
+
         # --- themes ----------------------------------------------------------------------------
         atlas = theme_snapshot(page)
         page.get_by_role('button', name='Observatory').click()
@@ -309,6 +405,8 @@ def main() -> None:
         expect(page.get_by_role('status', name='Session status')).to_contain_text('Connected', timeout=20000)
         expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
         print('PASS drop to unavailable and recover')
+        # the reconnect resumes with the full frame id `<epoch>.<seq>`; a bare seq makes the real service answer epoch_changed
+        check(bool(engine.resume_ids) and all(re.fullmatch(rf'{EPOCH}\.\d+', i) for i in engine.resume_ids), f'the event stream resumes with the epoch-qualified id: {engine.resume_ids[:2]}')
 
         # --- product views (lane L13): Explorer, Tiers, Companion, Grants & health ------------------
         run_views(page, base, a.view_shots)
