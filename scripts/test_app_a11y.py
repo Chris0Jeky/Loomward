@@ -334,6 +334,8 @@ def run_a11y(browser: Browser, base: str, check) -> None:
 
     # click then drill through the text list: select X, then open X. The old inspector path repeated the last part.
     page.locator('main details.as-text summary').click()
+    listed = page.locator('main details.as-text li').first.inner_text()
+    check(re.search(r'root folder.*tier \d.*meaning .*at least \d+ access denied below', listed, re.S) is not None, f'1.1.1 the text list gives kind, thread states and denied count below: "{listed[:200]}"')
     row = page.locator('main details.as-text li', has=page.locator('button.open')).first
     name = row.locator('button.open').inner_text().strip()
     row.locator('button.inspect').click()
@@ -367,6 +369,10 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     expect(live).to_contain_text('Enter opens it')
     first = live.inner_text().split(', ')[0]
     check(bool(first), f'4.1.3 focusing the cloth announces the active region: "{live.inner_text()[:70]}"')
+    said = live.inner_text()
+    check(re.search(r'^[^,]+, (root folder|folder|file|volume|all roots|folded items), ', said) is not None, f'1.1.1 the announcement names the kind: "{said[:90]}"')
+    check(re.search(r'(tier \d|residency unknown)', said) is not None and 'meaning' in said and re.search(r'at least \d+ access denied below', said) is not None,
+          f'1.1.1 the announcement carries the thread states and the denied count below: "{said}"')
     # edge feedback: from the first region, one direction has no neighbour
     page.keyboard.press('Home')
     page.keyboard.press('ArrowLeft')
