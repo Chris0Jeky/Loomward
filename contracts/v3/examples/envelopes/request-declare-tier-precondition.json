@@ -1,0 +1,14 @@
+{
+  "def": "RequestEnvelope",
+  "value": {
+    "protocol": "loomward/3",
+    "request_id": "r_000031",
+    "command": "volumes.declare_tier",
+    "payload": {
+      "volume_id": "vo_lab1",
+      "tier": 1
+    },
+    "deadline_ms": 5000,
+    "expected_state_rev": "311"
+  }
+}

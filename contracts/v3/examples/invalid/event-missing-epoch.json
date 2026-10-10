@@ -1,0 +1,19 @@
+{
+  "def": "EventEnvelope",
+  "reason": "epoch is required",
+  "value": {
+    "protocol": "loomward/3",
+    "seq": 1,
+    "event": "stream.hello",
+    "at": "2026-10-09T12:00:00Z",
+    "catalog_rev": null,
+    "state_rev": null,
+    "data": {
+      "session_started_at": "2026-10-09T11:58:30Z",
+      "epoch": "e_k3J9x2Qa",
+      "last_seq": 4210,
+      "oldest_replayable_seq": 3187,
+      "dataset_class": "synthetic"
+    }
+  }
+}

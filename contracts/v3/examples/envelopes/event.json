@@ -2,9 +2,12 @@
   "def": "EventEnvelope",
   "value": {
     "protocol": "loomward/3",
+    "epoch": "e_k3J9x2Qa",
     "seq": 4211,
     "event": "scan.progress",
-    "at": "2026-10-09T12:00:00Z",
+    "at": "2026-10-09T12:00:00.250Z",
+    "catalog_rev": "8813",
+    "state_rev": null,
     "data": {
       "job_id": "jb_0008",
       "root_id": "rt_synth1",

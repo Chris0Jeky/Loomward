@@ -1,12 +1,12 @@
 {
   "def": "IdentityObservation",
-  "reason": "an identity observation never authorises an effect",
+  "reason": "durable_reference is a closed vocabulary",
   "value": {
     "quality": "native_file_id_128",
     "volume_key": "v1",
     "file_id_hex": "0000000000000000000300000000a1b2",
     "observed_generation": "12",
-    "durable_reference": "available",
-    "authorises_effects": true
+    "durable_reference": "maybe",
+    "authorises_effects": false
   }
 }

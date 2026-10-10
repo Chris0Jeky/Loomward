@@ -35,6 +35,18 @@
         "reason": "heat_unknown"
       }
     ],
+    "pre_rejected": [
+      {
+        "group_id": "cg_0003",
+        "reason": "relief_unknown"
+      }
+    ],
+    "excluded_volumes": [
+      {
+        "volume_id": "vo_lab3",
+        "reason": "tier_unknown"
+      }
+    ],
     "projected_free_bytes": {
       "vo_lab1": "912316860416",
       "vo_lab2": "3999000000000"
@@ -48,6 +60,7 @@
     "shortfall_improvement_bytes": "487683139584",
     "assumption": "Heat is assumed cold for the listed groups; nothing was measured.",
     "heat_policy": "assumed_only",
+    "relief_policy": "verified_only",
     "assumptions": [
       "cg_0001 heat assumed 0.0 by the owner"
     ],

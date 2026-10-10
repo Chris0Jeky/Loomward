@@ -2,6 +2,7 @@
   "event_id": "fe_0001",
   "revision": 1,
   "data_class": "human",
+  "idempotent_replay": false,
   "learning": {
     "model_id": "md_0001",
     "algorithm": "weighted_multinomial_nb_v1",

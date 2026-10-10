@@ -15,6 +15,7 @@
       ],
       "complete": false,
       "live": false,
+      "aggregate_state": "consistent",
       "ordering": "exact",
       "truncated": true,
       "nodes": [
@@ -136,10 +137,12 @@
       ]
     },
     "meta": {
-      "served_at": "2026-10-09T12:00:00Z",
+      "served_at": "2026-10-09T12:00:00.250Z",
       "elapsed_ms": 14,
       "dataset_class": "synthetic",
-      "budget_hit": false
+      "budget_hit": false,
+      "catalog_rev": "8812",
+      "state_rev": "311"
     }
   }
 }

@@ -38,7 +38,7 @@
       ]
     },
     "engine": {
-      "private_bytes": "104857600",
+      "private_commit_bytes": "104857600",
       "working_set_bytes": "125829120",
       "cpu_fraction": 0.02,
       "threads": 21,
@@ -61,7 +61,8 @@
           "pid": 4242,
           "name": "synthetic-app.exe",
           "started_at": "2026-10-09T11:58:30Z",
-          "private_bytes": "734003200",
+          "private_commit_bytes": "734003200",
+          "private_working_set_bytes": "301989888",
           "working_set_bytes": "412316860",
           "cpu_fraction": 0.12,
           "io_read_bytes_per_s": 1048576.0,

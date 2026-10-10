@@ -1,4 +1,5 @@
 {
+  "reason": "subscriber_overflow",
   "dropped": 1024,
   "resync": [
     "jobs",

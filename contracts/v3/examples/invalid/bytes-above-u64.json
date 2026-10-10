@@ -1,0 +1,9 @@
+{
+  "def": "BytesAndFiles",
+  "reason": "a 20-digit byte string above u64::MAX; the schema pattern admits it, the runtime range check does not",
+  "rust_only": true,
+  "value": {
+    "bytes": "18446744073709551616",
+    "files": 1
+  }
+}

@@ -3,6 +3,7 @@
   "target_free_bytes": "900000000000",
   "max_transfer_bytes": "2000000000",
   "heat_policy": "assumed_only",
+  "relief_policy": "verified_only",
   "candidate_basis": "root_children",
   "max_groups": 50,
   "overrides": [

@@ -28,6 +28,7 @@
     "volume_key": "v1",
     "file_id_hex": "0000000000000000000300000000a1b2",
     "observed_generation": "12",
+    "durable_reference": "available",
     "authorises_effects": false
   },
   "timestamps": {

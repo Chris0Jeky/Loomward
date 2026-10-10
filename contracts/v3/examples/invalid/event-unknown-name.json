@@ -3,9 +3,12 @@
   "reason": "event is outside the closed list",
   "value": {
     "protocol": "loomward/3",
+    "epoch": "e_k3J9x2Qa",
     "seq": 1,
     "event": "scan.finished",
     "at": "2026-10-09T12:00:00Z",
+    "catalog_rev": null,
+    "state_rev": null,
     "data": {}
   }
 }

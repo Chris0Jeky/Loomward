@@ -1,7 +1,7 @@
 {
   "observed_at": "2026-10-09T12:00:00Z",
   "engine": {
-    "private_bytes": "104857600",
+    "private_commit_bytes": "104857600",
     "working_set_bytes": "125829120",
     "cpu_seconds": 12.5,
     "threads": 21

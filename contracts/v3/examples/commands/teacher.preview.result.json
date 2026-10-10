@@ -4,6 +4,16 @@
   "model": "gpt-6.1-sol",
   "reasoning_effort": "medium",
   "dataset_class": "synthetic",
+  "serialization_version": "loomward-teacher-request/1",
+  "instructions": "Label each item with exactly one allowed label, or abstain. Use only the metadata given.",
+  "allowed_labels": [
+    "Project",
+    "Archive",
+    "Reference",
+    "Scratch"
+  ],
+  "output_schema_digest": "sha256:885e3edcf603e7d881b549d4ede3677bd04e5d869726f2b10dd45abece9ad12a",
+  "runner_profile_digest": "sha256:9698898a9149e02067f378a741463b904edb790836ce526b4e6c3ea2284ac64f",
   "fields": [
     "name",
     "extension",
@@ -24,7 +34,7 @@
   "excluded": [
     {
       "node_id": "nd_0021",
-      "reason": "sensitive_name"
+      "reason": "sensitive_context"
     }
   ],
   "taxonomy_version": 1,

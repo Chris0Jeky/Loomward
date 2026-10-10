@@ -9,6 +9,7 @@
   ],
   "complete": false,
   "live": false,
+  "aggregate_state": "consistent",
   "ordering": "exact",
   "truncated": true,
   "nodes": [

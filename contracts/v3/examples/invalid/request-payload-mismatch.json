@@ -1,0 +1,13 @@
+{
+  "def": "RequestEnvelope",
+  "reason": "a tree.slice payload must be a TreeSliceRequest",
+  "complete": true,
+  "value": {
+    "protocol": "loomward/3",
+    "request_id": "r_9",
+    "command": "tree.slice",
+    "payload": {
+      "job_id": "jb_0007"
+    }
+  }
+}
