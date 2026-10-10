@@ -1,3 +1,156 @@
+# Catalogue P4b (#148): safe staging candidate, throughput gate missed — 2026-10-10
+
+## Changed
+
+Uncommitted on `perf/catalog-p4b`, starting HEAD `42a346a5c23b75fc0b263bd11fcfb7f5afd2588c`.
+The tree started clean; the driver commits. No commit, push or external action.
+Owned changes: `src/writer.rs`, `src/db.rs`, `src/writer/publication_tests.rs`,
+`examples/bench.rs`, this receipt and `evidence/v3/bench/catalog-1m.json`.
+
+- M1 pins singleton publications with resolved references and confirms intents
+  from both queued commands retire. #171's FULL intent protocol is retained.
+- L1 fixes a reproduced receipt defect: after SQLite ended the outer transaction,
+  a later savepoint committed a new listing while its caller was told it failed.
+  Check autocommit before receiving another command; abort the batch and close
+  the writer. The fixture also covers real SQLITE_FULL via max_page_count: on
+  this build it rolls back only the statement/savepoint, and healthy neighbours
+  commit. RAISE(ROLLBACK) forces the whole-transaction case deterministically.
+- M2 uses FILE temp storage, a 16 MiB temp cache and enabled spilling. Main cache
+  is 224 MiB (from 256). The measured 2M RSS fits the proposed 448 MiB workload
+  envelope; these settings are not an OS memory limit.
+- First full scan, first listing of each directory, no old files and no resolved
+  references: load a private unindexed file table, assign monotonic IDs in input
+  order, build its four indexes, then publish via INSERT SELECT inside the same
+  catalogue transaction. Directory handling retains its existing indexed path.
+  No catalogue-file swap; no live index is dropped. This preserves open readers,
+  other roots, catalogue instance and pending-reference semantics. Later listings
+  retain incremental matching and UPSERT. Complete/incomplete and malformed
+  staged listings retain their existing rules.
+- Bench adds Windows native PeakWorkingSetSize and PeakPagefileUsage, a
+  single-directory layout, generation/enqueue/persistence-tail timings and bulk
+  load/index/copy timings. No dependency or schema-version change.
+
+## Verified
+
+Windows shared host, concurrent estate lanes. Sequential A1/B1/A2/B2/A3/B3 in this
+session; no own benchmarks overlapped. A uses unchanged starting production plus
+RSS instrumentation; B uses final production. Three final B runs use exactly
+`cargo run -p loomward-catalog --release --example bench -- --rows 1000000`.
+Each accounting oracle matches, all live indexes exist, temporary directories
+are removed. Earlier exploratory runs and the old receipt are preserved; the
+overlapping exploratory measurements are excluded from this comparison.
+
+| Gate (median of three run summaries) | Before | After |
+| --- | ---: | ---: |
+| P4 rows/s | 37,057 | 25,684 |
+| P4 wall seconds | 27.012 | 38.973 |
+| P6 p50 ms | 65.157 | 58.252 |
+| P7 logical p50 ms | 1.183 | 1.084 |
+| P7 allocated p50 ms | 0.999 | 0.956 |
+| P8 p50 ms | 24.463 | 22.584 |
+
+After range: 25,082–29,706 rows/s;
+wall times: 38.973 / 39.909 / 33.697 s.
+**250k is not reached, and throughput retention fails**: ratio
+0.693x. The observed final best is
+29,706 rows/s, not a hardware ceiling.
+Destination copy/index maintenance and COMMIT dominate. P6/P7/P8 median timings
+do not regress in these final pairs; uncontrolled load limits this inference.
+Their exact p95 values are retained in the JSON; 1M warm SQL observations do not
+establish the 10M/HTTP gate.
+
+| Writer phase (seconds, independent medians) | Before | After |
+| --- | ---: | ---: |
+| staging_seconds | 0.777 | 1.184 |
+| state_prepare_seconds | 0.010 | 0.010 |
+| bulk_load_seconds | n/a | 2.408 |
+| bulk_index_seconds | n/a | 1.675 |
+| bulk_publish_seconds | n/a | 18.346 |
+| file_insert_seconds | 10.071 | 2.408 |
+| listing_seconds | 13.420 | 25.525 |
+| invalidation_seconds | 0.017 | 0.053 |
+| name_validation_seconds | 0.833 | 0.000 |
+| commit_seconds | 13.401 | 11.763 |
+| transactions | 74.000 | 109.000 |
+| EndRun_rollup_seconds | 0.013 | 0.010 |
+| EndRun_multilink_seconds | 1.833 | 1.523 |
+| EndRun_checkpoint_seconds | 0.285 | 0.082 |
+
+Listing includes bulk load, index, copy, invalidation and validation; do not sum
+those twice. EndRun is outside P4. Generation runs concurrently with writer work;
+the JSON records enumeration through last ListingDone send and persistence tail.
+Bulk name GROUP BY validation is inside listing_seconds, even when the separate
+name-insert timer is zero. Live destination index maintenance is inside copy time.
+
+| Native process high-water | Before | After |
+| --- | ---: | ---: |
+| 1M RSS, median MiB | 207.785 | 206.289 |
+| One 2M-entry directory RSS MiB | 460.719 | 417.156 |
+| One 2M-entry directory private commit MiB | 468.184 | 482.566 |
+
+2M after: 53.339 s,
+37,496 rows/s. RSS measured through queries, excluding
+the isolated SQL index probe. File spilling alone at 256 MiB main cache did not
+meet the 448 MiB envelope; reducing main cache to 224 did. Peak private commit
+is separately reported and exceeds RSS.
+
+Required checks all exit 0: cargo fmt --all --check; cargo test --workspace
+(337 passed,
+zero failed); cargo clippy --workspace --all-targets -- -D warnings; git diff --check.
+No existing test was weakened. Catalogue/errata, pending references, publication
+sync, incarnation, partial #8/#10 and the random-tree rollup oracle remain green.
+The first workspace run failed only the unchanged Windows
+stalled_native_consumer_reports_real_overflow fixture: its ten-second callback
+hold expired during the 10,000-file burst. The same isolated test passed with
+overflow detected in 2.858 s; the complete workspace rerun passed, without source
+or timeout edits. This package has no catalogue dependency. The initial failed
+run is retained in `.loomward/p4b/gate-1-initial.txt`.
+
+New regression proofs (all pass):
+- resolved_references_keep_two_queued_publications_in_singleton_transactions:
+  remove the gate => exit 101, one transaction rather than two.
+- auto_rollback_never_commits_a_failed_receipt_or_acknowledges_lost_rows:
+  remove the guard => exit 101, failed receipt's listing persisted. Real FULL
+  savepoint isolation is a positive control.
+- temp_tables_spill_with_a_small_cache: restore MEMORY => exit 101.
+- first_listing_bulk_keeps_live_readers_indexed_and_refresh_incremental:
+  disable bulk => exit 101. A pinned snapshot sees old data until it releases;
+  another reader sees old before commit/new after, always with four live indexes.
+- first_listing_bulk_process_crashes_leave_old_or_new_indexed_state:
+  abrupt process exits at loaded/indexed/copied/committed; quick_check and index
+  checks pass after recovery. Force early COMMIT before copied crash => exit 101,
+  one recovered row when zero is required. The bulk_crash_child helper is exercised
+  by these subprocesses. Mutated sources were restored byte-for-byte; final source
+  hashes, raw runs, phase summaries and gate results are in the JSON and task-owned
+  ignored `.loomward/p4b/` logs.
+
+## NOT verified
+
+250k throughput and throughput retention; 10M, cold cache, Linux, HTTP/native scan
+integration, Python/UI/Tauri, intent-bearing performance, arbitrary long-name
+2M datasets, OS-enforced process memory, hosted CI, fresh-context review, physical
+power loss or storage-device fsync behavior.
+
+## Residual risk
+
+**The bulk candidate is NOT performance-qualified; park its integration on #148.**
+It copies into an already indexed live table for each listing, so it does not
+realise the isolated fresh-table probe's one-time index-build advantage. The
+confirmed M1/L1 protections can be separated by the driver. FILE spilling and the
+cache reduction meet this synthetic RSS envelope but add throughput costs.
+Pinned readers can delay WAL checkpoints; the checkpoint threshold is not a WAL
+size cap. NORMAL publications plus process-crash tests do not prove power-loss
+durability. Source and worktree are deliberately retained uncommitted.
+
+Recommended commit messages (driver-owned, no commits made):
+1. `fix(catalog): stop streamed batches after SQLite auto-rollback`
+2. `test(catalog): pin singleton reference publications`
+3. `perf(catalog): spill temporary storage and bound cache residency`
+4. `perf(catalog): prototype first-scan staging publication` (parked candidate)
+5. `bench(catalog): record P4b shared-host phases and memory`
+
+---
+
 # Catalogue P4 (#148): bounded streaming publications - 2026-10-10
 
 ## Changed

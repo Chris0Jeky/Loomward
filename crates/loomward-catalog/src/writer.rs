@@ -276,6 +276,10 @@ fn validate(c: &WriteCommand) -> Result<usize> {
 }
 #[derive(Clone, Default, serde::Serialize)]
 pub struct WriterTimings {
+    pub bulk_listings: u64,
+    pub bulk_load_seconds: f64,
+    pub bulk_index_seconds: f64,
+    pub bulk_publish_seconds: f64,
     pub staging_seconds: f64,
     pub validation_dry_run_seconds: f64,
     pub state_prepare_seconds: f64,
@@ -454,7 +458,9 @@ fn work(
                     p.command = WriteCommand::Barrier;
                     release(&p._permit.quota, p._permit.bytes);
                     p._permit.bytes = 0;
-                    if !batchable
+                    // An auto-rollback must not let the next savepoint commit a new transaction.
+                    if tx.is_autocommit()
+                        || !batchable
                         || bytes >= TRANSACTION_BYTES
                         || transaction_start.elapsed() >= TRANSACTION_TIME
                     {
@@ -1105,6 +1111,29 @@ fn publish(
     let coverage = outcome.coverage()?;
     let is_direct = direct.is_some();
     let has_old = old_files(conn, dir)?;
+    let bulk: bool = !has_old && conn.query_row(
+        "SELECT d.listing_state='unlisted' AND s.mode='full'
+         AND NOT EXISTS(SELECT 1 FROM scan_run prior WHERE prior.root_id=s.root_id AND prior.id<s.id)
+         AND NOT EXISTS(SELECT 1 FROM st.object_ref WHERE state='resolved')
+         FROM dir d JOIN scan_run s ON s.id=?2 WHERE d.id=?1",
+        params![dir, run], |r| r.get(0),
+    )?;
+    if bulk {
+        // Private staging never removes the indexes used by concurrent main readers.
+        let schema = include_str!("catalog.sql")
+            .split_once("CREATE TABLE file (")
+            .expect("file schema")
+            .1
+            .split_once("CREATE INDEX file_by_logical")
+            .expect("file indexes")
+            .0;
+        let schema = format!("CREATE TEMP TABLE bulk_file ({schema}")
+            .replace(" REFERENCES dir(id) ON DELETE CASCADE", "")
+            .replace(" REFERENCES ext(id)", "");
+        conn.execute_batch("DROP TABLE IF EXISTS temp.bulk_file")?;
+        conn.execute_batch(&schema)?;
+        conn.execute("INSERT INTO temp.sqlite_sequence(name,seq) SELECT 'bulk_file',seq FROM main.sqlite_sequence WHERE name='file'", [])?;
+    }
     conn.execute_batch("CREATE TEMP TABLE IF NOT EXISTS listing_seen(kind INTEGER,id INTEGER,PRIMARY KEY(kind,id));DELETE FROM listing_seen;CREATE TEMP TABLE IF NOT EXISTS listing_names(name TEXT,raw BLOB,kind INTEGER);DELETE FROM listing_names")?;
     let mut own = Totals {
         complete,
@@ -1211,19 +1240,19 @@ fn publish(
                 Value::Integer(run),
             ]);
             tuples.push("(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
-            if !is_direct {
+            if !is_direct && !bulk {
                 let name_start = Instant::now();
                 conn.prepare_cached("INSERT INTO listing_names VALUES(?1,?2,1)")?
                     .execute(params![o.name, o.name_utf16])?;
                 names_seconds += name_start.elapsed().as_secs_f64();
             }
             if tuples.len() == 128 {
-                let (insert, seen) = insert_files(conn, &mut values, &mut tuples, has_old)?;
+                let (insert, seen) = insert_files(conn, &mut values, &mut tuples, has_old, bulk)?;
                 file_seconds += insert;
                 seen_seconds += seen;
             }
         }
-        let (insert, seen) = insert_files(conn, &mut values, &mut tuples, has_old)?;
+        let (insert, seen) = insert_files(conn, &mut values, &mut tuples, has_old, bulk)?;
         file_seconds += insert;
         seen_seconds += seen;
         for o in dirs {
@@ -1291,16 +1320,42 @@ fn publish(
             }
         }
     }
-    if !is_direct
-        && conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM listing_names GROUP BY name,raw HAVING count(*)>1)",
-            [],
-            |r| r.get::<_, bool>(0),
-        )?
-    {
+    let duplicate_names = if bulk {
+        "SELECT EXISTS(SELECT 1 FROM (SELECT name,name_utf16 raw FROM temp.bulk_file UNION ALL SELECT name,raw FROM listing_names) GROUP BY name,raw HAVING count(*)>1)"
+    } else {
+        "SELECT EXISTS(SELECT 1 FROM listing_names GROUP BY name,raw HAVING count(*)>1)"
+    };
+    if !is_direct && conn.query_row(duplicate_names, [], |r| r.get::<_, bool>(0))? {
         return Err(Error::Invalid(
             "duplicate listing name or directory identity",
         ));
+    }
+    if bulk {
+        #[cfg(test)]
+        bulk_crash_point("loaded");
+        let started = Instant::now();
+        conn.execute_batch(
+            "CREATE INDEX temp.bulk_by_logical ON bulk_file(dir_id,logical DESC,id);
+            CREATE INDEX temp.bulk_by_allocated ON bulk_file(dir_id,allocated DESC,id);
+            CREATE INDEX temp.bulk_identity ON bulk_file(file_id) WHERE file_id IS NOT NULL;
+            CREATE INDEX temp.bulk_by_ext ON bulk_file(ext_id,logical DESC)",
+        )?;
+        let index_seconds = started.elapsed().as_secs_f64();
+        #[cfg(test)]
+        bulk_crash_point("indexed");
+        let started = Instant::now();
+        conn.execute(
+            "INSERT INTO main.file SELECT * FROM temp.bulk_file ORDER BY dir_id,logical DESC,id",
+            [],
+        )?;
+        let publish_seconds = started.elapsed().as_secs_f64();
+        #[cfg(test)]
+        bulk_crash_point("copied");
+        let mut timing = ctx.timings.lock().expect("timing lock");
+        timing.bulk_listings += 1;
+        timing.bulk_load_seconds += file_seconds;
+        timing.bulk_index_seconds += index_seconds;
+        timing.bulk_publish_seconds += publish_seconds;
     }
     members_changed |= conn.execute(
         "DELETE FROM file WHERE id IN (SELECT id FROM old_file WHERE used=-1)",
@@ -1339,11 +1394,18 @@ fn publish(
         revision: ctx.revision,
     })
 }
+#[cfg(test)]
+fn bulk_crash_point(phase: &str) {
+    if std::env::var("LOOMWARD_BULK_CRASH_PHASE").as_deref() == Ok(phase) {
+        std::process::exit(17);
+    }
+}
 fn insert_files(
     conn: &Connection,
     values: &mut Vec<Value<'_>>,
     tuples: &mut Vec<&str>,
     has_old: bool,
+    bulk: bool,
 ) -> Result<(f64, f64)> {
     if tuples.is_empty() {
         return Ok((0.0, 0.0));
@@ -1354,7 +1416,8 @@ fn insert_files(
     } else {
         ""
     };
-    let sql=format!("INSERT INTO file(id,dir_id,name,name_utf16,ext_id,file_id,logical,allocated,created_ft,modified_ft,changed_ft,accessed_ft,attrs,reparse_tag,flags,born_run,seen_run) VALUES {}{conflict}",tuples.join(","));
+    let table = if bulk { "temp.bulk_file" } else { "main.file" };
+    let sql=format!("INSERT INTO {table}(id,dir_id,name,name_utf16,ext_id,file_id,logical,allocated,created_ft,modified_ft,changed_ft,accessed_ft,attrs,reparse_tag,flags,born_run,seen_run) VALUES {}{conflict}",tuples.join(","));
     conn.prepare_cached(&sql)?
         .execute(rusqlite::params_from_iter(
             values.iter().map(|v| ToSqlOutput::Borrowed(*v)),

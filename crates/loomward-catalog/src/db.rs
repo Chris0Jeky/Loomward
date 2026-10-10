@@ -263,8 +263,9 @@ pub(crate) fn open_pair(dir: &Path, dataset: &str) -> Result<Connection> {
     conn.busy_timeout(Duration::from_secs(5))?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
-    conn.pragma_update(None, "cache_size", -262144)?;
-    conn.pragma_update(None, "temp_store", "MEMORY")?;
+    conn.pragma_update(None, "cache_size", -229376)?;
+    conn.pragma_update(None, "temp_store", "FILE")?;
+    conn.execute_batch("PRAGMA temp.cache_size=-16384; PRAGMA cache_spill=ON")?;
     conn.wal_hook(Some(|wal, pages| {
         let threshold = if wal.name().to_bytes() == b"main" {
             16384
@@ -368,6 +369,26 @@ pub(crate) fn grant_view(conn: &Connection) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn temp_tables_spill_with_a_small_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let conn = open_pair(temp.path(), "synthetic").unwrap();
+        for (pragma, expected) in [
+            ("PRAGMA main.cache_size", -229376),
+            ("PRAGMA temp_store", 1),
+            ("PRAGMA temp.cache_size", -16384),
+        ] {
+            assert_eq!(
+                conn.query_row(pragma, [], |r| r.get::<_, i64>(0)).unwrap(),
+                expected
+            );
+        }
+        assert!(
+            conn.query_row("PRAGMA temp.cache_spill", [], |r| r.get::<_, i64>(0))
+                .unwrap()
+                > 0
+        );
+    }
     #[test]
     fn writer_connection_uses_full_for_precious_state_and_normal_for_catalogue() {
         let temp = tempfile::tempdir().unwrap();
