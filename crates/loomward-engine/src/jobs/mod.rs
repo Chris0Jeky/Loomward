@@ -163,17 +163,19 @@ impl Registry {
                 }
             }
             // Allocate under the records lock so submission events and listing order agree.
-            let seq = self
+            // The records lock serialises allocation, so a load and store is enough (and avoids
+            // `fetch_update`, deprecated on newer toolchains).
+            let next = self
                 .seq
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                    n.checked_add(1).filter(|next| Count::new(*next).is_ok())
-                })
-                .map_err(|_| EngineError::Internal {
+                .load(Ordering::Relaxed)
+                .checked_add(1)
+                .filter(|next| Count::new(*next).is_ok())
+                .ok_or_else(|| EngineError::Internal {
                     message: "job sequence exhausted".into(),
                     detail: None,
-                })?
-                + 1;
-            job.seq = Count::new(seq).unwrap();
+                })?;
+            self.seq.store(next, Ordering::Relaxed);
+            job.seq = Count::new(next).unwrap();
             records.insert(
                 job.job_id.clone(),
                 Record {
