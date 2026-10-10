@@ -160,6 +160,65 @@ fn corrupt_derived_catalog_is_preserved_and_precious_corruption_is_refused() {
 }
 
 #[test]
+fn corrupt_schema_page_rebuilds_only_the_derived_database() {
+    for name in ["catalog.db", "state.db"] {
+        let temp = tempfile::tempdir().unwrap();
+        drop(Catalog::open(temp.path(), "synthetic").unwrap());
+        let path = temp.path().join(name);
+        let mut damaged = std::fs::read(&path).unwrap();
+        assert_eq!(&damaged[..16], b"SQLite format 3\0");
+        damaged[100] = 0; // Invalid schema b-tree page type; retain the database header.
+        std::fs::write(&path, &damaged).unwrap();
+        let db = Connection::open(&path).unwrap();
+        assert_eq!(
+            db.pragma_query_value(None, "application_id", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            APPLICATION_ID
+        );
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
+        assert!(matches!(
+            db.query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get::<_, i64>(0)),
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ErrorCode::DatabaseCorrupt
+        ));
+        drop(db);
+        let precious = std::fs::read(temp.path().join("state.db")).unwrap();
+        let result = Catalog::open(temp.path(), "synthetic");
+        if name == "catalog.db" {
+            drop(result.unwrap());
+            let archive = std::fs::read_dir(temp.path())
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .find(|p| {
+                    p.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with("catalog.corrupt-")
+                })
+                .unwrap();
+            assert_eq!(std::fs::read(archive).unwrap(), damaged);
+            let db = Connection::open(&path).unwrap();
+            assert_eq!(
+                db.query_row("PRAGMA quick_check", [], |r| r.get::<_, String>(0))
+                    .unwrap(),
+                "ok"
+            );
+        } else {
+            assert!(matches!(result, Err(Error::CorruptDatabase)));
+            assert_eq!(std::fs::read(&path).unwrap(), damaged);
+        }
+        assert_eq!(
+            std::fs::read(temp.path().join("state.db")).unwrap(),
+            precious
+        );
+    }
+}
+
+#[test]
 fn a_preexisting_backup_does_not_block_restart_before_migration() {
     let temp = tempfile::tempdir().unwrap();
     let db = Connection::open(temp.path().join("state.db")).unwrap();

@@ -634,6 +634,31 @@ fn retire_files(
     )? {
         return Ok(());
     }
+    // Exercise every publication rejection before any precious binding can change.
+    {
+        let tx = conn.transaction()?;
+        let mut validation = Context {
+            timings: Arc::new(Mutex::new(WriterTimings::default())),
+            parents: HashMap::new(),
+            marked: HashSet::new(),
+            revision: tx.query_row("SELECT catalog_rev+1 FROM revision", [], |r| r.get(0))?,
+        };
+        let result = publish(
+            &tx,
+            run,
+            dir,
+            if complete {
+                ListingOutcome::Complete
+            } else {
+                ListingOutcome::Incomplete(String::new())
+            },
+            (0, 0),
+            &mut validation,
+            incoming,
+        );
+        tx.rollback()?;
+        result?;
+    }
     conn.execute_batch("CREATE TEMP TABLE IF NOT EXISTS continuity_entry(kind INTEGER,name TEXT,raw BLOB,identity BLOB,created_ft INTEGER);CREATE INDEX IF NOT EXISTS continuity_by_identity ON continuity_entry(kind,identity,created_ft);CREATE INDEX IF NOT EXISTS continuity_by_name ON continuity_entry(kind,name,raw);DELETE FROM continuity_entry")?;
     old_files(conn, dir)?;
     let fs: Option<String> = conn.query_row("SELECT v.filesystem FROM dir d JOIN root r ON r.id=d.root_id JOIN volume v ON v.id=r.volume_id WHERE d.id=?1", [dir], |r| r.get(0))?;
@@ -1180,8 +1205,8 @@ fn rebuild_multilink(conn: &Connection, root: i64) -> Result<()> {
     })?;
     conn.execute("DELETE FROM multilink WHERE volume_id=?1", [volume])?;
     conn.execute("INSERT INTO multilink SELECT ?1,f.file_id,count(*),max(f.allocated) FROM file f JOIN dir d ON d.id=f.dir_id JOIN root r ON r.id=d.root_id WHERE r.volume_id=?1 AND f.file_id IS NOT NULL AND d.listing_state!='absent_pending' GROUP BY f.file_id HAVING count(*)>1",[volume])?;
-    conn.execute("UPDATE file SET flags=flags & ~?2 WHERE dir_id IN (SELECT id FROM dir WHERE root_id=?1) AND flags & ?2 != 0",params![root,HARDLINK_SUSPECTED])?;
-    conn.execute("UPDATE file SET flags=flags | ?2 WHERE dir_id IN (SELECT id FROM dir WHERE root_id=?1) AND file_id IN (SELECT file_id FROM multilink WHERE volume_id=?3)",params![root,HARDLINK_SUSPECTED,volume])?;
+    conn.execute("UPDATE file SET flags=flags & ~?2 WHERE dir_id IN (SELECT d.id FROM dir d JOIN root r ON r.id=d.root_id WHERE r.volume_id=?1) AND flags & ?2 != 0",params![volume,HARDLINK_SUSPECTED])?;
+    conn.execute("UPDATE file SET flags=flags | ?2 WHERE dir_id IN (SELECT d.id FROM dir d JOIN root r ON r.id=d.root_id WHERE r.volume_id=?1) AND file_id IN (SELECT file_id FROM multilink WHERE volume_id=?1)",params![volume,HARDLINK_SUSPECTED])?;
     Ok(())
 }
 /// One directory read, one postorder propagation, one prepared update per visible directory.

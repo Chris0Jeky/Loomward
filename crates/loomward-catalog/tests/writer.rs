@@ -1299,6 +1299,274 @@ fn duplicate_staged_names_roll_back_the_whole_publication() {
 }
 
 #[test]
+fn duplicate_staged_names_preserve_durable_references_and_old_listing() {
+    rejected_staged_listing_preserves_references(false);
+}
+
+#[test]
+fn conflicting_staged_families_preserve_durable_references_and_old_listing() {
+    rejected_staged_listing_preserves_references(true);
+}
+
+fn rejected_staged_listing_preserves_references(conflicting_family: bool) {
+    let (temp, c, grant, root, run) = setup();
+    let w = c.writer();
+    let mut old_file = identified("omitted", 2, 10);
+    old_file.created_ft = Some(42);
+    let mut old_dir = identified("replaced", 3, 0);
+    old_dir.created_ft = Some(42);
+    w.call(listing(run, root, vec![old_file], vec![old_dir.clone()]))
+        .unwrap();
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    let file: i64 = db
+        .query_row("SELECT id FROM file", [], |r| r.get(0))
+        .unwrap();
+    let dir: i64 = db
+        .query_row("SELECT id FROM dir WHERE parent_id=?1", [root], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    for node in [NodeKey::File(file), NodeKey::Dir(dir)] {
+        w.call(WriteCommand::ObjectReference {
+            node,
+            observed_at_ns: 3,
+        })
+        .unwrap();
+    }
+    let st = Connection::open(temp.path().join("state.db")).unwrap();
+    let bindings = || {
+        st.prepare("SELECT id,state,retired,row_id,born_run FROM object_ref ORDER BY id")
+            .unwrap()
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, bool>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, i64>(4)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    let before = bindings();
+    assert_eq!(before.len(), 2);
+    let state_rev: i64 = st
+        .query_row("SELECT state_rev FROM revision", [], |r| r.get(0))
+        .unwrap();
+    old_dir.created_ft = Some(100);
+    for seq in 0..2 {
+        let mut o = identified(
+            if conflicting_family && seq == 1 {
+                "other"
+            } else {
+                "duplicate"
+            },
+            seq as u8 + 4,
+            20,
+        );
+        if conflicting_family {
+            o.extension = Some("fixture".into());
+            o.family = if seq == 0 { "document" } else { "image" }.into();
+        }
+        w.call(WriteCommand::StageChunk {
+            run_id: run,
+            dir_id: root,
+            seq,
+            files: vec![o],
+            dirs: if seq == 0 {
+                vec![old_dir.clone()]
+            } else {
+                vec![]
+            },
+        })
+        .unwrap();
+    }
+    let revision: i64 = db
+        .query_row("SELECT catalog_rev FROM revision", [], |r| r.get(0))
+        .unwrap();
+    assert!(matches!(
+        w.call(WriteCommand::ListingDone {
+            run_id: run,
+            dir_id: root,
+            outcome: ListingOutcome::Complete,
+            skipped: 0,
+            errors: 0,
+        }),
+        Err(Error::Invalid(_))
+    ));
+    assert_eq!(bindings(), before);
+    assert_eq!(
+        st.query_row("SELECT state_rev FROM revision", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        state_rev
+    );
+    assert_eq!(
+        db.query_row("SELECT catalog_rev FROM revision", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        revision
+    );
+    assert_eq!(
+        db.query_row("SELECT id,name,logical,created_ft FROM file", [], |r| Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, i64>(2)?,
+            r.get::<_, i64>(3)?
+        )))
+        .unwrap(),
+        (file, "omitted".into(), 10, 42)
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT id,created_ft,listing_state FROM dir WHERE parent_id=?1",
+            [root],
+            |r| Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?
+            ))
+        )
+        .unwrap(),
+        (dir, 42, "unlisted".into())
+    );
+    // A valid replacement still publishes and retires the omitted/replaced bindings.
+    w.call(WriteCommand::EndRun {
+        run_id: run,
+        state: "cancelled".into(),
+        finished_at_ns: 4,
+    })
+    .unwrap();
+    let WriteReply::Run(refresh) = w
+        .call(WriteCommand::BeginRun {
+            grant_id: grant,
+            mode: "refresh".into(),
+            strategy: "fixture".into(),
+            started_at_ns: 5,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    w.call(listing(refresh, root, vec![], vec![old_dir]))
+        .unwrap();
+    assert!(bindings().iter().all(|r| r.1 == "unresolved" && r.2));
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM file", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn multilink_flags_cover_both_roots_in_either_finalisation_order_and_clear_after_removal() {
+    for reverse in [false, true] {
+        let (temp, c, _, root, run) = setup();
+        let w = c.writer();
+        let WriteReply::Root {
+            dir_id: other,
+            grant_id: other_grant,
+            ..
+        } = w
+            .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_key: "fixture-volume".into(),
+                display_name: "Synthetic volume".into(),
+                display_path: "Second synthetic root".into(),
+                root_file_id: Some(vec![9; 16]),
+                filesystem: Some("NTFS".into()),
+                origin: "fixture".into(),
+                granted_via: "fixture".into(),
+                observed_at_ns: 3,
+            }))
+            .unwrap()
+        else {
+            panic!()
+        };
+        let WriteReply::Run(other_run) = w
+            .call(WriteCommand::BeginRun {
+                grant_id: other_grant,
+                mode: "full".into(),
+                strategy: "fixture".into(),
+                started_at_ns: 4,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        w.call(listing(run, root, vec![identified("first", 2, 10)], vec![]))
+            .unwrap();
+        w.call(listing(
+            other_run,
+            other,
+            vec![identified("second", 2, 10)],
+            vec![],
+        ))
+        .unwrap();
+        let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+        let runs = if reverse {
+            [other_run, run]
+        } else {
+            [run, other_run]
+        };
+        for run_id in runs {
+            w.call(WriteCommand::EndRun {
+                run_id,
+                state: "completed".into(),
+                finished_at_ns: 5,
+            })
+            .unwrap();
+            assert_eq!(
+                db.query_row(
+                    "SELECT count(*) FROM file WHERE flags & ?1 != 0",
+                    [HARDLINK_SUSPECTED],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                2
+            );
+            assert_eq!(
+                db.query_row("SELECT names FROM multilink", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                2
+            );
+        }
+        let WriteReply::Run(refresh) = w
+            .call(WriteCommand::BeginRun {
+                grant_id: other_grant,
+                mode: "refresh".into(),
+                strategy: "fixture".into(),
+                started_at_ns: 6,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        w.call(listing(refresh, other, vec![], vec![])).unwrap();
+        w.call(WriteCommand::EndRun {
+            run_id: refresh,
+            state: "completed".into(),
+            finished_at_ns: 7,
+        })
+        .unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT name,flags & ?1 FROM file",
+                [HARDLINK_SUSPECTED],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            )
+            .unwrap(),
+            ("first".into(), 0)
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM multilink", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+}
+
+#[test]
 fn grant_survives_a_crash_between_precious_and_derived_commits() {
     let temp = tempfile::tempdir().unwrap();
     let c = Catalog::open(temp.path(), "synthetic").unwrap();

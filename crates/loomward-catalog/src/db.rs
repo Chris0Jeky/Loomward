@@ -14,17 +14,36 @@ pub(crate) fn local_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn inspection_error(error: rusqlite::Error) -> Error {
+    match error {
+        rusqlite::Error::SqliteFailure(ref e, _)
+            if matches!(
+                e.code,
+                rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase
+            ) =>
+        {
+            Error::CorruptDatabase
+        }
+        _ => Error::Sql(error),
+    }
+}
+
 fn inspect(path: &Path, dataset: &str) -> Result<i64> {
     if !path.exists() {
         return Ok(0);
     }
     local_path(&path.canonicalize()?)?;
-    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(inspection_error)?;
     let id: i64 = conn
         .pragma_query_value(None, "application_id", |r| r.get(0))
-        .map_err(|_| Error::CorruptDatabase)?;
-    let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    let tables: i64 = conn.query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get(0))?;
+        .map_err(inspection_error)?;
+    let version: i64 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .map_err(inspection_error)?;
+    let tables: i64 = conn
+        .query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get(0))
+        .map_err(inspection_error)?;
     if id != APPLICATION_ID && !(id == 0 && version == 0 && tables == 0) {
         return Err(Error::ForeignDatabase);
     }
@@ -33,7 +52,7 @@ fn inspect(path: &Path, dataset: &str) -> Result<i64> {
     }
     let check: String = conn
         .query_row("PRAGMA quick_check", [], |r| r.get(0))
-        .map_err(|_| Error::CorruptDatabase)?;
+        .map_err(inspection_error)?;
     if check != "ok" {
         return Err(Error::CorruptDatabase);
     }
@@ -44,7 +63,8 @@ fn inspect(path: &Path, dataset: &str) -> Result<i64> {
                 [],
                 |r| r.get(0),
             )
-            .optional()?;
+            .optional()
+            .map_err(inspection_error)?;
         if class.as_deref() != Some(dataset) {
             return Err(Error::DatasetMismatch);
         }
