@@ -149,7 +149,7 @@ impl Inner {
             return Err(with_reason(
                 fail(
                     ErrorCode::CapabilityUnavailable,
-                    "personal scanning waits for the #184 gates: watch pins must not block the                      owner's renames (MEDIUM-2) and attribute changes must be watched (MEDIUM-3)",
+                    "personal scanning is not available yet: folder watching must first never block renames and must notice attribute changes",
                 ),
                 "personal_scan_gated_184",
             ));

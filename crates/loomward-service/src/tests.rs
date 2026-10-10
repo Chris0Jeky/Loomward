@@ -1684,6 +1684,11 @@ fn scan_start_is_refused_outside_registered_lab_roots() {
     ));
     assert_eq!(e.code, ErrorCode::CapabilityUnavailable);
     assert_eq!(reason(&e), Some("personal_scan_gated_184"));
+    assert!(
+        !e.message.contains("  ") && !e.message.contains("MEDIUM"),
+        "plain words on the wire: {}",
+        e.message.as_str()
+    );
     let synthetic = open(&tmp.path().join("synthetic"), DatasetClass::Synthetic);
     let (root, _) = fixture(&synthetic, 1);
     let e = err(call(
@@ -1864,4 +1869,31 @@ fn a_failed_end_run_releases_the_root() {
         .unwrap();
     sink.begin_run(&id, 52, &RunScope::FullRoot)
         .expect("the root is not busy after a failed end");
+}
+
+/// #206 LOW: no `tree.invalidated` follows a revocation that fenced the root's writer.
+#[test]
+fn no_tree_invalidated_after_the_writer_is_fenced() {
+    let tmp = tempfile::tempdir().unwrap();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (root, grant) = register(&svc, 11);
+    let dir = crate::db::active_root_dir(&svc.inner.db(), root)
+        .unwrap()
+        .unwrap();
+    let id = RootId::new(svc.inner.root_id(root)).unwrap();
+    svc.inner.scan.bind(&id, grant, dir);
+    let mut events = svc.subscribe(None);
+    let mut next_tree = || loop {
+        match events.recv_timeout(Duration::from_millis(500)) {
+            RecvOutcome::Event(e) if e.event == EventName::TreeInvalidated => return true,
+            RecvOutcome::Event(_) => continue,
+            RecvOutcome::Timeout => return false,
+            other => panic!("{other:?}"),
+        }
+    };
+    svc.inner.scan.invalidated(&id, true);
+    assert!(next_tree(), "an unfenced root publishes");
+    svc.inner.scan.fence_root(&id).unwrap();
+    svc.inner.scan.invalidated(&id, true);
+    assert!(!next_tree(), "a fenced root never publishes");
 }

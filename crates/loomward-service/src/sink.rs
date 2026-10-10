@@ -316,7 +316,8 @@ impl CatalogScanSink {
     }
 
     /// Throttled `tree.invalidated` after a committed publication; `force` for the run's end.
-    fn invalidated(&self, root: &RootId, force: bool) {
+    /// Never after a revocation fenced the root.
+    pub(crate) fn invalidated(&self, root: &RootId, force: bool) {
         let Some(inner) = self.inner.upgrade() else {
             return;
         };
@@ -325,6 +326,9 @@ impl CatalogScanSink {
             let Some(r) = s.roots.get_mut(root) else {
                 return;
             };
+            if r.fenced == Some(r.grant) {
+                return;
+            }
             if !force && r.last_event.is_some_and(|t| t.elapsed() < EVENT_INTERVAL) {
                 return;
             }
