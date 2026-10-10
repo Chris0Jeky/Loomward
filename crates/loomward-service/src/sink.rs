@@ -636,6 +636,8 @@ impl ScanSink for CatalogScanSink {
         if let Err(e) = end(if complete { "completed" } else { "cancelled" }) {
             // Release the catalogue run, or every later begin_run answers busy until restart.
             let _ = end("failed");
+            // Throttling may have held back the last publication's event: announce it now.
+            self.invalidated(root, true);
             return Err(listing_error(e));
         }
         self.invalidated(root, true);

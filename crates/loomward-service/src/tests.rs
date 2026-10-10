@@ -1869,7 +1869,16 @@ fn a_failed_end_run_releases_the_root() {
         },
     )
     .unwrap();
+    let mut events = svc.subscribe(None);
     assert!(sink.finish_run(&id, 51, &RunScope::FullRoot, true).is_err());
+    let announced = loop {
+        match events.recv_timeout(Duration::from_millis(500)) {
+            RecvOutcome::Event(e) if e.event == EventName::TreeInvalidated => break true,
+            RecvOutcome::Event(_) => continue,
+            _ => break false,
+        }
+    };
+    assert!(announced, "a failed end still announces what was published");
     let (run_state, active): (String, Option<i64>) = svc
         .inner
         .db()
