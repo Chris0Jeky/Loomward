@@ -1,6 +1,7 @@
 {
   "catch_up": [
     {
+      "catch_up_span_usn": 4821024,
       "cleanup": "removed_owned_tempdir",
       "errors": {
         "below_first_usn": 1181,
@@ -8,7 +9,6 @@
         "wrong_journal_id": 87
       },
       "files": 10000,
-      "first_usn": 43729813504,
       "generation_ms": 5189.907,
       "handle_reopen_catchup": true,
       "lab": "marked watch-usn-* owned tempdir below loomward-lab/scale",
@@ -88,11 +88,10 @@
         }
       ],
       "same_journal_after_changes": true,
-      "start_usn": 43761755760,
-      "target_usn": 43766576784,
       "volume": "G"
     },
     {
+      "catch_up_span_usn": 4821024,
       "cleanup": "removed_owned_tempdir",
       "errors": {
         "below_first_usn": 1181,
@@ -100,7 +99,6 @@
         "wrong_journal_id": 87
       },
       "files": 10000,
-      "first_usn": 1065353216,
       "generation_ms": 4678.8447,
       "handle_reopen_catchup": true,
       "lab": "marked watch-usn-* owned tempdir below loomward-lab/scale",
@@ -180,15 +178,37 @@
         }
       ],
       "same_journal_after_changes": true,
-      "start_usn": 1098718944,
-      "target_usn": 1103539968,
       "volume": "E"
     }
   ],
   "date": "2026-10-10",
   "elevated": false,
+  "environment": {
+    "architecture": "x86_64-pc-windows-msvc",
+    "build_profile": "release",
+    "os": "Windows 11 Pro",
+    "rustc": "1.97.1",
+    "temp_filesystem": "NTFS",
+    "token_elevation": 0,
+    "version": "10.0.26300",
+    "volume_filesystems": {
+      "E": "NTFS",
+      "G": "NTFS"
+    },
+    "windows_sys": "0.61.2"
+  },
   "lab": "owned OS tempdirs; no real paths or names retained",
   "schema_version": 1,
+  "source": {
+    "base_head": "dcbd1c2950f32c158721a14a28a5edab68c3f36a",
+    "branch": "feat/change-tracking-spike",
+    "committed": false,
+    "files_sha256": {
+      "crates/loomward-lab/examples/change_tracking.rs": "3902e2efce9729f24db3b16ceb595c9b1c2dd3b8b7a74be7dd317148a41b5bf8",
+      "crates/loomward-lab/examples/change_tracking/windows.rs": "f9dd0c62f0a20863fb9a41222c966c4d93400317dd8b6e648398951d769d225a"
+    },
+    "watch_note": "Measured before USN additions; final watcher uses equivalent clippy-safe error matching. No remeasurement after formatting."
+  },
   "usn": [
     {
       "handle": "volume_metadata",
@@ -211,11 +231,10 @@
     {
       "handle": "directory",
       "journal": {
-        "first_usn": 43713036288,
-        "id": "131671456976704998",
-        "lowest_valid_usn": 0,
+        "id_present": true,
+        "lowest_valid_usn_is_zero": true,
         "max_size": 33554432,
-        "next_usn": 43749704096,
+        "retained_span_usn": 36667808,
         "versions": [
           2,
           4
@@ -250,11 +269,10 @@
     {
       "handle": "directory",
       "journal": {
-        "first_usn": 1056964608,
-        "id": "132398587855945930",
-        "lowest_valid_usn": 0,
+        "id_present": true,
+        "lowest_valid_usn_is_zero": true,
         "max_size": 33554432,
-        "next_usn": 1093898680,
+        "retained_span_usn": 36934072,
         "versions": [
           2,
           4
@@ -269,6 +287,26 @@
       "volume": "E"
     }
   ],
+  "validation": {
+    "cargo clippy --workspace --all-targets -- -D warnings": "PASS",
+    "cargo fmt --all --check": "PASS",
+    "cargo test --workspace": {
+      "result": "PASS",
+      "tests": 71
+    },
+    "cargo test -p loomward-lab --example change_tracking": {
+      "result": "PASS",
+      "tests": 3
+    },
+    "not_verified": [
+      "reboot",
+      "actual journal wrap/recreation",
+      "ACL-inaccessible object filtering",
+      "production engine/catalogue integration",
+      "other Windows builds/accounts/filesystems",
+      "repeated content-write coalescing"
+    ]
+  },
   "watch": [
     {
       "actions": [
@@ -963,49 +1001,5 @@
       "watcher_cpu_s": 0.0,
       "zero_byte_completions": 0
     }
-  ],
-  "environment": {
-    "os": "Windows 11 Pro",
-    "version": "10.0.26300",
-    "architecture": "x86_64-pc-windows-msvc",
-    "rustc": "1.97.1",
-    "windows_sys": "0.61.2",
-    "temp_filesystem": "NTFS",
-    "volume_filesystems": {
-      "G": "NTFS",
-      "E": "NTFS"
-    },
-    "build_profile": "release",
-    "token_elevation": 0
-  },
-  "source": {
-    "base_head": "dcbd1c2950f32c158721a14a28a5edab68c3f36a",
-    "branch": "feat/change-tracking-spike",
-    "committed": false,
-    "watch_note": "Measured before USN additions; final watcher uses equivalent clippy-safe error matching. No remeasurement after formatting.",
-    "files_sha256": {
-      "crates/loomward-lab/examples/change_tracking.rs": "3902e2efce9729f24db3b16ceb595c9b1c2dd3b8b7a74be7dd317148a41b5bf8",
-      "crates/loomward-lab/examples/change_tracking/windows.rs": "f9dd0c62f0a20863fb9a41222c966c4d93400317dd8b6e648398951d769d225a"
-    }
-  },
-  "validation": {
-    "cargo fmt --all --check": "PASS",
-    "cargo test --workspace": {
-      "result": "PASS",
-      "tests": 71
-    },
-    "cargo clippy --workspace --all-targets -- -D warnings": "PASS",
-    "cargo test -p loomward-lab --example change_tracking": {
-      "result": "PASS",
-      "tests": 3
-    },
-    "not_verified": [
-      "reboot",
-      "actual journal wrap/recreation",
-      "ACL-inaccessible object filtering",
-      "production engine/catalogue integration",
-      "other Windows builds/accounts/filesystems",
-      "repeated content-write coalescing"
-    ]
-  }
+  ]
 }
