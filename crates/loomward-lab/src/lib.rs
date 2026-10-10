@@ -8,6 +8,8 @@ use std::{
 
 pub const MARKER: &str = "Loomward disposable scale lab v1\n";
 pub const MAX_FILES: u64 = 3_000_000;
+pub const L_FILES: u64 = 10_000_000;
+pub const RESERVE_BYTES: u64 = 20_000_000_000;
 pub const QUEUE_LIMIT: usize = 1024;
 pub const MAX_DEPTH: usize = 128;
 
@@ -85,6 +87,22 @@ pub fn mix(mut x: u64) -> u64 {
     x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
     x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
     x ^ (x >> 31)
+}
+
+/// Validate the scope before any I/O; return the payload/volume-delta ceiling.
+pub fn generation_limits(input: &str, files: u64) -> io::Result<u64> {
+    root_name(input)?;
+    let cap = if input[..1].eq_ignore_ascii_case("E") {
+        L_FILES
+    } else {
+        MAX_FILES
+    };
+    if files == 0 || files > cap {
+        return Err(invalid(
+            "files must be 1..=3000000; up to 10000000 only under the E: scale lab",
+        ));
+    }
+    Ok((RESERVE_BYTES * files.max(MAX_FILES)).div_ceil(MAX_FILES))
 }
 
 pub fn bucket_path(bucket: u64, seed: u64, profile: Profile) -> PathBuf {
@@ -276,8 +294,10 @@ pub struct Manifest {
 }
 
 pub fn expected(files: u64, seed: u64, profile: Profile) -> io::Result<Totals> {
-    if files == 0 || files > MAX_FILES {
-        return Err(invalid("files must be in 1..=3000000"));
+    if files == 0 || files > L_FILES {
+        return Err(invalid(
+            "files must be in 1..=10000000; scope checked separately",
+        ));
     }
     let mut directories = BTreeSet::new();
     for bucket in 0..files.div_ceil(profile.bucket_size()) {
@@ -357,6 +377,32 @@ pub fn decode_records(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn oversized_generation_is_e_only_and_bounded() {
+        for path in [
+            r"E:\loomward-lab\scale\large",
+            r"e:\LOOMWARD-LAB\SCALE\large",
+        ] {
+            assert!(generation_limits(path, 10_000_000).is_ok());
+            assert_eq!(generation_limits(path, 10_000_000).unwrap(), 66_666_666_667);
+            assert!(generation_limits(path, 10_000_001).is_err());
+            assert!(generation_limits(path, 0).is_err());
+        }
+        assert_eq!(
+            generation_limits(r"G:\loomward-lab\scale\small", MAX_FILES).unwrap(),
+            20_000_000_000
+        );
+        for path in [
+            r"G:\loomward-lab\scale\large",
+            r"E:\other\large",
+            r"E:\loomward-lab\scale\large\child",
+            r"E:\loomward-lab\scale\..",
+            r"E:\loomward-lab\scale\NUL",
+        ] {
+            assert!(generation_limits(path, 10_000_000).is_err(), "{path}");
+        }
+        assert!(generation_limits(r"G:\loomward-lab\scale\large", MAX_FILES + 1).is_err());
+    }
     use super::*;
     #[test]
     fn cross_check_compares_every_counter_and_names_differences() {
@@ -491,7 +537,7 @@ mod tests {
             assert_ne!(file_spec(0, 42, profile), file_spec(0, 43, profile));
         }
         assert!(expected(0, 0, Profile::Dev).is_err());
-        assert!(expected(MAX_FILES + 1, 0, Profile::Dev).is_err());
+        assert!(expected(L_FILES + 1, 0, Profile::Dev).is_err());
         assert!(Profile::parse("bogus").is_err());
     }
     #[test]

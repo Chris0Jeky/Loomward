@@ -22,8 +22,14 @@ that directory itself.
 Synthetic generation/bench roots must be **direct children of G:\loomward-lab\scale or E:\loomward-lab\scale**, with ASCII letters/digits/hyphens/
 underscores and no device names. Relative, UNC, device, ADS and traversal paths are refused.
 Generation never overwrites an existing root. It reserves 20 GB (decimal) free space, limits a tree to
-3M files, sparsifies before extending files, and refuses completion if payload allocation or the
-observed generation volume delta exceeds 20 GB (decimal). Volume deltas include concurrent unrelated
+3M files, except the owner-authorised oversized **L tier (10,000,000 files)**, which is permitted
+only under the E: scale lab. G: and every other root keep the 3M cap/refusal. The root grammar,
+marker, non-elevated token, never-overwrite check and sparse zero payloads remain mandatory.
+It sparsifies before extending files and refuses completion if payload allocation or the
+observed generation volume delta exceeds 20 GB (decimal) for <=3M files. For oversized E: trees,
+only that ceiling scales proportionally: `ceil(20 GB * files / 3,000,000)`, at most
+66,666,666,667 bytes for 10M. The **20 GB free-space reserve never scales down**. These are
+metadata/sparse-allocation ceilings, not permission to write payload content. Volume deltas include concurrent unrelated
 activity and metadata; they are not precise per-tree allocation measurements.
 
 `destroy --root <marked-root>` remains restricted to G:; it verifies the exact lab marker and preflights/pins all directories
@@ -52,6 +58,31 @@ checks exact totals, compares the unchanged Python scanner at 100k, and saves ra
 OS caches or changes global policy. All timing labels are uncontrolled; no cold-cache claim.
 
 Research and measurements: [enumeration-spike.md](../../docs/research/enumeration-spike.md).
+
+## Native scan tiers
+
+`bench scan --tier S|M|L --runs N [--cache-label first-after-generate]` uses marked mixed trees
+named `mixed-100000`, `mixed-1000000` (G:) and `mixed-10000000` (E:). Generate L once with
+`generate --root <private-E-lab-root> --files 10000000 --profile mixed --seed 42 --threads 8`.
+Keep its selected path only in the ignored `.loomward/scan-roots.log`; published evidence uses
+the label "10M lab tier (E: scale lab)". Leave this tree for later L17 runs.
+
+Every scan run uses a fresh process. Complete scans must match the exact independent manifest
+(files, descendant directories, logical and allocated bytes) and sink totals. L alone may pass
+the N6 partial invariant oracle on engine limits: incomplete coverage, limit reported, observed
+totals bounded by the manifest, sink agreement, repairing root and no sweep. This is not an
+exact subset oracle: scheduling decides which directories fit the bounded arena. Full allocation
+is null on partial scans; observed subset allocation remains separately labelled. S/M never
+accept partial coverage. Engine caps and its shared 64 MiB accounting remain unchanged.
+
+Results separate wall time through the last drained `ListingDone`, summed enumeration worker
+time (includes backpressure), writer staging time, and bottom-up aggregation/final publication
+time. Enumeration and staging overlap; do not subtract their timings from wall time.
+The sink retains only directory aggregates: there is no SQLite state disk or durable publication.
+`PeakPagefileUsage` and `PeakWorkingSetSize` are process-lifetime Windows high-water counters,
+including manifest-plan validation and scan setup. p50 uses the median; nearest-rank p95 is null
+below 20 runs. All measurements on the concurrent host are shared-host/uncontrolled, cache
+warm/uncontrolled; `first-after-generate` is an observation label, never a cold-cache claim.
 
 ## Explicit real-root cross-check
 
