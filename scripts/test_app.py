@@ -6,11 +6,17 @@ Serves the built app/dist from a tiny loopback static server and drives it with 
   - http mode against a small in-process fake engine: token header, fragment scrubbed, SSE held open,
     and a dropped engine flips the shell to "unavailable" and back.
 Run `npm.cmd --prefix app run build` first.
+
+`--live-serve` replaces the Python servers with the real `loomward-serve --static app/dist` binary
+(lane L6, its FixtureService answering from contracts/v3/examples): the static files under the
+server's own CSP header, the fragment-token handshake, calls and the SSE stream through the real
+security boundary, and "unavailable" once the process is gone.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 import threading
 import time
@@ -151,14 +157,71 @@ def theme_snapshot(page: Page) -> dict:
     }""")
 
 
+def run_live_serve(browser_path: str | None) -> None:
+    """The app's http transport against the real loomward-serve binary (lane L6)."""
+    subprocess.run(['cargo', 'build', '-q', '-p', 'loomward-http', '--bin', 'loomward-serve'], cwd=ROOT, check=True)
+    exe = ROOT / 'target' / 'debug' / ('loomward-serve.exe' if sys.platform == 'win32' else 'loomward-serve')
+    proc = subprocess.Popen([str(exe), '--static', str(DIST)], stdout=subprocess.PIPE, text=True)
+    try:
+        url = (proc.stdout.readline() if proc.stdout else '').strip()
+        check(url.startswith('http://127.0.0.1:') and '/#token=' in url, 'loomward-serve printed the fragment-token URL')
+        base, token = url.split('/#token=')
+        check(len(token) == 64, 'the session token is 32 random bytes, hex encoded')
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(executable_path=browser_path, headless=True, args=['--no-sandbox'])
+            page = browser.new_context(viewport={'width': 1360, 'height': 900}).new_page()
+            page.set_default_timeout(8000)
+            errors: list[str] = []
+            hosts: set[str] = set()
+            page.on('pageerror', lambda e: errors.append(f'pageerror: {e}'))
+            page.on('console', lambda m: m.type == 'error' and errors.append(f'console: {m.text}'))
+            page.on('request', lambda r: hosts.add(urlsplit(r.url).hostname or r.url))
+
+            res = page.goto(f'{base}/?transport=mock')
+            headers = res.headers if res else {}
+            check("script-src 'self'" in headers.get('content-security-policy', '') and headers.get('x-content-type-options') == 'nosniff', 'static page carries the CSP and nosniff headers')
+            expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
+            print('PASS the built app runs under the server CSP (mock mode)')
+
+            page.evaluate('sessionStorage.clear()')
+            page.goto(url)
+            status = page.get_by_role('status', name='Session status')
+            expect(status).to_contain_text('Connected')
+            check('token' not in page.url, 'the token is scrubbed from the address bar')
+            expect(status).to_contain_text('Dataset synthetic')
+            expect(status).to_contain_text('Browser')
+            check(page.evaluate(f"""async () => (await fetch('/api/v3/call', {{method: 'POST', body: '{{}}', headers: {{'Content-Type': 'application/json'}}}})).status""") == 403, 'a call without the token header is refused')
+            page.wait_for_timeout(1500)  # the SSE stream stays open: still connected
+            expect(status).to_contain_text('Connected')
+            print('PASS http transport connected through loomward-serve')
+
+            proc.terminate()
+            proc.wait(timeout=10)
+            expect(page.get_by_role('alert')).to_contain_text('Unavailable', timeout=15000)
+            expect(status).to_contain_text('Dataset unknown')
+            print('PASS a stopped server flips the shell to unavailable')
+
+            check(hosts <= {'127.0.0.1'}, f'every request stayed on loopback: {sorted(hosts)}')
+            unexpected = [e for e in errors if 'Failed to load resource' not in e and 'ERR_CONNECTION_REFUSED' not in e]
+            check(not unexpected, f'no console errors or page errors: {unexpected}')
+            browser.close()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    print('ALL PASS (live serve)')
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--browser', default=None, help='path to a Chromium executable')
     ap.add_argument('--screenshots', type=Path)
     ap.add_argument('--view-shots', type=Path, help='directory for the product-view screenshots (evidence/v3/app-views)')
+    ap.add_argument('--live-serve', action='store_true', help='run the http leg against the real loomward-serve binary')
     a = ap.parse_args()
     if not (DIST / 'index.html').exists():
         sys.exit('app/dist is missing: run `npm.cmd --prefix app run build` first')
+    if a.live_serve:
+        return run_live_serve(a.browser)
 
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     server.daemon_threads = True
