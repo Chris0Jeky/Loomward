@@ -1,4 +1,14 @@
 {
+  "configuration_note": {
+    "shipped": "main configuration (256 MiB main cache, temp_store=MEMORY); the 224/16 MiB FILE spill candidate was rejected (driver decision 2026-10-10, PR #208)",
+    "top_level_values": "the representative run of the REJECTED P4c candidate, kept for history; they do not describe the shipped configuration",
+    "shipped_P4_rows_per_second_median": 44487.69716852134,
+    "shipped_P4_rows_per_second_range": [
+      41758.8703480107,
+      44709.81831587198
+    ],
+    "source": "P4c.metrics.main (interleaved A/B on a shared host)"
+  },
   "P14": {
     "bytes_per_entry": 155.02178319502178,
     "catalog_bytes": 155176960,
