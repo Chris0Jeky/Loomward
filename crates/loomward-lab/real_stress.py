@@ -34,7 +34,32 @@ def native(*args):
 
 
 def python_child(root, label, root_log):
-    # The native cross-check already validated this root without following links.
+    text = str(root)
+    if (len(text) < 4 or not text[0].isascii() or not text[0].isalpha()
+            or text[1:3] != ":\\"):
+        raise ValueError("real root must be an absolute local path below a volume root")
+    parts = text[3:].split("\\")
+    if any(not part or part in (".", "..") or part.endswith((".", " "))
+           or any(char in part for char in ":/*?\0") for part in parts) or any(
+            part.lower() in ("users", "appdata", "browser", "chrome", "chromium", "firefox",
+                             "edge", "credentials", "keys", ".ssh", ".aws", ".azure", ".gnupg")
+            for part in parts):
+        raise ValueError("profile, credential, browser, or ambiguous real root refused")
+    root = Path(root)
+    if any(path.is_symlink() or path.is_junction() for path in (root, *root.parents)):
+        raise ValueError("reparse real root refused")
+    if not root_log.is_absolute():
+        raise ValueError("root-log must be absolute and outside the scan root")
+    try:
+        resolved_root = root.resolve(strict=True)
+        parent = root_log.parent.resolve(strict=True)
+    except OSError as error:
+        raise ValueError("root and root-log parent must resolve") from error
+    root_key = Path(str(resolved_root).removeprefix("\\\\?\\"))
+    parent_key = Path(str(parent).removeprefix("\\\\?\\"))
+    if not resolved_root.is_dir() or not parent.is_dir() or parent_key.is_relative_to(root_key):
+        raise ValueError("root-log must be absolute and outside the scan root")
+    root_log = parent / root_log.name
     with root_log.open("a", encoding="utf-8") as log:
         log.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\t{root}\towner-authorised Python metadata comparison; {label}\n")
         log.flush()
@@ -61,7 +86,7 @@ def main():
     parser.add_argument("--plan", type=Path)
     parser.add_argument("--root-log", type=Path, required=True)
     parser.add_argument("--synthetic", action="store_true")
-    parser.add_argument("--python-child", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--python-child", help=argparse.SUPPRESS)
     parser.add_argument("--label", help=argparse.SUPPRESS)
     args = parser.parse_args()
     require_non_elevated()
