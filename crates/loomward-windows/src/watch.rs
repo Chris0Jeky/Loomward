@@ -69,7 +69,7 @@ mod native {
             mpsc, Arc, Mutex,
         },
         thread::{self, JoinHandle},
-        time::Duration,
+        time::{Duration, Instant},
     };
     use windows_sys::Win32::{
         Foundation::*,
@@ -84,7 +84,43 @@ mod native {
     const FILTER: u32 = FILE_NOTIFY_CHANGE_FILE_NAME
         | FILE_NOTIFY_CHANGE_DIR_NAME
         | FILE_NOTIFY_CHANGE_SIZE
-        | FILE_NOTIFY_CHANGE_LAST_WRITE;
+        | FILE_NOTIFY_CHANGE_LAST_WRITE
+        | FILE_NOTIFY_CHANGE_ATTRIBUTES
+        | FILE_NOTIFY_CHANGE_SECURITY;
+
+    #[derive(Default)]
+    struct Checkpoint {
+        held: Option<mpsc::SyncSender<()>>,
+    }
+    impl Checkpoint {
+        fn request(
+            &mut self,
+            reply: mpsc::SyncSender<()>,
+            completed: impl FnOnce() -> Result<bool, SourceError>,
+        ) -> Result<bool, SourceError> {
+            if completed()? {
+                self.held = Some(reply);
+                Ok(true)
+            } else {
+                let _ = reply.send(());
+                Ok(false)
+            }
+        }
+        fn deliver(&mut self, hints: Vec<Change>, callback: &impl Fn(Vec<Change>)) {
+            callback(hints);
+            if let Some(reply) = self.held.take() {
+                let _ = reply.send(());
+            }
+        }
+    }
+
+    fn validate_path(path: &Path, expected: OpenedIdentity) -> Result<(), SourceError> {
+        let (_, _, identity) = open_watch_root(path)?;
+        if identity.id != expected.id || identity.volume_serial != expected.volume_serial {
+            return Err(SourceError::IdentityChanged);
+        }
+        Ok(())
+    }
 
     struct PendingRead<'a> {
         dir: &'a File,
@@ -159,6 +195,7 @@ mod native {
     /// The callback must only enqueue/coalesce hints: it must not enumerate or write a database.
     pub struct Watcher {
         done: Arc<AtomicBool>,
+        failed: Arc<AtomicBool>,
         thread: Mutex<Option<JoinHandle<()>>>,
         checkpoints: mpsc::SyncSender<mpsc::SyncSender<()>>,
     }
@@ -178,6 +215,9 @@ mod native {
             }
             let done = Arc::new(AtomicBool::new(false));
             let stopped = done.clone();
+            let failed = Arc::new(AtomicBool::new(false));
+            let failure = failed.clone();
+            let path = path.to_owned();
             let (ready_tx, ready_rx) = mpsc::sync_channel(1);
             let (checkpoints, checkpoint_rx) = mpsc::sync_channel::<mpsc::SyncSender<()>>(1);
             let thread = thread::spawn(move || {
@@ -190,6 +230,8 @@ mod native {
                     let event = unsafe { OwnedHandle::from_raw_handle(raw) };
                     let mut buffer = vec![0u32; BUFFER_WORDS];
                     let mut previous = None;
+                    let mut checkpoint = Checkpoint::default();
+                    let mut checked = Instant::now();
                     let mut first = true;
                     loop {
                         if stopped.load(Ordering::Acquire) {
@@ -204,7 +246,7 @@ mod native {
                         }
                         // Rearm before decoding/delivering the previous completion.
                         if let Some(hints) = previous.take() {
-                            callback(hints);
+                            checkpoint.deliver(hints, &callback);
                         }
                         let (error, returned) = if pending.error == Some(ERROR_NOTIFY_ENUM_DIR) {
                             (pending.error, 0)
@@ -213,12 +255,31 @@ mod native {
                                 if stopped.load(Ordering::Acquire) {
                                     return Ok(());
                                 }
+                                // A handle can survive a root/ancestor rename without a notification.
+                                if checked.elapsed() >= Duration::from_millis(250) {
+                                    validate_path(&path, identity)?;
+                                    checked = Instant::now();
+                                }
                                 match unsafe { WaitForSingleObject(event.as_raw_handle(), 0) } {
                                     WAIT_OBJECT_0 => break pending.finish(),
                                     WAIT_TIMEOUT => {
-                                        // At this barrier all already-completed hints have been delivered.
                                         if let Ok(reply) = checkpoint_rx.try_recv() {
-                                            let _ = reply.send(());
+                                            validate_path(&path, identity)?;
+                                            // Completion may have arrived since the first zero wait.
+                                            if checkpoint.request(reply, || {
+                                                match unsafe {
+                                                    WaitForSingleObject(event.as_raw_handle(), 0)
+                                                } {
+                                                    WAIT_OBJECT_0 => Ok(true),
+                                                    WAIT_TIMEOUT => Ok(false),
+                                                    _ => Err(SourceError::Io(unsafe {
+                                                        GetLastError()
+                                                    }
+                                                        as i32)),
+                                                }
+                                            })? {
+                                                break pending.finish();
+                                            }
                                         }
                                         match unsafe {
                                             WaitForSingleObject(event.as_raw_handle(), 10)
@@ -258,12 +319,14 @@ mod native {
                     }
                 })();
                 if let Err(error) = outcome {
+                    failure.store(true, Ordering::Release);
                     let _ = ready_tx.try_send(Err(error));
                     callback(vec![Change::RootDirty]);
                 }
             });
             let watcher = Self {
                 done,
+                failed,
                 thread: Mutex::new(Some(thread)),
                 checkpoints,
             };
@@ -280,7 +343,15 @@ mod native {
                 .try_send(tx)
                 .map_err(|_| SourceError::Refused)?;
             rx.recv_timeout(Duration::from_secs(2))
-                .map_err(|_| SourceError::Refused)
+                .map_err(|_| SourceError::Refused)?;
+            if self.failed() {
+                return Err(SourceError::Refused);
+            }
+            Ok(())
+        }
+        /// Native I/O or the granted path lost coverage; the next scan must rebuild this watch.
+        pub fn failed(&self) -> bool {
+            self.failed.load(Ordering::Acquire)
         }
         /// Stop and join, cancelling and draining pending I/O before releasing root pins.
         pub fn stop(&self) {
@@ -299,6 +370,83 @@ mod native {
     #[cfg(test)]
     mod tests {
         use super::*;
+        #[test]
+        fn completion_between_poll_and_request_is_delivered_before_ack() {
+            let mut checkpoint = Checkpoint::default();
+            let (tx, rx) = mpsc::sync_channel(1);
+            let completion = std::cell::Cell::new(false);
+            assert!(!completion.get()); // the first zero wait timed out
+            completion.set(true); // completion arrives just before taking the request
+            assert!(checkpoint.request(tx, || Ok(completion.get())).unwrap());
+            assert!(matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
+            let delivered = std::cell::Cell::new(false);
+            let callback = |hints| {
+                assert_eq!(hints, vec![Change::RootDirty]);
+                assert!(rx.try_recv().is_err());
+                delivered.set(true);
+            };
+            checkpoint.deliver(vec![Change::RootDirty], &callback);
+            rx.try_recv().unwrap();
+            assert!(delivered.get());
+            let (tx, rx) = mpsc::sync_channel(1);
+            assert!(!checkpoint.request(tx, || Ok(false)).unwrap());
+            rx.try_recv().unwrap();
+        }
+
+        #[test]
+        fn armed_watch_allows_parent_rename_and_sibling_delete_and_fails_closed() {
+            let tree = fixture();
+            let parent = tree.path().join("parent");
+            let root = parent.join("root");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::create_dir(parent.join("sibling")).unwrap();
+            if elevated_refusal(&root) {
+                return;
+            }
+            let (tx, rx) = mpsc::channel();
+            let watcher = Watcher::start(&root, None, move |batch| {
+                let _ = tx.send(batch);
+            })
+            .unwrap();
+            let renamed = tree.path().join("renamed");
+            std::fs::remove_dir(parent.join("sibling")).unwrap();
+            std::fs::rename(&parent, &renamed).unwrap();
+            assert!(rx
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .contains(&Change::RootDirty));
+            assert!(watcher.failed());
+            assert!(watcher.checkpoint().is_err());
+            watcher.stop();
+        }
+
+        #[test]
+        fn armed_watch_allows_root_delete_and_fails_closed() {
+            let tree = fixture();
+            let root = tree.path().join("root");
+            std::fs::create_dir(&root).unwrap();
+            if elevated_refusal(&root) {
+                return;
+            }
+            let (tx, rx) = mpsc::channel();
+            let watcher = Watcher::start(&root, None, move |batch| {
+                let _ = tx.send(batch);
+            })
+            .unwrap();
+            std::fs::remove_dir(&root).unwrap();
+            assert!(rx
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .contains(&Change::RootDirty));
+            assert!(watcher.failed());
+            watcher.stop();
+        }
+
+        #[test]
+        fn filter_covers_attributes_and_security() {
+            assert_ne!(FILTER & FILE_NOTIFY_CHANGE_ATTRIBUTES, 0);
+            assert_ne!(FILTER & FILE_NOTIFY_CHANGE_SECURITY, 0);
+        }
         fn fixture() -> tempfile::TempDir {
             tempfile::tempdir_in(std::fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap()
         }
