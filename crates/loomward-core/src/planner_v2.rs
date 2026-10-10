@@ -427,8 +427,8 @@ pub fn plan_v2(s: &Scenario, node_budget: u64) -> Result<PlanV2, String> {
     })
 }
 
-/// Python-compatible intake. v1 Python treats a missing `groups` key as empty (v2 Python raises
-/// KeyError there; this port follows v1) and raises on a non-boolean flag only where it
+/// Python-compatible intake. Both v1 and v2 Python treat a missing `groups` key as empty
+/// (`.get('groups', [])`) and raise on a non-boolean flag only where it
 /// evaluates one: every volume's `online`/`writable`, and the pinned/active/protected flags of
 /// source-volume groups up to the first true one. Flags Python never evaluates are dropped so
 /// the typed `Scenario` does not reject what Python accepts.
@@ -787,5 +787,27 @@ mod tests {
         raw.as_object_mut().unwrap().remove("groups");
         let p = plan_v2(&scenario_from_value(&raw).unwrap(), 100).unwrap();
         assert!(p.proposals.is_empty() && p.search.complete);
+    }
+
+    #[test]
+    fn missing_groups_fixture_records_no_discrepancy() {
+        let missing = cases()
+            .into_iter()
+            .find(|c| c["name"] == "edge-missing-groups")
+            .expect("edge-missing-groups fixture case");
+        assert!(
+            missing.get("python_discrepancy").is_none(),
+            "edge-missing-groups still carries a python_discrepancy note: {:?}",
+            missing.get("python_discrepancy")
+        );
+        let empty = cases()
+            .into_iter()
+            .find(|c| c["name"] == "edge-empty-groups")
+            .expect("edge-empty-groups fixture case");
+        assert_eq!(
+            missing.get("output"),
+            empty.get("output"),
+            "edge-missing-groups output should equal the empty-group plan"
+        );
     }
 }
