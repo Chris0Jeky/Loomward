@@ -2,14 +2,10 @@
 
 ## Changed
 
-Architecture revision 2 (PR #110) and issue #117's L2 errata are implemented in
-`C:/Users/jekyt/wt/lw-l2`, branch `feat/l2-catalog`. HEAD remains
-`6499bc8ea71d6d8b17c8684d9c8cac095b6019ba`. `git fetch origin` completed and
-`git merge --no-commit origin/main` imported main at
-`c64b2588bef48020e54eb797fd9522a815de6fef`. Cargo.lock was regenerated with
-`cargo generate-lockfile` and its conflict resolved. The merge remains pending:
-**no commit or push was made; the driver owns both.** The initial tree was clean.
-Staged changes outside L2 are imported main, not new L2 work.
+Architecture revision 2 (PR #110) and issue #117's L2 errata are implemented on branch
+`feat/l2-catalog`. The driver committed the work as two commits, after the merge of main at
+`c64b258`, and then merged current main. Cargo.lock keeps main's pins and adds only the
+catalogue's dependencies.
 
 Migration 2 supplies AUTOINCREMENT/born_run, revisioned observations, root grants
 and revocations in precious state, continuity/incarnation bindings and FULL/NORMAL
