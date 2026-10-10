@@ -5,7 +5,7 @@
 //!   (`semantics.md` sections 1 and 2): every call returns by its deadline;
 //! - the 10-minute idempotency cache of mutations, replaying retained outcomes and never executing
 //!   twice (errata #117 N4), and `expected_state_rev` preconditions;
-//! - node IDs sealed with a per-install HMAC key over catalogue instance, row and `born_run`, and
+//! - node IDs sealed with a per-session HMAC key over catalogue instance, row and `born_run`, and
 //!   session-bound cursors (section 5, partial #15);
 //! - provenance: a synthetic session accepts only fixture or identity-verified registered lab
 //!   roots; a personal session needs `allow_personal` and stays teacher-disabled (ADR-V3-15);
@@ -114,7 +114,6 @@ impl Service {
         let engine = Engine::open(EngineConfig::new(state_dir.clone(), config.dataset))
             .map_err(|e| format!("engine refused to open: {e}"))?;
         let conn = db::open(&state_dir).map_err(|e| format!("state store: {e}"))?;
-        let key = db::install_key(&conn).map_err(|e| format!("state store: {e}"))?;
         let instance = db::instance(&conn).map_err(|e| format!("state store: {e}"))?;
         let lookups = db::open(&state_dir).map_err(|e| format!("state store: {e}"))?;
         let inner = Arc::new_cyclic(|weak| Inner {
@@ -126,7 +125,7 @@ impl Service {
             catalog,
             db: Mutex::new(conn),
             instance,
-            ids: ids::NodeIds::new(key),
+            ids: ids::NodeIds::session(),
             cursors: cursors::Cursors::new(4096),
             idem: idem::Idempotency::new(ttl),
             mutation: Mutex::new(()),
@@ -142,9 +141,13 @@ impl Service {
                 .map_err(|e| format!("engine refused the scan writer: {e}"))?;
         }
         for (i, root) in config.grant_roots.iter().enumerate() {
-            inner
-                .grant(root, "cli_flag")
-                .map_err(|r| format!("grant root #{} refused: {}", i + 1, refusal_name(r)))?;
+            inner.grant(root, "cli_flag").map_err(|r| {
+                let rule = match r {
+                    Refused::Rule(r) => refusal_name(r),
+                    Refused::RootLimit => "root_limit_reached".into(),
+                };
+                format!("grant root #{} refused: {rule}", i + 1)
+            })?;
         }
         spawn_telemetry_pump(Arc::downgrade(&inner));
         Ok(Service { inner })
@@ -171,6 +174,20 @@ pub(crate) fn refusal_name(r: Refusal) -> String {
         .ok()
         .and_then(|v| v.as_str().map(str::to_owned))
         .unwrap_or_default()
+}
+
+/// Why a grant was refused: a contract refusal rule, or the active-root cap (the contract lists
+/// at most 64 roots, so a 65th active root could not be shown or revoked).
+#[derive(Debug, PartialEq)]
+pub(crate) enum Refused {
+    Rule(Refusal),
+    RootLimit,
+}
+
+impl From<Refusal> for Refused {
+    fn from(r: Refusal) -> Self {
+        Refused::Rule(r)
+    }
 }
 
 /// Commands that change state. Their outcome is retained under the `request_id` (section 4) and a
@@ -210,13 +227,14 @@ pub(crate) struct Queue {
     serving: u64,
 }
 
+fn is_revocation(c: Command) -> bool {
+    matches!(c, Command::RootsRevoke | Command::GrantsRevoke)
+}
+
 /// Revocation must never wait behind other mutations (its state change is serialised by
 /// `Inner::mutation`), and the folder picker waits on the owner: neither takes a ticket.
 fn is_ticketed(c: Command) -> bool {
-    !matches!(
-        c,
-        Command::RootsRequestGrant | Command::RootsRevoke | Command::GrantsRevoke
-    )
+    !is_revocation(c) && c != Command::RootsRequestGrant
 }
 
 /// `semantics.md` section 2 defaults.
@@ -394,7 +412,13 @@ impl Service {
         // cap check, the claim and the ticket are one step.
         let mut queue = is_ticketed(command)
             .then(|| self.inner.turn.0.lock().unwrap_or_else(|e| e.into_inner()));
-        match self.inner.idem.claim(&id, &fingerprint) {
+        // Revocation is never refused by the slot cap: other mutations cannot crowd it out.
+        let claim = if is_revocation(command) {
+            self.inner.idem.claim_uncapped(&id, &fingerprint)
+        } else {
+            self.inner.idem.claim(&id, &fingerprint)
+        };
+        match claim {
             idem::Claim::Full => return busy(id),
             idem::Claim::Conflict => {
                 let e = with_reason(
@@ -450,12 +474,10 @@ impl Service {
                         })
                 };
                 if spawned.is_err() {
-                    // No thread: the ticket is never issued, so the queue order is untouched.
-                    let e = fail(ErrorCode::ResourceBudget, "no worker");
-                    self.inner.idem.finish(
-                        &id,
-                        ResponseEnvelope::error(Some(id.clone()), e.clone(), None),
-                    );
+                    // No thread: nothing ran. The ticket is never issued (queue order untouched)
+                    // and the key is freed, so a retry with the same request_id runs.
+                    self.inner.idem.release(&id);
+                    let e = retry_flag(command, fail(ErrorCode::ResourceBudget, "no worker"));
                     return ResponseEnvelope::error(Some(id), e, None);
                 }
                 if let Some(q) = queue.as_mut() {
@@ -602,7 +624,7 @@ impl Inner {
     /// Grants one already path-checked root under the session's provenance policy. A synthetic
     /// session accepts only a registered lab root whose native identity matches the registry; a
     /// personal session accepts an owner folder. Re-granting an active root returns it.
-    pub(crate) fn grant(&self, root: &Path, via: &str) -> Result<(i64, bool), Refusal> {
+    pub(crate) fn grant(&self, root: &Path, via: &str) -> Result<(i64, bool), Refused> {
         let (volume_key, file_id) = lab::identity(root)?;
         let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
         let conn = self.db();
@@ -623,6 +645,11 @@ impl Inner {
             {
                 return Ok((root, false));
             }
+        }
+        if db::active_grants(&conn).map_err(|_| Refusal::IdentityUnavailable)?
+            >= db::MAX_ACTIVE_ROOTS
+        {
+            return Err(Refused::RootLimit);
         }
         drop(conn);
         let text = root.to_string_lossy();
@@ -647,7 +674,7 @@ impl Inner {
             .map_err(|_| Refusal::IdentityUnavailable)?;
         match reply {
             WriteReply::Root { root_id, .. } => Ok((root_id, true)),
-            _ => Err(Refusal::IdentityUnavailable),
+            _ => Err(Refusal::IdentityUnavailable.into()),
         }
     }
 

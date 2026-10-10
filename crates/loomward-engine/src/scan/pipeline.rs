@@ -53,6 +53,7 @@ pub struct ScanReport {
     /// Final root totals (allocation can remain unknown).
     pub totals: Sums,
     /// Every traversed listing reached native EOF, no errors or limits occurred.
+    /// Coverage describes this run's observations; changes after its final drain are unknown.
     pub complete: bool,
     /// Least capable actual strategy observed across this traversal.
     pub strategy: Strategy,
@@ -341,11 +342,17 @@ impl<S: DirSource> Shared<'_, S> {
             }
             let entry = Entry {
                 name: raw.name.to_vec(),
-                file_id: raw.file_id,
-                identity_eligible: raw.file_id.is_some()
-                    && !raw.file_id.is_some_and(|id| {
-                        matches!(id, FileIdObs::Id64(_)) && self.source.is_refs(&task.dir)
-                    }),
+                // Name-only listings can still obtain a verified identity from the child open.
+                file_id: child.as_ref().map_or(raw.file_id, |(_, id)| id.id),
+                identity_eligible: child.as_ref().map_or_else(
+                    || {
+                        raw.file_id.is_some()
+                            && !raw.file_id.is_some_and(|id| {
+                                matches!(id, FileIdObs::Id64(_)) && self.source.is_refs(&task.dir)
+                            })
+                    },
+                    |(_, id)| matches!(id.basis, IdBasis::Listed | IdBasis::PostOpen),
+                ),
                 attributes: raw.attributes,
                 reparse_tag: raw.reparse_tag,
                 logical: raw.end_of_file,

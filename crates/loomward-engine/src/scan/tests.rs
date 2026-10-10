@@ -6,7 +6,7 @@ use std::{
     sync::{atomic::AtomicBool, Arc},
     time::Duration,
 };
-fn identity(id: u64) -> OpenedIdentity {
+pub(super) fn identity(id: u64) -> OpenedIdentity {
     OpenedIdentity {
         id: Some(FileIdObs::Id64(id)),
         basis: IdBasis::Listed,
@@ -15,7 +15,7 @@ fn identity(id: u64) -> OpenedIdentity {
         reparse_tag: None,
     }
 }
-fn root() -> GrantedRoot {
+pub(super) fn root() -> GrantedRoot {
     GrantedRoot::new(
         RootId::new("rt_test").unwrap(),
         "unused".into(),
@@ -161,7 +161,103 @@ fn reparent_invalidates_both_chains_and_restart_repairs() {
     assert_eq!(sink.totals(root.root_id()), Some(report.totals));
     assert!(!sink.is_repairing(root.root_id()));
 }
-struct Tree;
+pub(super) struct Tree;
+
+struct ReplacementTree {
+    id: u64,
+    attributes: u32,
+    listed_id: bool,
+    name_only: bool,
+}
+impl DirSource for ReplacementTree {
+    type Dir = u64;
+    fn strategy(&self) -> Strategy {
+        Strategy::Portable
+    }
+    fn open_root(&self, path: &std::path::Path) -> Result<(u64, OpenedIdentity), SourceError> {
+        Tree.open_root(path)
+    }
+    fn open_child(&self, _: &u64, _: &RawEntry<'_>) -> Result<(u64, OpenedIdentity), SourceError> {
+        let mut id = identity(self.id);
+        if self.name_only {
+            if self.listed_id {
+                id.basis = IdBasis::NonUnique;
+            } else {
+                id.id = None;
+                id.basis = IdBasis::None;
+            }
+        } else if !self.listed_id {
+            id.basis = IdBasis::PostOpen;
+        }
+        Ok((self.id, id))
+    }
+    fn list(&self, dir: &u64, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+        Tree.list(dir, &mut |mut e| {
+            if *dir == 1 {
+                e.file_id = self.listed_id.then_some(FileIdObs::Id64(self.id));
+                e.attributes = self.attributes;
+            }
+            sink(e)
+        })
+    }
+}
+fn replacement_matches_fresh(attributes: u32, listed_id: bool, name_only: bool) {
+    let root = root();
+    let sink = Arc::new(MemorySink::default());
+    let scan = |source: &ReplacementTree, run, sink| {
+        run_scan(
+            source,
+            &root,
+            run,
+            sink,
+            Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+            Arc::new(AtomicBool::new(false)),
+            ScanOptions {
+                workers: 1,
+                ..ScanOptions::default()
+            },
+        )
+        .unwrap()
+    };
+    let first = ReplacementTree {
+        id: 2,
+        attributes: 0x10,
+        listed_id,
+        name_only,
+    };
+    assert!(scan(&first, 1, sink.clone()).complete);
+    let next = ReplacementTree {
+        id: if refused_attributes(attributes) { 2 } else { 4 },
+        attributes,
+        listed_id,
+        name_only,
+    };
+    assert!(scan(&next, 2, sink.clone()).complete);
+    let fresh = Arc::new(MemorySink::default());
+    let expected = scan(&next, 3, fresh.clone());
+    assert_eq!(
+        sink.totals(root.root_id()),
+        Some(expected.totals),
+        "retained totals must equal a fresh scan"
+    );
+    assert_eq!(sink.totals(root.root_id()), fresh.totals(root.root_id()));
+}
+#[test]
+fn same_name_new_directory_identity_matches_fresh_scan() {
+    replacement_matches_fresh(0x10, true, false);
+}
+#[test]
+fn directory_becoming_reparse_or_offline_matches_fresh_scan() {
+    for refused in [0x400, 0x1000, 0x40000, 0x400000] {
+        replacement_matches_fresh(0x10 | refused, true, false);
+    }
+}
+#[test]
+fn post_open_and_name_only_directory_presence_matches_fresh_scan() {
+    replacement_matches_fresh(0x10, false, false);
+    replacement_matches_fresh(0x10, false, true);
+    replacement_matches_fresh(0x10, true, true);
+}
 impl DirSource for Tree {
     type Dir = u64;
     fn strategy(&self) -> Strategy {
@@ -685,9 +781,9 @@ fn oversized_stress_is_separate_with_partial_oracle_n6() {
     assert!(!sink.sweep_allowed(root.root_id()));
 }
 struct FailedWriter(MemorySink);
-struct MovingTree {
-    x_listings: std::sync::atomic::AtomicUsize,
-    unique: bool,
+pub(super) struct MovingTree {
+    pub(super) x_listings: std::sync::atomic::AtomicUsize,
+    pub(super) unique: bool,
 }
 impl DirSource for MovingTree {
     type Dir = u64;

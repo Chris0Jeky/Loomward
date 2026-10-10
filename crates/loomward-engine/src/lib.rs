@@ -91,3 +91,12 @@ impl Engine {
         &self.config
     }
 }
+
+#[cfg(windows)]
+impl Drop for Engine {
+    fn drop(&mut self) {
+        for watch in self.scan_watches.get_mut().unwrap().values() {
+            watch.stop();
+        }
+    }
+}

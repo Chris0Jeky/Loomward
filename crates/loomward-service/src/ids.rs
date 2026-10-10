@@ -1,7 +1,9 @@
 //! Opaque node IDs (docs/41 section 6.3): `nd_` + base64url of
 //! `kind | row_id | born_run | instance tag | HMAC tag`. The HMAC-SHA256 tag covers the kind, row,
-//! incarnation and the full catalogue instance under a per-install key kept in `state.db`. An ID
-//! only selects a row to view; it never authorises anything (invariant 5).
+//! incarnation and the full catalogue instance under a per-session key that is never persisted, so
+//! an ID is bound to the session and the catalogue instance (`semantics.md` section 5): after a
+//! restart it is `not_found`. An ID only selects a row to view; it never authorises anything
+//! (invariant 5).
 
 use loomward_catalog::NodeKey;
 use sha2::{Digest, Sha256};
@@ -74,7 +76,7 @@ pub enum Refusal {
     InstanceChanged,
 }
 
-/// Seals and opens node IDs for one install key and the current catalogue instance.
+/// Seals and opens node IDs for one session key and the current catalogue instance.
 pub struct NodeIds {
     key: [u8; 32],
 }
@@ -131,6 +133,13 @@ pub fn open_row_id(prefix: &str, id: &str, instance: &str) -> Result<i64, Refusa
 impl NodeIds {
     pub fn new(key: [u8; 32]) -> Self {
         Self { key }
+    }
+
+    /// A fresh key from the OS random source, held in memory only.
+    pub fn session() -> Self {
+        let mut key = [0u8; 32];
+        getrandom::fill(&mut key).expect("OS random source");
+        Self::new(key)
     }
 
     fn mac(&self, body: &[u8], instance: &str) -> [u8; 32] {
