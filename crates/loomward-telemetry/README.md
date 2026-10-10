@@ -57,6 +57,8 @@ All PDH paths below are English paths added with `PdhAddEnglishCounterW`.
 |---|---|---|---|
 | Root `schema_version`, `status`, `platform`, `display_truncated` | version 2 / coverage / OS / boolean | sampler | unsupported on non-Windows; partial coverage stays visible |
 | `captured_at_unix_ms` | ms since Unix epoch | sample start wall clock | collection is sequential, not an atomic snapshot |
+| `processes_observed_at_unix_ms` | ms since Unix epoch | process enumeration start | null without an enumeration; leased rows retain this time between enumerations (minimum fifteen seconds, extended by coarser lease ticks); standalone sampling remains fresh every call |
+| `sampled_channels` | booleans | requested native channels | false means not sampled under this lease, distinct from failed or unavailable hardware |
 | `snapshot_cost_ms` | ms | monotonic collection + rates + retained copy + projection | excludes JSON, output, startup and build |
 | `sample_interval_seconds` | seconds | monotonic sample-start difference | null first sample |
 | `logical_processor_count` | logical CPUs | `GetActiveProcessorCount(ALL_PROCESSOR_GROUPS)` | null if unavailable |
@@ -67,7 +69,7 @@ All PDH paths below are English paths added with `PdhAddEnglishCounterW`.
 | `memory.standby_bytes` | bytes | sum of `\Memory\Standby Cache Core Bytes`, `Normal Priority Bytes`, `Reserve Bytes` | null if any component unavailable/invalid or sum overflows; no partial sum |
 | `memory.modified_bytes` | bytes | `\Memory\Modified Page List Bytes` | null with field or `memory_lists` reason |
 | `memory.free_bytes` | bytes | `\Memory\Free & Zero Page List Bytes` | null with field or `memory_lists` reason; excludes standby |
-| `processes[].pid`, `parent_pid`, `thread_count` | counts / IDs | Toolhelp enumeration | parent/thread metadata can race with process lifetime |
+| `processes[].pid`, `parent_pid`, `thread_count` | counts / IDs | Toolhelp enumeration | parent/thread metadata can race with process lifetime; thread count is null without a current enumeration |
 | `image_name`, `session_id` | basename / ID | `QueryFullProcessImageNameW`, `ProcessIdToSessionId` | null on denial, query failure or exit; no full path |
 | `start_time_windows_100ns` | exact decimal string, 100 ns since 1601 | `GetProcessTimes` creation FILETIME | null on denial/failure/exit; used with PID to match instances |
 | `cpu_user_100ns`, `cpu_kernel_100ns` | cumulative 100 ns | `GetProcessTimes` | null with `start_and_cpu_times` or process-handle reason |

@@ -60,7 +60,16 @@ pub(super) fn process_ref(process: &Process, _sequence: u64) -> ProcessRef {
         .expect("bounded decimal observation identity")
 }
 
-pub(super) fn process_row(process: &Process, sequence: u64) -> ProcessRow {
+pub(super) fn processes_observed_at(raw: &Snapshot) -> EngineResult<Timestamp> {
+    let at = raw
+        .processes_observed_at_unix_ms
+        .ok_or_else(|| EngineError::PartialCoverage {
+            message: "process enumeration not sampled".into(),
+        })?;
+    timestamp(i128::from(at) * 10_000)
+}
+
+pub(super) fn process_row(process: &Process, sequence: u64, observed_at: &Timestamp) -> ProcessRow {
     let started_at = process
         .start_time_windows_100ns
         .as_deref()
@@ -78,6 +87,7 @@ pub(super) fn process_row(process: &Process, sequence: u64) -> ProcessRow {
         ProcessRowAccess::Full
     };
     ProcessRow {
+        observed_at: observed_at.clone(),
         process_ref: process_ref(process, sequence),
         pid: Int::new(i64::from(process.pid)).expect("u32 pid"),
         name: Text::truncated(process.image_name.as_deref().unwrap_or("Unknown process")),
@@ -107,11 +117,12 @@ pub(super) fn sorted_rows(
     raw: &Snapshot,
     sequence: u64,
     sort: ProcessListRequestSort,
-) -> Vec<ProcessRow> {
+) -> EngineResult<Vec<ProcessRow>> {
+    let observed_at = processes_observed_at(raw)?;
     let mut rows: Vec<_> = raw
         .processes
         .iter()
-        .map(|p| process_row(p, sequence))
+        .map(|p| process_row(p, sequence, &observed_at))
         .collect();
     rows.sort_by(|a, b| {
         let ordering = match sort {
@@ -143,7 +154,7 @@ pub(super) fn sorted_rows(
         };
         ordering.then_with(|| a.pid.cmp(&b.pid))
     });
-    rows
+    Ok(rows)
 }
 
 pub(super) fn health(own: Option<&Process>) -> HealthEngine {
@@ -154,7 +165,7 @@ pub(super) fn health(own: Option<&Process>) -> HealthEngine {
             .and_then(|p| p.cpu_user_100ns.zip(p.cpu_kernel_100ns))
             .and_then(|(u, k)| u.checked_add(k))
             .and_then(|v| Rate::new(v as f64 / 10_000_000.0).ok()),
-        threads: own.map(|p| Count::from(p.thread_count)),
+        threads: own.and_then(|p| p.thread_count).map(Count::from),
     }
 }
 
@@ -166,6 +177,22 @@ pub(super) fn sample(
     busy: bool,
 ) -> EngineResult<TelemetrySample> {
     let requested = |channel| channels.contains(&channel);
+    for channel in channels {
+        let sampled = match channel {
+            TelemetryChannel::System => raw.sampled_channels.system,
+            TelemetryChannel::Processes => raw.sampled_channels.processes,
+            TelemetryChannel::Gpu => raw.sampled_channels.gpu,
+            TelemetryChannel::Disks => raw.sampled_channels.disks,
+            TelemetryChannel::Engine => raw.sampled_channels.engine,
+        };
+        if !sampled {
+            return Err(EngineError::PartialCoverage {
+                message: format!(
+                    "telemetry channel {channel:?} not sampled under the current lease union"
+                ),
+            });
+        }
+    }
     let system = if requested(TelemetryChannel::System) {
         raw.logical_processor_count.filter(|v| *v > 0).map(|cpus| {
             let memory = match &raw.memory {
@@ -289,7 +316,7 @@ pub(super) fn sample(
         } else {
             ProcessListRequestSort::WorkingSetDesc
         };
-        let mut rows = sorted_rows(raw, sequence, sort);
+        let mut rows = sorted_rows(raw, sequence, sort)?;
         rows.truncate(20);
         Some(ProcessSummary {
             observed_count: Count::saturating(raw.process_totals.enumerated as u64),

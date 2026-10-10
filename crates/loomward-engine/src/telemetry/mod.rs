@@ -17,6 +17,7 @@ const EVENT_CAPACITY: usize = 1024;
 
 #[derive(Debug)]
 struct Lease {
+    generation: u64,
     channels: UniqueVec<TelemetryChannel, 1, 5>,
     interval: TelemetryInterval,
     expires: Instant,
@@ -36,6 +37,7 @@ struct State {
     latest: Option<Latest>,
     events: VecDeque<TelemetrySampleEvent>,
     next_id: u64,
+    next_generation: u64,
     sequence: u64,
     running: bool,
     busy: bool,
@@ -45,6 +47,8 @@ struct State {
     panic_sample: bool,
     #[cfg(test)]
     panic_mapping: bool,
+    #[cfg(test)]
+    mapping_pause: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
     #[cfg(test)]
     sample_override: Option<Snapshot>,
 }
@@ -135,9 +139,19 @@ impl Telemetry {
                     detail: None,
                 })?;
         let expires_at = mapping::timestamp((unix + LEASE_DURATION).as_nanos() as i128 / 100)?;
+        state.next_generation =
+            state
+                .next_generation
+                .checked_add(1)
+                .ok_or_else(|| EngineError::ResourceBudget {
+                    message: "telemetry lease generations exhausted".into(),
+                })?;
+        let generation = state.next_generation;
+        state.events.retain(|event| event.subscription_id != id);
         state.leases.insert(
             id.clone(),
             Lease {
+                generation,
                 channels: request.channels.clone(),
                 interval: request.interval_ms,
                 expires: now + LEASE_DURATION,
@@ -295,10 +309,10 @@ fn run(shared: Arc<Shared>) {
         assert!(!panic_sample, "injected sampler panic");
         let started = Instant::now();
         #[cfg(not(test))]
-        let raw = sampler.sample_channels(loomward_telemetry::MAX_PROCESS_ROWS, channels);
+        let raw = sampler.sample_leased(loomward_telemetry::MAX_PROCESS_ROWS, channels);
         #[cfg(test)]
         let raw = sample_override.unwrap_or_else(|| {
-            sampler.sample_channels(loomward_telemetry::MAX_PROCESS_ROWS, channels)
+            sampler.sample_leased(loomward_telemetry::MAX_PROCESS_ROWS, channels)
         });
         let own = sampler.own_process().cloned();
         let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -307,13 +321,15 @@ fn run(shared: Arc<Shared>) {
         let mut due = vec![];
         for (id, lease) in &mut state.leases {
             if lease.next_event <= started {
-                due.push((id.clone(), lease.channels.clone()));
+                due.push((id.clone(), lease.channels.clone(), lease.generation));
                 lease.next_event =
                     started + Duration::from_millis(u64::from(lease.interval.millis()));
             }
         }
         #[cfg(test)]
         let panic_mapping = std::mem::take(&mut state.panic_mapping);
+        #[cfg(test)]
+        let mapping_pause = state.mapping_pause.take();
         drop(state);
         #[cfg(test)]
         assert!(!panic_mapping, "injected mapping panic");
@@ -321,16 +337,24 @@ fn run(shared: Arc<Shared>) {
         let mapping_started = Instant::now();
         let events: Vec<_> = due
             .into_iter()
-            .map(|(id, channels)| {
-                mapping::sample(&raw, own.as_ref(), sequence, &channels, true).map(|sample| {
-                    TelemetrySampleEvent {
-                        subscription_id: id,
-                        sample,
-                    }
-                })
+            .map(|(id, channels, generation)| {
+                (
+                    generation,
+                    mapping::sample(&raw, own.as_ref(), sequence, &channels, true).map(|sample| {
+                        TelemetrySampleEvent {
+                            subscription_id: id,
+                            sample,
+                        }
+                    }),
+                )
             })
             .collect();
         let mapping_ms = mapping_started.elapsed().as_secs_f64() * 1000.0;
+        #[cfg(test)]
+        if let Some((mapped, resume)) = mapping_pause {
+            mapped.send(()).unwrap();
+            resume.recv_timeout(Duration::from_secs(10)).unwrap();
+        }
         let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
         state.costs.add(sampler.phase_costs());
         state.costs.engine_mapping_ms += mapping_ms;
@@ -339,9 +363,14 @@ fn run(shared: Arc<Shared>) {
         state.expire(finished);
         if !state.shutdown && !state.leases.is_empty() {
             state.sequence = sequence;
-            for event in events {
+            for (generation, event) in events {
                 match event {
-                    Ok(event) if state.leases.contains_key(&event.subscription_id) => {
+                    Ok(event)
+                        if state
+                            .leases
+                            .get(&event.subscription_id)
+                            .is_some_and(|lease| lease.generation == generation) =>
+                    {
                         if state.events.len() == EVENT_CAPACITY {
                             state.events.pop_front();
                         }
@@ -440,16 +469,16 @@ impl Engine {
                 message: "process enumeration unavailable; no complete observed count".into(),
             });
         }
-        let mut rows = mapping::sorted_rows(&latest.raw, latest.sequence, request.sort);
+        let mut rows = mapping::sorted_rows(&latest.raw, latest.sequence, request.sort)?;
         let limit = request.limit.get() as usize;
         let truncated = latest.raw.display_truncated
             || latest.raw.process_totals.enumeration_truncated
             || rows.len() > limit;
         rows.truncate(limit);
         Ok(ProcessList {
-            sample_seq: Count::saturating(latest.sequence), observed_at: mapping::observed_at(&latest.raw)?, rows: rows.try_into().map_err(mapping::invalid)?,
+            sample_seq: Count::saturating(latest.sequence), observed_at: mapping::processes_observed_at(&latest.raw)?, rows: rows.try_into().map_err(mapping::invalid)?,
             observed_count: Count::saturating(latest.raw.process_totals.enumerated as u64), denied_count: Count::saturating(latest.raw.process_totals.access_denied as u64), truncated,
-            note: Text::truncated("Bounded observation, not a complete ranking beyond the native display cap. Null means unavailable, denied or awaiting a second sample. Names may be display-truncated. GPU sort is PID-only because process GPU memory is not collected; shared working sets are never unique RAM totals."),
+            note: Text::truncated("Process metadata refreshes at most every fifteen seconds; each row carries its observation time. Bounded observation, not a complete ranking beyond the native display cap. Null means unavailable, denied or awaiting a second sample. Names may be display-truncated. GPU sort is PID-only because process GPU memory is not collected; shared working sets are never unique RAM totals."),
         })
     }
 
@@ -461,6 +490,11 @@ impl Engine {
     ) -> EngineResult<ProcessExplanation> {
         let state = lock(&self.telemetry.shared.state)?;
         let latest = state.latest()?;
+        if !latest.raw.sampled_channels.processes {
+            return Err(EngineError::PartialCoverage {
+                message: "processes not sampled under the current lease union".into(),
+            });
+        }
         let process = latest
             .raw
             .processes
@@ -491,7 +525,7 @@ impl Engine {
             });
         }
         Ok(ProcessExplanation {
-            process_ref: request.process_ref.clone(), observed_at: mapping::observed_at(&latest.raw)?, facts: facts.try_into().map_err(mapping::invalid)?,
+            process_ref: request.process_ref.clone(), observed_at: mapping::processes_observed_at(&latest.raw)?, facts: facts.try_into().map_err(mapping::invalid)?,
             summary: Text::truncated("Read-only process observation. Missing counters are unknown and learned or observed values grant no permission."),
             caveats: vec![Text::truncated("This is a retained sample, not proof the process is still alive. Observation failures may reflect denial, exit or missing support; they do not diagnose protection.")].try_into().map_err(mapping::invalid)?,
             available_actions: BoundedVec::default(),

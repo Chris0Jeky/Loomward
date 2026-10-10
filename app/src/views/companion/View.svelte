@@ -202,6 +202,7 @@
                 <th scope="row">
                   <button class="link" type="button" onclick={() => void explainRow(r)} aria-label={`Explain ${escapedName(r.name)}, process ${r.pid}`}><VisibleName name={r.name} /></button>
                   <span class="muted small num">pid {r.pid}</span>
+                  <div class="muted small">Observed <time datetime={r.observed_at}>{r.observed_at}</time></div>
                   {#if r.loomward_owned}<span class="tag">Loomward</span>{/if}
                   {#if hasHiddenCharacters(r.name)}<span class="tag warn">hidden characters</span>{/if}
                   {#if r.access !== 'full'}<span class="tag warn">{r.access === 'denied' ? 'access denied' : 'limited access'}</span>{/if}
