@@ -213,6 +213,12 @@ fn staged_pipeline_has_exact_totals_and_releases_bytes() {
     )
     .unwrap();
     assert!(report.complete);
+    assert!(report.enumeration_wall_seconds > 0.);
+    assert!(report.enumeration_wall_seconds <= report.elapsed_seconds);
+    assert!(report.staging_seconds > 0.);
+    assert!(report.staging_seconds <= report.persistence_seconds);
+    assert!(report.aggregation_seconds > 0.);
+    assert!(report.aggregation_seconds <= report.elapsed_seconds);
     assert_eq!(
         report.totals,
         Sums {
@@ -243,6 +249,86 @@ fn incomplete_listing_does_not_authorize_absence() {
     )
     .unwrap();
     assert!(!report.complete);
+    assert!(!sink.sweep_allowed(root.root_id()));
+}
+#[test]
+fn directory_limit_partial_sink_oracle() {
+    let root = root();
+    let sink = Arc::new(MemorySink::default());
+    let report = run_scan(
+        &Tree,
+        &root,
+        1,
+        sink.clone(),
+        Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions {
+            max_dirs: 1,
+            ..ScanOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(!report.complete);
+    assert!(report.limit_hit);
+    assert_eq!(report.skipped, 0);
+    assert_eq!(report.failed, 0);
+    assert!(!sink.sweep_allowed(root.root_id()));
+    assert!(sink.is_repairing(root.root_id()));
+    assert_eq!(sink.totals(root.root_id()), Some(report.totals));
+}
+#[test]
+fn directory_limit_does_not_hide_child_io_errors() {
+    struct DeniedThenLimit;
+    impl DirSource for DeniedThenLimit {
+        type Dir = u64;
+        fn strategy(&self) -> Strategy {
+            Strategy::Portable
+        }
+        fn open_root(&self, path: &std::path::Path) -> Result<(u64, OpenedIdentity), SourceError> {
+            Tree.open_root(path)
+        }
+        fn open_child(
+            &self,
+            parent: &u64,
+            entry: &RawEntry<'_>,
+        ) -> Result<(u64, OpenedIdentity), SourceError> {
+            if entry.file_id == Some(FileIdObs::Id64(2)) {
+                Err(SourceError::AccessDenied)
+            } else {
+                Tree.open_child(parent, entry)
+            }
+        }
+        fn list(&self, dir: &u64, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+            let first = Tree.list(dir, &mut |mut entry| {
+                entry.name = &[98];
+                sink(entry)
+            });
+            assert_eq!(first, ListOutcome::Complete);
+            Tree.list(dir, &mut |mut entry| {
+                entry.name = &[97];
+                entry.file_id = Some(FileIdObs::Id64(3));
+                sink(entry)
+            })
+        }
+    }
+    let root = root();
+    let sink = Arc::new(MemorySink::default());
+    let report = run_scan(
+        &DeniedThenLimit,
+        &root,
+        1,
+        sink.clone(),
+        Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions {
+            max_dirs: 1,
+            ..ScanOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(!report.complete);
+    assert!(report.limit_hit);
+    assert_eq!(report.failed, 1);
     assert!(!sink.sweep_allowed(root.root_id()));
 }
 #[test]
@@ -603,6 +689,7 @@ fn oversized_stress_is_separate_with_partial_oracle_n6() {
     .unwrap();
     assert!(!report.complete);
     assert!(report.limit_hit);
+    assert_eq!(report.failed, 0);
     assert_eq!(report.totals.files, 2_000_000);
     assert_eq!(report.totals.logical, 2_000_000);
     assert_eq!(report.totals.allocated, None);
