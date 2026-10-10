@@ -26,12 +26,12 @@ export function tokenFromHash(hash: string): string | null {
 }
 
 /**
- * Mock data only ever appears when asked for with `?transport=mock`. With no engine and no explicit
+ * Development mock data only appears when asked for with `?transport=mock`. With no engine and no explicit
  * mock the answer is `none`, which the shell renders as "unavailable": never demo data by default.
  */
-export function chooseTransport(env: Env): Choice {
+export function chooseTransport(env: Env, dev = import.meta.env.DEV): Choice {
   const q = new URLSearchParams(env.search);
-  if (q.get('transport') === 'mock') return { mode: 'mock' };
+  if (dev && q.get('transport') === 'mock') return { mode: 'mock' };
   if (env.hasTauri) return { mode: 'tauri' };
   const token = tokenFromHash(env.hash) ?? env.storedToken;
   if (!token) {
