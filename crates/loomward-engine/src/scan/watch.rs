@@ -227,12 +227,23 @@ impl RootWatch {
         true
     }
     pub(crate) fn stop(&self) {
+        // Stopped before the joins: a reconcile racing this stop must never read a clean state
+        // and claim complete coverage for a revoked or torn-down root. Poison-tolerant, because
+        // this also runs from `StopOnExit::drop` while unwinding, where a second panic aborts.
+        self.dirty
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .stopped = true;
         self.stop.store(true, Ordering::Release);
         self.native.stop();
-        if let Some(thread) = self.dispatcher.lock().unwrap().take() {
+        if let Some(thread) = self
+            .dispatcher
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
             let _ = thread.join();
         }
-        self.dirty.lock().unwrap().stopped = true;
     }
 }
 
