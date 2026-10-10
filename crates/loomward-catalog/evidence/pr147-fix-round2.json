@@ -1,0 +1,51 @@
+{
+  "head": "6c2b6d116179c4cbb4f69b45be3b747ae4bf826d",
+  "platform": "Windows-11-10.0.26300-SP0",
+  "scope": "Disposable synthetic SQLite fixtures; no external action",
+  "regressions": [
+    {
+      "item": "1",
+      "test": "duplicate_staged_names_preserve_durable_references_and_old_listing",
+      "command": "cargo test -p loomward-catalog --test writer duplicate_staged_names_preserve_durable_references_and_old_listing -- --exact",
+      "without_fix_exit_code": 101,
+      "expected_defect_detected": true
+    },
+    {
+      "item": "1",
+      "test": "conflicting_staged_families_preserve_durable_references_and_old_listing",
+      "command": "cargo test -p loomward-catalog --test writer conflicting_staged_families_preserve_durable_references_and_old_listing -- --exact",
+      "without_fix_exit_code": 101,
+      "expected_defect_detected": true
+    },
+    {
+      "item": "2",
+      "test": "corrupt_schema_page_rebuilds_only_the_derived_database",
+      "command": "cargo test -p loomward-catalog --test open corrupt_schema_page_rebuilds_only_the_derived_database -- --exact",
+      "without_fix_exit_code": 101,
+      "expected_defect_detected": true
+    },
+    {
+      "item": "3",
+      "test": "multilink_flags_cover_both_roots_in_either_finalisation_order_and_clear_after_removal",
+      "command": "cargo test -p loomward-catalog --test writer multilink_flags_cover_both_roots_in_either_finalisation_order_and_clear_after_removal -- --exact",
+      "without_fix_exit_code": 101,
+      "expected_defect_detected": true
+    }
+  ],
+  "fixed_source_sha256": {
+    "crates/loomward-catalog/src/writer.rs": "16ef28f756d670474f1c5f6d56978f91ee0c86d11cb93d7d928a74d2be46b313",
+    "crates/loomward-catalog/src/db.rs": "f4b50c16dcbac9773e8dc97eb3ba7cb9106c0c0d82a7a392516484f8dc7d67a6"
+  },
+  "proving": {
+    "cargo fmt --all --check": "PASS",
+    "cargo test --workspace": "PASS: 211 passed, 0 failed, 0 ignored; catalogue 49",
+    "cargo clippy --workspace --all-targets -- -D warnings": "PASS",
+    "git diff --check": "PASS"
+  },
+  "not_verified": [
+    "Hosted CI/review threads",
+    "UI/Python suites",
+    "Scale performance with durable references",
+    "Physical power-loss durability"
+  ]
+}

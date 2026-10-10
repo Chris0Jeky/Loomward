@@ -341,3 +341,57 @@ Recommended commits:
 Worktree is deliberately **not removal-ready**: all work is uncommitted. Final ignored survivor
 is `target/` (rebuildable Cargo output); no personal data or database is retained. The driver
 must commit/push before cleanup and run its integration/review gate. No deletion was attempted.
+
+## PR #147 connector fix round 2 — 2026-10-10
+
+### Changed
+
+Uncommitted changes from clean `feat/l2-catalog` HEAD
+`6c2b6d116179c4cbb4f69b45be3b747ae4bf826d`; the driver commits and pushes.
+
+1. Before retiring or rebinding precious references, execute the actual publication
+   in a catalogue-only transaction and roll it back. This covers every publication
+   rejection, for direct and staged listings, while preserving state-before-catalogue
+   commit ordering. The extra pass runs only when resolved references exist. Tests:
+   `duplicate_staged_names_preserve_durable_references_and_old_listing` and
+   `conflicting_staged_families_preserve_durable_references_and_old_listing`.
+   Both retain the omitted file and replaced directory bindings, state/catalogue
+   revisions and old rows; a valid replacement in the next run still succeeds.
+2. All database inspection queries map SQLite CORRUPT/NOTADB errors to
+   `CorruptDatabase`; other SQL errors remain SQL errors. Only catalogue corruption
+   takes the existing archive/rebuild route; state corruption is reported untouched.
+   Test: `corrupt_schema_page_rebuilds_only_the_derived_database`, using an invalid
+   schema b-tree page with readable application/version headers, checks both files,
+   exact archived bytes, a healthy rebuilt catalogue and preserved precious bytes.
+3. Clear/set file link flags across every directory of every root on the rebuilt
+   volume. Test:
+   `multilink_flags_cover_both_roots_in_either_finalisation_order_and_clear_after_removal`
+   checks both finalisation orders, both flags after either root finalises, and the
+   surviving flag clearing after the other link is removed.
+
+### Verified
+
+Windows: `cargo fmt --all --check`, `cargo test --workspace` (211 passed,
+49 catalogue tests; zero failed/ignored),
+`cargo clippy --workspace --all-targets -- -D warnings`, and `git diff --check` pass.
+Every final new test also fails with exit 101 against the original committed
+production sources for its expected defect. Fixed source bytes were restored
+exactly; hashes and commands are in `evidence/pr147-fix-round2.json`.
+No existing test was weakened.
+
+Recommended commit: `fix(catalog): preserve references and recover derived state`.
+
+### NOT verified
+
+Hosted CI/review threads, Python/UI, scale performance with durable references,
+physical power-loss durability. No commit, push, merge or external action.
+Shared implementation-status/checkpoint integration remains with the driver.
+
+### Residual risk
+
+Resolved references add a rollback-only publication pass; its performance impact
+has not been measured. This does not create cross-file atomicity or establish
+physical power-loss guarantees. The existing P4 throughput miss still stands.
+Worktree is not removal-ready because these changes are uncommitted.
+`HUMAN_TODO.md` was read and preserved: q-5 remains open, q-6 is not yet needed;
+neither blocks this synthetic catalogue fix.
