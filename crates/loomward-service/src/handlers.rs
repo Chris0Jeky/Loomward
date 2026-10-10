@@ -85,12 +85,18 @@ impl Inner {
                 let r: RootRevokeRequest = req.decode_payload()?;
                 let grant = self.grant_of_root(self.root_row(&r.root_id)?)?;
                 let (at, revs) = self.revoke(grant)?;
-                Ok(out(json!({"root_id": r.root_id, "revoked_at": at, "purged": false}), Some(revs)))
+                Ok(out(
+                    json!({"root_id": r.root_id, "revoked_at": at, "purged": false}),
+                    Some(revs),
+                ))
             }
             GrantsRevoke => {
                 let r: GrantRevokeRequest = req.decode_payload()?;
                 let (at, revs) = self.revoke(grant_number(&r.grant_id)?)?;
-                Ok(out(json!({"grant_id": r.grant_id, "revoked_at": at}), Some(revs)))
+                Ok(out(
+                    json!({"grant_id": r.grant_id, "revoked_at": at}),
+                    Some(revs),
+                ))
             }
             GrantsList => self.grants_list(),
             VolumesList => {
@@ -98,14 +104,24 @@ impl Inner {
                 Ok(out(json!({"volumes": self.volumes(None)?}), Some(revs)))
             }
             VolumesDeclareTier => self.declare_tier(req.decode_payload()?, req.expected_state_rev),
-            ScanStart => unavailable("scanning is not wired to the catalogue yet (catalogue scan sink and grant proof pending)"),
-            ScanCancel => engine(self.engine.scan_cancel(&req.decode_payload::<JobRefRequest>()?.job_id).map(|job| JobResult { job })),
-            JobsGet => engine(self.engine.job_status(&req.decode_payload::<JobRefRequest>()?.job_id).map(|job| JobResult { job })),
+            ScanStart => self.scan_start(req.decode_payload()?),
+            ScanCancel => engine(
+                self.engine
+                    .scan_cancel(&req.decode_payload::<JobRefRequest>()?.job_id)
+                    .map(|job| JobResult { job }),
+            ),
+            JobsGet => engine(
+                self.engine
+                    .job_status(&req.decode_payload::<JobRefRequest>()?.job_id)
+                    .map(|job| JobResult { job }),
+            ),
             JobsList => engine(self.engine.job_list(&req.decode_payload()?)),
             TreeSlice => self.tree_slice(req),
             TreeChildren => self.tree_children(req),
             TreePath => self.node_read(req, |reader, key| reader.path(key).map(|p| encode(&p))),
-            NodeInspect => self.node_read(req, |reader, key| reader.inspect(key).map(|d| encode(&d))),
+            NodeInspect => {
+                self.node_read(req, |reader, key| reader.inspect(key).map(|d| encode(&d)))
+            }
             SearchQuery => self.search(req),
             StatsBreakdown => self.breakdown(req),
             TiersModel | PlacementCandidates | PlacementSimulate | ProposalsList | ProposalsGet => {
@@ -125,6 +141,53 @@ impl Inner {
         handled
     }
 
+    /// `scan.start` (docs/41 section 7): a synthetic session scans its registered lab roots
+    /// only. The engine mints the root from the active grant row and checks its identity; the
+    /// job's events (`job.state`, final `scan.progress`, `tree.invalidated`) follow the commits.
+    fn scan_start(&self, r: ScanStartRequest) -> Handled {
+        if self.dataset == DatasetClass::Personal {
+            return Err(with_reason(
+                fail(
+                    ErrorCode::CapabilityUnavailable,
+                    "personal scanning waits for the #184 gates: watch pins must not block the                      owner's renames (MEDIUM-2) and attribute changes must be watched (MEDIUM-3)",
+                ),
+                "personal_scan_gated_184",
+            ));
+        }
+        let row = self.root_row(&r.root_id)?;
+        let root = db::roots(&self.db(), Some(row))
+            .map_err(sql_error)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| fail(ErrorCode::NotFound, "unknown root"))?;
+        if root.grant_state != "active" {
+            return Err(fail(
+                ErrorCode::PermissionDenied,
+                "the root's grant is not active",
+            ));
+        }
+        if root.origin != "lab_generated" {
+            return Err(with_reason(
+                fail(
+                    ErrorCode::PermissionDenied,
+                    "a synthetic session scans registered lab roots only",
+                ),
+                "synthetic_session_requires_lab_root",
+            ));
+        }
+        let dir = root
+            .dir
+            .ok_or_else(|| fail(ErrorCode::InternalError, "root has no directory row"))?;
+        let id = RootId::new(self.root_id(row)).expect("rt_ id");
+        self.scan.bind(&id, root.grant, dir);
+        let granted = self.engine.granted_root(id, root.grant)?;
+        let job = match r.mode {
+            ScanStartRequestMode::Full => self.engine.scan_start(&granted, r.budget),
+            ScanStartRequestMode::Refresh => self.engine.scan_refresh(&granted, r.budget),
+        }?;
+        Ok(out(encode(&JobResult { job })?, None))
+    }
+
     fn hello(&self, ctx: &CallContext) -> Handled {
         let personal = self.dataset == DatasetClass::Personal;
         let f = false;
@@ -138,9 +201,10 @@ impl Inner {
                 "enumeration_strategy": "file_id_extd_directory_info",
                 "capabilities": {
                     "observation": {
-                        // Honest: scans are not wired yet; telemetry observes personal hosts only;
-                        // the teacher stays disabled (confinement_not_enforced).
-                        "metadata_scan": f,
+                        // Honest: scans run for synthetic lab roots on Windows only (personal
+                        // scans wait for #184); telemetry observes personal hosts only; the
+                        // teacher stays disabled (confinement_not_enforced).
+                        "metadata_scan": !personal && cfg!(windows),
                         "process_observation": personal,
                         "gpu_observation": f,
                         "disk_io_observation": personal,

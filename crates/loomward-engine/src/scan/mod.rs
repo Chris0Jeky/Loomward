@@ -27,8 +27,8 @@ pub struct GrantedRoot {
     expected: Option<source::OpenedIdentity>,
 }
 impl GrantedRoot {
-    // L8 must wire construction from its durable grant row inside the trusted engine boundary.
-    #[allow(dead_code)]
+    // Minted by `Engine::granted_root` from a durable grant row, and by fixtures.
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn new(
         root_id: RootId,
         path: PathBuf,
@@ -113,6 +113,59 @@ impl GrantedRoot {
     }
 }
 impl Engine {
+    /// The only production way to mint a [`GrantedRoot`] (#144): read grant `grant_id` from this
+    /// engine's own `state.db`, require it `active`, take the path and dataset class from that
+    /// durable row (never from a caller), and require the opened native root to carry the
+    /// grant's volume and file identity. The dataset class is reconciled at scan start.
+    pub fn granted_root(&self, root_id: RootId, grant_id: i64) -> EngineResult<GrantedRoot> {
+        use rusqlite::{OpenFlags, OptionalExtension};
+        let denied = |message: &str| EngineError::PermissionDenied {
+            message: message.into(),
+        };
+        let conn = rusqlite::Connection::open_with_flags(
+            self.config.state_dir.join("state.db"),
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|_| denied("grant store unavailable"))?;
+        let row: Option<(String, String, Vec<u8>, String)> = conn
+            .query_row(
+                "SELECT g.display_path,g.volume_key,g.root_file_id,
+                        (SELECT value FROM meta WHERE key='dataset_class')
+                 FROM root_grant g WHERE g.id=?1 AND g.state='active'",
+                [grant_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()
+            .map_err(|_| denied("grant store unavailable"))?;
+        let (path, volume_key, file_id, class) = row.ok_or_else(|| denied("grant_not_active"))?;
+        let dataset_class = match class.as_str() {
+            "synthetic" => DatasetClass::Synthetic,
+            "personal" => DatasetClass::Personal,
+            _ => return Err(denied("dataset_class_mismatch")),
+        };
+        #[cfg(windows)]
+        {
+            use source::{DirSource, FileIdObs};
+            let path = PathBuf::from(path);
+            let (_, identity) = loomward_windows::enumerate::NativeSource::default()
+                .open_root(&path)
+                .map_err(|_| denied("root open refused"))?;
+            let same_id = match identity.id {
+                Some(FileIdObs::Id128(id)) => file_id == id,
+                Some(FileIdObs::Id64(id)) => file_id == id.to_le_bytes(),
+                None => false,
+            };
+            if !same_id || identity.volume_serial.map(|s| format!("vsn_{s}")) != Some(volume_key) {
+                return Err(denied("root_identity_changed"));
+            }
+            Ok(GrantedRoot::new(root_id, path, dataset_class, identity))
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (root_id, path, volume_key, file_id, dataset_class);
+            Err(EngineError::unavailable(Component::Scan))
+        }
+    }
     fn check_root(&self, root: &GrantedRoot) -> EngineResult<()> {
         if root.dataset_class != self.config.dataset_class {
             return Err(EngineError::PermissionDenied {
@@ -195,6 +248,50 @@ impl Engine {
         let bytes = self.budgets.bytes.clone();
         static NEXT_RUN: AtomicU64 = AtomicU64::new(1);
         let run = NEXT_RUN.fetch_add(1, Ordering::Relaxed);
+        // A sink that refuses watch hints (the trait default) is never watched: its scans are
+        // plain full passes, and no watch pins outlive them (#184 MEDIUM-2).
+        #[cfg(windows)]
+        let watched = match sink.watch_dirty(root.root_id()) {
+            Ok(()) => true,
+            Err(EngineError::Unavailable { .. }) => false,
+            Err(e) => return Err(e),
+        };
+        #[cfg(windows)]
+        if !watched {
+            let io = source::native_cancel();
+            let interrupt = io.clone();
+            let root_id = root.root_id().clone();
+            let workers = std::sync::Mutex::new(Some(worker_permit));
+            let runner: crate::jobs::JobRunner = Arc::new(move |ctx, _| {
+                let _workers = workers
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("scan runner executes once");
+                let source = loomward_windows::enumerate::NativeSource::new(io.clone());
+                let report = run_scan(
+                    &source,
+                    &root,
+                    run,
+                    sink.clone(),
+                    bytes.clone(),
+                    ctx.cancel.clone(),
+                    options.clone(),
+                )?;
+                ctx.set_scan_report(&report);
+                Ok(if report.complete {
+                    loomward_protocol::CoverageState::Complete
+                } else {
+                    loomward_protocol::CoverageState::Partial
+                })
+            });
+            return self.jobs.submit(
+                crate::jobs::JobSpec::new(JobKind::Scan, Some(root_id)),
+                runner,
+                self.events.clone(),
+                Some(Arc::new(move || interrupt.cancel())),
+            );
+        }
         #[cfg(windows)]
         {
             let watch = {

@@ -21,6 +21,7 @@ mod idem;
 mod ids;
 pub mod lab;
 pub mod paths;
+mod sink;
 #[cfg(test)]
 mod tests;
 
@@ -60,6 +61,8 @@ pub(crate) struct Inner {
     started_at: Timestamp,
     engine: Engine,
     catalog: Catalog,
+    /// The catalogue-backed scan writer installed into the engine.
+    scan: Arc<sink::CatalogScanSink>,
     db: Mutex<rusqlite::Connection>,
     instance: String,
     ids: ids::NodeIds,
@@ -84,10 +87,16 @@ impl Service {
     /// Opens the stores and the engine, then grants `config.grant_roots` under the session's
     /// provenance policy. Errors name the rule, never a path.
     pub fn open(config: Config) -> Result<Service, String> {
-        Self::open_with(config, idem::TTL)
+        Self::open_with(config, idem::TTL, true)
     }
 
-    pub(crate) fn open_with(config: Config, ttl: Duration) -> Result<Service, String> {
+    /// `scan_writer: false` leaves the engine without a catalogue scan writer (tests that install
+    /// their own probe).
+    pub(crate) fn open_with(
+        config: Config,
+        ttl: Duration,
+        scan_writer: bool,
+    ) -> Result<Service, String> {
         if config.dataset == DatasetClass::Personal && !config.allow_personal {
             return Err("a personal session requires --allow-personal".into());
         }
@@ -106,7 +115,9 @@ impl Service {
             .map_err(|e| format!("engine refused to open: {e}"))?;
         let conn = db::open(&state_dir).map_err(|e| format!("state store: {e}"))?;
         let instance = db::instance(&conn).map_err(|e| format!("state store: {e}"))?;
-        let inner = Arc::new(Inner {
+        let lookups = db::open(&state_dir).map_err(|e| format!("state store: {e}"))?;
+        let inner = Arc::new_cyclic(|weak| Inner {
+            scan: Arc::new(sink::CatalogScanSink::new(weak.clone(), lookups)),
             dataset: config.dataset,
             state_dir,
             started_at: now(),
@@ -123,6 +134,12 @@ impl Service {
             #[cfg(test)]
             hooks: Default::default(),
         });
+        if scan_writer {
+            inner
+                .engine
+                .set_scan_sink(inner.scan.clone())
+                .map_err(|e| format!("engine refused the scan writer: {e}"))?;
+        }
         for (i, root) in config.grant_roots.iter().enumerate() {
             inner.grant(root, "cli_flag").map_err(|r| {
                 let rule = match r {

@@ -626,6 +626,7 @@ dependencies = [
  "loomward-protocol",
  "loomward-telemetry",
  "loomward-windows",
+ "rusqlite",
  "serde_json",
  "sha2",
  "tempfile",

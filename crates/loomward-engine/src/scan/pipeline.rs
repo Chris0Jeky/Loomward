@@ -290,6 +290,7 @@ impl<S: DirSource> Shared<'_, S> {
         let mut count = 0u64;
         let mut stopped = None;
         let mut error = None;
+        let mut children = Vec::new();
         let start = Instant::now();
 
         let outcome = self.source.list(&task.dir, &mut |raw| {
@@ -416,90 +417,16 @@ impl<S: DirSource> Shared<'_, S> {
                         return Flow::Continue;
                     }
                 }
-                // Drop the parent's chunk reservation before waiting for a writer reply.
-                if !self.flush(ticket, &mut entries, &mut permit) {
-                    return Flow::Stop;
-                }
-                chunk_bytes = CHUNK_ENTRY_BYTES;
-                let available = self.arena.lock().unwrap().len() < self.max_dirs;
+                // Children are prepared only after this listing's ListingDone: a durable writer
+                // creates child rows when the parent listing publishes, so a child ticket must not
+                // be requested before then. Held handles count against the arena reservation.
+                let available = self.arena.lock().unwrap().len() + children.len() < self.max_dirs;
                 if !available {
                     complete = false;
                     stopped = Some(IncompleteReason::Limit);
                     return Flow::Stop;
                 }
-                let child_ticket = match self.prepare(Some(ticket.dir), raw.name, identity) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        error = Some(e);
-                        return Flow::Stop;
-                    }
-                };
-                if let Some(old_parent) = child_ticket.old_parent {
-                    if !self.message(ScanMessage::InvalidateChains {
-                        run: self.run,
-                        old_parent,
-                        new_parent: ticket.dir,
-                    }) {
-                        return Flow::Stop;
-                    }
-                }
-                let slot = {
-                    let mut arena = self.arena.lock().unwrap();
-                    if let Some(&index) = self.catalog_dirs.lock().unwrap().get(&child_ticket.dir) {
-                        // Name-only identities can recur when their parent is relisted.
-                        if arena[index].parent == Some(task.slot) {
-                            arena[index].seen = listing;
-                        } else {
-                            complete = false;
-                        }
-                        arena[index].ticket = child_ticket;
-                        if let Some(key) = key {
-                            self.discovered.lock().unwrap().insert(key, index);
-                        }
-                        self.tasks.lock().unwrap().queue.push_back(Task {
-                            dir: arena[index].dir.clone(),
-                            slot: index,
-                            depth: arena[index].depth,
-                        });
-                        self.ready.notify_one();
-                        return Flow::Continue;
-                    }
-                    if arena.len() >= self.max_dirs {
-                        complete = false;
-                        stopped = Some(IncompleteReason::Limit);
-                        return Flow::Stop;
-                    }
-                    let index = arena.len();
-                    arena.push(Slot {
-                        parent: Some(task.slot),
-                        listings: 0,
-                        seen: listing,
-                        dir: Arc::new(dir),
-                        depth: task.depth + 1,
-                        own: Sums::ZERO,
-                        listed: false,
-                        sums: Sums::ZERO,
-                        complete: false,
-                        ticket: child_ticket,
-                    });
-                    self.catalog_dirs
-                        .lock()
-                        .unwrap()
-                        .insert(child_ticket.dir, index);
-                    index
-                };
-                if let Some(key) = key {
-                    self.discovered.lock().unwrap().insert(key, slot);
-                }
-                // The arena reservation also covers every queued handle/task: no recursive
-                // enumeration retains another native buffer or parent callback on the stack.
-                let dir = self.arena.lock().unwrap()[slot].dir.clone();
-                self.tasks.lock().unwrap().queue.push_back(Task {
-                    dir,
-                    slot,
-                    depth: task.depth + 1,
-                });
-                self.ready.notify_one();
+                children.push((raw.name.to_vec(), dir, identity, key));
             }
             Flow::Continue
         });
@@ -541,7 +468,98 @@ impl<S: DirSource> Shared<'_, S> {
         }) {
             return Err(cancelled());
         }
+        for (name, dir, identity, key) in children {
+            if !self.adopt(&task, ticket, listing, &name, dir, identity, key)? {
+                complete = false;
+            }
+        }
         self.finish_slot(task.slot, own, complete)
+    }
+    /// Prepare one child sighted by a published listing and queue it. `Ok(false)` means the
+    /// parent's aggregate cannot claim this child (moved, unpublished or over the arena cap).
+    #[allow(clippy::too_many_arguments)]
+    fn adopt(
+        &self,
+        task: &Task<S::Dir>,
+        ticket: ListingTicket,
+        listing: u32,
+        name: &[u16],
+        dir: S::Dir,
+        identity: OpenedIdentity,
+        key: Option<(Option<u64>, FileIdObs)>,
+    ) -> EngineResult<bool> {
+        let child_ticket = match self.prepare(Some(ticket.dir), name, identity) {
+            Ok(t) => t,
+            // The parent's publication was rejected as obsolete: the child is unknown to the
+            // writer this epoch, and the dirty parent is relisted.
+            Err(EngineError::StaleGeneration { .. }) => return Ok(false),
+            Err(e) => return Err(e),
+        };
+        if let Some(old_parent) = child_ticket.old_parent {
+            if !self.message(ScanMessage::InvalidateChains {
+                run: self.run,
+                old_parent,
+                new_parent: ticket.dir,
+            }) {
+                return Err(cancelled());
+            }
+        }
+        let slot = {
+            let mut arena = self.arena.lock().unwrap();
+            if let Some(&index) = self.catalog_dirs.lock().unwrap().get(&child_ticket.dir) {
+                // Name-only identities can recur when their parent is relisted.
+                let claimed = arena[index].parent == Some(task.slot);
+                if claimed {
+                    arena[index].seen = listing;
+                }
+                arena[index].ticket = child_ticket;
+                if let Some(key) = key {
+                    self.discovered.lock().unwrap().insert(key, index);
+                }
+                self.tasks.lock().unwrap().queue.push_back(Task {
+                    dir: arena[index].dir.clone(),
+                    slot: index,
+                    depth: arena[index].depth,
+                });
+                self.ready.notify_one();
+                return Ok(claimed);
+            }
+            if arena.len() >= self.max_dirs {
+                self.limit_hit.store(true, Ordering::Release);
+                return Ok(false);
+            }
+            let index = arena.len();
+            arena.push(Slot {
+                parent: Some(task.slot),
+                listings: 0,
+                seen: listing,
+                dir: Arc::new(dir),
+                depth: task.depth + 1,
+                own: Sums::ZERO,
+                listed: false,
+                sums: Sums::ZERO,
+                complete: false,
+                ticket: child_ticket,
+            });
+            self.catalog_dirs
+                .lock()
+                .unwrap()
+                .insert(child_ticket.dir, index);
+            index
+        };
+        if let Some(key) = key {
+            self.discovered.lock().unwrap().insert(key, slot);
+        }
+        // The arena reservation also covers every queued handle/task: no recursive
+        // enumeration retains another native buffer or parent callback on the stack.
+        let dir = self.arena.lock().unwrap()[slot].dir.clone();
+        self.tasks.lock().unwrap().queue.push_back(Task {
+            dir,
+            slot,
+            depth: task.depth + 1,
+        });
+        self.ready.notify_one();
+        Ok(true)
     }
     fn worker(&self) -> EngineResult<()> {
         loop {
