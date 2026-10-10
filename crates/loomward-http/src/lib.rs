@@ -13,6 +13,7 @@
 //! thread and returns a synchronous [`Handle`].
 
 pub mod fixture;
+mod static_handle;
 
 #[cfg(windows)]
 mod windows_socket;
@@ -21,7 +22,7 @@ use windows_socket::exclusive_address_use;
 
 use axum::body::{Body, Bytes};
 use axum::http::{header, HeaderMap, HeaderValue, Method, Response, StatusCode};
-use futures_util::stream;
+use futures_util::{stream, StreamExt};
 use http_body_util::{BodyExt, Limited};
 use hyper::body::Incoming;
 use hyper_util::rt::{TokioIo, TokioTimer};
@@ -32,7 +33,7 @@ use loomward_protocol::{
 };
 use std::convert::Infallible;
 use std::future::Future;
-use std::io;
+use std::io::{self, Read};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -84,7 +85,7 @@ pub struct Options {
     pub read_timeout: Duration,
     /// Maximum time without progress on a pending response write.
     pub write_timeout: Duration,
-    /// Maximum lifetime of a connection that has not opened SSE.
+    /// Maximum lifetime outside an active SSE body; then drain for at most `write_timeout`.
     pub connection_lifetime: Duration,
     /// Maximum time the SSE pump waits for space in its bounded channel.
     pub sse_send_timeout: Duration,
@@ -194,24 +195,12 @@ pub fn serve(service: Arc<dyn ViewService>, options: Options) -> io::Result<Hand
             "--allow-origin takes a loopback http origin such as http://localhost:5173, not {bad}"
         )));
     }
-    let static_dir = match &options.static_dir {
-        Some(dir) => {
-            let dir = dir.canonicalize()?;
-            if !dir.is_dir() {
-                return Err(invalid("--static must name a directory".into()));
-            }
-            for protected in options.grant_roots.iter().chain(options.state_dir.iter()) {
-                let protected = protected.canonicalize()?;
-                if dir.starts_with(&protected) || protected.starts_with(&dir) {
-                    return Err(invalid(
-                        "--static overlaps a grant root or the state directory".into(),
-                    ));
-                }
-            }
-            Some(dir)
-        }
-        None => None,
-    };
+    let static_dir = loomward_service::paths::validate_static_dir(
+        options.static_dir.as_deref(),
+        &options.grant_roots,
+        options.state_dir.as_deref(),
+    )
+    .map_err(invalid)?;
     let mut raw = [0u8; 32];
     getrandom::fill(&mut raw).map_err(|e| io::Error::other(e.to_string()))?;
     let token: String = raw.iter().map(|b| format!("{b:02x}")).collect();
@@ -311,24 +300,38 @@ async fn accept_loop(
             let _permit = permit;
             let timeout = shared.read_timeout;
             let lifetime = shared.connection_lifetime;
+            let write_timeout = shared.write_timeout;
             let io = WriteDeadline {
                 tcp,
                 timeout: shared.write_timeout,
                 stalled: None,
             };
-            let sse = Arc::new(AtomicBool::new(false));
-            let opened = sse.clone();
+            let (opened, mut sse) = watch::channel(false);
             let service = hyper::service::service_fn(move |req| {
                 let shared = shared.clone();
                 let opened = opened.clone();
                 async move {
-                    let res = handle(&shared, req).await;
+                    let mut res = handle(&shared, req).await;
                     if res
                         .headers()
                         .get(header::CONTENT_TYPE)
                         .is_some_and(|v| v == "text/event-stream")
                     {
-                        opened.store(true, Ordering::SeqCst);
+                        let _ = opened.send(true);
+                        res = res.map(|body| {
+                            Body::from_stream(stream::unfold(
+                                (body.into_data_stream(), opened),
+                                |(mut body, opened)| async move {
+                                    match body.next().await {
+                                        Some(frame) => Some((frame, (body, opened))),
+                                        None => {
+                                            let _ = opened.send(false);
+                                            None
+                                        }
+                                    }
+                                },
+                            ))
+                        });
                     }
                     Ok::<_, Infallible>(res)
                 }
@@ -342,9 +345,14 @@ async fn accept_loop(
             tokio::select! {
                 _ = &mut connection => {},
                 _ = tokio::time::sleep(lifetime) => {
-                    if sse.load(Ordering::SeqCst) {
-                        let _ = connection.await;
+                    while *sse.borrow() {
+                        tokio::select! {
+                            _ = &mut connection => return,
+                            _ = sse.changed() => {},
+                        }
                     }
+                    connection.as_mut().graceful_shutdown();
+                    let _ = tokio::time::timeout(write_timeout, &mut connection).await;
                 }
             }
         });
@@ -861,16 +869,28 @@ fn mime(file: &Path) -> &'static str {
 }
 
 fn read_static(root: &Path, rel: &Path) -> Option<(Vec<u8>, &'static str)> {
-    let file = root.join(rel).canonicalize().ok()?;
-    // Symlinks and junctions inside the root resolve first; the result must still be inside.
-    if !file.starts_with(root) {
+    read_static_file(root, std::fs::File::open(root.join(rel)).ok()?)
+}
+
+fn read_static_file(root: &Path, file: std::fs::File) -> Option<(Vec<u8>, &'static str)> {
+    let path = static_handle::path(&file)?;
+    // Check the object we read, even if a link or junction changed while opening it.
+    if !path.starts_with(root) {
         return None;
     }
-    let meta = std::fs::metadata(&file).ok()?;
+    let meta = file.metadata().ok()?;
     if !meta.is_file() || meta.len() > MAX_STATIC_BYTES {
         return None;
     }
-    Some((std::fs::read(&file).ok()?, mime(&file)))
+    Some((read_static_bytes(file)?, mime(&path)))
+}
+
+fn read_static_bytes(file: std::fs::File) -> Option<Vec<u8>> {
+    let mut bytes = Vec::new();
+    file.take(MAX_STATIC_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() as u64 <= MAX_STATIC_BYTES).then_some(bytes)
 }
 
 async fn static_file(s: &Shared, path: &str) -> Response<Body> {
@@ -999,5 +1019,40 @@ mod tests {
             h.insert("last-event-id", HeaderValue::from_static(bad));
             assert_eq!(parse_last_event_id(&h), Some((String::new(), 0)), "{bad}");
         }
+    }
+
+    #[test]
+    fn followup_static_reads_the_opened_object_after_path_replacement() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let path = root.join("asset.txt");
+        std::fs::write(&path, b"original").unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        std::fs::rename(&path, root.join("renamed.txt")).unwrap();
+        std::fs::write(&path, b"replacement").unwrap();
+        assert_eq!(read_static_file(&root, file).unwrap().0, b"original");
+        let outside = tempfile::tempdir().unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        std::fs::rename(&path, outside.path().join("outside.txt")).unwrap();
+        assert!(read_static_file(&root, file).is_none());
+    }
+
+    #[test]
+    fn followup_static_read_is_bounded_when_a_file_grows_after_metadata() {
+        use std::io::Seek;
+        let mut file = tempfile::tempfile().unwrap();
+        file.set_len(MAX_STATIC_BYTES).unwrap();
+        assert_eq!(file.metadata().unwrap().len(), MAX_STATIC_BYTES);
+        // Model growth after the metadata check but before the read.
+        file.set_len(MAX_STATIC_BYTES + 100).unwrap();
+        let reader = file.try_clone().unwrap();
+        assert!(read_static_bytes(reader).is_none());
+        assert_eq!(file.stream_position().unwrap(), MAX_STATIC_BYTES + 1);
+        file.rewind().unwrap();
+        file.set_len(MAX_STATIC_BYTES).unwrap();
+        assert_eq!(
+            read_static_bytes(file).unwrap().len() as u64,
+            MAX_STATIC_BYTES
+        );
     }
 }

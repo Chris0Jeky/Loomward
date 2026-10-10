@@ -983,7 +983,7 @@ fn sixteen_non_readers_release_connections_at_the_write_deadline() {
 #[test]
 fn sixteen_non_readers_release_connections_at_the_lifetime_cap() {
     non_readers_release_connections(
-        Duration::from_secs(60),
+        Duration::from_secs(2),
         Duration::from_secs(1),
         "lifetime-cap",
     );
@@ -1166,4 +1166,273 @@ fn the_engine_service_answers_through_the_adapter() {
     );
     let grant = call(&h, r#"{"protocol":"loomward/3","request_id":"r_3","command":"roots.request_grant","payload":{"purpose":"metadata_scan"}}"#).json();
     assert_eq!(grant["error"]["code"], "capability_unavailable");
+}
+
+struct FollowupService {
+    fixture: FixtureService,
+    call_entered: Option<std::sync::mpsc::Sender<()>>,
+    call_release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    stream_end: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+}
+
+impl loomward_protocol::ViewService for FollowupService {
+    fn call(
+        &self,
+        request: loomward_protocol::RequestEnvelope,
+        ctx: &loomward_protocol::CallContext,
+    ) -> loomward_protocol::ResponseEnvelope {
+        if let Some(entered) = &self.call_entered {
+            entered.send(()).unwrap();
+            self.call_release
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap();
+        }
+        self.fixture.call(request, ctx)
+    }
+
+    fn subscribe(&self, resume: Option<(String, u64)>) -> Box<dyn loomward_protocol::EventStream> {
+        Box::new(FollowupStream {
+            source: self.fixture.subscribe(resume),
+            first: true,
+            end: self.stream_end.lock().unwrap().take().unwrap(),
+        })
+    }
+}
+
+struct FollowupStream {
+    source: Box<dyn loomward_protocol::EventStream>,
+    first: bool,
+    end: std::sync::mpsc::Receiver<()>,
+}
+
+impl loomward_protocol::EventStream for FollowupStream {
+    fn epoch(&self) -> &str {
+        self.source.epoch()
+    }
+    fn recv_timeout(&mut self, timeout: Duration) -> loomward_protocol::RecvOutcome {
+        if self.first {
+            self.first = false;
+            return self.source.recv_timeout(timeout);
+        }
+        match self.end.recv_timeout(timeout) {
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                loomward_protocol::RecvOutcome::Timeout
+            }
+            _ => loomward_protocol::RecvOutcome::Closed(
+                loomward_protocol::CloseReason::ServiceShutdown,
+            ),
+        }
+    }
+    fn close(&mut self) {
+        self.source.close();
+    }
+}
+
+#[test]
+fn followup_lifetime_expiry_drains_an_in_flight_call() {
+    let (entered, entry) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let h = serve(
+        Arc::new(FollowupService {
+            fixture: fixture(),
+            call_entered: Some(entered),
+            call_release: std::sync::Mutex::new(released),
+            stream_end: std::sync::Mutex::new(None),
+        }),
+        Options {
+            connection_lifetime: Duration::from_millis(300),
+            write_timeout: Duration::from_secs(1),
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    let addr = h.addr();
+    let head = call_head(&h, HELLO.len(), "");
+    let client = std::thread::spawn(move || exchange(addr, &head, HELLO.as_bytes()));
+    entry.recv_timeout(Duration::from_secs(2)).unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    release.send(()).unwrap();
+    let response = client.join().unwrap();
+    assert_eq!(response.status, 200);
+    assert_eq!(response.json()["ok"], true);
+}
+
+#[test]
+fn followup_finished_sse_restores_the_lifetime_cap() {
+    let (_, released) = std::sync::mpsc::channel();
+    let (end, ended) = std::sync::mpsc::channel();
+    let h = serve(
+        Arc::new(FollowupService {
+            fixture: fixture(),
+            call_entered: None,
+            call_release: std::sync::Mutex::new(released),
+            stream_end: std::sync::Mutex::new(Some(ended)),
+        }),
+        Options {
+            connection_lifetime: Duration::from_millis(300),
+            write_timeout: Duration::from_millis(300),
+            read_timeout: Duration::from_secs(5),
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    let mut sse = open_events(&h, "").ok().unwrap();
+    assert_eq!(sse.next().event, "stream.hello");
+    std::thread::sleep(Duration::from_millis(500));
+    end.send(()).unwrap();
+    sse.reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut rest = Vec::new();
+    sse.reader
+        .read_to_end(&mut rest)
+        .expect("connection remained exempt after SSE ended");
+    assert_eq!(
+        rest, b"0\r\n\r\n",
+        "SSE must finish before the connection closes"
+    );
+}
+
+#[cfg(windows)]
+fn followup_refused_start(
+    state: &std::path::Path,
+    static_dir: &std::path::Path,
+    grant: Option<&std::path::Path>,
+    personal: bool,
+) {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_loomward-serve"));
+    command
+        .arg("--state-dir")
+        .arg(state)
+        .arg("--static")
+        .arg(static_dir);
+    if let Some(grant) = grant {
+        command.arg("--grant-root").arg(grant);
+    }
+    if personal {
+        command.args(["--dataset", "personal", "--allow-personal"]);
+    }
+    let mut child = command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let end = Instant::now() + Duration::from_secs(3);
+    let exited = loop {
+        if child.try_wait().unwrap().is_some() {
+            break true;
+        }
+        if Instant::now() >= end {
+            child.kill().unwrap();
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let output = child.wait_with_output().unwrap();
+    assert!(exited, "overlapping static server started");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("overlaps"));
+}
+
+#[cfg(windows)]
+#[test]
+fn followup_stored_grants_refuse_static_without_recording_new_grants() {
+    use loomward_protocol::{CallContext, RequestEnvelope, ViewService};
+    use loomward_service::{lab, Config, Service};
+    let tmp = tempfile::tempdir().unwrap();
+    let state = tmp.path().join("state");
+    let dist = tmp.path().join("dist");
+    let old = dist.join("stored-lab");
+    let new = tmp.path().join("new-lab");
+    lab::register(&state, &old, "s", "S", "sha256:00").unwrap();
+    lab::register(&state, &new, "s", "S", "sha256:00").unwrap();
+    let cfg = |roots| Config {
+        state_dir: state.clone(),
+        dataset: DatasetClass::Synthetic,
+        allow_personal: false,
+        grant_roots: roots,
+    };
+    drop(Service::open(cfg(vec![old.canonicalize().unwrap()])).unwrap());
+    followup_refused_start(&state, &dist, Some(&new), false);
+    let service = Service::open(cfg(vec![])).unwrap();
+    let response = service.call(RequestEnvelope::from_slice(br#"{"protocol":"loomward/3","request_id":"r_roots","command":"roots.list","payload":{}}"#).unwrap(), &CallContext::http());
+    let roots = serde_json::to_value(response).unwrap();
+    assert_eq!(roots["result"]["roots"].as_array().unwrap().len(), 1);
+    assert!(roots["result"]["roots"][0]["display_path"]["text"]
+        .as_str()
+        .unwrap()
+        .ends_with("stored-lab"));
+    drop(service);
+    // A disjoint static tree still permits the stored root and the proposed grant.
+    let safe = tmp.path().join("safe-static");
+    std::fs::create_dir(&safe).unwrap();
+    assert!(Service::open_with_static(cfg(vec![new.canonicalize().unwrap()]), Some(&safe)).is_ok());
+}
+
+#[cfg(windows)]
+#[test]
+fn followup_proposed_static_overlap_leaves_no_active_grant() {
+    use loomward_protocol::{CallContext, RequestEnvelope, ViewService};
+    use loomward_service::{lab, Config, Service};
+    let tmp = tempfile::tempdir().unwrap();
+    let state = tmp.path().join("state");
+    let grant = tmp.path().join("dist/lab");
+    lab::register(&state, &grant, "s", "S", "sha256:00").unwrap();
+    followup_refused_start(&state, &tmp.path().join("dist"), Some(&grant), false);
+    let service = Service::open(Config {
+        state_dir: state,
+        dataset: DatasetClass::Synthetic,
+        allow_personal: false,
+        grant_roots: vec![],
+    })
+    .unwrap();
+    let response = service.call(RequestEnvelope::from_slice(br#"{"protocol":"loomward/3","request_id":"r_roots","command":"roots.list","payload":{}}"#).unwrap(), &CallContext::http());
+    assert_eq!(
+        serde_json::to_value(response).unwrap()["result"]["roots"],
+        json!([])
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn followup_stored_picker_grant_refuses_static() {
+    use loomward_protocol::{CallContext, NativeDialogs, RequestEnvelope, ViewService};
+    struct Picker(PathBuf);
+    impl NativeDialogs for Picker {
+        fn pick_folder(&self) -> Option<PathBuf> {
+            Some(self.0.clone())
+        }
+        fn confirm_disclosure(&self, _: &loomward_protocol::dto::DisclosureSummary) -> bool {
+            false
+        }
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let state = tmp.path().join("state");
+    let dist = tmp.path().join("dist");
+    let root = dist.join("picked-fixture");
+    std::fs::create_dir_all(&root).unwrap();
+    // Personal policy is exercised using only disposable synthetic files.
+    let service = loomward_service::Service::open(loomward_service::Config {
+        state_dir: state.clone(),
+        dataset: DatasetClass::Personal,
+        allow_personal: true,
+        grant_roots: vec![],
+    })
+    .unwrap();
+    let response = service.call(RequestEnvelope::from_slice(br#"{"protocol":"loomward/3","request_id":"r_pick","command":"roots.request_grant","payload":{"purpose":"metadata_scan"}}"#).unwrap(), &CallContext::tauri(Arc::new(Picker(root))));
+    let granted = serde_json::to_value(response).unwrap();
+    assert_eq!(granted["result"]["outcome"], "granted");
+    assert_eq!(granted["result"]["root"]["granted_via"], "desktop_picker");
+    drop(service);
+    followup_refused_start(&state, &dist, None, true);
+    let dir = dist.canonicalize().unwrap();
+    let volume = dir.ancestors().last().unwrap().to_path_buf();
+    assert!(
+        loomward_service::paths::validate_static_dir(Some(&dir), &[volume], None)
+            .unwrap_err()
+            .contains("overlaps")
+    );
 }
