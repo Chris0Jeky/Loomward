@@ -66,6 +66,8 @@ class FakeEngine:
         self.server: ThreadingHTTPServer | None = None
         self.process_error: str | None = None
         self.telemetry_calls: list[dict] = []
+        self.explain_partial_once = False
+        self.explain_calls: list[str] = []
 
     @property
     def base(self) -> str:
@@ -88,6 +90,14 @@ class FakeEngine:
                 'limits': {'max_request_bytes': 65536, 'max_slice_nodes': 6000, 'max_page_items': 200},
             }
         if self.process_error is not None:
+            if cmd == 'processes.explain':
+                self.explain_calls.append(p['process_ref'])
+                if self.explain_partial_once:
+                    self.explain_partial_once = False
+                    return ('partial_coverage', 'synthetic process sample not ready')
+                result = json.loads((ROOT / 'contracts/v3/examples/commands/processes.explain.result.json').read_text())
+                result['process_ref'] = p['process_ref']
+                return result
             if cmd in ('telemetry.subscribe', 'telemetry.unsubscribe'):
                 self.telemetry_calls.append(req)
                 if cmd == 'telemetry.unsubscribe':
@@ -95,7 +105,7 @@ class FakeEngine:
                 result = json.loads((ROOT / 'contracts/v3/examples/commands/telemetry.subscribe.result.json').read_text())
                 result['subscription_id'] = f'sub_fake_{len(self.telemetry_calls)}'
                 return result
-            if cmd in ('telemetry.snapshot', 'processes.list', 'tree.slice'):
+            if cmd in ('telemetry.snapshot', 'processes.list', 'tree.slice', 'budgets.get'):
                 if cmd == 'processes.list' and self.process_error:
                     return (self.process_error, 'synthetic process observation failure')
                 return json.loads((ROOT / f'contracts/v3/examples/commands/{cmd}.result.json').read_text())
@@ -409,6 +419,13 @@ def check_process_strip_failures(browser) -> None:
         ok([r['command'] for r in engine.telemetry_calls[:3]] == ['telemetry.subscribe', 'telemetry.unsubscribe', 'telemetry.subscribe'],
            'process strip: session epoch change releases the old lease before subscribing again')
         ok(engine.telemetry_calls[1]['payload']['subscription_id'] == 'sub_fake_1', 'process strip: epoch change releases the correct subscription')
+        page.evaluate("""() => {
+          window.__stripStatus = document.querySelector('#strip-status');
+          window.__stripAnnouncements = [];
+          new MutationObserver(() => window.__stripAnnouncements.push({
+            text: window.__stripStatus.textContent, focus: document.activeElement.id
+          })).observe(window.__stripStatus, {childList: true, characterData: true, subtree: true});
+        }""")
         for i, code in enumerate(('partial_coverage', 'capability_unavailable'), 1):
             strip.get_by_role('link').first.focus()
             engine.process_error = code
@@ -418,9 +435,30 @@ def check_process_strip_failures(browser) -> None:
             expect(strip.get_by_role('link')).to_have_count(0)
             expect(strip.get_by_role('heading', name='Processes', exact=True)).to_be_focused()
             ok(True, f'process strip: {code} stays visible and moves row focus to the stable heading')
+            spoken = 'not sampled' if code == 'partial_coverage' else 'unavailable'
+            ok(page.evaluate("""text => {
+              const status = window.__stripStatus;
+              return status === document.querySelector('#strip-status') && status.isConnected
+                && status.getAttribute('role') === 'status' && status.getAttribute('aria-live') === 'polite'
+                && status.getAttribute('aria-atomic') === 'true'
+                && window.__stripAnnouncements.some(a => a.text.includes(text) && a.focus === 'strip-h');
+            }""", spoken), f'process strip: {code} updates the persistent live region after the focus move')
             engine.process_error = ''
             page.clock.set_system_time(start + timedelta(seconds=32 * i))
             expect(strip.get_by_role('link')).to_have_count(1)
+        engine.process_error = 'partial_coverage'
+        engine.explain_partial_once = True
+        strip.get_by_role('link').first.click()
+        expect(page.get_by_role('heading', name='Companion', level=1)).to_be_visible()
+        expect(page.get_by_role('status').filter(has_text='Waiting for a fresh process sample.')).to_be_visible()
+        ok(len(engine.explain_calls) == 1 and page.locator('main [role=alert]').filter(has_text='synthetic process sample not ready').count() == 0,
+           'Companion deep link: partial coverage waits honestly without a stale explanation alert')
+        engine.process_error = ''
+        page.clock.set_system_time(start + timedelta(seconds=80))
+        expect(page.get_by_role('region', name='Explanation')).to_be_visible(timeout=10000)
+        expect(page.get_by_role('heading', name='About this process')).to_be_focused()
+        ok(len(engine.explain_calls) == 2 and engine.explain_calls[0] == engine.explain_calls[1],
+           'Companion deep link: its first process sample retries the same opaque reference once')
         ok(not errors, f'process strip failures: no page errors {errors}')
     finally:
         page.close()

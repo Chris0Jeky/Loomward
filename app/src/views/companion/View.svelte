@@ -3,23 +3,24 @@
 </script>
 
 <script lang="ts">
-  import { onMount, tick as flush, untrack } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { formatBytes, parseBytes } from '../../lib/format/bytes';
   import { escapedName, hasHiddenCharacters } from '../../lib/format/names';
   import { formatCount, formatTime } from '../../lib/format/time';
   import { session } from '../../lib/stores/session.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
-  import type { ProcessExplanation, ProcessRow } from '../../lib/contracts.gen';
+  import type { ProcessRow } from '../../lib/contracts.gen';
   import type { ProcessSort } from '../../lib/derived';
   import { ProcessTable } from './table.svelte';
+  import { Explanation } from './explanation.svelte';
 
   const SORTS: [ProcessSort, string][] = [
     ['private_desc', 'Private commit'], ['working_set_desc', 'Working set'], ['cpu_desc', 'CPU'], ['io_desc', 'Disk I/O'], ['gpu_desc', 'GPU memory'], ['name_asc', 'Name'],
   ];
 
-  let explain = $state<{ row: ProcessRow | null; result: ProcessExplanation } | null>(null);
-  let explainError = $state('');
-  let explainTicket = 0;
+  const explanation = new Explanation(() => session.client, (e) => session.handle(e));
+  const explain = $derived(explanation.answer);
+  const explainError = $derived(explanation.error);
   let aboutEl = $state<HTMLElement>();
   let tableEl = $state<HTMLElement>();
 
@@ -40,37 +41,26 @@
     return untrack(() => table.run());
   });
 
+  $effect(() => {
+    if (explanation.pending && (table.list || table.waiting)) {
+      untrack(() => void explanation.resume(table.waiting ?? table.list));
+    }
+  });
+
+  $effect(() => { if (explain) aboutEl?.focus(); });
+
   // Observatory links carry an opaque process reference, never a PID used as authority.
   onMount(() => {
     const openLink = () => {
       const ref = new URLSearchParams(location.hash.split('?')[1] ?? '').get('process');
-      if (ref) void explainProcess(ref);
+      if (ref) void explanation.open(ref);
     };
     openLink();
     window.addEventListener('hashchange', openLink);
-    return () => { explainTicket++; window.removeEventListener('hashchange', openLink); };
+    return () => { explanation.close(); window.removeEventListener('hashchange', openLink); };
   });
 
-  async function explainProcess(ref: string, row: ProcessRow | null = null) {
-    const c = session.client;
-    if (!c) return;
-    const mine = ++explainTicket;
-    explainError = '';
-    explain = null;
-    try {
-      const { result } = await c.call('processes.explain', { process_ref: ref });
-      if (mine !== explainTicket) return;
-      explain = { row, result };
-      // the panel appears below the table: move focus to it so the reader lands on the answer
-      await flush();
-      if (mine === explainTicket) aboutEl?.focus();
-    } catch (e) {
-      if (mine !== explainTicket) return;
-      explainError = session.handle(e);
-    }
-  }
-
-  function explainRow(row: ProcessRow) { return explainProcess(row.process_ref, row); }
+  function explainRow(row: ProcessRow) { return explanation.open(row.process_ref, row); }
 
   const pct = (f: number | null) => (f === null ? null : `${(f * 100).toFixed(1)}%`);
   const rate = (n: number | null) => (n === null ? null : `${formatBytes(Math.round(n).toString())}/s`);
@@ -199,6 +189,7 @@
       <p class="muted small">Rows from sample {formatCount(list.sample_seq)}. {list.note} CPU is a share of the whole machine. Working sets include shared pages, so do not add rows up. Private commit is what a process has promised, not what is resident. GPU memory is per process and is never summed into an adapter total.</p>
     {:else}<p class="muted">Waiting for the first sample.</p>{/if}
 
+    <p class="muted small live" class:has={!!explanation.pending} role="status">{explanation.pending ? 'Waiting for a fresh process sample.' : ''}</p>
     <p class="bad live" class:has={!!explainError} role="alert">{explainError}</p>
     {#if explain}
       <div class="explain" role="region" aria-label="Explanation">
