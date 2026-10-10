@@ -390,9 +390,10 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     # 1.4.13: the hover tooltip can be dismissed with Escape
     box = page.locator('main canvas').first.bounding_box()
     page.mouse.move(box['x'] + box['width'] * 0.3, box['y'] + box['height'] * 0.4)
-    page.wait_for_timeout(300)
+    expect(page.locator('main .tip')).to_have_count(1)
     check(page.locator('main .tip').count() == 1, 'hovering a region shows the tooltip')
     page.keyboard.press('Escape')
+    expect(page.locator('main .tip')).to_have_count(0)
     check(page.locator('main .tip').count() == 0, '1.4.13 Escape dismisses the tooltip')
 
     # ... and inside a region, the Escape that dismisses a tooltip does not also go back up a level (#169)
@@ -411,9 +412,10 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     page.wait_for_timeout(1000)
     box = page.locator('main canvas').first.bounding_box()
     page.mouse.move(box['x'] + box['width'] * 0.3, box['y'] + box['height'] * 0.4)
-    page.wait_for_timeout(300)
+    expect(page.locator('main .tip')).to_have_count(1)
     check(page.locator('main .tip').count() == 1, 'hovering a region of the drilled view shows the tooltip')
     page.keyboard.press('Escape')
+    expect(page.locator('main .tip')).to_have_count(0)
     check(page.locator('main .tip').count() == 0 and crumbs.count() == 2, f'1.4.13 Escape over a tooltip dismisses it and stays in the region ({crumbs.count()} crumbs)')
     page.mouse.move(0, 0)
     page.keyboard.press('Escape')
@@ -433,6 +435,7 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     page.locator('main details.as-text summary').click()
     row = page.locator('main details.as-text li', has=page.locator('button.inspect')).first
     row.locator('button.inspect').click()
+    expect(page.locator('main aside.inspector h2')).to_have_text(row.locator('button.open').inner_text())
     shown = page.locator('main aside.inspector h2').inner_text()
     expect(page.locator('#obs-live')).to_contain_text(shown.split(' ')[0])
     check(True, '4.1.3 Inspect in the Observatory speaks the region')
@@ -449,7 +452,7 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     page.wait_for_timeout(2600)
     check(seq() == before, f'2.2.2 paused: the sample number holds ({before})')
     page.get_by_role('button', name='Resume updates').click()
-    page.wait_for_timeout(2600)
+    expect(page.locator('.res-note .seq')).not_to_have_text(before, timeout=9000)
     check(seq() != before, f'2.2.2 resumed: samples arrive again ({before} -> {seq()})')
 
     # Process strip: a persistent live region, ordinary links, and sequential keyboard order.
@@ -515,7 +518,7 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     expect(page.locator('#proc-waiting')).to_contain_text('A newer sample is waiting')
     before = sample()
     page.locator('main .tbl-wrap').nth(1).evaluate('e => { e.hidden = true; }')
-    page.wait_for_timeout(3600)
+    wait_until(page, lambda: sample() > before)
     check(sample() > before, f'2.2.2 a table that vanished under focus, with no focusout, no longer holds the rows ({before} -> {sample()})')
     page.locator('main .tbl-wrap').nth(1).evaluate('e => { e.hidden = false; }')
 

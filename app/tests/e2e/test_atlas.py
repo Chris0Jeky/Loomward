@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import statistics
 import time
 
 from playwright.sync_api import expect
@@ -92,6 +93,21 @@ def p9_marks(page, prefix: str) -> list[dict]:
     )
 
 
+def measure_p9(page, base: str, check) -> dict:
+    runs = []
+    for i in range(6):  # One warm-up, then five fresh documents with fresh performance entries.
+        page.goto(f'{base}/?transport=mock&run={i}#/atlas')
+        wait_until(page, "performance.getEntriesByName('loomward:atlas:slice-to-paint').length > 0")
+        marks = p9_marks(page, 'loomward:atlas')
+        first = {m['name']: m for m in marks if m['nodes'] == 2500}
+        check({'layout', 'first-paint', 'slice-to-paint'} <= set(first), f'P9 run {i}: marks recorded for 2,500 nodes: {marks}')
+        if i:
+            runs.append({'layout_ms': first['layout']['ms'], 'first_paint_ms': first['first-paint']['ms'],
+                         'layout_plus_paint_ms': first['layout']['ms'] + first['first-paint']['ms'],
+                         'slice_to_paint_wall_ms': first['slice-to-paint']['ms'], 'cells_drawn': first['layout']['cells']})
+    return {'nodes': 2500, 'runs': runs, 'median_layout_plus_paint_ms': statistics.median(r['layout_plus_paint_ms'] for r in runs), 'budget_ms': 50}
+
+
 def run(ctx) -> dict:
     page, base, check = ctx.page, ctx.base, ctx.check
     results: dict = {}
@@ -114,14 +130,10 @@ def run(ctx) -> dict:
     expect(page.locator('main .status')).to_contain_text('synthetic')
 
     # --- P9: layout + first draw on the 2,500-node slice ----------------------------------------
-    marks = p9_marks(page, 'loomward:atlas')
-    first = {m['name']: m for m in marks if m['nodes'] == 2500}
-    check({'layout', 'first-paint', 'slice-to-paint'} <= set(first), f'P9 marks recorded for the 2,500-node slice: {marks}')
-    cpu = first['layout']['ms'] + first['first-paint']['ms']
-    results['p9_first_slice'] = {'nodes': 2500, 'cells_drawn': first['layout']['cells'], 'layout_ms': round(first['layout']['ms'], 2),
-                                 'first_paint_ms': round(first['first-paint']['ms'], 2), 'layout_plus_paint_ms': round(cpu, 2),
-                                 'slice_to_paint_wall_ms': round(first['slice-to-paint']['ms'], 2)}
-    budget(cpu <= 50, f'P9 layout + first draw of 2,500 nodes within 50 ms ({cpu:.1f} ms)')
+    results['p9_first_slice'] = measure_p9(page, base, check)
+    print('P9 samples', json.dumps(results['p9_first_slice']))
+    cpu = results['p9_first_slice']['median_layout_plus_paint_ms']
+    budget(cpu <= 50, f'P9 layout + first draw of 2,500 nodes within 50 ms (median of 5: {cpu:.1f} ms)')
     page.wait_for_timeout(1900)  # the loom reveal
     hover = page.evaluate(FRAME_PACING, {'kind': 'hover', 'frames': 90})
     results['p9_hover'] = hover
