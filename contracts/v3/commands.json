@@ -2,16 +2,17 @@
   "protocol": "loomward/3",
   "status": "proposed",
   "schema": "view-service.schema.json",
+  "semantics": "semantics.md (normative: deadlines, revisions, idempotency, commit-before-event, epochs, replay)",
   "description": "Closed command and event list of the v0.3 view-model service (docs/41 section 5). Request and result names refer to $defs in view-service.schema.json. 'adapters' lists where a command exists; elsewhere it returns capability_unavailable. 'wave' is the implementation wave in docs/43. 'effects' is 'none' for every command: catalogue rows, preferences, feedback, collections, grants and saved simulations are Loomward's own state, never a file or process effect. Any new command needs a coordinator-reviewed contract PR; a contract test rejects names matching (delete|move|rename|kill|exec|shell|trim|suspend|priority|uninstall|write_file|run_command).",
   "transport": {
     "http": {
       "call": "POST /api/v3/call  (Content-Type: application/json, X-Loomward-Token, body = RequestEnvelope, max 65536 bytes) -> 200 ResponseEnvelope",
-      "events": "GET /api/v3/events  (Accept: text/event-stream, X-Loomward-Token, optional Last-Event-ID) -> SSE frames 'id: <seq>', 'event: <EventName>', 'data: <EventEnvelope JSON>'",
+      "events": "GET /api/v3/events  (Accept: text/event-stream, X-Loomward-Token, optional Last-Event-ID: '<epoch>.<seq>') -> SSE frames 'id: <epoch>.<seq>', 'event: <EventName>', 'data: <EventEnvelope JSON>'",
       "assets": "GET / and /assets/* serve app/dist when built; no token required for static assets"
     },
     "tauri": {
       "call": "invoke('lw_call', { request: RequestEnvelope }) -> ResponseEnvelope",
-      "events": "invoke('lw_events', { channel: Channel<EventEnvelope>, lastSeq: number | null }) -> null; events arrive on the channel"
+      "events": "invoke('lw_events', { channel: Channel<EventEnvelope>, lastEpoch: string | null, lastSeq: number | null }) -> null; events arrive on the channel"
     }
   },
   "commands": {
@@ -44,9 +45,9 @@
     "collections.members":        { "request": "CollectionMembersRequest",  "result": "EntryPage",             "adapters": ["tauri", "http"], "wave": 3, "effects": "none" },
     "teacher.preview":            { "request": "TeacherPreviewRequest",     "result": "TeacherPreview",        "adapters": ["tauri", "http"], "wave": 3, "effects": "none", "note": "Builds and stores the exact payload. Sends nothing." },
     "grants.list":                { "request": "EmptyRequest",              "result": "GrantList",             "adapters": ["tauri", "http"], "wave": 2, "effects": "none" },
-    "grants.create_disclosure":   { "request": "DisclosureGrantRequest",    "result": "DisclosureGrantResult", "adapters": ["tauri", "http"], "wave": 3, "effects": "none", "note": "Personal dataset: native Rust confirmation dialog (Tauri only). HTTP refuses personal with personal_requires_desktop_dialog." },
+    "grants.create_disclosure":   { "request": "DisclosureGrantRequest",    "result": "DisclosureGrantResult", "adapters": ["tauri", "http"], "wave": 3, "effects": "none", "note": "Personal dataset: refused with confinement_not_enforced until the docs/41 section 9.2 confinement profile is demonstrated; then native Rust confirmation dialog showing every item (Tauri only). HTTP refuses personal with personal_requires_desktop_dialog. A preview yields at most one grant." },
     "grants.revoke":              { "request": "GrantRevokeRequest",        "result": "GrantRevokeResult",     "adapters": ["tauri", "http"], "wave": 2, "effects": "none" },
-    "teacher.run":                { "request": "TeacherRunRequest",         "result": "JobResult",             "adapters": ["tauri", "http"], "wave": 3, "effects": "none", "events": ["job.state", "learning.updated"], "note": "The only command that causes network egress, and only via the single-use grant. Spawns codex.cmd as a Job-Object-bound child (ADR-V3-10)." },
+    "teacher.run":                { "request": "TeacherRunRequest",         "result": "JobResult",             "adapters": ["tauri", "http"], "wave": 3, "effects": "none", "events": ["job.state", "learning.updated"], "note": "The only command that causes network egress, and only via the single-use grant, consumed in state.db before spawn. Launches the pinned native Codex executable under the docs/41 section 9.2 runner profile (ADR-V3-10). Replay with a used grant returns the existing job, never a second disclosure." },
     "teacher.results":            { "request": "JobRefRequest",             "result": "TeacherResults",        "adapters": ["tauri", "http"], "wave": 3, "effects": "none" },
     "tiers.model":                { "request": "EmptyRequest",              "result": "TierModel",             "adapters": ["tauri", "http"], "wave": 2, "effects": "none" },
     "placement.candidates":       { "request": "PlacementCandidatesRequest", "result": "PlacementCandidates",  "adapters": ["tauri", "http"], "wave": 2, "effects": "none" },
@@ -62,7 +63,7 @@
     "budgets.set":                { "request": "BudgetSetRequest",          "result": "OwnBudgets",            "adapters": ["tauri", "http"], "wave": 2, "effects": "none" }
   },
   "events": {
-    "stream.hello":      { "data": "StreamHello",          "rate": "once per stream connection" },
+    "stream.hello":      { "data": "StreamHello",          "rate": "first item of every stream, then re-sent as a heartbeat after 15 s without other events on that stream (SSE and Tauri); not sequenced, never replayed (semantics.md section 7)" },
     "stream.lagged":     { "data": "StreamLagged",         "rate": "when a subscriber queue (1024 events) overflowed; client refetches the named resources" },
     "job.state":         { "data": "JobResult",            "rate": "every job state transition" },
     "scan.progress":     { "data": "ScanProgressEvent",    "rate": "at most 4 per second per job" },

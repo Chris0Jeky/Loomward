@@ -1,0 +1,15 @@
+[package]
+name = "loomward-learn"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+# Python-exact casefold: CaseFolding C+F data, Unicode 16.0 (verified against CPython 3.14 on every code point).
+caseless = "0.2.2"
+# Python's \w and isdecimal are defined by general category (L*, N* and Nd); std's is_alphanumeric differs
+# (it counts Other_Alphabetic combining marks). Unicode 16.0, verified against CPython 3.14 on every code point.
+unicode-general-category = "1.1.0"
+serde_json = "1"
+sha2 = "0.10"

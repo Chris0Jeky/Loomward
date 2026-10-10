@@ -27,8 +27,8 @@
     "GroupId": { "type": "string", "pattern": "^cg_[A-Za-z0-9_-]{1,64}$" },
     "Cursor": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,512}$", "$comment": "Opaque; bound to command, query, anchor, generation and session. Not reusable for another scope." },
     "Digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
-    "ByteCount": { "type": "string", "pattern": "^(0|[1-9][0-9]{0,19})$", "$comment": "Exact unsigned decimal. All byte quantities on the wire use this, never JSON numbers (ADR-V3-04)." },
-    "NullableBytes": { "type": ["string", "null"], "pattern": "^(0|[1-9][0-9]{0,19})$", "$comment": "null means unknown, never zero (invariant 4)." },
+    "ByteCount": { "type": "string", "pattern": "^(0|[1-9][0-9]{0,19})$", "$comment": "Exact unsigned decimal. All byte quantities on the wire use this, never JSON numbers (ADR-V3-04). Range 0..18446744073709551615 (u64::MAX) is enforced at runtime (semantics.md section 9); the pattern alone admits larger 20-digit strings." },
+    "NullableBytes": { "type": ["string", "null"], "pattern": "^(0|[1-9][0-9]{0,19})$", "$comment": "null means unknown, never zero (invariant 4). Same runtime range as ByteCount." },
     "Generation": { "type": "string", "pattern": "^(0|[1-9][0-9]{0,19})$" },
     "NullableGeneration": { "type": ["string", "null"], "pattern": "^(0|[1-9][0-9]{0,19})$" },
     "Count": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
@@ -36,8 +36,9 @@
     "Fraction": { "type": "number", "minimum": 0, "maximum": 1 },
     "NullableFraction": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
     "NullableRate": { "type": ["number", "null"], "minimum": 0, "$comment": "Display-only per-second rate; null until two samples exist." },
-    "Timestamp": { "type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$", "maxLength": 40, "$comment": "RFC 3339 UTC (a trailing Z, never a numeric offset), display and chronology only." },
+    "Timestamp": { "type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$", "maxLength": 40, "$comment": "RFC 3339 in UTC with a literal Z; display and chronology only. Servers emit millisecond precision." },
     "NullableTimestamp": { "type": ["string", "null"], "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$", "maxLength": 40 },
+    "StreamEpoch": { "type": "string", "pattern": "^[A-Za-z0-9_-]{8,64}$", "$comment": "Random per service start; event seq is only comparable within one epoch (semantics.md section 7)." },
     "Tier": { "type": "integer", "minimum": 0, "maximum": 9, "$comment": "0 is fastest, 9 slowest; demotion goes to an equal or higher number (planner v1/v2 rule)." },
     "NullableTier": { "type": ["integer", "null"], "minimum": 0, "maximum": 9 },
     "Label": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9 _-]{0,63}$" },
@@ -50,7 +51,7 @@
     },
     "ExtFamily": { "enum": ["document", "spreadsheet", "presentation", "image", "video", "audio", "archive", "code", "data", "model", "executable", "system", "font", "other", "none"] },
     "FileAttribute": { "enum": ["readonly", "hidden", "system", "archive", "compressed", "sparse", "encrypted", "offline", "not_content_indexed", "reparse_point", "recall_on_open", "recall_on_data_access", "pinned", "unpinned", "temporary"] },
-    "EntryFlag": { "enum": ["sensitive_name", "protected_context", "hardlink_suspected", "cloud_placeholder", "reparse_not_followed", "excluded_state_dir", "access_denied", "enumeration_error", "identity_unavailable", "name_lossy"] },
+    "EntryFlag": { "enum": ["sensitive_name", "protected_context", "hardlink_suspected", "cloud_placeholder", "reparse_not_followed", "excluded_state_dir", "access_denied", "enumeration_error", "identity_unavailable", "name_lossy", "on_disk_only_listing", "listing_incomplete"] },
     "DisplayPath": {
       "type": "object",
       "additionalProperties": false,
@@ -90,12 +91,13 @@
     "ResponseMeta": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["served_at", "elapsed_ms", "dataset_class", "budget_hit"],
+      "required": ["served_at", "elapsed_ms", "dataset_class", "budget_hit", "catalog_rev"],
       "properties": {
         "served_at": { "$ref": "#/$defs/Timestamp" },
         "elapsed_ms": { "$ref": "#/$defs/Count" },
         "dataset_class": { "$ref": "#/$defs/DatasetClass" },
-        "budget_hit": { "type": "boolean" }
+        "budget_hit": { "type": "boolean" },
+        "catalog_rev": { "$ref": "#/$defs/NullableGeneration", "$comment": "Catalogue revision the response was read at, or committed at for a mutation (semantics.md section 5)." }
       }
     },
     "ResponseOk": {
@@ -127,13 +129,15 @@
     "EventEnvelope": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["protocol", "seq", "event", "at", "data"],
+      "required": ["protocol", "epoch", "seq", "event", "at", "catalog_rev", "data"],
       "properties": {
         "protocol": { "$ref": "#/$defs/Protocol" },
+        "epoch": { "$ref": "#/$defs/StreamEpoch" },
         "seq": { "$ref": "#/$defs/Count" },
         "event": { "$ref": "#/$defs/EventName" },
         "at": { "$ref": "#/$defs/Timestamp" },
-        "data": { "type": "object", "$comment": "Validated against the event definition named in commands.json." }
+        "catalog_rev": { "$ref": "#/$defs/NullableGeneration", "$comment": "Emitted only after the change it describes is committed (semantics.md section 6)." },
+        "data": { "type": "object", "$comment": "Validated against the event definition named in commands.json; L1 generates discriminated envelope validation from commands.json (semantics.md section 10)." }
       }
     },
 
@@ -230,9 +234,9 @@
         "engine": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["private_bytes", "working_set_bytes", "cpu_seconds", "threads"],
+          "required": ["private_commit_bytes", "working_set_bytes", "cpu_seconds", "threads"],
           "properties": {
-            "private_bytes": { "$ref": "#/$defs/NullableBytes" },
+            "private_commit_bytes": { "$ref": "#/$defs/NullableBytes", "$comment": "PROCESS_MEMORY_COUNTERS_EX2.PrivateUsage." },
             "working_set_bytes": { "$ref": "#/$defs/NullableBytes" },
             "cpu_seconds": { "type": ["number", "null"], "minimum": 0 },
             "threads": { "$ref": "#/$defs/NullableCount" }
@@ -273,16 +277,20 @@
     "SubtreeTotals": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["files", "dirs", "logical_bytes", "allocated_bytes", "allocation_unknown_files", "skipped", "failed", "complete"],
+      "required": ["files", "dirs", "logical_bytes", "allocated_bytes", "allocation_unknown_files", "skipped", "failed", "complete", "stream_coverage", "unique_objects", "unique_allocated_bytes", "multi_link_entries"],
       "properties": {
-        "files": { "$ref": "#/$defs/Count" },
+        "files": { "$ref": "#/$defs/Count", "$comment": "Directory entries (names), not objects." },
         "dirs": { "$ref": "#/$defs/Count" },
-        "logical_bytes": { "$ref": "#/$defs/ByteCount" },
-        "allocated_bytes": { "$ref": "#/$defs/NullableBytes" },
+        "logical_bytes": { "$ref": "#/$defs/ByteCount", "$comment": "Bytes by directory entry: sum of default-stream end-of-file as listed. A hard-linked object counts once per observed name." },
+        "allocated_bytes": { "$ref": "#/$defs/NullableBytes", "$comment": "Bytes by directory entry: sum of default-stream allocation as listed." },
         "allocation_unknown_files": { "$ref": "#/$defs/Count" },
         "skipped": { "$ref": "#/$defs/Count" },
         "failed": { "$ref": "#/$defs/Count" },
-        "complete": { "type": "boolean" }
+        "complete": { "type": "boolean" },
+        "stream_coverage": { "const": "default_stream_only", "$comment": "Alternate data streams and filesystem metadata are not observed in v0.3." },
+        "unique_objects": { "$ref": "#/$defs/NullableCount", "$comment": "Distinct (volume_key, file_id) objects within this subtree; null when any entry lacks a native ID." },
+        "unique_allocated_bytes": { "$ref": "#/$defs/NullableBytes", "$comment": "Allocation counted once per unique object within this subtree; null when unique_objects is null or allocation is unknown." },
+        "multi_link_entries": { "$ref": "#/$defs/Count", "$comment": "Entries whose object has another observed name anywhere in the dataset or an observed link count above 1." }
       }
     },
     "Root": {
@@ -322,7 +330,7 @@
       "properties": {
         "outcome": { "enum": ["granted", "cancelled_by_user", "refused"] },
         "root": { "anyOf": [{ "$ref": "#/$defs/Root" }, { "type": "null" }] },
-        "refusal": { "enum": [null, "volume_root", "reparse_or_placeholder", "not_a_directory", "contains_state_dir", "inside_state_dir", "already_granted", "network_or_removable_unsupported", "identity_unavailable"] }
+        "refusal": { "enum": [null, "volume_root", "reparse_or_placeholder", "not_a_directory", "contains_state_dir", "inside_state_dir", "already_granted", "network_or_removable_unsupported", "identity_unavailable", "synthetic_session_requires_lab_root"] }
       }
     },
     "RootRevokeRequest": {
@@ -632,14 +640,15 @@
     "TreeSlice": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["anchor_node_id", "basis", "root_generations", "complete", "live", "ordering", "truncated", "nodes"],
+      "required": ["anchor_node_id", "basis", "root_generations", "complete", "live", "aggregate_state", "ordering", "truncated", "nodes"],
       "properties": {
         "anchor_node_id": { "$ref": "#/$defs/NodeId" },
         "basis": { "$ref": "#/$defs/Basis" },
         "root_generations": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/RootGeneration" } },
         "complete": { "type": "boolean" },
         "live": { "type": "boolean" },
-        "ordering": { "enum": ["exact", "approximate_live", "approximate_files"] },
+        "aggregate_state": { "enum": ["consistent", "provisional_live"], "$comment": "consistent: every directory sum was published at a revision covering its committed listings. provisional_live: sums come from the running scan's arena snapshot; 'other' nodes are clamped at zero. Inconsistent committed sums are repaired before serving, never sent." },
+        "ordering": { "enum": ["exact", "approximate_live"] },
         "truncated": { "type": "boolean" },
         "nodes": { "type": "array", "minItems": 1, "maxItems": 6000, "items": { "$ref": "#/$defs/SliceNode" } }
       }
@@ -696,7 +705,7 @@
       "required": ["node_id", "sort", "basis", "limit", "cursor"],
       "properties": {
         "node_id": { "$ref": "#/$defs/NodeId" },
-        "sort": { "enum": ["size_desc", "name_asc", "modified_desc"] },
+        "sort": { "enum": ["size_desc", "name_asc", "modified_desc"], "$comment": "size_desc is index-backed for both bases (ties broken by row id). name_asc and modified_desc are served only for directories with at most 10,000 direct children; larger ones return resource_budget with detail sort_requires_index." },
         "basis": { "$ref": "#/$defs/Basis" },
         "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
         "cursor": { "anyOf": [{ "$ref": "#/$defs/Cursor" }, { "type": "null" }] }
@@ -747,9 +756,10 @@
     "IdentityObservation": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["quality", "volume_key", "file_id_hex", "observed_generation", "authorises_effects"],
+      "required": ["quality", "volume_key", "file_id_hex", "observed_generation", "durable_reference", "authorises_effects"],
       "properties": {
-        "quality": { "enum": ["native_file_id_128", "native_file_id_64", "path_observation", "unavailable"] },
+        "quality": { "enum": ["native_file_id_128", "native_file_id_64", "path_observation", "unavailable"], "$comment": "Width is preserved: a 64-bit ID is never padded and reported as 128-bit." },
+        "durable_reference": { "enum": ["available", "unavailable_identity_quality", "unavailable_filesystem"], "$comment": "Whether labels and collection membership may bind to this object (docs/41 section 6.3). Without it, feedback.record returns capability_unavailable." },
         "volume_key": { "type": ["string", "null"], "maxLength": 80 },
         "file_id_hex": { "type": ["string", "null"], "pattern": "^[0-9a-f]{16,32}$" },
         "observed_generation": { "$ref": "#/$defs/NullableGeneration" },
@@ -925,7 +935,7 @@
         "retract": { "type": "boolean" },
         "client_event_id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{8,64}$" }
       },
-      "$comment": "label is null only when retract is true (service-enforced). Records a human label; never a grant."
+      "$comment": "label is null only when retract is true (service-enforced); the service stores the withdrawn label internally (docs/41 section 9.1). client_event_id is a durable idempotency key: identical replay returns the original result, reuse with different content is invalid_request. Records a human label; never a grant."
     },
     "LearningStatus": {
       "type": "object",
@@ -948,10 +958,11 @@
     "FeedbackResult": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["event_id", "revision", "data_class", "learning"],
+      "required": ["event_id", "revision", "data_class", "idempotent_replay", "learning"],
       "properties": {
         "event_id": { "$ref": "#/$defs/EventId" },
         "revision": { "type": "integer", "minimum": 1 },
+        "idempotent_replay": { "type": "boolean", "$comment": "True when client_event_id matched an already committed identical event; nothing new was written." },
         "data_class": { "const": "human" },
         "learning": { "$ref": "#/$defs/LearningStatus" }
       }
@@ -1046,9 +1057,14 @@
     "TeacherPreview": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["preview_id", "recipient", "model", "reasoning_effort", "dataset_class", "fields", "items", "excluded", "taxonomy_version", "payload_bytes", "payload_digest", "expires_at"],
+      "required": ["preview_id", "recipient", "model", "reasoning_effort", "dataset_class", "serialization_version", "instructions", "allowed_labels", "output_schema_digest", "runner_profile_digest", "fields", "items", "excluded", "taxonomy_version", "payload_bytes", "payload_digest", "expires_at"],
       "properties": {
         "preview_id": { "$ref": "#/$defs/PreviewId" },
+        "serialization_version": { "const": "loomward-teacher-request/1" },
+        "instructions": { "type": "string", "maxLength": 4000, "$comment": "The exact system instructions sent." },
+        "allowed_labels": { "type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": { "$ref": "#/$defs/Label" } },
+        "output_schema_digest": { "$ref": "#/$defs/Digest" },
+        "runner_profile_digest": { "$ref": "#/$defs/Digest", "$comment": "Pinned Codex executable hash, version, argv and effective configuration overrides (docs/41 section 9.2)." },
         "recipient": { "$ref": "#/$defs/TeacherRecipient" },
         "model": { "const": "gpt-6.1-sol" },
         "reasoning_effort": { "const": "medium" },
@@ -1086,16 +1102,51 @@
             "required": ["node_id", "reason"],
             "properties": {
               "node_id": { "$ref": "#/$defs/NodeId" },
-              "reason": { "enum": ["sensitive_name", "excluded", "cloud_placeholder", "directory_not_supported"] }
+              "reason": { "enum": ["sensitive_name", "sensitive_context", "excluded", "cloud_placeholder", "directory_not_supported"] }
             }
           }
         },
         "taxonomy_version": { "type": "integer", "minimum": 1 },
         "payload_bytes": { "$ref": "#/$defs/Count" },
-        "payload_digest": { "$ref": "#/$defs/Digest" },
+        "payload_digest": { "$ref": "#/$defs/Digest", "$comment": "SHA-256 over the canonical serialization of the complete request: instructions, allowed labels, output schema, items and serialization version." },
         "expires_at": { "$ref": "#/$defs/Timestamp" }
       },
-      "$comment": "Shows the exact bytes that would leave the machine. Creating a preview sends nothing."
+      "$comment": "Immutable once created. Shows the complete request that would leave the machine. Creating a preview sends nothing."
+    },
+    "DisclosureSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["preview_id", "recipient", "model", "reasoning_effort", "dataset_class", "fields", "items", "excluded_count", "payload_digest", "runner_profile_digest", "expires_at"],
+      "properties": {
+        "preview_id": { "$ref": "#/$defs/PreviewId" },
+        "recipient": { "$ref": "#/$defs/TeacherRecipient" },
+        "model": { "const": "gpt-6.1-sol" },
+        "reasoning_effort": { "const": "medium" },
+        "dataset_class": { "$ref": "#/$defs/DatasetClass" },
+        "fields": { "type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true, "items": { "$ref": "#/$defs/TeacherField" } },
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 25,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["handle", "name", "extension", "context", "size_bucket"],
+            "properties": {
+              "handle": { "type": "string", "pattern": "^i[0-9]{2}$" },
+              "name": { "type": "string", "maxLength": 256 },
+              "extension": { "type": "string", "maxLength": 32 },
+              "context": { "type": "string", "maxLength": 512 },
+              "size_bucket": { "type": "integer", "minimum": 0, "maximum": 16 }
+            }
+          }
+        },
+        "excluded_count": { "type": "integer", "minimum": 0, "maximum": 25 },
+        "payload_digest": { "$ref": "#/$defs/Digest" },
+        "runner_profile_digest": { "$ref": "#/$defs/Digest" },
+        "expires_at": { "$ref": "#/$defs/Timestamp" }
+      },
+      "$comment": "Built by Rust from the stored immutable preview, never from UI input, and rendered by the native confirmation dialog item by item. Not sent over the wire; defined here so the Rust and dialog implementations agree."
     },
     "DisclosureGrantRequest": {
       "type": "object",
@@ -1133,7 +1184,7 @@
       "properties": {
         "outcome": { "enum": ["granted", "declined_by_user", "refused"] },
         "grant": { "anyOf": [{ "$ref": "#/$defs/DisclosureGrant" }, { "type": "null" }] },
-        "refusal": { "enum": [null, "personal_requires_desktop_dialog", "preview_expired", "digest_mismatch", "teacher_unavailable", "canary_gate_not_passed"] }
+        "refusal": { "enum": [null, "personal_requires_desktop_dialog", "preview_expired", "preview_already_used", "digest_mismatch", "teacher_unavailable", "runner_profile_mismatch", "confinement_not_enforced"] }
       }
     },
     "RootGrantRecord": {
@@ -1263,16 +1314,18 @@
     "CandidateGroup": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["group_id", "node_id", "root_id", "name", "source_bytes", "destination_bytes", "transfer_bytes", "estimate_basis", "heat", "heat_basis", "newest_modified_at", "pinned", "active", "protected", "days_since_move", "coverage"],
+      "required": ["group_id", "node_id", "root_id", "name", "source_bytes", "destination_bytes", "transfer_bytes", "estimate_basis", "estimated_relief_bytes", "relief_basis", "heat", "heat_basis", "newest_modified_at", "pinned", "active", "protected", "days_since_move", "coverage"],
       "properties": {
         "group_id": { "$ref": "#/$defs/GroupId" },
         "node_id": { "$ref": "#/$defs/NodeId" },
         "root_id": { "$ref": "#/$defs/RootId" },
         "name": { "type": "string", "maxLength": 260 },
-        "source_bytes": { "$ref": "#/$defs/ByteCount" },
-        "destination_bytes": { "$ref": "#/$defs/ByteCount" },
+        "source_bytes": { "$ref": "#/$defs/ByteCount", "$comment": "Bytes by directory entry under estimate_basis (observation, not relief)." },
+        "destination_bytes": { "$ref": "#/$defs/ByteCount", "$comment": "Labelled estimate: per-file logical size rounded up to the destination cluster size where known." },
         "transfer_bytes": { "$ref": "#/$defs/ByteCount" },
-        "estimate_basis": { "const": "source_allocated_destination_logical_transfer_logical" },
+        "estimate_basis": { "enum": ["allocated_entries", "logical_fallback", "unknown"] },
+        "estimated_relief_bytes": { "$ref": "#/$defs/NullableBytes", "$comment": "null unless relief_basis is verified_unique_allocation or an entry_allocation_whatif was requested." },
+        "relief_basis": { "enum": ["verified_unique_allocation", "entry_allocation_whatif", "unknown"], "$comment": "verified_unique_allocation: every entry has a native ID, every object's names are inside this group and link counts were observed; default stream only." },
         "heat": { "$ref": "#/$defs/NullableFraction" },
         "heat_basis": { "$ref": "#/$defs/HeatBasis" },
         "newest_modified_at": { "$ref": "#/$defs/NullableTimestamp" },
@@ -1311,12 +1364,13 @@
     "PlacementSimulateRequest": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["source_volume_id", "target_free_bytes", "max_transfer_bytes", "heat_policy", "candidate_basis", "max_groups", "overrides", "node_budget", "save"],
+      "required": ["source_volume_id", "target_free_bytes", "max_transfer_bytes", "heat_policy", "relief_policy", "candidate_basis", "max_groups", "overrides", "node_budget", "save"],
       "properties": {
         "source_volume_id": { "$ref": "#/$defs/VolumeId" },
         "target_free_bytes": { "$ref": "#/$defs/ByteCount" },
         "max_transfer_bytes": { "$ref": "#/$defs/ByteCount" },
         "heat_policy": { "enum": ["unknown_is_ineligible", "mtime_proxy_whatif", "assumed_only"] },
+        "relief_policy": { "enum": ["verified_only", "entry_allocation_whatif"], "$comment": "verified_only (default) pre-rejects groups whose relief is unknown; entry_allocation_whatif feeds entry allocation as an assumed relief and records it in assumptions." },
         "candidate_basis": { "$ref": "#/$defs/CandidateBasis" },
         "max_groups": { "type": "integer", "minimum": 1, "maximum": 200 },
         "overrides": { "type": "array", "maxItems": 200, "items": { "$ref": "#/$defs/GroupOverride" } },
@@ -1343,7 +1397,7 @@
     "PlacementPlan": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["mode", "algorithm", "optimality_claim", "optimality_scope", "shortfall_optimal", "search", "proposals", "rejected", "projected_free_bytes", "target_free_bytes", "shortfall_bytes", "satisfied", "transfer_bytes", "filesystem_changed", "baseline_shortfall_bytes", "shortfall_improvement_bytes", "assumption", "heat_policy", "assumptions", "root_generations", "proposal_id"],
+      "required": ["mode", "algorithm", "optimality_claim", "optimality_scope", "shortfall_optimal", "search", "proposals", "rejected", "pre_rejected", "excluded_volumes", "projected_free_bytes", "target_free_bytes", "shortfall_bytes", "satisfied", "transfer_bytes", "filesystem_changed", "baseline_shortfall_bytes", "shortfall_improvement_bytes", "assumption", "heat_policy", "relief_policy", "assumptions", "root_generations", "proposal_id"],
       "properties": {
         "mode": { "const": "simulation" },
         "algorithm": { "const": "bounded_portfolio_search_v2" },
@@ -1376,8 +1430,37 @@
               "group_id": { "$ref": "#/$defs/GroupId" },
               "reason": { "enum": ["not_on_source", "pinned_active_protected_or_unspecified", "heat_unknown", "not_cold", "cooldown_or_history_unknown", "source_offline_or_readonly", "not_selected_by_bounded_allocator"] }
             }
+          },
+          "$comment": "Exactly the planner's own rejections (parity with planner_v2)."
+        },
+        "pre_rejected": {
+          "type": "array",
+          "maxItems": 200,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["group_id", "reason"],
+            "properties": {
+              "group_id": { "$ref": "#/$defs/GroupId" },
+              "reason": { "enum": ["relief_unknown", "shares_objects_with_other_group", "group_coverage_incomplete"] }
+            }
+          },
+          "$comment": "Service-level exclusions applied before the planner runs; these groups never reach it."
+        },
+        "excluded_volumes": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["volume_id", "reason"],
+            "properties": {
+              "volume_id": { "$ref": "#/$defs/VolumeId" },
+              "reason": { "enum": ["tier_unknown", "capacity_unknown", "offline"] }
+            }
           }
         },
+        "relief_policy": { "enum": ["verified_only", "entry_allocation_whatif"] },
         "projected_free_bytes": {
           "type": "object",
           "maxProperties": 64,
@@ -1523,9 +1606,9 @@
               "adapter_id": { "type": "string", "maxLength": 64 },
               "name": { "type": "string", "maxLength": 128 },
               "dedicated_total_bytes": { "$ref": "#/$defs/NullableBytes" },
-              "dedicated_used_bytes": { "$ref": "#/$defs/NullableBytes" },
-              "shared_used_bytes": { "$ref": "#/$defs/NullableBytes" },
-              "engine_busy_fraction": { "$ref": "#/$defs/NullableFraction" }
+              "dedicated_used_bytes": { "$ref": "#/$defs/NullableBytes", "$comment": "Global, from the GPU Adapter Memory counter; never a sum of per-process values." },
+              "shared_used_bytes": { "$ref": "#/$defs/NullableBytes", "$comment": "Global, from the GPU Adapter Memory counter." },
+              "engine_busy_fraction": { "$ref": "#/$defs/NullableFraction", "$comment": "Maximum over engine types of the per-type utilisation summed across that adapter's engine instances, clamped to 1 (the Task Manager method)." }
             }
           }
         }
@@ -1549,8 +1632,8 @@
               "volume_ids": { "type": "array", "maxItems": 16, "items": { "$ref": "#/$defs/VolumeId" } },
               "read_bytes_per_s": { "$ref": "#/$defs/NullableRate" },
               "write_bytes_per_s": { "$ref": "#/$defs/NullableRate" },
-              "busy_fraction": { "$ref": "#/$defs/NullableFraction" },
-              "queue_length": { "$ref": "#/$defs/NullableRate" }
+              "busy_fraction": { "$ref": "#/$defs/NullableFraction", "$comment": "1 - (PhysicalDisk % Idle Time / 100), clamped to [0, 1]." },
+              "queue_length": { "$ref": "#/$defs/NullableRate", "$comment": "PhysicalDisk Avg. Disk Queue Length; a separate quantity from busy_fraction." }
             }
           }
         }
@@ -1572,11 +1655,11 @@
     "EngineSample": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["private_bytes", "working_set_bytes", "cpu_fraction", "threads", "pools"],
+      "required": ["private_commit_bytes", "working_set_bytes", "cpu_fraction", "threads", "pools"],
       "properties": {
-        "private_bytes": { "$ref": "#/$defs/NullableBytes" },
+        "private_commit_bytes": { "$ref": "#/$defs/NullableBytes" },
         "working_set_bytes": { "$ref": "#/$defs/NullableBytes" },
-        "cpu_fraction": { "$ref": "#/$defs/NullableFraction" },
+        "cpu_fraction": { "$ref": "#/$defs/NullableFraction", "$comment": "Machine-normalised: CPU time over the interval divided by (interval x logical CPUs)." },
         "threads": { "$ref": "#/$defs/NullableCount" },
         "pools": { "type": "array", "maxItems": 8, "items": { "$ref": "#/$defs/PoolUse" } }
       }
@@ -1584,18 +1667,19 @@
     "ProcessRow": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["process_ref", "pid", "name", "started_at", "private_bytes", "working_set_bytes", "cpu_fraction", "io_read_bytes_per_s", "io_write_bytes_per_s", "gpu_dedicated_bytes", "access", "loomward_owned"],
+      "required": ["process_ref", "pid", "name", "started_at", "private_commit_bytes", "private_working_set_bytes", "working_set_bytes", "cpu_fraction", "io_read_bytes_per_s", "io_write_bytes_per_s", "gpu_dedicated_bytes", "access", "loomward_owned"],
       "properties": {
         "process_ref": { "$ref": "#/$defs/ProcessRef" },
         "pid": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
         "name": { "type": "string", "maxLength": 260 },
         "started_at": { "$ref": "#/$defs/NullableTimestamp" },
-        "private_bytes": { "$ref": "#/$defs/NullableBytes" },
-        "working_set_bytes": { "$ref": "#/$defs/NullableBytes" },
-        "cpu_fraction": { "$ref": "#/$defs/NullableFraction" },
+        "private_commit_bytes": { "$ref": "#/$defs/NullableBytes", "$comment": "PROCESS_MEMORY_COUNTERS_EX2.PrivateUsage (commit charge), not resident memory." },
+        "private_working_set_bytes": { "$ref": "#/$defs/NullableBytes", "$comment": "PROCESS_MEMORY_COUNTERS_EX2.PrivateWorkingSetSize where supported, else null." },
+        "working_set_bytes": { "$ref": "#/$defs/NullableBytes", "$comment": "Total working set, including shared pages." },
+        "cpu_fraction": { "$ref": "#/$defs/NullableFraction", "$comment": "Machine-normalised over the sample interval; null on the first sample." },
         "io_read_bytes_per_s": { "$ref": "#/$defs/NullableRate" },
         "io_write_bytes_per_s": { "$ref": "#/$defs/NullableRate" },
-        "gpu_dedicated_bytes": { "$ref": "#/$defs/NullableBytes" },
+        "gpu_dedicated_bytes": { "$ref": "#/$defs/NullableBytes", "$comment": "GPU Process Memory dedicated usage for this process; may include shared allocations, so rows are never summed into an adapter total." },
         "access": { "enum": ["full", "limited", "denied"] },
         "loomward_owned": { "type": "boolean" }
       },
@@ -1724,19 +1808,22 @@
     "StreamHello": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["session_started_at", "last_seq", "dataset_class"],
+      "required": ["session_started_at", "epoch", "last_seq", "oldest_replayable_seq", "dataset_class"],
       "properties": {
         "session_started_at": { "$ref": "#/$defs/Timestamp" },
+        "epoch": { "$ref": "#/$defs/StreamEpoch" },
         "last_seq": { "$ref": "#/$defs/Count" },
+        "oldest_replayable_seq": { "$ref": "#/$defs/Count" },
         "dataset_class": { "$ref": "#/$defs/DatasetClass" }
       }
     },
     "StreamLagged": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["dropped", "resync"],
+      "required": ["reason", "dropped", "resync"],
       "properties": {
-        "dropped": { "$ref": "#/$defs/Count" },
+        "reason": { "enum": ["subscriber_overflow", "epoch_changed", "replay_gap"] },
+        "dropped": { "$ref": "#/$defs/NullableCount", "$comment": "null when unknown (epoch change or replay gap)." },
         "resync": { "type": "array", "maxItems": 5, "uniqueItems": true, "items": { "enum": ["roots", "volumes", "jobs", "tree", "learning"] } }
       }
     },

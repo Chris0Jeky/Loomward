@@ -7,7 +7,7 @@ const dimensions=['cpu_slots','memory_mib','gpu_mib','io_mib_s'];
 const copy=x=>JSON.parse(JSON.stringify(x));
 function integer(x,lo=0,hi=1e9){if(!Number.isSafeInteger(x)||x<lo||x>hi)throw Error('Resource value is outside the allowed integer range.');return x;}
 function fields(x,allowed){if(!x||typeof x!=='object'||Array.isArray(x)||Object.keys(x).some(k=>!allowed.includes(k)))throw Error('Unsupported resource fields.');}
-function vector(x,unknown=false){fields(x,dimensions);return Object.fromEntries(dimensions.map(d=>[d,unknown&&x[d]===null?null:integer(x[d]??0)]));}
+function vector(x,unknown=false){fields(x,dimensions);return Object.fromEntries(dimensions.map(d=>[d,unknown&&(x[d]===null||x[d]===undefined)?null:integer(x[d]??0)]));}
 function simulateAdmission(s){
  fields(s,['capacity','reserved','jobs','telemetry_age_seconds']);
  const cap=vector(s.capacity,true),reserved=vector(s.reserved||{}),age=integer(s.telemetry_age_seconds??0,0,86400);
