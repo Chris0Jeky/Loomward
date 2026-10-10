@@ -24,6 +24,11 @@ spike). Implements [41](41-v03-architecture.md) under the decisions in [42](42-v
 
 ## Rules every lane follows
 
+- **Binding errata.** Issue #117 lists the verification findings on revision 2 (N1-N6 and the partials). The
+  lane each item names applies it, with its test, before merge, and links #117 in its PR.
+- **Owner decisions (2026-10-10).** Whole-volume personal roots are allowed through the native grant (ADR-V3-08);
+  L15b is authorised (ADR-V3-10); the 10M lab tier runs on `E:` only (ADR-V3-17).
+
 - **One worktree, one branch, one lane.** A lane edits only the paths in its **Owns** list. A needed change
   elsewhere is a one-line request to the coordinator, not an edit.
 - **Coordinator-owned files**: root `Cargo.toml`, `Cargo.lock`, `.github/workflows/`, `AGENTS.md`,
@@ -56,7 +61,7 @@ spike). Implements [41](41-v03-architecture.md) under the decisions in [42](42-v
 | LW-108 | Tier model and placement data path over observed volumes | L12 |
 | LW-109 | Codex teacher runner, synthetic-only, with single-use grants | L15 |
 | LW-110 | Rust student port with Python parity fixtures | L5 |
-| LW-111 | OS-enforced teacher confinement and enforcement canaries (blocked on owner Q2) | L15b |
+| LW-111 | OS-enforced teacher confinement and enforcement canaries (authorised by the owner 2026-10-10) | L15b |
 | LW-112 | Wave-3 service integration and grant policy | L20 |
 
 ## Wave 0: in flight
@@ -212,7 +217,7 @@ in wave 3; one `mod watch;` line in L7's `scan/mod.rs` to L16.
 |---|---|---|---|---|---|---|
 | L14 learning integration | Sol high | `crates/loomward-learn/` (adds `teacher_payload.rs`, `teacher_validate.rs`), `loomward-engine/src/learning/`, `app/src/views/review/`, `app/tests/e2e/test_review.py` | LW-021, LW-026, LW-110 | After L5, L8 | Feedback stored per doc 41 §9.1: withdrawn label on retraction, unique `(object_ref, revision)` for both sources, `client_event_id` replay and conflict, labels only on durable references; refit job; `learning.queue`; `threads.meaning`; teacher payload builder with **ancestor-context screening** (`sensitive_context`) and complete-request preview serialization; strict validator | `cargo test -p loomward-learn -p loomward-engine`; app checks; `py -3 scripts/verify.py` |
 | L15 teacher runner (synthetic-only) | Sol high, plus an Opus deep-review lens | `loomward-windows/src/jobs.rs`, `loomward-engine/src/teacher/`, `evidence/v3/teacher/` | LW-052 (owned teacher child only), LW-023, LW-109 | After L14 (spike #116 done) | Resolve and pin the native `codex.exe` (path, SHA-256, `--version`); launch directly with `CreateProcessW` + `STARTUPINFOEX` (job list with non-inherited job handle, stdio-only handle list, no breakaway, fail closed), stdin prompt, no shell; the #116 hardened argv; `runner_profile_digest`; grant consumed with request row before spawn, `interrupted` never retried; 180 s timeout; strict output validation; **personal grants refused with `confinement_not_enforced`**; synthetic runs only from fixture or registered lab roots; no hostile canary names sent to the real service | `cargo test -p loomward-engine teacher`; synthetic run log (schema-valid rate, latency, tokens) |
-| L15b teacher confinement | Sol high, plus Opus review | `experiments/teacher-confinement/`, a later `loomward-windows/src/confine.rs` | LW-111 | **Blocked on owner Q2** | The gate for personal metadata: an **OS-enforced boundary** (AppContainer or restricted token, filesystem read allowlist, egress restricted to the model endpoint) demonstrated by **enforcement canaries** run under it: probes that must fail to read outside the allowlist and to reach a non-endpoint host, plus the #116 tool canaries repeated inside the boundary. Model refusal is never a pass | Canary logs in `evidence/v3/teacher-confinement/` |
+| L15b teacher confinement | Sol high, plus Opus review | `experiments/teacher-confinement/`, a later `loomward-windows/src/confine.rs` | LW-111 | Authorised (owner, 2026-10-10); after L15 | The gate for personal metadata: an **OS-enforced boundary** (AppContainer or restricted token, filesystem read allowlist, egress restricted to the model endpoint) demonstrated by **enforcement canaries** run under it: probes that must fail to read outside the allowlist and to reach a non-endpoint host, plus the #116 tool canaries repeated inside the boundary. Model refusal is never a pass | Canary logs in `evidence/v3/teacher-confinement/` |
 | L20 wave-3 service integration | Sonnet high (L8's worker) | `crates/loomward-service/` in wave 3 | LW-112 | After L14; L15 for teacher commands | Dispatch for taxonomy, feedback, learning, collections, threads, teacher and disclosure commands; grant and provenance policy (synthetic-policy grants only for fixture or lab items; personal refused until LW-111); idempotency and timed-out-mutation behaviour of `semantics.md` §3 for these commands, including `teacher.run` replay returning the same job | `cargo test -p loomward-service`; `py -3 scripts/test_app.py --live` |
 | L16 change tracking | Sol high | `loomward-windows/src/watch.rs`, `loomward-engine/src/scan/watch.rs`, `experiments/usn-unprivileged/` | LW-008, LW-007 (spike) | After L7 | Watch established **before** the scan; both overflow forms (`ERROR_NOTIFY_ENUM_DIR` and successful zero-byte completion) dirty the root; dirty epochs; dirtied directories relisted before a run completes; renames reconcile both parents or leave a tombstone; ancestor sums via the repair rollup; USN hypothesis reported either way | `cargo test -p loomward-engine scan`; fixture-lab overflow case |
 | L17 scale and comparison | Sol high | `experiments/windows-benchmarks/`, `evidence/v3/bench/` | LW-056 | After L7, L8 | All P targets with doc 41 §15 methodology: phase-separated timings, generated 10M-row catalogue, stated distributions, `PeakPagefileUsage`, at least 20 runs for p95, one tool per cold boot, P12 against idle baseline; real-folder runs as aggregates only | Bench commands and JSON evidence |
@@ -229,7 +234,7 @@ in wave 3; one `mod watch;` line in L7's `scan/mod.rs` to L16.
 6. **L7** first PR (portable source end to end), then **L8**, **L11**, **L12**; **L10** and **L13** on mock at any
    time; **L9** after L6 and L8.
 7. Wave 3: **L14**, then **L15** and **L20**; **L16**, **L17**, **L18** in parallel; **L19** alongside L3 and L9;
-   **L15b** only after the owner answers Q2.
+   **L15b** after L15 (authorised by the owner on 2026-10-10; elevated steps are the owner's).
 
 At every merge the coordinator runs `cargo fmt --all --check`, `cargo test --workspace`,
 `cargo clippy --workspace --all-targets -- -D warnings`, `py -3 scripts/verify.py --ui`, and once `app/` exists
@@ -241,4 +246,4 @@ kept separate (invariant 9).
 
 L1 (picking up revision 2), L2, L3 (#114, continuing), L5 can proceed immediately. L6 starts when L1a merges.
 L10 starts when W0-C hands off; L13 starts on mock data once L3's shell exists. Wave 2 waits for C2, which waits
-for L1b and L2. L15b waits for the owner.
+for L1b and L2. L15b is authorised and follows L15.

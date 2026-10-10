@@ -153,6 +153,8 @@ the weaker boundary. Token-holder equals owner: rejected, any local process that
 grant authority.
 **Reversibility.** Two-way. Review on owner answer to Q1.
 
+**Owner decision (2026-10-10, overrides "volume roots refused").** Whole volumes (`C:\`, `G:\`, `E:\`) may be personal scan roots when the owner picks them in the native grant dialog: read-only metadata, non-elevated, results in private state outside Git. Agents still never pick a volume root themselves (AGENTS.md invariant 2).
+
 ## ADR-V3-09: The production student is a Rust port; Python stays the oracle and evaluation lab
 
 **Context.** The brief asks where the student lives: Rust port or Python sidecar.
@@ -214,6 +216,8 @@ launch of the native `codex.exe` with stdin and no shell works (`codex.cmd` is a
 to the model endpoint) demonstrated by **enforcement canaries** run under that boundary: probe processes that must
 fail to read outside the allowlist and to reach a non-endpoint host, plus the #116 tool canaries repeated inside
 it. CLI flags are kept as defence in depth, not as the gate. The 180 s timeout covers the observed 88.8 s maximum.
+
+**Owner decision (2026-10-10).** L15b is authorised: build the OS-enforced boundary (per-request credential copy readable only inside the sandbox, filesystem allowlist, egress restricted to the model endpoint). Personal metadata stays off until its enforcement canaries pass. Any elevated step, such as a firewall rule, is performed by the owner from a prepared HUMAN_TODO item, never by an agent.
 
 ## ADR-V3-11: Svelte 5 shell in TypeScript; heavy visuals as JSDoc-typed ES modules (partly overturns the default)
 
@@ -331,6 +335,8 @@ allows it (Q3). P2 is measured at 2M and extrapolated, clearly labelled, until t
 **Consequences.** Good: no unrequested permanent footprint. Bad: the 10M target is unproven until Q3.
 **Alternatives.** Run 10M anyway: rejected, a lasting side effect on the owner's disk without consent.
 **Reversibility.** Two-way.
+
+**Owner decision (2026-10-10).** The 10M-entry lab tier is allowed on the HDD lab root `E:\loomward-lab\scale` (850 GB free); `G:` stays capped at 2M entries.
 
 ## ADR-V3-18: Refresh reconciles identity first and finalises absence only after a completed run (new)
 
