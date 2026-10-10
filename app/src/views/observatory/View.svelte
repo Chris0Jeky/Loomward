@@ -4,21 +4,25 @@
 
 <script lang="ts">
   // Lane L10: the orbitable sunburst plus resource instruments. Telemetry is polled from
-  // `telemetry.snapshot`; the mock serves synthetic samples and they are labelled as such.
+  // `telemetry.snapshot` (one call in flight, backoff after a failure, resume on success or on a new
+  // session epoch); the mock serves synthetic samples and they are labelled as such. Every scale comes
+  // from the sample: disks by their own labels, VRAM against the adapter's total, disk I/O auto-ranged.
   import { onMount, untrack } from 'svelte';
   import { session } from '../../lib/stores/session.svelte';
   import { theme } from '../../lib/stores/theme.svelte';
   import { formatBytes } from '../../lib/format/bytes';
   import { formatCount } from '../../lib/format/time';
   import { LoomwardError } from '../../lib/transport/client';
-  import type { DatasetClass } from '../../lib/types';
+  import VisibleName from '../../lib/ui/VisibleName.svelte';
+  import type { DatasetClass, ResponseMeta } from '../../lib/types';
   import type { TelemetrySample } from '../../lib/types.views';
   import type { NodeInfo } from '../../../viz/types.js';
   import { createSunburst } from '../../../viz/sunburst.js';
   import { createGauge, type GaugeTheme } from '../../../viz/gauges.js';
   import Inspector from '../atlas/Inspector.svelte';
   import RegionList from '../atlas/RegionList.svelte';
-  import { SliceNav, formatApprox, readPalette } from '../atlas/shared.svelte';
+  import { SliceNav, canvasLabel, formatApprox, readPalette } from '../atlas/shared.svelte';
+  import { Poller } from './poller';
 
   const nav = new SliceNav({ depth: 4, maxNodes: 2500, minShare: 0 });
   const reducedMQ = matchMedia('(prefers-reduced-motion: reduce)');
@@ -38,10 +42,12 @@
   let telState = $state<TelState>('waiting');
   let telClass = $state<DatasetClass | null>(null);
   let telNote = $state('');
+  let ioScale = $state(100); // MB/s; auto-ranged from recent samples
   const gaugeEls: Record<'cpu' | 'gpu' | 'vram' | 'io', HTMLCanvasElement | undefined> = $state({ cpu: undefined, gpu: undefined, vram: undefined, io: undefined });
-  const sparkEls: (HTMLCanvasElement | undefined)[] = $state([]);
   let gauges: Record<string, ReturnType<typeof createGauge>> = {};
-  let sparks: ReturnType<typeof createGauge>[] = [];
+  const sparks = new Map<string, ReturnType<typeof createGauge>>();
+  const recentIo: number[] = [];
+  let poller: Poller<{ result: TelemetrySample; meta: ResponseMeta }> | null = null;
 
   function gaugeTheme(): GaugeTheme {
     const cs = getComputedStyle(document.documentElement);
@@ -52,52 +58,64 @@
   const frac = (f: number | null | undefined) => (typeof f === 'number' ? f * 100 : null);
   const num = (s: string | null | undefined) => (typeof s === 'string' && /^\d+$/.test(s) ? Number(s) : null);
   const mbps = (v: number | null) => (v === null ? 'unknown' : `${(v / 1e6).toFixed(v >= 1e8 ? 0 : 1)} MB/s`);
+  const rateOf = (d: { read_bytes_per_s: number | null; write_bytes_per_s: number | null }) =>
+    d.read_bytes_per_s === null || d.write_bytes_per_s === null ? null : d.read_bytes_per_s + d.write_bytes_per_s;
+  /** The smallest step that clears the recent peak; it only shrinks when the peak falls far below it. */
+  const STEPS = [10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000];
+  function rangeFor(peak: number, current: number): number {
+    const want = STEPS.find((s) => s >= peak * 1.1) ?? STEPS[STEPS.length - 1]!;
+    return want > current || peak < current / 4 ? want : current;
+  }
 
   function apply(s: TelemetrySample) {
     tel = s;
     const gpu = s.gpu?.adapters[0];
     gauges.cpu?.push(frac(s.system?.cpu.busy_fraction));
     gauges.gpu?.push(frac(gpu?.engine_busy_fraction));
-    const used = num(gpu?.dedicated_used_bytes);
-    gauges.vram?.push(used === null ? null : used / 2 ** 30);
+    const used = num(gpu?.dedicated_used_bytes), total = num(gpu?.dedicated_total_bytes);
+    if (total !== null && total > 0) gauges.vram?.setRange(0, total / 2 ** 30);
+    gauges.vram?.push(used === null || total === null ? null : used / 2 ** 30); // no total, no scale: unknown
     const disks = s.disks?.disks ?? [];
-    const rates = disks.map((d) => (d.read_bytes_per_s === null || d.write_bytes_per_s === null ? null : d.read_bytes_per_s + d.write_bytes_per_s));
-    gauges.io?.push(rates.length && rates.every((r) => r !== null) ? (rates as number[]).reduce((a, b) => a + b, 0) / 1e6 : null);
-    rates.forEach((r, i) => sparks[i]?.push(r === null ? null : r / 1e6));
+    const rates = disks.map(rateOf);
+    const sum = rates.length && rates.every((r) => r !== null) ? (rates as number[]).reduce((a, b) => a + b, 0) / 1e6 : null;
+    if (sum !== null) {
+      recentIo.push(sum); if (recentIo.length > 30) recentIo.shift();
+      ioScale = rangeFor(Math.max(...recentIo), ioScale);
+      gauges.io?.setRange(0, ioScale);
+    }
+    gauges.io?.push(sum);
+    disks.forEach((d, i) => { const r = rates[i] ?? null; sparks.get(d.disk_label)?.push(r === null ? null : r / 1e6); });
   }
 
-  async function poll(mine: number) {
-    const c = session.client;
-    if (!c || document.hidden) return;
-    try {
-      const { result, meta } = await c.call('telemetry.snapshot', { channels: ['system', 'gpu', 'disks'] });
-      if (mine !== pollTicket) return;
-      telClass = meta.dataset_class;
-      telState = 'live';
-      apply(result);
-    } catch (e) {
-      if (mine !== pollTicket) return;
-      telState = 'unavailable';
-      telNote = e instanceof LoomwardError ? e.message : session.handle(e);
-      tel = null;
-      clearInterval(timer);
-    }
+  function fail(e: unknown) {
+    telState = 'unavailable';
+    telNote = e instanceof LoomwardError ? e.message : session.handle(e);
+    tel = null;
+    // nothing stale stays drawn: every dial reads unknown and every trace starts again
+    for (const g of Object.values(gauges)) g.push(null);
+    for (const g of sparks.values()) g.clear();
+    recentIo.length = 0;
   }
-  let timer: ReturnType<typeof setInterval> | undefined;
-  let pollTicket = 0;
+
+  /** Svelte action: a sparkline per disk, keyed by the disk's own label. */
+  function sparkline(node: HTMLCanvasElement, label: string) {
+    const g = createGauge(node, { kind: 'spark', unit: 'MB/s', theme: gaugeTheme() });
+    sparks.set(label, g);
+    return { destroy() { g.destroy(); sparks.delete(label); } };
+  }
 
   const memory = $derived.by(() => {
     const m = tel?.system?.memory;
-    const total = num(m?.total_bytes), avail = num(m?.available_bytes), commit = num(m?.commit_bytes), limit = num(m?.commit_limit_bytes);
-    return { m, total, avail, inUse: total !== null && avail !== null ? total - avail : null, commit, limit };
+    const total = num(m?.total_bytes), avail = num(m?.available_bytes);
+    return { m, total, avail, inUse: total !== null && avail !== null ? total - avail : null };
   });
 
   onMount(() => {
     if (!canvas) return;
-    const s = createSunburst(canvas, { palette, reducedMotion: () => reducedMQ.matches, format: formatApprox });
+    const s = createSunburst(canvas, { palette, reducedMotion: () => reducedMQ.matches, format: formatApprox, label: canvasLabel });
     sb = s;
     const off = [
-      s.on('hover', (e: { node: NodeInfo | null; viaKeyboard: boolean }) => { hovered = e.node; if (e.node && e.viaKeyboard) live = `${e.node.name}, ${formatApprox(e.node.size)}.${e.node.drillable ? ' Enter opens it.' : ''}`; }),
+      s.on('hover', (e: { node: NodeInfo | null; viaKeyboard: boolean }) => { hovered = e.node; if (e.node && e.viaKeyboard) live = `${canvasLabel(e.node.name)}, ${formatApprox(e.node.size)}.${e.node.drillable ? ' Enter opens it.' : ''}`; }),
       s.on('select', (n: NodeInfo) => { selected = n; }),
       s.on('drill', (n: NodeInfo) => { hovered = null; void nav.drill(n.id, n.name); }),
       s.on('back', () => { hovered = null; void nav.back(); }),
@@ -107,35 +125,45 @@
     gauges = {
       cpu: createGauge(gaugeEls.cpu!, { kind: 'arc', unit: '%', min: 0, max: 100, theme: th, format: fmtPct }),
       gpu: createGauge(gaugeEls.gpu!, { kind: 'arc', unit: '%', min: 0, max: 100, theme: th, format: fmtPct }),
-      vram: createGauge(gaugeEls.vram!, { kind: 'arc', unit: 'GiB', min: 0, max: 24, theme: th }),
-      io: createGauge(gaugeEls.io!, { kind: 'arc', unit: 'MB/s', min: 0, max: 3000, theme: th, format: (v) => (v >= 1000 ? `${(v / 1000).toFixed(1)}k` : v.toFixed(0)) }),
+      vram: createGauge(gaugeEls.vram!, { kind: 'arc', unit: 'GiB', min: 0, max: 1, theme: th }),
+      io: createGauge(gaugeEls.io!, { kind: 'arc', unit: 'MB/s', min: 0, max: ioScale, theme: th, format: (v) => (v >= 1000 ? `${(v / 1000).toFixed(1)}k` : v.toFixed(0)) }),
     };
-    sparks = sparkEls.map((el) => createGauge(el!, { kind: 'spark', unit: 'MB/s', theme: th }));
-    const mine = ++pollTicket;
-    void poll(mine);
-    timer = setInterval(() => void poll(mine), 1000);
+    const p = new Poller({
+      call: async () => {
+        const c = session.client;
+        if (!c) throw new Error('no session');
+        return c.call('telemetry.snapshot', { channels: ['system', 'gpu', 'disks'] });
+      },
+      onSample: ({ result, meta }) => { telClass = meta.dataset_class; telState = 'live'; telNote = ''; apply(result); },
+      onError: (e) => fail(e),
+      intervalMs: 1000,
+      backoffMs: [2000, 4000, 8000, 15000, 30000],
+      isHidden: () => document.hidden,
+    });
+    poller = p;
+    p.start();
     return () => {
-      pollTicket++;
-      clearInterval(timer);
+      p.stop(); poller = null;
       off.forEach((f) => f());
       s.destroy(); sb = null;
       Object.values(gauges).forEach((g) => g.destroy());
-      sparks.forEach((g) => g.destroy());
     };
   });
 
+  // A new session (or stale data) restarts the slice and pokes the poller out of any backoff.
   $effect(() => {
     void session.epoch;
-    if (session.client) untrack(() => void nav.start());
+    if (session.client) untrack(() => { void nav.start(); poller?.kick(); });
   });
   $effect(() => {
     const s = nav.slice;
-    if (!s || !sb) return;
+    if (!sb) return;
     const b = sb;
+    if (!s) { untrack(() => { b.clear(); hovered = null; selected = null; }); return; }
     untrack(() => {
       b.setSlice(s);
       if (selected && !s.nodes.some((n) => n.node_id === selected!.id)) selected = null;
-      live = `Showing ${nav.here?.name ?? ''}: ${formatCount(s.nodes.length)} nodes${s.aggregate_state === 'provisional_live' ? ', provisional sums from a running scan' : ''}.`;
+      live = `Showing ${canvasLabel(nav.here?.name ?? '')}: ${formatCount(s.nodes.length)} nodes${s.aggregate_state === 'provisional_live' ? ', provisional sums from a running scan' : ''}.`;
     });
   });
   $effect(() => {
@@ -149,6 +177,11 @@
       sparks.forEach((g) => g.setTheme(th));
     });
   });
+
+  function inspectById(id: string) {
+    const n = sb?.info(id) ?? null;
+    if (n) { selected = n; hovered = null; }
+  }
 
   function basisKey(e: KeyboardEvent) {
     if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
@@ -164,7 +197,7 @@
   <nav class="crumbs" aria-label="Location">
     <ol>
       {#each nav.trail as c, i (c.id)}
-        <li><button type="button" class="crumb" aria-current={i === nav.trail.length - 1 ? 'location' : undefined} onclick={() => void nav.jump(i)}><bdi>{c.name}</bdi></button></li>
+        <li><button type="button" class="crumb" aria-current={i === nav.trail.length - 1 ? 'location' : undefined} onclick={() => void nav.jump(i)}><VisibleName name={c.name} /></button></li>
       {/each}
     </ol>
   </nav>
@@ -174,7 +207,7 @@
   </div>
 </div>
 
-{#if nav.error}<p class="bad" role="alert">{nav.error}</p>{/if}
+{#if nav.error}<p class="bad" role="alert">Could not load this view: {nav.error} Nothing is drawn until a load succeeds.</p>{/if}
 
 <div class="stage">
   <section class="orbit" aria-label="Sunburst">
@@ -191,33 +224,35 @@
       Drag to orbit · click an arc to open it · the centre goes back · <kbd>[ ]</kbd> rotate
       {#if nav.slice} · <span class="num">{formatCount(nav.slice.nodes.length)}</span> nodes{#if provisional} · <span class="warn">provisional: running scan</span>{/if}{/if}
     </p>
-    <RegionList slice={nav.slice} onopen={(id, name) => void nav.drill(id, name)} />
+    <RegionList slice={nav.slice} onopen={(id, name) => void nav.drill(id, name)} oninspect={inspectById} />
   </section>
 
   <div class="side">
     <section class="resources" aria-labelledby="res-h">
       <div class="res-top">
         <h2 id="res-h">Resources</h2>
-        <p class="res-note" role="status">
-          {#if telState === 'unavailable'}<span class="warn">Telemetry unavailable</span>
-          {:else if telState === 'waiting'}Waiting for a sample
-          {:else}<span class="dot" aria-hidden="true"></span>{telClass === 'synthetic' ? 'Synthetic telemetry' : 'Observed'} · sample {tel?.sample_seq ?? ''}{/if}
+        <p class="res-note">
+          <span role="status">
+            {#if telState === 'unavailable'}<span class="warn">Telemetry unavailable, retrying</span>
+            {:else if telState === 'waiting'}Waiting for a sample
+            {:else}<span class="dot" aria-hidden="true"></span>{telClass === 'synthetic' ? 'Synthetic telemetry' : 'Observed telemetry'}{/if}
+          </span>
+          {#if telState === 'live' && tel}<span class="seq num" aria-hidden="true">· sample {tel.sample_seq}</span>{/if}
         </p>
       </div>
-      {#if telState === 'unavailable'}<p class="muted small">{telNote} Nothing is shown in its place.</p>{/if}
+      {#if telState === 'unavailable'}<p class="muted small">{telNote} Nothing is shown in its place: every reading is unknown until a sample arrives.</p>{/if}
       <div class="gauges" class:off={telState === 'unavailable'}>
         <figure><figcaption>CPU</figcaption><canvas bind:this={gaugeEls.cpu} aria-label={`CPU busy ${frac(tel?.system?.cpu.busy_fraction)?.toFixed(0) ?? 'unknown'} percent`}></canvas></figure>
         <figure><figcaption>GPU</figcaption><canvas bind:this={gaugeEls.gpu} aria-label={`GPU busy ${frac(tel?.gpu?.adapters[0]?.engine_busy_fraction)?.toFixed(0) ?? 'unknown'} percent`}></canvas></figure>
-        <figure><figcaption>VRAM</figcaption><canvas bind:this={gaugeEls.vram} aria-label={`GPU memory used ${formatBytes(tel?.gpu?.adapters[0]?.dedicated_used_bytes)}`}></canvas></figure>
-        <figure><figcaption>Disk I/O</figcaption><canvas bind:this={gaugeEls.io} aria-label="Disk read plus write rate"></canvas></figure>
+        <figure><figcaption>VRAM</figcaption><canvas bind:this={gaugeEls.vram} aria-label={`GPU memory used ${formatBytes(tel?.gpu?.adapters[0]?.dedicated_used_bytes)} of ${formatBytes(tel?.gpu?.adapters[0]?.dedicated_total_bytes)}`}></canvas></figure>
+        <figure><figcaption>Disk I/O <span class="scale num">0–{ioScale >= 1000 ? `${ioScale / 1000}k` : ioScale}</span></figcaption><canvas bind:this={gaugeEls.io} aria-label={`Disk read plus write rate, scale 0 to ${ioScale} MB/s`}></canvas></figure>
       </div>
       <div class="disks">
-        {#each ['C:', 'G:', 'E:'] as label, i (label)}
-          {@const d = tel?.disks?.disks[i]}
+        {#each tel?.disks?.disks ?? [] as d (d.disk_label)}
           <div class="disk">
-            <span class="dl num">{label}</span>
-            <canvas bind:this={sparkEls[i]} aria-hidden="true"></canvas>
-            <span class="dv num">r {mbps(d?.read_bytes_per_s ?? null)} · w {mbps(d?.write_bytes_per_s ?? null)}</span>
+            <span class="dl"><VisibleName name={d.disk_label} /></span>
+            <canvas use:sparkline={d.disk_label} aria-hidden="true"></canvas>
+            <span class="dv num">r {mbps(d.read_bytes_per_s)} · w {mbps(d.write_bytes_per_s)}</span>
           </div>
         {/each}
       </div>
@@ -227,9 +262,13 @@
         <div><dt>Total</dt><dd class="num">{formatBytes(memory.m?.total_bytes)}</dd></div>
         <div class="wide"><dt>Commit</dt><dd class="num">{formatBytes(memory.m?.commit_bytes)} of {formatBytes(memory.m?.commit_limit_bytes)}</dd></div>
       </dl>
-      <div class="membar" role="img" aria-label="Physical memory in use versus available">
-        <span style:flex-grow={memory.inUse ?? 0} class="use"></span><span style:flex-grow={memory.avail ?? 0} class="avail"></span>
-      </div>
+      {#if memory.inUse !== null && memory.avail !== null}
+        <div class="membar" role="img" aria-label={`Physical memory: ${formatBytes(String(memory.inUse))} in use, ${formatBytes(String(memory.avail))} available`}>
+          <span style:flex-grow={memory.inUse} class="use"></span><span style:flex-grow={memory.avail} class="avail"></span>
+        </div>
+      {:else}
+        <div class="membar unknown-bar" role="img" aria-label="Physical memory split unknown"><span>unknown</span></div>
+      {/if}
       <p class="fine">Read-only. There is no memory cleaner, trim or kill control here, by design. Available already includes the standby cache.</p>
     </section>
 
@@ -262,6 +301,9 @@
   .res-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
   .res-top h2 { margin: 0; }
   .res-note { margin: 0; font-size: 0.8rem; color: var(--muted); display: inline-flex; gap: 6px; align-items: center; }
+  .seq { color: var(--faint); }
+  .scale { color: var(--faint); font-size: 0.72rem; }
+  .unknown-bar { align-items: center; justify-content: center; height: 16px; font-size: 0.72rem; color: var(--unknown); border: 1px dashed var(--unknown); background: none; }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--gauge-value); }
   .gauges { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; margin-top: 8px; }
   .gauges.off { opacity: 0.35; }
@@ -269,8 +311,8 @@
   figcaption { font-size: 0.78rem; color: var(--muted); }
   figure canvas { width: 100%; height: 86px; display: block; }
   .disks { display: grid; gap: 4px; margin: 10px 0; }
-  .disk { display: grid; grid-template-columns: 26px minmax(60px, 1fr) auto; gap: 8px; align-items: center; }
-  .dl { font-size: 0.8rem; color: var(--muted); }
+  .disk { display: grid; grid-template-columns: minmax(0, 6.5rem) minmax(60px, 1fr) auto; gap: 8px; align-items: center; }
+  .dl { font-size: 0.8rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .disk canvas { width: 100%; height: 24px; display: block; }
   .dv { font-size: 0.75rem; color: var(--muted); text-align: right; white-space: nowrap; }
   .mem { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 16px; margin: 6px 0; }
@@ -286,7 +328,7 @@
   @media (max-width: 760px) {
     .well { height: 380px; }
     .gauges { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .disk { grid-template-columns: 26px minmax(0, 1fr); }
+    .disk { grid-template-columns: minmax(0, 6.5rem) minmax(0, 1fr); }
     .dv { grid-column: 2; text-align: left; }
     .mem { grid-template-columns: 1fr; }
   }

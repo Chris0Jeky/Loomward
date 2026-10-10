@@ -7,6 +7,7 @@
   import type { NodeInfo, Palette } from '../../../viz/types.js';
   import { drawSwatch, zeroCounts } from '../../../viz/woven-treemap.js';
   import { formatApprox } from './shared.svelte';
+  import VisibleName from '../../lib/ui/VisibleName.svelte';
 
   interface Props {
     node: NodeInfo | null;
@@ -40,7 +41,7 @@
     const out: string[] = [];
     if (!node) return out;
     if (node.synthetic === 'remainder') out.push('These bytes are counted by the parent but not listed in this slice. Open the parent to see them.');
-    if (node.synthetic === 'fold') out.push(`${node.folded} items too small to draw at this scale; their bytes are kept in the total.`);
+    if (node.synthetic === 'fold') out.push(`${node.folded === null ? 'Some' : node.folded} items too small to draw at this scale${node.folded === null ? ' (the count is unknown)' : ''}; their bytes are kept in the total.`);
     if (src?.kind === 'other') out.push(`${formatCount(src.folded_count)} items folded by the engine into one node.`);
     if (denied) out.push('Access denied: contents, file count and size below here are unknown, not zero.');
     else if (src && src.coverage !== 'complete') out.push(`Coverage is ${human(src.coverage)}: counts are at least these.`);
@@ -62,8 +63,8 @@
     <div class="head">
       {#if src}<canvas class="swatch" bind:this={swatch} aria-hidden="true"></canvas>{/if}
       <div>
-        <h2 id="insp-name"><bdi>{node.name}</bdi></h2>
-        <p class="path"><bdi>{[...path, node.name].join(' / ')}</bdi></p>
+        <h2 id="insp-name"><VisibleName name={node.name} /></h2>
+        <p class="path">{#each [...path, node.name] as part, i (i)}{#if i > 0} / {/if}<VisibleName name={part} />{/each}</p>
       </div>
     </div>
 
@@ -80,7 +81,7 @@
 
       <dl class="channels">
         <div class="ch"><dt>Warp<small>meaning</small></dt><dd>
-          {MEANING[src.threads.meaning.state] ?? src.threads.meaning.state}{#if src.threads.meaning.label}: <bdi>{src.threads.meaning.label}</bdi>{/if}
+          {MEANING[src.threads.meaning.state] ?? src.threads.meaning.state}{#if src.threads.meaning.label}: <VisibleName name={src.threads.meaning.label} />{/if}
           {#if src.threads.meaning.source}<span class="sub">source: {src.threads.meaning.source}{#if src.threads.meaning.state === 'suggested'}; a suggestion is not an approval{/if}</span>{/if}
         </dd></div>
         <div class="ch"><dt>Weft<small>residency</small></dt><dd>

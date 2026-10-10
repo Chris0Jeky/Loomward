@@ -12,7 +12,8 @@
   import { createWovenTreemap, drawSwatch } from '../../../viz/woven-treemap.js';
   import Inspector from './Inspector.svelte';
   import RegionList from './RegionList.svelte';
-  import { SliceNav, formatApprox, readPalette } from './shared.svelte';
+  import { SliceNav, canvasLabel, formatApprox, readPalette } from './shared.svelte';
+  import VisibleName from '../../lib/ui/VisibleName.svelte';
 
   // 2,500 nodes is the P9 budget (docs/41 section 15); the renderer nests three levels and folds the rest.
   const nav = new SliceNav({ depth: 6, maxNodes: 2500, minShare: 0 });
@@ -24,7 +25,7 @@
   let hovered = $state<NodeInfo | null>(null);
   let selected = $state<NodeInfo | null>(null);
   let live = $state('');
-  let tip = $state<{ x: number; y: number; title: string; sub: string } | null>(null);
+  let tip = $state<{ x: number; y: number; name: string; sub: string } | null>(null);
   let show = $state<ThreadToggles>({ meaning: true, residency: true, permission: true });
   let revealed = false;
   let well = $state<HTMLDivElement>();
@@ -35,7 +36,7 @@
 
   onMount(() => {
     if (!canvas) return;
-    const t = createWovenTreemap(canvas, { palette, reducedMotion: () => reducedMQ.matches, format: formatApprox, marks: 'loomward:atlas' });
+    const t = createWovenTreemap(canvas, { palette, reducedMotion: () => reducedMQ.matches, format: formatApprox, marks: 'loomward:atlas', label: canvasLabel });
     tm = t;
     const off = [
       t.on('hover', (e: { node: NodeInfo | null; clientX: number; clientY: number; viaKeyboard: boolean }) => {
@@ -43,7 +44,7 @@
         if (e.node && e.viaKeyboard) live = describe(e.node);
         if (e.node && !e.viaKeyboard && well) {
           const r = well.getBoundingClientRect();
-          tip = { x: e.clientX - r.left, y: e.clientY - r.top, title: e.node.name, sub: describeSize(e.node) };
+          tip = { x: e.clientX - r.left, y: e.clientY - r.top, name: e.node.name, sub: describeSize(e.node) };
         } else tip = null;
       }),
       t.on('select', (n: NodeInfo) => { selected = n; live = describe(n); }),
@@ -62,13 +63,18 @@
   // Hand every new slice to the renderer; the first one is woven in.
   $effect(() => {
     const s = nav.slice;
-    if (!s || !tm) return;
+    if (!tm) return;
     const t = tm;
+    if (!s) {
+      // a failed load: drop the cloth so nothing stale stays drawn or clickable
+      untrack(() => { t.clear(); hovered = null; selected = null; tip = null; });
+      return;
+    }
     untrack(() => {
       t.setSlice(s);
       if (!revealed) { revealed = true; t.reveal(); }
       if (selected && !s.nodes.some((n) => n.node_id === selected!.id)) selected = null;
-      live = `Showing ${nav.here?.name ?? ''}: ${formatCount(s.nodes.length)} nodes${s.truncated ? ', more exist than this slice holds' : ''}${s.aggregate_state === 'provisional_live' ? ', provisional sums from a running scan' : ''}.`;
+      live = `Showing ${canvasLabel(nav.here?.name ?? '')}: ${formatCount(s.nodes.length)} nodes${s.truncated ? ', more exist than this slice holds' : ''}${s.aggregate_state === 'provisional_live' ? ', provisional sums from a running scan' : ''}.`;
     });
   });
 
@@ -83,12 +89,20 @@
 
   function describeSize(n: NodeInfo): string {
     const src = n.src;
-    if (!src) return `${formatApprox(n.size)} · ${n.synthetic === 'fold' ? `${n.folded} items folded` : 'not in this slice'}`;
+    if (!src) return `${formatApprox(n.size)} · ${n.synthetic === 'fold' ? (n.folded === null ? 'some items folded, count unknown' : `${n.folded} items folded`) : 'not in this slice'}`;
     const z = n.zero.filter((x) => x.coverage === 'denied').length;
     return `${formatApprox(n.size)}${z ? ` · ${z} access denied` : ''}${src.size_unknown_files ? ` · ${src.size_unknown_files} alloc unknown` : ''}`;
   }
   function describe(n: NodeInfo): string {
-    return `${n.name}, ${describeSize(n)}.${n.drillable ? ' Enter opens it.' : ''}`;
+    return `${canvasLabel(n.name)}, ${describeSize(n)}.${n.drillable ? ' Enter opens it.' : ''}`;
+  }
+
+  function inspectById(id: string) {
+    const n = tm?.info(id) ?? null;
+    if (!n) return;
+    selected = n;
+    hovered = null;
+    live = describe(n);
   }
 
   // Basis radiogroup: arrow keys move the choice.
@@ -142,7 +156,7 @@
   <nav class="crumbs" aria-label="Location">
     <ol>
       {#each nav.trail as c, i (c.id)}
-        <li><button type="button" class="crumb" aria-current={i === nav.trail.length - 1 ? 'location' : undefined} onclick={() => void nav.jump(i)}><bdi>{c.name}</bdi></button></li>
+        <li><button type="button" class="crumb" aria-current={i === nav.trail.length - 1 ? 'location' : undefined} onclick={() => void nav.jump(i)}><VisibleName name={c.name} /></button></li>
       {/each}
     </ol>
   </nav>
@@ -168,7 +182,7 @@
   </p>
 </div>
 
-{#if nav.error}<p class="bad" role="alert">{nav.error}</p>{/if}
+{#if nav.error}<p class="bad" role="alert">Could not load this view: {nav.error} Nothing is drawn until a load succeeds; the breadcrumb shows where you still are.</p>{/if}
 
 <div class="stage">
   <section class="map" aria-label="Woven atlas">
@@ -181,13 +195,13 @@
       ></canvas>
       {#if tip}
         <div class="tip" style:left={`${Math.min(tip.x + 16, (well?.clientWidth ?? 0) - 240)}px`} style:top={`${tip.y + 18}px`}>
-          <b><bdi>{tip.title}</bdi></b><span class="num">{tip.sub}</span>
+          <b><VisibleName name={tip.name} /></b><span class="num">{tip.sub}</span>
         </div>
       {/if}
     </div>
     <p id="atlas-live" class="sr-only" aria-live="polite">{live}</p>
     <p class="help">Click a region to open it · <kbd>Arrows</kbd> move · <kbd>Enter</kbd> opens · <kbd>Esc</kbd> goes back</p>
-    <RegionList slice={nav.slice} onopen={(id, name) => void nav.drill(id, name)} />
+    <RegionList slice={nav.slice} onopen={(id, name) => void nav.drill(id, name)} oninspect={inspectById} />
   </section>
 
   <Inspector node={shown} status={hovered ? 'Hover' : selected ? 'Selected' : 'Nothing selected'} basis={nav.basis} {provisional} {palette} path={pathNames} />

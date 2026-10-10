@@ -1,5 +1,6 @@
 // Shared by the Atlas and Observatory views (lane L10): palette from tokens, and slice navigation.
 import { formatBytes } from '../../lib/format/bytes';
+import { escapedName } from '../../lib/format/names';
 import { session } from '../../lib/stores/session.svelte';
 import type { Anchor, Basis, TreeSlice } from '../../lib/types';
 import type { Palette } from '../../../viz/types.js';
@@ -25,6 +26,9 @@ export function readPalette(): Palette {
   };
 }
 
+/** Canvas and aria text for an untrusted name: hidden characters spelled out (one escape, at the slice boundary). */
+export const canvasLabel = (name: string) => escapedName(name);
+
 /** Byte label for a lossy layout number (exact strings are shown wherever the slice has them). */
 export const formatApprox = (n: number) => formatBytes(String(Math.max(0, Math.round(n))));
 
@@ -46,50 +50,53 @@ export class SliceNav {
 
   get here(): Crumb | undefined { return this.trail[this.trail.length - 1]; }
 
-  async load(): Promise<void> {
+  /**
+   * Fetch the slice for `trail` and only then make it current, so the breadcrumb always matches
+   * what is drawn. On failure the trail stays where it was and the slice is dropped (the view clears
+   * the canvas): nothing stale stays on screen or clickable.
+   */
+  private async go(trail: Crumb[], basis: Basis = this.basis): Promise<boolean> {
     const c = session.client;
-    const here = this.here;
-    if (!c || !here) return;
+    const here = trail[trail.length - 1];
+    if (!c || !here) return false;
     const mine = ++this.ticket;
     this.busy = true;
     try {
       const { result } = await c.call('tree.slice', {
-        anchor: here.anchor, depth: this.opts.depth, max_nodes: this.opts.maxNodes, min_share: this.opts.minShare, basis: this.basis, include_files: true,
+        anchor: here.anchor, depth: this.opts.depth, max_nodes: this.opts.maxNodes, min_share: this.opts.minShare, basis, include_files: true,
       });
-      if (mine !== this.ticket) return;
+      if (mine !== this.ticket) return false;
+      this.trail = trail;
+      this.basis = basis;
       this.slice = result;
       this.error = '';
+      return true;
     } catch (e) {
-      if (mine !== this.ticket) return;
+      if (mine !== this.ticket) return false;
       this.error = session.handle(e);
       this.slice = null;
+      return false;
     } finally {
       if (mine === this.ticket) this.busy = false;
     }
   }
 
-  start(): Promise<void> {
-    this.trail = [{ id: 'atlas', name: 'All roots', anchor: { kind: 'atlas' } }];
-    return this.load();
+  load(): Promise<boolean> { return this.go(this.trail); }
+  start(): Promise<boolean> { return this.go([{ id: 'atlas', name: 'All roots', anchor: { kind: 'atlas' } }]); }
+  drill(id: string, name: string): Promise<boolean> {
+    if (this.here?.id === id) return Promise.resolve(true);
+    return this.go([...this.trail, { id, name, anchor: { kind: 'node', node_id: id } }]);
   }
-  drill(id: string, name: string): Promise<void> {
-    if (this.here?.id === id) return Promise.resolve();
-    this.trail = [...this.trail, { id, name, anchor: { kind: 'node', node_id: id } }];
-    return this.load();
+  back(): Promise<boolean> {
+    if (this.trail.length < 2) return Promise.resolve(false);
+    return this.go(this.trail.slice(0, -1));
   }
-  back(): Promise<void> {
-    if (this.trail.length < 2) return Promise.resolve();
-    this.trail = this.trail.slice(0, -1);
-    return this.load();
+  jump(i: number): Promise<boolean> {
+    if (i >= this.trail.length - 1) return Promise.resolve(false);
+    return this.go(this.trail.slice(0, i + 1));
   }
-  jump(i: number): Promise<void> {
-    if (i >= this.trail.length - 1) return Promise.resolve();
-    this.trail = this.trail.slice(0, i + 1);
-    return this.load();
-  }
-  setBasis(b: Basis): Promise<void> {
-    if (b === this.basis) return Promise.resolve();
-    this.basis = b;
-    return this.load();
+  setBasis(b: Basis): Promise<boolean> {
+    if (b === this.basis) return Promise.resolve(true);
+    return this.go(this.trail, b);
   }
 }
