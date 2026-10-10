@@ -96,8 +96,7 @@ CPU are reported separately without claiming Windows library helper threads belo
 - `crates/loomward-telemetry/src/lib.rs`
 - `crates/loomward-telemetry/src/windows.rs`
 - `crates/loomward-telemetry/tests/native.rs`
-- `docs/16-implementation-status.md`
-- `handoff/CHECKPOINT.json`
+- (the coordinator updates `docs/16-implementation-status.md` and `handoff/CHECKPOINT.json` at the wave checkpoint)
 - `evidence/v3/telemetry-engine.md`
 - `evidence/v3/bench/telemetry.json`
 
