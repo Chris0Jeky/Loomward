@@ -82,6 +82,19 @@ mod windows {
     };
     use std::fs;
 
+    fn skip_elevated() -> bool {
+        if !crate::enumerate::running_elevated() {
+            return false;
+        }
+        assert_eq!(
+            observe(std::path::Path::new("synthetic"))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        true
+    }
+
     fn temp() -> tempfile::TempDir {
         let base = std::env::current_dir()
             .unwrap()
@@ -92,6 +105,9 @@ mod windows {
 
     #[test]
     fn fixture_cleanup_refuses_foreign_content_and_outside_roots() {
+        if skip_elevated() {
+            return;
+        }
         let base = temp();
         let root = base.path().join("lab");
         fs::create_dir(&root).unwrap();
@@ -122,6 +138,9 @@ mod windows {
 
     #[test]
     fn unlisted_alternate_streams_block_cleanup_without_deletion() {
+        if skip_elevated() {
+            return;
+        }
         let base = temp();
         let root = base.path().join("lab");
         fixtures::create_in(&root, base.path()).unwrap();
@@ -135,6 +154,9 @@ mod windows {
 
     #[test]
     fn fixture_guards_pin_ancestors_against_junction_replacement() {
+        if skip_elevated() {
+            return;
+        }
         let base = temp();
         let parent = base.path().join("parent");
         let root = parent.join("lab");
@@ -148,6 +170,9 @@ mod windows {
 
     #[test]
     fn handle_identity_distinguishes_links_changes_recreation_and_gone() {
+        if skip_elevated() {
+            return;
+        }
         let base = temp();
         let root = base.path().join("lab");
         fixtures::create_in(&root, base.path()).unwrap();
@@ -175,6 +200,9 @@ mod windows {
 
     #[test]
     fn volume_bounds_are_real_or_named_unknowns() {
+        if skip_elevated() {
+            return;
+        }
         let inventory = volumes::enumerate().unwrap();
         assert!(!inventory.is_empty());
         for volume in inventory {
@@ -184,6 +212,9 @@ mod windows {
 
     #[test]
     fn junction_swaps_are_rejected_even_when_the_leaf_is_the_same_hardlink() {
+        if skip_elevated() {
+            return;
+        }
         let base = temp();
         let a = base.path().join("a");
         let b = base.path().join("b");
@@ -218,6 +249,9 @@ mod windows {
 
     #[test]
     fn manifest_traversal_is_refused_without_partial_deletion() {
+        if skip_elevated() {
+            return;
+        }
         let base = temp();
         let root = base.path().join("lab");
         fixtures::create_in(&root, base.path()).unwrap();
@@ -240,6 +274,9 @@ mod windows {
 
     #[test]
     fn fixture_classes_are_native_or_have_named_skips() {
+        if skip_elevated() {
+            return;
+        }
         use std::os::windows::{ffi::OsStrExt, fs::OpenOptionsExt};
         use windows_sys::Win32::Storage::FileSystem::*;
         let base = temp();

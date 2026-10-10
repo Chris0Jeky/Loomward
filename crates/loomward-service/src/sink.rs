@@ -197,9 +197,11 @@ fn outcome(o: ListOutcome) -> ListingOutcome {
                 IncompleteReason::Cancelled => "cancelled",
                 IncompleteReason::AccessDenied => "denied",
                 IncompleteReason::OutsideScope => "stale",
-                IncompleteReason::Io(_) | IncompleteReason::Malformed | IncompleteReason::Limit => {
-                    "partial"
-                }
+                IncompleteReason::Io(_)
+                | IncompleteReason::Malformed
+                | IncompleteReason::Limit
+                | IncompleteReason::Refused
+                | IncompleteReason::IdentityUnverified => "partial",
             }
             .into(),
         ),
