@@ -84,9 +84,18 @@ fn leases_share_renew_release_and_latest_is_not_an_on_demand_scan() {
             Err(EngineError::NotFound { .. })
         ));
     }
-    let stopped = latest(&e);
-    thread::sleep(Duration::from_millis(1100));
-    assert_eq!(stopped.sample_seq, latest(&e).sample_seq);
+    assert!(matches!(
+        e.telemetry_snapshot(&from_value(json!({"channels":["engine"]})).unwrap()),
+        Err(EngineError::PartialCoverage { .. })
+    ));
+    let renewed = lease(&e, None, 1000);
+    let fresh = latest(&e);
+    assert!(fresh.sample_seq > sample.sample_seq);
+    assert!(fresh.elapsed_ms.is_none());
+    e.telemetry_release(&SubscriptionRefRequest {
+        subscription_id: renewed.subscription_id,
+    })
+    .unwrap();
 }
 
 #[test]

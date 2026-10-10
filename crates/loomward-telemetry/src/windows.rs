@@ -107,6 +107,7 @@ pub(super) fn own_usage() -> Observation<OwnUsage> {
                 calling_thread_cpu_seconds,
                 private_commit_bytes: memory.PrivateUsage as u64,
                 peak_private_commit_bytes: memory.PeakPagefileUsage as u64,
+                working_set_bytes: memory.WorkingSetSize as u64,
             },
         }
     }
@@ -267,16 +268,49 @@ fn process(entry: &PROCESSENTRY32W) -> (Process, bool) {
     (result, true)
 }
 
-pub(super) fn collect(pdh: &mut PdhSampler) -> Snapshot {
+pub(super) fn collect(
+    pdh: &mut PdhSampler,
+    costs: &mut SamplingCosts,
+    channels: SampleChannels,
+) -> Snapshot {
     let mut snapshot = unsupported_snapshot();
     snapshot.status = "observed".into();
-    snapshot.memory = Observation::Observed { value: memory() };
+    snapshot.memory = if channels.system {
+        Observation::Observed { value: memory() }
+    } else {
+        Observation::Unsupported {
+            reason: "not_requested".into(),
+        }
+    };
+    snapshot.gpu = Observation::Unsupported {
+        reason: "not_requested".into(),
+    };
+    snapshot.disk_io = Observation::Unsupported {
+        reason: "not_requested".into(),
+    };
     let cores = unsafe { GetActiveProcessorCount(u16::MAX) };
     snapshot.logical_processor_count = (cores > 0).then_some(cores);
-    pdh.sample(&mut snapshot);
+    let pdh_started = Instant::now();
+    if channels.system || channels.gpu || channels.disks {
+        pdh.sample(&mut snapshot, costs, channels);
+    }
+    costs.pdh_decode_ms = (pdh_started.elapsed().as_secs_f64() * 1000.0
+        - costs.pdh_collection_ms
+        - costs.wildcard_expansion_ms)
+        .max(0.0);
     snapshot.process_gpu = Observation::Unsupported {
         reason: "optional GPU Process Memory counters not collected; PID-only instances are not stable process identity".into(),
     };
+    if !channels.processes {
+        snapshot
+            .process_totals
+            .enumeration_unknowns
+            .push(unknown("process_enumeration", "not_requested"));
+    }
+    if !channels.processes && !channels.engine {
+        return snapshot;
+    }
+    let process_started = Instant::now();
     let raw = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if raw == INVALID_HANDLE_VALUE {
         snapshot
@@ -284,6 +318,7 @@ pub(super) fn collect(pdh: &mut PdhSampler) -> Snapshot {
             .enumeration_unknowns
             .push(failure("process_enumeration", unsafe { GetLastError() }));
         snapshot.status = "partial".into();
+        costs.process_enumeration_ms = process_started.elapsed().as_secs_f64() * 1000.0;
         return snapshot;
     }
     let handle = Handle(raw);
@@ -292,10 +327,14 @@ pub(super) fn collect(pdh: &mut PdhSampler) -> Snapshot {
         ..Default::default()
     };
     let mut has_entry = unsafe { Process32FirstW(handle.0, &mut entry) };
-    while has_entry != 0 && snapshot.processes.len() < MAX_ENUMERATED_PROCESSES {
+    while has_entry != 0 && snapshot.process_totals.enumerated < MAX_ENUMERATED_PROCESSES {
+        snapshot.process_totals.enumerated += 1;
+        if !channels.processes && entry.th32ProcessID != std::process::id() {
+            has_entry = unsafe { Process32NextW(handle.0, &mut entry) };
+            continue;
+        }
         let (row, opened) = process(&entry);
         let totals = &mut snapshot.process_totals;
-        totals.enumerated += 1;
         totals.opened += usize::from(opened);
         totals.access_denied += usize::from(
             row.unknowns
@@ -325,6 +364,7 @@ pub(super) fn collect(pdh: &mut PdhSampler) -> Snapshot {
                 .push(failure("process_enumeration", error));
         }
     }
+    costs.process_enumeration_ms = process_started.elapsed().as_secs_f64() * 1000.0;
     if snapshot.process_totals.partial_or_unknown > 0
         || snapshot.process_totals.enumeration_truncated
         || !snapshot.process_totals.enumeration_unknowns.is_empty()
