@@ -255,8 +255,10 @@ impl<S: DirSource> Shared<'_, S> {
         arena[index].listed = complete;
         arena[index].counts = counts;
         if arena[index]
-            .identity
-            .is_some_and(|key| self.source.can_reopen(reopen_identity(key)))
+            .dir
+            .as_ref()
+            .zip(arena[index].identity)
+            .is_some_and(|(dir, key)| self.source.can_reopen(dir, reopen_identity(key)))
             && arena[index].dir.take().is_some()
         {
             self.handles.fetch_sub(1, Ordering::Relaxed);
@@ -1027,6 +1029,9 @@ pub fn run_scan<S: DirSource>(
             tasks.done = false;
             let slot_bytes = arena.len() * shared.node_bytes;
             for dir in dirty {
+                if shared.stopping() {
+                    break;
+                }
                 let Some(&index) = shared.catalog_dirs.lock().unwrap().get(&dir) else {
                     result = Err(EngineError::Internal {
                         message: "unknown dirty directory".into(),
@@ -1054,10 +1059,12 @@ pub fn run_scan<S: DirSource>(
                             slot.listed = false;
                             continue;
                         }
-                        let expected = reopen_identity(
-                            slot.identity
-                                .expect("released handle has a unique identity"),
-                        );
+                        let Some(identity) = slot.identity else {
+                            slot.listed = false;
+                            slot.counts[2] = slot.counts[2].max(1);
+                            continue;
+                        };
+                        let expected = reopen_identity(identity);
                         match source.reopen(shared.root_path, shared.root_identity, expected) {
                             Ok((dir, identity))
                                 if identity.id == expected.id
@@ -1086,7 +1093,7 @@ pub fn run_scan<S: DirSource>(
                 break;
             }
         }
-        if !reconciled && result.is_ok() {
+        if !reconciled && !shared.arena.is_poisoned() {
             // Finals were never accepted: still report the partial sums of what was listed,
             // never a zero standing in for unknown.
             let aggregation = Instant::now();

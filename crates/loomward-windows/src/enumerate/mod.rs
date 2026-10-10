@@ -155,8 +155,8 @@ pub trait DirSource: Send + Sync {
     }
     /// Open an explicitly granted path, without following its final reparse component.
     fn open_root(&self, path: &Path) -> Result<(Self::Dir, OpenedIdentity), SourceError>;
-    /// Whether a unique identity can replace a retained handle between listings.
-    fn can_reopen(&self, _identity: OpenedIdentity) -> bool {
+    /// Whether this directory's volume and unique identity allow releasing its handle between listings.
+    fn can_reopen(&self, _dir: &Self::Dir, _identity: OpenedIdentity) -> bool {
         false
     }
     /// Reopen a previously observed identity on the still-verified root's volume.

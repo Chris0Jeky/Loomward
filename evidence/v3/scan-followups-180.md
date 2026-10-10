@@ -1,9 +1,10 @@
 # Scan pipeline follow-ups — #180
 
-Windows, 10 October 2026. Uncommitted on `fix/scan-followups-180`, based on
+Windows, 10 October 2026. Measured before commit on `fix/scan-followups-180`, based on
 `befd890614f2fae864a1acabfed657792ec1445d`. Commands ran from the worktree's repository root.
 Source hashes, gate results and every mutation's command and failing test are in
-[scan-followups-180.json](bench/scan-followups-180.json). No commit, push or remote write.
+[scan-followups-180.json](bench/scan-followups-180.json). These measurements preceded the commit
+and push published in PR #262; they describe that measurement pass, not later review fixes.
 
 ## Changed
 
@@ -22,8 +23,10 @@ Source hashes, gate results and every mutation's command and failing test are in
   counters, and [watch reconciliation:426](../../crates/loomward-engine/src/scan/watch.rs#L426)
   likewise reports the latest pass. `enumeration_attempts` retains the entry limit across every
   attempt. Deliberate outside-scope upserts are partial, without being counted as I/O failures.
-- **F7:** [semantics §7:150](../../contracts/v3/semantics.md#L150) now names both the 1,024-event
-  limit and the 60-second age cutoff. Event code is unchanged.
+- **F7:** [semantics §7:150](../../contracts/v3/semantics.md#L150) names both the 1,024-event
+  limit and the 60-second age cutoff. Checked against `events.rs`: publication retains at most
+  1,024 events; replay and live subscriber eligibility exclude events aged 60 seconds or more.
+  The wording matches the code. Event code is unchanged.
 - **Further issue items:** the name-only scheduling path uses the freshly opened handle.
   [Panic cleanup:1089](../../crates/loomward-engine/src/scan/pipeline.rs#L1089) terminates a poisoned
   run, stops its writer, finishes incomplete and releases the byte reservation. Poison recovery
@@ -85,7 +88,27 @@ replacing the granted root prevents reopening through a stale anchor.
 
 No issue item was declined. Scale benchmarks were skipped under the shared-host constraint.
 
-## Recommended commits
+## PR #262 review follow-up
 
-1. `fix(scan): release listed handles and make relist counters exact`
-2. `docs(events): document replay-age subscriber overflow`
+Windows, 10 October 2026, from `5ce026d04716283bc6b11dacff719055496a2321`.
+Cancelled runs aggregate partial observations unless the arena is poisoned. Native handle release
+requires a verified identity and an NTFS/ReFS flag from the opened directory's volume query;
+FAT, exFAT and unknown filesystems retain handles. A released slot losing its identity stays
+partial instead of panicking, and reconciliation stops before the next refresh after cancellation.
+
+Four regression tests failed before their fixes: `cancelled_multidirectory_scan_preserves_partial_totals`,
+`handle_release_requires_ntfs_or_refs_and_verified_identity`,
+`released_slot_losing_identity_stays_partial_without_panicking`, and
+`cancellation_stops_reconciliation_before_the_next_refresh`. All pass after the fixes.
+Eight mutations were killed by runtime test failures: skip error aggregation, aggregate a poisoned
+arena, release on every filesystem, allow exFAT release, disallow ReFS release, panic on a lost
+identity, omit its failure count, and continue reconciliation after cancellation. Fixed source bytes
+were restored before the final gates. Local logs and receipts stay ignored under `target/scan262/`.
+
+All required gates passed, exit 0: `cargo fmt --all --check`; `cargo test --workspace`
+(576 passed, 0 failed, 1 existing ignored test: `verbatim_device_namespace_state_paths_are_refused`,
+tracked in #246); `cargo test -p loomward-windows -p loomward-engine --all-features`
+(207 passed, 0 failed, 0 ignored); `cargo clippy --workspace --all-targets --all-features -- -D warnings`;
+`git diff --check`. Filesystem names in the new release test are synthetic, not physical FAT/exFAT/ReFS
+qualification. No hosted CI, scale benchmark or push was performed for this follow-up. The four
+separately tracked LOW findings and `HUMAN_TODO.md` are unchanged.

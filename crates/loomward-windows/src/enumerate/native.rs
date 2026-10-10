@@ -116,6 +116,7 @@ impl NativeSource {
 pub struct NativeDir {
     file: File,
     refs: bool,
+    reopen_safe: bool,
     strategy: Mutex<Strategy>,
 }
 impl NativeDir {
@@ -335,13 +336,13 @@ fn opened(
     {
         return Err(last_error());
     }
-    let refs = String::from_utf16_lossy(
+    let fs_name = String::from_utf16_lossy(
         &fs_name[..fs_name
             .iter()
             .position(|c| *c == 0)
             .unwrap_or(fs_name.len())],
-    )
-    .eq_ignore_ascii_case("ReFS");
+    );
+    let refs = fs_name.eq_ignore_ascii_case("ReFS");
     let mut basic: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
     let basic_ok = unsafe { GetFileInformationByHandle(h, &mut basic) } != 0;
     let ext: Option<FILE_ID_INFO> = information(h, FileIdInfo);
@@ -365,6 +366,7 @@ fn opened(
         NativeDir {
             file,
             refs,
+            reopen_safe: reopen_safe_fs(&fs_name),
             strategy: Mutex::new(preferred),
         },
         OpenedIdentity {
@@ -378,6 +380,10 @@ fn opened(
                 .then_some(attr.ReparseTag),
         },
     ))
+}
+fn reopen_safe_fs(name: &str) -> bool {
+    // FAT/exFAT IDs can be recycled when a directory entry is reused after handle release.
+    name.eq_ignore_ascii_case("NTFS") || name.eq_ignore_ascii_case("ReFS")
 }
 /// Retain component-wise, no-recall pins while opening the final component asynchronously.
 pub(crate) fn open_watch_root(
@@ -476,8 +482,9 @@ impl DirSource for NativeSource {
         )?;
         opened(file, entry.file_id, self.strategy())
     }
-    fn can_reopen(&self, identity: OpenedIdentity) -> bool {
-        matches!(identity.basis, IdBasis::Listed | IdBasis::PostOpen)
+    fn can_reopen(&self, dir: &NativeDir, identity: OpenedIdentity) -> bool {
+        dir.reopen_safe
+            && matches!(identity.basis, IdBasis::Listed | IdBasis::PostOpen)
             && identity.id.and_then(FileIdObs::nonzero).is_some()
             && identity.volume_serial.is_some()
     }
@@ -487,10 +494,10 @@ impl DirSource for NativeSource {
         root_identity: OpenedIdentity,
         identity: OpenedIdentity,
     ) -> Result<(NativeDir, OpenedIdentity), SourceError> {
-        if !self.can_reopen(identity) {
+        let (anchor, observed) = self.open_root(root)?;
+        if !self.can_reopen(&anchor, identity) {
             return Err(SourceError::IdentityUnverified);
         }
-        let (anchor, observed) = self.open_root(root)?;
         if observed.id != root_identity.id || observed.volume_serial != root_identity.volume_serial
         {
             return Err(SourceError::IdentityChanged);
@@ -777,6 +784,53 @@ impl NativeSource {
 #[cfg(test)]
 mod cancellation_tests {
     use super::*;
+    #[test]
+    fn handle_release_requires_ntfs_or_refs_and_verified_identity() {
+        let source = NativeSource::default();
+        let identity = OpenedIdentity {
+            id: Some(FileIdObs::Id128([1; 16])),
+            basis: IdBasis::Listed,
+            volume_serial: Some(1),
+            attributes: FILE_ATTRIBUTE_DIRECTORY,
+            reparse_tag: None,
+        };
+        for name in [
+            "NTFS", "ntfs", "ReFS", "refs", "FAT", "FAT32", "exFAT", "", "unknown",
+        ] {
+            let dir = NativeDir {
+                file: tempfile::tempfile().unwrap(),
+                refs: name.eq_ignore_ascii_case("ReFS"),
+                reopen_safe: reopen_safe_fs(name),
+                strategy: Mutex::new(Strategy::Extended),
+            };
+            let safe = matches!(name, "NTFS" | "ntfs" | "ReFS" | "refs");
+            assert_eq!(
+                source.can_reopen(&dir, identity),
+                safe,
+                "filesystem {name:?}"
+            );
+            for invalid in [
+                OpenedIdentity {
+                    basis: IdBasis::NonUnique,
+                    ..identity
+                },
+                OpenedIdentity {
+                    id: None,
+                    ..identity
+                },
+                OpenedIdentity {
+                    id: Some(FileIdObs::Id128([0; 16])),
+                    ..identity
+                },
+                OpenedIdentity {
+                    volume_serial: None,
+                    ..identity
+                },
+            ] {
+                assert!(!source.can_reopen(&dir, invalid));
+            }
+        }
+    }
     fn fixture() -> Option<(tempfile::TempDir, NativeSource, NativeDir)> {
         let temp = super::super::tests::canonical_tempdir();
         let source = NativeSource::with_strategy(Strategy::Find);
