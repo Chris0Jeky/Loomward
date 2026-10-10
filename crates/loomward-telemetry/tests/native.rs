@@ -26,6 +26,33 @@ fn snapshot_json_has_documented_fields() {
         assert!(value.get(field).is_some(), "missing {field}");
     }
     assert!(value["sample_interval_seconds"].is_null());
+    assert_eq!(value["schema_version"], 2);
+    if value["memory"]["status"] == "observed" {
+        for field in [
+            "total_bytes",
+            "available_bytes",
+            "commit_bytes",
+            "standby_bytes",
+            "modified_bytes",
+            "free_bytes",
+            "load_fraction",
+        ] {
+            assert!(
+                value["memory"]["value"].get(field).is_some(),
+                "missing {field}"
+            );
+        }
+        assert!(value["memory"]["value"]
+            .get("physical_total_bytes")
+            .is_none());
+    }
+    for process in value["processes"].as_array().unwrap() {
+        assert!(process.get("private_commit_bytes").is_some());
+        assert!(process.get("private_working_set_bytes").is_some());
+        assert!(process.get("private_bytes").is_none());
+        assert!(process["rates"].get("cpu_fraction").is_some());
+        assert!(process["rates"].get("cpu_percent_of_machine").is_none());
+    }
     assert!(serde_json::from_value::<loomward_telemetry::Snapshot>(value).is_ok());
 }
 
@@ -47,7 +74,7 @@ fn watch_is_ndjson_and_first_rates_are_unknown() {
     assert!(rows[0]
         .processes
         .iter()
-        .all(|p| p.rates.cpu_percent_of_machine.is_none()));
+        .all(|p| p.rates.cpu_fraction.is_none()));
 }
 
 #[test]
@@ -84,8 +111,22 @@ fn windows_observations_and_rates_have_structural_truths() {
     let Observation::Observed { value: memory } = &first.memory else {
         panic!("memory not observed")
     };
-    assert!(memory.physical_total_bytes.unwrap() > 0);
-    assert!(memory.physical_available_bytes.unwrap() <= memory.physical_total_bytes.unwrap());
+    assert!(memory.total_bytes.unwrap() > 0);
+    assert!(memory.available_bytes.unwrap() <= memory.total_bytes.unwrap());
+    for (field, bytes) in [
+        ("standby_bytes", memory.standby_bytes),
+        ("modified_bytes", memory.modified_bytes),
+        ("free_bytes", memory.free_bytes),
+    ] {
+        if let Some(bytes) = bytes {
+            assert!(bytes <= memory.total_bytes.unwrap());
+        } else {
+            assert!(memory
+                .unknowns
+                .iter()
+                .any(|u| u.field == field || u.field == "memory_lists"));
+        }
+    }
     let own = first
         .processes
         .iter()
@@ -93,7 +134,7 @@ fn windows_observations_and_rates_have_structural_truths() {
         .unwrap();
     assert!(own.working_set_bytes.unwrap() > 0);
     assert!(own.start_time_windows_100ns.is_some());
-    assert!(own.rates.cpu_percent_of_machine.is_none());
+    assert!(own.rates.cpu_fraction.is_none());
     // PID 4 (System): what is readable depends on the token (hosted CI runners are elevated). Either
     // way an unread field is null with a recorded reason, never a silent zero.
     let system = first.processes.iter().find(|p| p.pid == 4).unwrap();
@@ -109,18 +150,72 @@ fn windows_observations_and_rates_have_structural_truths() {
         .iter()
         .find(|p| p.pid == std::process::id())
         .unwrap();
-    assert!(own.rates.cpu_percent_of_machine.unwrap() >= 0.0);
-    assert!(own.rates.io_read_bytes_per_second.unwrap() >= 0.0);
+    assert!((0.0..=1.0).contains(&own.rates.cpu_fraction.unwrap()));
+    assert!(own.rates.io_read_bytes_per_s.unwrap() >= 0.0);
     assert!(second.sample_interval_seconds.unwrap() >= 0.1);
+    match &second.gpu {
+        Observation::Observed { value } => {
+            assert!(!value.is_empty());
+            let ids: std::collections::HashSet<_> = value.iter().map(|a| &a.adapter_id).collect();
+            assert_eq!(ids.len(), value.len());
+            for adapter in value {
+                assert!(adapter.adapter_id.starts_with("luid_"));
+                for (field, bytes) in [
+                    ("dedicated_total_bytes", adapter.dedicated_total_bytes),
+                    ("dedicated_used_bytes", adapter.dedicated_used_bytes),
+                    ("shared_used_bytes", adapter.shared_used_bytes),
+                ] {
+                    if bytes.is_none() {
+                        assert!(adapter.unknowns.iter().any(|u| u.field == field));
+                    }
+                }
+                if let Some(fraction) = adapter.engine_busy_fraction {
+                    assert!((0.0..=1.0).contains(&fraction));
+                    assert_eq!(
+                        Some(fraction),
+                        adapter
+                            .engines
+                            .iter()
+                            .filter_map(|e| e.busy_fraction)
+                            .reduce(f64::max)
+                    );
+                } else {
+                    assert!(adapter
+                        .unknowns
+                        .iter()
+                        .any(|u| u.field == "engine_busy_fraction"));
+                }
+                for engine in &adapter.engines {
+                    if let Some(fraction) = engine.busy_fraction {
+                        assert!((0.0..=1.0).contains(&fraction));
+                    } else {
+                        assert!(!engine.unknowns.is_empty());
+                    }
+                }
+            }
+        }
+        Observation::Unknown { reason } => assert!(!reason.is_empty()),
+        Observation::Unsupported { .. } => panic!("Windows GPU query should be attempted"),
+    }
     match second.disk_io {
         Observation::Observed { value } => {
             assert!(!value.is_empty());
             for disk in value {
-                assert!(disk.sample_interval_seconds > 0.0);
-                if let Some(rate) = disk.bytes_per_second {
-                    assert!(rate.is_finite() && rate >= 0.0);
-                } else {
-                    assert!(disk.unknown_reason.is_some());
+                assert!(disk.sample_interval_seconds.unwrap() > 0.0);
+                for (field, value) in [
+                    ("read_bytes_per_s", disk.read_bytes_per_s),
+                    ("write_bytes_per_s", disk.write_bytes_per_s),
+                    ("busy_fraction", disk.busy_fraction),
+                    ("queue_length", disk.queue_length),
+                ] {
+                    if let Some(value) = value {
+                        assert!(value.is_finite() && value >= 0.0);
+                        if field == "busy_fraction" {
+                            assert!(value <= 1.0);
+                        }
+                    } else {
+                        assert!(disk.unknowns.iter().any(|u| u.field == field));
+                    }
                 }
             }
         }
@@ -141,7 +236,7 @@ fn rates_survive_a_process_not_being_displayed_in_the_first_sample() {
         .iter()
         .find(|p| p.pid == std::process::id())
         .unwrap();
-    assert!(own.rates.cpu_percent_of_machine.is_some());
+    assert!(own.rates.cpu_fraction.is_some());
 }
 
 #[cfg(not(windows))]
