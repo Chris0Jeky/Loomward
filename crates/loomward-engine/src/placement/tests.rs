@@ -759,6 +759,15 @@ fn placement_partial_allocation_uses_logical_fallback_and_rejects_whatif() {
 #[test]
 fn placement_native_link_pass_feeds_verified_relief_on_disposable_hardlinks() {
     use loomward_windows::{identity, linkcount};
+    if loomward_windows::enumerate::running_elevated() {
+        assert_eq!(
+            identity::observe(std::path::Path::new("synthetic"))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     let a = temp.path().join("a");
     let b = temp.path().join("b");
