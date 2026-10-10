@@ -112,6 +112,20 @@ mod native {
                 let _ = reply.send(());
             }
         }
+        fn poll(
+            &mut self,
+            requests: &mpsc::Receiver<mpsc::SyncSender<()>>,
+            completed: impl FnOnce() -> Result<bool, SourceError>,
+            validate: impl FnOnce() -> Result<(), SourceError>,
+        ) -> Result<bool, SourceError> {
+            // Take the request even when every overlapped read completes immediately.
+            if let Ok(reply) = requests.try_recv() {
+                validate()?;
+                self.request(reply, completed)
+            } else {
+                completed()
+            }
+        }
     }
 
     fn validate_path(path: &Path, expected: OpenedIdentity) -> Result<(), SourceError> {
@@ -248,57 +262,35 @@ mod native {
                         if let Some(hints) = previous.take() {
                             checkpoint.deliver(hints, &callback);
                         }
-                        let (error, returned) = if pending.error == Some(ERROR_NOTIFY_ENUM_DIR) {
-                            (pending.error, 0)
-                        } else {
-                            loop {
-                                if stopped.load(Ordering::Acquire) {
-                                    return Ok(());
-                                }
-                                // A handle can survive a root/ancestor rename without a notification.
-                                if checked.elapsed() >= Duration::from_millis(250) {
-                                    validate_path(&path, identity)?;
-                                    checked = Instant::now();
-                                }
-                                match unsafe { WaitForSingleObject(event.as_raw_handle(), 0) } {
-                                    WAIT_OBJECT_0 => break pending.finish(),
-                                    WAIT_TIMEOUT => {
-                                        if let Ok(reply) = checkpoint_rx.try_recv() {
-                                            validate_path(&path, identity)?;
-                                            // Completion may have arrived since the first zero wait.
-                                            if checkpoint.request(reply, || {
-                                                match unsafe {
-                                                    WaitForSingleObject(event.as_raw_handle(), 0)
-                                                } {
-                                                    WAIT_OBJECT_0 => Ok(true),
-                                                    WAIT_TIMEOUT => Ok(false),
-                                                    _ => Err(SourceError::Io(unsafe {
-                                                        GetLastError()
-                                                    }
-                                                        as i32)),
-                                                }
-                                            })? {
-                                                break pending.finish();
-                                            }
-                                        }
-                                        match unsafe {
-                                            WaitForSingleObject(event.as_raw_handle(), 10)
-                                        } {
-                                            WAIT_OBJECT_0 => break pending.finish(),
-                                            WAIT_TIMEOUT => (),
-                                            _ => {
-                                                return Err(SourceError::Io(
-                                                    unsafe { GetLastError() } as i32,
-                                                ))
-                                            }
-                                        }
+                        let (error, returned) = loop {
+                            if stopped.load(Ordering::Acquire) {
+                                return Ok(());
+                            }
+                            // A handle can survive a root/ancestor rename without a notification.
+                            if checked.elapsed() >= Duration::from_millis(250) {
+                                validate_path(&path, identity)?;
+                                checked = Instant::now();
+                            }
+                            if checkpoint.poll(
+                                &checkpoint_rx,
+                                || {
+                                    if pending.error == Some(ERROR_NOTIFY_ENUM_DIR) {
+                                        return Ok(true);
                                     }
-                                    _ => {
-                                        return Err(SourceError::Io(
-                                            unsafe { GetLastError() } as i32
-                                        ))
+                                    match unsafe { WaitForSingleObject(event.as_raw_handle(), 0) } {
+                                        WAIT_OBJECT_0 => Ok(true),
+                                        WAIT_TIMEOUT => Ok(false),
+                                        _ => Err(SourceError::Io(unsafe { GetLastError() } as i32)),
                                     }
-                                }
+                                },
+                                || validate_path(&path, identity),
+                            )? {
+                                break pending.finish();
+                            }
+                            match unsafe { WaitForSingleObject(event.as_raw_handle(), 10) } {
+                                WAIT_OBJECT_0 => break pending.finish(),
+                                WAIT_TIMEOUT => (),
+                                _ => return Err(SourceError::Io(unsafe { GetLastError() } as i32)),
                             }
                         };
                         previous = Some(if overflow(error, returned) {
@@ -370,6 +362,48 @@ mod native {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn continuous_completions_do_not_starve_checkpoint() {
+            let mut checkpoint = Checkpoint::default();
+            let (requests, receiver) = mpsc::sync_channel(1);
+            for ready in [true, true, true, true, false] {
+                let (reply, ack) = mpsc::sync_channel(1);
+                requests.send(reply).unwrap();
+                let validated = std::cell::Cell::new(false);
+                assert_eq!(
+                    checkpoint
+                        .poll(
+                            &receiver,
+                            || Ok(ready),
+                            || {
+                                validated.set(true);
+                                Ok(())
+                            },
+                        )
+                        .unwrap(),
+                    ready
+                );
+                assert!(
+                    validated.get(),
+                    "a ready completion must not bypass the request"
+                );
+                if ready {
+                    assert!(matches!(ack.try_recv(), Err(mpsc::TryRecvError::Empty)));
+                    let delivered = std::cell::Cell::new(false);
+                    checkpoint.deliver(vec![Change::RootDirty], &|hints| {
+                        assert_eq!(hints, vec![Change::RootDirty]);
+                        assert!(
+                            ack.try_recv().is_err(),
+                            "hints must precede acknowledgement"
+                        );
+                        delivered.set(true);
+                    });
+                    assert!(delivered.get());
+                }
+                ack.try_recv().unwrap();
+            }
+        }
         #[test]
         fn completion_between_poll_and_request_is_delivered_before_ack() {
             let mut checkpoint = Checkpoint::default();

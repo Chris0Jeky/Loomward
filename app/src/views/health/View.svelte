@@ -246,6 +246,7 @@
 
     <h3 id="h-scans">Scans</h3>
     <p class="muted">Scan reads names, sizes and dates only. It never opens the contents of a file and changes no file. Refresh re-reads a root that was scanned before.</p>
+    <p class="muted">Watching runs only during a scan. While it runs, renaming a parent folder may be blocked; the watch closes when the scan ends. Completed coverage describes that scan; changes since it ended are unknown.</p>
     {#if scanNote}<p class="muted">{scanNote}</p>{/if}
     <p class="live scanlive" class:has={!!scanSay.text} role="status">{scanSay.text}</p>
     <ul class="scans" aria-labelledby="h-scans">
