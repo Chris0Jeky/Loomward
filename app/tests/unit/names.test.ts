@@ -55,3 +55,15 @@ describe('invisible characters that must not pass as plain text', () => {
     expect(escapedName('plain.txt')).toBe('plain.txt');
   });
 });
+
+describe('keycap selectors', () => {
+  it('exempts a selector after a digit, # or * only inside the full keycap sequence', () => {
+    expect(codes('1\uFE0F\u20E3.png')).toEqual([]);
+    expect(codes('#\uFE0F\u20E3')).toEqual([]);
+    expect(codes('*\uFE0F\u20E3')).toEqual([]);
+    expect(codes('1\uFE0F')).toEqual(['U+FE0F']);
+    expect(codes('#\uFE0F.txt')).toEqual(['U+FE0F']);
+    expect(codes('7\uFE0E')).toEqual(['U+FE0E']);
+    expect(codes('1\uFE0F\u20E3\uFE0F')).toEqual(['U+FE0F']);
+  });
+});

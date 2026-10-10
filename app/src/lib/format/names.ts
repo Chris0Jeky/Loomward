@@ -17,9 +17,9 @@ const KNOWN: Record<number, string> = {
 };
 
 // Control, format (includes every bidi and zero-width character and the tag block), separators, private
-// use, lone surrogates, invisible fillers, every variation selector except an emoji or keycap
-// presentation selector right after its base, and every space except the plain one.
-const HIDDEN = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Zl}\p{Zp}\u034f\u115f\u1160\u17b4\u17b5\u180b-\u180f\u3164\uffa0\u{e0100}-\u{e01ef}\ufffd]|[\ufe00-\ufe0d]|(?<![\p{Extended_Pictographic}0-9#*])[\ufe0e\ufe0f]|(?!\u0020)\p{Zs}/gu;
+// use, lone surrogates, invisible fillers, every variation selector except an emoji presentation selector
+// right after its pictographic base or inside a full keycap sequence (digit, #, * + selector + U+20E3), and every space except the plain one.
+const HIDDEN = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Zl}\p{Zp}\u034f\u115f\u1160\u17b4\u17b5\u180b-\u180f\u3164\uffa0\u{e0100}-\u{e01ef}\ufffd]|[\ufe00-\ufe0d]|(?<![\p{Extended_Pictographic}0-9#*])[\ufe0e\ufe0f]|(?<=[0-9#*])[\ufe0e\ufe0f](?!\u20e3)|(?!\u0020)\p{Zs}/gu;
 
 const hex = (cp: number) => `U+${cp.toString(16).toUpperCase().padStart(4, '0')}`;
 
