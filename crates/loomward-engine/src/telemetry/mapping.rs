@@ -6,6 +6,7 @@ use loomward_telemetry::{Observation, Process, Snapshot};
 pub(super) fn invalid(error: Invalid) -> EngineError {
     EngineError::Internal {
         message: format!("telemetry contract: {error}"),
+        detail: None,
     }
 }
 

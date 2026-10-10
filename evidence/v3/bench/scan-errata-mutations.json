@@ -1,0 +1,48 @@
+{
+  "platform": "Windows 11",
+  "all_mutations_rejected": true,
+  "mutations": [
+    {
+      "errata": "N1",
+      "mutation": "if d.dirty_run != run || d.dirty != ticket.input_revision { -> if d.dirty_run != run {",
+      "test": "same_run_obsolete_final_is_rejected_n1",
+      "mutation_rejected": true,
+      "exit_code": 101
+    },
+    {
+      "errata": "N2",
+      "mutation": "complete && matches!(scope, RunScope::FullRoot) -> complete",
+      "test": "targeted_run_never_sweeps_unrelated_tombstones_n2",
+      "mutation_rejected": true,
+      "exit_code": 101
+    },
+    {
+      "errata": "N3",
+      "mutation": "            IdBasis::NonUnique ->             IdBasis::Listed",
+      "test": "id_width_is_preserved_and_refs64_is_not_unique",
+      "mutation_rejected": true,
+      "exit_code": 101
+    },
+    {
+      "errata": "partial-2",
+      "mutation": "(Some(_), None) => return Err(SourceError::IdentityUnverified), -> (Some(_), None) => IdBasis::None,",
+      "test": "missing_post_open_id_does_not_trust_listing",
+      "mutation_rejected": true,
+      "exit_code": 101
+    },
+    {
+      "errata": "partial-8",
+      "mutation": "                invalidate(r, old_parent); ->                 let _ = old_parent;",
+      "test": "reparent_invalidates_both_chains_and_restart_repairs",
+      "mutation_rejected": true,
+      "exit_code": 101
+    },
+    {
+      "errata": "N6",
+      "mutation": "\"M\" => Ok(1_000_000) -> \"M\" => Ok(2_500_000)",
+      "test": "m_tier_stays_one_million_n6",
+      "mutation_rejected": true,
+      "exit_code": 101
+    }
+  ]
+}

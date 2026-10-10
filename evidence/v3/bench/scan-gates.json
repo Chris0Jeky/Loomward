@@ -1,0 +1,52 @@
+{
+  "platform": "Windows 11",
+  "base_head": "e1037873dfebe11dc9fb8a209b72eda44693b92e",
+  "branch": "feat/l7-scan",
+  "receipts": [
+    {
+      "command": "cargo fmt --all --check",
+      "exit_code": 0,
+      "tests_passed": 0
+    },
+    {
+      "command": "cargo test --workspace",
+      "exit_code": 0,
+      "tests_passed": 153
+    },
+    {
+      "command": "cargo clippy --workspace --all-targets -- -D warnings",
+      "exit_code": 0,
+      "tests_passed": 0
+    },
+    {
+      "command": "cargo test -p loomward-windows --all-features",
+      "exit_code": 0,
+      "tests_passed": 24
+    }
+  ],
+  "source_sha256": {
+    "crates/loomward-engine/Cargo.toml": "626ab56590488929c92900d6fbf527df18f0a389052b7355326592cca0085d85",
+    "crates/loomward-engine/src/budgets.rs": "9a4b2919cf57167f12c744685d8cf84148dc41469d20fb676a7c6d18ad501aa5",
+    "crates/loomward-engine/src/error.rs": "9cf0b5407bc8a3f1e3fb9ed5b6a724a740a5d7ff54e192f64e6f3a0f6a231ebc",
+    "crates/loomward-engine/src/events.rs": "830a488b913064b1630bf91f40ef4255645337df8e9c6b45931e707550851533",
+    "crates/loomward-engine/src/lib.rs": "ebe1cb815eb7238c2f86bdcb7952b21030a5e7c633434993554b1d1f22791ddf",
+    "crates/loomward-engine/tests/smoke.rs": "7729c3569b61a6e723b115082282c96d21eb69be61b272e40e768a753e2f735f",
+    "crates/loomward-engine/src/jobs/mod.rs": "de3ada8ca0a69862567d743ccd1709bae4457dd797d33c68c2834beadef808a2",
+    "crates/loomward-engine/src/learning/mod.rs": "ab0f89f9be4f971f176e6dd1fb566513f3f4a880c3fc907234983849ed289fcc",
+    "crates/loomward-engine/src/placement/mod.rs": "b55781f632fdf089291e679da634528762202daebc27d233619e503913201c5a",
+    "crates/loomward-engine/src/scan/mod.rs": "b43bbce08f4b31d6d2f929e4b5b2473e127513609fd0ff77d82d36ede32ce047",
+    "crates/loomward-engine/src/scan/pipeline.rs": "827ccd9c98b4482c9f787880533220c3ed3b7ce8740f7a54332d4a4a5ec73865",
+    "crates/loomward-engine/src/scan/sink.rs": "f2d324c6bbcf6898bcc7d12f3cd56f0f8f6880733da999f2d55613cccf021ba0",
+    "crates/loomward-engine/src/scan/source.rs": "76f1b630d2ee9b3034012f0c14ed8f038bfea6c91716bd0a0d70f92d46539f7e",
+    "crates/loomward-engine/src/scan/tests.rs": "5cea0e8db1e5f4c21892dd3a0c072beaaaa65c4e914bb357c4e716cb585902c9",
+    "crates/loomward-engine/src/teacher/mod.rs": "c3fb24684461fef3b63fd6081645ffac2dd5ae90266a190b7eabafe249cac333",
+    "crates/loomward-engine/src/telemetry/mod.rs": "3d006186c7a45c5373e555aa8cf30c7c4ffb6ce7897e866bf17666b9f76b842f",
+    "crates/loomward-windows/src/enumerate/mod.rs": "9f7c1ba7ecbb2f124f1f273e6ed15c0fb8be27837b7e334f1dda846def8feabb",
+    "crates/loomward-windows/src/enumerate/native.rs": "eb71db93739199b5d89eb9eeae98c43806815afe2525fec892689fbc993e01e0",
+    "crates/loomward-windows/src/enumerate/tests.rs": "9a4c887c8c0064dbf1c4944f943c832c4182c5102963c00b8c16d558c126ab40",
+    "crates/loomward-lab/Cargo.toml": "e9a1ee94b55a830de4a75115657fb769d56864e280c8824130f4f0f7a6b52373",
+    "crates/loomward-lab/src/lib.rs": "6772edc988b4d4c62553165c80d34b5c4016b5fa14bd9d103e643a5736824b09",
+    "crates/loomward-lab/src/main.rs": "ab2cc1e419b5e4f5c264a66bff3e71cdf7fbf96dd70f802f777cbab77754fada",
+    "crates/loomward-lab/src/windows.rs": "d045461f9e1ea3ca3c71d48e8f96d414d82ae4ce0f546d80e7b58097a8af31d5"
+  }
+}

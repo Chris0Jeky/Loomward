@@ -1,6 +1,6 @@
 //! The engine's error type and its mapping onto the wire vocabulary (docs/41 section 5.1).
 
-use loomward_protocol::{ErrorBody, ErrorCode};
+use loomward_protocol::{Detail, ErrorBody, ErrorCode};
 use std::fmt;
 
 /// An engine component a lane owns. Names the part that is not built yet.
@@ -42,7 +42,7 @@ impl Component {
 
 /// Why an engine call failed. One variant per protocol [`ErrorCode`] the engine can produce;
 /// `unsupported_protocol` and `unknown_command` belong to the service and have no variant here.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum EngineError {
     /// The component is not implemented yet (skeleton). Maps to `capability_unavailable`.
     Unavailable {
@@ -68,6 +68,8 @@ pub enum EngineError {
     StaleGeneration {
         /// What moved.
         message: String,
+        /// Optional structured wire reason or resource identifier.
+        detail: Option<Detail>,
     },
     /// The volume or device is offline.
     DeviceOffline {
@@ -88,6 +90,8 @@ pub enum EngineError {
     Busy {
         /// What is busy.
         message: String,
+        /// Optional structured wire reason or resource identifier.
+        detail: Option<Detail>,
     },
     /// The work was cancelled.
     Cancelled {
@@ -103,6 +107,8 @@ pub enum EngineError {
     Internal {
         /// What failed, without paths or user data.
         message: String,
+        /// Optional structured wire reason or resource identifier.
+        detail: Option<Detail>,
     },
 }
 
@@ -152,20 +158,27 @@ impl EngineError {
             EngineError::InvalidRequest { message }
             | EngineError::NotFound { message }
             | EngineError::PermissionDenied { message }
-            | EngineError::StaleGeneration { message }
+            | EngineError::StaleGeneration { message, .. }
             | EngineError::DeviceOffline { message }
             | EngineError::PartialCoverage { message }
             | EngineError::ResourceBudget { message }
-            | EngineError::Busy { message }
+            | EngineError::Busy { message, .. }
             | EngineError::Cancelled { message }
             | EngineError::DeadlineExceeded { message }
-            | EngineError::Internal { message } => message.clone(),
+            | EngineError::Internal { message, .. } => message.clone(),
         }
     }
 
-    /// The wire body, without `detail`; the service adds `detail` (for example `job_id`).
+    /// The wire body, preserving optional structured detail.
     pub fn to_body(&self) -> ErrorBody {
-        ErrorBody::new(self.code(), &self.message(), self.retryable())
+        let mut body = ErrorBody::new(self.code(), &self.message(), self.retryable());
+        body.detail = match self {
+            Self::Busy { detail, .. }
+            | Self::StaleGeneration { detail, .. }
+            | Self::Internal { detail, .. } => detail.clone(),
+            _ => None,
+        };
+        body
     }
 }
 

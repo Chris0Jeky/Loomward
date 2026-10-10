@@ -109,10 +109,10 @@ mod windows {
         let output = std::env::args()
             .nth(1)
             .expect("aggregate evidence JSON output path required");
-        let engine = Engine::open(EngineConfig {
-            state_dir: "unused-bench-state".into(),
-            dataset_class: DatasetClass::Personal,
-        })
+        let engine = Engine::open(EngineConfig::new(
+            "unused-bench-state".into(),
+            DatasetClass::Personal,
+        ))
         .unwrap();
         let idle = phase(&engine, false);
         let live = phase(&engine, true);
