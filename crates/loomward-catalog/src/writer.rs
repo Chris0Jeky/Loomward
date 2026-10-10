@@ -891,7 +891,7 @@ fn full_traversal(conn: &Connection, run: i64, root: i64) -> Result<bool> {
 /// Rows inside an excluded directory, transitively. Its contents were never observed after it
 /// became excluded, so their absence is unknown: neither `retire_pending` nor the EndRun delete
 /// may treat them as gone (invariant 4). Both statements use this same set.
-const SHIELDED: &str = "shielded(id) AS (SELECT id FROM dir WHERE root_id=?1 AND listing_state='excluded' UNION ALL SELECT d.id FROM dir d JOIN shielded s ON d.parent_id=s.id)";
+const SHIELDED: &str = "shielded(id) AS (SELECT id FROM dir WHERE root_id=?1 AND listing_state='excluded' UNION SELECT d.id FROM dir d JOIN shielded s ON d.parent_id=s.id)";
 fn retire_pending(conn: &mut Connection, run: i64) -> Result<()> {
     let root = active_run(conn, run, None)?;
     if !full_traversal(conn, run, root)? {
@@ -1059,6 +1059,14 @@ fn apply(
                 "UPDATE root SET active_run=NULL,state='stale' WHERE grant_id=?1",
                 [grant_id],
             )?;
+            // Link counts cover visible rows only, and this grant's rows just stopped being visible.
+            let roots: Vec<i64> = conn
+                .prepare("SELECT id FROM root WHERE grant_id=?1")?
+                .query_map([grant_id], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            for root in roots {
+                rebuild_multilink(conn, root)?;
+            }
             Ok(WriteReply::Done)
         }
         WriteCommand::Repair { root_id } => {
@@ -1300,10 +1308,8 @@ fn publish(
             };
             if let Some((id, parent, _, _, state, created)) = &old_dir {
                 if *created == o.created_ft && excluded && state != "excluded" {
-                    // Same directory, now excluded (an attribute change: reparse, offline,
-                    // recall). Its row stays; its descendants become absent like any unseen
-                    // child, keeping their identities, so a returning directory revives them
-                    // with their references, and only a completed full traversal retires them.
+                    // Same directory, now excluded: hide its descendants but shield their
+                    // identities and references until rediscovery or an observed absent ancestor.
                     conn.execute("UPDATE dir SET listing_state='absent_pending' WHERE parent_id=?1 AND listing_state!='absent_pending'", [id])?;
                     ctx.dirty(*id, run);
                     members_changed = true;
@@ -1445,9 +1451,10 @@ fn rebuild_multilink(conn: &Connection, root: i64) -> Result<()> {
         r.get(0)
     })?;
     conn.execute("DELETE FROM multilink WHERE volume_id=?1", [volume])?;
-    conn.execute("INSERT INTO multilink SELECT ?1,f.file_id,count(*),max(f.allocated) FROM file f JOIN dir d ON d.id=f.dir_id JOIN root r ON r.id=d.root_id WHERE r.volume_id=?1 AND f.file_id IS NOT NULL AND d.listing_state!='absent_pending' GROUP BY f.file_id HAVING count(*)>1",[volume])?;
+    conn.execute("INSERT INTO multilink SELECT ?1,f.file_id,count(*),max(f.allocated) FROM file f JOIN dir d ON d.id=f.dir_id JOIN visible_dir v ON v.id=d.id JOIN root r ON r.id=d.root_id WHERE r.volume_id=?1 AND f.file_id IS NOT NULL AND d.listing_state!='excluded' GROUP BY f.file_id HAVING count(*)>1",[volume])?;
     conn.execute("UPDATE file SET flags=flags & ~?2 WHERE dir_id IN (SELECT d.id FROM dir d JOIN root r ON r.id=d.root_id WHERE r.volume_id=?1) AND flags & ?2 != 0",params![volume,HARDLINK_SUSPECTED])?;
-    conn.execute("UPDATE file SET flags=flags | ?2 WHERE dir_id IN (SELECT d.id FROM dir d JOIN root r ON r.id=d.root_id WHERE r.volume_id=?1) AND file_id IN (SELECT file_id FROM multilink WHERE volume_id=?1)",params![volume,HARDLINK_SUSPECTED])?;
+    // Only visible rows carry the flag; hidden copies were cleared above and are not counted.
+    conn.execute("UPDATE file SET flags=flags | ?2 WHERE dir_id IN (SELECT d.id FROM dir d JOIN visible_dir v ON v.id=d.id JOIN root r ON r.id=d.root_id WHERE r.volume_id=?1 AND d.listing_state!='excluded') AND file_id IN (SELECT file_id FROM multilink WHERE volume_id=?1)",params![volume,HARDLINK_SUSPECTED])?;
     Ok(())
 }
 /// One directory read, one postorder propagation, one prepared update per visible directory.
@@ -1557,6 +1564,21 @@ mod publication_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn nested_exclusions_shield_each_directory_once() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE dir(id INTEGER PRIMARY KEY,parent_id INTEGER,root_id INTEGER,listing_state TEXT);
+            INSERT INTO dir VALUES(1,NULL,1,'complete'),(2,1,1,'excluded'),(3,2,1,'excluded'),(4,3,1,'complete');")
+            .unwrap();
+        let count: i64 = conn
+            .query_row(
+                &format!("WITH RECURSIVE {SHIELDED} SELECT count(*) FROM shielded"),
+                [1],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 3);
+    }
     #[test]
     fn streamed_transactions_bound_bytes_and_release_applied_payloads() {
         let temp = tempfile::tempdir().unwrap();

@@ -1701,6 +1701,84 @@ fn rejected_staged_listing_preserves_references(conflicting_family: bool) {
 }
 
 #[test]
+fn revoking_one_root_clears_the_other_roots_cross_root_link_flag() {
+    let (temp, c, _, root, run) = setup();
+    let w = c.writer();
+    let WriteReply::Root {
+        dir_id: other,
+        grant_id: other_grant,
+        ..
+    } = w
+        .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_key: "fixture-volume".into(),
+            display_name: "Synthetic volume".into(),
+            display_path: "Second synthetic root".into(),
+            root_file_id: Some(vec![9; 16]),
+            filesystem: Some("NTFS".into()),
+            origin: "fixture".into(),
+            granted_via: "fixture".into(),
+            observed_at_ns: 3,
+        }))
+        .unwrap()
+    else {
+        panic!()
+    };
+    let WriteReply::Run(other_run) = w
+        .call(WriteCommand::BeginRun {
+            grant_id: other_grant,
+            mode: "full".into(),
+            strategy: "fixture".into(),
+            started_at_ns: 4,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    w.call(listing(run, root, vec![identified("first", 2, 10)], vec![]))
+        .unwrap();
+    w.call(listing(
+        other_run,
+        other,
+        vec![identified("second", 2, 10)],
+        vec![],
+    ))
+    .unwrap();
+    for run_id in [run, other_run] {
+        w.call(WriteCommand::EndRun {
+            run_id,
+            state: "completed".into(),
+            finished_at_ns: 5,
+        })
+        .unwrap();
+    }
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    let first_flag = || -> i64 {
+        db.query_row(
+            "SELECT flags & ?1 FROM file WHERE name='first'",
+            [HARDLINK_SUSPECTED],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_ne!(
+        first_flag(),
+        0,
+        "a cross-root link is flagged while both roots are visible"
+    );
+    w.call(WriteCommand::RevokeGrant {
+        grant_id: other_grant,
+        revoked_at_ns: 6,
+    })
+    .unwrap();
+    assert_eq!(first_flag(), 0, "the revoked root's copy no longer counts");
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM multilink", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
 fn multilink_flags_cover_both_roots_in_either_finalisation_order_and_clear_after_removal() {
     for reverse in [false, true] {
         let (temp, c, _, root, run) = setup();
@@ -2187,9 +2265,12 @@ fn a_completed_traversal_never_retires_the_subtree_of_an_excluded_directory() {
     let sub = directory("sub", 6);
     w.call(listing(run, proj_id, vec![], vec![sub.clone()]))
         .unwrap();
+    let deep = directory("deep", 11);
+    w.call(listing(run, id("sub"), vec![], vec![deep.clone()]))
+        .unwrap();
     let mut doc = identified("doc", 7, 100);
     doc.created_ft = Some(1);
-    w.call(listing(run, id("sub"), vec![doc.clone()], vec![]))
+    w.call(listing(run, id("deep"), vec![doc.clone()], vec![]))
         .unwrap();
     let mut old = identified("old", 10, 5);
     old.created_ft = Some(1);
@@ -2273,7 +2354,8 @@ fn a_completed_traversal_never_retires_the_subtree_of_an_excluded_directory() {
     let run = begin(w, grant, 7);
     w.call(listing(run, root, vec![], vec![proj])).unwrap();
     w.call(listing(run, proj_id, vec![], vec![sub])).unwrap();
-    w.call(listing(run, id("sub"), vec![doc], vec![])).unwrap();
+    w.call(listing(run, id("sub"), vec![], vec![deep])).unwrap();
+    w.call(listing(run, id("deep"), vec![doc], vec![])).unwrap();
     end(w, run, "completed");
     assert_eq!(file("doc"), doc_row);
     assert_eq!(binding(kept), bound);
@@ -2285,6 +2367,249 @@ fn a_completed_traversal_never_retires_the_subtree_of_an_excluded_directory() {
         )
         .unwrap(),
         1
+    );
+}
+
+#[test]
+fn multilink_ignores_files_below_excluded_or_absent_ancestors() {
+    for excluded in [true, false] {
+        let (temp, c, grant, root, run) = setup();
+        let w = c.writer();
+        let proj = directory("proj", 5);
+        w.call(listing(run, root, vec![], vec![proj.clone()]))
+            .unwrap();
+        let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+        let id = |name: &str| -> i64 {
+            db.query_row("SELECT id FROM dir WHERE name=?1", [name], |r| r.get(0))
+                .unwrap()
+        };
+        w.call(listing(
+            run,
+            id("proj"),
+            vec![identified("hidden-top", 8, 100)],
+            vec![directory("sub", 6)],
+        ))
+        .unwrap();
+        w.call(listing(run, id("sub"), vec![], vec![directory("deep", 7)]))
+            .unwrap();
+        w.call(listing(
+            run,
+            id("deep"),
+            vec![identified("hidden", 8, 100)],
+            vec![],
+        ))
+        .unwrap();
+        end(w, run, "completed");
+
+        let run = begin(w, grant, 5);
+        let dirs = if excluded {
+            let mut placeholder = proj.clone();
+            placeholder.flags = 1 << 3;
+            vec![placeholder]
+        } else {
+            vec![]
+        };
+        w.call(listing(
+            run,
+            root,
+            vec![identified("visible", 8, 100)],
+            dirs,
+        ))
+        .unwrap();
+        // Cancellation retains the genuinely absent subtree; exclusion retains it even after
+        // a full traversal. Neither retained copy belongs in the visible link count.
+        end(w, run, if excluded { "completed" } else { "cancelled" });
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM file WHERE name='hidden'", [], |r| r
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+            1
+        );
+        if excluded {
+            assert_eq!(
+                db.query_row("SELECT generation FROM root", [], |r| r
+                    .get::<_, Option<i64>>(0))
+                    .unwrap(),
+                Some(run),
+                "the traversal was full"
+            );
+        }
+        let mut reader = c.reader().unwrap();
+        let sums = reader.inspect(NodeKey::Dir(root)).unwrap().subtree.unwrap();
+        let flag: i64 = db
+            .query_row(
+                "SELECT flags & ?1 FROM file WHERE name='visible'",
+                [HARDLINK_SUSPECTED],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!((flag, sums.multi_link_entries), (0, 0));
+        assert_eq!(
+            (sums.unique_objects, sums.unique_allocated_bytes),
+            (Some(1), Some("100".into()))
+        );
+
+        // Positive control: the second name becomes visible again and must count as a link.
+        let run = begin(w, grant, 7);
+        w.call(listing(
+            run,
+            root,
+            vec![identified("visible", 8, 100)],
+            vec![proj],
+        ))
+        .unwrap();
+        w.call(listing(
+            run,
+            id("proj"),
+            vec![identified("hidden-top", 8, 100)],
+            vec![directory("sub", 6)],
+        ))
+        .unwrap();
+        w.call(listing(run, id("sub"), vec![], vec![directory("deep", 7)]))
+            .unwrap();
+        w.call(listing(
+            run,
+            id("deep"),
+            vec![identified("hidden", 8, 100)],
+            vec![],
+        ))
+        .unwrap();
+        end(w, run, "completed");
+        assert_eq!(
+            reader
+                .inspect(NodeKey::Dir(root))
+                .unwrap()
+                .subtree
+                .unwrap()
+                .multi_link_entries,
+            3
+        );
+    }
+}
+
+#[test]
+fn multilink_flags_only_visible_copies_when_hidden_copies_share_the_id() {
+    let (temp, c, grant, root, run) = setup();
+    let w = c.writer();
+    let proj = directory("proj", 5);
+    w.call(listing(run, root, vec![], vec![proj.clone()]))
+        .unwrap();
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    let proj_id: i64 = db
+        .query_row("SELECT id FROM dir WHERE name='proj'", [], |r| r.get(0))
+        .unwrap();
+    w.call(listing(
+        run,
+        proj_id,
+        vec![identified("hidden", 8, 100)],
+        vec![],
+    ))
+    .unwrap();
+    end(w, run, "completed");
+
+    let run = begin(w, grant, 5);
+    let mut placeholder = proj.clone();
+    placeholder.flags = 1 << 3;
+    w.call(listing(
+        run,
+        root,
+        vec![
+            identified("visible", 8, 100),
+            identified("visible2", 8, 100),
+        ],
+        vec![placeholder],
+    ))
+    .unwrap();
+    end(w, run, "completed");
+    let flag = |name: &str| -> i64 {
+        db.query_row(
+            "SELECT flags & ?1 FROM file WHERE name=?2",
+            rusqlite::params![HARDLINK_SUSPECTED, name],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    // The two visible names are a genuine link; the hidden copy is neither counted nor flagged.
+    assert_ne!(flag("visible"), 0);
+    assert_ne!(flag("visible2"), 0);
+    assert_eq!(flag("hidden"), 0);
+}
+
+#[test]
+fn absent_parent_retires_its_excluded_child_and_descendants() {
+    let (temp, c, grant, root, run) = setup();
+    let w = c.writer();
+    w.call(listing(run, root, vec![], vec![directory("parent", 5)]))
+        .unwrap();
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    let id = |name: &str| -> i64 {
+        db.query_row("SELECT id FROM dir WHERE name=?1", [name], |r| r.get(0))
+            .unwrap()
+    };
+    let child = directory("child", 6);
+    w.call(listing(run, id("parent"), vec![], vec![child.clone()]))
+        .unwrap();
+    let mut doc = identified("doc", 7, 100);
+    doc.created_ft = Some(1);
+    w.call(listing(run, id("child"), vec![doc], vec![]))
+        .unwrap();
+    let file: i64 = db
+        .query_row("SELECT id FROM file", [], |r| r.get(0))
+        .unwrap();
+    let WriteReply::Reference(reference) = w
+        .call(WriteCommand::ObjectReference {
+            node: NodeKey::File(file),
+            observed_at_ns: 3,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    end(w, run, "completed");
+
+    let run = begin(w, grant, 5);
+    w.call(listing(run, root, vec![], vec![directory("parent", 5)]))
+        .unwrap();
+    let mut placeholder = child;
+    placeholder.flags = 1 << 3;
+    w.call(listing(run, id("parent"), vec![], vec![placeholder]))
+        .unwrap();
+    end(w, run, "completed");
+    let st = Connection::open(temp.path().join("state.db")).unwrap();
+    let binding = || -> (String, bool) {
+        st.query_row(
+            "SELECT state,retired FROM object_ref WHERE id=?1",
+            [reference],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    };
+    assert_eq!(binding(), ("resolved".into(), false));
+
+    let run = begin(w, grant, 7);
+    w.call(listing(run, root, vec![], vec![])).unwrap();
+    assert_eq!(
+        binding(),
+        ("resolved".into(), false),
+        "retirement waits for EndRun"
+    );
+    end(w, run, "completed");
+    assert_eq!(binding(), ("unresolved".into(), true));
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM dir WHERE parent_id IS NOT NULL",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM file", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
     );
 }
 
