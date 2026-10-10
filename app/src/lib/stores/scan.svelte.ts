@@ -23,6 +23,35 @@ class Scans {
   change = $state<Change | null>(null);
   private n = 0;
   private streamEpoch: string | null = null;
+  private sessionStartedAt: string | null = null;
+  private generation = 0;
+
+  private resetEpoch(): void {
+    this.book = {};
+    this.problems = {};
+    this.pending = {};
+    this.change = null;
+    this.generation++;
+  }
+
+  /** HTTP hello can identify a restart before the event stream's hello arrives. */
+  private alignEpoch(): void {
+    const startedAt = session.info?.session_started_at;
+    if (startedAt && this.sessionStartedAt !== startedAt) {
+      this.resetEpoch();
+      this.sessionStartedAt = startedAt;
+      this.streamEpoch = null;
+    }
+  }
+
+  private captureGeneration(): () => boolean {
+    this.alignEpoch();
+    const generation = this.generation, epoch = session.epoch, client = session.client;
+    return () => {
+      this.alignEpoch();
+      return generation === this.generation && epoch === session.epoch && client === session.client;
+    };
+  }
 
   view(rootId: string, nowMs: number): ScanView | null {
     const job = this.book[rootId];
@@ -34,7 +63,8 @@ class Scans {
   }
 
   onEvent(ev: EventEnvelope): void {
-    if (this.streamEpoch !== null && this.streamEpoch !== ev.epoch) this.book = {};
+    this.alignEpoch();
+    if (this.streamEpoch !== null && this.streamEpoch !== ev.epoch) this.resetEpoch();
     this.streamEpoch = ev.epoch;
     if (ev.event === 'job.state') this.apply((ev.data as unknown as JobResult).job);
     else if (ev.event === 'scan.progress') {
@@ -55,16 +85,28 @@ class Scans {
   async sync(): Promise<void> {
     const c = session.client;
     if (!c) return;
-    const { result } = await c.call('jobs.list', { kinds: ['scan'], limit: 50 });
+    const current = this.captureGeneration();
+    let result;
+    try {
+      ({ result } = await c.call('jobs.list', { kinds: ['scan'], limit: 50 }));
+    } catch (e) {
+      if (!current()) return;
+      throw e;
+    }
+    if (!current()) return;
     this.commit(result.jobs.reduce(applyJob, this.book));
     for (const job of result.jobs) if (job.root_id && this.book[job.root_id]?.job_id === job.job_id) this.clearConfirmationProblem(job.root_id);
     const listed = new Set(result.jobs.map((j) => j.job_id));
     for (const job of Object.values(this.book)) {
       if (!isActive(job.state) || listed.has(job.job_id)) continue;
+      const currentJob = this.captureGeneration();
       try {
-        this.apply((await c.call('jobs.get', { job_id: job.job_id })).result.job);
+        const { result } = await c.call('jobs.get', { job_id: job.job_id });
+        if (!currentJob()) return;
+        this.apply(result.job);
         this.clearConfirmationProblem(job.root_id!);
       } catch (e) {
+        if (!currentJob()) return;
         if (e instanceof LoomwardError && e.code === 'not_found') {
           // This is a local observation, not a new engine revision; don't overwrite a newer snapshot.
           if (this.book[job.root_id!]?.job_id === job.job_id && this.book[job.root_id!]?.rev === job.rev) {
@@ -81,42 +123,57 @@ class Scans {
 
   async start(rootId: string, mode: 'full' | 'refresh'): Promise<void> {
     const c = session.client;
+    const current = this.captureGeneration(), generation = this.generation;
     if (!c || this.pending[rootId]) return;
     this.pending = { ...this.pending, [rootId]: true };
     this.setProblem(rootId, null);
     try {
-      this.apply((await c.call('scan.start', { root_id: rootId, mode })).result.job);
+      const { result } = await c.call('scan.start', { root_id: rootId, mode });
+      if (!current()) return;
+      this.apply(result.job);
     } catch (e) {
+      if (!current()) return;
       if (!(e instanceof LoomwardError)) throw e; // a transport fault belongs to the shell
       const busyJob = e.code === 'busy' && typeof e.detail?.job_id === 'string' ? e.detail.job_id : null;
       if (busyJob) await this.adopt(busyJob);
+      if (!current()) return;
       this.setProblem(rootId, refusalText(e.code, e.detail, e.message));
     } finally {
-      this.pending = { ...this.pending, [rootId]: false };
+      if (generation === this.generation) this.pending = { ...this.pending, [rootId]: false };
     }
   }
 
   async cancel(rootId: string): Promise<void> {
     const c = session.client;
+    const current = this.captureGeneration(), generation = this.generation;
     const job = this.book[rootId];
     if (!c || !job || this.pending[rootId]) return;
     this.pending = { ...this.pending, [rootId]: true };
     this.setProblem(rootId, null);
     try {
-      this.apply((await c.call('scan.cancel', { job_id: job.job_id })).result.job);
+      const { result } = await c.call('scan.cancel', { job_id: job.job_id });
+      if (!current()) return;
+      this.apply(result.job);
     } catch (e) {
+      if (!current()) return;
       if (!(e instanceof LoomwardError)) throw e;
       this.setProblem(rootId, `The scan could not be cancelled: ${e.message}`);
     } finally {
-      this.pending = { ...this.pending, [rootId]: false };
+      if (generation === this.generation) this.pending = { ...this.pending, [rootId]: false };
     }
   }
 
   /** A start answered `busy` with the running job's id: show that job instead of pretending none exists. */
   private async adopt(jobId: string): Promise<void> {
+    const c = session.client;
+    if (!c) return;
+    const current = this.captureGeneration();
     try {
-      this.apply((await session.client!.call('jobs.get', { job_id: jobId })).result.job);
+      const { result } = await c.call('jobs.get', { job_id: jobId });
+      if (!current()) return;
+      this.apply(result.job);
     } catch (e) {
+      if (!current()) return;
       if (!(e instanceof LoomwardError)) throw e;
     }
   }

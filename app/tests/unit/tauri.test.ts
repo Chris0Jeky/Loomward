@@ -117,6 +117,33 @@ describe('tauri transport', () => {
       } finally { stop(); }
     });
 
+    it.each([
+      { last: 99, oldest: 2, seq: 6, replay: false },
+      { last: 1, oldest: 3, seq: 3, replay: true },
+      { last: 5, oldest: 3, seq: 2, replay: false },
+      { last: -1, oldest: 2, seq: 2, replay: false },
+      { last: 2.5, oldest: 2, seq: 2, replay: false },
+      { last: '5', oldest: 2, seq: 2, replay: false },
+      { last: Number.MAX_SAFE_INTEGER + 1, oldest: 2, seq: 2, replay: false },
+      { last: 5, oldest: -1, seq: 2, replay: false },
+      { last: 5, oldest: 2.5, seq: 3, replay: false },
+      { last: 5, oldest: undefined, seq: 2, replay: false },
+      { last: 5, oldest: 6, seq: 5, replay: false },
+    ])('bounds the first-hello replay window: $last/$oldest, event $seq', async ({ last, oldest, seq, replay }) => {
+      const { api, channels } = mk();
+      const t = await createTauriTransport(api);
+      const got: string[] = [];
+      const stop = t.subscribe((e) => got.push(`${e.event}:${e.seq}`), () => {}, { epoch: 'e1', seq: 1 });
+      try {
+        await until(() => channels.length === 1);
+        channels[0]!.onmessage({ ...env('e1', 5, 'stream.hello', { epoch: 'e1', last_seq: last, oldest_replayable_seq: oldest }), at: new Date().toISOString() });
+        channels[0]!.onmessage({ ...ev(seq), at: new Date(Date.now() - 60_000).toISOString() });
+        expect(got).toEqual(['stream.hello:5', `${replay ? 'roots.changed' : 'stream.lagged'}:${seq}`]);
+        channels[0]!.onmessage({ ...ev(7), at: new Date().toISOString() });
+        expect(got.at(-1)).toBe('roots.changed:7');
+      } finally { stop(); }
+    });
+
     it('reports closed when the channel goes silent past the heartbeat window, then resubscribes from the last seq', async () => {
       const { api, channels, lastSeqs, resumes } = mk();
       const t = await createTauriTransport(api, { idleMs: 40, sleep: async () => {} });

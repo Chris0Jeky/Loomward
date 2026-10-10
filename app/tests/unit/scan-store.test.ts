@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CommandKey, ErrorCode, EventEnvelope, Job, JobState } from '../../src/lib/contracts.gen';
+import type { CommandKey, ErrorCode, EventEnvelope, Job, JobState, SessionInfo } from '../../src/lib/contracts.gen';
 import { scans } from '../../src/lib/stores/scan.svelte';
 import { session } from '../../src/lib/stores/session.svelte';
 import { Client } from '../../src/lib/transport/client';
@@ -11,7 +11,12 @@ const job = (state: JobState, over: Partial<Job> = {}): Job => ({
 });
 const ev = (event: EventEnvelope['event'], data: unknown): EventEnvelope =>
   ({ protocol: 'loomward/3', epoch: 'e1', seq: 1, event, at: '2026-10-10T10:00:00Z', catalog_rev: null, state_rev: null, data } as EventEnvelope);
-const fresh = () => { scans.book = {}; scans.problems = {}; scans.pending = {}; scans.change = null; };
+const fresh = () => {
+  scans.book = {}; scans.problems = {}; scans.pending = {}; scans.change = null;
+  session.info = null;
+  const epochs = scans as unknown as { streamEpoch: string | null; sessionStartedAt: string | null };
+  epochs.streamEpoch = null; epochs.sessionStartedAt = null;
+};
 
 describe('the scan store follows the event stream', () => {
   beforeEach(fresh);
@@ -67,6 +72,99 @@ function clientWith(handler: (command: string, payload: Record<string, unknown>)
   } as unknown as Transport;
   return { client: new Client(transport), calls };
 }
+
+describe('scan requests stay inside their engine generation', () => {
+  const oldJob = job('running', { job_id: 'jb_old', seq: 50 });
+  const newJob = job('queued', { job_id: 'jb_new', seq: 1 });
+  const hello = (epoch: string) => ({ ...ev('stream.hello', {}), epoch });
+  const httpHello = () => {
+    session.info = { session_started_at: '2026-10-10T11:00:00Z' } as SessionInfo;
+    session.epoch++;
+  };
+
+  beforeEach(() => {
+    fresh();
+    session.info = { session_started_at: '2026-10-10T10:00:00Z' } as SessionInfo;
+    scans.onEvent(hello('old_epoch'));
+    scans.apply(oldJob);
+  });
+  afterEach(() => { session.client = null; session.info = null; });
+
+  it.each(['sync', 'start', 'adopt'] as const)('clears old ordering on %s after HTTP hello and before SSE hello', async (operation) => {
+    session.client = clientWith((c) => c === 'jobs.list' ? { jobs: [newJob] } :
+      c === 'scan.start' && operation === 'adopt' ? { error: { code: 'busy', message: 'running', detail: { job_id: 'jb_new' } } } : { job: newJob }).client;
+    httpHello();
+    if (operation === 'sync') await scans.sync();
+    else await scans.start('rt_a', 'full');
+    expect(scans.book.rt_a?.job_id).toBe('jb_new');
+    scans.onEvent(hello('new_epoch'));
+    expect(scans.book.rt_a?.job_id).toBe('jb_new');
+  });
+
+  it.each((['jobs.list', 'jobs.get', 'scan.start', 'scan.cancel', 'adopt'] as const)
+    .flatMap((command) => (['http', 'stream'] as const).map((via) => ({ command, via }))))(
+    'drops an old $command response after a new epoch via $via', async ({ command, via }) => {
+      let answer!: (reply: Reply) => void;
+      session.client = clientWith((c) => {
+        if (c === 'jobs.list' && command === 'jobs.get') return { jobs: [] };
+        if (c === 'scan.start' && command === 'adopt') return { error: { code: 'busy', message: 'old scan', detail: { job_id: 'jb_old' } } };
+        return new Promise<Reply>((resolve) => { answer = resolve; });
+      }).client;
+      const pending = command === 'jobs.list' || command === 'jobs.get' ? scans.sync() :
+        command === 'scan.cancel' ? scans.cancel('rt_a') : scans.start('rt_a', 'full');
+      await vi.waitFor(() => expect(answer).toBeTypeOf('function'));
+      if (via === 'http') httpHello();
+      else {
+        scans.onEvent(hello('new_epoch'));
+        scans.onEvent({ ...ev('job.state', { job: newJob }), epoch: 'new_epoch' });
+      }
+      // The old response itself must notice the HTTP epoch, without a preceding sync/event.
+      answer(command === 'jobs.list' ? { jobs: [oldJob] } : { job: oldJob });
+      await pending;
+      expect(scans.book).toEqual(via === 'http' ? {} : { rt_a: newJob });
+      expect(scans.problems).toEqual({});
+      scans.onEvent(hello('new_epoch'));
+      scans.onEvent({ ...ev('job.state', { job: newJob }), epoch: 'new_epoch' });
+      expect(scans.book.rt_a?.job_id).toBe('jb_new');
+    },
+  );
+
+  it.each(['jobs.list', 'jobs.get', 'scan.start', 'scan.cancel', 'adopt'] as const)(
+    'drops an old %s rejection after an SSE epoch change', async (command) => {
+      let answer!: (reply: Reply) => void;
+      session.client = clientWith((c) => {
+        if (c === 'jobs.list' && command === 'jobs.get') return { jobs: [] };
+        if (c === 'scan.start' && command === 'adopt') return { error: { code: 'busy', message: 'old scan', detail: { job_id: 'jb_old' } } };
+        return new Promise<Reply>((resolve) => { answer = resolve; });
+      }).client;
+      const pending = command === 'jobs.list' || command === 'jobs.get' ? scans.sync() :
+        command === 'scan.cancel' ? scans.cancel('rt_a') : scans.start('rt_a', 'full');
+      await vi.waitFor(() => expect(answer).toBeTypeOf('function'));
+      scans.onEvent(hello('new_epoch'));
+      scans.onEvent({ ...ev('job.state', { job: newJob }), epoch: 'new_epoch' });
+      answer({ error: { code: 'internal_error', message: 'old engine refusal' } });
+      await expect(pending).resolves.toBeUndefined();
+      expect(scans.book.rt_a?.job_id).toBe('jb_new');
+      expect(scans.problems).toEqual({});
+    },
+  );
+
+  it('does not let an old start clear the pending flag of a new-engine start', async () => {
+    const answers: ((reply: Reply) => void)[] = [];
+    session.client = clientWith(() => new Promise<Reply>((resolve) => answers.push(resolve))).client;
+    const oldStart = scans.start('rt_a', 'full');
+    scans.onEvent(hello('new_epoch'));
+    const newStart = scans.start('rt_a', 'full');
+    expect(answers).toHaveLength(2);
+    answers[0]!({ job: oldJob });
+    await oldStart;
+    expect(scans.pending.rt_a).toBe(true);
+    answers[1]!({ job: newJob });
+    await newStart;
+    expect(scans.pending.rt_a).toBe(false);
+    expect(scans.book.rt_a?.job_id).toBe('jb_new');
+  });
+});
 
 describe('settling and syncing keep what was known', () => {
   beforeEach(fresh);
