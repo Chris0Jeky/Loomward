@@ -682,6 +682,38 @@ struct CrossRun {
     error: Option<String>,
 }
 
+fn validated_root_log(root: &Path, log_path: &Path) -> io::Result<PathBuf> {
+    if !log_path.is_absolute() {
+        return Err(invalid(
+            "root-log must be absolute and outside the scan root",
+        ));
+    }
+    let root = fs::canonicalize(root)?;
+    let parent = fs::canonicalize(
+        log_path
+            .parent()
+            .ok_or_else(|| invalid("root-log parent required"))?,
+    )?;
+    let root_key = root
+        .to_str()
+        .ok_or_else(|| invalid("root final path must be Unicode"))?
+        .to_lowercase();
+    let parent_key = parent
+        .to_str()
+        .ok_or_else(|| invalid("root-log parent final path must be Unicode"))?
+        .to_lowercase();
+    if !parent.is_dir() || Path::new(&parent_key).starts_with(Path::new(&root_key)) {
+        return Err(invalid(
+            "root-log must be absolute and outside the scan root",
+        ));
+    }
+    Ok(parent.join(
+        log_path
+            .file_name()
+            .ok_or_else(|| invalid("root-log filename required"))?,
+    ))
+}
+
 fn cross_check(
     input: &str,
     name: Option<&str>,
@@ -699,12 +731,7 @@ fn cross_check(
             _ => return Err(invalid("unknown cross-check strategy")),
         };
         let root = PathBuf::from(format!(r"\\?\{input}"));
-        let log_path = Path::new(root_log);
-        if !log_path.is_absolute() || log_path.starts_with(Path::new(input)) {
-            return Err(invalid(
-                "root-log must be absolute and outside the scan root",
-            ));
-        }
+        let log_path = validated_root_log(Path::new(input), Path::new(root_log))?;
         let mut log = OpenOptions::new()
             .append(true)
             .create(true)
@@ -1025,5 +1052,99 @@ pub fn run() -> io::Result<()> {
             required("--root-log")?,
         ),
         _ => unreachable!(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct LogScope(PathBuf);
+
+    impl LogScope {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "loomward-log-guard-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs::create_dir(&path).unwrap();
+            fs::create_dir(path.join("scanroot-long-name")).unwrap();
+            Self(path)
+        }
+
+        fn root(&self) -> PathBuf {
+            self.0.join("scanroot-long-name")
+        }
+    }
+
+    impl Drop for LogScope {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+
+    #[test]
+    fn root_log_refuses_case_variant() {
+        let scope = LogScope::new();
+        let log = PathBuf::from(scope.root().to_str().unwrap().to_uppercase()).join("unsafe.log");
+        assert!(validated_root_log(&scope.root(), &log).is_err());
+    }
+
+    #[test]
+    fn root_log_refuses_parent_components() {
+        let scope = LogScope::new();
+        fs::create_dir(scope.0.join("outside")).unwrap();
+        let log = scope.0.join("outside\\..\\scanroot-long-name\\unsafe.log");
+        assert!(validated_root_log(&scope.root(), &log).is_err());
+    }
+
+    #[test]
+    fn root_log_refuses_namespace_alias() {
+        let scope = LogScope::new();
+        let log = fs::canonicalize(scope.root()).unwrap().join("unsafe.log");
+        assert!(log.to_str().unwrap().starts_with(r"\\?\"));
+        assert!(validated_root_log(&scope.root(), &log).is_err());
+    }
+
+    #[test]
+    fn root_log_refuses_short_name_alias() {
+        let scope = LogScope::new();
+        let mut buffer = vec![0u16; 32768];
+        let length = unsafe {
+            GetShortPathNameW(
+                wide(&scope.root()).as_ptr(),
+                buffer.as_mut_ptr(),
+                buffer.len() as u32,
+            )
+        };
+        assert!(length > 0 && (length as usize) < buffer.len());
+        let short = PathBuf::from(OsString::from_wide(&buffer[..length as usize]));
+        if short == scope.root() {
+            eprintln!("UNVERIFIED: fixture volume has no 8.3 alias");
+            return;
+        }
+        assert!(validated_root_log(&scope.root(), &short.join("unsafe.log")).is_err());
+        assert!(validated_root_log(&short, &scope.root().join("unsafe.log")).is_err());
+    }
+
+    #[test]
+    fn root_log_refuses_unresolved_parent_and_relative_path() {
+        let scope = LogScope::new();
+        assert!(validated_root_log(&scope.root(), &scope.0.join("missing\\unsafe.log")).is_err());
+        assert!(validated_root_log(&scope.root(), Path::new("relative.log")).is_err());
+    }
+
+    #[test]
+    fn root_log_accepts_external_sibling_with_shared_prefix() {
+        let scope = LogScope::new();
+        let sibling = scope.0.join("scanroot-long-name-sibling");
+        fs::create_dir(&sibling).unwrap();
+        assert!(validated_root_log(&scope.root(), &sibling.join("safe.log")).is_ok());
+        assert!(validated_root_log(&scope.root(), &scope.0.join("safe.log")).is_ok());
+        assert!(validated_root_log(&scope.root(), &scope.root().join("unsafe.log")).is_err());
     }
 }
