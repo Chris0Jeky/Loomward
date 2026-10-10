@@ -212,6 +212,54 @@ fn directory_attributes(file: &File) -> Result<FILE_ATTRIBUTE_TAG_INFO, SourceEr
         information(file.as_raw_handle(), FileAttributeTagInfo).ok_or_else(last_error)?;
     validate_directory_attributes(attr)
 }
+
+fn readonly_error(error: SourceError) -> std::io::Error {
+    match error {
+        SourceError::Io(code) => std::io::Error::from_raw_os_error(if code < 0 {
+            (unsafe { RtlNtStatusToDosError(code) }) as i32
+        } else {
+            code
+        }),
+        SourceError::AccessDenied => std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "non-elevated guarded access required",
+        ),
+        _ => std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "placeholder, offline, reparse or invalid path refused",
+        ),
+    }
+}
+
+/// Open a local directory by a non-elevated, no-recall, no-follow handle walk.
+/// Ancestor handles bind subsequent opens; attribute-only handles do not prevent renames.
+pub fn open_readonly_directory(path: &Path) -> std::io::Result<File> {
+    let mut pins = root_handles(path, FILE_READ_ATTRIBUTES | SYNCHRONIZE, FILE_SHARE_READ)
+        .map_err(readonly_error)?;
+    Ok(pins.pop().unwrap())
+}
+
+/// Open one validated child relative to an already-open directory, never following reparses.
+/// Contents access is read-only and denies concurrent writers; metadata access does not.
+pub fn open_readonly_child(parent: &File, name: &[u16], contents: bool) -> std::io::Result<File> {
+    directory_attributes(parent).map_err(readonly_error)?;
+    let file = open_relative(
+        parent,
+        name,
+        FILE_READ_ATTRIBUTES | SYNCHRONIZE | if contents { FILE_READ_DATA } else { 0 },
+        FILE_SHARE_READ | FILE_SHARE_DELETE,
+    )
+    .map_err(readonly_error)?;
+    if unsafe { GetFileType(file.as_raw_handle()) } != FILE_TYPE_DISK {
+        return Err(readonly_error(SourceError::Refused));
+    }
+    let attr: FILE_ATTRIBUTE_TAG_INFO = information(file.as_raw_handle(), FileAttributeTagInfo)
+        .ok_or_else(|| readonly_error(last_error()))?;
+    if refused_attributes(attr.FileAttributes) {
+        return Err(readonly_error(SourceError::Refused));
+    }
+    Ok(file)
+}
 fn validate_directory_attributes(
     attr: FILE_ATTRIBUTE_TAG_INFO,
 ) -> Result<FILE_ATTRIBUTE_TAG_INFO, SourceError> {

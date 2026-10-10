@@ -368,10 +368,6 @@ fn unicode_link_info_paths_volume_and_network_offsets() {
 
 #[test]
 fn hostile_extra_blocks_utf16_and_counts_are_bounded() {
-    let mut b = header(0x84);
-    b.extend(1u16.to_le_bytes());
-    b.extend(0xd800u16.to_le_bytes());
-    assert_eq!(parse(&finish(b)).unwrap_err().0, "invalid UTF-16");
     let mut b = header(0);
     for _ in 0..65 {
         b.extend(8u32.to_le_bytes());
@@ -406,6 +402,59 @@ fn hostile_extra_blocks_utf16_and_counts_are_bounded() {
         parse(&b).unwrap_err().0,
         "trailing data after terminal block"
     );
+}
+
+#[test]
+fn unpaired_surrogates_preserve_raw_units() {
+    for units in [vec![0xd800u16], vec![0xdc00, 65], vec![65, 0xd800, 66]] {
+        let mut b = header(0x84);
+        b.extend((units.len() as u16).to_le_bytes());
+        for unit in &units {
+            b.extend(unit.to_le_bytes());
+        }
+        let text = parse(&finish(b)).unwrap().name.unwrap();
+        assert_eq!(text, Text::Wide(units));
+        assert_eq!(text.as_str(), None);
+    }
+    let mut s = local();
+    s.link_info.as_mut().unwrap().local_base_path = Some(Text::Wide(vec![0xd800]));
+    let p = probe(VolumeState::Available, MetadataState::Present);
+    assert_eq!(health(&s, &p), Health::Unknown);
+    assert_eq!(p.calls.get(), 0);
+}
+
+#[test]
+fn random_and_mutated_links_never_panic() {
+    let mut state = 0x248_044_045u64;
+    let mut random = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let mut local = header(2);
+    local.extend(local_info());
+    let mut text = header(0x84);
+    string(&mut text, "synthetic name");
+    let seeds = [finish(header(0)), finish(local), finish(text)];
+    for index in 0..12_000 {
+        let mut bytes = if index % 2 == 0 {
+            seeds[index % seeds.len()].clone()
+        } else {
+            (0..random() % 2048).map(|_| random() as u8).collect()
+        };
+        for _ in 0..1 + random() % 8 {
+            if !bytes.is_empty() {
+                let at = random() as usize % bytes.len();
+                bytes[at] = random() as u8;
+            }
+        }
+        if index % 3 == 0 {
+            let len = random() as usize % (bytes.len() + 1);
+            bytes.truncate(len);
+        }
+        let _ = parse(&bytes);
+    }
 }
 
 #[test]
@@ -483,20 +532,81 @@ fn known_folders_preserve_redirection_ownership_unicode_and_failures() {
 }
 #[test]
 fn source_has_no_execution_com_initialisation_or_library_loading() {
-    let src = [
-        include_str!("../src/lib.rs"),
-        include_str!("../src/known_folders.rs"),
-        include_str!("../src/shortcuts.rs"),
-    ]
-    .join("\n");
+    assert!(guard_tree(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")
+    ));
+}
+
+fn guard_tree(dir: &std::path::Path) -> bool {
+    std::fs::read_dir(dir).unwrap().all(|entry| {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            guard_tree(&path)
+        } else {
+            guard_source(&std::fs::read_to_string(path).unwrap())
+        }
+    })
+}
+
+fn guard_source(src: &str) -> bool {
+    if src
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .any(|word| matches!(word, "process" | "Command"))
+    {
+        return false;
+    }
     for token in [
         "std::process",
         "CoInitialize",
         "LoadLibrary",
         "IShellLink",
         "IPersistFile",
+        "ShellExecuteW",
+        "CreateProcessW",
+        "CoCreateInstance",
+        "SHGetFileInfo",
+        "ExtractIcon",
+        "SHParseDisplayName",
+        "SHCreateItemFromParsingName",
+        "GetProcAddress",
     ] {
-        assert!(!src.contains(token), "forbidden token {token}");
+        if src.contains(token) {
+            return false;
+        }
+    }
+    true
+}
+
+#[test]
+fn source_guard_covers_nested_files_and_import_forms() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("nested/deeper")).unwrap();
+    let path = dir.path().join("nested/deeper/adapter.rs");
+    std::fs::write(&path, "use std::{io, path::Path};").unwrap();
+    assert!(guard_tree(dir.path()));
+    for source in [
+        "use std::{io, process::Command};",
+        "use std::{process::{self, Command as Run}};",
+        "use std::{process as p};",
+        "use std::process;",
+        "use std::process::*;",
+        "Command :: new(\"inert\");",
+        "process :: id();",
+        "ShellExecuteW",
+        "CreateProcessW",
+        "CoCreateInstance",
+        "SHGetFileInfoW",
+        "ExtractIconExW",
+        "SHParseDisplayName",
+        "SHCreateItemFromParsingName",
+        "GetProcAddress",
+        "CoInitialize",
+        "LoadLibrary",
+        "IShellLink",
+        "IPersistFile",
+    ] {
+        std::fs::write(&path, source).unwrap();
+        assert!(!guard_tree(dir.path()), "guard missed {source}");
     }
 }
 #[cfg(windows)]
