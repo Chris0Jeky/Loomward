@@ -18,10 +18,14 @@ whole-disk scan, benchmark, effect endpoint, commit or push was performed.
 | 5 | Stream syntax in any component is `invalid_path`; repeated relative names are skipped as `duplicate_name`, never counted as multiple names of an object | `crates/loomward-windows/src/duplicate_reader/native.rs:98`, `crates/loomward-windows/src/duplicate_reader.rs:261` |
 | 6 | Elevation refusal precedes even an expired budget, without opening the root | `crates/loomward-windows/src/duplicate_reader.rs:141` |
 
+The per-root gate is held during admission and the final revocation check, not across content I/O.
+Revocation requests cancellation and can return before pending reads drain.
 Pending overlapped reads check the root cancellation every 10 ms while waiting and use
 `CancelIoEx` plus a drain before dropping the event, buffer or OVERLAPPED. The grouping core
-clears equality groups on cancellation; the engine checks the revocation fence again before
-returning evidence. #233's cancel-jobs-before-watch-teardown ordering is retained.
+originally cleared equality groups on cancellation. The bug-hunt correction preserves already
+verified reader groups with partial coverage and a stop reason; the engine still checks the
+revocation fence again before returning evidence and refuses a revoked report in its entirety.
+#233's cancel-jobs-before-watch-teardown ordering is retained.
 
 `GrantedRoot` does not carry a durable row id. To leave the concurrently owned grant-construction
 region unchanged, inspection requires exactly one matching durable path/volume/file-identity

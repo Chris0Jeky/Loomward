@@ -28,7 +28,6 @@ pub struct Budget {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reason {
-    ContentReadGated,
     Elevated,
     Unsupported,
     InvalidPath,
@@ -49,7 +48,6 @@ pub enum Reason {
 impl Reason {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::ContentReadGated => "content_read_gated",
             Self::Elevated => "elevated",
             Self::Unsupported => "unsupported",
             Self::InvalidPath => "invalid_path",
@@ -214,7 +212,7 @@ trait ContentReader {
         right: usize,
         entries: &[Entry],
         meter: &mut Meter,
-    ) -> Result<bool, Reason>;
+    ) -> Result<bool, Skip>;
 }
 #[cfg(any(windows, test))]
 fn attributes(attributes: u32) -> Result<(), Reason> {
@@ -323,18 +321,27 @@ fn group(entries: &[Entry], reader: &mut impl ContentReader, meter: &mut Meter) 
         let mut partitions: Vec<Vec<usize>> = Vec::new();
         for index in indices {
             let mut placed = false;
-            for partition in &mut partitions {
+            let mut position = 0;
+            while position < partitions.len() {
+                let partition = &mut partitions[position];
                 match reader.equal(partition[0], index, entries, meter) {
                     Ok(true) => {
                         partition.push(index);
                         placed = true;
                         break;
                     }
-                    Ok(false) => {}
-                    Err(reason) => {
-                        skip(&mut report, index, reason);
-                        placed = true;
-                        break;
+                    Ok(false) => position += 1,
+                    Err(failed) => {
+                        skip(&mut report, failed.entry, failed.reason);
+                        if failed.entry == index || budget_reason(failed.reason) {
+                            placed = true;
+                            break;
+                        }
+                        // Retry the innocent candidate against the next surviving representative.
+                        partition.remove(0);
+                        if partition.is_empty() {
+                            partitions.remove(position);
+                        }
                     }
                 }
             }
@@ -358,7 +365,6 @@ fn group(entries: &[Entry], reader: &mut impl ContentReader, meter: &mut Meter) 
         }
     }
     if let Err(reason) = meter.check() {
-        report.groups.clear();
         report.partial = true;
         report.stop = Some(reason);
     }
