@@ -1349,27 +1349,44 @@ fn granted_root_comes_only_from_an_active_durable_grant() {
     insert(1, &file_id, "active");
     insert(2, &file_id, "revoked");
     insert(3, &[9; 16], "active");
+    // Catalogue root row `g` observes grant `g`.
+    rusqlite::Connection::open(state.path().join("catalog.db"))
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE root(id INTEGER PRIMARY KEY,grant_id INTEGER);
+             INSERT INTO root VALUES(1,1),(2,2),(3,3),(4,4);",
+        )
+        .unwrap();
     let engine = Engine::open(EngineConfig::new(
         state.path().to_path_buf(),
         DatasetClass::Synthetic,
     ))
     .unwrap();
-    let id = || RootId::new("rt_granted").unwrap();
+    let rt = |row: i64| RootId::new(format!("rt_{row}_0a1b2c3d")).unwrap();
     let message =
         |r: EngineResult<GrantedRoot>| r.unwrap_err().to_body().message.as_str().to_owned();
-    let root = engine.granted_root(id(), 1).unwrap();
+    let root = engine.granted_root(rt(1), 1).unwrap();
     assert_eq!(root.path(), root_dir.path());
     assert_eq!(root.dataset_class(), DatasetClass::Synthetic);
-    assert_eq!(message(engine.granted_root(id(), 2)), "grant_not_active");
-    assert_eq!(message(engine.granted_root(id(), 4)), "grant_not_active");
+    assert_eq!(message(engine.granted_root(rt(2), 2)), "grant_not_active");
+    assert_eq!(message(engine.granted_root(rt(4), 4)), "grant_not_active");
     assert_eq!(
-        message(engine.granted_root(id(), 3)),
+        message(engine.granted_root(rt(3), 3)),
         "root_identity_changed"
+    );
+    // #206: a root ID and an active grant that do not belong together are refused.
+    assert_eq!(
+        message(engine.granted_root(rt(3), 1)),
+        "grant_root_mismatch"
+    );
+    assert_eq!(
+        message(engine.granted_root(RootId::new("rt_granted").unwrap(), 1)),
+        "grant_root_mismatch"
     );
     // The row's class, not the caller's, reaches the engine's class check.
     conn.execute("UPDATE meta SET value='personal'", [])
         .unwrap();
-    let personal = engine.granted_root(id(), 1).unwrap();
+    let personal = engine.granted_root(rt(1), 1).unwrap();
     assert_eq!(personal.dataset_class(), DatasetClass::Personal);
     engine
         .set_scan_sink(Arc::new(MemorySink::default()))
