@@ -100,7 +100,7 @@ fn fixture() -> (tempfile::TempDir, Connection, WriteCommand) {
     )
     .unwrap();
     conn.execute_batch(
-        "PRAGMA main.foreign_keys=ON; PRAGMA st.synchronous=FULL;
+        "PRAGMA main.foreign_keys=ON; PRAGMA main.synchronous=NORMAL; PRAGMA st.synchronous=FULL;
         INSERT INTO st.collection VALUES(1,'Kept','human',1);
         INSERT INTO st.collection_member SELECT 1,id,1 FROM st.object_ref;",
     )
@@ -222,6 +222,79 @@ fn pending_count(dir: &std::path::Path) -> i64 {
         .unwrap()
 }
 
+fn assert_publication_sync(conn: &Connection, after_commit: bool) {
+    let pending: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM st.pending_reference)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let mode: i64 = conn
+        .query_row("PRAGMA main.synchronous", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(mode, if pending && !after_commit { 2 } else { 1 });
+    assert_eq!(
+        conn.query_row("PRAGMA st.synchronous", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    assert_eq!(conn.is_autocommit(), after_commit);
+}
+
+#[test]
+fn publication_sync_is_full_only_with_intents_and_normal_is_restored() {
+    for intents in [true, false] {
+        let (_temp, conn, command) = fixture();
+        if !intents {
+            conn.execute_batch("DELETE FROM st.collection_member; DELETE FROM st.object_ref")
+                .unwrap();
+        }
+        publish(
+            conn,
+            command,
+            Some(PublicationCrash::Observe(assert_publication_sync)),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn hardlink_membership_survives_publication_before_confirmation() {
+    for crash in [
+        PublicationCrash::BeforeCatalog,
+        PublicationCrash::AfterCatalog,
+    ] {
+        let (temp, conn, command) = fixture();
+        let before = bindings(temp.path());
+        publish(conn, command, Some(crash)).unwrap_err();
+        assert_eq!(bindings(temp.path()), before);
+        assert_eq!(pending_count(temp.path()), 4);
+        let membership = Reader::open(temp.path())
+            .unwrap()
+            .inspect(NodeKey::File(2))
+            .unwrap()
+            .memberships;
+        if matches!(crash, PublicationCrash::BeforeCatalog) {
+            assert_memberships(temp.path());
+            // An uncommitted witness must not expose the pending new binding.
+            assert!(membership.is_empty());
+        } else {
+            assert_eq!(membership[0].name, "Kept");
+            drop(crate::db::open_pair(temp.path(), "synthetic").unwrap());
+            assert_eq!(
+                Reader::open(temp.path())
+                    .unwrap()
+                    .inspect(NodeKey::File(2))
+                    .unwrap()
+                    .memberships[0]
+                    .name,
+                "Kept"
+            );
+        }
+    }
+}
+
 #[test]
 fn catalogue_commit_failure_reverts_pending_references_and_preserves_listing() {
     let (temp, conn, command) = fixture();
@@ -231,7 +304,14 @@ fn catalogue_commit_failure_reverts_pending_references_and_preserves_listing() {
     conn.execute_batch("CREATE TABLE fault_parent(id INTEGER PRIMARY KEY);
         CREATE TABLE fault_child(id INTEGER REFERENCES fault_parent(id) DEFERRABLE INITIALLY DEFERRED);
         CREATE TRIGGER fail_commit AFTER UPDATE ON revision BEGIN INSERT INTO fault_child VALUES(1);END;").unwrap();
-    assert!(matches!(publish(conn, command, None), Err(Error::Sql(_))));
+    assert!(matches!(
+        publish(
+            conn,
+            command,
+            Some(PublicationCrash::Observe(assert_publication_sync))
+        ),
+        Err(Error::Sql(_))
+    ));
     assert_eq!(bindings(temp.path()), before);
     assert_eq!(old_listing(temp.path()), listing);
     assert_memberships(temp.path());

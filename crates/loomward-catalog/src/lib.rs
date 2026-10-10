@@ -1,4 +1,12 @@
 //! Local SQLite observations. References here are internal, never authority for effects.
+//!
+//! Pending reference intents commit to FULL state.db before publication. A catalogue-only
+//! publication carrying intents switches main.synchronous from NORMAL to FULL before BEGIN,
+//! fsyncs its WAL commit and restores NORMAL after commit or rollback. Only then does a
+//! state-only FULL transaction confirm the matching publication witness and clear the journal.
+//! Publications without intents keep NORMAL (ADR-V3-22); no transaction writes both files.
+//! Membership readers accept the confirmed binding or a pending binding whose instance and
+//! token match the published witness, keeping surviving hard links visible before confirmation.
 use std::path::Path;
 mod db;
 mod model;

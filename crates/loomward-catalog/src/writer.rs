@@ -315,6 +315,7 @@ impl Context {
 enum PublicationCrash {
     BeforeCatalog,
     AfterCatalog,
+    Observe(fn(&Connection, bool)),
 }
 fn work(
     mut conn: Connection,
@@ -390,7 +391,19 @@ fn work(
         if matches!(crash, Some(PublicationCrash::BeforeCatalog)) {
             break;
         }
-        match conn.transaction() {
+        let durability = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM st.pending_reference)",
+            [],
+            |r| r.get::<_, bool>(0),
+        );
+        let full = matches!(durability, Ok(true));
+        // The publication must survive power loss before FULL state confirmation can retire it.
+        match durability.and_then(|full| {
+            if full {
+                conn.execute_batch("PRAGMA main.synchronous=FULL")?;
+            }
+            conn.transaction()
+        }) {
             Ok(mut tx) => {
                 for (p, ready) in batch.iter().zip(prepared) {
                     results.push(ready.and_then(|prepared| {
@@ -420,6 +433,10 @@ fn work(
                     }));
                 }
                 let commit_start = Instant::now();
+                #[cfg(test)]
+                if let Some(PublicationCrash::Observe(observe)) = crash {
+                    observe(&tx, false);
+                }
                 let committed = tx.commit();
                 context.timings.lock().expect("timing lock").commit_seconds +=
                     commit_start.elapsed().as_secs_f64();
@@ -435,6 +452,17 @@ fn work(
                 failed = true;
                 results.push(Err(Error::Sql(e)));
             }
+        }
+        if full {
+            if let Err(e) = conn.execute_batch("PRAGMA main.synchronous=NORMAL") {
+                failed = true;
+                results.clear();
+                results.push(Err(Error::Sql(e)));
+            }
+        }
+        #[cfg(test)]
+        if let Some(PublicationCrash::Observe(observe)) = crash {
+            observe(&conn, true);
         }
         #[cfg(test)]
         if matches!(crash, Some(PublicationCrash::AfterCatalog)) {
