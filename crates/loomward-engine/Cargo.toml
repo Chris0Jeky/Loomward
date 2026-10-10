@@ -13,10 +13,12 @@ lab = []
 [dependencies]
 loomward-protocol = { path = "../loomward-protocol" }
 loomward-core = { path = "../loomward-core" }
+loomward-telemetry = { path = "../loomward-telemetry" }
 loomward-windows = { path = "../loomward-windows" }
 serde_json.workspace = true
 sha2.workspace = true
 getrandom = "0.4"
 
 [dev-dependencies]
+jsonschema = { version = "0.58.6", default-features = false }
 tempfile.workspace = true

@@ -2,8 +2,9 @@
 //! scheduler, placement scenario builder, learning jobs, teacher runner and own-pool budgets.
 //!
 //! L7 implements read-only scans through an installed catalogue sink, kind-dispatched jobs,
-//! own-pool budgets and event replay. Other lane entry points remain explicitly unavailable.
-//! No catalogue durability is implied by the aggregate-only in-memory fixture sink.
+//! own-pool budgets and event replay; L11b adds the read-only telemetry scheduler. Other lane
+//! entry points remain explicitly unavailable. No catalogue durability is implied by the
+//! aggregate-only in-memory fixture sink.
 //!
 //! The engine exposes no generic command and accepts no path from a caller: the service resolves
 //! a granted root from `state.db` and passes a [`scan::GrantedRoot`]. Nothing here performs a
@@ -58,6 +59,7 @@ pub struct Engine {
     events: Arc<events::Bus>,
     jobs: Arc<jobs::Registry>,
     scan_sink: Mutex<Option<Arc<dyn scan::ScanSink>>>,
+    telemetry: telemetry::Telemetry,
 }
 
 impl Engine {
@@ -74,6 +76,7 @@ impl Engine {
             events,
             jobs: Default::default(),
             scan_sink: Mutex::new(None),
+            telemetry: telemetry::Telemetry::default(),
         })
     }
 

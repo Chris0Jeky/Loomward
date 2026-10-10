@@ -1,0 +1,77 @@
+{
+  "P12": {
+    "no_lease_sampling": "none: lease lifecycle tested independently",
+    "overhead_percent_one_core": 3.1432218225288784,
+    "pass": false,
+    "target_percent_one_core_above_idle": 1.0
+  },
+  "P13": {
+    "idle_peak_private_commit_bytes": "987136",
+    "idle_percent_one_core": 0.0,
+    "pass": true,
+    "target_percent_one_core": 0.5,
+    "target_private_commit_bytes": "83886080",
+    "cpu_counter_caveat": "Observed zero at Windows CPU time counter precision, not a claim of infinitely precise zero overhead."
+  },
+  "idle": {
+    "duration_s": 600.0003742,
+    "engine_cpu_s": 0.0,
+    "engine_percent_one_core": 0.0,
+    "events_drained": 0,
+    "last_sample_seq": 0,
+    "main_thread_cpu_s": 0.0,
+    "non_main_thread_cpu_s": 0.0,
+    "non_main_thread_percent_one_core": 0.0,
+    "own_commit_samples": 0,
+    "private_commit_end_bytes": "872448",
+    "private_commit_observed_max_bytes": "974848",
+    "private_commit_start_bytes": "974848",
+    "private_commit_true_high_water_bytes": "987136"
+  },
+  "leased": {
+    "duration_s": 600.0014019,
+    "engine_cpu_s": 18.859375,
+    "engine_percent_one_core": 3.1432218225288784,
+    "events_drained": 595,
+    "last_sample_seq": 595,
+    "main_thread_cpu_s": 0.015625,
+    "non_main_thread_cpu_s": 18.84375,
+    "non_main_thread_percent_one_core": 3.1406176619468327,
+    "own_commit_samples": 594,
+    "private_commit_end_bytes": "7536640",
+    "private_commit_observed_max_bytes": "9539584",
+    "private_commit_start_bytes": "872448",
+    "private_commit_true_high_water_bytes": "10293248"
+  },
+  "limitations": [
+    "Uncontrolled concurrent host workloads and cache conditions.",
+    "C2 engine with telemetry only: catalogue, scan, learning and teacher pools remain stubs.",
+    "A single 10 minute phase per condition, no p95 or repeatability claim.",
+    "Per-process GPU memory is unsupported; adapter capacity remains unknown when no native observation exists."
+  ],
+  "method": "GetProcessTimes sums all engine-process threads; GetThreadTimes measures the harness main thread. Non-main CPU is reported separately without attributing possible Windows library helper threads to the sampler. Same engine: 600 s idle then 600 s leased, all channels at 1000 ms, renewal every 30 s, bounded events drained every second.",
+  "platform": "Windows 11",
+  "profile": "release",
+  "schema_version": 1,
+  "scope": "read-only personal observations; persisted evidence is aggregates only",
+  "source_base": "3462de4e450c43ae6bfadff2de8c070e8885be8f",
+  "source_sha256": {
+    "Cargo.lock": "369ccb422ec9091fda6fef766e1f48eb25951e2e0e0d13d5bfead4c5c28669ad",
+    "crates/loomward-engine/Cargo.toml": "2f1c251aa5544fc37fac050e12900d7847b5200d9fb63f0f779fdeb511c553ad",
+    "crates/loomward-engine/src/lib.rs": "e07563102d80f2ff710987a6619a68174b522d39132ea6312b062029cdf84405",
+    "crates/loomward-engine/src/telemetry/mod.rs": "6f806ca055ae5ba8005da3fc024c431e6de748efc0ac5855d8ee9a0daaca4ce4",
+    "crates/loomward-engine/src/telemetry/mapping.rs": "1b16e2584570127dad8a82cb3c8505cd1d275b711cb3f6f08d68d64186131a7d",
+    "crates/loomward-engine/examples/telemetry_bench.rs": "d8ef41446714d9451367f8e1238b22843ea27af248d02885cda0451aa14f85c3",
+    "crates/loomward-telemetry/src/lib.rs": "f68986b7a143429231dd18ada1749b47d35841d77acf59c2b9da67df892ab335",
+    "crates/loomward-telemetry/src/windows.rs": "ecab02f121565cf3a4eb314e66aa88cb6ba7876ca70f2622fb3d20964d43335e",
+    "crates/loomward-telemetry/src/windows/pdh.rs": "4c67c0888d507a83e82fa303a5c67940c4dae35c7b427c8fcb52842b4effd1da"
+  },
+  "binary_sha256": "cee84e462cb9adcfc3c84e61568b9347a42bc29c3de099f83dc9ba47da5c418e",
+  "measured_on": "2026-10-10",
+  "checks": {
+    "platform": "Windows 11 / rustc 1.97.1",
+    "workspace_tests_passed": 166,
+    "cargo_fmt_all_check": "pass",
+    "cargo_clippy_workspace_all_targets_D_warnings": "pass"
+  }
+}

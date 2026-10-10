@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-lw-call"
+description = "Enables the lw_call command without any pre-configured scope."
+commands.allow = ["lw_call"]
+
+[[permission]]
+identifier = "deny-lw-call"
+description = "Denies the lw_call command without any pre-configured scope."
+commands.deny = ["lw_call"]

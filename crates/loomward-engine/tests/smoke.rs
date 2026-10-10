@@ -53,32 +53,20 @@ fn implemented_infrastructure_and_unavailable_future_lanes() {
         }))
         .is_ok());
 
-    // telemetry
-    assert_unavailable(
+    // L11b telemetry is live; detailed lifecycle/schema/Windows checks live in telemetry.rs.
+    assert!(matches!(
+        e.telemetry_snapshot(&from_value(json!({ "channels": ["system"] })).unwrap()),
+        Err(EngineError::PartialCoverage { .. })
+    ));
+    assert!(matches!(
         e.telemetry_lease(
             &from_value(json!({
                 "subscription_id": null, "channels": ["system"], "interval_ms": 1000
             }))
-            .unwrap(),
+            .unwrap()
         ),
-        Component::Telemetry,
-    );
-    assert_unavailable(
-        e.telemetry_release(&from_value(json!({ "subscription_id": "sb_smoke" })).unwrap()),
-        Component::Telemetry,
-    );
-    assert_unavailable(
-        e.telemetry_snapshot(&from_value(json!({ "channels": ["system"] })).unwrap()),
-        Component::Telemetry,
-    );
-    assert_unavailable(
-        e.processes_list(&from_value(json!({ "sort": "cpu_desc", "limit": 10 })).unwrap()),
-        Component::Telemetry,
-    );
-    assert_unavailable(
-        e.processes_explain(&from_value(json!({ "process_ref": "pc_smoke" })).unwrap()),
-        Component::Telemetry,
-    );
+        Err(EngineError::PermissionDenied { .. })
+    ));
 
     // Placement is implemented: its snapshot/store entry points are exercised in placement::tests.
 

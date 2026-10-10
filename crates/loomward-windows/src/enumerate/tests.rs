@@ -109,7 +109,7 @@ fn placeholders_and_reparse_attributes_are_refused() {
 #[test]
 fn native_handle_relative_open_and_all_strategy_widths() {
     use std::fs;
-    let temp = tempfile::tempdir().unwrap();
+    let temp = canonical_tempdir();
     fs::create_dir(temp.path().join("child")).unwrap();
     fs::write(temp.path().join("file"), b"synthetic").unwrap();
     for strategy in [Strategy::Extended, Strategy::Both, Strategy::Find] {
@@ -141,7 +141,7 @@ fn native_handle_relative_open_and_all_strategy_widths() {
 #[cfg(windows)]
 #[test]
 fn child_open_remains_bound_to_renamed_parent_handle() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = canonical_tempdir();
     let a = temp.path().join("a");
     std::fs::create_dir(&a).unwrap();
     std::fs::create_dir(a.join("child")).unwrap();
@@ -173,7 +173,7 @@ fn child_open_remains_bound_to_renamed_parent_handle() {
 #[cfg(windows)]
 #[test]
 fn junction_never_opened_or_followed() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = canonical_tempdir();
     let target = temp.path().join("target");
     std::fs::create_dir(&target).unwrap();
     std::fs::write(target.join("sentinel"), b"synthetic").unwrap();
@@ -202,7 +202,7 @@ fn junction_never_opened_or_followed() {
 #[cfg(windows)]
 #[test]
 fn root_with_intermediate_junction_is_refused() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = canonical_tempdir();
     let target = temp.path().join("outside");
     std::fs::create_dir_all(target.join("root")).unwrap();
     let link = temp.path().join("parent");
@@ -226,7 +226,7 @@ fn root_with_intermediate_junction_is_refused() {
 #[cfg(windows)]
 #[test]
 fn post_open_attributes_and_id_replacement_are_rejected() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = canonical_tempdir();
     let child = temp.path().join("child");
     std::fs::create_dir(&child).unwrap();
     let source = NativeSource::default();
@@ -262,7 +262,7 @@ fn post_open_offline_race_is_refused_before_listing() {
     use windows_sys::Win32::Storage::FileSystem::{
         SetFileAttributesW, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_OFFLINE,
     };
-    let temp = tempfile::tempdir().unwrap();
+    let temp = canonical_tempdir();
     let child = temp.path().join("child");
     std::fs::create_dir(&child).unwrap();
     let source = NativeSource::default();
@@ -309,4 +309,11 @@ fn absent_zero_ids_do_not_become_unique_observations() {
         })
         .unwrap();
     }
+}
+
+/// Native roots are opened component by component and refuse reparse ancestors, so tests grant a
+/// canonical temp base (hosted runners may junction the temp folder), as a real grant would.
+#[cfg(windows)]
+fn canonical_tempdir() -> tempfile::TempDir {
+    tempfile::tempdir_in(std::fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap()
 }

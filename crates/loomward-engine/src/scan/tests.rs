@@ -513,10 +513,12 @@ fn writer_install_is_startup_only() {
 #[cfg(windows)]
 #[test]
 fn native_scan_job_reports_exact_final_progress() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = canonical_tempdir();
     std::fs::write(temp.path().join("synthetic"), [0u8; 123]).unwrap();
     let source = loomward_windows::enumerate::NativeSource::default();
-    let (_, identity) = source.open_root(temp.path()).unwrap();
+    let (_, identity) = source
+        .open_root(temp.path())
+        .unwrap_or_else(|e| panic!("{e:?}: {}", explain(temp.path())));
     let root = GrantedRoot::new(
         RootId::new("rt_native_test").unwrap(),
         temp.path().to_path_buf(),
@@ -695,9 +697,11 @@ fn busy_scan_preserves_job_id_wire_detail() {
 #[cfg(windows)]
 #[test]
 fn native_state_root_is_excluded_by_handle_identity() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = canonical_tempdir();
     let source = loomward_windows::enumerate::NativeSource::default();
-    let (_, identity) = source.open_root(temp.path()).unwrap();
+    let (_, identity) = source
+        .open_root(temp.path())
+        .unwrap_or_else(|e| panic!("{e:?}: {}", explain(temp.path())));
     let root = GrantedRoot::new(
         RootId::new("rt_state_exclusion").unwrap(),
         temp.path().to_path_buf(),
@@ -764,4 +768,26 @@ fn targeted_pipeline_never_establishes_absence_outside_scope() {
     assert!(!report.complete);
     assert!(!sink.sweep_allowed(root.root_id()));
     assert_eq!(report.totals.files, 1);
+}
+
+/// Native roots are opened component by component and refuse reparse ancestors, so tests grant a
+/// canonical temp base (hosted runners may junction the temp folder), as a real grant would.
+#[cfg(windows)]
+fn canonical_tempdir() -> tempfile::TempDir {
+    tempfile::tempdir_in(std::fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap()
+}
+
+/// Each ancestor's attributes, for a refused root on an unfamiliar host.
+#[cfg(windows)]
+fn explain(path: &std::path::Path) -> String {
+    use std::os::windows::fs::MetadataExt;
+    path.ancestors()
+        .map(|a| {
+            let attrs = std::fs::symlink_metadata(a)
+                .map(|m| m.file_attributes())
+                .unwrap_or(0);
+            format!("{}={attrs:#x}", a.display())
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
 }

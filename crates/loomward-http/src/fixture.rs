@@ -66,7 +66,7 @@ impl FixtureService {
         if dataset != DatasetClass::Synthetic {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "the fixture service serves synthetic contract examples only;                  personal mode needs the real engine service (lane L8)",
+                "the fixture service serves synthetic contract examples only; personal mode needs the real engine service (lane L8)",
             ));
         }
         Self::load(dataset, Path::new(EXAMPLES_DIR))

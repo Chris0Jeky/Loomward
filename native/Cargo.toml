@@ -2,10 +2,41 @@
 name = "loomward-desktop"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.85"
 license = "MIT"
+description = "Loomward Tauri 2 desktop shell: the lw_call / lw_events adapter to the ViewService (docs/41 section 5.1)."
+
+# Excluded from the root workspace (its own Cargo.lock). The fixture service stands in for the real
+# engine service until lane L8 lands it.
+
+[lib]
+name = "loomward_desktop"
+path = "src/lib.rs"
+
+[[bin]]
+name = "loomward-desktop"
+path = "src/main.rs"
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2.6", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+loomward-protocol = { path = "../crates/loomward-protocol" }
+loomward-http = { path = "../crates/loomward-http" }
+serde = "1"
+serde_json = "1"
+# No default features: no tray, no devtools, no plugins. `wry` and the compression of embedded
+# assets are what a webview shell needs.
+tauri = { version = "2.10", default-features = false, features = ["wry", "compression", "common-controls-v6", "custom-protocol"] }
+rfd = { version = "0.17", default-features = false, features = ["common-controls-v6"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Console"] }
+
+[dev-dependencies]
+# `test` adds Tauri's mock runtime, so tests drive the real IPC and ACL without a webview.
+tauri = { version = "2.10", default-features = false, features = ["wry", "compression", "common-controls-v6", "custom-protocol", "test"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
