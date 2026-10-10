@@ -1,6 +1,6 @@
 # L12 placement engine: local Windows proof
 
-10 October 2026. Worktree `C:/Users/jekyt/wt/lw-l12`, branch `feat/l12-placement`,
+10 October 2026. Disposable worktree, branch `feat/l12-placement`,
 starting HEAD `e103787` (C2 merged). This is an uncommitted worker handoff; the driver commits.
 Static placement and proposals only. Production code reads metadata; it moves no files and controls no processes.
 Disposable test files and hard links are created only by tests and cleaned by `tempfile`.
