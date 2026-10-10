@@ -1,11 +1,11 @@
 {
   "project": "Loomward",
   "schema_version": 2,
-  "as_of": "2026-10-09",
+  "as_of": "2026-10-10",
   "version": "0.3.0-dev",
-  "base_commit": "1e51c3b",
+  "base_commit": "3462de4",
   "branch": "main",
-  "phase": "v0.3 wave 1: native crates landed, architecture in revision, no effects",
+  "phase": "v0.3 wave 2: protocol, engine skeleton, HTTP adapter, telemetry rev 2 and the Atlas/Observatory app views on main; catalogue (#147), scan (L7), placement (L12) and engine telemetry (L11b) in flight; no effects",
   "read_first": [
     "AGENTS.md",
     "handoff/START-HERE.md",
@@ -44,15 +44,30 @@
     "crates": {
       "loomward-core": "v1 planner + v2 allocator port (222 parity cases, #107), portable scanner, policy, transaction simulation",
       "loomward-windows": "handle-derived identity, volume capabilities, opt-in fixture lab (#108)",
-      "loomward-telemetry": "read-only memory/process/disk snapshots and rates (#109)",
-      "loomward-lab": "deterministic scale lab and enumeration benchmarks (#111)"
+      "loomward-telemetry": "read-only telemetry schema v2: memory ledger (standby/modified/free), machine-normalised CPU, disk busy vs queue, PDH GPU by LUID with churn kept unknown (#109, #139)",
+      "loomward-lab": "deterministic scale lab, enumeration benchmarks, hardened real-root guards (#111, #118); change-tracking spike example (#138)",
+      "loomward-learn": "student model port with exact Python parity (#113)",
+      "loomward-protocol": "v3 envelopes, complete per-command validation, duplicate-key refusal, ViewService trait (#133)",
+      "loomward-engine": "C2 skeleton: per-lane entry points answering capability_unavailable, error mapping per semantics §8 (#140)",
+      "loomward-http": "loomward-serve: loopback HTTP + SSE adapter, token/Host/Origin checks, FixtureService until L8 (#143)"
     },
-    "rust_tests_on_windows": 54,
+    "rust_tests_on_windows": 155,
     "compiled": true,
     "toolchain": "rustc 1.97.1",
     "fmt_clippy_clean": true,
     "tauri": "unbuilt; superseded for v0.3 by the plan in docs/41 (PR #110)",
-    "enumeration": "GetFileInformationByHandleEx(FileIdExtdDirectoryInfo), 8 workers: 3M files in 0.558 s warm (5.38M files/s, 9.2 MiB RSS); cold cache unmeasured"
+    "enumeration": "GetFileInformationByHandleEx(FileIdExtdDirectoryInfo), 8 workers: 3M files in 0.558 s warm (5.38M files/s, 9.2 MiB RSS); cold cache unmeasured",
+    "rust_tests_by_crate": {
+      "loomward-core": 30,
+      "loomward-engine": 4,
+      "loomward-http": 30,
+      "loomward-lab": 14,
+      "loomward-learn": 8,
+      "loomward-protocol": 35,
+      "loomward-telemetry": 24,
+      "loomward-windows": 10
+    },
+    "change_tracking": "non-elevated: ReadDirectoryChangesW overflows as zero-byte completions (64 KiB recommended); unprivileged USN works through directory handles on G:/E: without names, 1.84M rec/s (#138)"
   },
   "learning": {
     "student": "weighted Naive Bayes; Rust port loomward-learn with exact Python parity (#113)",
@@ -68,11 +83,11 @@
     "windows_performance_claim": false
   },
   "next_local_issues": [
-    "LW-103",
-    "LW-005",
-    "LW-106",
-    "LW-105",
-    "LW-101"
+    "LW-005 (#147 catalogue, review)",
+    "LW-006/LW-101 (L7 scan)",
+    "LW-108 (L12 placement)",
+    "LW-050/LW-107 (L11b engine telemetry)",
+    "LW-103 (L8 service, after #147)"
   ],
   "optional_independent_starts": [
     "LW-065",
@@ -107,12 +122,12 @@
     "tier": "T1 sandbox (.agent-harness/tier.json)"
   },
   "ui": {
-    "prototype": "app/prototype: woven atlas treemap + Observatory sunburst + gauges, synthetic (#112)",
-    "app_shell": "Svelte 5 shell in review (#114)"
+    "prototype": "app/prototype: woven atlas + Observatory signature prototype (#112)",
+    "app": "Svelte 5 app: shell (#114), Explorer/Tiers/Companion/Health views (#119), Atlas and Observatory views over bounded slices with hidden-character escaping (#136); contract conformance in review (#149)"
   },
   "architecture": {
     "docs": "docs/41-43 and contracts/v3 merged (#110), revision 2 after a cross-vendor review",
-    "errata": "binding verification findings for implementing lanes: issue #117",
+    "errata": "binding verification findings for implementing lanes: issue #117; lane hardening issues #144 (engine API), #146 (serve), #148 (catalogue P4)",
     "owner_decisions_2026_10_10": [
       "whole-volume roots via native grant",
       "L15b teacher sandbox authorised",
@@ -120,6 +135,6 @@
       "T1 and Muse proxy network confirmed"
     ]
   },
-  "backlog_github_map": "backlog/github-issues.json (#4-#105)",
+  "backlog_github_map": "backlog/github-issues.json (#4-#105, #120-#131); follow-ups #141-#151",
   "teacher_confinement": "partially achievable with CLI flags; synthetic-only until LW-111 enforcement canaries pass (#116)"
 }

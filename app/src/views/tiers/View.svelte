@@ -10,7 +10,8 @@
   import { session } from '../../lib/stores/session.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import { firstTrusted, isSound, type Outcome } from './plan';
-  import type { CandidateGroup, GroupOverride, HeatPolicy, PlacementCandidates, PlacementPlan, PreRejectReason, RejectReason, ReliefPolicy, TierInfo, TierModel, TierVolume } from '../../lib/types.views';
+  import type { CandidateGroup, GroupOverride, PlacementCandidates, PlacementPlan, TierInfo, TierModel, TierVolume } from '../../lib/contracts.gen';
+  import type { HeatPolicy, PreRejectReason, RejectReason, ReliefPolicy } from '../../lib/derived';
 
   interface Assumption { heat: '' | '0.1' | '0.5' | '0.9'; free: boolean }
 

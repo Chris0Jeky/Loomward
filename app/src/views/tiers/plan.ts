@@ -1,4 +1,4 @@
-import type { PlacementPlan } from '../../lib/types.views';
+import type { PlacementPlan } from '../../lib/contracts.gen';
 
 export type Outcome = { plan: PlacementPlan } | { error: string };
 

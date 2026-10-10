@@ -1,9 +1,10 @@
-import type { ByteCount, ErrorCode, Timestamp } from '../types';
+import type { ByteCount, ErrorCode, Timestamp } from '../contracts.gen';
 import type {
   CandidateGroup, GroupOverride, HeatBasis, OwnBudgets, PlacementCandidates, PlacementPlan, PlacementProposal,
-  PlacementSimulateRequest, PoolName, PoolUse, PreRejectReason, ProcessExplanation, ProcessList, ProcessRow, RejectReason,
+  PlacementSimulateRequest, PoolName, PoolUse, ProcessExplanation, ProcessList, ProcessRow,
   RootRevokeResult, GrantRevokeResult, TelemetrySample, TelemetrySubscription, TierModel, Volume, VolumeList,
-} from '../types.views';
+} from '../contracts.gen';
+import type { PreRejectReason, RejectReason } from '../derived';
 import { formatBytes } from '../format/bytes';
 import { prng } from './synth';
 
@@ -49,6 +50,8 @@ export interface ViewMock {
   /** root_id / grant_id -> revoked_at, read by the roots.list and grants.list handlers in mock.ts. */
   revokedRoots: Map<string, Timestamp>;
   revokedGrants: Map<string, Timestamp>;
+  /** state.db revision: starts at 1 and moves only when a revocation actually changes owner data. */
+  stateRev(): string;
 }
 
 export function createViewMock(now: () => Date, fail: Fail): ViewMock {
@@ -56,6 +59,7 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
   const revokedRoots = new Map<string, Timestamp>();
   const revokedGrants = new Map<string, Timestamp>();
   const subscriptions = new Set<string>();
+  let stateRev = 1;
   let sampleSeq = 0;
 
   const free = (v: VolumeSeed): bigint => BigInt(Math.round(Number(v.capacity) * v.freeFraction));
@@ -71,7 +75,8 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
     volume_id: v.id, display_name: v.name, mount_points: [`${v.name}\\`], filesystem: v.fs, label: null, online: true, read_only: false, removable: v.removable,
     capacity_bytes: str(v.capacity), free_bytes: str(free(v)),
     device: { bus_type: v.bus, seek_penalty: v.seek, multiple_disks: v.bus === 'usb' ? null : false, basis: v.bus === 'usb' ? 'unavailable' : 'ioctl_storage_query_property' },
-    tier: tierInfo(v), observed_at: iso(),
+    tier: tierInfo(v), features: { file_ids_128: null, hard_links: null, sparse_files: null, compression: null, reparse_points: null, usn_journal: null }, // unknown, not invented
+    observed_at: iso(),
   });
 
   const model = (): TierModel => ({
@@ -305,7 +310,7 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
       const id = typeof p.subscription_id === 'string' ? p.subscription_id : `sub_mock_${subscriptions.size + 1}`;
       if (typeof p.subscription_id === 'string' && !subscriptions.has(id)) fail('not_found', 'unknown or expired subscription');
       subscriptions.add(id);
-      return { subscription_id: id, channels: p.channels as TelemetrySubscription['channels'], interval_ms: Number(p.interval_ms), expires_at: new Date(now().getTime() + 60_000).toISOString() };
+      return { subscription_id: id, channels: p.channels as TelemetrySubscription['channels'], interval_ms: p.interval_ms as TelemetrySubscription['interval_ms'], expires_at: new Date(now().getTime() + 60_000).toISOString() };
     },
     'telemetry.unsubscribe': (p) => ({ subscription_id: String(p.subscription_id), stopped: subscriptions.delete(String(p.subscription_id)) }),
     'telemetry.snapshot': telemetry,
@@ -316,6 +321,7 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
       const id = typeof p.root_id === 'string' ? p.root_id : fail('invalid_request', 'root_id');
       if (typeof p.purge_catalog !== 'boolean') fail('invalid_request', 'purge_catalog must be a boolean');
       if (!/^rt_mock_\d+$/.test(id)) fail('not_found', 'no such root');
+      if (!revokedRoots.has(id)) stateRev++; // revoking a revoked grant returns the original revoked_at, no commit
       const at = revokedRoots.get(id) ?? iso();
       revokedRoots.set(id, at);
       return { root_id: id, revoked_at: at, purged: p.purge_catalog };
@@ -323,10 +329,11 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
     'grants.revoke': (p): GrantRevokeResult => {
       const id = typeof p.grant_id === 'string' ? p.grant_id : fail('invalid_request', 'grant_id');
       if (!/^gr_mock_/.test(id)) fail('not_found', 'no such grant');
+      if (!revokedGrants.has(id)) stateRev++;
       const at = revokedGrants.get(id) ?? iso();
       revokedGrants.set(id, at);
       return { grant_id: id, revoked_at: at };
     },
   };
-  return { handlers, revokedRoots, revokedGrants };
+  return { handlers, revokedRoots, revokedGrants, stateRev: () => String(stateRev) };
 }
