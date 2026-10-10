@@ -1,6 +1,6 @@
 /**
  * Telemetry polling with one call in flight at a time, backoff after a failure, and resume on
- * success or on demand (`kick`, e.g. when the session epoch changes). Timers are injectable for tests.
+ * success or on demand (`kick`, e.g. on a reconnect). Timers are injectable for tests.
  */
 export interface PollerOptions<T> {
   call: () => Promise<T>;
@@ -32,8 +32,11 @@ export class Poller<T> {
 
   start(): void { this.stopped = false; void this.tick(); }
   stop(): void { this.stopped = true; if (this.timer !== null) this.clear(this.timer); this.timer = null; }
-  /** Poll now and forget the backoff (a reconnect or a fresh session). */
-  kick(): void { if (this.stopped) return; this.failures = 0; if (this.timer !== null) this.clear(this.timer); this.timer = null; void this.tick(); }
+  /**
+   * Poll now and forget the backoff (a reconnect or a fresh session). With `keepBackoff`, a poller that
+   * is failing is left on its backoff schedule (a stream event during an outage must not hammer it).
+   */
+  kick(keepBackoff = false): void { if (this.stopped || (keepBackoff && this.failures > 0)) return; this.failures = 0; if (this.timer !== null) this.clear(this.timer); this.timer = null; void this.tick(); }
 
   private schedule(ms: number): void {
     if (this.stopped) return;
@@ -54,7 +57,7 @@ export class Poller<T> {
     } catch (e) {
       if (this.stopped) return;
       this.failures++;
-      this.o.onError(e, this.failures);
+      try { this.o.onError(e, this.failures); } catch (r) { console.error('poller onError threw', r); }
       const b = this.o.backoffMs;
       this.schedule(b[Math.min(this.failures - 1, b.length - 1)] ?? this.o.intervalMs);
     } finally {
