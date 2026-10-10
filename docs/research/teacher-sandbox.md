@@ -203,3 +203,9 @@ execution, production runner integration, UI/Tauri or hosted CI.
 Residual risk: **LW-111 remains blocked**, and the code paths beyond the failed launch
 are compiled/tested builders, not Windows confinement evidence. Recommended single
 commit: `Measure the unregistered teacher AppContainer launch gate`.
+
+## Evidence files and cleanup scope
+
+`evidence/v3/teacher-sandbox.json` is the machine receipt exactly as `--run` emits it. The diagnostics, blocked questions and context written by hand during the spike live in `evidence/v3/teacher-sandbox-annotations.json`, so a rerun cannot silently drop them.
+
+The receipt's `cleanup.ok` and `root_removed` cover only the run's own temporary root: the example does not enumerate other `loomward-teacher-sandbox-*` directories. After the spike the driver listed the user temp folder for that prefix and found none remaining (10 October 2026); that check is manual and outside the receipt.
