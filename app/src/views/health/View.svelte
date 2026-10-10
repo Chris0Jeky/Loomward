@@ -6,10 +6,13 @@
   import { tick, untrack } from 'svelte';
   import { formatBytes } from '../../lib/format/bytes';
   import { escapedName } from '../../lib/format/names';
-  import { formatCount, formatTime } from '../../lib/format/time';
+  import { formatCount, formatDuration, formatTime } from '../../lib/format/time';
+  import { scans } from '../../lib/stores/scan.svelte';
   import { session } from '../../lib/stores/session.svelte';
+  import { Say } from '../../lib/ui/say.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import type { GrantList, Health, Root, RootList } from '../../lib/contracts.gen';
+  import type { ScanView } from '../../lib/scan/model';
   import type { Grant } from '../../lib/derived';
 
   /** A revocation the owner has asked for and not yet confirmed. */
@@ -32,13 +35,15 @@
   let doneEl = $state<HTMLElement>();
   let opener: HTMLElement | null = null; // the Revoke… button that opened the confirmation: focus goes back to it
   let ticket = 0;
+  let now = $state(Date.now()); // ticks once a second while a scan is active: the elapsed time
+  const scanSay = new Say();
 
   async function load(): Promise<void> {
     const c = session.client;
     if (!c) return;
     const mine = ++ticket;
     try {
-      const [r, g, h] = await Promise.all([c.call('roots.list', {}), c.call('grants.list', {}), c.call('health.get', {})]);
+      const [r, g, h] = await Promise.all([c.call('roots.list', {}), c.call('grants.list', {}), c.call('health.get', {}), scans.sync()]);
       if (mine !== ticket) return;
       roots = r.result;
       grants = g.result;
@@ -49,9 +54,26 @@
     }
   }
 
+  // `scans.settled` moves when a scan ends: the roots are read again for their totals and coverage.
   $effect(() => {
     void session.epoch;
+    void scans.settled;
     untrack(() => void load());
+  });
+  $effect(() => {
+    if (!scans.anyActive) return;
+    now = Date.now();
+    const t = setInterval(() => { now = Date.now(); }, 1000);
+    return () => clearInterval(t);
+  });
+  // Every scan state change is said once, in a region that stays in the page. A change made before this
+  // view mounted (the store outlives the view) is not repeated.
+  let heard = scans.change?.n ?? 0;
+  $effect(() => {
+    const c = scans.change;
+    if (!c || c.n <= heard) return;
+    heard = c.n;
+    untrack(() => scanSay.say(`${escapedName(rootLabel(c.rootId))}: ${c.text}`));
   });
 
   const rootLabel = (id: string) => roots?.roots.find((r) => r.root_id === id)?.display_path.text ?? id;
@@ -99,6 +121,31 @@
   }
 
   const rootActive = (r: Root) => r.grant_state === 'active';
+
+  /** Scan or Cancel: one button that keeps its place, so keyboard focus is never lost while a scan starts, runs and ends. */
+  async function primary(r: Root, v: ScanView | null) {
+    if (v?.activity === 'cancelling') return;
+    if (v?.active) await scans.cancel(r.root_id);
+    else await scans.start(r.root_id, 'full');
+    await keepFocus(r.root_id);
+  }
+  async function refresh(r: Root) {
+    await scans.start(r.root_id, 'refresh');
+    await keepFocus(r.root_id);
+  }
+  /** Refresh goes away once a scan starts: if focus was on it, it moves to the root's Scan/Cancel button. */
+  async function keepFocus(id: string) {
+    await tick();
+    const a = document.activeElement;
+    if (!a || a === document.body || !a.isConnected) document.querySelector<HTMLElement>(`[data-scan-primary="${CSS.escape(id)}"]`)?.focus();
+  }
+  const scanNote = $derived.by(() => {
+    const info = session.info;
+    if (!info || info.capabilities.observation.metadata_scan) return '';
+    return info.dataset_class === 'personal'
+      ? 'Real-disk scans arrive after the safety gates (issue 184). In this personal session the service declines a scan and says so.'
+      : 'This build reports that it cannot scan here. The service declines a scan and says why.';
+  });
   const grantActive = (g: Grant) => g.revoked_at === null;
   const effects = $derived(Object.entries(session.info?.capabilities.effects ?? {}));
   const observation = $derived(Object.entries(session.info?.capabilities.observation ?? {}));
@@ -168,6 +215,9 @@
 
 <section class="panel" aria-labelledby="h-roots">
   <h2 id="h-roots">Roots</h2>
+  <p class="muted">Scan reads names, sizes and dates only. It never opens the contents of a file and changes no file. Refresh re-reads a root that was scanned before.</p>
+  {#if scanNote}<p class="muted">{scanNote}</p>{/if}
+  <p class="live scanlive" class:has={!!scanSay.text} role="status">{scanSay.text}</p>
   {#if roots}
     <div class="tbl-wrap">
       <table class="tbl">
@@ -179,16 +229,40 @@
         </thead>
         <tbody>
           {#each roots.roots as r (r.root_id)}
+            {@const v = scans.view(r.root_id, now)}
+            {@const problem = scans.problems[r.root_id]}
+            {@const label = escapedName(r.display_path.text)}
             <tr>
               <th scope="row"><VisibleName name={r.display_path.text} />{#if r.display_path.truncated} <span class="tag warn">truncated</span>{/if}<div class="muted small">{r.origin.replaceAll('_', ' ')} · {r.dataset_class}</div></th>
               <td class="num">{r.volume_id ?? 'unknown'}</td>
               <td>{r.granted_via.replaceAll('_', ' ')}</td>
               <td><span class="tag" class:warn={!rootActive(r)}>{r.grant_state.replaceAll('_', ' ')}</span></td>
-              <td>{r.scan.state.replaceAll('_', ' ')} <span class="tag">{r.scan.coverage}</span></td>
+              <td>
+                {r.scan.state.replaceAll('_', ' ')} <span class="tag">{r.scan.coverage}</span>
+                {#if v}
+                  <div class="job" data-activity={v.activity}>
+                    {#if v.active}<span class="scanbar" aria-hidden="true"><i></i></span>{/if}
+                    <strong>{v.headline}</strong>{#if v.elapsedMs !== null}<span class="num"> · {v.active ? 'elapsed' : 'took'} {formatDuration(v.elapsedMs)}</span>{/if}
+                    {#if v.activity === 'running'}<div class="muted small">No progress is reported until the scan ends.</div>{/if}
+                    {#if v.detail}<div class="small">{v.detail}</div>{/if}
+                  </div>
+                {/if}
+                {#if problem}<div class="problem small">{problem}</div>{/if}
+              </td>
               <td class="r num">{formatCount(r.totals?.files)}</td>
               <td class="r num">{formatBytes(r.totals?.logical_bytes)}</td>
               <td class="r num">{formatBytes(r.totals?.allocated_bytes)}</td>
-              <td><button class="btn" type="button" disabled={!rootActive(r)} aria-label={`Revoke… ${escapedName(r.display_path.text)}`} onclick={() => void ask({ kind: 'root', id: r.root_id, label: r.display_path.text })}>Revoke…</button></td>
+              <td class="acts">
+                {#if rootActive(r)}
+                  <button class="btn" type="button" data-scan-primary={r.root_id} aria-disabled={v?.activity === 'cancelling' ? 'true' : undefined}
+                    aria-label={v?.activity === 'cancelling' ? `Cancelling scan of ${label}` : v?.active ? `Cancel scan of ${label}` : `Scan ${label}`}
+                    onclick={() => void primary(r, v)}>{v?.activity === 'cancelling' ? 'Cancelling' : v?.active ? 'Cancel' : 'Scan'}</button>
+                  {#if !v?.active && r.scan.state !== 'never_scanned'}
+                    <button class="btn" type="button" aria-label={`Refresh scan of ${label}`} onclick={() => void refresh(r)}>Refresh</button>
+                  {/if}
+                {/if}
+                <button class="btn" type="button" disabled={!rootActive(r)} aria-label={`Revoke… ${label}`} onclick={() => void ask({ kind: 'root', id: r.root_id, label: r.display_path.text })}>Revoke…</button>
+              </td>
             </tr>
           {:else}
             <tr><td colspan="9" class="muted">No roots granted.</td></tr>
@@ -256,6 +330,16 @@
   .tag.ok-tag { color: var(--ok); border-color: var(--ok); }
   .meter { display: inline-block; width: 90px; height: 8px; margin-left: 10px; border: 1px solid var(--control-line); border-radius: 4px; vertical-align: middle; overflow: hidden; }
   .meter i { display: block; height: 100%; background: var(--residency); }
+  .acts { display: flex; flex-wrap: wrap; gap: 6px; }
+  .job { margin-top: 4px; }
+  .job[data-activity='partial'] strong, .job[data-activity='cancelled'] strong { color: var(--warn); }
+  .job[data-activity='failed'] strong, .problem { color: var(--danger); }
+  .problem { margin-top: 4px; }
+  /* indeterminate: the service reports no progress while a job runs, so nothing here moves in proportion to anything */
+  .scanbar { display: inline-block; position: relative; width: 56px; height: 6px; margin-right: 8px; border: 1px solid var(--control-line); border-radius: 3px; vertical-align: middle; overflow: hidden; }
+  .scanbar i { position: absolute; top: 0; bottom: 0; left: 0; width: 40%; background: var(--residency); animation: sweep 1.3s ease-in-out infinite alternate; }
+  @keyframes sweep { to { left: 60%; } }
+  @media (forced-colors: active) { .scanbar { border-color: CanvasText; } .scanbar i { background: Highlight; } }
   .confirm { border-color: var(--permission); border-style: dashed; margin-bottom: 16px; outline: none; }
   .confirm:focus-visible { outline: 2px solid var(--focus); }
   .chk { display: block; margin: 8px 0; }
