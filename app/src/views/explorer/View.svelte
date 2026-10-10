@@ -84,7 +84,12 @@
       total = page.total;
       next = page.next_cursor;
       budgetHit = page.budget_hit;
-      if (hadFocus) { await tick(); (next ? moreEl : countEl)?.focus(); }
+      if (hadFocus) {
+        await tick();
+        // only if the reader is still there: on the button, or on the body because the button just went away
+        const at = document.activeElement;
+        if (at === moreEl || at === document.body) (next ? moreEl : countEl)?.focus();
+      }
     } catch (e) {
       if (mine !== gen) return;
       if (e instanceof LoomwardError && e.code === 'stale_generation' && !restarted) {

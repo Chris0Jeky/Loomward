@@ -275,6 +275,17 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     expect(page.get_by_label('Search names')).to_be_focused()
     check(True, '2.4.3 Clear search hands focus to the search box')
 
+    # Load more hands focus on only while the reader is still there: one who moved on is not pulled back
+    goto(page, base, 'explorer', 'Explorer')
+    page.get_by_label('Search names').fill('a')
+    page.get_by_role('button', name='Search', exact=True).click()
+    expect(page.get_by_role('button', name='Load more')).to_be_visible()
+    page.evaluate("""() => { const more = [...document.querySelectorAll('main button')].find((b) => b.textContent.trim() === 'Load more');
+        more.focus(); more.click(); document.querySelector('input[type=search]').focus(); }""")
+    expect(page.locator('main table tbody tr')).to_have_count(100)
+    page.wait_for_timeout(300)
+    check(page.evaluate("document.activeElement.matches('input[type=search]')"), f'2.4.3 Load more does not take focus back from where the reader went ({active(page)})')
+
     # a route change lands on the new view's heading (nothing else announces it)
     page.get_by_role('navigation', name='Views').get_by_role('link', name='Atlas').click()
     expect(page.get_by_role('heading', name='Atlas', level=1)).to_be_focused()
