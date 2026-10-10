@@ -1390,7 +1390,10 @@ fn corp_and_coop_are_same_origin_on_every_response() {
     loop {
         let mut line = String::new();
         let bytes = reader.read_line(&mut line).unwrap();
-        assert_ne!(bytes, 0, "EOF before SSE response headers completed: {head}");
+        assert_ne!(
+            bytes, 0,
+            "EOF before SSE response headers completed: {head}"
+        );
         head.push_str(&line);
         if line == "\r\n" {
             break;
