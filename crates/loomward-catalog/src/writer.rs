@@ -454,7 +454,9 @@ fn work(
                     p.command = WriteCommand::Barrier;
                     release(&p._permit.quota, p._permit.bytes);
                     p._permit.bytes = 0;
-                    if !batchable
+                    // An auto-rollback must not let the next savepoint commit a new transaction.
+                    if tx.is_autocommit()
+                        || !batchable
                         || bytes >= TRANSACTION_BYTES
                         || transaction_start.elapsed() >= TRANSACTION_TIME
                     {

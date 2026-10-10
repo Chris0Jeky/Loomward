@@ -260,6 +260,154 @@ fn publication_sync_is_full_only_with_intents_and_normal_is_restored() {
 }
 
 #[test]
+fn resolved_references_keep_two_queued_publications_in_singleton_transactions() {
+    let (temp, conn, first) = fixture();
+    let second = WriteCommand::DirListing(DirListing {
+        run_id: 2,
+        dir_id: 1,
+        files: vec![],
+        dirs: vec![],
+        state: "complete".into(),
+        skipped: 0,
+        errors: 0,
+    });
+    let (tx, rx) = bounded(2);
+    let mut replies = Vec::new();
+    for command in [first, second] {
+        let (reply, result) = bounded(1);
+        tx.send(Pending {
+            command,
+            reply,
+            _permit: BytePermit {
+                quota: Arc::new((Mutex::new(0), Condvar::new())),
+                bytes: 0,
+            },
+        })
+        .unwrap();
+        replies.push(result);
+    }
+    drop(tx);
+    let timings = Arc::new(Mutex::new(WriterTimings::default()));
+    let (alive, _) = bounded(0);
+    work(
+        conn,
+        rx,
+        timings.clone(),
+        alive,
+        Some(PublicationCrash::Observe(assert_publication_sync)),
+    );
+    for reply in replies {
+        reply.recv().unwrap().unwrap();
+    }
+    let timings = timings.lock().unwrap();
+    assert_eq!(timings.transactions, 2);
+    assert_eq!(timings.max_transaction_commands, 1);
+    assert_eq!(pending_count(temp.path()), 0);
+    let after = bindings(temp.path());
+    assert!(after.iter().all(|r| r.1 == "unresolved" && r.2));
+    assert_eq!(old_listing(temp.path()).1, vec![(4, "nested".into())]);
+}
+
+#[test]
+fn auto_rollback_never_commits_a_failed_receipt_or_acknowledges_lost_rows() {
+    for full in [true, false] {
+        let (temp, conn, _) = fixture();
+        conn.execute_batch(
+            "DELETE FROM st.collection_member; DELETE FROM st.object_ref;
+        CREATE TRIGGER auto_rollback BEFORE INSERT ON file WHEN NEW.name='fault'
+        BEGIN SELECT RAISE(ROLLBACK,'injected transaction rollback'); END;",
+        )
+        .unwrap();
+        if full {
+            conn.execute_batch(
+                "DROP TRIGGER auto_rollback; CREATE TABLE fault_growth(value BLOB);
+            CREATE TRIGGER auto_rollback BEFORE INSERT ON file WHEN NEW.name='fault'
+            BEGIN INSERT INTO fault_growth VALUES(zeroblob(10000000)); END;",
+            )
+            .unwrap();
+            let pages: i64 = conn
+                .query_row("PRAGMA main.page_count", [], |r| r.get(0))
+                .unwrap();
+            conn.pragma_update(None, "max_page_count", pages + 32)
+                .unwrap();
+            let error = conn
+                .execute("INSERT INTO fault_growth VALUES(zeroblob(10000000))", [])
+                .unwrap_err();
+            assert_eq!(
+                error.sqlite_error_code(),
+                Some(rusqlite::ErrorCode::DiskFull)
+            );
+        }
+        let before = old_listing(temp.path());
+        let (tx, rx) = bounded(3);
+        let mut replies = Vec::new();
+        for name in ["before", "fault", "after"] {
+            let (reply, result) = bounded(1);
+            tx.send(Pending {
+                command: WriteCommand::DirListing(DirListing {
+                    run_id: 2,
+                    dir_id: 1,
+                    files: vec![observation(name, 6, 42)],
+                    dirs: vec![observation("child", 4, 42)],
+                    state: "complete".into(),
+                    skipped: 0,
+                    errors: 0,
+                }),
+                reply,
+                _permit: BytePermit {
+                    quota: Arc::new((Mutex::new(0), Condvar::new())),
+                    bytes: 0,
+                },
+            })
+            .unwrap();
+            replies.push(result);
+        }
+        drop(tx);
+        let (alive, _) = bounded(0);
+        work(
+            conn,
+            rx,
+            Arc::new(Mutex::new(WriterTimings::default())),
+            alive,
+            if full {
+                None
+            } else {
+                Some(PublicationCrash::Observe(|conn, _| {
+                    assert!(conn.is_autocommit(), "fault did not auto-rollback")
+                }))
+            },
+        );
+        if full {
+            // This FULL fails only the statement/savepoint; the ROLLBACK case below ends the batch.
+            let results: Vec<_> = replies.into_iter().map(|r| r.recv().unwrap()).collect();
+            assert!(results[0].is_ok());
+            assert!(
+                matches!(&results[1], Err(Error::Sql(e)) if e.sqlite_error_code()==Some(rusqlite::ErrorCode::DiskFull))
+            );
+            assert!(results[2].is_ok());
+            assert_eq!(
+                old_listing(temp.path()).1,
+                vec![(4, "nested".into()), (5, "after".into())]
+            );
+            continue;
+        }
+        for reply in replies {
+            assert!(
+                reply.recv().unwrap_or(Err(Error::Closed)).is_err(),
+                "rolled-back listing acknowledged"
+            );
+        }
+        assert_eq!(
+            old_listing(temp.path()),
+            before,
+            "failed caller's listing persisted"
+        );
+        drop(crate::db::open_pair(temp.path(), "synthetic").unwrap());
+        assert_eq!(old_listing(temp.path()).1, before.1);
+    }
+}
+
+#[test]
 fn hardlink_membership_survives_publication_before_confirmation() {
     for crash in [
         PublicationCrash::BeforeCatalog,

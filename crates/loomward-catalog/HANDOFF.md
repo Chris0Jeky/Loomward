@@ -804,3 +804,167 @@ Schema 4 cannot be opened by the older schema-3 binary. The worktree remains
 owned by the driver and is not removal-ready while changes are uncommitted.
 `HUMAN_TODO.md` was read and preserved; q-5 remains open and q-6 is not yet needed,
 neither relevant to this synthetic fix round.
+
+## P4c extraction from parked P4b - 10 October 2026
+
+### Changed
+
+Uncommitted work on `fix/catalog-rollback-and-spill`, based on main
+`fc79c7f8ed4260fd6a76d833de6b9dfb5fcce568`. The driver commits. Only catalogue writer/connection code,
+publication tests, the benchmark, this handoff and its benchmark receipt change.
+
+- Stop a streamed batch when SQLite has auto-rolled back its transaction; the
+  next savepoint cannot publish independently or acknowledge lost rows. The
+  existing statement/savepoint-isolated SQLITE_FULL path still accepts valid
+  commands before and after the failed statement.
+- Pin the existing resolved-reference gate with two prequeued publications: both
+  require their own FULL catalogue commit/state confirmation. No new M1 logic.
+- Use FILE temp storage, spill enabled, a 16 MiB temp page cache and a 224 MiB
+  main page cache. Precious state remains FULL. These are SQLite cache policy
+  targets; they are not a total-process or private-commit cap.
+- Carry the small Windows peak-RSS/private-commit counter helper and generate a
+  2M-entry directory in bounded 1,000-entry chunks. No bulk publication code,
+  timing fields, index strategy or bulk-only tests were brought over.
+
+P4b `32ef19f` remains **PARKED**: its shared-host median P4 fell from
+**37,057 to 25,684 rows/s (-30.7%)**. That path is historical negative evidence,
+not a candidate merged into this extraction.
+
+### Verified
+
+Windows 11, Intel i5-13600K, rustc 1.97.1. Final checks:
+
+```text
+cargo fmt --all --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+git diff --check
+```
+
+Workspace: **366 passed**, zero failed/ignored. The three requested regression
+tests pass. Each was run with its production fix alone removed, then restored:
+
+| Regression | Removed fix / failure | Restored |
+| --- | --- | --- |
+| `auto_rollback_never_commits_a_failed_receipt_or_acknowledges_lost_rows` | Autocommit guard removed: exit 101; failed caller's `after` listing persisted (revision 13 vs original 12) | exit 0 |
+| `resolved_references_keep_two_queued_publications_in_singleton_transactions` | Existing resolved-reference batching gate removed: exit 101; 1 transaction instead of 2 | exit 0 |
+| `temp_tables_spill_with_a_small_cache` | Original cache/MEMORY settings restored: exit 101; main cache -262144 vs -229376 | exit 0 |
+| Same spill test, storage-only mutation | FILE -> MEMORY with cache limits unchanged: exit 101; temp_store 2 vs 1 | exit 0 |
+
+Every mutated production file was restored byte-for-byte. Writer/connection
+hashes in the curated receipt match the measured 224/16 MiB source; no existing
+test was weakened. Successful SQLITE_FULL controls exclude an always-reject fix.
+
+**All timings are shared-host.** No own test/build/benchmark overlapped a measured
+run. Other lanes shared the machine, CPU/storage load and cold caches were not
+controlled. Main production was unchanged in a separate detached worktree; both
+sides used the exact same instrumented benchmark. Commands:
+
+```text
+cargo run -p loomward-catalog --release --example bench -- --rows 1000000
+cargo run -p loomward-catalog --release --example bench -- --rows 2000000 --single-directory
+```
+
+Three main and three 224/16 MiB runs alternated A1/B1/A2/B2/A3/B3 in this session.
+Values below are independent per-metric medians [minimum - maximum] of three run
+summaries; queries had 21 warm probes/run. P4 includes generation, staging,
+publication and queue backpressure, with finalisation outside P4.
+
+| Gate | Main | P4c 224/16 MiB FILE |
+| --- | ---: | ---: |
+| P4 rows/s | 44,488 [41,759 - 44,710] | 27,787 [19,702 - 28,306] |
+| P4 seconds | 22.501 [22.389 - 23.971] | 36.024 [35.364 - 50.808] |
+| P6 p50 ms | 34.236 [32.347 - 48.380] | 32.594 [31.966 - 38.981] |
+| P6 p95 ms | 72.463 [37.453 - 82.633] | 46.773 [35.344 - 47.740] |
+| P7 logical p50 ms | 0.702 [0.690 - 1.082] | 0.699 [0.660 - 0.803] |
+| P7 logical p95 ms | 1.536 [1.101 - 1.910] | 1.003 [0.949 - 1.093] |
+| P7 allocated p50 ms | 0.563 [0.513 - 0.884] | 0.529 [0.505 - 0.571] |
+| P7 allocated p95 ms | 1.061 [0.812 - 1.189] | 0.901 [0.863 - 0.912] |
+| P8 p50 ms | 13.990 [13.086 - 19.673] | 13.672 [13.167 - 15.450] |
+| P8 p95 ms | 24.987 [14.141 - 26.446] | 17.221 [16.878 - 20.917] |
+
+All six runs passed the file/byte/unknown-allocation accounting oracle, kept all
+declared indexes, and removed their disposable databases. P8 hit its explicit
+work budget on all 63 probes per side. P6 retained 2,500 nodes below 1.5 MB.
+
+Peak process memory through publication/finalisation/queries, before the isolated
+index diagnostic (Windows native high-water counters, not polling):
+
+| Dataset / counter (MiB) | Main | P4c 224/16 MiB FILE |
+| --- | ---: | ---: |
+| 1M peak RSS median [range] | 209.5 [201.8 - 210.0] | 197.2 [196.3 - 197.6] |
+| 1M peak private commit median [range] | 210.3 [201.8 - 210.5] | 196.2 [196.0 - 197.1] |
+| One 2M-directory peak RSS | 461.2 | 425.5 |
+| One 2M-directory peak private commit | 468.5 | 489.5 |
+
+The 2M-directory runs are single observations, not medians: P4 **48,974 to 23,274
+rows/s**, publication **40.838 to 85.935 s**. Its FILE private commit increased
+despite lower RSS; page-cache policy does not bound all SQLite journals, sorters,
+readers or process allocations.
+
+### Cache trade and recommended default
+
+**The no-P4-regression goal was not met.** For the selected 224/16 MiB setting,
+median P4 is **-37.5%** against same-session main (non-overlapping observed run
+ranges). This is not labelled noise. Shared-host observations do not isolate
+causality, but they do not qualify this as a throughput-neutral change.
+
+Cache tuning was measured before settling on the tighter original setting:
+
+| Exploratory setting | P4 rows/s | 1M peak RSS MiB |
+| --- | ---: | ---: |
+| 256 MiB main / 16 MiB temp, FILE (one run) | 35,688 | 198.5 |
+| 224 MiB main / 64 MiB temp, FILE (one run) | 38,568 | 198.5 |
+
+A second A1/B1/A2/B2/A3/B3 comparison at **224/64 MiB FILE** measured main
+**67,464 [31,396 - 71,941]** and candidate
+**35,578 [31,043 - 38,844] rows/s**. Main varied widely;
+the larger temp cache still did not establish throughput parity. Its single 2M
+directory peaked at **463.6 MiB RSS / 529.0 MiB private commit**, versus its main
+control **460.9 / 468.3 MiB**. Increasing the temp cache trades away the large-
+directory RSS improvement without qualifying P4, so it was reverted.
+
+Recommendation for a **memory-first cache policy**: **224 MiB main, 16 MiB temp,
+FILE, spill ON**. This is the measured bounded-cache default and carries an observed
+37.5% P4 cost; it is **not performance-qualified**
+and does not establish a total-process memory bound. The guard and M1 pin can
+land independently if the driver parks the memory/throughput trade. No general
+cache option, adaptive policy or unrelated optimisation was added.
+
+**Driver decision (2026-10-10): the cache and spill change is rejected; main keeps
+256 MiB main cache and `temp_store=MEMORY`.** A 37.5% P4 loss buys about 12 MiB RSS
+at 1M rows and 36 MiB on a 2M-entry directory, while private commit rose. That is
+not worth it for a companion app. The guard, the M1 pin and the bench's RSS
+reporting land on their own. A memory bound returns only with a design that does not
+tax every first scan, for example chunked temp use for oversized directories.
+
+Recommended commit messages:
+
+1. `fix(catalog): reject receipts after SQLite auto-rollback` (guard + M1 pin).
+2. `perf(catalog): bound temp caching and record shared-host tradeoffs` (settings,
+   spill pin, benchmark and curated evidence).
+
+The [curated receipt](../../evidence/v3/bench/catalog-1m.json) preserves the
+unchanged pre-P4c receipt and P4b parked numbers, plus both interleaved passes,
+cache probes, native memory counters, source hashes, mutation results and gates.
+Top-level values are the representative median-P4 224/16 MiB run; independent
+per-metric medians/ranges live in `P4c.metrics`. Raw logs and disposable scripts
+stay in ignored `.loomward/p4c/`. The temporary main benchmark worktree was
+restored and removed after its generated evidence was copied here.
+
+### NOT verified
+
+Controlled-host causality or throughput neutrality; 250k P4, 10M distributions,
+cold-cache runs, HTTP/native enumeration integration, Linux execution, physical
+power loss and a total-process/private-commit bound. No commit, push or hosted CI.
+
+### Residual risk
+
+FILE spilling needs writable temporary storage and can add I/O. The 2M-directory
+private-commit peak increased despite lower RSS. Larger caches did not remove
+the measured P4 cost. These changes are ready for driver review as an extraction,
+not a claimed performance win; the worktree remains uncommitted and owned.
+
+Main advanced during this session to `0cc03acd7581c33c0b92a245066553d408193d6f`.
+Measurements and gates cover the frozen `fc79c7f` baseline plus this extraction;
+integration onto the subsequently advanced main remains with the driver.
