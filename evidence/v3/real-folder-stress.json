@@ -1,0 +1,3506 @@
+{
+  "schema_version": 1,
+  "platform": "Windows-11-10.0.26300-SP0",
+  "python": "3.14.3",
+  "measured_at_utc": "2026-10-09T23:20:12Z",
+  "token_elevated": false,
+  "logical_processors": 20,
+  "source_base": "3bf9ed9f90c53d88343758d47d47a88d75de0b90",
+  "source_sha256": {
+    "crates/loomward-lab/src/lib.rs": "92d01c2dd94e17160f4b4d158e70ac8b76facd5b4f8473535d608857608e6925",
+    "crates/loomward-lab/src/main.rs": "ab2cc1e419b5e4f5c264a66bff3e71cdf7fbf96dd70f802f777cbab77754fada",
+    "crates/loomward-lab/src/windows.rs": "9a4150928c1ee1b7980baffaa9b85d0ffbf01c36284b1ade7292758ce936bc58"
+  },
+  "executable_sha256": "0d407ca96ebd928d097a825ca205cb240df1db8393a15339a8d81238f2ebcf2d",
+  "cache_method": "First traversal of each chosen root by this session, not known first touch since boot. Only std-single is first-touch; the other three strategies inherit its cache. Five additional warm-uncontrolled sweeps. No flush, reboot, no-buffering claim, or elevation.",
+  "roots": [
+    {
+      "label": "real-A",
+      "storage": "NVMe",
+      "passes": [
+        {
+          "agreement": true,
+          "disagreements": [],
+          "runs": [
+            {
+              "buffer_kib": 64,
+              "cache_label": "previously-touched-in-session-uncontrolled",
+              "cpu_seconds": 14.015625,
+              "error": null,
+              "files_per_second": 20612.99889100675,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 31837,
+                "files": 291935,
+                "logical_bytes": 73256569896,
+                "skipped_reparse": 16
+              },
+              "peak_rss_bytes": 5603328,
+              "strategy": "std-single",
+              "threads": 1,
+              "wall_seconds": 14.1626651
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "previously-touched-in-session-uncontrolled",
+              "cpu_seconds": 25.125,
+              "error": null,
+              "files_per_second": 79337.75187191818,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 31837,
+                "files": 291935,
+                "logical_bytes": 73256569896,
+                "skipped_reparse": 16
+              },
+              "peak_rss_bytes": 7036928,
+              "strategy": "std-parallel",
+              "threads": 8,
+              "wall_seconds": 3.679648
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "previously-touched-in-session-uncontrolled",
+              "cpu_seconds": 4.28125,
+              "error": null,
+              "files_per_second": 513533.7475588523,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 31837,
+                "files": 291935,
+                "logical_bytes": 73256569896,
+                "skipped_reparse": 16
+              },
+              "peak_rss_bytes": 9568256,
+              "strategy": "find",
+              "threads": 8,
+              "wall_seconds": 0.5684826
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "previously-touched-in-session-uncontrolled",
+              "cpu_seconds": 2.828125,
+              "error": null,
+              "files_per_second": 734719.8973981852,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 31837,
+                "files": 291935,
+                "logical_bytes": 73256569896,
+                "skipped_reparse": 16
+              },
+              "peak_rss_bytes": 9248768,
+              "strategy": "handle",
+              "threads": 8,
+              "wall_seconds": 0.3973419
+            }
+          ],
+          "pass": 0
+        },
+        {
+          "agreement": false,
+          "disagreements": [
+            "std-parallel.logical_bytes=73256570790 differs from std-single.logical_bytes=73256569896",
+            "find.logical_bytes=73256570790 differs from std-single.logical_bytes=73256569896",
+            "handle.logical_bytes=73256570790 differs from std-single.logical_bytes=73256569896"
+          ],
+          "runs": [
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 14.328125,
+              "error": null,
+              "files_per_second": 20216.866412921743,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 31837,
+                "files": 291935,
+                "logical_bytes": 73256569896,
+                "skipped_reparse": 16
+              },
+              "peak_rss_bytes": 5582848,
+              "strategy": "std-single",
+              "threads": 1,
+              "wall_seconds": 14.4401706
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 26.171875,
+              "error": null,
+              "files_per_second": 76267.21171896579,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 31837,
+                "files": 291935,
+                "logical_bytes": 73256570790,
+                "skipped_reparse": 16
+              },
+              "peak_rss_bytes": 6995968,
+              "strategy": "std-parallel",
+              "threads": 8,
+              "wall_seconds": 3.8277917
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 4.640625,
+              "error": null,
+              "files_per_second": 484278.1098530901,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 31837,
+                "files": 291935,
+                "logical_bytes": 73256570790,
+                "skipped_reparse": 16
+              },
+              "peak_rss_bytes": 9318400,
+              "strategy": "find",
+              "threads": 8,
+              "wall_seconds": 0.6028251
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 3.171875,
+              "error": null,
+              "files_per_second": 712700.4397510755,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 31837,
+                "files": 291935,
+                "logical_bytes": 73256570790,
+                "skipped_reparse": 16
+              },
+              "peak_rss_bytes": 9535488,
+              "strategy": "handle",
+              "threads": 8,
+              "wall_seconds": 0.4096181
+            }
+          ],
+          "pass": 1
+        },
+        {
+          "agreement": true,
+          "disagreements": [],
+          "runs": [
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 14.21875,
+              "error": null,
+              "files_per_second": 20301.732274939925,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 31837,
+                "files": 291935,
+                "logical_bytes": 73256570790,
+                "skipped_reparse": 16
+              },
+              "peak_rss_bytes": 5591040,
+              "strategy": "std-single",
+              "threads": 1,
+              "wall_seconds": 14.3798074
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 28.421875,
+              "error": null,
+              "files_per_second": 63927.20801184511,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 31837,
+                "files": 291935,
+                "logical_bytes": 73256570790,
+                "skipped_reparse": 16
+              },
+              "peak_rss_bytes": 6873088,
+              "strategy": "std-parallel",
+              "threads": 8,
+              "wall_seconds": 4.5666784
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 4.28125,
+              "error": null,
+              "files_per_second": 511194.4107706728,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 31837,
+                "files": 291935,
+                "logical_bytes": 73256570790,
+                "skipped_reparse": 16
+              },
+              "peak_rss_bytes": 9420800,
+              "strategy": "find",
+              "threads": 8,
+              "wall_seconds": 0.5710841
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 2.921875,
+              "error": null,
+              "files_per_second": 691039.7635170962,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 31837,
+                "files": 291935,
+                "logical_bytes": 73256570790,
+                "skipped_reparse": 16
+              },
+              "peak_rss_bytes": 9117696,
+              "strategy": "handle",
+              "threads": 8,
+              "wall_seconds": 0.4224576
+            }
+          ],
+          "pass": 2
+        },
+        {
+          "agreement": true,
+          "disagreements": [],
+          "runs": [
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 14.390625,
+              "error": null,
+              "files_per_second": 19790.06874580511,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 31837,
+                "files": 291935,
+                "logical_bytes": 73256570790,
+                "skipped_reparse": 16
+              },
+              "peak_rss_bytes": 5586944,
+              "strategy": "std-single",
+              "threads": 1,
+              "wall_seconds": 14.751591
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 26.09375,
+              "error": null,
+              "files_per_second": 70724.46235442265,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 31837,
+                "files": 291935,
+                "logical_bytes": 73256570790,
+                "skipped_reparse": 16
+              },
+              "peak_rss_bytes": 7028736,
+              "strategy": "std-parallel",
+              "threads": 8,
+              "wall_seconds": 4.1277797
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 4.65625,
+              "error": null,
+              "files_per_second": 429532.5218952193,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 31837,
+                "files": 291935,
+                "logical_bytes": 73256570790,
+                "skipped_reparse": 16
+              },
+              "peak_rss_bytes": 9441280,
+              "strategy": "find",
+              "threads": 8,
+              "wall_seconds": 0.6796575
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 2.828125,
+              "error": null,
+              "files_per_second": 723125.8078147672,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 31837,
+                "files": 291935,
+                "logical_bytes": 73256570790,
+                "skipped_reparse": 16
+              },
+              "peak_rss_bytes": 9232384,
+              "strategy": "handle",
+              "threads": 8,
+              "wall_seconds": 0.4037126
+            }
+          ],
+          "pass": 3
+        },
+        {
+          "agreement": true,
+          "disagreements": [],
+          "runs": [
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 14.453125,
+              "error": null,
+              "files_per_second": 19766.755869342174,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 31837,
+                "files": 291935,
+                "logical_bytes": 73256570790,
+                "skipped_reparse": 16
+              },
+              "peak_rss_bytes": 5586944,
+              "strategy": "std-single",
+              "threads": 1,
+              "wall_seconds": 14.768989
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 23.671875,
+              "error": null,
+              "files_per_second": 77414.49302940743,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 31837,
+                "files": 291935,
+                "logical_bytes": 73256570790,
+                "skipped_reparse": 16
+              },
+              "peak_rss_bytes": 7024640,
+              "strategy": "std-parallel",
+              "threads": 8,
+              "wall_seconds": 3.7710639
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 4.265625,
+              "error": null,
+              "files_per_second": 518995.74008737423,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 31837,
+                "files": 291935,
+                "logical_bytes": 73256570790,
+                "skipped_reparse": 16
+              },
+              "peak_rss_bytes": 9625600,
+              "strategy": "find",
+              "threads": 8,
+              "wall_seconds": 0.5624998
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 2.8125,
+              "error": null,
+              "files_per_second": 729700.8635133071,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 31837,
+                "files": 291935,
+                "logical_bytes": 73256570790,
+                "skipped_reparse": 16
+              },
+              "peak_rss_bytes": 9453568,
+              "strategy": "handle",
+              "threads": 8,
+              "wall_seconds": 0.4000749
+            }
+          ],
+          "pass": 4
+        },
+        {
+          "agreement": true,
+          "disagreements": [],
+          "runs": [
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 13.984375,
+              "error": null,
+              "files_per_second": 20628.248541964713,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 31837,
+                "files": 291935,
+                "logical_bytes": 73256570790,
+                "skipped_reparse": 16
+              },
+              "peak_rss_bytes": 5595136,
+              "strategy": "std-single",
+              "threads": 1,
+              "wall_seconds": 14.1521952
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 24.9375,
+              "error": null,
+              "files_per_second": 71258.7293682625,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 31837,
+                "files": 291935,
+                "logical_bytes": 73256570790,
+                "skipped_reparse": 16
+              },
+              "peak_rss_bytes": 6909952,
+              "strategy": "std-parallel",
+              "threads": 8,
+              "wall_seconds": 4.0968314
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 4.515625,
+              "error": null,
+              "files_per_second": 492426.9962029136,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 31837,
+                "files": 291935,
+                "logical_bytes": 73256570790,
+                "skipped_reparse": 16
+              },
+              "peak_rss_bytes": 9560064,
+              "strategy": "find",
+              "threads": 8,
+              "wall_seconds": 0.5928493
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 2.75,
+              "error": null,
+              "files_per_second": 726571.741664155,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 31837,
+                "files": 291935,
+                "logical_bytes": 73256570790,
+                "skipped_reparse": 16
+              },
+              "peak_rss_bytes": 8953856,
+              "strategy": "handle",
+              "threads": 8,
+              "wall_seconds": 0.4017979
+            }
+          ],
+          "pass": 5
+        }
+      ],
+      "stable_across_passes": false
+    },
+    {
+      "label": "real-B",
+      "storage": "NVMe",
+      "passes": [
+        {
+          "agreement": true,
+          "disagreements": [],
+          "runs": [
+            {
+              "buffer_kib": 64,
+              "cache_label": "first-session-touch-uncontrolled",
+              "cpu_seconds": 18.5625,
+              "error": null,
+              "files_per_second": 7569.947996889052,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 51036,
+                "files": 260395,
+                "logical_bytes": 85539512131,
+                "skipped_reparse": 18
+              },
+              "peak_rss_bytes": 5660672,
+              "strategy": "std-single",
+              "threads": 1,
+              "wall_seconds": 34.398519
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "first-session-touch-uncontrolled",
+              "cpu_seconds": 28.59375,
+              "error": null,
+              "files_per_second": 69145.88822480004,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 51036,
+                "files": 260395,
+                "logical_bytes": 85539512131,
+                "skipped_reparse": 18
+              },
+              "peak_rss_bytes": 6987776,
+              "strategy": "std-parallel",
+              "threads": 8,
+              "wall_seconds": 3.7658783
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "first-session-touch-uncontrolled",
+              "cpu_seconds": 6.96875,
+              "error": null,
+              "files_per_second": 279296.0232159088,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 51036,
+                "files": 260395,
+                "logical_bytes": 85539512131,
+                "skipped_reparse": 18
+              },
+              "peak_rss_bytes": 9547776,
+              "strategy": "find",
+              "threads": 8,
+              "wall_seconds": 0.9323262
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "first-session-touch-uncontrolled",
+              "cpu_seconds": 5.25,
+              "error": null,
+              "files_per_second": 365241.47287153336,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 51036,
+                "files": 260395,
+                "logical_bytes": 85539512131,
+                "skipped_reparse": 18
+              },
+              "peak_rss_bytes": 9920512,
+              "strategy": "handle",
+              "threads": 8,
+              "wall_seconds": 0.7129393
+            }
+          ],
+          "pass": 0
+        },
+        {
+          "agreement": true,
+          "disagreements": [],
+          "runs": [
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 14.96875,
+              "error": null,
+              "files_per_second": 17257.29421148023,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 51036,
+                "files": 260395,
+                "logical_bytes": 85539512131,
+                "skipped_reparse": 18
+              },
+              "peak_rss_bytes": 5660672,
+              "strategy": "std-single",
+              "threads": 1,
+              "wall_seconds": 15.0889819
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 25.96875,
+              "error": null,
+              "files_per_second": 75464.31076707148,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 51036,
+                "files": 260395,
+                "logical_bytes": 85539512131,
+                "skipped_reparse": 18
+              },
+              "peak_rss_bytes": 6987776,
+              "strategy": "std-parallel",
+              "threads": 8,
+              "wall_seconds": 3.4505715
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 7.671875,
+              "error": null,
+              "files_per_second": 258052.88619956415,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 51036,
+                "files": 260395,
+                "logical_bytes": 85539512131,
+                "skipped_reparse": 18
+              },
+              "peak_rss_bytes": 9609216,
+              "strategy": "find",
+              "threads": 8,
+              "wall_seconds": 1.0090761
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 7.03125,
+              "error": null,
+              "files_per_second": 270723.8456665627,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 51036,
+                "files": 260395,
+                "logical_bytes": 85539512131,
+                "skipped_reparse": 18
+              },
+              "peak_rss_bytes": 10096640,
+              "strategy": "handle",
+              "threads": 8,
+              "wall_seconds": 0.9618473
+            }
+          ],
+          "pass": 1
+        },
+        {
+          "agreement": true,
+          "disagreements": [],
+          "runs": [
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 14.4375,
+              "error": null,
+              "files_per_second": 17931.040713485127,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 51036,
+                "files": 260395,
+                "logical_bytes": 85539512131,
+                "skipped_reparse": 18
+              },
+              "peak_rss_bytes": 5656576,
+              "strategy": "std-single",
+              "threads": 1,
+              "wall_seconds": 14.5220238
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 25.34375,
+              "error": null,
+              "files_per_second": 79058.94008768727,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 51036,
+                "files": 260395,
+                "logical_bytes": 85539512131,
+                "skipped_reparse": 18
+              },
+              "peak_rss_bytes": 6918144,
+              "strategy": "std-parallel",
+              "threads": 8,
+              "wall_seconds": 3.2936819
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 7.359375,
+              "error": null,
+              "files_per_second": 273082.0650434402,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 51036,
+                "files": 260395,
+                "logical_bytes": 85539512131,
+                "skipped_reparse": 18
+              },
+              "peak_rss_bytes": 9920512,
+              "strategy": "find",
+              "threads": 8,
+              "wall_seconds": 0.9535412
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 4.6875,
+              "error": null,
+              "files_per_second": 382851.0038490203,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 51036,
+                "files": 260395,
+                "logical_bytes": 85539512131,
+                "skipped_reparse": 18
+              },
+              "peak_rss_bytes": 9633792,
+              "strategy": "handle",
+              "threads": 8,
+              "wall_seconds": 0.6801471
+            }
+          ],
+          "pass": 2
+        },
+        {
+          "agreement": true,
+          "disagreements": [],
+          "runs": [
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 14.609375,
+              "error": null,
+              "files_per_second": 17615.504626046164,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 51036,
+                "files": 260395,
+                "logical_bytes": 85539512131,
+                "skipped_reparse": 18
+              },
+              "peak_rss_bytes": 5664768,
+              "strategy": "std-single",
+              "threads": 1,
+              "wall_seconds": 14.7821482
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 26.4375,
+              "error": null,
+              "files_per_second": 74070.5531583619,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 51036,
+                "files": 260395,
+                "logical_bytes": 85539512131,
+                "skipped_reparse": 18
+              },
+              "peak_rss_bytes": 6971392,
+              "strategy": "std-parallel",
+              "threads": 8,
+              "wall_seconds": 3.5154996
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 6.9375,
+              "error": null,
+              "files_per_second": 278895.20675539144,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 51036,
+                "files": 260395,
+                "logical_bytes": 85539512131,
+                "skipped_reparse": 18
+              },
+              "peak_rss_bytes": 9633792,
+              "strategy": "find",
+              "threads": 8,
+              "wall_seconds": 0.9336661
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 4.78125,
+              "error": null,
+              "files_per_second": 387319.9946333434,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 51036,
+                "files": 260395,
+                "logical_bytes": 85539512131,
+                "skipped_reparse": 18
+              },
+              "peak_rss_bytes": 9859072,
+              "strategy": "handle",
+              "threads": 8,
+              "wall_seconds": 0.6722994
+            }
+          ],
+          "pass": 3
+        },
+        {
+          "agreement": true,
+          "disagreements": [],
+          "runs": [
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 14.78125,
+              "error": null,
+              "files_per_second": 17312.168309206794,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 51036,
+                "files": 260395,
+                "logical_bytes": 85539512131,
+                "skipped_reparse": 18
+              },
+              "peak_rss_bytes": 5660672,
+              "strategy": "std-single",
+              "threads": 1,
+              "wall_seconds": 15.0411546
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 25.53125,
+              "error": null,
+              "files_per_second": 77733.12017809943,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 51036,
+                "files": 260395,
+                "logical_bytes": 85539512131,
+                "skipped_reparse": 18
+              },
+              "peak_rss_bytes": 7024640,
+              "strategy": "std-parallel",
+              "threads": 8,
+              "wall_seconds": 3.3498591
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 6.609375,
+              "error": null,
+              "files_per_second": 300114.9425419832,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 51036,
+                "files": 260395,
+                "logical_bytes": 85539512131,
+                "skipped_reparse": 18
+              },
+              "peak_rss_bytes": 9560064,
+              "strategy": "find",
+              "threads": 8,
+              "wall_seconds": 0.8676509
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 4.578125,
+              "error": null,
+              "files_per_second": 412875.82093149365,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 51036,
+                "files": 260395,
+                "logical_bytes": 85539512131,
+                "skipped_reparse": 18
+              },
+              "peak_rss_bytes": 10088448,
+              "strategy": "handle",
+              "threads": 8,
+              "wall_seconds": 0.630686
+            }
+          ],
+          "pass": 4
+        },
+        {
+          "agreement": true,
+          "disagreements": [],
+          "runs": [
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 14.859375,
+              "error": null,
+              "files_per_second": 17341.113640397652,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 51036,
+                "files": 260395,
+                "logical_bytes": 85539512131,
+                "skipped_reparse": 18
+              },
+              "peak_rss_bytes": 5672960,
+              "strategy": "std-single",
+              "threads": 1,
+              "wall_seconds": 15.0160483
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 25.765625,
+              "error": null,
+              "files_per_second": 76837.88447196339,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 51036,
+                "files": 260395,
+                "logical_bytes": 85539512131,
+                "skipped_reparse": 18
+              },
+              "peak_rss_bytes": 6983680,
+              "strategy": "std-parallel",
+              "threads": 8,
+              "wall_seconds": 3.3888882
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 7.6875,
+              "error": null,
+              "files_per_second": 258047.26022177623,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 51036,
+                "files": 260395,
+                "logical_bytes": 85539512131,
+                "skipped_reparse": 18
+              },
+              "peak_rss_bytes": 9764864,
+              "strategy": "find",
+              "threads": 8,
+              "wall_seconds": 1.0090981
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 6.046875,
+              "error": null,
+              "files_per_second": 323694.93677447713,
+              "observed": {
+                "denied_directories": 2,
+                "directories": 51036,
+                "files": 260395,
+                "logical_bytes": 85539512131,
+                "skipped_reparse": 18
+              },
+              "peak_rss_bytes": 9994240,
+              "strategy": "handle",
+              "threads": 8,
+              "wall_seconds": 0.8044457
+            }
+          ],
+          "pass": 5
+        }
+      ],
+      "stable_across_passes": true
+    },
+    {
+      "label": "real-C",
+      "storage": "NVMe",
+      "passes": [
+        {
+          "agreement": true,
+          "disagreements": [],
+          "runs": [
+            {
+              "buffer_kib": 64,
+              "cache_label": "first-session-touch-uncontrolled",
+              "cpu_seconds": 15.796875,
+              "error": null,
+              "files_per_second": 5249.907007647576,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 61959,
+                "files": 138616,
+                "logical_bytes": 17827003676,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 5378048,
+              "strategy": "std-single",
+              "threads": 1,
+              "wall_seconds": 26.4035153
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "first-session-touch-uncontrolled",
+              "cpu_seconds": 20.84375,
+              "error": null,
+              "files_per_second": 35005.98783311102,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 61959,
+                "files": 138616,
+                "logical_bytes": 17827003676,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 6549504,
+              "strategy": "std-parallel",
+              "threads": 8,
+              "wall_seconds": 3.9597797
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "first-session-touch-uncontrolled",
+              "cpu_seconds": 9.421875,
+              "error": null,
+              "files_per_second": 110247.83253998788,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 61959,
+                "files": 138616,
+                "logical_bytes": 17827003676,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 8577024,
+              "strategy": "find",
+              "threads": 8,
+              "wall_seconds": 1.2573127
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "first-session-touch-uncontrolled",
+              "cpu_seconds": 7.21875,
+              "error": null,
+              "files_per_second": 144805.9928136046,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 61959,
+                "files": 138616,
+                "logical_bytes": 17827003676,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 8343552,
+              "strategy": "handle",
+              "threads": 8,
+              "wall_seconds": 0.9572532
+            }
+          ],
+          "pass": 0
+        },
+        {
+          "agreement": true,
+          "disagreements": [],
+          "runs": [
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 11.703125,
+              "error": null,
+              "files_per_second": 11645.822490498154,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 61959,
+                "files": 138616,
+                "logical_bytes": 17827003676,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 5390336,
+              "strategy": "std-single",
+              "threads": 1,
+              "wall_seconds": 11.9026372
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 19.3125,
+              "error": null,
+              "files_per_second": 38095.61604974878,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 61959,
+                "files": 138616,
+                "logical_bytes": 17827003676,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 6598656,
+              "strategy": "std-parallel",
+              "threads": 8,
+              "wall_seconds": 3.6386339
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 8.84375,
+              "error": null,
+              "files_per_second": 117548.70881796793,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 61959,
+                "files": 138616,
+                "logical_bytes": 17827003676,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 8785920,
+              "strategy": "find",
+              "threads": 8,
+              "wall_seconds": 1.1792218
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 6.546875,
+              "error": null,
+              "files_per_second": 160033.15744417527,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 61959,
+                "files": 138616,
+                "logical_bytes": 17827003676,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 8548352,
+              "strategy": "handle",
+              "threads": 8,
+              "wall_seconds": 0.8661705
+            }
+          ],
+          "pass": 1
+        },
+        {
+          "agreement": true,
+          "disagreements": [],
+          "runs": [
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 11.046875,
+              "error": null,
+              "files_per_second": 12453.980732609352,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 61959,
+                "files": 138616,
+                "logical_bytes": 17827003676,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 5378048,
+              "strategy": "std-single",
+              "threads": 1,
+              "wall_seconds": 11.1302565
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 18.328125,
+              "error": null,
+              "files_per_second": 39989.38009277446,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 61959,
+                "files": 138616,
+                "logical_bytes": 17827003676,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 6598656,
+              "strategy": "std-parallel",
+              "threads": 8,
+              "wall_seconds": 3.4663203
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 8.890625,
+              "error": null,
+              "files_per_second": 117717.81523969116,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 61959,
+                "files": 138616,
+                "logical_bytes": 17827003676,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 8531968,
+              "strategy": "find",
+              "threads": 8,
+              "wall_seconds": 1.1775278
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 6.78125,
+              "error": null,
+              "files_per_second": 146571.8465445129,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 61959,
+                "files": 138616,
+                "logical_bytes": 17827003676,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 8130560,
+              "strategy": "handle",
+              "threads": 8,
+              "wall_seconds": 0.9457205
+            }
+          ],
+          "pass": 2
+        },
+        {
+          "agreement": true,
+          "disagreements": [],
+          "runs": [
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 11.9375,
+              "error": null,
+              "files_per_second": 11347.72981181062,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 61959,
+                "files": 138616,
+                "logical_bytes": 17827003676,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 5390336,
+              "strategy": "std-single",
+              "threads": 1,
+              "wall_seconds": 12.2153067
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 23.03125,
+              "error": null,
+              "files_per_second": 31220.616508074407,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 61959,
+                "files": 138616,
+                "logical_bytes": 17827003676,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 6508544,
+              "strategy": "std-parallel",
+              "threads": 8,
+              "wall_seconds": 4.4398867
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 10.390625,
+              "error": null,
+              "files_per_second": 100389.34402484386,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 61959,
+                "files": 138616,
+                "logical_bytes": 17827003676,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 8761344,
+              "strategy": "find",
+              "threads": 8,
+              "wall_seconds": 1.380784
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 6.734375,
+              "error": null,
+              "files_per_second": 149074.4523732527,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 61959,
+                "files": 138616,
+                "logical_bytes": 17827003676,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 8421376,
+              "strategy": "handle",
+              "threads": 8,
+              "wall_seconds": 0.9298441
+            }
+          ],
+          "pass": 3
+        },
+        {
+          "agreement": true,
+          "disagreements": [],
+          "runs": [
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 12.546875,
+              "error": null,
+              "files_per_second": 10813.799411603744,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 61959,
+                "files": 138616,
+                "logical_bytes": 17827003676,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 5378048,
+              "strategy": "std-single",
+              "threads": 1,
+              "wall_seconds": 12.8184364
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 19.109375,
+              "error": null,
+              "files_per_second": 37126.25495224082,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 61959,
+                "files": 138616,
+                "logical_bytes": 17827003676,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 6598656,
+              "strategy": "std-parallel",
+              "threads": 8,
+              "wall_seconds": 3.7336381
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 11.5625,
+              "error": null,
+              "files_per_second": 86965.70884932678,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 61959,
+                "files": 138616,
+                "logical_bytes": 17827003676,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 8425472,
+              "strategy": "find",
+              "threads": 8,
+              "wall_seconds": 1.5939156
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 9.0625,
+              "error": null,
+              "files_per_second": 110481.4994737591,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 61959,
+                "files": 138616,
+                "logical_bytes": 17827003676,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 8769536,
+              "strategy": "handle",
+              "threads": 8,
+              "wall_seconds": 1.2546535
+            }
+          ],
+          "pass": 4
+        },
+        {
+          "agreement": true,
+          "disagreements": [],
+          "runs": [
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 12.109375,
+              "error": null,
+              "files_per_second": 11316.318298180384,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 61959,
+                "files": 138616,
+                "logical_bytes": 17827003676,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 5373952,
+              "strategy": "std-single",
+              "threads": 1,
+              "wall_seconds": 12.2492136
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 20.078125,
+              "error": null,
+              "files_per_second": 35638.715529436085,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 61959,
+                "files": 138616,
+                "logical_bytes": 17827003676,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 6635520,
+              "strategy": "std-parallel",
+              "threads": 8,
+              "wall_seconds": 3.889478
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 8.71875,
+              "error": null,
+              "files_per_second": 121792.44429253874,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 61959,
+                "files": 138616,
+                "logical_bytes": 17827003676,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 8413184,
+              "strategy": "find",
+              "threads": 8,
+              "wall_seconds": 1.138133
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 6.609375,
+              "error": null,
+              "files_per_second": 158397.86596653596,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 61959,
+                "files": 138616,
+                "logical_bytes": 17827003676,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 9011200,
+              "strategy": "handle",
+              "threads": 8,
+              "wall_seconds": 0.8751128
+            }
+          ],
+          "pass": 5
+        }
+      ],
+      "stable_across_passes": true
+    },
+    {
+      "label": "real-D",
+      "storage": "HDD",
+      "passes": [
+        {
+          "agreement": true,
+          "disagreements": [],
+          "runs": [
+            {
+              "buffer_kib": 64,
+              "cache_label": "first-session-touch-uncontrolled",
+              "cpu_seconds": 0.53125,
+              "error": null,
+              "files_per_second": 3075.105117793387,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 2185,
+                "files": 12639,
+                "logical_bytes": 22005778010,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 5324800,
+              "strategy": "std-single",
+              "threads": 1,
+              "wall_seconds": 4.1101034
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "first-session-touch-uncontrolled",
+              "cpu_seconds": 0.421875,
+              "error": null,
+              "files_per_second": 156932.3262712338,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 2185,
+                "files": 12639,
+                "logical_bytes": 22005778010,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 6148096,
+              "strategy": "std-parallel",
+              "threads": 8,
+              "wall_seconds": 0.0805379
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "first-session-touch-uncontrolled",
+              "cpu_seconds": 0.15625,
+              "error": null,
+              "files_per_second": 146140.7803193845,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 2185,
+                "files": 12639,
+                "logical_bytes": 22005778010,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 6225920,
+              "strategy": "find",
+              "threads": 8,
+              "wall_seconds": 0.0864851
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "first-session-touch-uncontrolled",
+              "cpu_seconds": 0.1875,
+              "error": null,
+              "files_per_second": 404682.3920414705,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 2185,
+                "files": 12639,
+                "logical_bytes": 22005778010,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 6197248,
+              "strategy": "handle",
+              "threads": 8,
+              "wall_seconds": 0.0312319
+            }
+          ],
+          "pass": 0
+        },
+        {
+          "agreement": true,
+          "disagreements": [],
+          "runs": [
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 0.28125,
+              "error": null,
+              "files_per_second": 40583.94123083108,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 2185,
+                "files": 12639,
+                "logical_bytes": 22005778010,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 5308416,
+              "strategy": "std-single",
+              "threads": 1,
+              "wall_seconds": 0.3114286
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 0.515625,
+              "error": null,
+              "files_per_second": 154472.47874613176,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 2185,
+                "files": 12639,
+                "logical_bytes": 22005778010,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 6107136,
+              "strategy": "std-parallel",
+              "threads": 8,
+              "wall_seconds": 0.0818204
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 0.21875,
+              "error": null,
+              "files_per_second": 368256.3546729135,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 2185,
+                "files": 12639,
+                "logical_bytes": 22005778010,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 6307840,
+              "strategy": "find",
+              "threads": 8,
+              "wall_seconds": 0.0343212
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 0.203125,
+              "error": null,
+              "files_per_second": 404569.69456412486,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 2185,
+                "files": 12639,
+                "logical_bytes": 22005778010,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 6242304,
+              "strategy": "handle",
+              "threads": 8,
+              "wall_seconds": 0.0312406
+            }
+          ],
+          "pass": 1
+        },
+        {
+          "agreement": true,
+          "disagreements": [],
+          "runs": [
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 0.296875,
+              "error": null,
+              "files_per_second": 44430.00823637228,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 2185,
+                "files": 12639,
+                "logical_bytes": 22005778010,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 5328896,
+              "strategy": "std-single",
+              "threads": 1,
+              "wall_seconds": 0.2844699
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 0.5,
+              "error": null,
+              "files_per_second": 156976.37591861424,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 2185,
+                "files": 12639,
+                "logical_bytes": 22005778010,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 6160384,
+              "strategy": "std-parallel",
+              "threads": 8,
+              "wall_seconds": 0.0805153
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 0.1875,
+              "error": null,
+              "files_per_second": 356968.35326846765,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 2185,
+                "files": 12639,
+                "logical_bytes": 22005778010,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 6320128,
+              "strategy": "find",
+              "threads": 8,
+              "wall_seconds": 0.0354065
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 0.234375,
+              "error": null,
+              "files_per_second": 390591.681963991,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 2185,
+                "files": 12639,
+                "logical_bytes": 22005778010,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 6213632,
+              "strategy": "handle",
+              "threads": 8,
+              "wall_seconds": 0.0323586
+            }
+          ],
+          "pass": 2
+        },
+        {
+          "agreement": true,
+          "disagreements": [],
+          "runs": [
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 0.28125,
+              "error": null,
+              "files_per_second": 43990.397918365605,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 2185,
+                "files": 12639,
+                "logical_bytes": 22005778010,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 5312512,
+              "strategy": "std-single",
+              "threads": 1,
+              "wall_seconds": 0.2873127
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 0.5,
+              "error": null,
+              "files_per_second": 162782.88017124464,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 2185,
+                "files": 12639,
+                "logical_bytes": 22005778010,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 6135808,
+              "strategy": "std-parallel",
+              "threads": 8,
+              "wall_seconds": 0.0776433
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 0.25,
+              "error": null,
+              "files_per_second": 373296.5520500446,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 2185,
+                "files": 12639,
+                "logical_bytes": 22005778010,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 6311936,
+              "strategy": "find",
+              "threads": 8,
+              "wall_seconds": 0.0338578
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 0.203125,
+              "error": null,
+              "files_per_second": 377849.79282387334,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 2185,
+                "files": 12639,
+                "logical_bytes": 22005778010,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 6242304,
+              "strategy": "handle",
+              "threads": 8,
+              "wall_seconds": 0.0334498
+            }
+          ],
+          "pass": 3
+        },
+        {
+          "agreement": true,
+          "disagreements": [],
+          "runs": [
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 0.296875,
+              "error": null,
+              "files_per_second": 43574.37431004655,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 2185,
+                "files": 12639,
+                "logical_bytes": 22005778010,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 5304320,
+              "strategy": "std-single",
+              "threads": 1,
+              "wall_seconds": 0.2900558
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 0.515625,
+              "error": null,
+              "files_per_second": 146352.64746716936,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 2185,
+                "files": 12639,
+                "logical_bytes": 22005778010,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 6082560,
+              "strategy": "std-parallel",
+              "threads": 8,
+              "wall_seconds": 0.0863599
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 0.328125,
+              "error": null,
+              "files_per_second": 352242.7992140797,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 2185,
+                "files": 12639,
+                "logical_bytes": 22005778010,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 6316032,
+              "strategy": "find",
+              "threads": 8,
+              "wall_seconds": 0.0358815
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 0.203125,
+              "error": null,
+              "files_per_second": 374159.6284158829,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 2185,
+                "files": 12639,
+                "logical_bytes": 22005778010,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 6266880,
+              "strategy": "handle",
+              "threads": 8,
+              "wall_seconds": 0.0337797
+            }
+          ],
+          "pass": 4
+        },
+        {
+          "agreement": true,
+          "disagreements": [],
+          "runs": [
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 0.296875,
+              "error": null,
+              "files_per_second": 44030.22719165255,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 2185,
+                "files": 12639,
+                "logical_bytes": 22005778010,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 5324800,
+              "strategy": "std-single",
+              "threads": 1,
+              "wall_seconds": 0.2870528
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 0.5,
+              "error": null,
+              "files_per_second": 156886.35390353954,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 2185,
+                "files": 12639,
+                "logical_bytes": 22005778010,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 6176768,
+              "strategy": "std-parallel",
+              "threads": 8,
+              "wall_seconds": 0.0805615
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 0.234375,
+              "error": null,
+              "files_per_second": 361382.7414650884,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 2185,
+                "files": 12639,
+                "logical_bytes": 22005778010,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 6303744,
+              "strategy": "find",
+              "threads": 8,
+              "wall_seconds": 0.034974
+            },
+            {
+              "buffer_kib": 64,
+              "cache_label": "warm-uncontrolled",
+              "cpu_seconds": 0.203125,
+              "error": null,
+              "files_per_second": 388187.5978991984,
+              "observed": {
+                "denied_directories": 0,
+                "directories": 2185,
+                "files": 12639,
+                "logical_bytes": 22005778010,
+                "skipped_reparse": 0
+              },
+              "peak_rss_bytes": 6242304,
+              "strategy": "handle",
+              "threads": 8,
+              "wall_seconds": 0.032559
+            }
+          ],
+          "pass": 5
+        }
+      ],
+      "stable_across_passes": true
+    }
+  ],
+  "synthetic": [
+    {
+      "storage": "NVMe",
+      "root": "G:\\loomward-lab\\scale\\mixed-1000000",
+      "generated": false,
+      "manifest": {
+        "schema_version": 1,
+        "complete": true,
+        "seed": 42,
+        "profile": "mixed",
+        "expected": {
+          "files": 1000000,
+          "directories": 6325,
+          "logical_bytes": 121256337157388,
+          "skipped_reparse": 0
+        },
+        "file_data_allocation_bytes": 7246288,
+        "generation_seconds": 76.6328482,
+        "volume_free_before": 225848885248,
+        "volume_free_after": 224544808960
+      },
+      "runs": [
+        {
+          "strategy": "std-single",
+          "threads": 1,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 59.354258,
+          "files_per_second": 16847.99092257206,
+          "cpu_seconds": 51.25,
+          "cpu_percent_one_core": 86.3459534781818,
+          "peak_rss_bytes": 6811648,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 1
+        },
+        {
+          "strategy": "std-parallel",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 10.6227258,
+          "files_per_second": 94137.79653429444,
+          "cpu_seconds": 81.4375,
+          "cpu_percent_one_core": 766.6346805261603,
+          "peak_rss_bytes": 7991296,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 1
+        },
+        {
+          "strategy": "find",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 0.4277017,
+          "files_per_second": 2338078.151197435,
+          "cpu_seconds": 2.71875,
+          "cpu_percent_one_core": 635.6649973568026,
+          "peak_rss_bytes": 8286208,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 1
+        },
+        {
+          "strategy": "handle",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 0.2435081,
+          "files_per_second": 4106639.5737965186,
+          "cpu_seconds": 1.671875,
+          "cpu_percent_one_core": 686.5788037441054,
+          "peak_rss_bytes": 7815168,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": 7246288,
+          "nonzero_file_ids": 1000000,
+          "pass": 1
+        },
+        {
+          "strategy": "std-single",
+          "threads": 1,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 43.9163026,
+          "files_per_second": 22770.587248845488,
+          "cpu_seconds": 43.734375,
+          "cpu_percent_one_core": 99.5857401711227,
+          "peak_rss_bytes": 6815744,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 2
+        },
+        {
+          "strategy": "std-parallel",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 10.3350473,
+          "files_per_second": 96758.1444934461,
+          "cpu_seconds": 79.5,
+          "cpu_percent_one_core": 769.2272487228965,
+          "peak_rss_bytes": 7962624,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 2
+        },
+        {
+          "strategy": "find",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 0.2833154,
+          "files_per_second": 3529635.169849574,
+          "cpu_seconds": 1.796875,
+          "cpu_percent_one_core": 634.2313195823453,
+          "peak_rss_bytes": 8200192,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 2
+        },
+        {
+          "strategy": "handle",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 0.2428223,
+          "files_per_second": 4118237.9048382295,
+          "cpu_seconds": 1.8125,
+          "cpu_percent_one_core": 746.4306202519291,
+          "peak_rss_bytes": 7651328,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": 7246288,
+          "nonzero_file_ids": 1000000,
+          "pass": 2
+        },
+        {
+          "strategy": "std-single",
+          "threads": 1,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 45.1279398,
+          "files_per_second": 22159.221192721056,
+          "cpu_seconds": 44.78125,
+          "cpu_percent_one_core": 99.23176240365397,
+          "peak_rss_bytes": 6778880,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 3
+        },
+        {
+          "strategy": "std-parallel",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 10.0391008,
+          "files_per_second": 99610.51491783009,
+          "cpu_seconds": 77.265625,
+          "cpu_percent_one_core": 769.6468691697966,
+          "peak_rss_bytes": 7774208,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 3
+        },
+        {
+          "strategy": "find",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 0.3133692,
+          "files_per_second": 3191124.0798393716,
+          "cpu_seconds": 1.875,
+          "cpu_percent_one_core": 598.3357649698821,
+          "peak_rss_bytes": 8192000,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 3
+        },
+        {
+          "strategy": "handle",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 0.1998814,
+          "files_per_second": 5002966.759288258,
+          "cpu_seconds": 1.53125,
+          "cpu_percent_one_core": 766.0792850160145,
+          "peak_rss_bytes": 7618560,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": 7246288,
+          "nonzero_file_ids": 1000000,
+          "pass": 3
+        },
+        {
+          "strategy": "std-single",
+          "threads": 1,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 44.9614692,
+          "files_per_second": 22241.266083893894,
+          "cpu_seconds": 44.609375,
+          "cpu_percent_one_core": 99.21689792112042,
+          "peak_rss_bytes": 6807552,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 4
+        },
+        {
+          "strategy": "std-parallel",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 9.5516092,
+          "files_per_second": 104694.40060424583,
+          "cpu_seconds": 73.75,
+          "cpu_percent_one_core": 772.121204456313,
+          "peak_rss_bytes": 7786496,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 4
+        },
+        {
+          "strategy": "find",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 0.2815583,
+          "files_per_second": 3551662.3022656413,
+          "cpu_seconds": 1.578125,
+          "cpu_percent_one_core": 560.4967070762965,
+          "peak_rss_bytes": 8065024,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 4
+        },
+        {
+          "strategy": "handle",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 0.2016983,
+          "files_per_second": 4957899.992216097,
+          "cpu_seconds": 1.421875,
+          "cpu_percent_one_core": 704.9514051432263,
+          "peak_rss_bytes": 7745536,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": 7246288,
+          "nonzero_file_ids": 1000000,
+          "pass": 4
+        },
+        {
+          "strategy": "std-single",
+          "threads": 1,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 47.6043948,
+          "files_per_second": 21006.463882196018,
+          "cpu_seconds": 47.28125,
+          "cpu_percent_one_core": 99.32118704300805,
+          "peak_rss_bytes": 6811648,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 5
+        },
+        {
+          "strategy": "std-parallel",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 10.3624184,
+          "files_per_second": 96502.5693230067,
+          "cpu_seconds": 79.828125,
+          "cpu_percent_one_core": 770.3619166738143,
+          "peak_rss_bytes": 7831552,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 5
+        },
+        {
+          "strategy": "find",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 0.2781392,
+          "files_per_second": 3595322.0545683606,
+          "cpu_seconds": 1.671875,
+          "cpu_percent_one_core": 601.0929059981478,
+          "peak_rss_bytes": 8151040,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 5
+        },
+        {
+          "strategy": "handle",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 0.1935192,
+          "files_per_second": 5167445.917511027,
+          "cpu_seconds": 1.421875,
+          "cpu_percent_one_core": 734.7462163960992,
+          "peak_rss_bytes": 7770112,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": 7246288,
+          "nonzero_file_ids": 1000000,
+          "pass": 5
+        }
+      ]
+    },
+    {
+      "storage": "HDD",
+      "root": "E:\\loomward-lab\\scale\\mixed-1000000",
+      "generated": true,
+      "manifest": {
+        "schema_version": 1,
+        "complete": true,
+        "seed": 42,
+        "profile": "mixed",
+        "expected": {
+          "files": 1000000,
+          "directories": 6325,
+          "logical_bytes": 121256337157388,
+          "skipped_reparse": 0
+        },
+        "file_data_allocation_bytes": 10549984,
+        "generation_seconds": 221.315991,
+        "volume_free_before": 912848498688,
+        "volume_free_after": 911777423360
+      },
+      "runs": [
+        {
+          "strategy": "std-single",
+          "threads": 1,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 34.0705552,
+          "files_per_second": 29350.857188262078,
+          "cpu_seconds": 33.75,
+          "cpu_percent_one_core": 99.05914301038452,
+          "peak_rss_bytes": 6778880,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 1
+        },
+        {
+          "strategy": "std-parallel",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 8.466399,
+          "files_per_second": 118113.97029599008,
+          "cpu_seconds": 63.21875,
+          "cpu_percent_one_core": 746.7017559649623,
+          "peak_rss_bytes": 8077312,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 1
+        },
+        {
+          "strategy": "find",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 0.1704919,
+          "files_per_second": 5865381.287908692,
+          "cpu_seconds": 1.3125,
+          "cpu_percent_one_core": 769.8312940380159,
+          "peak_rss_bytes": 8724480,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 1
+        },
+        {
+          "strategy": "handle",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 0.1289521,
+          "files_per_second": 7754817.486493047,
+          "cpu_seconds": 0.9375,
+          "cpu_percent_one_core": 727.0141393587232,
+          "peak_rss_bytes": 8093696,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": 10549984,
+          "nonzero_file_ids": 1000000,
+          "pass": 1
+        },
+        {
+          "strategy": "std-single",
+          "threads": 1,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 33.0603279,
+          "files_per_second": 30247.73387078233,
+          "cpu_seconds": 32.640625,
+          "cpu_percent_one_core": 98.73049383760045,
+          "peak_rss_bytes": 6807552,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 2
+        },
+        {
+          "strategy": "std-parallel",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 8.2981606,
+          "files_per_second": 120508.63416646818,
+          "cpu_seconds": 62.75,
+          "cpu_percent_one_core": 756.1916793945878,
+          "peak_rss_bytes": 8200192,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 2
+        },
+        {
+          "strategy": "find",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 0.13799,
+          "files_per_second": 7246901.949416624,
+          "cpu_seconds": 1.0625,
+          "cpu_percent_one_core": 769.9833321255164,
+          "peak_rss_bytes": 8376320,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 2
+        },
+        {
+          "strategy": "handle",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 0.1355429,
+          "files_per_second": 7377737.970782682,
+          "cpu_seconds": 0.953125,
+          "cpu_percent_one_core": 703.1906503402245,
+          "peak_rss_bytes": 7929856,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": 10549984,
+          "nonzero_file_ids": 1000000,
+          "pass": 2
+        },
+        {
+          "strategy": "std-single",
+          "threads": 1,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 31.7160831,
+          "files_per_second": 31529.74460455995,
+          "cpu_seconds": 31.484375,
+          "cpu_percent_one_core": 99.26943027841922,
+          "peak_rss_bytes": 6856704,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 4
+        },
+        {
+          "strategy": "std-parallel",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 8.0464117,
+          "files_per_second": 124279.00004172046,
+          "cpu_seconds": 60.265625,
+          "cpu_percent_one_core": 748.9751611889309,
+          "peak_rss_bytes": 8155136,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 4
+        },
+        {
+          "strategy": "find",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 0.137451,
+          "files_per_second": 7275319.932194019,
+          "cpu_seconds": 1.078125,
+          "cpu_percent_one_core": 784.3704301896677,
+          "peak_rss_bytes": 8470528,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 4
+        },
+        {
+          "strategy": "handle",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 0.1308796,
+          "files_per_second": 7640610.148564023,
+          "cpu_seconds": 0.90625,
+          "cpu_percent_one_core": 692.4302947136146,
+          "peak_rss_bytes": 7983104,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": 10549984,
+          "nonzero_file_ids": 1000000,
+          "pass": 4
+        },
+        {
+          "strategy": "std-single",
+          "threads": 1,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 33.1934709,
+          "files_per_second": 30126.406575939003,
+          "cpu_seconds": 32.921875,
+          "cpu_percent_one_core": 99.1817791492242,
+          "peak_rss_bytes": 6815744,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 5
+        },
+        {
+          "strategy": "std-parallel",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 8.1918079,
+          "files_per_second": 122073.175080192,
+          "cpu_seconds": 60.265625,
+          "cpu_percent_one_core": 735.6816191942196,
+          "peak_rss_bytes": 8175616,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 5
+        },
+        {
+          "strategy": "find",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 0.1487045,
+          "files_per_second": 6724746.056777031,
+          "cpu_seconds": 1.171875,
+          "cpu_percent_one_core": 788.0561785285583,
+          "peak_rss_bytes": 8658944,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 5
+        },
+        {
+          "strategy": "handle",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 0.1436148,
+          "files_per_second": 6963070.658455814,
+          "cpu_seconds": 0.921875,
+          "cpu_percent_one_core": 641.9080763263953,
+          "peak_rss_bytes": 8200192,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": 10549984,
+          "nonzero_file_ids": 1000000,
+          "pass": 5
+        },
+        {
+          "strategy": "std-single",
+          "threads": 1,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled-after-probe",
+          "wall_seconds": 32.5233721,
+          "files_per_second": 30747.11923859826,
+          "cpu_seconds": 32.125,
+          "cpu_percent_one_core": 98.77512055399691,
+          "peak_rss_bytes": 6828032,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 6,
+          "replaces_pass": 3
+        },
+        {
+          "strategy": "std-parallel",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled-after-probe",
+          "wall_seconds": 8.1105129,
+          "files_per_second": 123296.76462261715,
+          "cpu_seconds": 60.375,
+          "cpu_percent_one_core": 744.4042164090511,
+          "peak_rss_bytes": 8028160,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 6,
+          "replaces_pass": 3
+        },
+        {
+          "strategy": "find",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled-after-probe",
+          "wall_seconds": 0.1430378,
+          "files_per_second": 6991158.980353446,
+          "cpu_seconds": 1.015625,
+          "cpu_percent_one_core": 710.0395839421468,
+          "peak_rss_bytes": 8536064,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 6,
+          "replaces_pass": 3
+        },
+        {
+          "strategy": "handle",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled-after-probe",
+          "wall_seconds": 0.1194023,
+          "files_per_second": 8375048.051838197,
+          "cpu_seconds": 0.6875,
+          "cpu_percent_one_core": 575.7845535638761,
+          "peak_rss_bytes": 8015872,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": 10549984,
+          "nonzero_file_ids": 1000000,
+          "pass": 6,
+          "replaces_pass": 3
+        }
+      ],
+      "excluded_overlap_runs": [
+        {
+          "strategy": "std-single",
+          "threads": 1,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 32.9310913,
+          "files_per_second": 30366.439754154155,
+          "cpu_seconds": 32.640625,
+          "cpu_percent_one_core": 99.1179572600438,
+          "peak_rss_bytes": 6819840,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 3
+        },
+        {
+          "strategy": "std-parallel",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 8.3024416,
+          "files_per_second": 120446.49612470626,
+          "cpu_seconds": 61.984375,
+          "cpu_percent_one_core": 746.5800783229839,
+          "peak_rss_bytes": 8044544,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 3
+        },
+        {
+          "strategy": "find",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 0.1452487,
+          "files_per_second": 6884743.202520917,
+          "cpu_seconds": 1.015625,
+          "cpu_percent_one_core": 699.2317315060307,
+          "peak_rss_bytes": 8658944,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": null,
+          "nonzero_file_ids": null,
+          "pass": 3
+        },
+        {
+          "strategy": "handle",
+          "threads": 8,
+          "buffer_kib": 64,
+          "cache_label": "warm-uncontrolled",
+          "wall_seconds": 0.1317346,
+          "files_per_second": 7591020.126830764,
+          "cpu_seconds": 0.984375,
+          "cpu_percent_one_core": 747.2410437349033,
+          "peak_rss_bytes": 7938048,
+          "expected": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "observed": {
+            "files": 1000000,
+            "directories": 6325,
+            "logical_bytes": 121256337157388,
+            "skipped_reparse": 0
+          },
+          "exact": true,
+          "allocation_bytes": 10549984,
+          "nonzero_file_ids": 1000000,
+          "pass": 3
+        }
+      ],
+      "replacement_reason": "Third HDD sweep overlapped the metadata-only live-growth probe's second traversal. Preserve all four original results, replace the sweep once after the probe and original batch finished. No other timed sweep overlapped an active probe traversal.",
+      "replacement_complete": true
+    }
+  ],
+  "complete": true,
+  "python_comparison": {
+    "strategy": "python-reference",
+    "label": "real-D",
+    "cache_label": "warm-uncontrolled",
+    "wall_seconds": 0.7604368999891449,
+    "files_per_second": 16620.708437715766,
+    "cpu_seconds": 0.75,
+    "peak_rss_bytes": 37892096,
+    "observed": {
+      "files": 12639,
+      "directories": 2185,
+      "logical_bytes": 22005778010,
+      "skipped_reparse": 0
+    },
+    "coverage": {
+      "limit_hit": false,
+      "examined_entries": 14824,
+      "skipped_count": 0,
+      "error_count": 0,
+      "max_entries": 200000,
+      "max_depth": 128,
+      "complete_under_policy": true,
+      "unqualified_complete": true
+    }
+  },
+  "preliminary_first_touch": {
+    "label": "real-A",
+    "note": "Initial diagnostic build used broad directory sharing; final build restores the existing directory pins. This is contextual first-session-touch evidence only.",
+    "source_sha256": {
+      "crates/loomward-lab/src/lib.rs": "92d01c2dd94e17160f4b4d158e70ac8b76facd5b4f8473535d608857608e6925",
+      "crates/loomward-lab/src/main.rs": "ab2cc1e419b5e4f5c264a66bff3e71cdf7fbf96dd70f802f777cbab77754fada",
+      "crates/loomward-lab/src/windows.rs": "5d5fc672f17e110634368e75d3b5308927e25c219e03340195852790fcb79663"
+    },
+    "executable_sha256": "e146b735e27f1364075efa301ad3348bcedc9f92bff8eabe6ec6b335293e1ba5",
+    "pass": {
+      "agreement": false,
+      "disagreements": [
+        "std-parallel.logical_bytes=73256569896 differs from std-single.logical_bytes=73256569002",
+        "find.logical_bytes=73256569896 differs from std-single.logical_bytes=73256569002",
+        "handle.logical_bytes=73256569896 differs from std-single.logical_bytes=73256569002"
+      ],
+      "runs": [
+        {
+          "buffer_kib": 64,
+          "cache_label": "first-session-touch-uncontrolled",
+          "cpu_seconds": 18.34375,
+          "error": null,
+          "files_per_second": 7568.441770082227,
+          "observed": {
+            "denied_directories": 2,
+            "directories": 31837,
+            "files": 291935,
+            "logical_bytes": 73256569002,
+            "skipped_reparse": 16
+          },
+          "peak_rss_bytes": 5533696,
+          "strategy": "std-single",
+          "threads": 1,
+          "wall_seconds": 38.5726691
+        },
+        {
+          "buffer_kib": 64,
+          "cache_label": "first-session-touch-uncontrolled",
+          "cpu_seconds": 30.03125,
+          "error": null,
+          "files_per_second": 66547.88567564027,
+          "observed": {
+            "denied_directories": 2,
+            "directories": 31837,
+            "files": 291935,
+            "logical_bytes": 73256569896,
+            "skipped_reparse": 16
+          },
+          "peak_rss_bytes": 6991872,
+          "strategy": "std-parallel",
+          "threads": 8,
+          "wall_seconds": 4.3868411
+        },
+        {
+          "buffer_kib": 64,
+          "cache_label": "first-session-touch-uncontrolled",
+          "cpu_seconds": 5.140625,
+          "error": null,
+          "files_per_second": 393674.719916285,
+          "observed": {
+            "denied_directories": 2,
+            "directories": 31837,
+            "files": 291935,
+            "logical_bytes": 73256569896,
+            "skipped_reparse": 16
+          },
+          "peak_rss_bytes": 9482240,
+          "strategy": "find",
+          "threads": 8,
+          "wall_seconds": 0.741564
+        },
+        {
+          "buffer_kib": 64,
+          "cache_label": "first-session-touch-uncontrolled",
+          "cpu_seconds": 4.515625,
+          "error": null,
+          "files_per_second": 495170.08384655067,
+          "observed": {
+            "denied_directories": 2,
+            "directories": 31837,
+            "files": 291935,
+            "logical_bytes": 73256569896,
+            "skipped_reparse": 16
+          },
+          "peak_rss_bytes": 9756672,
+          "strategy": "handle",
+          "threads": 8,
+          "wall_seconds": 0.5895651
+        }
+      ],
+      "pass": 0
+    }
+  },
+  "storage_verified": {
+    "C": "PNY CS3030 2TB SSD, NVMe, NTFS",
+    "G": "Sabrent Rocket Q, NVMe, NTFS",
+    "E": "ST2000DM006-2DM164, SATA HDD, NTFS"
+  },
+  "live_growth_diagnosis": {
+    "label": "real-A",
+    "method": "two metadata-only snapshots, 180-second intervening wait; names in memory only",
+    "first_files": 291935,
+    "last_files": 291935,
+    "first_errors": 2,
+    "last_errors": 2,
+    "first_logical_bytes": 73256576424,
+    "last_logical_bytes": 73256578212,
+    "added_files": 0,
+    "removed_files": 0,
+    "changed_existing_entries": 1,
+    "changed_size_entries": 1,
+    "changed_mtime_entries": 1,
+    "existing_entry_size_delta": 1788
+  },
+  "verification": {
+    "cargo fmt --all --check": "PASS",
+    "cargo test --workspace": "PASS, 64 tests on Windows",
+    "cargo clippy --workspace --all-targets -- -D warnings": "PASS",
+    "py -3 scripts/verify.py": "PASS, 212 Python tests (one privilege skip), JS syntax, 9 JS boundary assertions, 80 parity fixtures, Rust gates",
+    "py -3 crates/loomward-lab/check_windows.py": "PASS, 20 existing native regression cases",
+    "py -3 crates/loomward-lab/check_real_windows.py --root-log <private-log>": "PASS, 8 new native controls"
+  },
+  "handoff_source_sha256": {
+    "crates/loomward-lab/src/lib.rs": "0600ddd615874264c15466be9dacf5d7fdfe793c10164830cc085fcf299e9bcc",
+    "crates/loomward-lab/src/main.rs": "ab2cc1e419b5e4f5c264a66bff3e71cdf7fbf96dd70f802f777cbab77754fada",
+    "crates/loomward-lab/src/windows.rs": "9a4150928c1ee1b7980baffaa9b85d0ffbf01c36284b1ade7292758ce936bc58"
+  },
+  "handoff_executable_sha256": "4ab517a8bc3319594878f04ac280dc524da8db757dadcd2ed9ca10d8a34a6be9",
+  "handoff_binary_matches_timed": false,
+  "source_note": "After timing, only two cfg(test) root-validation examples were replaced with fictional paths. Timed and handoff source hashes are separate; operational Rust code is unchanged. The rebuilt handoff binary has a different hash and is independently confirmed by all native controls, a four-strategy real-D cross-check and both 1M synthetic handle walks; performance trials retain their original binary identity.",
+  "root_log_audit": {
+    "native_order": "append + sync_all precede ancestor preflight and traversal",
+    "python_order": "append + fsync precede scan",
+    "roots": [
+      {
+        "label": "real-A",
+        "recorded_lines": 47
+      },
+      {
+        "label": "real-B",
+        "recorded_lines": 24
+      },
+      {
+        "label": "real-C",
+        "recorded_lines": 24
+      },
+      {
+        "label": "real-D",
+        "recorded_lines": 29
+      }
+    ],
+    "real_paths_exported": false,
+    "checked_at_utc": "2026-10-09T23:42:34Z"
+  },
+  "final_binary_boundary_proof": {
+    "real_label": "real-D",
+    "cross_check": {
+      "agreement": true,
+      "disagreements": [],
+      "runs": [
+        {
+          "buffer_kib": 64,
+          "cache_label": "handoff-boundary-proof",
+          "cpu_seconds": 0.453125,
+          "error": null,
+          "files_per_second": 25554.432518323716,
+          "observed": {
+            "denied_directories": 0,
+            "directories": 2185,
+            "files": 12639,
+            "logical_bytes": 22005778010,
+            "skipped_reparse": 0
+          },
+          "peak_rss_bytes": 5312512,
+          "strategy": "std-single",
+          "threads": 1,
+          "wall_seconds": 0.4945913
+        },
+        {
+          "buffer_kib": 64,
+          "cache_label": "handoff-boundary-proof",
+          "cpu_seconds": 0.421875,
+          "error": null,
+          "files_per_second": 152391.31011432662,
+          "observed": {
+            "denied_directories": 0,
+            "directories": 2185,
+            "files": 12639,
+            "logical_bytes": 22005778010,
+            "skipped_reparse": 0
+          },
+          "peak_rss_bytes": 6107136,
+          "strategy": "std-parallel",
+          "threads": 8,
+          "wall_seconds": 0.0829378
+        },
+        {
+          "buffer_kib": 64,
+          "cache_label": "handoff-boundary-proof",
+          "cpu_seconds": 0.21875,
+          "error": null,
+          "files_per_second": 362782.04660855193,
+          "observed": {
+            "denied_directories": 0,
+            "directories": 2185,
+            "files": 12639,
+            "logical_bytes": 22005778010,
+            "skipped_reparse": 0
+          },
+          "peak_rss_bytes": 6299648,
+          "strategy": "find",
+          "threads": 8,
+          "wall_seconds": 0.0348391
+        },
+        {
+          "buffer_kib": 64,
+          "cache_label": "handoff-boundary-proof",
+          "cpu_seconds": 0.203125,
+          "error": null,
+          "files_per_second": 371299.5631597038,
+          "observed": {
+            "denied_directories": 0,
+            "directories": 2185,
+            "files": 12639,
+            "logical_bytes": 22005778010,
+            "skipped_reparse": 0
+          },
+          "peak_rss_bytes": 6209536,
+          "strategy": "handle",
+          "threads": 8,
+          "wall_seconds": 0.0340399
+        }
+      ]
+    },
+    "synthetic_handle_runs": [
+      {
+        "strategy": "handle",
+        "threads": 8,
+        "buffer_kib": 64,
+        "cache_label": "handoff-boundary-proof",
+        "wall_seconds": 0.188453,
+        "files_per_second": 5306362.859705072,
+        "cpu_seconds": 1.265625,
+        "cpu_percent_one_core": 671.5865494314232,
+        "peak_rss_bytes": 7663616,
+        "expected": {
+          "files": 1000000,
+          "directories": 6325,
+          "logical_bytes": 121256337157388,
+          "skipped_reparse": 0
+        },
+        "observed": {
+          "files": 1000000,
+          "directories": 6325,
+          "logical_bytes": 121256337157388,
+          "skipped_reparse": 0
+        },
+        "exact": true,
+        "allocation_bytes": 7246288,
+        "nonzero_file_ids": 1000000
+      },
+      {
+        "strategy": "handle",
+        "threads": 8,
+        "buffer_kib": 64,
+        "cache_label": "handoff-boundary-proof",
+        "wall_seconds": 0.1161194,
+        "files_per_second": 8611825.414185744,
+        "cpu_seconds": 0.890625,
+        "cpu_percent_one_core": 766.9907009509178,
+        "peak_rss_bytes": 7983104,
+        "expected": {
+          "files": 1000000,
+          "directories": 6325,
+          "logical_bytes": 121256337157388,
+          "skipped_reparse": 0
+        },
+        "observed": {
+          "files": 1000000,
+          "directories": 6325,
+          "logical_bytes": 121256337157388,
+          "skipped_reparse": 0
+        },
+        "exact": true,
+        "allocation_bytes": 10549984,
+        "nonzero_file_ids": 1000000
+      }
+    ],
+    "native_controls": "PASS, 8 controls on rebuilt handoff binary"
+  }
+}

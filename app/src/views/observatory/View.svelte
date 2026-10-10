@@ -11,7 +11,8 @@
   import { formatBytes } from '../../lib/format/bytes';
   import { formatCount } from '../../lib/format/time';
   import { LoomwardError } from '../../lib/transport/client';
-  import type { DatasetClass, TelemetrySample } from '../../lib/types';
+  import type { DatasetClass } from '../../lib/types';
+  import type { TelemetrySample } from '../../lib/types.views';
   import type { NodeInfo } from '../../../viz/types.js';
   import { createSunburst } from '../../../viz/sunburst.js';
   import { createGauge, type GaugeTheme } from '../../../viz/gauges.js';

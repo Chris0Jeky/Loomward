@@ -1,8 +1,10 @@
 import type {
   Basis, DatasetClass, EntryPage, EntryRow, ErrorCode, EventEnvelope, GrantList, Health, RequestEnvelope,
   ResponseEnvelope, Root, RootList, SearchRequest, SessionInfo, SliceNode, TreeChildrenRequest, TreeSlice,
-  TreeSliceRequest, Threads, TelemetrySample,
+  TreeSliceRequest, Threads,
 } from '../types';
+import type { TelemetrySample } from '../types.views';
+import { createViewMock } from './mock-views';
 import { generateTree, prng, type SynthNode } from './synth';
 import type { Transport } from './transport';
 
@@ -103,7 +105,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
   const page = (anchor: string | null, all: SynthNode[], offset: number, limit: number, hint: boolean): EntryPage => {
     const items = all.slice(offset, offset + limit).map((n) => entryRow(n, hint));
     const end = offset + items.length;
-    return { anchor, generation: 1, items, next_cursor: end < all.length ? cursorOf(end) : null, total: all.length, budget_hit: false };
+    return { anchor, generation: '1', items, next_cursor: end < all.length ? cursorOf(end) : null, total: all.length, budget_hit: false };
   };
 
   const slice = (p: TreeSliceRequest): TreeSlice => {
@@ -155,45 +157,45 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
   const search = (p: SearchRequest): EntryPage => {
     const text = str(p.text, 'text').toLowerCase();
     const limit = int(p.limit, 'limit', 1, 100);
-    const hits = tree.nodes.filter((n) => n.kind !== 'atlas' && n.kind !== 'root' && n.name.toLowerCase().includes(text) && (p.kind === 'any' || p.kind === (n.kind === 'file' ? 'file' : 'dir')));
+    const ext = typeof p.extension === 'string' ? p.extension.toLowerCase() : null;
+    const min = typeof p.min_bytes === 'string' && /^\d{1,19}$/.test(p.min_bytes) ? BigInt(p.min_bytes) : 0n;
+    const hits = tree.nodes.filter(
+      (n) => n.kind !== 'atlas' && n.kind !== 'root' && n.name.toLowerCase().includes(text) && (p.kind === 'any' || p.kind === (n.kind === 'file' ? 'file' : 'dir'))
+        && (ext === null || n.extension?.toLowerCase() === ext) && n.logical >= min,
+    );
     return page(null, hits, offsetOf(p.cursor), limit, true);
   };
 
-  // Synthetic telemetry: a deterministic random walk with periodic "build" and "render" episodes.
-  // Rates are null on the first sample, as the contract requires.
+  const views = createViewMock(now, fail);
+  // Synthetic GPU and disk channels for the Observatory (L10), layered on the view mock's system and
+  // engine channels (L13), so one telemetry.snapshot serves both. A deterministic random walk with
+  // periodic "build" and "render" episodes; rates are null on the first sample, as the contract requires.
   const tRnd = prng((opts.seed ?? 1) ^ 0x7e1e);
   const GiB = 2 ** 30;
-  const tel = { seq: 0, cpu: 0.18, gpu: 0.08, inUse: 27 * GiB, commit: 38 * GiB, vram: 6.2 * GiB, io: [[40e6, 12e6], [18e6, 6e6], [2e6, 0.4e6]] as [number, number][] };
+  const tel = { gpu: 0.08, vram: 6.2 * GiB, io: [[40e6, 12e6], [18e6, 6e6], [2e6, 0.4e6]] as [number, number][] };
   const walk = (v: number, target: number, k: number, noise: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v + (target - v) * k + (tRnd() - 0.5) * noise));
-  const telemetry = (): TelemetrySample => {
-    const t = ++tel.seq;
+  const telemetry = (p: Record<string, unknown>): TelemetrySample => {
+    const base = views.handlers['telemetry.snapshot']!(p) as TelemetrySample;
+    const t = base.sample_seq, first = base.elapsed_ms === null;
     const build = Math.sin(t / 37) > 0.55, render = Math.sin(t / 53 + 1) > 0.7;
-    tel.cpu = walk(tel.cpu, build ? 0.74 : 0.16, 0.18, 0.09, 0.01, 1);
     tel.gpu = walk(tel.gpu, render ? 0.82 : 0.07, 0.15, 0.07, 0, 1);
     tel.vram = walk(tel.vram, (render ? 19.5 : 6.4) * GiB, 0.12, 0.4 * GiB, 2 * GiB, 24 * GiB);
-    tel.inUse = walk(tel.inUse, (build ? 41 : 28) * GiB, 0.08, 0.6 * GiB, 18 * GiB, 54 * GiB);
-    tel.commit = walk(tel.commit, tel.inUse + 11 * GiB, 0.1, 0.4 * GiB, 20 * GiB, 96 * GiB);
     const targets: [number, number][] = [[build ? 620e6 : 35e6, build ? 410e6 : 10e6], [render ? 1400e6 : 20e6, 8e6], [t % 90 > 70 ? 160e6 : 1.5e6, 0.4e6]];
     tel.io = tel.io.map(([r, w], i) => [walk(r, targets[i]![0], 0.3, 40e6, 0, 3.5e9), walk(w, targets[i]![1], 0.3, 25e6, 0, 3e9)]);
-    const total = 64 * GiB;
     const b = (n: number) => String(Math.round(n));
-    const first = t === 1;
     return {
-      sample_seq: t, observed_at: now().toISOString(), elapsed_ms: first ? null : 1000,
-      system: { memory: { total_bytes: b(total), available_bytes: b(total - tel.inUse), commit_bytes: b(tel.commit), commit_limit_bytes: b(96 * GiB), load_fraction: tel.inUse / total }, cpu: { logical_cpus: 16, busy_fraction: first ? null : tel.cpu } },
+      ...base,
       gpu: { state: 'observed', basis: 'pdh_gpu_counters', adapters: [{ adapter_id: 'gpu_mock_0', name: 'Synthetic GPU', dedicated_total_bytes: b(24 * GiB), dedicated_used_bytes: b(tel.vram), shared_used_bytes: b(0.4 * GiB), engine_busy_fraction: first ? null : tel.gpu }] },
       disks: {
         state: 'observed',
         disks: (['C', 'G', 'E'] as const).map((l, i) => ({ disk_label: `Disk ${i} (${l}:)`, volume_ids: [`vol_mock_${l.toLowerCase()}`], read_bytes_per_s: first ? null : tel.io[i]![0], write_bytes_per_s: first ? null : tel.io[i]![1], busy_fraction: first ? null : Math.min(1, (tel.io[i]![0] + tel.io[i]![1]) / (i === 2 ? 2.2e8 : 3.5e9)), queue_length: first ? null : 0.1 })),
       },
-      engine: null,
-      processes: null,
     };
   };
-
   const rootRow = (n: SynthNode): Root => ({
     root_id: rootId(n), display_path: { text: `[mock] ${n.name}`, truncated: false }, origin: 'fixture', dataset_class: DATASET,
-    granted_at: GRANTED_AT, granted_via: 'fixture', grant_state: 'active',
+    volume_id: n.index === tree.rootIndexes[0] ? 'vo_c' : 'vo_g',
+    granted_at: GRANTED_AT, granted_via: 'fixture', grant_state: views.revokedRoots.has(rootId(n)) ? 'revoked' : 'active',
     scan: { state: 'complete', finished_at: GRANTED_AT, coverage: n.coverage },
     totals: { files: n.files, dirs: n.dirs, logical_bytes: n.logical.toString(), allocated_bytes: n.allocated === null ? null : n.allocated.toString(), skipped: 0, failed: 0, complete: n.coverage === 'complete' },
   });
@@ -203,30 +205,31 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
       protocol: 'loomward/3', engine_version: 'mock-0.3 (no engine)', adapter: 'http', dataset_class: DATASET, session_started_at: t0,
       enumeration_strategy: 'std_read_dir',
       capabilities: {
-        observation: { metadata_scan: false, process_observation: false, gpu_observation: false, disk_io_observation: false, teacher_disclosure: false },
+        observation: { metadata_scan: false, process_observation: true, gpu_observation: false, disk_io_observation: false, teacher_disclosure: false },
         effects: { file_move: false, file_delete: false, file_rename: false, file_write: false, content_read: false, process_kill: false, process_suspend: false, process_priority: false, memory_trim: false, uninstall: false, elevation: false },
       },
-      features: { grant_picker: false, disclosure_dialog: false, teacher_available: false, telemetry_available: false, gpu_available: false },
+      features: { grant_picker: false, disclosure_dialog: false, teacher_available: false, telemetry_available: true, gpu_available: true },
       limits: { max_request_bytes: 65536, max_slice_nodes: 6000, max_page_items: 200 },
     }),
     'health.get': (): Health => ({
       observed_at: now().toISOString(),
-      engine: { private_bytes: null, working_set_bytes: null, cpu_seconds: null, threads: null },
+      engine: { private_commit_bytes: '96468992', working_set_bytes: '75497472', cpu_seconds: 12.4, threads: 18 },
       catalog: { schema_version: 3, db_bytes: null, wal_bytes: null, files: tree.nodes[0]!.files, dirs: tree.nodes[0]!.dirs, writer_queue_depth: 0, writer_queue_capacity: 1024 },
       jobs_running: 0, last_error: null,
-      warnings: [{ code: 'telemetry_unavailable', message: 'The mock transport has no engine; every engine figure is unknown.', at: t0 }],
+      warnings: [{ code: 'telemetry_unavailable', message: 'The mock transport has no GPU or disk counters; those figures are unknown.', at: t0 }],
     }),
     'roots.list': (): RootList => ({ roots: tree.rootIndexes.map((i) => rootRow(tree.nodes[i]!)) }),
     'grants.list': (): GrantList => ({
       grants: [
-        ...tree.rootIndexes.map((i, k) => ({ grant_id: `gr_mock_root_${k}`, kind: 'metadata_root' as const, root_id: rootId(tree.nodes[i]!), granted_at: GRANTED_AT, granted_via: 'fixture' as const, revoked_at: null })),
-        { grant_id: 'gr_mock_teacher_0', kind: 'teacher_disclosure' as const, recipient: 'codex_cli', dataset_class: DATASET, fields: ['name', 'extension'], item_count: 25, payload_digest: 'sha256:' + '0'.repeat(64), created_at: GRANTED_AT, expires_at: '2026-10-01T10:00:00Z', revoked_at: null, used: false, confirmed_via: 'synthetic_policy' as const },
+        ...tree.rootIndexes.map((i, k) => ({ grant_id: `gr_mock_root_${k}`, kind: 'metadata_root' as const, root_id: rootId(tree.nodes[i]!), granted_at: GRANTED_AT, granted_via: 'fixture' as const, revoked_at: views.revokedRoots.get(rootId(tree.nodes[i]!)) ?? null })),
+        { grant_id: 'gr_mock_teacher_0', kind: 'teacher_disclosure' as const, recipient: 'codex_cli', dataset_class: DATASET, fields: ['name', 'extension'], item_count: 25, payload_digest: 'sha256:' + '0'.repeat(64), created_at: GRANTED_AT, expires_at: '2026-10-01T10:00:00Z', revoked_at: views.revokedGrants.get('gr_mock_teacher_0') ?? null, used: false, confirmed_via: 'synthetic_policy' as const },
       ],
     }),
     'tree.slice': (p) => slice(p as unknown as TreeSliceRequest),
-    'telemetry.snapshot': () => telemetry(),
     'tree.children': (p) => children(p as unknown as TreeChildrenRequest),
     'search.query': (p) => search(p as unknown as SearchRequest),
+    ...views.handlers,
+    'telemetry.snapshot': telemetry, // after the spread: wraps the view mock's sample with gpu and disks
   };
 
   const respond = (req: RequestEnvelope): ResponseEnvelope => {

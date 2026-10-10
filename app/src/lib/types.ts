@@ -62,6 +62,7 @@ export interface Root {
   display_path: DisplayPath;
   origin: 'fixture' | 'lab_generated' | 'owner_granted';
   dataset_class: DatasetClass;
+  volume_id: string | null;
   granted_at: Timestamp;
   granted_via: 'desktop_picker' | 'cli_flag' | 'fixture';
   grant_state: 'active' | 'revoked' | 'identity_changed';
@@ -77,7 +78,7 @@ export interface GrantList { grants: Grant[] }
 
 export interface Health {
   observed_at: Timestamp;
-  engine: { private_bytes: NullableBytes; working_set_bytes: NullableBytes; cpu_seconds: number | null; threads: number | null };
+  engine: { private_commit_bytes: NullableBytes; working_set_bytes: NullableBytes; cpu_seconds: number | null; threads: number | null };
   catalog: { schema_version: number; db_bytes: NullableBytes; wal_bytes: NullableBytes; files: number; dirs: number; writer_queue_depth: number; writer_queue_capacity: number };
   jobs_running: number;
   last_error: ErrorBody | null;
@@ -137,42 +138,13 @@ export interface EntryRow {
   coverage: CoverageState;
   location_hint: DisplayPath | null;
 }
-export interface EntryPage { anchor: string | null; generation: number | null; items: EntryRow[]; next_cursor: Cursor | null; total: number | null; budget_hit: boolean }
+export interface EntryPage { anchor: string | null; generation: string | null; items: EntryRow[]; next_cursor: Cursor | null; total: number | null; budget_hit: boolean }
 
 // Requests the shell and placeholder views send.
 export type Anchor = { kind: 'atlas' } | { kind: 'root'; root_id: RootId } | { kind: 'node'; node_id: NodeId };
 export interface TreeSliceRequest { anchor: Anchor; depth: number; max_nodes: number; min_share: number; basis: Basis; include_files: boolean }
 export interface TreeChildrenRequest { node_id: NodeId; sort: 'size_desc' | 'name_asc' | 'modified_desc'; basis: Basis; limit: number; cursor: Cursor | null }
 export interface SearchRequest { root_id: RootId | null; text: string; extension: string | null; min_bytes: NullableBytes; kind: 'any' | 'file' | 'dir'; limit: number; cursor: Cursor | null }
-
-// Telemetry (wave 2 in contracts/v3; the mock serves synthetic samples). Subset used by the Observatory view.
-export type NullableFraction = number | null;
-export type NullableRate = number | null;
-export type TelemetryChannel = 'system' | 'processes' | 'gpu' | 'disks' | 'engine';
-export interface TelemetrySnapshotRequest { channels: TelemetryChannel[] }
-export interface SystemSample {
-  memory: { total_bytes: NullableBytes; available_bytes: NullableBytes; commit_bytes: NullableBytes; commit_limit_bytes: NullableBytes; load_fraction: NullableFraction };
-  cpu: { logical_cpus: number; busy_fraction: NullableFraction };
-}
-export interface GpuSample {
-  state: 'observed' | 'unavailable' | 'denied';
-  basis: 'pdh_gpu_counters' | 'unavailable';
-  adapters: { adapter_id: string; name: string; dedicated_total_bytes: NullableBytes; dedicated_used_bytes: NullableBytes; shared_used_bytes: NullableBytes; engine_busy_fraction: NullableFraction }[];
-}
-export interface DiskSample {
-  state: 'observed' | 'unavailable';
-  disks: { disk_label: string; volume_ids: string[]; read_bytes_per_s: NullableRate; write_bytes_per_s: NullableRate; busy_fraction: NullableFraction; queue_length: NullableRate }[];
-}
-export interface TelemetrySample {
-  sample_seq: number;
-  observed_at: Timestamp;
-  elapsed_ms: number | null;
-  system: SystemSample | null;
-  gpu: GpuSample | null;
-  disks: DiskSample | null;
-  engine: Record<string, unknown> | null;
-  processes: Record<string, unknown> | null;
-}
 
 /** Command name -> [request, result] for the commands this lane calls. */
 export interface CommandMap {
@@ -183,6 +155,5 @@ export interface CommandMap {
   'tree.slice': [TreeSliceRequest, TreeSlice];
   'tree.children': [TreeChildrenRequest, EntryPage];
   'search.query': [SearchRequest, EntryPage];
-  'telemetry.snapshot': [TelemetrySnapshotRequest, TelemetrySample];
 }
 export type CommandName = keyof CommandMap;
