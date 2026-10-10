@@ -73,6 +73,8 @@ struct Retained {
 struct State {
     seq: u64,
     replay: VecDeque<Retained>,
+    #[cfg(test)]
+    now: Option<Instant>,
 }
 #[derive(Debug)]
 pub(crate) struct Bus {
@@ -93,15 +95,20 @@ impl Bus {
             state: Mutex::new(State {
                 seq: 0,
                 replay: VecDeque::new(),
+                #[cfg(test)]
+                now: None,
             }),
             changed: Condvar::new(),
         }
     }
     fn oldest_replayable(&self, state: &State) -> u64 {
+        let now = Instant::now();
+        #[cfg(test)]
+        let now = state.now.unwrap_or(now);
         state
             .replay
             .iter()
-            .find(|e| e.published.elapsed() < Duration::from_secs(60))
+            .find(|e| now.saturating_duration_since(e.published) < Duration::from_secs(60))
             .map_or(state.seq + 1, |e| e.event.seq.get())
     }
     fn envelope(
@@ -223,10 +230,7 @@ impl EventStream for Subscription {
         let deadline = Instant::now() + timeout;
         let mut state = self.bus.state.lock().unwrap();
         loop {
-            let oldest = state
-                .replay
-                .front()
-                .map_or(state.seq + 1, |e| e.event.seq.get());
+            let oldest = self.bus.oldest_replayable(&state);
             if self.cursor.saturating_add(1) < oldest {
                 let dropped = state.seq - self.cursor;
                 self.cursor = state.seq;
@@ -364,7 +368,7 @@ mod replay_contract_tests {
 mod expiry_tests {
     use super::*;
     #[test]
-    fn reconnect_replay_expires_after_sixty_seconds() {
+    fn reconnect_and_idle_subscriber_replay_expire_after_sixty_seconds() {
         let bus = Arc::new(Bus::new(DatasetClass::Synthetic, Duration::from_secs(15)));
         let mut live = bus.subscribe(None);
         live.recv_timeout(Duration::ZERO);
@@ -378,13 +382,7 @@ mod expiry_tests {
             None,
         )
         .unwrap();
-        bus.state
-            .lock()
-            .unwrap()
-            .replay
-            .front_mut()
-            .unwrap()
-            .published = Instant::now() - Duration::from_secs(61);
+        bus.state.lock().unwrap().now = Some(Instant::now() + Duration::from_secs(61));
         let mut reconnect = bus.subscribe(Some(EventResume {
             epoch: bus.epoch.clone(),
             last_seq: 0,
@@ -394,8 +392,15 @@ mod expiry_tests {
             panic!("missing replay gap")
         };
         assert_eq!(gap.data["reason"], "replay_gap");
-        assert!(
-            matches!(live.recv_timeout(Duration::ZERO),RecvOutcome::Event(e) if e.event==EventName::HealthWarning)
-        );
+        let RecvOutcome::Event(gap) = live.recv_timeout(Duration::ZERO) else {
+            panic!("missing idle subscriber gap")
+        };
+        assert_eq!(gap.event, EventName::StreamLagged);
+        assert_eq!(gap.data["reason"], "subscriber_overflow");
+        assert_eq!(gap.data["dropped"], 1);
+        assert!(matches!(
+            live.recv_timeout(Duration::ZERO),
+            RecvOutcome::Timeout
+        ));
     }
 }

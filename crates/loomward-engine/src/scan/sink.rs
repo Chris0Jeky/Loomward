@@ -155,6 +155,15 @@ pub trait ScanSink: Send + Sync {
         name: &[u16],
         identity: OpenedIdentity,
     ) -> EngineResult<ListingTicket>;
+    /// Reserve a fresh dirty epoch for a rejected listing without changing its identity or parent.
+    /// Called on the scan coordinator thread while the writer is idle after a barrier, not on
+    /// the writer thread: an implementation must not rely on writer-thread affinity.
+    fn refresh_listing(
+        &self,
+        root: &RootId,
+        run: u64,
+        ticket: ListingTicket,
+    ) -> EngineResult<ListingTicket>;
     /// Stage/publish/finalize a message, rejecting obsolete runs and revisions.
     fn consume(&self, root: &RootId, message: ScanMessage) -> EngineResult<()>;
     /// Finish: only full-root plus complete permits global absence reconciliation.
@@ -275,7 +284,10 @@ fn active(r: &MemoryRoot, run: u64) -> EngineResult<()> {
         });
     }
     if r.active != Some(run) {
-        return Err(stale());
+        return Err(EngineError::StaleGeneration {
+            message: "obsolete scan run".into(),
+            detail: None,
+        });
     }
     Ok(())
 }
@@ -378,6 +390,33 @@ impl ScanSink for MemorySink {
             dir,
             input_revision: revision,
             old_parent,
+        })
+    }
+    fn refresh_listing(
+        &self,
+        root: &RootId,
+        run: u64,
+        ticket: ListingTicket,
+    ) -> EngineResult<ListingTicket> {
+        let mut s = self.state.lock().unwrap();
+        active(s.roots.get(root).ok_or_else(stale)?, run)?;
+        s.next_rev += 1;
+        let revision = s.next_rev;
+        let r = s.roots.get_mut(root).unwrap();
+        let d = r.dirs.get_mut(&ticket.dir).ok_or_else(stale)?;
+        if d.dirty_run != run {
+            return Err(EngineError::StaleGeneration {
+                message: "obsolete scan run".into(),
+                detail: None,
+            });
+        }
+        d.dirty = revision;
+        d.valid = 0;
+        r.stages.retain(|(_, dir, _), _| *dir != ticket.dir);
+        Ok(ListingTicket {
+            input_revision: revision,
+            old_parent: None,
+            ..ticket
         })
     }
     fn consume(&self, root: &RootId, message: ScanMessage) -> EngineResult<()> {

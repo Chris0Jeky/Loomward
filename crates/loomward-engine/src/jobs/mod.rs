@@ -214,7 +214,7 @@ impl Registry {
         }
         Ok(job)
     }
-    pub fn cancel(&self, id: &JobId) -> EngineResult<Job> {
+    pub fn cancel(&self, id: &JobId, events: &Bus) -> EngineResult<Job> {
         let (job, interrupt) = {
             let mut records = self.records.lock().unwrap();
             let r = records.get_mut(id).ok_or_else(|| EngineError::NotFound {
@@ -224,6 +224,7 @@ impl Registry {
                 r.cancel.store(true, Ordering::Release);
                 r.job.state = JobState::CancelRequested;
             }
+            emit(events, &r.job);
             (r.job.clone(), r.interrupt.clone())
         };
         if let Some(f) = interrupt {
@@ -268,9 +269,7 @@ impl Engine {
     }
     /// Acknowledge cancellation immediately; synchronous I/O completion remains separate.
     pub fn job_cancel(&self, id: &JobId) -> EngineResult<Job> {
-        let job = self.jobs.cancel(id)?;
-        emit(&self.events, &job);
-        Ok(job)
+        self.jobs.cancel(id, &self.events)
     }
     /// Retained state of a job, including terminal outcomes inside the idempotency window.
     pub fn job_status(&self, id: &JobId) -> EngineResult<Job> {
@@ -311,6 +310,68 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cancel_complete_race_never_publishes_nonterminal_after_terminal() {
+        // The interrupt callback lets completion win before cancellation returns.
+        let e = Arc::new(engine());
+        let mut stale = 0;
+        for _ in 0..128 {
+            let registry = Arc::downgrade(&e.jobs);
+            let (tx, rx) = std::sync::mpsc::sync_channel(1);
+            let runner: JobRunner = Arc::new(move |ctx, _| {
+                tx.send(ctx.job_id.clone()).unwrap();
+                while !ctx.is_cancelled() {
+                    std::thread::yield_now();
+                }
+                Ok(CoverageState::Complete)
+            });
+            let id = Arc::new(Mutex::new(None::<JobId>));
+            let interrupt_id = id.clone();
+            let interrupt = Arc::new(move || {
+                let registry = registry.upgrade().unwrap();
+                let id = interrupt_id.lock().unwrap().clone().unwrap();
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while registry.records.lock().unwrap()[&id].terminal.is_none() {
+                    assert!(Instant::now() < deadline);
+                    std::thread::yield_now();
+                }
+            });
+            let mut stream = e.subscribe_events(None).unwrap();
+            stream.recv_timeout(Duration::ZERO);
+            let job = e
+                .jobs
+                .submit(
+                    JobSpec::new(JobKind::Refit, None),
+                    runner,
+                    e.events.clone(),
+                    Some(interrupt),
+                )
+                .unwrap();
+            *id.lock().unwrap() = Some(rx.recv_timeout(Duration::from_secs(2)).unwrap());
+            e.job_cancel(&job.job_id).unwrap();
+            let mut terminal = false;
+            let mut saw_cancel = false;
+            while let loomward_protocol::RecvOutcome::Event(event) =
+                stream.recv_timeout(Duration::ZERO)
+            {
+                if event.event != EventName::JobState {
+                    continue;
+                }
+                let state = &event.data["job"]["state"];
+                if state == "cancelled" {
+                    terminal = true;
+                } else if terminal {
+                    stale += 1;
+                }
+                saw_cancel |= state == "cancel_requested";
+            }
+            assert!(terminal && saw_cancel);
+        }
+        assert_eq!(
+            stale, 0,
+            "late cancellation transitions overtake terminal state"
+        );
+    }
     fn engine() -> Engine {
         Engine::open(crate::EngineConfig::new(
             "unused".into(),
