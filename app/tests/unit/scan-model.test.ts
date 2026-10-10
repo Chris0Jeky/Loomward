@@ -134,6 +134,13 @@ describe('applying job snapshots', () => {
     expect(applyProgress(b, 'rt_x', 'jb_1', progress())).toBe(b);
   });
 
+  it('never lets an unreadable created_at outrank a readable one when seq is missing', () => {
+    const readable = job('queued', { job_id: 'jb_ok', seq: undefined, created_at: '2026-10-10T10:00:00Z' });
+    const unreadable = job('queued', { job_id: 'jb_bad', seq: undefined, created_at: 'not a time' });
+    expect(applyJob(applyJob({}, unreadable), readable).rt_a?.job_id).toBe('jb_ok');
+    expect(applyJob(applyJob({}, readable), unreadable).rt_a?.job_id).toBe('jb_ok');
+  });
+
   it('rebuilds from a jobs.list in any order', () => {
     const old = done({ job_id: 'jb_0', seq: 0, created_at: '2026-10-10T09:00:00Z' });
     const fresh = job('running', { job_id: 'jb_2', seq: 2, created_at: '2026-10-10T11:00:00Z' });

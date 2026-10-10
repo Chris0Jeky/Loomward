@@ -55,9 +55,9 @@ function merge(cur: Job, job: Job): Job {
 
 /** Submission order within one engine lifetime, independent of clocks and random IDs. */
 function newerJob(job: Job, cur: Job): boolean {
-  return job.seq === undefined || cur.seq === undefined
-    ? Date.parse(job.created_at) > Date.parse(cur.created_at)
-    : job.seq > cur.seq;
+  if (job.seq !== undefined && cur.seq !== undefined) return job.seq > cur.seq;
+  const a = Date.parse(job.created_at), b = Date.parse(cur.created_at);
+  return Number.isNaN(b) ? !Number.isNaN(a) : a > b; // an unreadable time never outranks a readable one
 }
 
 /** Applies snapshots by submission and revision; legacy jobs retain the state and null guards. */

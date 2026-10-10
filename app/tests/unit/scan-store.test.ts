@@ -4,7 +4,7 @@ import { scans } from '../../src/lib/stores/scan.svelte';
 import { session } from '../../src/lib/stores/session.svelte';
 import { Client } from '../../src/lib/transport/client';
 import { createMockTransport } from '../../src/lib/transport/mock';
-import type { Transport } from '../../src/lib/transport/transport';
+import { TransportError, type Transport } from '../../src/lib/transport/transport';
 
 const job = (state: JobState, over: Partial<Job> = {}): Job => ({
   job_id: 'jb_1', seq: 1, rev: { queued: 0, running: 1, cancel_requested: 2, completed: 3, failed: 3, cancelled: 3 }[state], kind: 'scan', state, root_id: 'rt_a', created_at: '2026-10-10T10:00:00Z', started_at: null, finished_at: null, progress: null, coverage: null, error: null, ...over,
@@ -148,6 +148,33 @@ describe('scan requests stay inside their engine generation', () => {
       expect(scans.problems).toEqual({});
     },
   );
+
+  it.each(['tree.invalidated', 'roots.changed'] as const)('keeps same-engine replies across a %s view resync', async (event) => {
+    const answers: ((reply: Reply) => void)[] = [];
+    session.client = clientWith(() => new Promise<Reply>((resolve) => answers.push(resolve))).client;
+    const refused = scans.start('rt_a', 'full');
+    session.epoch++; // what session.onEvent does for a view resync
+    scans.onEvent({ ...ev(event, {}), epoch: 'old_epoch' });
+    answers[0]!({ error: { code: 'busy', message: 'already scanning' } });
+    await refused;
+    expect(scans.problems.rt_a).toBeTruthy();
+    const started = scans.start('rt_a', 'full');
+    session.epoch++;
+    answers[1]!({ job: job('queued', { job_id: 'jb_next', seq: 51 }) });
+    await started;
+    expect(scans.book.rt_a?.job_id).toBe('jb_next');
+  });
+
+  it.each(['sync', 'start', 'cancel'] as const)('still hands a transport fault to the shell after a new epoch (%s)', async (operation) => {
+    let fail!: (e: Error) => void;
+    session.client = clientWith((c) => c === 'jobs.list' && operation !== 'sync' ? { jobs: [] } :
+      new Promise<Reply>((_, reject) => { fail = reject; })).client;
+    const pending = operation === 'sync' ? scans.sync() : operation === 'cancel' ? scans.cancel('rt_a') : scans.start('rt_a', 'full');
+    await vi.waitFor(() => expect(fail).toBeTypeOf('function'));
+    scans.onEvent(hello('new_epoch'));
+    fail(new TransportError('engine went away'));
+    await expect(pending).rejects.toBeInstanceOf(TransportError);
+  });
 
   it('does not let an old start clear the pending flag of a new-engine start', async () => {
     const answers: ((reply: Reply) => void)[] = [];

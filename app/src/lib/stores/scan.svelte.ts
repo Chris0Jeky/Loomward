@@ -44,12 +44,13 @@ class Scans {
     }
   }
 
+  /** Engine generation only: `session.epoch` also counts same-engine view resyncs (tree.invalidated, roots.changed). */
   private captureGeneration(): () => boolean {
     this.alignEpoch();
-    const generation = this.generation, epoch = session.epoch, client = session.client;
+    const generation = this.generation, client = session.client;
     return () => {
       this.alignEpoch();
-      return generation === this.generation && epoch === session.epoch && client === session.client;
+      return generation === this.generation && client === session.client;
     };
   }
 
@@ -90,7 +91,7 @@ class Scans {
     try {
       ({ result } = await c.call('jobs.list', { kinds: ['scan'], limit: 50 }));
     } catch (e) {
-      if (!current()) return;
+      if (!current() && e instanceof LoomwardError) return;
       throw e;
     }
     if (!current()) return;
@@ -106,7 +107,8 @@ class Scans {
         this.apply(result.job);
         this.clearConfirmationProblem(job.root_id!);
       } catch (e) {
-        if (!currentJob()) return;
+        if (!currentJob() && e instanceof LoomwardError) return;
+        if (!currentJob()) throw e;
         if (e instanceof LoomwardError && e.code === 'not_found') {
           // This is a local observation, not a new engine revision; don't overwrite a newer snapshot.
           if (this.book[job.root_id!]?.job_id === job.job_id && this.book[job.root_id!]?.rev === job.rev) {
@@ -132,8 +134,8 @@ class Scans {
       if (!current()) return;
       this.apply(result.job);
     } catch (e) {
-      if (!current()) return;
       if (!(e instanceof LoomwardError)) throw e; // a transport fault belongs to the shell
+      if (!current()) return;
       const busyJob = e.code === 'busy' && typeof e.detail?.job_id === 'string' ? e.detail.job_id : null;
       if (busyJob) await this.adopt(busyJob);
       if (!current()) return;
@@ -155,8 +157,8 @@ class Scans {
       if (!current()) return;
       this.apply(result.job);
     } catch (e) {
-      if (!current()) return;
       if (!(e instanceof LoomwardError)) throw e;
+      if (!current()) return;
       this.setProblem(rootId, `The scan could not be cancelled: ${e.message}`);
     } finally {
       if (generation === this.generation) this.pending = { ...this.pending, [rootId]: false };
@@ -173,8 +175,8 @@ class Scans {
       if (!current()) return;
       this.apply(result.job);
     } catch (e) {
-      if (!current()) return;
       if (!(e instanceof LoomwardError)) throw e;
+      if (!current()) return;
     }
   }
 
