@@ -21,14 +21,29 @@ pub fn validate_static_dir(
         return Err("--static must name a directory".into());
     }
     for protected in roots.iter().map(PathBuf::as_path).chain(state) {
-        let protected = protected
-            .canonicalize()
-            .map_err(|_| "cannot resolve a protected directory")?;
-        if dir.starts_with(&protected) || protected.starts_with(&dir) {
+        let overlaps = match protected.canonicalize() {
+            Ok(protected) => dir.starts_with(&protected) || protected.starts_with(&dir),
+            // An offline, renamed or deleted grant cannot be resolved. Compare its stored path as
+            // text so the server still starts, and still refuse any textual overlap.
+            Err(_) => lexical_overlap(&dir, protected),
+        };
+        if overlaps {
             return Err("--static overlaps a grant root or the state directory".into());
         }
     }
     Ok(Some(dir))
+}
+
+/// Case-insensitive, separator-normalised prefix overlap of two absolute paths, either way round.
+/// The verbatim drive prefix (`\\?\`) is ignored, so a canonical path matches its stored form.
+fn lexical_overlap(a: &Path, b: &Path) -> bool {
+    fn norm(p: &Path) -> String {
+        let s = p.to_string_lossy().replace('/', "\\").to_lowercase();
+        let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
+        s.trim_end_matches('\\').to_string() + "\\"
+    }
+    let (a, b) = (norm(a), norm(b));
+    a.starts_with(&b) || b.starts_with(&a)
 }
 
 /// Checks one root and returns it canonicalised.
@@ -175,6 +190,30 @@ mod tests {
             .ends_with("network_or_removable_unsupported"));
         // A refusal names the rule and the position, never the path.
         assert!(!rule(&[a.clone(), b.clone()], None).contains(&*base.to_string_lossy()));
+    }
+
+    /// #224: an unresolvable stored grant compares as text instead of failing the start.
+    #[test]
+    fn an_offline_grant_is_compared_lexically() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let canonical = dist.canonicalize().unwrap();
+        let elsewhere = tmp.path().join("gone-elsewhere");
+        assert_eq!(
+            validate_static_dir(Some(&dist), &[elsewhere], None),
+            Ok(Some(canonical.clone()))
+        );
+        assert!(validate_static_dir(Some(&dist), &[dist.join("gone")], None).is_err());
+        assert!(lexical_overlap(&canonical, &canonical.join("gone")));
+        assert!(lexical_overlap(
+            &canonical.join("x"),
+            &PathBuf::from(canonical.to_string_lossy().to_uppercase())
+        ));
+        assert!(!lexical_overlap(
+            &canonical,
+            &canonical.with_file_name("dist-other")
+        ));
     }
 
     /// #185 item 4: only the verbatim drive form is local; every other verbatim or device
