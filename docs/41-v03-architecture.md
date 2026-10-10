@@ -145,7 +145,9 @@ Dependencies point one way: adapters to service to engine to leaves. Leaves (`co
 helpers in `loomward-http` (exclusive port binding, static-file handle paths) and the Windows generator and benchmark code in
 `loomward-lab`, and in the desktop shell (`native/`: console attach and the disclosure message box). The library
 crates `core`, `engine`, `catalog`, `service`, `protocol`, `learn` and `cli` keep `#![forbid(unsafe_code)]`;
-the attribute covers their library code only, not benchmark examples such as `crates/loomward-catalog/examples/bench.rs`.
+the attribute covers their library code only. This inventory is of production code: test harnesses (for example
+`native/tests/desktop.rs` window automation) and benchmark examples (for example `crates/loomward-catalog/examples/bench.rs`)
+also call Win32 through `unsafe`.
 
 | Crate | Responsibility | Key modules | Must not |
 |---|---|---|---|
