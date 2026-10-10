@@ -38,14 +38,21 @@ pub fn invalid(message: impl Into<String>) -> io::Error {
 
 /// Deliberately a direct child: no relative paths, namespaces, traversal or ADS.
 pub fn root_name(input: &str) -> io::Result<&str> {
-    let prefix = "G:\\loomward-lab\\scale\\";
+    let prefix = ["G:\\loomward-lab\\scale\\", "E:\\loomward-lab\\scale\\"]
+        .into_iter()
+        .find(|p| {
+            input
+                .get(..p.len())
+                .is_some_and(|s| s.eq_ignore_ascii_case(p))
+        })
+        .ok_or_else(|| invalid("root must be a direct child of G: or E: loomward-lab\\scale"))?;
     if input.len() <= prefix.len()
         || !input
             .get(..prefix.len())
             .is_some_and(|s| s.eq_ignore_ascii_case(prefix))
     {
         return Err(invalid(
-            "root must be a direct child of G:\\loomward-lab\\scale",
+            "root must be a direct child of G: or E: loomward-lab\\scale",
         ));
     }
     let name = &input[prefix.len()..];
@@ -127,6 +134,90 @@ impl Totals {
         self.logical_bytes += other.logical_bytes;
         self.skipped_reparse += other.skipped_reparse;
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CrossTotals {
+    #[serde(flatten)]
+    pub totals: Totals,
+    pub denied_directories: u64,
+}
+
+pub fn disagreements(
+    baseline_name: &str,
+    baseline: CrossTotals,
+    name: &str,
+    actual: CrossTotals,
+) -> Vec<String> {
+    [
+        ("files", baseline.totals.files, actual.totals.files),
+        (
+            "directories",
+            baseline.totals.directories,
+            actual.totals.directories,
+        ),
+        (
+            "logical_bytes",
+            baseline.totals.logical_bytes,
+            actual.totals.logical_bytes,
+        ),
+        (
+            "skipped_reparse",
+            baseline.totals.skipped_reparse,
+            actual.totals.skipped_reparse,
+        ),
+        (
+            "denied_directories",
+            baseline.denied_directories,
+            actual.denied_directories,
+        ),
+    ]
+    .into_iter()
+    .filter(|(_, expected, observed)| expected != observed)
+    .map(|(field, expected, observed)| {
+        format!("{name}.{field}={observed} differs from {baseline_name}.{field}={expected}")
+    })
+    .collect()
+}
+
+/// Real observation scopes are explicit local paths, never profile or credential stores.
+pub fn real_root(input: &str) -> io::Result<()> {
+    let bytes = input.as_bytes();
+    if bytes.len() < 4 || !bytes[0].is_ascii_alphabetic() || &bytes[1..3] != b":\\" {
+        return Err(invalid(
+            "real root must be an absolute local path below a volume root",
+        ));
+    }
+    let parts: Vec<_> = input[3..].split('\\').collect();
+    if parts.iter().any(|p| {
+        p.is_empty()
+            || *p == "."
+            || *p == ".."
+            || p.ends_with(['.', ' '])
+            || p.contains([':', '/', '*', '?', '\0'])
+    }) || parts.iter().any(|p| {
+        [
+            "users",
+            "appdata",
+            "browser",
+            "chrome",
+            "chromium",
+            "firefox",
+            "edge",
+            "credentials",
+            "keys",
+            ".ssh",
+            ".aws",
+            ".azure",
+            ".gnupg",
+        ]
+        .contains(&p.to_ascii_lowercase().as_str())
+    }) {
+        return Err(invalid(
+            "profile, credential, browser, or ambiguous real root refused",
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -226,6 +317,52 @@ pub fn decode_records(
 mod tests {
     use super::*;
     #[test]
+    fn cross_check_compares_every_counter_and_names_differences() {
+        let baseline = CrossTotals {
+            totals: Totals {
+                files: 7,
+                directories: 3,
+                logical_bytes: 123,
+                skipped_reparse: 2,
+            },
+            denied_directories: 1,
+        };
+        assert!(disagreements("std-single", baseline, "handle", baseline).is_empty());
+        let changed = CrossTotals {
+            totals: Totals {
+                files: 8,
+                directories: 4,
+                logical_bytes: 124,
+                skipped_reparse: 3,
+            },
+            denied_directories: 2,
+        };
+        let differences = disagreements("std-single", baseline, "handle", changed);
+        assert_eq!(differences.len(), 5);
+        assert_eq!(
+            differences[0],
+            "handle.files=8 differs from std-single.files=7"
+        );
+        assert_eq!(
+            differences[4],
+            "handle.denied_directories=2 differs from std-single.denied_directories=1"
+        );
+        for field in 0..5 {
+            let mut single = baseline;
+            match field {
+                0 => single.totals.files += 1,
+                1 => single.totals.directories += 1,
+                2 => single.totals.logical_bytes += 1,
+                3 => single.totals.skipped_reparse += 1,
+                _ => single.denied_directories += 1,
+            }
+            assert_eq!(
+                disagreements("baseline", baseline, "candidate", single).len(),
+                1
+            );
+        }
+    }
+    #[test]
     fn scope_rejects_escape_and_devices() {
         assert_eq!(
             root_name(r"G:\loomward-lab\scale\test-1").unwrap(),
@@ -237,10 +374,33 @@ mod tests {
             r"G:\loomward-lab\scale\..\x",
             r"G:\loomward-lab\scale\x:y",
             r"G:\loomward-lab\scale\NUL",
-            r"E:\loomward-lab\scale\x",
             r"\\?\G:\loomward-lab\scale\x",
         ] {
             assert!(root_name(path).is_err(), "{path}");
+        }
+        assert_eq!(
+            root_name(r"E:\loomward-lab\scale\mixed-1000000").unwrap(),
+            "mixed-1000000"
+        );
+    }
+    #[test]
+    fn real_scope_rejects_broad_and_protected_paths() {
+        for path in [r"C:\fixtures\real-A", r"E:\fixtures\real-D"] {
+            assert!(real_root(path).is_ok());
+        }
+        for path in [
+            r"C:\",
+            r"C:\Users\owner",
+            r"E:\Browser",
+            r"E:\keys",
+            r"E:\games\..\keys",
+            r"E:\games:stream",
+            r"E:\games\",
+            r"\\?\E:\games",
+            r"E:\games.",
+            r"E:\games\AppData",
+        ] {
+            assert!(real_root(path).is_err(), "{path}");
         }
     }
     #[test]

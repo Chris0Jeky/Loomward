@@ -19,14 +19,14 @@ file/directory/logical-byte oracle and measured allocation before marking its ma
 Control files are siblings of `data/`; enumeration counts only `data/` descendants, excluding
 that directory itself.
 
-Roots must be **direct children of G:\loomward-lab\scale**, with ASCII letters/digits/hyphens/
+Synthetic generation/bench roots must be **direct children of G:\loomward-lab\scale or E:\loomward-lab\scale**, with ASCII letters/digits/hyphens/
 underscores and no device names. Relative, UNC, device, ADS and traversal paths are refused.
 Generation never overwrites an existing root. It reserves 20 GB (decimal) free space, limits a tree to
 3M files, sparsifies before extending files, and refuses completion if payload allocation or the
 observed generation volume delta exceeds 20 GB (decimal). Volume deltas include concurrent unrelated
 activity and metadata; they are not precise per-tree allocation measurements.
 
-`destroy --root <marked-root>` verifies the exact lab marker and preflights/pins all directories
+`destroy --root <marked-root>` remains restricted to G:; it verifies the exact lab marker and preflights/pins all directories
 before deleting anything. It refuses any reparse/offline entry, including junctions, and keeps
 the marker until payload deletion succeeds. Ancestor handles and the `.busy` file coordinate
 commands in this lab. A crashed command can leave `.busy`; inspect ownership before removing
@@ -52,3 +52,35 @@ checks exact totals, compares the unchanged Python scanner at 100k, and saves ra
 OS caches or changes global policy. All timing labels are uncontrolled; no cold-cache claim.
 
 Research and measurements: [enumeration-spike.md](../../docs/research/enumeration-spike.md).
+
+## Explicit real-root cross-check
+
+`cross-check --root <absolute-local-root> --root-log <absolute-private-log>` needs no marker or
+manifest. It refuses volume roots, profile/credential/browser components, namespace aliases and
+reparse/offline root ancestors, requires a non-elevated token, and flushes a timestamp/root/reason
+line before each traversal. The log must be outside the scanned root. The owner must explicitly
+authorise the selected metadata scope; syntactic validation is not a grant.
+
+Each of the four strategies runs in a fresh child process, with one worker for `std-single`,
+eight by default for the others, and 64 KiB handle buffers. Output contains only aggregates,
+timings, process CPU and lifetime peak working set. Exact comparison includes file count,
+descendant-directory count, logical bytes, skipped reparse/offline/recall entries, and denied
+directories. A disagreement is printed field by field and returns a nonzero exit code. Other
+traversal errors fail visibly rather than masquerading as denied directories. `--strategy` selects
+one child measurement; a reported traversal error still needs inspection of its `error` field.
+Directory pins retain the synthetic walker sharing restrictions; this experiment is neither a
+consistent snapshot nor a production coexistence benchmark. No file contents are read.
+
+`real_stress.py --plan <private-absolute-JSON> --root-log <private-log> --synthetic` reproduces six
+sweeps per real root (one initial uncontrolled sweep plus five warm sweeps), the Python comparison
+on the smallest root, and five warm runs per strategy on identical marked G:/E: mixed 1M trees.
+The private plan is a list of `{ "label": "real-A", "path": "<explicit-root>", "storage": "NVMe" }`
+objects, labelled consecutively, with three or four roots. Keep it outside the public worktree.
+The Python scanner keeps per-file records in memory but exports aggregate context only; its
+200k examination cap remains in force. Generation/validation primes synthetic caches; no cold
+claim is made for those trees. Existing deterministic manifests are checked before reuse.
+
+`check_real_windows.py --root-log <private-log>` tests manifest-free agreement, cyclic-junction
+rejection, an actual denied directory and scope/log guards using one newly marked disposable G:
+tree; its ACL change and cleanup touch only that control. Real experiment results and limitations:
+[real-folder-stress.md](../../docs/research/real-folder-stress.md).
