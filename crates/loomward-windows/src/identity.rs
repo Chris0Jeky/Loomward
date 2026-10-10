@@ -111,17 +111,24 @@ fn ancestry(path: &Path) -> io::Result<Vec<ObjectKey>> {
 
 #[cfg(windows)]
 fn one(path: &Path) -> io::Result<ObservedIdentity> {
-    use crate::win::{info, open};
-    use windows_sys::Win32::{Foundation::*, Storage::FileSystem::*};
+    use crate::win::open;
+    use windows_sys::Win32::Storage::FileSystem::*;
     let handle = open(
         path,
         FILE_READ_ATTRIBUTES,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
     )?;
-    let basic: FILE_BASIC_INFO = info(&handle, FileBasicInfo)?;
-    let standard: FILE_STANDARD_INFO = info(&handle, FileStandardInfo)?;
-    let tag: FILE_ATTRIBUTE_TAG_INFO = info(&handle, FileAttributeTagInfo)?;
-    let (serial, id, quality) = match info::<FILE_ID_INFO>(&handle, FileIdInfo) {
+    from_handle(&handle)
+}
+
+#[cfg(windows)]
+pub(crate) fn from_handle(handle: &crate::win::Handle) -> io::Result<ObservedIdentity> {
+    use crate::win::info;
+    use windows_sys::Win32::{Foundation::*, Storage::FileSystem::*};
+    let basic: FILE_BASIC_INFO = info(handle, FileBasicInfo)?;
+    let standard: FILE_STANDARD_INFO = info(handle, FileStandardInfo)?;
+    let tag: FILE_ATTRIBUTE_TAG_INFO = info(handle, FileAttributeTagInfo)?;
+    let (serial, id, quality) = match info::<FILE_ID_INFO>(handle, FileIdInfo) {
         Ok(id) => (
             id.VolumeSerialNumber,
             id.FileId.Identifier,

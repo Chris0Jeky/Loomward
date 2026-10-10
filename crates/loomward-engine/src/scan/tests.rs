@@ -1,6 +1,67 @@
 use super::*;
 use crate::{Engine, EngineConfig};
 use loomward_protocol::{DatasetClass, RootId};
+
+#[test]
+fn duplicate_content_is_gated_for_personal_grants() {
+    let mut grant = root();
+    grant.dataset_class = DatasetClass::Personal;
+    let err = grant
+        .inspect_duplicates(
+            &[],
+            loomward_windows::duplicate_reader::Budget {
+                bytes: 100,
+                time: std::time::Duration::from_secs(1),
+            },
+        )
+        .unwrap_err();
+    assert_eq!(err.as_str(), "content_read_gated");
+}
+
+#[cfg(windows)]
+#[test]
+fn duplicate_synthetic_grant_returns_evidence() {
+    use loomward_windows::{
+        duplicate_reader::{Budget, Entry},
+        enumerate::{DirSource, NativeSource},
+        identity,
+    };
+    if loomward_windows::enumerate::running_elevated() {
+        assert_eq!(
+            NativeSource::default()
+                .open_root(std::path::Path::new("synthetic"))
+                .unwrap_err(),
+            source::SourceError::Refused
+        );
+        return;
+    }
+    let temp = tempfile::tempdir_in(std::fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+    for name in ["a", "b"] {
+        std::fs::write(temp.path().join(name), b"same").unwrap();
+    }
+    let expected = NativeSource::default().open_root(temp.path()).unwrap().1;
+    let grant = GrantedRoot::new(
+        RootId::new("rt_duplicate_fixture").unwrap(),
+        temp.path().to_owned(),
+        DatasetClass::Synthetic,
+        expected,
+    );
+    let entries = ["a", "b"].map(|name| Entry {
+        relative: name.into(),
+        expected: identity::observe(&temp.path().join(name)).unwrap(),
+    });
+    let report = grant
+        .inspect_duplicates(
+            &entries,
+            Budget {
+                bytes: 100,
+                time: std::time::Duration::from_secs(10),
+            },
+        )
+        .unwrap();
+    assert_eq!(report.groups, vec![vec![0, 1]]);
+    assert!(!report.partial);
+}
 use source::*;
 use std::{
     sync::{atomic::AtomicBool, Arc},
