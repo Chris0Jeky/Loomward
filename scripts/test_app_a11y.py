@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 
 from playwright.sync_api import Browser, Page, expect
+from test_app_views import wait_until
 
 ROOT = Path(__file__).resolve().parents[1]
 TOKENS = ROOT / 'app' / 'src' / 'styles' / 'tokens.css'
@@ -443,13 +444,46 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     seq = lambda: page.locator('.res-note .seq').inner_text()
     expect(page.locator('.res-note .seq')).to_be_attached()
     page.get_by_role('button', name='Pause updates').click()
-    expect(page.get_by_role('status').filter(has_text='Paused')).to_be_visible()
+    expect(page.locator('.res-note [role=status]')).to_contain_text('Paused')
     before = seq()
     page.wait_for_timeout(2600)
     check(seq() == before, f'2.2.2 paused: the sample number holds ({before})')
     page.get_by_role('button', name='Resume updates').click()
     page.wait_for_timeout(2600)
     check(seq() != before, f'2.2.2 resumed: samples arrive again ({before} -> {seq()})')
+
+    # Process strip: a persistent live region, ordinary links, and sequential keyboard order.
+    strip = page.get_by_role('region', name='Processes', exact=True)
+    expect(strip.get_by_role('link')).to_have_count(5)
+    strip_status = strip.get_by_role('status').element_handle()
+    check(strip_status.evaluate('e => e.getAttribute("aria-live") === "polite" && e.getAttribute("aria-atomic") === "true"'),
+          '4.1.3 the process strip has a persistent polite, atomic live region')
+    page.get_by_label('Process lens').focus()
+    page.keyboard.press('Tab')
+    expect(strip.get_by_role('link').first).to_be_focused()
+    page.keyboard.press('Tab')
+    expect(strip.get_by_role('link').nth(1)).to_be_focused()
+    names = strip.get_by_role('link').evaluate_all('(links) => links.map(e => e.getAttribute("aria-label"))')
+    check(all(re.fullmatch(r'Explain .+, process \d+, in Companion', name or '') for name in names), '2.4.6 each strip link names the process, PID and Companion destination')
+    page.get_by_role('button', name='Pause updates').click()
+    expect(strip.get_by_role('status')).to_contain_text('Paused')
+    check(strip_status.evaluate('e => e.isConnected && e.textContent.includes("Paused")'), '4.1.3 pause updates the existing process status node')
+    page.get_by_role('button', name='Resume updates').click()
+    wait_until(page, '() => !document.querySelector("#strip-status").textContent.includes("Paused")')
+    for label in ('Woven atlas', 'Observatory'):
+        page.get_by_role('group', name='Theme').get_by_role('button', name=label).click()
+        for selector in ('.process-name', '.process-detail', '.metric-label', '#strip-status'):
+            fg = css_rgb(page.evaluate('(s) => getComputedStyle(document.querySelector(s)).color', selector))
+            bg = css_rgb(page.evaluate('getComputedStyle(document.documentElement).backgroundColor'))
+            check(ratio(fg, bg) >= 4.5, f'1.4.3 strip {selector} in {label}: {ratio(fg, bg):.2f}:1')
+    page.set_viewport_size({'width': 320, 'height': 844})
+    check(page.evaluate('document.documentElement.scrollWidth <= innerWidth'), '1.4.10 process strip reflows at 320 px')
+    page.get_by_label('Process lens').focus()
+    page.keyboard.press('Tab')
+    focus = strip.get_by_role('link').first
+    expect(focus).to_be_focused()
+    check(focus.evaluate('e => { const r = e.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.width >= 24 && r.height >= 24 && getComputedStyle(e).outlineStyle !== "none"; }'),
+          '2.4.7/2.5.8 strip links have visible focus and 24 px targets at 320 px')
     page.context.close()
 
     # --- Companion: no re-sort under focus, pause ------------------------------------------------------------------------------------
@@ -511,6 +545,12 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     goto(page, base, 'observatory', 'Observatory')
     check(css(".seg button[aria-checked='true']", 'backgroundColor') != css(".seg button[aria-checked='false']", 'backgroundColor'), '1.4.1 forced colours: the checked basis has its own background in the Observatory')
     check('underline' in css(".crumb[aria-current='location']", 'textDecorationLine'), '1.4.1 forced colours: the current crumb is underlined in the Observatory')
+    expect(page.locator('.process-strip a').first).to_be_visible()
+    check('underline' in css('.process-strip a', 'textDecorationLine'), '1.4.1 forced colours: process explanation links retain an underline')
+    page.get_by_label('Process lens').focus()
+    page.keyboard.press('Tab')
+    expect(page.locator('.process-strip a').first).to_be_focused()
+    check(css('.process-strip a', 'outlineStyle') != 'none', '2.4.7 forced colours: process explanation links retain their focus outline')
     goto(page, base, 'explorer', 'Explorer')
     check('underline' in css('th.basis', 'textDecorationLine') and 'underline' not in css('thead th:first-child', 'textDecorationLine'), '1.4.1 forced colours: the sorted size column is underlined')
     goto(page, base, 'tiers', 'Tiers')
@@ -518,6 +558,68 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     page.get_by_role('button', name='Simulate', exact=True).click()
     expect(page.get_by_role('heading', name='Alternatives')).to_be_visible()
     check(css('.alts tr.current', 'outlineStyle') != 'none' and css('.alts tbody tr:not(.current)', 'outlineStyle') == 'none', '1.4.1 forced colours: the plan on show is outlined')
+    page.context.close()
+
+    # --- scan controls on Grants & health (2.4.3, 2.5.8, 4.1.2, 4.1.3, 1.4.1, 2.3.3) --------------------------------------------------
+    page = new_page(1280, 900)
+    goto(page, base, 'health', 'Grants & health')
+    live = page.locator('p.scanlive')
+    check(live.get_attribute('role') == 'status' and live.inner_text() == '', '4.1.3 the scan status region is in the page before any scan, empty, role=status')
+    page.evaluate("document.querySelector('p.scanlive').dataset.same = 'yes'")
+    lab = page.locator('ul.scans li', has_text='[mock] lab-complete')
+    names = page.locator('ul.scans').get_by_role('button').evaluate_all('(bs) => bs.map((b) => b.getAttribute("aria-label") + "|" + b.textContent.trim())')
+    check(all(n.split('|')[1] and n.split('|')[0].lower().find(n.split('|')[1].lower()) != -1 for n in names), f'2.5.3 each scan button names its root and contains its visible text: {names[:3]}')
+    small = page.evaluate("""() => [...document.querySelectorAll('ul.scans button')].map((b) => b.getBoundingClientRect()).filter((r) => r.width < 24 || r.height < 24).length""")
+    check(small == 0, f'2.5.8 every scan button is at least 24 x 24 px ({small} smaller)')
+    # keyboard only: Tab to the Scan button, press Enter; the same node becomes Cancel and keeps focus
+    page.get_by_role('button', name='Scan [mock] lab-complete', exact=True).focus()
+    page.evaluate("document.activeElement.dataset.mark = 'primary'")
+    page.keyboard.press('Enter')
+    expect(page.get_by_role('button', name='Cancel scan of [mock] lab-complete', exact=True)).to_be_focused()
+    check(page.evaluate("document.activeElement.dataset.mark") == 'primary', '2.4.3 Scan becomes Cancel on the same element: focus is not dropped')
+    expect(live).to_contain_text('Scanning')
+    check(page.evaluate("document.querySelector('p.scanlive').dataset.same") == 'yes', '4.1.3 the scan state is said in the region that was already in the page')
+    check(page.locator('[role=progressbar], [role=meter], progress, meter').count() == 0, '1.3.1 a running scan with no reported progress has no progress role')
+    check(page.evaluate("getComputedStyle(document.querySelector('.scanbar')).display") != 'none' and page.locator('.scanbar').get_attribute('aria-hidden') == 'true', '1.1.1 the moving bar is decoration: hidden from assistive technology, the words carry the state')
+    small = page.evaluate("""() => [...document.querySelectorAll('ul.scans button')].map((b) => b.getBoundingClientRect()).filter((r) => r.width < 24 || r.height < 24).length""")
+    check(small == 0, '2.5.8 the Cancel button is also at least 24 x 24 px')
+    # cancelling: the button stays (aria-disabled, not disabled) so focus and the pending state remain readable
+    page.keyboard.press('Enter')
+    expect(page.get_by_role('button', name='Cancelling scan of [mock] lab-complete', exact=True)).to_have_attribute('aria-disabled', 'true')
+    check(page.evaluate("document.activeElement.dataset.mark") == 'primary', '2.4.3 the cancelling button keeps focus')
+    expect(live).to_contain_text('Cancelled', timeout=5000)
+    expect(lab.get_by_role('button', name='Scan [mock] lab-complete', exact=True)).to_be_focused()
+    # Refresh disappears once its scan starts: focus follows to the same root's Cancel button, not to the page (2.4.3)
+    refresh = page.get_by_role('button', name='Refresh scan of [mock] lab-complete', exact=True)
+    expect(refresh).to_be_visible()
+    refresh.focus()
+    page.keyboard.press('Enter')
+    expect(page.get_by_role('button', name='Cancel scan of [mock] lab-complete', exact=True)).to_be_focused()
+    check(active(page).startswith('BUTTON|Cancel') and page.locator('ul.scans li', has_text='[mock] lab-complete').get_by_role('button', name=re.compile('^Refresh')).count() == 0, f'2.4.3 Refresh hands focus to Cancel when its scan starts ({active(page)})')
+    page.keyboard.press('Enter')
+    expect(page.get_by_role('button', name='Scan [mock] lab-complete', exact=True)).to_be_focused(timeout=5000)
+    # a refused scan is said too, and does not move focus
+    page.get_by_role('button', name=re.compile(r'^Scan \[mock\] Synthetic Alpha$')).click()
+    expect(live).to_contain_text('registered lab roots only')
+    check(active(page).startswith('BUTTON|Scan'), f'2.4.3 focus stays on the Scan button after a refusal ({active(page)})')
+    check(page.locator('ul.scans li', has_text='Synthetic Alpha').locator('.problem').count() == 1, '3.3.1 the refusal is written next to the root it concerns')
+    check(not duplicate_names(page), f'4.1.2 no two controls share a role and name while scans are on screen: {duplicate_names(page)[:3]}')
+    page.context.close()
+
+    # reduced motion: the sweeping bar stands still; forced colours: the bar draws in a system colour, and the words remain
+    page = new_page(1280, 900, reduced_motion='reduce')
+    goto(page, base, 'health', 'Grants & health')
+    page.get_by_role('button', name='Scan [mock] lab-complete', exact=True).click()
+    expect(page.locator('.scanbar')).to_be_visible()
+    check(page.evaluate("getComputedStyle(document.querySelector('.scanbar i')).animationName") == 'none', '2.3.3 reduced motion: the scan bar does not animate')
+    page.context.close()
+    page = new_page(1280, 900, forced_colors='active')
+    goto(page, base, 'health', 'Grants & health')
+    page.get_by_role('button', name='Scan [mock] lab-complete', exact=True).click()
+    expect(page.locator('.scanbar')).to_be_visible()
+    expect(page.locator('ul.scans li', has_text='[mock] lab-complete')).to_contain_text('Scanning')
+    bar = page.evaluate("() => ({ bg: getComputedStyle(document.querySelector('.scanbar i')).backgroundColor, canvas: getComputedStyle(document.body).backgroundColor, edge: getComputedStyle(document.querySelector('.scanbar')).borderTopColor })")
+    check(bar['bg'] != bar['canvas'] and bar['edge'] != bar['canvas'], f'1.4.1 forced colours: the scan bar and its edge are not the canvas colour ({bar})')
     page.context.close()
 
     check(not errors, f'no console errors or page errors in the accessibility leg: {errors[:3]}')

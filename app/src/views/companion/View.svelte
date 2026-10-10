@@ -3,22 +3,24 @@
 </script>
 
 <script lang="ts">
-  import { tick as flush, untrack } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { formatBytes, parseBytes } from '../../lib/format/bytes';
   import { escapedName, hasHiddenCharacters } from '../../lib/format/names';
   import { formatCount, formatTime } from '../../lib/format/time';
   import { session } from '../../lib/stores/session.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
-  import type { ProcessExplanation, ProcessRow } from '../../lib/contracts.gen';
+  import type { ProcessRow } from '../../lib/contracts.gen';
   import type { ProcessSort } from '../../lib/derived';
   import { ProcessTable } from './table.svelte';
+  import { Explanation } from './explanation.svelte';
 
   const SORTS: [ProcessSort, string][] = [
     ['private_desc', 'Private commit'], ['working_set_desc', 'Working set'], ['cpu_desc', 'CPU'], ['io_desc', 'Disk I/O'], ['gpu_desc', 'GPU memory'], ['name_asc', 'Name'],
   ];
 
-  let explain = $state<{ row: ProcessRow; result: ProcessExplanation } | null>(null);
-  let explainError = $state('');
+  const explanation = new Explanation(() => session.client, (e) => session.handle(e));
+  const explain = $derived(explanation.answer);
+  const explainError = $derived(explanation.error);
   let aboutEl = $state<HTMLElement>();
   let tableEl = $state<HTMLElement>();
 
@@ -39,21 +41,26 @@
     return untrack(() => table.run());
   });
 
-  async function explainRow(row: ProcessRow) {
-    const c = session.client;
-    if (!c) return;
-    explainError = '';
-    explain = null;
-    try {
-      const { result } = await c.call('processes.explain', { process_ref: row.process_ref });
-      explain = { row, result };
-      // the panel appears below the table: move focus to it so the reader lands on the answer
-      await flush();
-      aboutEl?.focus();
-    } catch (e) {
-      explainError = session.handle(e);
+  $effect(() => {
+    if (explanation.pending && (table.list || table.waiting)) {
+      untrack(() => void explanation.resume(table.waiting ?? table.list));
     }
-  }
+  });
+
+  $effect(() => { if (explain) aboutEl?.focus(); });
+
+  // Observatory links carry an opaque process reference, never a PID used as authority.
+  onMount(() => {
+    const openLink = () => {
+      const ref = new URLSearchParams(location.hash.split('?')[1] ?? '').get('process');
+      if (ref) void explanation.open(ref);
+    };
+    openLink();
+    window.addEventListener('hashchange', openLink);
+    return () => { explanation.close(); window.removeEventListener('hashchange', openLink); };
+  });
+
+  function explainRow(row: ProcessRow) { return explanation.open(row.process_ref, row); }
 
   const pct = (f: number | null) => (f === null ? null : `${(f * 100).toFixed(1)}%`);
   const rate = (n: number | null) => (n === null ? null : `${formatBytes(Math.round(n).toString())}/s`);
@@ -155,7 +162,7 @@
           <tbody>
             {#each list.rows as r (r.process_ref)}
               {@const denied = r.access === 'denied'}
-              <tr class:sel={explain?.row.process_ref === r.process_ref}>
+              <tr class:sel={explain?.result.process_ref === r.process_ref}>
                 <th scope="row">
                   <button class="link" type="button" onclick={() => void explainRow(r)} aria-label={`Explain ${escapedName(r.name)}, process ${r.pid}`}><VisibleName name={r.name} /></button>
                   <span class="muted small num">pid {r.pid}</span>
@@ -182,10 +189,11 @@
       <p class="muted small">Rows from sample {formatCount(list.sample_seq)}. {list.note} CPU is a share of the whole machine. Working sets include shared pages, so do not add rows up. Private commit is what a process has promised, not what is resident. GPU memory is per process and is never summed into an adapter total.</p>
     {:else}<p class="muted">Waiting for the first sample.</p>{/if}
 
+    <p class="muted small live" class:has={!!explanation.pending} role="status">{explanation.pending ? 'Waiting for a fresh process sample.' : ''}</p>
     <p class="bad live" class:has={!!explainError} role="alert">{explainError}</p>
     {#if explain}
       <div class="explain" role="region" aria-label="Explanation">
-        <h3 tabindex="-1" bind:this={aboutEl}>About <VisibleName name={explain.row.name} /></h3>
+        <h3 tabindex="-1" bind:this={aboutEl}>About {#if explain.row}<VisibleName name={explain.row.name} />{:else}this process{/if}</h3>
         <p>{explain.result.summary}</p>
         <ul class="list">{#each explain.result.facts as f (f.code)}<li>{f.text}</li>{/each}</ul>
         {#each explain.result.caveats as cv (cv)}<p class="muted small">{cv}</p>{/each}

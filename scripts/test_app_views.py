@@ -12,6 +12,7 @@ import queue
 import re
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -63,6 +64,10 @@ class FakeEngine:
         self.events: queue.Queue[dict] = queue.Queue()
         self.seq = 0
         self.server: ThreadingHTTPServer | None = None
+        self.process_error: str | None = None
+        self.telemetry_calls: list[dict] = []
+        self.explain_partial_once = False
+        self.explain_calls: list[str] = []
 
     @property
     def base(self) -> str:
@@ -80,10 +85,30 @@ class FakeEngine:
             effects = {k: False for k in 'file_move file_delete file_rename file_write content_read process_kill process_suspend process_priority memory_trim uninstall elevation'.split()}
             return {
                 'protocol': 'loomward/3', 'engine_version': 'view-fake', 'adapter': 'http', 'dataset_class': 'synthetic', 'session_started_at': '2026-10-01T00:00:00Z',
-                'enumeration_strategy': 'std_read_dir', 'capabilities': {'observation': {}, 'effects': effects},
+                'enumeration_strategy': 'std_read_dir', 'capabilities': {'observation': {'process_observation': self.process_error is not None}, 'effects': effects},
                 'features': {k: False for k in ('grant_picker', 'disclosure_dialog', 'teacher_available', 'telemetry_available', 'gpu_available')},
                 'limits': {'max_request_bytes': 65536, 'max_slice_nodes': 6000, 'max_page_items': 200},
             }
+        if self.process_error is not None:
+            if cmd == 'processes.explain':
+                self.explain_calls.append(p['process_ref'])
+                if self.explain_partial_once:
+                    self.explain_partial_once = False
+                    return ('partial_coverage', 'synthetic process sample not ready')
+                result = json.loads((ROOT / 'contracts/v3/examples/commands/processes.explain.result.json').read_text())
+                result['process_ref'] = p['process_ref']
+                return result
+            if cmd in ('telemetry.subscribe', 'telemetry.unsubscribe'):
+                self.telemetry_calls.append(req)
+                if cmd == 'telemetry.unsubscribe':
+                    return {'subscription_id': p['subscription_id'], 'stopped': True}
+                result = json.loads((ROOT / 'contracts/v3/examples/commands/telemetry.subscribe.result.json').read_text())
+                result['subscription_id'] = f'sub_fake_{len(self.telemetry_calls)}'
+                return result
+            if cmd in ('telemetry.snapshot', 'processes.list', 'tree.slice', 'budgets.get'):
+                if cmd == 'processes.list' and self.process_error:
+                    return (self.process_error, 'synthetic process observation failure')
+                return json.loads((ROOT / f'contracts/v3/examples/commands/{cmd}.result.json').read_text())
         if cmd == 'tree.slice':
             delay, root = self.slice_queue.pop(0) if self.slice_queue else (0.0, 'Fake Root')
             time.sleep(delay)
@@ -372,6 +397,148 @@ def check_tiers(page: Page, base: str, shoot) -> None:
 
 # --- Companion --------------------------------------------------------------------------------------
 
+def check_process_strip_failures(browser) -> None:
+    engine = FakeEngine()
+    engine.process_error = ''
+    engine.start()
+    page = browser.new_page()
+    errors = []
+    page.on('pageerror', lambda e: errors.append(str(e)))
+    start = datetime(2026, 10, 10, 12, tzinfo=timezone.utc)
+    page.clock.install(time=start)
+    try:
+        page.goto(f'{engine.base}/#token={TOKEN}')
+        page.evaluate("location.hash = '#/observatory'")
+        strip = page.get_by_role('region', name='Processes', exact=True)
+        expect(strip.get_by_role('link')).to_have_count(1)
+        engine.invalidate()
+        for _ in range(30):
+            if len(engine.telemetry_calls) >= 3:
+                break
+            page.wait_for_timeout(100)
+        ok([r['command'] for r in engine.telemetry_calls[:3]] == ['telemetry.subscribe', 'telemetry.unsubscribe', 'telemetry.subscribe'],
+           'process strip: session epoch change releases the old lease before subscribing again')
+        ok(engine.telemetry_calls[1]['payload']['subscription_id'] == 'sub_fake_1', 'process strip: epoch change releases the correct subscription')
+        page.evaluate("""() => {
+          window.__stripStatus = document.querySelector('#strip-status');
+          window.__stripAnnouncements = [];
+          new MutationObserver(() => window.__stripAnnouncements.push({
+            text: window.__stripStatus.textContent, focus: document.activeElement.id
+          })).observe(window.__stripStatus, {childList: true, characterData: true, subtree: true});
+        }""")
+        for i, code in enumerate(('partial_coverage', 'capability_unavailable'), 1):
+            strip.get_by_role('link').first.focus()
+            engine.process_error = code
+            page.clock.set_system_time(start + timedelta(seconds=16 * (2 * i - 1)))
+            expect(strip.get_by_role('status')).to_contain_text('not sampled' if code == 'partial_coverage' else 'unavailable')
+            expect(strip.get_by_text('synthetic process observation failure', exact=True)).to_be_visible()
+            expect(strip.get_by_role('link')).to_have_count(0)
+            expect(strip.get_by_role('heading', name='Processes', exact=True)).to_be_focused()
+            ok(True, f'process strip: {code} stays visible and moves row focus to the stable heading')
+            spoken = 'not sampled' if code == 'partial_coverage' else 'unavailable'
+            ok(page.evaluate("""text => {
+              const status = window.__stripStatus;
+              return status === document.querySelector('#strip-status') && status.isConnected
+                && status.getAttribute('role') === 'status' && status.getAttribute('aria-live') === 'polite'
+                && status.getAttribute('aria-atomic') === 'true'
+                && window.__stripAnnouncements.some(a => a.text.includes(text) && a.focus === 'strip-h');
+            }""", spoken), f'process strip: {code} updates the persistent live region after the focus move')
+            engine.process_error = ''
+            page.clock.set_system_time(start + timedelta(seconds=32 * i))
+            expect(strip.get_by_role('link')).to_have_count(1)
+        engine.process_error = 'partial_coverage'
+        engine.explain_partial_once = True
+        strip.get_by_role('link').first.click()
+        expect(page.get_by_role('heading', name='Companion', level=1)).to_be_visible()
+        expect(page.get_by_role('status').filter(has_text='Waiting for a fresh process sample.')).to_be_visible()
+        ok(len(engine.explain_calls) == 1 and page.locator('main [role=alert]').filter(has_text='synthetic process sample not ready').count() == 0,
+           'Companion deep link: partial coverage waits honestly without a stale explanation alert')
+        engine.process_error = ''
+        page.clock.set_system_time(start + timedelta(seconds=80))
+        expect(page.get_by_role('region', name='Explanation')).to_be_visible(timeout=10000)
+        expect(page.get_by_role('heading', name='About this process')).to_be_focused()
+        ok(len(engine.explain_calls) == 2 and engine.explain_calls[0] == engine.explain_calls[1],
+           'Companion deep link: its first process sample retries the same opaque reference once')
+        ok(not errors, f'process strip failures: no page errors {errors}')
+    finally:
+        page.close()
+        engine.stop()
+
+
+def check_process_strip(browser, base: str, shots: Path | None) -> None:
+    page = browser.new_page(viewport={'width': 1440, 'height': 1000})
+    errors = []
+    page.on('pageerror', lambda e: errors.append(str(e)))
+    start = datetime.now(timezone.utc)
+    page.clock.install(time=start)
+    page.goto(f'{base}/?transport=mock#/observatory')
+    strip = page.get_by_role('region', name='Processes', exact=True)
+    expect(strip.locator('li')).to_have_count(5)
+    expect(strip.get_by_role('status')).to_contain_text('Synthetic process observations')
+    expect(strip.get_by_role('status')).to_contain_text('could not be read (unknown, not zero)')
+    expect(strip.locator('.process-metric').first).to_contain_text('unknown')
+    ok('0.0%' not in strip.inner_text(), 'process strip: initial CPU rates are unknown, never zero')
+    retained_at = strip.locator('time').first.get_attribute('datetime')
+
+    page.clock.set_system_time(start + timedelta(seconds=12))
+    wait_until(page, '() => document.querySelector(".process-strip time").textContent.includes("12 s ago")')
+    ok(strip.locator('time').first.get_attribute('datetime') == retained_at, 'process strip: newer gauge samples do not refresh row observation time')
+    page.clock.set_system_time(start + timedelta(seconds=16))
+    wait_until(page, '() => document.querySelector(".process-strip .process-metric").textContent.includes("%")')
+    expect(strip.locator('time').first).not_to_contain_text('age unknown')
+    cpu = [float(t.split('%')[0]) for t in strip.locator('.process-metric').all_inner_texts()]
+    ok(cpu == sorted(cpu, reverse=True), f'process strip: descending machine-normalised CPU {cpu}')
+
+    page.get_by_label('Process lens').select_option('private_desc')
+    expect(strip.locator('.process-name').first).to_have_text('vm-host.exe')
+    expect(strip.locator('.process-metric').first).to_contain_text('6.80 GiB')
+    ok(strip.get_by_role('button', name=FORBIDDEN_BUTTONS).count() == 0, 'process strip has no process effect controls')
+
+    # An update cannot reorder a row while its explanation link has focus.
+    strip.get_by_role('link').first.focus()
+    held_at = strip.locator('time').first.get_attribute('datetime')
+    held_order = strip.locator('.process-name').all_inner_texts()
+    page.clock.set_system_time(start + timedelta(seconds=32))
+    expect(strip.get_by_role('status')).to_contain_text('A newer observation is waiting')
+    ok(strip.locator('.process-name').all_inner_texts() == held_order and strip.locator('time').first.get_attribute('datetime') == held_at,
+       'process strip: row order and observations hold under keyboard focus')
+    page.get_by_label('Process lens').focus()
+    expect(strip.get_by_role('status')).not_to_contain_text('A newer observation is waiting')
+    ok(strip.locator('time').first.get_attribute('datetime') != held_at, 'process strip: focus leaving releases the queued observation')
+
+    page.get_by_role('button', name='Pause updates').click()
+    expect(strip.get_by_role('status')).to_contain_text('Paused; showing retained observations')
+    paused_at = strip.locator('time').first.get_attribute('datetime')
+    page.clock.set_system_time(start + timedelta(seconds=44))
+    wait_until(page, '() => document.querySelector(".process-strip time").textContent.includes("12 s ago")')
+    ok(strip.locator('time').first.get_attribute('datetime') == paused_at, 'process strip: paused retained rows still show their own age')
+    page.get_by_role('button', name='Resume updates').click()
+    expect(page.get_by_label('Process lens')).to_be_enabled()
+
+    if shots:
+        for theme, label in (('woven-atlas', 'Woven atlas'), ('observatory', 'Observatory')):
+            page.get_by_role('group', name='Theme').get_by_role('button', name=label).click()
+            strip.screenshot(path=str(shots / f'process-strip-{theme}.png'))
+        page.set_viewport_size({'width': 320, 'height': 844})
+        strip.screenshot(path=str(shots / 'process-strip-320.png'))
+    page.set_viewport_size({'width': 320, 'height': 844})
+    ok(page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'process strip: no horizontal page scroll at 320 px')
+    ok(strip.locator('time').first.is_visible(), 'process strip: row ages stay visible at 320 px')
+
+    strip.get_by_role('link').first.focus()
+    page.keyboard.press('Enter')
+    expect(page.get_by_role('heading', name='Companion', level=1)).to_be_visible()
+    explanation = page.get_by_role('region', name='Explanation')
+    expect(explanation).to_contain_text('vm-host.exe')
+    expect(explanation.get_by_role('heading')).to_be_focused()
+    ok(explanation.get_by_role('button').count() == 0, 'process strip: Enter opens the row explanation in Companion, read-only')
+    page.goto(f'{base}/?transport=mock#/companion?process=pc_missing')
+    expect(page.locator('main [role=alert]').filter(has_text='no such process')).to_be_visible()
+    ok(page.get_by_role('region', name='Explanation').count() == 0, 'an expired or missing process reference is not explained as a different process')
+    ok(not errors, f'process strip: no page errors {errors}')
+    page.close()
+
+
 def check_companion(page: Page, base: str, shoot) -> None:
     page.goto(f'{base}/?transport=mock#/companion')
     expect(page.get_by_role('heading', name='Companion', level=1)).to_be_visible()
@@ -464,6 +631,112 @@ def check_health(page: Page, base: str, shoot) -> None:
     print('PASS Grants & health: revoke root and grant with confirmation, state reflected, all effects off')
 
 
+ROOTS = 'main section[aria-labelledby="h-roots"]'
+SCAN_CLEAN, SCAN_DIRTY = '[mock] lab-complete', '[mock] lab-unreadable-folders'
+
+
+def check_scan_controls(page: Page, base: str, shots: Path | None) -> None:
+    """Scan, Refresh and Cancel on a granted root, on the mock transport: a lab root scans, a fixture root is
+    refused with the service's reason, a running scan is indeterminate, a partial scan says partial."""
+    page.set_viewport_size({'width': 1440, 'height': 900})
+    page.goto(f'{base}/?transport=mock#/health')
+    page.reload()  # a same-URL goto is only a hash change: reload for a fresh mock
+    expect(page.get_by_role('heading', name='Grants & health', level=1)).to_be_visible()
+    section = page.locator(ROOTS)
+    live = section.locator('p.scanlive')
+    cards = section.locator('ul.scans li')
+    clean = cards.filter(has_text=SCAN_CLEAN)
+    dirty = cards.filter(has_text=SCAN_DIRTY)
+    fixture = cards.first
+    table_row = lambda root: section.locator('tbody tr', has_text=root)
+
+    def shoot(name: str) -> None:
+        if not shots:
+            return
+        for tag, (w, h) in VIEWPORTS.items():
+            page.set_viewport_size({'width': w, 'height': h})
+            page.wait_for_timeout(300)
+            head, body = section.locator('#h-scans').bounding_box(), section.locator('ul.scans').bounding_box()
+            top = page.evaluate('scrollY')
+            page.screenshot(path=str(shots / f'{name}-{tag}.png'), full_page=True, clip={
+                'x': max(0, head['x'] - 8), 'y': head['y'] + top - 8, 'width': body['width'] + 16, 'height': body['y'] + body['height'] - head['y'] + 16})
+        page.set_viewport_size({'width': 1440, 'height': 900})
+
+    def scan_btn(row, root: str):
+        return row.get_by_role('button', name=f'Scan {root}', exact=True)
+
+    def cancel_btn(row, root: str):
+        return row.get_by_role('button', name=f'Cancel scan of {root}', exact=True)
+
+    # idle: a Scan button on each active root, no Refresh before a first scan, a status region that is already in the page
+    expect(live).to_have_attribute('role', 'status')
+    ok(live.inner_text() == '', 'the scan status region is in the page and empty before any scan')
+    expect(scan_btn(clean, SCAN_CLEAN)).to_be_visible()
+    expect(clean.get_by_role('button', name=re.compile('^Refresh'))).to_have_count(0)
+    expect(table_row(SCAN_CLEAN)).to_contain_text('never scanned')
+    ok(not re.search(r'Scanning|Finished|Cancelled', clean.inner_text()), 'an unscanned root claims no scan result')
+    ok(clean.get_by_role('button').count() == 1, 'an unscanned root offers Scan and nothing else')
+    shoot('scan-idle')
+
+    # refused: the mock answers a fixture root the way the service answers a non-lab root in a synthetic session
+    fixture.get_by_role('button', name=re.compile('^Scan ')).click()
+    expect(fixture.locator('.problem')).to_contain_text('registered lab roots only')
+    expect(live).to_contain_text('registered lab roots only')
+    ok(fixture.locator('.job').count() == 0, 'a refused scan leaves no scan job on the root')
+    shoot('scan-refused')
+
+    # running: indeterminate (text and elapsed time, no bar that fills, no percentage), Cancel in the same place
+    scan_btn(clean, SCAN_CLEAN).click()
+    expect(cancel_btn(clean, SCAN_CLEAN)).to_be_focused()
+    expect(clean).to_contain_text('Scanning')
+    expect(clean).to_contain_text('No progress is reported until the scan ends')
+    expect(clean).to_contain_text(re.compile(r'elapsed [1-9]\d* s'))
+    ok(clean.locator('[role=progressbar], [role=meter], progress, meter').count() == 0, 'a running scan has no progress bar or meter')
+    ok('%' not in clean.inner_text(), 'a running scan shows no percentage')
+    expect(live).to_contain_text('Scanning')
+    shoot('scan-running')
+
+    # completed: complete coverage only because the mock root is complete; counts; focus stays on the one button
+    expect(clean).to_contain_text('Finished, complete coverage', timeout=9000)
+    expect(clean).to_contain_text('1,284 files, 212 folders')
+    expect(clean).to_contain_text(re.compile(r'took \d+ s'))
+    expect(live).to_contain_text('Finished, complete coverage')
+    expect(scan_btn(clean, SCAN_CLEAN)).to_be_focused()
+    expect(clean.get_by_role('button', name=f'Refresh scan of {SCAN_CLEAN}', exact=True)).to_be_visible()
+    ok('partial' not in clean.locator('.job').inner_text().lower(), 'a complete scan is not called partial')
+    expect(table_row(SCAN_CLEAN).locator('td').nth(4)).to_have_text('1,284')
+
+    # refresh then cancel: Refresh goes away, focus follows to Cancel, the root ends cancelled and not complete-covered
+    clean.get_by_role('button', name=f'Refresh scan of {SCAN_CLEAN}', exact=True).click()
+    expect(cancel_btn(clean, SCAN_CLEAN)).to_be_focused()
+    cancel_btn(clean, SCAN_CLEAN).click()
+    expect(clean).to_contain_text('Cancelled', timeout=5000)
+    expect(clean).to_contain_text('not published as a complete scan')
+    expect(live).to_contain_text('Cancelled')
+
+    # partial: the root has unreadable folders, so the finished scan says partial and keeps the gap in view
+    scan_btn(dirty, SCAN_DIRTY).click()
+    expect(dirty).to_contain_text('Finished, partial coverage', timeout=9000)
+    expect(dirty).to_contain_text('4 could not be read')
+    expect(dirty).to_contain_text('lower bounds')
+    ok('complete coverage' not in dirty.locator('.job').inner_text().lower(), 'a partial scan is never called complete')
+    expect(table_row(SCAN_DIRTY).locator('td').nth(3)).to_contain_text('partial')
+    shoot('scan-partial')
+
+    # leaving the view mid-scan loses nothing: the Explorer refetches on tree.invalidated, and the result is here on return
+    scan_btn(dirty, SCAN_DIRTY).click()
+    expect(cancel_btn(dirty, SCAN_DIRTY)).to_be_visible()
+    page.evaluate("location.hash = '#/explorer'")
+    expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
+    page.wait_for_timeout(5200)
+    expect(rows(page).first).to_be_visible()
+    page.evaluate("location.hash = '#/health'")
+    expect(page.get_by_role('heading', name='Grants & health', level=1)).to_be_visible()
+    expect(section.locator('ul.scans li', has_text=SCAN_DIRTY)).to_contain_text('Finished, partial coverage')
+    ok(section.locator('p.scanlive').inner_text() == '', 'a scan that ended while the view was away is not announced again on return')
+    print('PASS scan controls: idle, refused, running indeterminate, complete, refresh and cancel, partial, survives leaving the view')
+
+
 def check_narrow(page: Page, base: str) -> None:
     page.set_viewport_size({'width': 390, 'height': 844})
     for view in ('explorer', 'tiers', 'companion', 'health'):
@@ -523,6 +796,8 @@ def run_views(page: Page, base: str, shots: Path | None) -> None:
         page.set_viewport_size({'width': 1360, 'height': 900})
 
     page.set_viewport_size({'width': 1360, 'height': 900})
+    check_process_strip(page.context.browser, base, shots)
+    check_process_strip_failures(page.context.browser)
     check_explorer_mock(page, base, shoot)
     engine = FakeEngine()
     engine.start()
@@ -535,5 +810,6 @@ def run_views(page: Page, base: str, shots: Path | None) -> None:
     check_tiers(page, base, shoot)
     check_companion(page, base, shoot)
     check_health(page, base, shoot)
+    check_scan_controls(page, base, shots)
     check_narrow(page, base)
     check_narrow_wide_fonts(page, base)

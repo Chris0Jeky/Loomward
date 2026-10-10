@@ -11,6 +11,11 @@ describe('chooseTransport', () => {
   it('uses mock only when asked explicitly', () => {
     expect(chooseTransport(env({ search: '?transport=mock' }))).toEqual({ mode: 'mock' });
   });
+  it('ignores the mock override in production and retains the real transport', () => {
+    expect(chooseTransport(env({ search: '?transport=mock', hasTauri: true }), false)).toEqual({ mode: 'tauri' });
+    expect(chooseTransport(env({ search: '?transport=mock' }), false).mode).toBe('none');
+    expect(chooseTransport(env({ search: '?transport=mock' }), true).mode).toBe('mock');
+  });
   it('prefers the desktop bridge, then a fragment token, then the tab-stored token', () => {
     expect(chooseTransport(env({ hasTauri: true })).mode).toBe('tauri');
     expect(chooseTransport(env({ hash: `#token=${TOKEN}` }))).toEqual({ mode: 'http', base: 'http://127.0.0.1:5000', token: TOKEN });

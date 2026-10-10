@@ -5,20 +5,31 @@
 use crate::Desktop;
 use loomward_protocol::{EventEnvelope, ResponseEnvelope};
 use std::sync::Arc;
-use tauri::ipc::Channel;
+use tauri::ipc::{Channel, InvokeBody, Request};
 use tauri::webview::PageLoadEvent;
 use tauri::{Builder, Manager, Runtime, State, Webview, WindowEvent};
 
 #[tauri::command]
 async fn lw_call(
     desktop: State<'_, Arc<Desktop>>,
-    request: serde_json::Value,
+    request: Request<'_>,
 ) -> Result<ResponseEnvelope, String> {
     let desktop = desktop.inner().clone();
+    let InvokeBody::Raw(bytes) = request.body() else {
+        return Err("lw_call requires a raw UTF-8 JSON envelope".into());
+    };
+    if bytes.len() > loomward_protocol::limits::MAX_REQUEST_BYTES {
+        return Err("the request exceeds 64 KiB".into());
+    }
+    let permit = desktop.begin_call()?;
+    let bytes = bytes.clone();
     // Off the async runtime: the service is synchronous and may show a native dialog.
-    tauri::async_runtime::spawn_blocking(move || desktop.call(&request))
-        .await
-        .map_err(|_| "the service failed".to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        desktop.dispatch_bytes(&bytes)
+    })
+    .await
+    .map_err(|_| "the service failed".to_string())?
 }
 
 #[tauri::command]
@@ -45,6 +56,20 @@ async fn lw_events<R: Runtime>(
 pub fn configure<R: Runtime>(builder: Builder<R>, desktop: Arc<Desktop>) -> Builder<R> {
     builder
         .manage(desktop)
+        .setup(|app| {
+            if let Some(config) = app.config().app.windows.iter().find(|w| w.label == "main") {
+                let window = tauri::WebviewWindowBuilder::from_config(app, config)?
+                    .on_navigation(local_navigation)
+                    .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
+                    .build()?;
+                #[cfg(windows)]
+                if let Some(dialogs) = app.try_state::<Arc<crate::dialogs::DesktopDialogs>>() {
+                    dialogs.set_owner(window.hwnd()?.0 as isize);
+                }
+                let _ = window;
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![lw_call, lw_events])
         .on_page_load(|webview, payload| {
             // A new document can never receive on the old one's channels.
@@ -73,6 +98,17 @@ pub fn configure<R: Runtime>(builder: Builder<R>, desktop: Arc<Desktop>) -> Buil
                 }
             }
         })
+}
+
+/// Only the embedded application origin may replace the main document.
+pub fn local_navigation(url: &tauri::Url) -> bool {
+    url.username().is_empty()
+        && url.password().is_none()
+        && url.port().is_none()
+        && matches!(
+            (url.scheme(), url.host_str()),
+            ("http", Some("tauri.localhost")) | ("tauri", Some("localhost"))
+        )
 }
 
 /// One stderr line per teardown that stopped something: the native test log reads it.
