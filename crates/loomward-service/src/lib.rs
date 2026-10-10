@@ -193,13 +193,14 @@ pub(crate) struct Queue {
     serving: u64,
 }
 
+fn is_revocation(c: Command) -> bool {
+    matches!(c, Command::RootsRevoke | Command::GrantsRevoke)
+}
+
 /// Revocation must never wait behind other mutations (its state change is serialised by
 /// `Inner::mutation`), and the folder picker waits on the owner: neither takes a ticket.
 fn is_ticketed(c: Command) -> bool {
-    !matches!(
-        c,
-        Command::RootsRequestGrant | Command::RootsRevoke | Command::GrantsRevoke
-    )
+    !is_revocation(c) && c != Command::RootsRequestGrant
 }
 
 /// `semantics.md` section 2 defaults.
@@ -377,7 +378,13 @@ impl Service {
         // cap check, the claim and the ticket are one step.
         let mut queue = is_ticketed(command)
             .then(|| self.inner.turn.0.lock().unwrap_or_else(|e| e.into_inner()));
-        match self.inner.idem.claim(&id, &fingerprint) {
+        // Revocation is never refused by the slot cap: other mutations cannot crowd it out.
+        let claim = if is_revocation(command) {
+            self.inner.idem.claim_uncapped(&id, &fingerprint)
+        } else {
+            self.inner.idem.claim(&id, &fingerprint)
+        };
+        match claim {
             idem::Claim::Full => return busy(id),
             idem::Claim::Conflict => {
                 let e = with_reason(

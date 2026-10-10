@@ -1022,3 +1022,40 @@ fn a_failed_spawn_leaves_the_request_id_free_for_a_retry() {
         1
     );
 }
+
+/// #185 item 1: with every idempotency slot live, other mutations are `busy` but the owner's
+/// revocation still runs.
+#[test]
+fn revocation_runs_with_the_idempotency_slot_cap_full() {
+    let tmp = tempfile::tempdir().unwrap();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (root, grant) = register(&svc, 1);
+    for _ in 0..crate::idem::MAX_SLOTS {
+        assert_eq!(
+            err(declare_with_deadline(&svc, "vo_unknown", 5000)).code,
+            ErrorCode::NotFound
+        );
+    }
+    let e = err(declare_with_deadline(&svc, "vo_unknown", 5000));
+    assert_eq!(
+        (e.code, e.retryable),
+        (ErrorCode::Busy, true),
+        "cap is full"
+    );
+    ok(
+        "roots.revoke",
+        call(
+            &svc,
+            "roots.revoke",
+            json!({"root_id": svc.inner.root_id(root), "purge_catalog": false}),
+        ),
+    );
+    ok(
+        "grants.revoke",
+        call(
+            &svc,
+            "grants.revoke",
+            json!({"grant_id": format!("gr_{grant}")}),
+        ),
+    );
+}
