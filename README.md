@@ -166,8 +166,8 @@ Run from the repository root. Missing tooling is reported as UNVERIFIED, never a
 | Prototype | `py -3 app/prototype/check.py` (add `--gpu` for the hardware rasterizer) |
 
 The browser checks need Playwright and a Chromium (`--browser PATH` selects one);
-`scripts/test_app.py` expects `app/dist`, so build first. `scripts/verify.py` does not run the
-`app/` checks. Docs-only changes: `git diff --check` plus the links you touched.
+`scripts/test_app.py` expects `app/dist`, so build first. `py -3 scripts/verify.py --app` runs
+the four `app/` checks in order (after `npm ci --prefix app`). Docs-only changes: `git diff --check` plus the links you touched.
 
 Counts as [AGENTS.md](AGENTS.md) records them (Windows 11): 212 Python tests with one skip
 (symlink creation needs a privilege a standard user lacks), 2 JavaScript syntax checks, 9

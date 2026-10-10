@@ -50,8 +50,8 @@ a first measurement and must be reported as such. On Windows use `codex.cmd`, `n
 | Python reference, schemas, JS boundary, fixtures | `py -3 scripts/verify.py` (216 tests with 1 symlink-privilege skip, 2 JS syntax, 9 JS boundary, 80 cross-language fixtures; it also runs the Rust gates when cargo is present) |
 | Rust workspace (`crates/*`, glob) | `cargo fmt --all --check`, `cargo test --workspace` (240 on Windows: core 30, engine 61, http 30, lab 22, learn 8, protocol 35, telemetry 25, windows 29; native scan tests assert the elevation refusal on an elevated host such as hosted CI and run fully otherwise), `cargo clippy --workspace --all-targets -- -D warnings`; add `--all-features` for the `loomward-windows` fixture lab |
 | Browser UI | `py -3 scripts/test_ui.py` (14 Chromium checks; Playwright installed here) |
-| Svelte app (`app/`) | `npm.cmd --prefix app run check`, `run test`, `run build`, then `py -3 scripts/test_app.py` (Playwright e2e incl. Atlas and Observatory); add `--live-serve` when you touch `loomward-http` or an app transport |
-| Python, Rust and the legacy browser UI in one go | `py -3 scripts/verify.py --ui` (it does not run the Svelte app checks: run that row separately) |
+| Svelte app (`app/`) | `npm.cmd --prefix app run check`, `run test`, `run build`, then `py -3 scripts/test_app.py` (Playwright e2e incl. Atlas and Observatory), or all four via `py -3 scripts/verify.py --app`; add `--live-serve` when you touch `loomward-http` or an app transport |
+| Python, Rust, the legacy browser UI and the Svelte app in one go | `py -3 scripts/verify.py --ui --app` (`--app` reports UNVERIFIED, never PASS, when Node, npm or `app/node_modules` is missing) |
 | Tauri shell (`native/`) | excluded from the root workspace: `cargo build`, `cargo test` (7 + 1 ignored) and `cargo clippy --all-targets -- -D warnings` with `--manifest-path native/Cargo.toml`, then `native/target/debug/loomward-desktop.exe --self-test`; `native/tests/webview2_probe.py` drives the real window |
 | Docs only | `git diff --check` plus the links you touched |
 
