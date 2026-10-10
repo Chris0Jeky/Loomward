@@ -335,7 +335,7 @@ impl Inner {
 
     fn grants_list(&self) -> Handled {
         let revs = self.revisions()?;
-        let rows = db::roots(&self.db(), None).map_err(sql_error)?;
+        let rows = db::grant_rows(&self.db()).map_err(sql_error)?;
         let grants: Vec<Value> = rows
             .iter()
             .map(|r| {

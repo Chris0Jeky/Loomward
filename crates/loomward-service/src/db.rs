@@ -106,16 +106,25 @@ pub struct RootRow {
 /// At most [`MAX_ACTIVE_ROOTS`] rows (the contract's list cap): every active grant first, then the
 /// newest revoked ones, returned in root id order. Grants are refused past that many active roots.
 pub fn roots(conn: &Connection, only: Option<i64>) -> Sql<Vec<RootRow>> {
+    rows(conn, only, 64)
+}
+
+/// The same projection for `grants.list`, whose contract allows 256 entries.
+pub fn grant_rows(conn: &Connection) -> Sql<Vec<RootRow>> {
+    rows(conn, None, 256)
+}
+
+fn rows(conn: &Connection, only: Option<i64>, limit: i64) -> Sql<Vec<RootRow>> {
     let mut stmt = conn.prepare_cached(
         "SELECT r.id,r.grant_id,r.volume_id,r.generation,r.state,g.display_path,g.origin,g.granted_via,g.state,
                 g.granted_at_ns,g.revoked_at_ns,
                 (SELECT id FROM main.dir WHERE root_id=r.id AND parent_id IS NULL),
                 (SELECT max(finished_at_ns) FROM main.scan_run WHERE root_id=r.id AND state='completed')
          FROM main.root r JOIN st.root_grant g ON g.id=r.grant_id
-         WHERE ?1 IS NULL OR r.id=?1 ORDER BY g.state='active' DESC,r.id DESC LIMIT 64",
+         WHERE ?1 IS NULL OR r.id=?1 ORDER BY g.state='active' DESC,r.id DESC LIMIT ?2",
     )?;
     let rows = stmt
-        .query_map([only], |r| {
+        .query_map(rusqlite::params![only, limit], |r| {
             Ok(RootRow {
                 root: r.get(0)?,
                 grant: r.get(1)?,

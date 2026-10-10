@@ -1123,11 +1123,10 @@ fn roots_list_keeps_active_roots_past_64_revoked_rows() {
             .iter()
             .map(|r| svc.inner.root_row(r["root_id"].as_str().unwrap()).unwrap())
             .collect();
-        let expected: Vec<i64> = all[6..].iter().map(|(root, _)| *root).collect();
-        assert_eq!(
-            ids, expected,
-            "{command}: 4 active and the 60 newest revoked"
-        );
+        // roots.list is capped at 64 (4 active, then the 60 newest revoked); grants.list at 256.
+        let from = if command == "roots.list" { 6 } else { 0 };
+        let expected: Vec<i64> = all[from..].iter().map(|(root, _)| *root).collect();
+        assert_eq!(ids, expected, "{command}");
     }
 }
 
@@ -1145,6 +1144,11 @@ fn grants_past_64_active_roots_are_refused_by_rule() {
             d.canonicalize().unwrap()
         })
         .collect();
+    if cfg!(not(windows)) {
+        // No native file identity off Windows: every grant fails closed before the cap.
+        assert!(svc.inner.grant(&dirs[0], "cli_flag").is_err());
+        return;
+    }
     let mut granted = Vec::new();
     for d in &dirs[..64] {
         granted.push(svc.inner.grant(d, "cli_flag").unwrap().0);
