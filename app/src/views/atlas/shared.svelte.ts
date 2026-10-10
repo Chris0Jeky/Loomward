@@ -1,5 +1,6 @@
 // Shared by the Atlas and Observatory views (lane L10): palette from tokens, and slice navigation.
-import { formatBytes } from '../../lib/format/bytes';
+import { formatBytes, parseBytes } from '../../lib/format/bytes';
+import { formatCount } from '../../lib/format/time';
 import { escapedName } from '../../lib/format/names';
 import { session } from '../../lib/stores/session.svelte';
 import type { Anchor, Basis, TreeSlice } from '../../lib/contracts.gen';
@@ -32,12 +33,20 @@ export const canvasLabel = (name: string) => escapedName(name);
 /** Byte label for a lossy layout number (exact strings are shown wherever the slice has them). */
 export const formatApprox = (n: number) => formatBytes(String(Math.max(0, Math.round(n))));
 
-/** What a keyboard cursor or an Inspect press says about a region (denied and unknown parts included). */
+/**
+ * What a keyboard cursor or an Inspect press says about a region (denied and unknown parts included).
+ * The layout number `n.size` turns an unknown size into 0, so a real node's size is read from the slice
+ * node itself: unknown, or 0 with access denied or files of unknown allocation, is "size unknown".
+ */
 export function describeSize(n: NodeInfo): string {
   const src = n.src;
   if (!src) return `${formatApprox(n.size)} · ${n.synthetic === 'fold' ? (n.folded === null ? 'some items folded, count unknown' : `${n.folded} items folded`) : 'not in this slice'}`;
   const z = n.zero.filter((x) => x.coverage === 'denied').length;
-  return `${formatApprox(n.size)}${z ? ` · ${z} access denied` : ''}${src.size_unknown_files ? ` · ${src.size_unknown_files} alloc unknown` : ''}`;
+  const bytes = parseBytes(src.size_bytes);
+  const denied = src.coverage === 'denied' || src.threads.permission.state === 'denied';
+  const unknown = bytes === null || (bytes === 0n && (denied || src.size_unknown_files > 0));
+  const size = unknown ? `size unknown${denied ? ', access denied' : ''}` : formatBytes(src.size_bytes);
+  return `${size}${z ? ` · ${z} access denied` : ''}${src.size_unknown_files ? ` · ${src.size_unknown_files} alloc unknown` : ''}`;
 }
 export const describeNode = (n: NodeInfo): string => `${canvasLabel(n.name)}, ${describeSize(n)}.${n.drillable ? ' Enter opens it.' : ''}`;
 
@@ -63,6 +72,21 @@ export function pathTo(node: Pick<NodeInfo, 'id' | 'name' | 'parentId' | 'src'>,
     i = p;
   }
   return [...trail, ...below.reverse()];
+}
+
+/** What makes a slice worth announcing again: where it is, on what basis, and whether it is partial or provisional. */
+export interface SliceKey { anchor: string; basis: string; provisional: boolean; truncated: boolean }
+
+/**
+ * The "Showing ..." line for a newly arrived slice, or null when it is only a refetch of the same view
+ * (a tree.invalidated during a scan bumps the epoch up to twice a second: announcing each one would repeat
+ * itself and drop the cursor announcements queued behind it). A drill, back, jump or basis change always differs.
+ */
+export function announceSlice(prev: SliceKey | null, s: SliceLike, name: string): { key: SliceKey; text: string | null } {
+  const key: SliceKey = { anchor: s.anchor_node_id, basis: s.basis, provisional: s.aggregate_state === 'provisional_live', truncated: s.truncated };
+  const same = prev !== null && prev.anchor === key.anchor && prev.basis === key.basis && prev.provisional === key.provisional && prev.truncated === key.truncated;
+  const text = same ? null : `Showing ${canvasLabel(name)}: ${formatCount(s.nodes.length)} nodes${key.truncated ? ', more exist than this slice holds' : ''}${key.provisional ? ', provisional sums from a running scan' : ''}.`;
+  return { key, text };
 }
 
 export interface Crumb { id: string; name: string; anchor: Anchor }

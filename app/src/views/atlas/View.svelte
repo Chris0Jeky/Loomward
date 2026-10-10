@@ -12,7 +12,7 @@
   import { createWovenTreemap, drawSwatch } from '../../../viz/woven-treemap.js';
   import Inspector from './Inspector.svelte';
   import RegionList from './RegionList.svelte';
-  import { SliceNav, canvasLabel, describeNode, describeSize, formatApprox, pathTo, readPalette } from './shared.svelte';
+  import { SliceNav, announceSlice, canvasLabel, describeNode, describeSize, formatApprox, pathTo, readPalette, type SliceKey } from './shared.svelte';
   import { Say } from '../../lib/ui/say.svelte';
   import LoadError from './LoadError.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
@@ -30,6 +30,7 @@
   let tip = $state<{ x: number; y: number; name: string; sub: string } | null>(null);
   let show = $state<ThreadToggles>({ meaning: true, residency: true, permission: true });
   let revealed = false;
+  let shownKey: SliceKey | null = null; // what the last "Showing ..." announced: a refetch of the same view stays silent
   let well = $state<HTMLDivElement>();
 
   const shown = $derived(hovered ?? selected);
@@ -74,7 +75,7 @@
     const t = tm;
     if (!s) {
       // a failed load: drop the cloth so nothing stale stays drawn or clickable
-      untrack(() => { t.clear(); hovered = null; selected = null; tip = null; });
+      untrack(() => { t.clear(); hovered = null; selected = null; tip = null; shownKey = null; });
       return;
     }
     untrack(() => {
@@ -82,7 +83,9 @@
       if (!revealed) { revealed = true; t.reveal(); }
       // the selection follows the new slice: re-read it from the renderer (its old info is from the previous slice)
       selected = selected ? t.info(selected.id) : null;
-      say.say(`Showing ${canvasLabel(nav.here?.name ?? '')}: ${formatCount(s.nodes.length)} nodes${s.truncated ? ', more exist than this slice holds' : ''}${s.aggregate_state === 'provisional_live' ? ', provisional sums from a running scan' : ''}.`);
+      const a = announceSlice(shownKey, s, nav.here?.name ?? '');
+      shownKey = a.key;
+      if (a.text) say.say(a.text);
     });
   });
 

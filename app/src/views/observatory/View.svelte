@@ -21,7 +21,7 @@
   import { createGauge, type GaugeTheme } from '../../../viz/gauges.js';
   import Inspector from '../atlas/Inspector.svelte';
   import RegionList from '../atlas/RegionList.svelte';
-  import { SliceNav, canvasLabel, describeNode, formatApprox, pathTo, readPalette } from '../atlas/shared.svelte';
+  import { SliceNav, announceSlice, canvasLabel, describeNode, formatApprox, pathTo, readPalette, type SliceKey } from '../atlas/shared.svelte';
   import { Say } from '../../lib/ui/say.svelte';
   import LoadError from '../atlas/LoadError.svelte';
   import { Poller } from './poller';
@@ -36,6 +36,7 @@
   let hovered = $state<NodeInfo | null>(null);
   let selected = $state<NodeInfo | null>(null);
   const say = new Say();
+  let shownKey: SliceKey | null = null; // what the last "Showing ..." announced: a refetch of the same view stays silent
   const shown = $derived(hovered ?? selected);
   const provisional = $derived(nav.slice?.aggregate_state === 'provisional_live');
   const pathNames = $derived(shown ? pathTo(shown, nav.slice, nav.trail.map((c) => c.name)) : []);
@@ -178,11 +179,13 @@
     const s = nav.slice;
     if (!sb) return;
     const b = sb;
-    if (!s) { untrack(() => { b.clear(); hovered = null; selected = null; }); return; }
+    if (!s) { untrack(() => { b.clear(); hovered = null; selected = null; shownKey = null; }); return; }
     untrack(() => {
       b.setSlice(s);
       selected = selected ? b.info(selected.id) : null; // the old info is from the previous slice
-      say.say(`Showing ${canvasLabel(nav.here?.name ?? '')}: ${formatCount(s.nodes.length)} nodes${s.aggregate_state === 'provisional_live' ? ', provisional sums from a running scan' : ''}.`);
+      const a = announceSlice(shownKey, s, nav.here?.name ?? '');
+      shownKey = a.key;
+      if (a.text) say.say(a.text);
     });
   });
   $effect(() => {
