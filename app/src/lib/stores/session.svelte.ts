@@ -1,7 +1,7 @@
 import { Client } from '../transport/client';
 import { buildTransport, chooseTransport, tokenFromHash, type Choice } from '../transport/select';
 import { TransportError, type Transport, type TransportMode } from '../transport/transport';
-import type { DatasetClass, SessionInfo } from '../types';
+import type { DatasetClass, EventEnvelope, SessionInfo, StreamHello } from '../contracts.gen';
 
 export type Connection = 'connecting' | 'connected' | 'unavailable';
 
@@ -30,7 +30,8 @@ class Session {
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private attempt = 0;
   private busy = false;
-  private lastSeq: number | null = null;
+  /** Epoch of the event stream (`stream.hello`), not to be confused with `epoch` above; a change means the engine restarted. */
+  private streamEpoch: string | null = null;
 
   /** Dataset class of the connected session, or null when unknown. */
   get datasetClass(): DatasetClass | null {
@@ -93,17 +94,25 @@ class Session {
     }
     // One stream for the page's life; the transport reconnects it, and a reopen re-verifies the session.
     this.stopStream ??= this.transport.subscribe(
-      (ev) => {
-        this.lastSeq = ev.seq;
-        if (ev.event === 'stream.lagged' || ev.event === 'tree.invalidated' || ev.event === 'roots.changed') this.epoch++;
-      },
+      (ev) => this.onEvent(ev),
       (s) => {
         if (s === 'closed') {
           if (this.state === 'connected') this.markUnavailable('event stream closed; reconnecting', false);
         } else if (this.state !== 'connected') void this.connect();
       },
-      this.lastSeq,
     );
+  }
+
+  /** Resyncs (bumps `epoch`, so views refetch) on every signal that earlier data may be stale (semantics.md section 7). */
+  private onEvent(ev: EventEnvelope): void {
+    if (ev.event === 'stream.hello') {
+      const next = (ev.data as unknown as StreamHello).epoch;
+      if (typeof next !== 'string') return;
+      if (this.streamEpoch !== null && this.streamEpoch !== next) this.epoch++; // restarted engine
+      this.streamEpoch = next;
+    } else if (ev.event === 'stream.lagged' || ev.event === 'tree.invalidated' || ev.event === 'roots.changed') {
+      this.epoch++; // lagged: epoch_changed, replay_gap and subscriber_overflow all mean refetch
+    }
   }
 }
 

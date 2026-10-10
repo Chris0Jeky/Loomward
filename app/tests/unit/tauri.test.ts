@@ -7,10 +7,11 @@ class FakeChannel<T> {
   onmessage: (m: T) => void = () => {};
 }
 const Channel = FakeChannel as unknown as TauriApi['Channel'];
-const ev = (seq: number) => ({ protocol: 'loomward/3', seq, event: 'roots.changed', at: 'x', data: {} });
+const env = (epoch: string, seq: number, event: string, data: object = {}) => ({ protocol: 'loomward/3', epoch, seq, event, at: 'x', catalog_rev: null, state_rev: null, data });
+const ev = (seq: number, epoch = 'e1') => env(epoch, seq, 'roots.changed');
 
 describe('tauri transport', () => {
-  it('invokes lw_call with the request and lw_events with a channel and lastSeq', async () => {
+  it('invokes lw_call with the request and lw_events with a channel, lastEpoch and lastSeq', async () => {
     const calls: [string, Record<string, unknown> | undefined][] = [];
     let channel!: FakeChannel<unknown>;
     const api: TauriApi = {
@@ -29,7 +30,7 @@ describe('tauri transport', () => {
     expect((await new Client(t).call('roots.list', {})).result).toEqual({ roots: [] });
     const got: number[] = [];
     const states: string[] = [];
-    const stop = t.subscribe((e) => got.push(e.seq), (s) => states.push(s), 41);
+    const stop = t.subscribe((e) => got.push(e.seq), (s) => states.push(s), { epoch: 'e1', seq: 41 });
     await Promise.resolve();
     channel.onmessage(ev(42));
     channel.onmessage({ nonsense: true });
@@ -38,7 +39,7 @@ describe('tauri transport', () => {
     expect(got).toEqual([42]);
     expect(states).toEqual(['open']);
     expect(calls.map((c) => c[0])).toEqual(['lw_call', 'lw_events']);
-    expect(calls[1]![1]!.lastSeq).toBe(41);
+    expect(calls[1]![1]).toMatchObject({ lastEpoch: 'e1', lastSeq: 41 });
   });
 
   it('maps an invoke failure to a transport fault', async () => {
@@ -49,23 +50,25 @@ describe('tauri transport', () => {
     const mk = (opts: { rejectEvents?: number } = {}) => {
       const channels: FakeChannel<unknown>[] = [];
       const lastSeqs: unknown[] = [];
+      const resumes: unknown[] = [];
       let rejects = opts.rejectEvents ?? 0;
       const api: TauriApi = {
         invoke: async (cmd, args) => {
           if (cmd !== 'lw_events') return null;
           lastSeqs.push(args!.lastSeq);
+          resumes.push([args!.lastEpoch, args!.lastSeq]);
           if (rejects-- > 0) throw 'engine gone';
           channels.push(args!.channel as FakeChannel<unknown>);
           return null;
         },
         Channel,
       };
-      return { api, channels, lastSeqs };
+      return { api, channels, lastSeqs, resumes };
     };
     const until = async (cond: () => boolean) => { for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 5)); };
 
     it('reports closed when the channel goes silent past the heartbeat window, then resubscribes from the last seq', async () => {
-      const { api, channels, lastSeqs } = mk();
+      const { api, channels, lastSeqs, resumes } = mk();
       const t = await createTauriTransport(api, { idleMs: 40, sleep: async () => {} });
       const states: string[] = [];
       const stop = t.subscribe(() => {}, (s) => states.push(s), null);
@@ -74,8 +77,40 @@ describe('tauri transport', () => {
       await until(() => channels.length === 2);
       expect(states.slice(0, 3)).toEqual(['open', 'closed', 'open']);
       expect(lastSeqs).toEqual([null, 9]);
+      expect(resumes).toEqual([[null, null], ['e1', 9]]);
       channels[0]!.onmessage(ev(10)); // the dead channel is ignored
       stop();
+    });
+
+    it('resumes in the new epoch after a hello and an epoch_changed lagged, without trusting the unsequenced hello inside one epoch', async () => {
+      const { api, channels, resumes } = mk();
+      const t = await createTauriTransport(api, { idleMs: 40, sleep: async () => {} });
+      const got: string[] = [];
+      const stop = t.subscribe((e) => got.push(`${e.event}:${e.epoch}.${e.seq}`), () => {}, { epoch: 'e1', seq: 40 });
+      await until(() => channels.length === 1);
+      channels[0]!.onmessage(env('e2', 3, 'stream.hello', { epoch: 'e2', last_seq: 3, oldest_replayable_seq: 1 }));
+      channels[0]!.onmessage(env('e2', 0, 'stream.lagged', { reason: 'epoch_changed', dropped: null, resync: ['roots'] }));
+      channels[0]!.onmessage(ev(4, 'e2'));
+      channels[0]!.onmessage(ev(4, 'e2')); // duplicate
+      await until(() => channels.length === 2);
+      stop();
+      expect(resumes).toEqual([['e1', 40], ['e2', 4]]);
+      expect(got).toEqual(['stream.hello:e2.3', 'stream.lagged:e2.0', 'roots.changed:e2.4']);
+    });
+
+    it.each([0, 9])('delivers a subscriber_overflow lagged with seq %i and keeps the resume point', async (seq) => {
+      const { api, channels, resumes } = mk();
+      const t = await createTauriTransport(api, { idleMs: 40, sleep: async () => {} });
+      const got: string[] = [];
+      const stop = t.subscribe((e) => got.push(`${e.event}:${e.epoch}.${e.seq}`), () => {}, null);
+      await until(() => channels.length === 1);
+      channels[0]!.onmessage(env('e1', 4, 'stream.hello', { epoch: 'e1', last_seq: 4, oldest_replayable_seq: 1 }));
+      channels[0]!.onmessage(ev(9));
+      channels[0]!.onmessage(env('e1', seq, 'stream.lagged', { reason: 'subscriber_overflow', dropped: 3, resync: ['roots'] }));
+      await until(() => channels.length === 2);
+      stop();
+      expect(got).toEqual(['stream.hello:e1.4', 'roots.changed:e1.9', `stream.lagged:e1.${seq}`]);
+      expect(resumes[1]).toEqual(['e1', 9]);
     });
 
     it('stays open while messages keep arriving', async () => {
