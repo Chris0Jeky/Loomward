@@ -395,7 +395,9 @@ fn placement_planner_parity_on_builder_scenarios() {
     match Command::new("py").args(["-3", "--version"]).output() {
         Ok(o) if o.status.success() => (),
         _ => {
-            eprintln!("SKIP: placement planner parity on builder scenarios requires Python via py -3");
+            eprintln!(
+                "SKIP: placement planner parity on builder scenarios requires Python via py -3"
+            );
             return;
         }
     }
@@ -962,7 +964,10 @@ fn placement_children_of_pre_rejected_parent_are_disclosed_not_planned() {
     let mut req = request();
     req.overrides = BoundedVec::new(vec![]).unwrap();
     let built = build_scenario(&inp, &req, deadline()).unwrap();
-    assert!(built.pre_rejected.iter().any(|r| r.group_id == parent_group));
+    assert!(built
+        .pre_rejected
+        .iter()
+        .any(|r| r.group_id == parent_group));
     assert!(
         built
             .assumptions

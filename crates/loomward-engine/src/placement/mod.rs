@@ -540,8 +540,7 @@ pub fn build_scenario(
             if selected_ids.contains(s.group_id.as_str()) {
                 continue;
             }
-            if s
-                .ancestors
+            if s.ancestors
                 .iter()
                 .any(|a| pre_rejected_nodes.contains(a.as_str()))
             {
