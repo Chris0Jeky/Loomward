@@ -4,7 +4,7 @@
     "title": "[LW-001] Verify the reference workbench on Windows",
     "milestone": "M1",
     "priority": "P0",
-    "status": "planned",
+    "status": "in_progress",
     "depends_on": [],
     "body_file": "backlog/issues/LW-001.md"
   },
@@ -13,7 +13,7 @@
     "title": "[LW-002] Compile, format and lock the native Rust workspace",
     "milestone": "M1",
     "priority": "P0",
-    "status": "planned",
+    "status": "done",
     "depends_on": [
       "LW-001"
     ],
@@ -24,7 +24,7 @@
     "title": "[LW-064] Build a disposable Windows filesystem fixture laboratory",
     "milestone": "M1",
     "priority": "P0",
-    "status": "planned",
+    "status": "done",
     "depends_on": [
       "LW-001",
       "LW-002"
@@ -36,7 +36,7 @@
     "title": "[LW-003] Implement handle-derived Windows object identity",
     "milestone": "M1",
     "priority": "P0",
-    "status": "planned",
+    "status": "done",
     "depends_on": [
       "LW-002",
       "LW-064"
@@ -48,7 +48,7 @@
     "title": "[LW-004] Inventory volume identity and capabilities",
     "milestone": "M1",
     "priority": "P0",
-    "status": "planned",
+    "status": "done",
     "depends_on": [
       "LW-002",
       "LW-064"
@@ -598,7 +598,7 @@
     "title": "[LW-050] Implement native read-only process telemetry",
     "milestone": "M6",
     "priority": "P0",
-    "status": "planned",
+    "status": "in_progress",
     "depends_on": [
       "LW-003",
       "LW-017"
@@ -956,7 +956,7 @@
     "title": "[LW-080] Port the v2 allocation portfolio and oracle fixtures to Rust",
     "milestone": "M2I",
     "priority": "P1",
-    "status": "planned",
+    "status": "in_progress",
     "depends_on": [
       "LW-002",
       "LW-030"
@@ -1221,5 +1221,137 @@
       "LW-097"
     ],
     "body_file": "backlog/issues/LW-100.md"
+  },
+  {
+    "id": "LW-101",
+    "title": "[LW-101] Measure enumeration strategies and promote the winner into loomward-windows",
+    "milestone": "V3",
+    "priority": "P0",
+    "status": "in_progress",
+    "depends_on": [
+      "LW-002",
+      "LW-064"
+    ],
+    "body_file": "backlog/issues/LW-101.md"
+  },
+  {
+    "id": "LW-102",
+    "title": "[LW-102] Deterministic synthetic scale lab with manifest oracles and lab-root registration",
+    "milestone": "V3",
+    "priority": "P0",
+    "status": "done",
+    "depends_on": [
+      "LW-002"
+    ],
+    "body_file": "backlog/issues/LW-102.md"
+  },
+  {
+    "id": "LW-103",
+    "title": "[LW-103] v3 view-service contract, protocol crate and generated TS types",
+    "milestone": "V3",
+    "priority": "P0",
+    "status": "in_progress",
+    "depends_on": [
+      "LW-016"
+    ],
+    "body_file": "backlog/issues/LW-103.md"
+  },
+  {
+    "id": "LW-104",
+    "title": "[LW-104] Svelte app shell, transports and mock mode",
+    "milestone": "V3",
+    "priority": "P0",
+    "status": "done",
+    "depends_on": [],
+    "body_file": "backlog/issues/LW-104.md"
+  },
+  {
+    "id": "LW-105",
+    "title": "[LW-105] Woven-atlas treemap, Observatory sunburst and gauge modules",
+    "milestone": "V3",
+    "priority": "P0",
+    "status": "in_progress",
+    "depends_on": [
+      "LW-104"
+    ],
+    "body_file": "backlog/issues/LW-105.md"
+  },
+  {
+    "id": "LW-106",
+    "title": "[LW-106] Loopback HTTP and SSE adapter (loomward-serve)",
+    "milestone": "V3",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-103"
+    ],
+    "body_file": "backlog/issues/LW-106.md"
+  },
+  {
+    "id": "LW-107",
+    "title": "[LW-107] Read-only system, GPU and disk telemetry samplers",
+    "milestone": "V3",
+    "priority": "P1",
+    "status": "in_progress",
+    "depends_on": [
+      "LW-050"
+    ],
+    "body_file": "backlog/issues/LW-107.md"
+  },
+  {
+    "id": "LW-108",
+    "title": "[LW-108] Tier model and placement data path over observed volumes",
+    "milestone": "V3",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-004",
+      "LW-080"
+    ],
+    "body_file": "backlog/issues/LW-108.md"
+  },
+  {
+    "id": "LW-109",
+    "title": "[LW-109] Codex teacher runner, synthetic-only, with single-use grants",
+    "milestone": "V3",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-110",
+      "LW-023"
+    ],
+    "body_file": "backlog/issues/LW-109.md"
+  },
+  {
+    "id": "LW-110",
+    "title": "[LW-110] Rust student port with Python parity fixtures",
+    "milestone": "V3",
+    "priority": "P0",
+    "status": "done",
+    "depends_on": [],
+    "body_file": "backlog/issues/LW-110.md"
+  },
+  {
+    "id": "LW-111",
+    "title": "[LW-111] OS-enforced teacher confinement and enforcement canaries",
+    "milestone": "V3",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-109"
+    ],
+    "body_file": "backlog/issues/LW-111.md"
+  },
+  {
+    "id": "LW-112",
+    "title": "[LW-112] Wave-3 service integration and grant policy",
+    "milestone": "V3",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-103",
+      "LW-106"
+    ],
+    "body_file": "backlog/issues/LW-112.md"
   }
 ]

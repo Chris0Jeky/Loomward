@@ -46,4 +46,33 @@ jobs:
       - run: cargo +stable fmt --all -- --check
       - run: cargo +stable test --workspace
       - run: cargo +stable clippy --workspace --all-targets -- -D warnings
+  app:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci --prefix app
+      - run: npm --prefix app run check
+      - run: npm --prefix app run test
+      - run: npm --prefix app run build
+      - if: runner.os == 'Linux'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13'
+      - if: runner.os == 'Linux'
+        run: python -m pip install playwright && python -m playwright install --with-deps chromium
+      - if: runner.os == 'Linux'
+        run: python scripts/test_app.py
+      - if: runner.os == 'Linux'
+        run: python scripts/test_ui.py
+        env:
+          PYTHONPATH: python
 # Hosted CI first ran green on 2026-10-09 (PR #2). Actions are pinned to full commit SHAs.
