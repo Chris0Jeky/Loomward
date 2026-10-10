@@ -20,6 +20,8 @@ from urllib.parse import urlsplit
 
 from playwright.sync_api import Page, expect, sync_playwright
 
+from test_app_views import run_views
+
 ROOT = Path(__file__).resolve().parents[1]
 TOKEN = 'a1b2c3d4e5f60718293a4b5c6d7e8f90'
 HOSTILE = '<img src=x onerror=alert(1)>.png'
@@ -153,6 +155,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--browser', default=None, help='path to a Chromium executable')
     ap.add_argument('--screenshots', type=Path)
+    ap.add_argument('--view-shots', type=Path, help='directory for the product-view screenshots (evidence/v3/app-views)')
     a = ap.parse_args()
     if not (DIST / 'index.html').exists():
         sys.exit('app/dist is missing: run `npm.cmd --prefix app run build` first')
@@ -306,6 +309,9 @@ def main() -> None:
         expect(page.get_by_role('status', name='Session status')).to_contain_text('Connected', timeout=20000)
         expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
         print('PASS drop to unavailable and recover')
+
+        # --- product views (lane L13): Explorer, Tiers, Companion, Grants & health ------------------
+        run_views(page, base, a.view_shots)
 
         # --- hygiene -------------------------------------------------------------------------------
         check(hosts <= {'127.0.0.1'}, f'every request stayed on loopback: {sorted(hosts)}')
