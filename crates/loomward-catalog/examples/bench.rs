@@ -11,6 +11,56 @@ fn summary(mut ms: Vec<f64>) -> serde_json::Value {
     ms.sort_by(f64::total_cmp);
     json!({"runs":ms.len(),"p50_ms":ms[ms.len()/2],"p95_ms":ms[(ms.len()*95).div_ceil(100)-1],"min_ms":ms[0],"max_ms":ms[ms.len()-1]})
 }
+#[cfg(windows)]
+fn peak_memory() -> std::io::Result<serde_json::Value> {
+    #[repr(C)]
+    #[derive(Default)]
+    struct Counters {
+        cb: u32,
+        faults: u32,
+        peak_working_set: usize,
+        working_set: usize,
+        peak_paged_pool: usize,
+        paged_pool: usize,
+        peak_nonpaged_pool: usize,
+        nonpaged_pool: usize,
+        pagefile: usize,
+        peak_pagefile: usize,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentProcess() -> *mut std::ffi::c_void;
+        fn K32GetProcessMemoryInfo(
+            process: *mut std::ffi::c_void,
+            counters: *mut Counters,
+            size: u32,
+        ) -> i32;
+    }
+    let mut counters = Counters {
+        cb: std::mem::size_of::<Counters>() as u32,
+        ..Counters::default()
+    };
+    // The pseudo-handle and writable, correctly sized native structure are valid for this call.
+    if unsafe {
+        K32GetProcessMemoryInfo(
+            GetCurrentProcess(),
+            &mut counters,
+            std::mem::size_of::<Counters>() as u32,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(
+        json!({"peak_working_set_bytes":counters.peak_working_set,"peak_pagefile_bytes":counters.peak_pagefile,"scope":"process high-water through publication/queries; before isolated index probe"}),
+    )
+}
+#[cfg(not(windows))]
+fn peak_memory() -> std::io::Result<serde_json::Value> {
+    Ok(
+        json!({"peak_working_set_bytes":null,"peak_pagefile_bytes":null,"scope":"Windows native counters unavailable"}),
+    )
+}
 // An isolated SQL copy measures deferred index building without disrupting live readers.
 fn index_probe(source: &Path, destination: &Path) -> rusqlite::Result<serde_json::Value> {
     let mut db = Connection::open(destination)?;
@@ -56,8 +106,10 @@ fn index_probe(source: &Path, destination: &Path) -> rusqlite::Result<serde_json
 }
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if args.len() != 2 || args[0] != "--rows" {
-        return Err("usage: bench --rows 1000000".into());
+    if !(args.len() == 2 || (args.len() == 3 && args[2] == "--single-directory"))
+        || args[0] != "--rows"
+    {
+        return Err("usage: bench --rows 1000000 [--single-directory]".into());
     }
     let rows: usize = args[1].parse()?;
     if !(1..=2_000_000).contains(&rows) {
@@ -92,7 +144,8 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     else {
         unreachable!()
     };
-    let directories = rows.div_ceil(1000);
+    let per_directory = if args.len() == 3 { rows } else { 1000 };
+    let directories = rows.div_ceil(per_directory);
     let children = (0..directories)
         .map(|i| {
             let mut o = Observation::file(format!("dir-{i:05}"), 0, None);
@@ -149,38 +202,43 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut expected_unknown = 0_u64;
     let cancel = Cancellation::default();
     for (i, id) in ids.iter().enumerate() {
-        let count = 1000.min(rows - generated);
-        // Reserve before constructing the chunk, including serialization/decode scratch.
-        let permit = c.writer().reserve_bytes(4 * 1024 * 1024, &cancel)?;
-        let mut files = Vec::with_capacity(count);
-        for j in 0..count {
-            let serial = i * 1000 + j;
-            let size = (serial as u64 * 7919) % 1_000_000 + 1;
-            let allocated = if serial % 97 == 0 {
-                None
-            } else {
-                Some(size.div_ceil(4096) * 4096)
-            };
-            expected_logical += size;
-            expected_allocated += allocated.unwrap_or(0);
-            expected_unknown += u64::from(allocated.is_none());
-            let mut f = Observation::file(format!("synthetic-{serial:07}.dat"), size, allocated);
-            f.extension = Some("dat".into());
-            f.family = "data".into();
-            f.file_id = Some((serial as u128 + 10_000_000).to_le_bytes().to_vec());
-            files.push(f);
+        let directory_count = per_directory.min(rows - generated);
+        for (seq, offset) in (0..directory_count).step_by(1000).enumerate() {
+            let count = 1000.min(directory_count - offset);
+            // Reserve before constructing the chunk, including serialization/decode scratch.
+            let permit = c.writer().reserve_bytes(4 * 1024 * 1024, &cancel)?;
+            let mut files = Vec::with_capacity(count);
+            for j in 0..count {
+                let serial = i * per_directory + offset + j;
+                let size = (serial as u64 * 7919) % 1_000_000 + 1;
+                let allocated = if serial % 97 == 0 {
+                    None
+                } else {
+                    Some(size.div_ceil(4096) * 4096)
+                };
+                expected_logical += size;
+                expected_allocated += allocated.unwrap_or(0);
+                expected_unknown += u64::from(allocated.is_none());
+                let mut f =
+                    Observation::file(format!("synthetic-{serial:07}.dat"), size, allocated);
+                f.extension = Some("dat".into());
+                f.family = "data".into();
+                f.file_id = Some((serial as u128 + 10_000_000).to_le_bytes().to_vec());
+                files.push(f);
+            }
+            receipts.push(c.writer().send_reserved(
+                WriteCommand::StageChunk {
+                    run_id: run,
+                    dir_id: *id,
+                    seq: seq as i64,
+                    files,
+                    dirs: vec![],
+                },
+                permit,
+                &cancel,
+            )?);
+            generated += count;
         }
-        receipts.push(c.writer().send_reserved(
-            WriteCommand::StageChunk {
-                run_id: run,
-                dir_id: *id,
-                seq: 0,
-                files,
-                dirs: vec![],
-            },
-            permit,
-            &cancel,
-        )?);
         receipts.push(c.writer().send(WriteCommand::ListingDone {
             run_id: run,
             dir_id: *id,
@@ -188,13 +246,13 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             skipped: 0,
             errors: 0,
         })?);
-        generated += count;
     }
     for receipt in receipts {
         receipt.wait()?;
     }
     let insert_s = insert_start.elapsed().as_secs_f64();
     let writer_timings = c.writer().timings();
+    let publication_memory = peak_memory()?;
     let finalise = Instant::now();
     c.writer().call(WriteCommand::EndRun {
         run_id: run,
@@ -203,6 +261,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     })?;
     let finalise_s = finalise.elapsed().as_secs_f64();
     let final_writer_timings = c.writer().timings();
+    let finalise_memory = peak_memory()?;
     let (got_files, got_logical, got_allocated, got_unknown): (i64, i64, i64, i64) = db.query_row(
         "SELECT sub_files,sub_logical,sub_allocated,sub_alloc_unknown FROM dir WHERE id=?1",
         [dir_id],
@@ -289,6 +348,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     drop(reader);
     drop(db);
     drop(c);
+    let memory = peak_memory()?;
     let index_probe = index_probe(
         &temp.path().join("catalog.db"),
         &temp.path().join("index-probe.db"),
@@ -306,6 +366,11 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     receipt["index_maintenance"] =
         json!("inline in file_insert_seconds; not separately timed by SQLite");
     receipt["temporary_directory_removed"] = json!(true);
+    receipt["memory"] = memory;
+    receipt["host_load"] = json!("shared-host; concurrent lanes; warm synthetic workload");
+    receipt["files_per_directory"] = json!(per_directory);
+    receipt["phases"] = json!({"publication_memory_high_water":publication_memory,"finalise_memory_high_water":finalise_memory});
+    receipt["limitations"] = json!(["shared-host warm synthetic workload; no controlled host-load or cold-cache claim", "P6 and P14 below 10M target; no HTTP or native scan integration", "process high-water is measured through queries, excluding the isolated index probe; cache settings are not an OS process-memory cap"]);
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
