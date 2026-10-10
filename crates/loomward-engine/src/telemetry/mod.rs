@@ -1,5 +1,5 @@
 //! Read-only native observations on one lease-driven thread (LW-050, LW-107).
-//! No lease means no sampler. Snapshots read the latest retained observation, including its age.
+//! No lease means no sampler or retained sample. Health observes own usage directly.
 //! The service/event-bus lane drains bounded subscription samples via `telemetry_events`.
 mod mapping;
 
@@ -40,6 +40,13 @@ struct State {
     running: bool,
     busy: bool,
     shutdown: bool,
+    costs: loomward_telemetry::SamplingCosts,
+    #[cfg(test)]
+    panic_sample: bool,
+    #[cfg(test)]
+    panic_mapping: bool,
+    #[cfg(test)]
+    sample_override: Option<Snapshot>,
 }
 
 impl State {
@@ -90,6 +97,16 @@ impl Telemetry {
         let mut state = lock(&self.shared.state)?;
         let now = Instant::now();
         state.expire(now);
+        if state.leases.is_empty() {
+            // Expiry can be noticed by this caller before the sleeping sampler notices it.
+            state.latest = None;
+            self.shared.wake.notify_one();
+            if let Some(old) = worker.take() {
+                drop(state);
+                let _ = old.join();
+                state = lock(&self.shared.state)?;
+            }
+        }
         let id =
             match &request.subscription_id {
                 Some(id) if state.leases.contains_key(id) => id.clone(),
@@ -128,9 +145,8 @@ impl Telemetry {
         if !state.running {
             if let Some(old) = worker.take() {
                 drop(state);
-                old.join().map_err(|_| EngineError::Internal {
-                    message: "telemetry sampler panicked".into(),
-                })?;
+                // The exit guard cleaned state, including after an unwind; restart this lease.
+                let _ = old.join();
                 state = lock(&self.shared.state)?;
             }
             state.running = true;
@@ -203,7 +219,21 @@ impl Drop for Telemetry {
     }
 }
 
+struct SamplerExit(Arc<Shared>);
+
+impl Drop for SamplerExit {
+    fn drop(&mut self) {
+        let mut state = self.0.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.running = false;
+        state.busy = false;
+        state.latest = None;
+        state.events.clear();
+        self.0.wake.notify_all();
+    }
+}
+
 fn run(shared: Arc<Shared>) {
+    let _exit = SamplerExit(Arc::clone(&shared));
     let mut sampler = Sampler::default();
     let mut next_sample = Instant::now();
     let mut previous_sample: Option<(Instant, Instant)> = None;
@@ -212,10 +242,21 @@ fn run(shared: Arc<Shared>) {
         let now = Instant::now();
         state.expire(now);
         if state.shutdown || state.leases.is_empty() {
-            state.running = false;
-            state.busy = false;
             return;
         }
+        let requested = |channel| {
+            state
+                .leases
+                .values()
+                .any(|lease| lease.channels.contains(&channel))
+        };
+        let channels = loomward_telemetry::SampleChannels {
+            system: requested(TelemetryChannel::System),
+            processes: requested(TelemetryChannel::Processes),
+            gpu: requested(TelemetryChannel::Gpu),
+            disks: requested(TelemetryChannel::Disks),
+            engine: requested(TelemetryChannel::Engine),
+        };
         let interval = Duration::from_millis(u64::from(
             state
                 .leases
@@ -241,37 +282,72 @@ fn run(shared: Arc<Shared>) {
             continue;
         }
         state.busy = true;
+        #[cfg(test)]
+        let panic_sample = std::mem::take(&mut state.panic_sample);
+        #[cfg(test)]
+        let sample_override = state.sample_override.take();
         drop(state);
+        #[cfg(test)]
+        assert!(!panic_sample, "injected sampler panic");
         let started = Instant::now();
-        let raw = sampler.sample(loomward_telemetry::MAX_PROCESS_ROWS);
+        #[cfg(not(test))]
+        let raw = sampler.sample_channels(loomward_telemetry::MAX_PROCESS_ROWS, channels);
+        #[cfg(test)]
+        let raw = sample_override.unwrap_or_else(|| {
+            sampler.sample_channels(loomward_telemetry::MAX_PROCESS_ROWS, channels)
+        });
         let own = sampler.own_process().cloned();
         let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.busy = false;
+        state.expire(Instant::now());
+        let sequence = state.sequence.saturating_add(1);
+        let mut due = vec![];
+        for (id, lease) in &mut state.leases {
+            if lease.next_event <= started {
+                due.push((id.clone(), lease.channels.clone()));
+                lease.next_event =
+                    started + Duration::from_millis(u64::from(lease.interval.millis()));
+            }
+        }
+        #[cfg(test)]
+        let panic_mapping = std::mem::take(&mut state.panic_mapping);
+        drop(state);
+        #[cfg(test)]
+        assert!(!panic_mapping, "injected mapping panic");
+        // Contract mapping can fail or panic: neither happens while holding the state mutex.
+        let mapping_started = Instant::now();
+        let events: Vec<_> = due
+            .into_iter()
+            .map(|(id, channels)| {
+                mapping::sample(&raw, own.as_ref(), sequence, &channels, true).map(|sample| {
+                    TelemetrySampleEvent {
+                        subscription_id: id,
+                        sample,
+                    }
+                })
+            })
+            .collect();
+        let mapping_ms = mapping_started.elapsed().as_secs_f64() * 1000.0;
+        let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.costs.add(sampler.phase_costs());
+        state.costs.engine_mapping_ms += mapping_ms;
         let finished = Instant::now();
+        state.busy = false;
         state.expire(finished);
         if !state.shutdown && !state.leases.is_empty() {
-            state.sequence = state.sequence.saturating_add(1);
-            let sequence = state.sequence;
-            let mut events = vec![];
-            for (id, lease) in &mut state.leases {
-                if lease.next_event <= started {
-                    if let Ok(sample) =
-                        mapping::sample(&raw, own.as_ref(), sequence, &lease.channels, true)
-                    {
-                        events.push(TelemetrySampleEvent {
-                            subscription_id: id.clone(),
-                            sample,
-                        });
-                    }
-                    lease.next_event =
-                        started + Duration::from_millis(u64::from(lease.interval.millis()));
-                }
-            }
+            state.sequence = sequence;
             for event in events {
-                if state.events.len() == EVENT_CAPACITY {
-                    state.events.pop_front();
+                match event {
+                    Ok(event) if state.leases.contains_key(&event.subscription_id) => {
+                        if state.events.len() == EVENT_CAPACITY {
+                            state.events.pop_front();
+                        }
+                        state.events.push_back(event);
+                    }
+                    Err(_) => {
+                        state.costs.mapping_errors = state.costs.mapping_errors.saturating_add(1)
+                    }
+                    _ => {}
                 }
-                state.events.push_back(event);
             }
             state.latest = Some(Latest { raw, own, sequence });
         }
@@ -286,6 +362,11 @@ fn run(shared: Arc<Shared>) {
 }
 
 impl Engine {
+    /// Aggregate diagnostics for the native overhead benchmark; no personal metadata.
+    pub fn telemetry_costs(&self) -> EngineResult<loomward_telemetry::SamplingCosts> {
+        Ok(lock(&self.telemetry.shared.state)?.costs.clone())
+    }
+
     /// Creates/renews a 60 s lease. All leases share a sampler at the fastest live interval.
     pub fn telemetry_lease(
         &self,
@@ -331,10 +412,17 @@ impl Engine {
         Ok(state.events.drain(..).collect())
     }
 
-    /// Own-process cumulative CPU seconds, commit and residency from the latest observation.
+    /// Current own-process CPU seconds, commit and residency; unsupported fields stay null.
     pub fn telemetry_health(&self) -> EngineResult<HealthEngine> {
-        let state = lock(&self.telemetry.shared.state)?;
-        Ok(mapping::health(state.latest()?.own.as_ref()))
+        Ok(match loomward_telemetry::own_usage() {
+            loomward_telemetry::Observation::Observed { value } => HealthEngine {
+                private_commit_bytes: Some(value.private_commit_bytes.into()),
+                working_set_bytes: Some(value.working_set_bytes.into()),
+                cpu_seconds: Rate::new(value.cpu_seconds).ok(),
+                threads: None, // own_usage does not enumerate host processes to count threads.
+            },
+            _ => mapping::health(None),
+        })
     }
 
     /// Bounded process display; unknown sort values come last, PID breaks ties.
@@ -357,12 +445,12 @@ impl Engine {
         Ok(ProcessList {
             sample_seq: Count::saturating(latest.sequence), observed_at: mapping::observed_at(&latest.raw)?, rows: rows.try_into().map_err(mapping::invalid)?,
             observed_count: Count::saturating(latest.raw.process_totals.enumerated as u64), denied_count: Count::saturating(latest.raw.process_totals.access_denied as u64), truncated,
-            note: Text::truncated("Bounded observation, not a complete ranking beyond the native display cap. Null means unavailable, denied or awaiting a second sample. Names may be display-truncated. Process GPU memory is not collected; shared working sets are never unique RAM totals."),
+            note: Text::truncated("Bounded observation, not a complete ranking beyond the native display cap. Null means unavailable, denied or awaiting a second sample. Names may be display-truncated. GPU sort is PID-only because process GPU memory is not collected; shared working sets are never unique RAM totals."),
         })
     }
 
     /// Rule-based meaning and native unknown reasons for a currently observed process instance.
-    /// PID reuse never reconnects a previous reference; no action is offered.
+    /// Exact creation time distinguishes PID reuse; fallback keys offer explanations, never actions.
     pub fn processes_explain(
         &self,
         request: &ProcessRefRequest,
@@ -382,7 +470,7 @@ impl Engine {
             ("working_set", "Working set includes shared resident pages; adding process rows double-counts shared pages."),
             ("cpu", "CPU fraction is CPU time over the monotonic interval divided by all logical CPUs; first-sample rates are null."),
             ("io", "I/O is bytes per second across all process devices, not just physical disk traffic; missing/regressed counters stay null."),
-            ("identity", "Identity uses PID and exact creation FILETIME; unknown creation time is scoped to this observation only."),
+            ("identity", "Identity uses PID and exact creation FILETIME; unknown creation time uses image name, PID and parent PID for explanation continuity only. Reuse of all three cannot be distinguished and never grants permission."),
             ("gpu_memory_unknown", "GPU Process Memory is not collected: PID-only counter instances cannot establish stable process identity. No process GPU sum is an adapter total."),
         ] {
             facts.push(ProcessExplanationFact { code: FactCode::new(code).map_err(mapping::invalid)?, text: Text::truncated(text) });

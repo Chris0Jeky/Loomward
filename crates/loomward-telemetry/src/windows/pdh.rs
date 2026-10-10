@@ -54,6 +54,10 @@ pub(crate) struct PdhSampler {
     localized_paths: [Option<Vec<u16>>; 13],
     previous_at: Option<i64>,
     interval: Option<f64>,
+    expansion_ms: f64,
+    expansions: u64,
+    sample_sequence: u64,
+    next_expansion: [u64; 13],
 }
 
 impl Drop for PdhSampler {
@@ -168,7 +172,11 @@ fn reconcile_instances<T>(array: &mut CounterArray<T>, expanded: CounterArray<()
 }
 
 impl PdhSampler {
-    fn collect(&mut self) -> Result<(), String> {
+    fn expansion_due(&self, kind: Counter) -> bool {
+        self.sample_sequence >= self.next_expansion[kind as usize]
+    }
+
+    fn collect(&mut self, channels: SampleChannels) -> Result<(), String> {
         unsafe {
             if self.query.is_null() {
                 let status = PdhOpenQueryW(ptr::null(), 0, &mut self.query);
@@ -177,7 +185,12 @@ impl PdhSampler {
                 }
             }
             for (index, path) in PATHS.iter().enumerate() {
-                if self.counters[index].is_null() {
+                let enabled = match index {
+                    0..=5 => channels.system,
+                    6..=9 => channels.disks,
+                    _ => channels.gpu,
+                };
+                if enabled && self.counters[index].is_null() {
                     let path: Vec<u16> = path.encode_utf16().chain([0]).collect();
                     let status = PdhAddEnglishCounterW(
                         self.query,
@@ -252,7 +265,17 @@ impl PdhSampler {
         decode: fn(&PDH_FMT_COUNTERVALUE) -> Result<T, String>,
     ) -> Result<CounterArray<T>, String> {
         let counter = self.counter(kind)?;
-        let expanded = self.expand(kind, counter)?;
+        let index = kind as usize;
+        let expanded = if self.expansion_due(kind) {
+            let started = Instant::now();
+            let expanded = self.expand(kind, counter);
+            self.expansion_ms += started.elapsed().as_secs_f64() * 1000.0;
+            self.expansions += 1;
+            self.next_expansion[index] = self.sample_sequence.saturating_add(10);
+            Some(expanded?)
+        } else {
+            None
+        };
         // Retry churn during sizing; reconcile collection with the fresh expansion.
         for _ in 0..3 {
             let (mut length, mut count) = (0, 0);
@@ -292,7 +315,13 @@ impl PdhSampler {
                 return Err(format!("PdhGetFormattedCounterArrayW data: {status:#x}"));
             }
             let mut array = parse_array(&buffer, length as usize, count as usize, decode)?;
-            reconcile_instances(&mut array, expanded);
+            if let Some(expanded) = expanded {
+                reconcile_instances(&mut array, expanded);
+            }
+            // Between audits use this collection's CStatus, never a cached value/instance set.
+            if array.rows.iter().any(|row| row.value.is_err()) {
+                self.next_expansion[index] = 0;
+            }
             return Ok(array);
         }
         Err("counter_instances_changed_during_three_buffer_attempts".into())
@@ -363,8 +392,19 @@ impl PdhSampler {
         Err("counter_instances_changed_during_three_expansion_attempts".into())
     }
 
-    pub(super) fn sample(&mut self, snapshot: &mut Snapshot) {
-        if let Err(reason) = self.collect() {
+    pub(super) fn sample(
+        &mut self,
+        snapshot: &mut Snapshot,
+        costs: &mut SamplingCosts,
+        channels: SampleChannels,
+    ) {
+        self.expansion_ms = 0.0;
+        self.expansions = 0;
+        self.sample_sequence = self.sample_sequence.saturating_add(1);
+        let started = Instant::now();
+        let collected = self.collect(channels);
+        costs.pdh_collection_ms = started.elapsed().as_secs_f64() * 1000.0;
+        if let Err(reason) = collected {
             snapshot.pdh_unknowns.push(unknown("pdh", &reason));
             snapshot.gpu = Observation::Unknown {
                 reason: reason.clone(),
@@ -400,34 +440,42 @@ impl PdhSampler {
                 &mut memory.unknowns,
             );
         }
-        snapshot.system_cpu_busy_fraction = observe(
-            "system_cpu_busy_fraction",
-            self.scalar(Counter::Cpu, DOUBLE_FORMAT, double)
-                .map(|v| (v / 100.0).clamp(0.0, 1.0)),
-            &mut snapshot.pdh_unknowns,
-        );
-        let disks = disk_rows(
-            [
-                self.array(Counter::DiskRead, DOUBLE_FORMAT, double),
-                self.array(Counter::DiskWrite, DOUBLE_FORMAT, double),
-                self.array(Counter::DiskIdle, DOUBLE_FORMAT, double),
-                self.array(Counter::DiskQueue, DOUBLE_FORMAT, double),
-            ],
-            self.interval,
-            snapshot,
-        );
-        snapshot.disk_io = disks;
-        let gpus = gpu_rows(
-            self.array(Counter::GpuEngine, DOUBLE_FORMAT, double),
-            self.array(
-                Counter::GpuDedicated,
-                PDH_FMT_LARGE | PDH_FMT_NOSCALE,
-                bytes,
-            ),
-            self.array(Counter::GpuShared, PDH_FMT_LARGE | PDH_FMT_NOSCALE, bytes),
-            snapshot,
-        );
-        snapshot.gpu = gpus;
+        if channels.system {
+            snapshot.system_cpu_busy_fraction = observe(
+                "system_cpu_busy_fraction",
+                self.scalar(Counter::Cpu, DOUBLE_FORMAT, double)
+                    .map(|v| (v / 100.0).clamp(0.0, 1.0)),
+                &mut snapshot.pdh_unknowns,
+            );
+        }
+        if channels.disks {
+            let disks = disk_rows(
+                [
+                    self.array(Counter::DiskRead, DOUBLE_FORMAT, double),
+                    self.array(Counter::DiskWrite, DOUBLE_FORMAT, double),
+                    self.array(Counter::DiskIdle, DOUBLE_FORMAT, double),
+                    self.array(Counter::DiskQueue, DOUBLE_FORMAT, double),
+                ],
+                self.interval,
+                snapshot,
+            );
+            snapshot.disk_io = disks;
+        }
+        if channels.gpu {
+            let gpus = gpu_rows(
+                self.array(Counter::GpuEngine, DOUBLE_FORMAT, double),
+                self.array(
+                    Counter::GpuDedicated,
+                    PDH_FMT_LARGE | PDH_FMT_NOSCALE,
+                    bytes,
+                ),
+                self.array(Counter::GpuShared, PDH_FMT_LARGE | PDH_FMT_NOSCALE, bytes),
+                snapshot,
+            );
+            snapshot.gpu = gpus;
+        }
+        costs.wildcard_expansion_ms = self.expansion_ms;
+        costs.wildcard_expansions = self.expansions;
     }
 }
 
@@ -829,6 +877,23 @@ mod tests {
                 .collect(),
             malformed: 0,
         })
+    }
+
+    #[test]
+    fn wildcard_audit_waits_ten_samples_and_status_failure_requests_retry() {
+        let mut sampler = PdhSampler::default();
+        sampler.sample_sequence = 1;
+        assert!(sampler.expansion_due(Counter::GpuEngine));
+        sampler.next_expansion[Counter::GpuEngine as usize] = 11;
+        for sequence in 2..11 {
+            sampler.sample_sequence = sequence;
+            assert!(!sampler.expansion_due(Counter::GpuEngine));
+        }
+        sampler.sample_sequence = 11;
+        assert!(sampler.expansion_due(Counter::GpuEngine));
+        sampler.next_expansion[Counter::GpuEngine as usize] = 21;
+        sampler.next_expansion[Counter::GpuEngine as usize] = 0;
+        assert!(sampler.expansion_due(Counter::GpuEngine));
     }
 
     #[test]

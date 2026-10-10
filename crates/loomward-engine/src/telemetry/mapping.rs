@@ -2,6 +2,7 @@
 use crate::{EngineError, EngineResult};
 use loomward_protocol::*;
 use loomward_telemetry::{Observation, Process, Snapshot};
+use std::hash::{Hash, Hasher};
 
 pub(super) fn invalid(error: Invalid) -> EngineError {
     EngineError::Internal {
@@ -37,14 +38,23 @@ pub(super) fn observed_at(raw: &Snapshot) -> EngineResult<Timestamp> {
     timestamp(i128::from(raw.captured_at_unix_ms) * 10_000)
 }
 
-pub(super) fn process_ref(process: &Process, sequence: u64) -> ProcessRef {
-    // Unknown creation times are sample-scoped: a PID alone must never reconnect two instances.
+pub(super) fn process_ref(process: &Process, _sequence: u64) -> ProcessRef {
+    // Unknown-time keys support explanation across ticks, never authorise an effect.
     let instance = process
         .start_time_windows_100ns
         .as_deref()
         .filter(|s| s.len() <= 20 && s.bytes().all(|c| c.is_ascii_digit()))
         .map(str::to_owned)
-        .unwrap_or_else(|| format!("unknown_{sequence}"));
+        .unwrap_or_else(|| {
+            let mut key = std::collections::hash_map::DefaultHasher::new();
+            (
+                process.image_name.as_deref(),
+                process.pid,
+                process.parent_pid,
+            )
+                .hash(&mut key);
+            format!("unknown_{:016x}", key.finish())
+        });
     ProcessRef::new(format!("pc_{}_{}", process.pid, instance))
         .expect("bounded decimal observation identity")
 }
@@ -122,7 +132,8 @@ pub(super) fn sorted_rows(
                     .partial_cmp(&total(a))
                     .unwrap_or(std::cmp::Ordering::Equal)
             }
-            ProcessListRequestSort::GpuDesc => b.gpu_dedicated_bytes.cmp(&a.gpu_dedicated_bytes),
+            // No per-process GPU counters exist; this order is explicitly PID-only.
+            ProcessListRequestSort::GpuDesc => std::cmp::Ordering::Equal,
             ProcessListRequestSort::NameAsc => a
                 .name
                 .as_str()
@@ -272,7 +283,12 @@ pub(super) fn sample(
         && raw.status != "unsupported"
         && raw.process_totals.enumeration_unknowns.is_empty()
     {
-        let mut rows = sorted_rows(raw, sequence, ProcessListRequestSort::CpuDesc);
+        let sort = if raw.processes.iter().any(|p| p.rates.cpu_fraction.is_some()) {
+            ProcessListRequestSort::CpuDesc
+        } else {
+            ProcessListRequestSort::WorkingSetDesc
+        };
+        let mut rows = sorted_rows(raw, sequence, sort);
         rows.truncate(20);
         Some(ProcessSummary {
             observed_count: Count::saturating(raw.process_totals.enumerated as u64),

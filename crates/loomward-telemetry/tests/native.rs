@@ -271,3 +271,26 @@ fn non_windows_is_explicitly_unsupported() {
         Observation::Unsupported { .. }
     ));
 }
+
+#[cfg(windows)]
+#[test]
+fn gpu_only_sampling_does_not_enumerate_processes_or_collect_other_channels() {
+    use loomward_telemetry::SampleChannels;
+    let mut sampler = Sampler::default();
+    let raw = sampler.sample_channels(
+        1024,
+        SampleChannels {
+            gpu: true,
+            system: false,
+            processes: false,
+            disks: false,
+            engine: false,
+        },
+    );
+    assert!(raw.processes.is_empty());
+    assert!(sampler.own_process().is_none());
+    assert_eq!(sampler.phase_costs().process_enumeration_ms, 0.0);
+    assert!(matches!(raw.memory, Observation::Unsupported { .. }));
+    assert!(matches!(raw.disk_io, Observation::Unsupported { .. }));
+    assert!(raw.system_cpu_busy_fraction.is_none());
+}

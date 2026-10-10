@@ -185,9 +185,11 @@ pub struct OwnUsage {
     pub private_commit_bytes: u64,
     /// True high-water private commit (PeakPagefileUsage).
     pub peak_private_commit_bytes: u64,
+    /// Resident pages including shared pages, observed directly.
+    pub working_set_bytes: u64,
 }
 
-/// Read own CPU and private commit only. Any failed API makes the observation unknown.
+/// Read current own CPU, private commit and working set. Failed APIs make the observation unknown.
 pub fn own_usage() -> Observation<OwnUsage> {
     #[cfg(windows)]
     {
@@ -201,14 +203,70 @@ pub fn own_usage() -> Observation<OwnUsage> {
     }
 }
 
+/// Native work requested by the current lease union.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SampleChannels {
+    pub system: bool,
+    pub processes: bool,
+    pub gpu: bool,
+    pub disks: bool,
+    pub engine: bool,
+}
+
+impl SampleChannels {
+    pub const ALL: Self = Self {
+        system: true,
+        processes: true,
+        gpu: true,
+        disks: true,
+        engine: true,
+    };
+}
+
+/// Aggregate wall-clock phase costs; no names, paths or counter values.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct SamplingCosts {
+    pub samples: u64,
+    pub process_enumeration_ms: f64,
+    pub pdh_collection_ms: f64,
+    pub wildcard_expansion_ms: f64,
+    pub wildcard_expansions: u64,
+    pub pdh_decode_ms: f64,
+    pub native_other_ms: f64,
+    pub rates_and_projection_ms: f64,
+    pub engine_mapping_ms: f64,
+    pub mapping_errors: u64,
+}
+
+impl SamplingCosts {
+    pub fn add(&mut self, other: &Self) {
+        self.samples += other.samples;
+        self.process_enumeration_ms += other.process_enumeration_ms;
+        self.pdh_collection_ms += other.pdh_collection_ms;
+        self.wildcard_expansion_ms += other.wildcard_expansion_ms;
+        self.wildcard_expansions += other.wildcard_expansions;
+        self.pdh_decode_ms += other.pdh_decode_ms;
+        self.native_other_ms += other.native_other_ms;
+        self.rates_and_projection_ms += other.rates_and_projection_ms;
+        self.engine_mapping_ms += other.engine_mapping_ms;
+        self.mapping_errors += other.mapping_errors;
+    }
+}
+
 #[derive(Default)]
 pub struct Sampler {
     previous: Option<(Instant, Snapshot)>,
+    costs: SamplingCosts,
+    channels: Option<SampleChannels>,
     #[cfg(windows)]
     pdh: windows::PdhSampler,
 }
 
 impl Sampler {
+    pub fn phase_costs(&self) -> &SamplingCosts {
+        &self.costs
+    }
+
     /// The engine's own row before display truncation; no new OS observation is performed.
     pub fn own_process(&self) -> Option<&Process> {
         self.previous
@@ -220,11 +278,35 @@ impl Sampler {
     }
 
     pub fn sample(&mut self, max_processes: usize) -> Snapshot {
+        self.sample_channels(max_processes, SampleChannels::ALL)
+    }
+
+    pub fn sample_channels(&mut self, max_processes: usize, channels: SampleChannels) -> Snapshot {
+        if self.channels != Some(channels) {
+            #[cfg(windows)]
+            {
+                self.pdh = windows::PdhSampler::default();
+            }
+            self.channels = Some(channels);
+            self.previous = None;
+        }
         let now = Instant::now();
+        self.costs = SamplingCosts {
+            samples: 1,
+            ..SamplingCosts::default()
+        };
         #[cfg(windows)]
-        let mut current = windows::collect(&mut self.pdh);
+        let mut current = windows::collect(&mut self.pdh, &mut self.costs, channels);
         #[cfg(not(windows))]
         let mut current = unsupported_snapshot();
+        let native_ms = now.elapsed().as_secs_f64() * 1000.0;
+        self.costs.native_other_ms = (native_ms
+            - self.costs.process_enumeration_ms
+            - self.costs.pdh_collection_ms
+            - self.costs.wildcard_expansion_ms
+            - self.costs.pdh_decode_ms)
+            .max(0.0);
+        let rates_started = Instant::now();
         if let Some((previous_at, previous)) = &self.previous {
             let seconds = now.duration_since(*previous_at).as_secs_f64();
             current.sample_interval_seconds = Some(seconds);
@@ -254,6 +336,10 @@ impl Sampler {
         current
             .processes
             .truncate(max_processes.min(MAX_PROCESS_ROWS));
+        if !channels.processes {
+            current.processes.clear();
+        }
+        self.costs.rates_and_projection_ms = rates_started.elapsed().as_secs_f64() * 1000.0;
         current.snapshot_cost_ms = now.elapsed().as_secs_f64() * 1000.0;
         current
     }
