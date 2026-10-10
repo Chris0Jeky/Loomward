@@ -1340,6 +1340,20 @@ fn followup_refused_start(
 #[cfg(windows)]
 #[test]
 fn followup_stored_grants_refuse_static_without_recording_new_grants() {
+    if loomward_windows::enumerate::running_elevated() {
+        // Native identity refuses elevation (invariant 2, #217), so no lab root can be registered.
+        let tmp = tempfile::tempdir().unwrap();
+        let err = loomward_service::lab::register(
+            &tmp.path().join("state"),
+            &tmp.path().join("lab"),
+            "s",
+            "S",
+            "sha256:00",
+        )
+        .unwrap_err();
+        assert!(err.contains("identity_unavailable"), "{err}");
+        return;
+    }
     use loomward_protocol::{CallContext, RequestEnvelope, ViewService};
     use loomward_service::{lab, Config, Service};
     let tmp = tempfile::tempdir().unwrap();
@@ -1375,6 +1389,20 @@ fn followup_stored_grants_refuse_static_without_recording_new_grants() {
 #[cfg(windows)]
 #[test]
 fn followup_proposed_static_overlap_leaves_no_active_grant() {
+    if loomward_windows::enumerate::running_elevated() {
+        // Native identity refuses elevation (invariant 2, #217), so no lab root can be registered.
+        let tmp = tempfile::tempdir().unwrap();
+        let err = loomward_service::lab::register(
+            &tmp.path().join("state"),
+            &tmp.path().join("lab"),
+            "s",
+            "S",
+            "sha256:00",
+        )
+        .unwrap_err();
+        assert!(err.contains("identity_unavailable"), "{err}");
+        return;
+    }
     use loomward_protocol::{CallContext, RequestEnvelope, ViewService};
     use loomward_service::{lab, Config, Service};
     let tmp = tempfile::tempdir().unwrap();
@@ -1424,6 +1452,11 @@ fn followup_stored_picker_grant_refuses_static() {
     .unwrap();
     let response = service.call(RequestEnvelope::from_slice(br#"{"protocol":"loomward/3","request_id":"r_pick","command":"roots.request_grant","payload":{"purpose":"metadata_scan"}}"#).unwrap(), &CallContext::tauri(Arc::new(Picker(root))));
     let granted = serde_json::to_value(response).unwrap();
+    if loomward_windows::enumerate::running_elevated() {
+        // Native identity refuses elevation (invariant 2, #217): the picker grant is refused.
+        assert_eq!(granted["result"]["outcome"], "refused");
+        return;
+    }
     assert_eq!(granted["result"]["outcome"], "granted");
     assert_eq!(granted["result"]["root"]["granted_via"], "desktop_picker");
     drop(service);
