@@ -1,3 +1,168 @@
+# Catalogue P4 (#148): bounded streaming publications - 2026-10-10
+
+## Changed
+
+Uncommitted on `perf/catalog-p4` in worktree `lw-p4`, starting and final HEAD
+`533473f08b3f7f369fe19b575fcfd03aaf64d9c8`. Initially clean; no commit or push.
+The driver owns committing this work. This receipt supersedes earlier performance
+figures, not their correctness or recovery evidence.
+
+- Ordinary listing commands now stream into an open writer transaction rather than
+  batching only the initial queue snapshot. Applied payloads release their byte permits
+  so producers can refill the bounded queue. Cumulative input reservations stop at
+  64 MiB; elapsed work stops the next command at 250 ms; idle receive is at most 1 ms.
+  A single atomic listing and COMMIT can exceed the time target. Control commands end
+  the batch, savepoints isolate failures, and every input retains its own revision.
+  Receipts still follow COMMIT and reference reconciliation.
+- Resolved references retain singleton publication transactions. The pending-reference
+  protocol and #171 ordering remain: state-only FULL preparation, catalogue-only FULL
+  publication with witness, state-only FULL confirmation, then acknowledgment. NORMAL
+  is restored after catalogue commit/rollback. No transaction writes both files.
+- Empty old-file sets already skipped matching; they now also use plain multi-row
+  INSERT instead of UPSERT. Refreshes retain matching, incarnation rules and UPSERT.
+  File names, raw names and identity parameters borrow the existing observations;
+  the 128-row parameter buffers reserve capacity once per decoded chunk.
+- Catalogue cache increases from 64 to 256 MiB; temporary tables use memory. A
+  database-specific passive checkpoint hook raises only main's threshold to 16,384
+  pages (about 64 MiB at the retained 4 KiB page size). State keeps its default
+  1,000-page checkpoint, FULL sync and cache settings. The hook ignores checkpoint
+  contention/errors exactly as SQLite's default auto-checkpoint does. The existing
+  128-statement cache was sufficient and stays unchanged.
+- Timings cover staging, validation dry runs, state preparation, invalidation, rollup,
+  multilink accounting, commits and final checkpoint. The bench adds allocated P7,
+  executable checks for all declared indexes and an isolated deferred-index probe.
+  No index is removed from the live catalogue; provisional readers retain their paths.
+
+Owned changes: `src/writer.rs`, `src/db.rs`, `examples/bench.rs`, this handoff and
+[benchmark evidence](../../evidence/v3/bench/catalog-1m.json). No dependency,
+schema, fixture, file/process effect or owner-decision change.
+
+## Verified
+
+Windows 11, Intel i5-13600K, rustc 1.97.1. All required commands pass:
+
+```text
+cargo fmt --all --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+git diff --check
+cargo run -p loomward-catalog --release --example bench -- --rows 1000000
+```
+
+Workspace: **316 passed**, zero failed or ignored; catalogue: **66 passed**.
+Existing N1/N2/N3, partial #8/#10, publication/recovery and random-tree rollup
+oracle tests remain green. Two new tests were independently mutation-tested:
+
+- `streamed_transactions_bound_bytes_and_release_applied_payloads`: removing the
+  next-command byte check fails with exit 101 (one transaction instead of two).
+- `checkpoint_threshold_is_raised_only_for_catalogue`: raising the state's threshold
+  to 16,384 fails with exit 101 (1,226 state WAL frames, zero checkpointed).
+
+Both production mutations were restored byte-for-byte; all 66 catalogue tests,
+fmt and workspace clippy passed again. Source hashes and mutation results are in
+the benchmark evidence.
+
+Three baseline and three final 1M runs passed the independent accounting oracle;
+final runs also assert every declared index, both P7 bases and temporary-directory
+removal. P4 includes generation, staging, publication and queue backpressure;
+EndRun/finalisation and the index diagnostic are outside its timing.
+
+| Phase (seconds; per-metric median) | Before | After |
+| --- | ---: | ---: |
+| P4 elapsed | 60.632 | 18.821 |
+| Staging (including JSON serialization) | 0.790 | 0.559 |
+| Validation dry run | 0: no references | 0: no references |
+| State preparation (includes dry run when required) | 0.059 | 0.026 |
+| Publication INSERT, including inline indexes | 21.144 | 6.718 |
+| Name validation inserts | 0.603 | 0.523 |
+| Other publication work, excluding invalidation | 1.988 | 1.746 |
+| Invalidation | 0.018 | 0.010 |
+| COMMIT/fsync, including passive checkpoints | 35.770 | 7.824 |
+| EndRun rollup (outside P4) | 0.004 | 0.003 |
+| EndRun multilink accounting (outside P4) | 1.534 | 1.138 |
+| EndRun explicit checkpoint (outside P4) | not instrumented | 0.119 |
+| Transactions through P4 | 256 | 71 |
+
+SQLite updates secondary indexes inside INSERT; their inline cost cannot be
+separately timed by this instrument. The isolated probe measures a different path:
+copying the same 1M file rows into the real schema with foreign keys and seeded
+parents, then creating the four file indexes. Medians: **0.676 s** copy without
+secondary indexes, **1.784 s** index creation and **1.205 s** COMMIT. This is an
+index-build diagnostic, not staged P4 or proof that live index deferral is safe.
+Phase medians are independent summaries; generation, admission, savepoint/revision
+work and scheduling are not fully partitioned, so the rows are not an additive wall clock.
+
+| Gate | Before median | After median | Before/after median p95 |
+| --- | ---: | ---: | ---: |
+| P4 rows/s | 16,510 | **53,186** | not applicable |
+| P6 slice + serialization | 43.250 ms | 31.825 ms | 51.284 / 40.993 ms |
+| P7 logical 200-row page | 0.996 ms | 0.634 ms | 1.300 / 0.954 ms |
+| P7 allocated 200-row page | not instrumented | 0.499 ms | not instrumented / 0.815 ms |
+| P8 budgeted substring search | 16.935 ms | 13.499 ms | 22.516 / 15.697 ms |
+
+Query results summarize three runs of 21 warm probes each; each table value is the
+median of run summaries. P8 reports `budget_hit` on all 63 final probes. P6 retains
+2,500 nodes and a payload below 1.5 MB. All final per-run query p95 values meet their
+time targets at 1M; P6's 10M/HTTP gate remains unverified. There is no measured
+logical-query regression; allocated P7 has no instrumented baseline comparison.
+
+P4 improves **3.22x**, but **250k remains unmet**. Baseline P4 runs:
+54.035 / 60.632 / 78.653 s. Final: 21.679 / 17.116 / 18.821 s
+(46,175 / 58,483 / 53,186 rows/s). Host load and disk/cache state were not controlled.
+
+Exploratory single warm measurements, in order:
+
+| Candidate | P4 rows/s | Disposition |
+| --- | ---: | --- |
+| Streaming transactions | 23,657 | retain |
+| Plus plain first-listing INSERT | 34,458 | retain |
+| Plus 256 MiB cache, memory temp, global checkpoint 16,384 | 76,958 | replace global checkpoint with per-database hook |
+| Remove raised checkpoint threshold | 44,813 | retain raised main threshold |
+| Per-database checkpoint hook | 69,307 | retain; state checkpoint pinned by test |
+| Borrowed row parameters and reserved buffers | 72,335 | retain; small gain is within host variability |
+| New-catalogue 8 KiB pages | 42,774 | reject, restore 4 KiB |
+| Remove memory temp tables (4 KiB pages) | 37,191 | reject, restore memory temp |
+
+The fastest exploratory observation was **76,958 rows/s**; the final three-run best
+is **58,483**, median **53,186**. These bound what this experiment observed, not
+the hardware's theoretical ceiling. Indexed INSERT plus commit/checkpoint still
+account for most P4 time (about 14.54 s of the independent phase medians).
+
+## NOT verified
+
+250k throughput, 10M/cold-cache gates, controlled host-load comparison, intent-bearing
+throughput, HTTP/native enumeration integration, Python/UI, process RSS, hosted CI,
+physical power loss or storage-device fsync behavior. No commit, push or external action.
+
+## Residual risk
+
+The writer's SQLite cache budget is now 256 MiB, and a checkpoint is a threshold,
+not a WAL size cap: pinned readers can delay it. Ordinary receipts can wait for the
+batch's 250 ms scheduling target plus a final atomic listing/COMMIT. References retain
+the conservative singleton path, so this no-reference benchmark does not predict
+personal catalogues with resolved references.
+
+The deeper candidate is a separate fresh-root bulk catalogue: sequential row load,
+index creation once, and one publication boundary instead of many random index/WAL
+writes. The isolated copy/index/commit subtotal is about 3.66 s, versus 14.54 s of
+current insert/commit phase medians. It could remove substantial I/O; it does not
+prove 250k through staging. Atomic replacement would need a design for provisional
+readers, other roots, stable IDs/instances, reference witnesses and reopen/recovery
+before it could preserve the current rules. Do not drop live indexes for a demo.
+
+[HUMAN_TODO.md](../../HUMAN_TODO.md) was read and preserved. q-5 (personal teacher
+disclosure) and q-8 (teacher sandbox path) remain owner decisions unrelated to P4;
+this work adds none. Keep this uncommitted worktree for the driver. Raw exploratory
+receipts and check logs are task-owned, gitignored `.loomward/p4/` files; build output
+is in ignored `target/`. No personal inventory or scan was used.
+
+Recommended commits:
+
+1. `perf(catalog): batch publications and reduce insert overhead`
+2. `bench(catalog): record P4 phase and query medians at 1M rows`
+
+---
+
 # Issue #171: durable publication before reference confirmation - 2026-10-10
 
 ## Changed
