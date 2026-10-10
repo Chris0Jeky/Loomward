@@ -4,6 +4,7 @@ import type {
   TreeSliceRequest, Threads,
 } from '../contracts.gen';
 import type { TelemetrySample } from '../contracts.gen';
+import { createScanMock } from './mock-scan';
 import { createViewMock } from './mock-views';
 import { generateTree, prng, type SynthNode } from './synth';
 import type { Transport } from './transport';
@@ -30,13 +31,14 @@ const REVS: Partial<Record<string, 'c' | 's' | 'cs'>> = {
 };
 
 class CommandFailure extends Error {
-  constructor(readonly code: ErrorCode, message: string) {
+  constructor(readonly code: ErrorCode, message: string, readonly detail: Record<string, unknown> | null = null) {
     super(message);
   }
 }
-const fail = (code: ErrorCode, message: string): never => {
-  throw new CommandFailure(code, message);
+const failWith = (code: ErrorCode, message: string, detail: Record<string, unknown> | null = null): never => {
+  throw new CommandFailure(code, message, detail);
 };
+const fail = (code: ErrorCode, message: string): never => failWith(code, message);
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const str = (v: unknown, what: string): string => (typeof v === 'string' ? v : fail('invalid_request', `${what} must be a string`));
@@ -178,6 +180,14 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
   };
 
   const views = createViewMock(now, fail);
+  // The stream: sequenced events from 1 after the hello (semantics.md section 7), to every open subscriber.
+  const listeners = new Set<(ev: EventEnvelope) => void>();
+  let seq = 0;
+  const emit = <E extends EventKey>(event: E, data: EventMap[E]): void => {
+    const ev: EventEnvelope = { protocol: 'loomward/3', epoch: EPOCH, seq: ++seq, event, at: now().toISOString(), catalog_rev: event === 'tree.invalidated' ? CATALOG_REV : null, state_rev: null, data: data as unknown as EventEnvelope['data'] };
+    for (const l of listeners) l(ev);
+  };
+  const scan = createScanMock({ now, fail: failWith, emit, isRevoked: (id) => views.revokedRoots.has(id) });
   // Synthetic GPU and disk channels for the Observatory (L10), layered on the view mock's system and
   // engine channels (L13), so one telemetry.snapshot serves both. A deterministic random walk with
   // periodic "build" and "render" episodes; rates are null on the first sample, as the contract requires.
@@ -226,7 +236,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
       protocol: 'loomward/3', engine_version: 'mock-0.3 (no engine)', adapter: 'http', dataset_class: DATASET, session_started_at: t0,
       enumeration_strategy: 'std_read_dir',
       capabilities: {
-        observation: { metadata_scan: false, process_observation: true, gpu_observation: false, disk_io_observation: false, teacher_disclosure: false },
+        observation: { metadata_scan: true, process_observation: true, gpu_observation: false, disk_io_observation: false, teacher_disclosure: false },
         effects: { file_move: false, file_delete: false, file_rename: false, file_write: false, content_read: false, process_kill: false, process_suspend: false, process_priority: false, memory_trim: false, uninstall: false, elevation: false },
       },
       features: { grant_picker: false, disclosure_dialog: false, teacher_available: false, telemetry_available: true, gpu_available: true },
@@ -240,11 +250,12 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
       warnings: [{ code: 'telemetry_unavailable', message: 'The mock transport has no GPU or disk counters; those figures are unknown.', at: t0 }],
     }),
     // A third root whose path hides a right-to-left override: Grants & health must show and speak it escaped.
-    'roots.list': (): RootList => ({ roots: [...tree.rootIndexes.map((i) => rootRow(tree.nodes[i]!)), hostileRoot()] }),
+    'roots.list': (): RootList => ({ roots: [...tree.rootIndexes.map((i) => rootRow(tree.nodes[i]!)), hostileRoot(), ...scan.roots()] }),
     'grants.list': (): GrantList => ({
       grants: [
         ...tree.rootIndexes.map((i, k) => ({ grant_id: `gr_mock_root_${k}`, kind: 'metadata_root' as const, root_id: rootId(tree.nodes[i]!), granted_at: GRANTED_AT, granted_via: 'fixture' as const, revoked_at: views.revokedRoots.get(rootId(tree.nodes[i]!)) ?? null })),
         { grant_id: 'gr_mock_root_2', kind: 'metadata_root' as const, root_id: HOSTILE_ROOT_ID, granted_at: GRANTED_AT, granted_via: 'fixture' as const, revoked_at: views.revokedRoots.get(HOSTILE_ROOT_ID) ?? null },
+        ...scan.roots().map((r, k) => ({ grant_id: `gr_mock_lab_${k}`, kind: 'metadata_root' as const, root_id: r.root_id, granted_at: GRANTED_AT, granted_via: 'fixture' as const, revoked_at: views.revokedRoots.get(r.root_id) ?? null })),
         { grant_id: 'gr_mock_teacher_0', kind: 'teacher_disclosure' as const, recipient: 'codex_cli_gpt_6_1_sol', dataset_class: DATASET, fields: ['name', 'extension'], item_count: 25, payload_digest: 'sha256:' + '0'.repeat(64), created_at: GRANTED_AT, expires_at: '2026-10-01T10:00:00Z', revoked_at: views.revokedGrants.get('gr_mock_teacher_0') ?? null, used: false, confirmed_via: 'synthetic_policy' as const },
       ],
     }),
@@ -252,12 +263,13 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     'tree.children': (p) => children(p as unknown as TreeChildrenRequest),
     'search.query': (p) => search(p as unknown as SearchRequest),
     ...views.handlers,
+    ...scan.handlers,
     'telemetry.snapshot': telemetry, // after the spread: wraps the view mock's sample with gpu and disks
   };
 
   const respond = (req: RequestEnvelope): ResponseEnvelope => {
     const base = { protocol: 'loomward/3' as const, request_id: req.request_id };
-    const err = (code: ErrorCode, message: string): ResponseEnvelope => ({ ...base, ok: false, error: { code, message, retryable: false, detail: null } });
+    const err = (code: ErrorCode, message: string, detail: Record<string, unknown> | null = null): ResponseEnvelope => ({ ...base, ok: false, error: { code, message, retryable: code === 'busy', detail } });
     if (req.protocol !== 'loomward/3') return err('unsupported_protocol', 'expected loomward/3');
     const h = Object.hasOwn(handlers, req.command) ? handlers[req.command] : undefined;
     if (!h) return err('capability_unavailable', `the mock transport does not implement ${req.command}`);
@@ -271,7 +283,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
       };
       return { ...base, ok: true, result, meta };
     } catch (e) {
-      if (e instanceof CommandFailure) return err(e.code, e.message);
+      if (e instanceof CommandFailure) return err(e.code, e.message, e.detail);
       throw e;
     }
   };
@@ -281,6 +293,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     call: async (req) => respond(req),
     subscribe(onEvent, onState, resume) {
       let live = true;
+      listeners.add(onEvent);
       // Asynchronous like a real stream: the caller has finished wiring before anything arrives.
       queueMicrotask(() => {
         if (!live) return;
@@ -291,7 +304,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
         onEvent(env('stream.hello', { session_started_at: t0, epoch: EPOCH, last_seq: 0, oldest_replayable_seq: 1, dataset_class: DATASET }));
         if (resume && resume.epoch !== EPOCH) onEvent(env('stream.lagged', { reason: 'epoch_changed', dropped: null, resync: ['roots', 'volumes', 'jobs', 'tree', 'learning'] }));
       });
-      return () => { live = false; };
+      return () => { live = false; listeners.delete(onEvent); };
     },
   };
 }
