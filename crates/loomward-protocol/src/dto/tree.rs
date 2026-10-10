@@ -173,12 +173,19 @@ pub struct RootGeneration {
     pub generation: Option<Generation>,
 }
 
+/// consistent: every directory sum was published at a revision covering its committed listings. provisional_live: sums come from the running scan's arena snapshot; 'other' nodes are clamped at zero. Inconsistent committed sums are repaired before serving, never sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TreeSliceAggregateState {
+    Consistent,
+    ProvisionalLive,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TreeSliceOrdering {
     Exact,
     ApproximateLive,
-    ApproximateFiles,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -189,6 +196,8 @@ pub struct TreeSlice {
     pub root_generations: BoundedVec<RootGeneration, 0, 64>,
     pub complete: bool,
     pub live: bool,
+    /// consistent: every directory sum was published at a revision covering its committed listings. provisional_live: sums come from the running scan's arena snapshot; 'other' nodes are clamped at zero. Inconsistent committed sums are repaired before serving, never sent.
+    pub aggregate_state: TreeSliceAggregateState,
     pub ordering: TreeSliceOrdering,
     pub truncated: bool,
     pub nodes: BoundedVec<SliceNode, 1, 6000>,
@@ -250,6 +259,7 @@ pub struct EntryRow {
     pub location_hint: Option<DisplayPath>,
 }
 
+/// size_desc is index-backed for both bases (ties broken by row id). name_asc and modified_desc are served only for directories with at most 10,000 direct children; larger ones return resource_budget with detail sort_requires_index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TreeChildrenRequestSort {
@@ -262,6 +272,7 @@ pub enum TreeChildrenRequestSort {
 #[serde(deny_unknown_fields)]
 pub struct TreeChildrenRequest {
     pub node_id: NodeId,
+    /// size_desc is index-backed for both bases (ties broken by row id). name_asc and modified_desc are served only for directories with at most 10,000 direct children; larger ones return resource_budget with detail sort_requires_index.
     pub sort: TreeChildrenRequestSort,
     pub basis: Basis,
     pub limit: Int<1, 200>,
@@ -324,6 +335,7 @@ pub struct NodePath {
     pub truncated: bool,
 }
 
+/// Width is preserved: a 64-bit ID is never padded and reported as 128-bit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IdentityObservationQuality {
@@ -335,10 +347,22 @@ pub enum IdentityObservationQuality {
     Unavailable,
 }
 
+/// Whether labels and collection membership may bind to this object (docs/41 section 6.3). Without it, feedback.record returns capability_unavailable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentityObservationDurableReference {
+    Available,
+    UnavailableIdentityQuality,
+    UnavailableFilesystem,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IdentityObservation {
+    /// Width is preserved: a 64-bit ID is never padded and reported as 128-bit.
     pub quality: IdentityObservationQuality,
+    /// Whether labels and collection membership may bind to this object (docs/41 section 6.3). Without it, feedback.record returns capability_unavailable.
+    pub durable_reference: IdentityObservationDurableReference,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub volume_key: Option<Text<80>>,
     #[serde(deserialize_with = "crate::types::required_nullable")]

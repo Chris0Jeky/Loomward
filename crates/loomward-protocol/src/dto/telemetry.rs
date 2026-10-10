@@ -143,10 +143,13 @@ pub struct GpuSampleAdapter {
     pub name: Text<128>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub dedicated_total_bytes: Option<Bytes>,
+    /// Global, from the GPU Adapter Memory counter; never a sum of per-process values.
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub dedicated_used_bytes: Option<Bytes>,
+    /// Global, from the GPU Adapter Memory counter.
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub shared_used_bytes: Option<Bytes>,
+    /// Maximum over engine types of the per-type utilisation summed across that adapter's engine instances, clamped to 1 (the Task Manager method).
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub engine_busy_fraction: Option<Fraction>,
 }
@@ -175,8 +178,10 @@ pub struct DiskSampleDisk {
     pub read_bytes_per_s: Option<Rate>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub write_bytes_per_s: Option<Rate>,
+    /// 1 - (PhysicalDisk % Idle Time / 100), clamped to [0, 1].
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub busy_fraction: Option<Fraction>,
+    /// PhysicalDisk Avg. Disk Queue Length; a separate quantity from busy_fraction.
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub queue_length: Option<Rate>,
 }
@@ -212,9 +217,10 @@ pub struct PoolUse {
 #[serde(deny_unknown_fields)]
 pub struct EngineSample {
     #[serde(deserialize_with = "crate::types::required_nullable")]
-    pub private_bytes: Option<Bytes>,
+    pub private_commit_bytes: Option<Bytes>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub working_set_bytes: Option<Bytes>,
+    /// Machine-normalised: CPU time over the interval divided by (interval x logical CPUs).
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub cpu_fraction: Option<Fraction>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
@@ -239,16 +245,23 @@ pub struct ProcessRow {
     pub name: Text<260>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub started_at: Option<Timestamp>,
+    /// PROCESS_MEMORY_COUNTERS_EX2.PrivateUsage (commit charge), not resident memory.
     #[serde(deserialize_with = "crate::types::required_nullable")]
-    pub private_bytes: Option<Bytes>,
+    pub private_commit_bytes: Option<Bytes>,
+    /// PROCESS_MEMORY_COUNTERS_EX2.PrivateWorkingSetSize where supported, else null.
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub private_working_set_bytes: Option<Bytes>,
+    /// Total working set, including shared pages.
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub working_set_bytes: Option<Bytes>,
+    /// Machine-normalised over the sample interval; null on the first sample.
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub cpu_fraction: Option<Fraction>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub io_read_bytes_per_s: Option<Rate>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub io_write_bytes_per_s: Option<Rate>,
+    /// GPU Process Memory dedicated usage for this process; may include shared allocations, so rows are never summed into an adapter total.
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub gpu_dedicated_bytes: Option<Bytes>,
     pub access: ProcessRowAccess,

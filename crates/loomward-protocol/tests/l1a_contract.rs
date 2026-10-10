@@ -178,6 +178,8 @@ fn sample_meta() -> ResponseMeta {
         elapsed_ms: Count::from(14),
         dataset_class: DatasetClass::Synthetic,
         budget_hit: false,
+        catalog_rev: Some(Generation(8812)),
+        state_rev: None,
     }
 }
 
@@ -266,39 +268,113 @@ fn payload_decoding_reports_invalid_request() {
     assert!(!err.retryable);
 }
 
-#[test]
-fn event_envelope_serialises_sse_fields() {
-    let env: EventEnvelope = serde_json::from_value(json!({"protocol":"loomward/3","seq":4211,"event":"scan.progress","at":"2026-10-09T12:00:00Z","data":{}})).unwrap();
-    assert_eq!(env.event, EventName::ScanProgress);
-    assert!(serde_json::from_value::<EventEnvelope>(json!({"protocol":"loomward/3","seq":1,"event":"scan.finished","at":"2026-10-09T12:00:00Z","data":{}})).is_err());
+fn event(seq: u32) -> EventEnvelope {
+    EventEnvelope {
+        protocol: Protocol,
+        epoch: StreamEpoch::new("e_k3J9x2Qa").unwrap(),
+        seq: Count::from(seq),
+        event: EventName::StreamHello,
+        at: Timestamp::new("2026-10-09T12:00:00.250Z").unwrap(),
+        catalog_rev: None,
+        state_rev: None,
+        data: Default::default(),
+    }
 }
 
 #[test]
-fn subscription_is_bounded() {
-    let (tx, sub) = EventSubscription::bounded(2);
-    let event = |seq| EventEnvelope {
-        protocol: Protocol,
-        seq: Count::from(seq),
-        event: EventName::StreamHello,
-        at: Timestamp::new("2026-10-09T12:00:00Z").unwrap(),
-        data: Default::default(),
-    };
-    tx.try_send(event(1)).unwrap();
-    tx.try_send(event(2)).unwrap();
+fn event_envelope_needs_epoch_and_both_revisions() {
+    let full = json!({"protocol":"loomward/3","epoch":"e_k3J9x2Qa","seq":4211,"event":"scan.progress","at":"2026-10-09T12:00:00Z","catalog_rev":"8813","state_rev":null,"data":{}});
+    let env: EventEnvelope = serde_json::from_value(full.clone()).unwrap();
+    assert_eq!(env.event, EventName::ScanProgress);
+    assert_eq!(env.catalog_rev, Some(Generation(8813)));
+    assert_eq!(serde_json::to_value(&env).unwrap(), full);
+    for missing in ["epoch", "catalog_rev", "state_rev"] {
+        let mut v = full.clone();
+        v.as_object_mut().unwrap().remove(missing);
+        assert!(
+            serde_json::from_value::<EventEnvelope>(v).is_err(),
+            "{missing}"
+        );
+    }
+    let mut unknown = full;
+    unknown["event"] = json!("scan.finished");
+    assert!(serde_json::from_value::<EventEnvelope>(unknown).is_err());
+}
+
+#[test]
+fn complete_envelope_checks_pair_payload_with_command_and_event() {
+    // A job.state event whose data is not a JobResult fails the complete check.
+    let mut e = event(1);
+    e.event = EventName::JobState;
+    e.data = json!({"root_id": null, "generation": null, "scope": "all", "node_ids": []})
+        .as_object()
+        .unwrap()
+        .clone();
+    assert!(e.validate().is_err());
+    // A request that carries a precondition where none exists is invalid_request.
+    let mut req = RequestEnvelope::new(
+        RequestId::new("r_1").unwrap(),
+        Command::JobsList.name(),
+        json!({"limit": 5}).as_object().unwrap().clone(),
+    );
+    assert_eq!(req.validate().unwrap(), Command::JobsList);
+    req.expected_state_rev = Some(Generation(3));
+    assert_eq!(req.validate().unwrap_err().code, ErrorCode::InvalidRequest);
+    req.command = Command::VolumesDeclareTier.name();
+    req.payload = json!({"volume_id": "vo_c1", "tier": 2})
+        .as_object()
+        .unwrap()
+        .clone();
+    assert_eq!(req.validate().unwrap(), Command::VolumesDeclareTier);
+    req.command = CommandName::new("files.erase").unwrap();
+    assert_eq!(req.validate().unwrap_err().code, ErrorCode::UnknownCommand);
+}
+
+/// A toy stream: shows the trait is object safe and that `close` is idempotent and final.
+struct ScriptedStream {
+    epoch: String,
+    queue: std::collections::VecDeque<EventEnvelope>,
+    closed: bool,
+}
+
+impl EventStream for ScriptedStream {
+    fn epoch(&self) -> &str {
+        &self.epoch
+    }
+    fn recv_timeout(&mut self, _timeout: Duration) -> RecvOutcome {
+        if self.closed {
+            return RecvOutcome::Closed(CloseReason::ClosedByAdapter);
+        }
+        self.queue
+            .pop_front()
+            .map_or(RecvOutcome::Timeout, RecvOutcome::Event)
+    }
+    fn close(&mut self) {
+        self.closed = true;
+    }
+}
+
+#[test]
+fn event_stream_trait_yields_then_closes() {
+    let mut s: Box<dyn EventStream> = Box::new(ScriptedStream {
+        epoch: "e_k3J9x2Qa".into(),
+        queue: [event(1)].into(),
+        closed: false,
+    });
+    assert_eq!(s.epoch(), "e_k3J9x2Qa");
     assert!(
-        tx.try_send(event(3)).is_err(),
-        "a full queue must refuse, not grow"
+        matches!(s.recv_timeout(Duration::from_millis(1)), RecvOutcome::Event(e) if e.seq.get() == 1)
     );
     assert_eq!(
-        sub.recv_timeout(Duration::from_millis(10))
-            .unwrap()
-            .seq
-            .get(),
-        1
+        s.recv_timeout(Duration::from_millis(1)),
+        RecvOutcome::Timeout
     );
-    drop(tx);
-    assert_eq!(sub.try_recv().unwrap().seq.get(), 2);
-    assert!(sub.recv_timeout(Duration::from_millis(10)).is_err());
+    s.close();
+    s.close();
+    assert_eq!(
+        s.recv_timeout(Duration::from_millis(1)),
+        RecvOutcome::Closed(CloseReason::ClosedByAdapter)
+    );
 }
 
 struct Fake;
@@ -317,8 +393,12 @@ impl ViewService for Fake {
             sample_meta(),
         )
     }
-    fn subscribe(&self, _last_seq: Option<u64>) -> EventSubscription {
-        EventSubscription::bounded(1).1
+    fn subscribe(&self, resume: Option<(String, u64)>) -> Box<dyn EventStream> {
+        Box::new(ScriptedStream {
+            epoch: resume.map_or_else(|| "e_fresh000".into(), |(e, _)| e),
+            queue: Default::default(),
+            closed: false,
+        })
     }
 }
 
@@ -332,7 +412,8 @@ fn trait_is_object_safe_and_usable() {
     );
     let resp = svc.call(req, &CallContext::http());
     assert!(resp.is_ok());
-    let _ = svc.subscribe(None);
+    let stream = svc.subscribe(Some(("e_k3J9x2Qa".into(), 7)));
+    assert_eq!(stream.epoch(), "e_k3J9x2Qa");
 }
 
 #[test]

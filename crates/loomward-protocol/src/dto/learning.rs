@@ -9,7 +9,7 @@ pub struct Taxonomy {
     pub labels: UniqueVec<Label, 1, 32>,
 }
 
-/// label is null only when retract is true (service-enforced). Records a human label; never a grant.
+/// label is null only when retract is true (service-enforced); the service stores the withdrawn label internally (docs/41 section 9.1). client_event_id is a durable idempotency key: identical replay returns the original result, reuse with different content is invalid_request. Records a human label; never a grant.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FeedbackRequest {
@@ -51,6 +51,8 @@ const_str!(
 pub struct FeedbackResult {
     pub event_id: EventId,
     pub revision: Int<1, 9007199254740991>,
+    /// True when client_event_id matched an already committed identical event; nothing new was written.
+    pub idempotent_replay: bool,
     pub data_class: FeedbackResultDataClass,
     pub learning: LearningStatus,
 }

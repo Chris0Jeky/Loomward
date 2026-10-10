@@ -26,18 +26,36 @@ pub struct RootScanState {
     pub coverage: CoverageState,
 }
 
+const_str!(
+/// Alternate data streams and filesystem metadata are not observed in v0.3.
+    pub SubtreeTotalsStreamCoverage = "default_stream_only"
+);
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SubtreeTotals {
+    /// Directory entries (names), not objects.
     pub files: Count,
     pub dirs: Count,
+    /// Bytes by directory entry: sum of default-stream end-of-file as listed. A hard-linked object counts once per observed name.
     pub logical_bytes: Bytes,
+    /// Bytes by directory entry: sum of default-stream allocation as listed.
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub allocated_bytes: Option<Bytes>,
     pub allocation_unknown_files: Count,
     pub skipped: Count,
     pub failed: Count,
     pub complete: bool,
+    /// Alternate data streams and filesystem metadata are not observed in v0.3.
+    pub stream_coverage: SubtreeTotalsStreamCoverage,
+    /// Distinct (volume_key, file_id) objects within this subtree; null when any entry lacks a native ID.
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub unique_objects: Option<Count>,
+    /// Allocation counted once per unique object within this subtree; null when unique_objects is null or allocation is unknown.
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub unique_allocated_bytes: Option<Bytes>,
+    /// Entries whose object has another observed name anywhere in the dataset or an observed link count above 1.
+    pub multi_link_entries: Count,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -117,6 +135,7 @@ pub enum RootGrantResultRefusal {
     AlreadyGranted,
     NetworkOrRemovableUnsupported,
     IdentityUnavailable,
+    SyntheticSessionRequiresLabRoot,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

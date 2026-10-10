@@ -6,7 +6,9 @@ mod common;
 
 use common::registry::roundtrip;
 use jsonschema::Validator;
-use loomward_protocol::{Command, EventName};
+use loomward_protocol::{
+    decode_exact, Command, EventEnvelope, EventName, RequestEnvelope, ResponseEnvelope,
+};
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
@@ -59,6 +61,39 @@ impl Schema {
     }
 }
 
+impl Schema {
+    /// Schema errors for a whole envelope, with its payload checked against the type
+    /// `commands.json` names for the envelope's command or event (semantics.md section 10).
+    /// `command` pairs a response with the request it answers.
+    fn complete_errors(
+        &mut self,
+        def: &str,
+        value: &Value,
+        command: Option<Command>,
+    ) -> Vec<String> {
+        let mut errors = self.errors(def, value);
+        let (payload, payload_def) = match def {
+            "RequestEnvelope" => {
+                let cmd = value["command"].as_str().and_then(Command::from_name);
+                (&value["payload"], cmd.map(|c| c.request_def()))
+            }
+            "ResponseEnvelope" if value["ok"] == json!(true) => {
+                (&value["result"], command.map(|c| c.result_def()))
+            }
+            "EventEnvelope" => {
+                let ev = serde_json::from_value::<EventName>(value["event"].clone()).ok();
+                (&value["data"], ev.map(|e| e.data_def()))
+            }
+            _ => return errors,
+        };
+        match payload_def {
+            Some(d) => errors.extend(self.errors(d, payload)),
+            None => errors.push("no payload type for this envelope".into()),
+        }
+        errors
+    }
+}
+
 fn files(dir: &str) -> Vec<PathBuf> {
     let mut out: Vec<_> = fs::read_dir(contracts().join("examples").join(dir))
         .unwrap()
@@ -85,13 +120,15 @@ fn valid_examples() -> Vec<(String, String, Value)> {
         let p = contracts().join(format!("examples/events/{}.json", e.as_str()));
         out.push((stem(&p), e.data_def().to_string(), read(&p)));
     }
-    for p in files("envelopes") {
-        let doc = read(&p);
-        out.push((
-            stem(&p),
-            doc["def"].as_str().unwrap().to_string(),
-            doc["value"].clone(),
-        ));
+    for dir in ["envelopes", "dtos"] {
+        for p in files(dir) {
+            let doc = read(&p);
+            out.push((
+                stem(&p),
+                doc["def"].as_str().unwrap().to_string(),
+                doc["value"].clone(),
+            ));
+        }
     }
     out
 }
@@ -118,8 +155,13 @@ fn example_directories_hold_exactly_the_expected_files() {
         .collect();
     let have: BTreeSet<_> = files("events").iter().map(|p| stem(p)).collect();
     assert_eq!(have, expect_events, "one example per event");
+    let have: BTreeSet<_> = files("dtos").iter().map(|p| stem(p)).collect();
+    assert_eq!(
+        have,
+        BTreeSet::from(["disclosure-summary.json".to_string()])
+    );
     assert!(
-        files("invalid").len() >= 20,
+        files("invalid").len() >= 40,
         "the negatives are the point of the suite"
     );
 }
@@ -155,7 +197,10 @@ fn every_enum_value_round_trips() {
 fn valid_examples_validate_and_round_trip() {
     let mut schema = Schema::load();
     let examples = valid_examples();
-    assert_eq!(examples.len(), 45 * 2 + 10 + files("envelopes").len());
+    assert_eq!(
+        examples.len(),
+        45 * 2 + 10 + files("envelopes").len() + files("dtos").len()
+    );
     for (label, def, value) in examples {
         let errors = schema.errors(&def, &value);
         assert!(
@@ -172,28 +217,103 @@ fn valid_examples_validate_and_round_trip() {
     }
 }
 
+/// The Rust verdict for a whole value, including the complete-envelope rule for envelopes.
+fn rust_verdict(def: &str, value: &Value, complete: bool) -> Result<(), String> {
+    roundtrip(def, value)
+        .unwrap_or_else(|| panic!("no Rust type for {def}"))
+        .map_err(|e| e.to_string())?;
+    if !complete {
+        return Ok(());
+    }
+    match def {
+        "EventEnvelope" => decode_exact::<EventEnvelope>(value.clone())
+            .and_then(|e| e.validate())
+            .map_err(|e| e.message.to_string()),
+        "RequestEnvelope" => decode_exact::<RequestEnvelope>(value.clone())
+            .and_then(|e| e.validate().map(drop))
+            .map_err(|e| e.message.to_string()),
+        _ => Ok(()),
+    }
+}
+
 #[test]
 fn invalid_examples_fail_the_schema_and_the_dto() {
     let mut schema = Schema::load();
+    let (mut rust_only, mut complete) = (0, 0);
     for p in files("invalid") {
         let doc = read(&p);
         let (def, value) = (doc["def"].as_str().unwrap(), &doc["value"]);
+        let flag = |k: &str| doc.get(k) == Some(&json!(true));
         assert!(
             doc["reason"].as_str().is_some_and(|r| !r.is_empty()),
             "{} needs a reason",
             stem(&p)
         );
+        let schema_errors = if flag("complete") {
+            schema.complete_errors(def, value, None)
+        } else {
+            schema.errors(def, value)
+        };
+        if flag("rust_only") {
+            // JSON Schema cannot express this rule; the runtime check must.
+            rust_only += 1;
+            assert!(
+                schema_errors.is_empty(),
+                "{} is marked rust_only but the schema rejects it",
+                stem(&p)
+            );
+        } else {
+            assert!(
+                !schema_errors.is_empty(),
+                "{} passes the schema as {def}",
+                stem(&p)
+            );
+        }
+        complete += usize::from(flag("complete"));
         assert!(
-            !schema.errors(def, value).is_empty(),
-            "{} passes the schema as {def}",
-            stem(&p)
-        );
-        let rust = roundtrip(def, value).unwrap_or_else(|| panic!("no Rust type for {def}"));
-        assert!(
-            rust.is_err(),
+            rust_verdict(def, value, flag("complete")).is_err(),
             "{} deserialises as {def} but must not",
             stem(&p)
         );
+    }
+    assert!(rust_only >= 2 && complete >= 3, "{rust_only} {complete}");
+}
+
+/// Complete envelopes: every command's request and ok response and every event, wrapped in a
+/// full envelope, validate with their payload discriminated through commands.json (schema
+/// and Rust), carry revisions, and round-trip.
+#[test]
+fn complete_envelopes_validate_for_every_command_and_event() {
+    let mut schema = Schema::load();
+    let meta = json!({"served_at":"2026-10-09T12:00:00.250Z","elapsed_ms":3,"dataset_class":"synthetic","budget_hit":false,"catalog_rev":"8812","state_rev":"311"});
+    for c in Command::ALL {
+        let payload =
+            read(&contracts().join(format!("examples/commands/{}.request.json", c.as_str())));
+        let result =
+            read(&contracts().join(format!("examples/commands/{}.result.json", c.as_str())));
+        let request = json!({"protocol":"loomward/3","request_id":"r_1","command":c.as_str(),"payload":payload});
+        let errs = schema.complete_errors("RequestEnvelope", &request, None);
+        assert!(errs.is_empty(), "{} request: {errs:?}", c.as_str());
+        let env = decode_exact::<RequestEnvelope>(request.clone()).unwrap();
+        assert_eq!(env.validate().unwrap(), *c);
+        assert_eq!(serde_json::to_value(&env).unwrap(), request);
+
+        let response = json!({"protocol":"loomward/3","request_id":"r_1","ok":true,"result":result,"meta":meta});
+        let errs = schema.complete_errors("ResponseEnvelope", &response, Some(*c));
+        assert!(errs.is_empty(), "{} response: {errs:?}", c.as_str());
+        match decode_exact::<ResponseEnvelope>(response.clone()).unwrap() {
+            ResponseEnvelope::Ok(ok) => ok.validate_for(*c).unwrap(),
+            ResponseEnvelope::Err(_) => panic!("ok response decoded as an error"),
+        }
+    }
+    for e in EventName::ALL {
+        let data = read(&contracts().join(format!("examples/events/{}.json", e.as_str())));
+        let event = json!({"protocol":"loomward/3","epoch":"e_k3J9x2Qa","seq":9,"event":e.as_str(),"at":"2026-10-09T12:00:00.250Z","catalog_rev":null,"state_rev":null,"data":data});
+        let errs = schema.complete_errors("EventEnvelope", &event, None);
+        assert!(errs.is_empty(), "{} event: {errs:?}", e.as_str());
+        let env = decode_exact::<EventEnvelope>(event.clone()).unwrap();
+        env.validate().unwrap();
+        assert_eq!(serde_json::to_value(&env).unwrap(), event);
     }
 }
 

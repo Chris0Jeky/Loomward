@@ -6,8 +6,18 @@ use super::*;
 #[serde(deny_unknown_fields)]
 pub struct StreamHello {
     pub session_started_at: Timestamp,
+    pub epoch: StreamEpoch,
     pub last_seq: Count,
+    pub oldest_replayable_seq: Count,
     pub dataset_class: DatasetClass,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamLaggedReason {
+    SubscriberOverflow,
+    EpochChanged,
+    ReplayGap,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -23,7 +33,10 @@ pub enum StreamLaggedResync {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StreamLagged {
-    pub dropped: Count,
+    pub reason: StreamLaggedReason,
+    /// null when unknown (epoch change or replay gap).
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub dropped: Option<Count>,
     pub resync: UniqueVec<StreamLaggedResync, 0, 5>,
 }
 

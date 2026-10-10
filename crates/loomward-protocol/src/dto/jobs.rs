@@ -2,13 +2,13 @@
 
 use super::*;
 
+/// placement.simulate is synchronous and bounded, never a job (semantics.md section 2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobKind {
     Scan,
     Refit,
     Teacher,
-    PlacementSimulation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -138,7 +138,7 @@ pub struct JobListRequest {
         deserialize_with = "crate::types::optional_present",
         skip_serializing_if = "Option::is_none"
     )]
-    pub kinds: Option<UniqueVec<JobKind, 0, 4>>,
+    pub kinds: Option<UniqueVec<JobKind, 0, 3>>,
     pub limit: Int<1, 50>,
 }
 

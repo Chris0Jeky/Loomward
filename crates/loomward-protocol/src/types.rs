@@ -531,6 +531,13 @@ string_newtype!(
 );
 
 string_newtype!(
+    /// Random identifier of one service start; event `seq` is only comparable within one epoch.
+    StreamEpoch,
+    "8-64 characters of [A-Za-z0-9_-]",
+    |s| slug_len(s, 8, 64)
+);
+
+string_newtype!(
     /// Client-chosen idempotency key for a feedback event.
     ClientEventId,
     "8-64 characters of [A-Za-z0-9_-]",

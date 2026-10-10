@@ -49,10 +49,10 @@ export type Cursor = string;
 
 export type Digest = string;
 
-/** Exact unsigned decimal. All byte quantities on the wire use this, never JSON numbers (ADR-V3-04). */
+/** Exact unsigned decimal. All byte quantities on the wire use this, never JSON numbers (ADR-V3-04). Range 0..18446744073709551615 (u64::MAX) is enforced at runtime (semantics.md section 9); the pattern alone admits larger 20-digit strings. */
 export type ByteCount = string;
 
-/** null means unknown, never zero (invariant 4). */
+/** null means unknown, never zero (invariant 4). Same runtime range as ByteCount. */
 export type NullableBytes = string | null;
 
 export type Generation = string;
@@ -70,10 +70,13 @@ export type NullableFraction = number | null;
 /** Display-only per-second rate; null until two samples exist. */
 export type NullableRate = number | null;
 
-/** RFC 3339 UTC (a trailing Z, never a numeric offset), display and chronology only. */
+/** RFC 3339 in UTC with a literal Z; display and chronology only. Servers emit millisecond precision. */
 export type Timestamp = string;
 
 export type NullableTimestamp = string | null;
+
+/** Random per service start; event seq is only comparable within one epoch (semantics.md section 7). */
+export type StreamEpoch = string;
 
 /** 0 is fastest, 9 slowest; demotion goes to an equal or higher number (planner v1/v2 rule). */
 export type Tier = number;
@@ -96,7 +99,7 @@ export type ExtFamily = "document" | "spreadsheet" | "presentation" | "image" | 
 
 export type FileAttribute = "readonly" | "hidden" | "system" | "archive" | "compressed" | "sparse" | "encrypted" | "offline" | "not_content_indexed" | "reparse_point" | "recall_on_open" | "recall_on_data_access" | "pinned" | "unpinned" | "temporary";
 
-export type EntryFlag = "sensitive_name" | "protected_context" | "hardlink_suspected" | "cloud_placeholder" | "reparse_not_followed" | "excluded_state_dir" | "access_denied" | "enumeration_error" | "identity_unavailable" | "name_lossy";
+export type EntryFlag = "sensitive_name" | "protected_context" | "hardlink_suspected" | "cloud_placeholder" | "reparse_not_followed" | "excluded_state_dir" | "access_denied" | "enumeration_error" | "identity_unavailable" | "name_lossy" | "on_disk_only_listing" | "listing_incomplete";
 
 /** Display only. Never accepted back as input; no command takes a path string. */
 export interface DisplayPath {
@@ -121,6 +124,8 @@ export interface RequestEnvelope {
   payload: Record<string, unknown>;
   deadline_ms?: number;
   expected_generation?: Generation;
+  /** Revision precondition for owner-state mutations (volumes.declare_tier, collections.update_members): the call commits only while state.db is still at this revision, else stale_generation with detail.reason state_rev_changed (semantics.md sections 3 and 5). Elsewhere invalid_request. */
+  expected_state_rev?: Generation;
 }
 
 export interface ResponseMeta {
@@ -128,6 +133,10 @@ export interface ResponseMeta {
   elapsed_ms: Count;
   dataset_class: DatasetClass;
   budget_hit: boolean;
+  /** Catalogue revision the response was read at, or committed at for a mutation (semantics.md section 5). */
+  catalog_rev: NullableGeneration;
+  /** state.db revision the response was read at, or committed at for a mutation; null when the command touched no state.db data (semantics.md section 5). */
+  state_rev: NullableGeneration;
 }
 
 export interface ResponseOk {
@@ -152,10 +161,15 @@ export type EventName = "stream.hello" | "stream.lagged" | "job.state" | "scan.p
 
 export interface EventEnvelope {
   protocol: Protocol;
+  epoch: StreamEpoch;
   seq: Count;
   event: EventName;
   at: Timestamp;
-  /** Validated against the event definition named in commands.json. */
+  /** Emitted only after the change it describes is committed (semantics.md section 6). */
+  catalog_rev: NullableGeneration;
+  /** state.db revision of the commit the event describes; null for events about catalogue-only changes or telemetry. */
+  state_rev: NullableGeneration;
+  /** Validated against the event definition named in commands.json; L1 generates discriminated envelope validation from commands.json (semantics.md section 10). */
   data: Record<string, unknown>;
 }
 
@@ -215,7 +229,8 @@ export interface HealthWarning {
 export interface Health {
   observed_at: Timestamp;
   engine: {
-    private_bytes: NullableBytes;
+    /** PROCESS_MEMORY_COUNTERS_EX2.PrivateUsage. */
+    private_commit_bytes: NullableBytes;
     working_set_bytes: NullableBytes;
     cpu_seconds: number | null;
     threads: NullableCount;
@@ -243,14 +258,25 @@ export interface RootScanState {
 }
 
 export interface SubtreeTotals {
+  /** Directory entries (names), not objects. */
   files: Count;
   dirs: Count;
+  /** Bytes by directory entry: sum of default-stream end-of-file as listed. A hard-linked object counts once per observed name. */
   logical_bytes: ByteCount;
+  /** Bytes by directory entry: sum of default-stream allocation as listed. */
   allocated_bytes: NullableBytes;
   allocation_unknown_files: Count;
   skipped: Count;
   failed: Count;
   complete: boolean;
+  /** Alternate data streams and filesystem metadata are not observed in v0.3. */
+  stream_coverage: "default_stream_only";
+  /** Distinct (volume_key, file_id) objects within this subtree; null when any entry lacks a native ID. */
+  unique_objects: NullableCount;
+  /** Allocation counted once per unique object within this subtree; null when unique_objects is null or allocation is unknown. */
+  unique_allocated_bytes: NullableBytes;
+  /** Entries whose object has another observed name anywhere in the dataset or an observed link count above 1. */
+  multi_link_entries: Count;
 }
 
 export interface Root {
@@ -278,7 +304,7 @@ export interface RootGrantRequest {
 export interface RootGrantResult {
   outcome: "granted" | "cancelled_by_user" | "refused";
   root: Root | null;
-  refusal: null | "volume_root" | "reparse_or_placeholder" | "not_a_directory" | "contains_state_dir" | "inside_state_dir" | "already_granted" | "network_or_removable_unsupported" | "identity_unavailable";
+  refusal: null | "volume_root" | "reparse_or_placeholder" | "not_a_directory" | "contains_state_dir" | "inside_state_dir" | "already_granted" | "network_or_removable_unsupported" | "identity_unavailable" | "synthetic_session_requires_lab_root";
 }
 
 export interface RootRevokeRequest {
@@ -350,7 +376,8 @@ export interface DeclareTierResult {
   preference_recorded_at: Timestamp;
 }
 
-export type JobKind = "scan" | "refit" | "teacher" | "placement_simulation";
+/** placement.simulate is synchronous and bounded, never a job (semantics.md section 2). */
+export type JobKind = "scan" | "refit" | "teacher";
 
 export type JobState = "queued" | "running" | "cancel_requested" | "cancelled" | "failed" | "completed";
 
@@ -496,7 +523,9 @@ export interface TreeSlice {
   root_generations: RootGeneration[];
   complete: boolean;
   live: boolean;
-  ordering: "exact" | "approximate_live" | "approximate_files";
+  /** consistent: every directory sum was published at a revision covering its committed listings. provisional_live: sums come from the running scan's arena snapshot; 'other' nodes are clamped at zero. Inconsistent committed sums are repaired before serving, never sent. */
+  aggregate_state: "consistent" | "provisional_live";
+  ordering: "exact" | "approximate_live";
   truncated: boolean;
   nodes: SliceNode[];
 }
@@ -534,6 +563,7 @@ export interface EntryRow {
 
 export interface TreeChildrenRequest {
   node_id: NodeId;
+  /** size_desc is index-backed for both bases (ties broken by row id). name_asc and modified_desc are served only for directories with at most 10,000 direct children; larger ones return resource_budget with detail sort_requires_index. */
   sort: "size_desc" | "name_asc" | "modified_desc";
   basis: Basis;
   limit: number;
@@ -564,7 +594,10 @@ export interface NodePath {
 }
 
 export interface IdentityObservation {
+  /** Width is preserved: a 64-bit ID is never padded and reported as 128-bit. */
   quality: "native_file_id_128" | "native_file_id_64" | "path_observation" | "unavailable";
+  /** Whether labels and collection membership may bind to this object (docs/41 section 6.3). Without it, feedback.record returns capability_unavailable. */
+  durable_reference: "available" | "unavailable_identity_quality" | "unavailable_filesystem";
   volume_key: string | null;
   file_id_hex: string | null;
   observed_generation: NullableGeneration;
@@ -663,7 +696,7 @@ export interface Taxonomy {
   labels: Label[];
 }
 
-/** label is null only when retract is true (service-enforced). Records a human label; never a grant. */
+/** label is null only when retract is true (service-enforced); the service stores the withdrawn label internally (docs/41 section 9.1). client_event_id is a durable idempotency key: identical replay returns the original result, reuse with different content is invalid_request. Records a human label; never a grant. */
 export interface FeedbackRequest {
   node_id: NodeId;
   label: Label | null;
@@ -688,6 +721,8 @@ export interface LearningStatus {
 export interface FeedbackResult {
   event_id: EventId;
   revision: number;
+  /** True when client_event_id matched an already committed identical event; nothing new was written. */
+  idempotent_replay: boolean;
   data_class: "human";
   learning: LearningStatus;
 }
@@ -747,9 +782,16 @@ export interface TeacherPreviewRequest {
   recipient: TeacherRecipient;
 }
 
-/** Shows the exact bytes that would leave the machine. Creating a preview sends nothing. */
+/** Immutable once created. Shows the complete request that would leave the machine. Creating a preview sends nothing. */
 export interface TeacherPreview {
   preview_id: PreviewId;
+  serialization_version: "loomward-teacher-request/1";
+  /** The exact system instructions sent. */
+  instructions: string;
+  allowed_labels: Label[];
+  output_schema_digest: Digest;
+  /** Pinned Codex executable hash, version, argv and effective configuration overrides (docs/41 section 9.2). */
+  runner_profile_digest: Digest;
   recipient: TeacherRecipient;
   model: "gpt-6.1-sol";
   reasoning_effort: "medium";
@@ -767,11 +809,33 @@ export interface TeacherPreview {
   }[];
   excluded: ({
     node_id: NodeId;
-    reason: "sensitive_name" | "excluded" | "cloud_placeholder" | "directory_not_supported";
+    reason: "sensitive_name" | "sensitive_context" | "excluded" | "cloud_placeholder" | "directory_not_supported";
   })[];
   taxonomy_version: number;
   payload_bytes: Count;
+  /** SHA-256 over the canonical serialization of the complete request: instructions, allowed labels, output schema, items and serialization version. */
   payload_digest: Digest;
+  expires_at: Timestamp;
+}
+
+/** Built by Rust from the stored immutable preview, never from UI input, and rendered by the native confirmation dialog item by item. Not sent over the wire; defined here so the Rust and dialog implementations agree. */
+export interface DisclosureSummary {
+  preview_id: PreviewId;
+  recipient: TeacherRecipient;
+  model: "gpt-6.1-sol";
+  reasoning_effort: "medium";
+  dataset_class: DatasetClass;
+  fields: TeacherField[];
+  items: {
+    handle: string;
+    name: string;
+    extension: string;
+    context: string;
+    size_bucket: number;
+  }[];
+  excluded_count: number;
+  payload_digest: Digest;
+  runner_profile_digest: Digest;
   expires_at: Timestamp;
 }
 
@@ -800,7 +864,7 @@ export interface DisclosureGrant {
 export interface DisclosureGrantResult {
   outcome: "granted" | "declined_by_user" | "refused";
   grant: DisclosureGrant | null;
-  refusal: null | "personal_requires_desktop_dialog" | "preview_expired" | "digest_mismatch" | "teacher_unavailable" | "canary_gate_not_passed";
+  refusal: null | "personal_requires_desktop_dialog" | "preview_expired" | "preview_already_used" | "digest_mismatch" | "teacher_unavailable" | "runner_profile_mismatch" | "confinement_not_enforced";
 }
 
 export interface RootGrantRecord {
@@ -892,10 +956,16 @@ export interface CandidateGroup {
   node_id: NodeId;
   root_id: RootId;
   name: string;
+  /** Bytes by directory entry under estimate_basis (observation, not relief). */
   source_bytes: ByteCount;
+  /** Labelled estimate: per-file logical size rounded up to the destination cluster size where known. */
   destination_bytes: ByteCount;
   transfer_bytes: ByteCount;
-  estimate_basis: "source_allocated_destination_logical_transfer_logical";
+  estimate_basis: "allocated_entries" | "logical_fallback" | "unknown";
+  /** null unless relief_basis is verified_unique_allocation or an entry_allocation_whatif was requested. */
+  estimated_relief_bytes: NullableBytes;
+  /** verified_unique_allocation: every entry has a native ID, every object's names are inside this group and link counts were observed; default stream only. */
+  relief_basis: "verified_unique_allocation" | "entry_allocation_whatif" | "unknown";
   heat: NullableFraction;
   heat_basis: HeatBasis;
   newest_modified_at: NullableTimestamp;
@@ -928,6 +998,8 @@ export interface PlacementSimulateRequest {
   target_free_bytes: ByteCount;
   max_transfer_bytes: ByteCount;
   heat_policy: "unknown_is_ineligible" | "mtime_proxy_whatif" | "assumed_only";
+  /** verified_only (default) pre-rejects groups whose relief is unknown; entry_allocation_whatif feeds entry allocation as an assumed relief and records it in assumptions. */
+  relief_policy: "verified_only" | "entry_allocation_whatif";
   candidate_basis: CandidateBasis;
   max_groups: number;
   overrides: GroupOverride[];
@@ -964,10 +1036,21 @@ export interface PlacementPlan {
     lower_bound_shortfall_bytes: ByteCount;
   };
   proposals: PlacementProposal[];
+  /** Exactly the planner's own rejections (parity with planner_v2). */
   rejected: ({
     group_id: GroupId;
     reason: "not_on_source" | "pinned_active_protected_or_unspecified" | "heat_unknown" | "not_cold" | "cooldown_or_history_unknown" | "source_offline_or_readonly" | "not_selected_by_bounded_allocator";
   })[];
+  /** Service-level exclusions applied before the planner runs; these groups never reach it. */
+  pre_rejected: ({
+    group_id: GroupId;
+    reason: "relief_unknown" | "shares_objects_with_other_group" | "group_coverage_incomplete";
+  })[];
+  excluded_volumes: ({
+    volume_id: VolumeId;
+    reason: "tier_unknown" | "capacity_unknown" | "offline";
+  })[];
+  relief_policy: "verified_only" | "entry_allocation_whatif";
   projected_free_bytes: { [key: string]: ByteCount };
   target_free_bytes: ByteCount;
   shortfall_bytes: ByteCount;
@@ -1060,8 +1143,11 @@ export interface GpuSample {
     adapter_id: string;
     name: string;
     dedicated_total_bytes: NullableBytes;
+    /** Global, from the GPU Adapter Memory counter; never a sum of per-process values. */
     dedicated_used_bytes: NullableBytes;
+    /** Global, from the GPU Adapter Memory counter. */
     shared_used_bytes: NullableBytes;
+    /** Maximum over engine types of the per-type utilisation summed across that adapter's engine instances, clamped to 1 (the Task Manager method). */
     engine_busy_fraction: NullableFraction;
   }[];
 }
@@ -1073,7 +1159,9 @@ export interface DiskSample {
     volume_ids: VolumeId[];
     read_bytes_per_s: NullableRate;
     write_bytes_per_s: NullableRate;
+    /** 1 - (PhysicalDisk % Idle Time / 100), clamped to [0, 1]. */
     busy_fraction: NullableFraction;
+    /** PhysicalDisk Avg. Disk Queue Length; a separate quantity from busy_fraction. */
     queue_length: NullableRate;
   }[];
 }
@@ -1089,8 +1177,9 @@ export interface PoolUse {
 }
 
 export interface EngineSample {
-  private_bytes: NullableBytes;
+  private_commit_bytes: NullableBytes;
   working_set_bytes: NullableBytes;
+  /** Machine-normalised: CPU time over the interval divided by (interval x logical CPUs). */
   cpu_fraction: NullableFraction;
   threads: NullableCount;
   pools: PoolUse[];
@@ -1102,11 +1191,17 @@ export interface ProcessRow {
   pid: number;
   name: string;
   started_at: NullableTimestamp;
-  private_bytes: NullableBytes;
+  /** PROCESS_MEMORY_COUNTERS_EX2.PrivateUsage (commit charge), not resident memory. */
+  private_commit_bytes: NullableBytes;
+  /** PROCESS_MEMORY_COUNTERS_EX2.PrivateWorkingSetSize where supported, else null. */
+  private_working_set_bytes: NullableBytes;
+  /** Total working set, including shared pages. */
   working_set_bytes: NullableBytes;
+  /** Machine-normalised over the sample interval; null on the first sample. */
   cpu_fraction: NullableFraction;
   io_read_bytes_per_s: NullableRate;
   io_write_bytes_per_s: NullableRate;
+  /** GPU Process Memory dedicated usage for this process; may include shared allocations, so rows are never summed into an adapter total. */
   gpu_dedicated_bytes: NullableBytes;
   access: "full" | "limited" | "denied";
   loomward_owned: boolean;
@@ -1190,12 +1285,16 @@ export interface BudgetSetRequest {
 
 export interface StreamHello {
   session_started_at: Timestamp;
+  epoch: StreamEpoch;
   last_seq: Count;
+  oldest_replayable_seq: Count;
   dataset_class: DatasetClass;
 }
 
 export interface StreamLagged {
-  dropped: Count;
+  reason: "subscriber_overflow" | "epoch_changed" | "replay_gap";
+  /** null when unknown (epoch change or replay gap). */
+  dropped: NullableCount;
   resync: ("roots" | "volumes" | "jobs" | "tree" | "learning")[];
 }
 

@@ -1,5 +1,6 @@
 //! Request and response envelopes (docs/41 section 5.1).
 
+use crate::command::Command;
 use crate::error::{ErrorBody, ErrorCode};
 use crate::types::{
     optional_present, required_nullable, CommandName, ConstFalse, ConstTrue, Count, DatasetClass,
@@ -32,6 +33,14 @@ pub struct RequestEnvelope {
         skip_serializing_if = "Option::is_none"
     )]
     pub expected_generation: Option<Generation>,
+    /// Revision precondition for owner-state mutations (`volumes.declare_tier`,
+    /// `collections.update_members`); a mismatch is `stale_generation`.
+    #[serde(
+        default,
+        deserialize_with = "optional_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub expected_state_rev: Option<Generation>,
 }
 
 impl RequestEnvelope {
@@ -43,7 +52,26 @@ impl RequestEnvelope {
             payload,
             deadline_ms: None,
             expected_generation: None,
+            expected_state_rev: None,
         }
+    }
+
+    /// Complete-envelope check: a known command whose payload is exactly its request type, and
+    /// `expected_state_rev` only where a revision precondition exists.
+    pub fn validate(&self) -> Result<Command, ErrorBody> {
+        let command = Command::from_name(&self.command)
+            .ok_or_else(|| ErrorBody::new(ErrorCode::UnknownCommand, "unknown command", false))?;
+        command.validate_request(&self.payload)?;
+        let takes_precondition = matches!(
+            command,
+            Command::VolumesDeclareTier | Command::CollectionsUpdateMembers
+        );
+        if self.expected_state_rev.is_some() && !takes_precondition {
+            return Err(ErrorBody::invalid_request(
+                "expected_state_rev is not accepted by this command",
+            ));
+        }
+        Ok(command)
     }
 
     /// Decodes the payload into the command's DTO (strictly, see [`decode_exact`]). Unknown or
@@ -103,6 +131,12 @@ pub struct ResponseMeta {
     pub elapsed_ms: Count,
     pub dataset_class: DatasetClass,
     pub budget_hit: bool,
+    /// Catalogue revision the response was read or committed at; `None` when no catalogue was involved.
+    #[serde(deserialize_with = "required_nullable")]
+    pub catalog_rev: Option<Generation>,
+    /// `state.db` revision the response was read or committed at; `None` when it touched no state.
+    #[serde(deserialize_with = "required_nullable")]
+    pub state_rev: Option<Generation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -139,6 +173,13 @@ pub struct ResponseError {
 pub enum ResponseEnvelope {
     Ok(ResponseOk),
     Err(ResponseError),
+}
+
+impl ResponseOk {
+    /// Complete-envelope check: `result` must be exactly the result type of `command`.
+    pub fn validate_for(&self, command: Command) -> Result<(), ErrorBody> {
+        command.validate_result(&self.result)
+    }
 }
 
 impl ResponseEnvelope {

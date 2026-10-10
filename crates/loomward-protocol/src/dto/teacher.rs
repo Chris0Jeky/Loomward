@@ -10,6 +10,10 @@ pub struct TeacherPreviewRequest {
 }
 
 const_str!(
+    pub TeacherPreviewSerializationVersion = "loomward-teacher-request/1"
+);
+
+const_str!(
     pub TeacherPreviewModel = "gpt-6.1-sol"
 );
 
@@ -38,6 +42,7 @@ pub struct TeacherPreviewItem {
 #[serde(rename_all = "snake_case")]
 pub enum TeacherPreviewExcludedReason {
     SensitiveName,
+    SensitiveContext,
     Excluded,
     CloudPlaceholder,
     DirectoryNotSupported,
@@ -50,11 +55,18 @@ pub struct TeacherPreviewExcluded {
     pub reason: TeacherPreviewExcludedReason,
 }
 
-/// Shows the exact bytes that would leave the machine. Creating a preview sends nothing.
+/// Immutable once created. Shows the complete request that would leave the machine. Creating a preview sends nothing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TeacherPreview {
     pub preview_id: PreviewId,
+    pub serialization_version: TeacherPreviewSerializationVersion,
+    /// The exact system instructions sent.
+    pub instructions: Text<4000>,
+    pub allowed_labels: UniqueVec<Label, 1, 32>,
+    pub output_schema_digest: Digest,
+    /// Pinned Codex executable hash, version, argv and effective configuration overrides (docs/41 section 9.2).
+    pub runner_profile_digest: Digest,
     pub recipient: TeacherRecipient,
     pub model: TeacherPreviewModel,
     pub reasoning_effort: TeacherPreviewReasoningEffort,
@@ -64,7 +76,35 @@ pub struct TeacherPreview {
     pub excluded: BoundedVec<TeacherPreviewExcluded, 0, 25>,
     pub taxonomy_version: Int<1, 9007199254740991>,
     pub payload_bytes: Count,
+    /// SHA-256 over the canonical serialization of the complete request: instructions, allowed labels, output schema, items and serialization version.
     pub payload_digest: Digest,
+    pub expires_at: Timestamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DisclosureSummaryItem {
+    pub handle: TeacherHandle,
+    pub name: Text<256>,
+    pub extension: Text<32>,
+    pub context: Text<512>,
+    pub size_bucket: Int<0, 16>,
+}
+
+/// Built by Rust from the stored immutable preview, never from UI input, and rendered by the native confirmation dialog item by item. Not sent over the wire; defined here so the Rust and dialog implementations agree.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DisclosureSummary {
+    pub preview_id: PreviewId,
+    pub recipient: TeacherRecipient,
+    pub model: TeacherPreviewModel,
+    pub reasoning_effort: TeacherPreviewReasoningEffort,
+    pub dataset_class: DatasetClass,
+    pub fields: UniqueVec<TeacherField, 1, 4>,
+    pub items: BoundedVec<DisclosureSummaryItem, 1, 25>,
+    pub excluded_count: Int<0, 25>,
+    pub payload_digest: Digest,
+    pub runner_profile_digest: Digest,
     pub expires_at: Timestamp,
 }
 
@@ -119,9 +159,11 @@ pub enum DisclosureGrantResultOutcome {
 pub enum DisclosureGrantResultRefusal {
     PersonalRequiresDesktopDialog,
     PreviewExpired,
+    PreviewAlreadyUsed,
     DigestMismatch,
     TeacherUnavailable,
-    CanaryGateNotPassed,
+    RunnerProfileMismatch,
+    ConfinementNotEnforced,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -90,8 +90,9 @@ pub struct HealthWarning {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HealthEngine {
+    /// PROCESS_MEMORY_COUNTERS_EX2.PrivateUsage.
     #[serde(deserialize_with = "crate::types::required_nullable")]
-    pub private_bytes: Option<Bytes>,
+    pub private_commit_bytes: Option<Bytes>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub working_set_bytes: Option<Bytes>,
     #[serde(deserialize_with = "crate::types::required_nullable")]

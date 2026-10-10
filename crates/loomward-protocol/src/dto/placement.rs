@@ -71,9 +71,22 @@ pub struct PlacementCandidatesRequest {
     pub min_bytes: Bytes,
 }
 
-const_str!(
-    pub CandidateGroupEstimateBasis = "source_allocated_destination_logical_transfer_logical"
-);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateGroupEstimateBasis {
+    AllocatedEntries,
+    LogicalFallback,
+    Unknown,
+}
+
+/// verified_unique_allocation: every entry has a native ID, every object's names are inside this group and link counts were observed; default stream only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateGroupReliefBasis {
+    VerifiedUniqueAllocation,
+    EntryAllocationWhatif,
+    Unknown,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -82,10 +95,17 @@ pub struct CandidateGroup {
     pub node_id: NodeId,
     pub root_id: RootId,
     pub name: Text<260>,
+    /// Bytes by directory entry under estimate_basis (observation, not relief).
     pub source_bytes: Bytes,
+    /// Labelled estimate: per-file logical size rounded up to the destination cluster size where known.
     pub destination_bytes: Bytes,
     pub transfer_bytes: Bytes,
     pub estimate_basis: CandidateGroupEstimateBasis,
+    /// null unless relief_basis is verified_unique_allocation or an entry_allocation_whatif was requested.
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub estimated_relief_bytes: Option<Bytes>,
+    /// verified_unique_allocation: every entry has a native ID, every object's names are inside this group and link counts were observed; default stream only.
+    pub relief_basis: CandidateGroupReliefBasis,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub heat: Option<Fraction>,
     pub heat_basis: HeatBasis,
@@ -156,6 +176,14 @@ pub enum PlacementSimulateRequestHeatPolicy {
     AssumedOnly,
 }
 
+/// verified_only (default) pre-rejects groups whose relief is unknown; entry_allocation_whatif feeds entry allocation as an assumed relief and records it in assumptions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlacementSimulateRequestReliefPolicy {
+    VerifiedOnly,
+    EntryAllocationWhatif,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlacementSimulateRequest {
@@ -163,6 +191,8 @@ pub struct PlacementSimulateRequest {
     pub target_free_bytes: Bytes,
     pub max_transfer_bytes: Bytes,
     pub heat_policy: PlacementSimulateRequestHeatPolicy,
+    /// verified_only (default) pre-rejects groups whose relief is unknown; entry_allocation_whatif feeds entry allocation as an assumed relief and records it in assumptions.
+    pub relief_policy: PlacementSimulateRequestReliefPolicy,
     pub candidate_basis: CandidateBasis,
     pub max_groups: Int<1, 200>,
     pub overrides: BoundedVec<GroupOverride, 0, 200>,
@@ -235,6 +265,36 @@ pub struct PlacementPlanRejected {
     pub reason: PlacementPlanRejectedReason,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlacementPlanPreRejectedReason {
+    ReliefUnknown,
+    SharesObjectsWithOtherGroup,
+    GroupCoverageIncomplete,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlacementPlanPreRejected {
+    pub group_id: GroupId,
+    pub reason: PlacementPlanPreRejectedReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlacementPlanExcludedVolumeReason {
+    TierUnknown,
+    CapacityUnknown,
+    Offline,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlacementPlanExcludedVolume {
+    pub volume_id: VolumeId,
+    pub reason: PlacementPlanExcludedVolumeReason,
+}
+
 /// Field-for-field the planner_v2 output (python/loomward/planner_v2.py) with bytes as decimal strings, plus heat_policy, assumptions, root_generations and proposal_id.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -246,7 +306,12 @@ pub struct PlacementPlan {
     pub shortfall_optimal: bool,
     pub search: PlacementPlanSearch,
     pub proposals: BoundedVec<PlacementProposal, 0, 200>,
+    /// Exactly the planner's own rejections (parity with planner_v2).
     pub rejected: BoundedVec<PlacementPlanRejected, 0, 200>,
+    /// Service-level exclusions applied before the planner runs; these groups never reach it.
+    pub pre_rejected: BoundedVec<PlacementPlanPreRejected, 0, 200>,
+    pub excluded_volumes: BoundedVec<PlacementPlanExcludedVolume, 0, 64>,
+    pub relief_policy: PlacementSimulateRequestReliefPolicy,
     pub projected_free_bytes: BoundedMap<VolumeId, Bytes, 64>,
     pub target_free_bytes: Bytes,
     pub shortfall_bytes: Bytes,

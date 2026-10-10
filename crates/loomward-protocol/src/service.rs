@@ -1,32 +1,20 @@
-//! The service trait every adapter calls (docs/41 section 5.3).
+//! The service trait every adapter calls, and the event stream behind it (docs/41 section 5.3).
 
+use crate::dto::DisclosureSummary;
 use crate::envelope::{RequestEnvelope, ResponseEnvelope};
 use crate::event::EventEnvelope;
 pub use crate::types::Adapter;
-use crate::types::{Count, DatasetClass, Digest, Int, TeacherField, TeacherRecipient};
 use std::fmt;
 use std::path::PathBuf;
-use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender, TryRecvError};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// What the native confirmation dialog shows before a personal disclosure: the exact fields,
-/// the item count, the recipient and the digest of the bytes that would leave the machine.
-#[derive(Debug, Clone, PartialEq)]
-pub struct DisclosureSummary {
-    pub recipient: TeacherRecipient,
-    pub dataset_class: DatasetClass,
-    pub fields: Vec<TeacherField>,
-    pub item_count: Int<1, 25>,
-    pub payload_bytes: Count,
-    pub payload_digest: Digest,
-}
-
 /// Native UI the Rust side owns. The webview never supplies a path or a confirmation.
 pub trait NativeDialogs: Send + Sync {
-    /// Rust-side folder picker; the path never crosses IPC.
+    /// Rust-side folder picker; the chosen path never crosses IPC.
     fn pick_folder(&self) -> Option<PathBuf>;
-    /// Native modal showing exact fields and item count. `false` means declined.
+    /// Native modal listing recipient, model, fields and every item of the summary. `true` only on
+    /// explicit accept.
     fn confirm_disclosure(&self, summary: &DisclosureSummary) -> bool;
 }
 
@@ -63,40 +51,42 @@ impl fmt::Debug for CallContext {
     }
 }
 
-/// The view-model service. Adapters run `call` on a blocking pool and pump `subscribe` into
-/// the SSE response or the Tauri `Channel`.
+/// The view-model service. Adapters run `call` on a blocking pool and pump the [`EventStream`]
+/// into the SSE response or the Tauri `Channel`.
 pub trait ViewService: Send + Sync + 'static {
-    /// Synchronous and bounded by the request deadline; long work returns a Job.
+    /// Synchronous; long work returns a Job. Deadlines per `semantics.md` section 2.
     fn call(&self, request: RequestEnvelope, ctx: &CallContext) -> ResponseEnvelope;
-    /// Bounded per-subscriber queue; replays from `last_seq` when still buffered, else starts
-    /// with `stream.lagged`.
-    fn subscribe(&self, last_seq: Option<u64>) -> EventSubscription;
+    /// Opens a stream. `resume` is the client's (epoch, last applied seq), if any.
+    fn subscribe(&self, resume: Option<(String, u64)>) -> Box<dyn EventStream>;
+}
+
+/// Why a stream ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseReason {
+    ServiceShutdown,
+    ClosedByAdapter,
+    /// More than four concurrent HTTP streams; the adapter answers HTTP 429.
+    TooManyStreams,
+}
+
+/// One step of an [`EventStream`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum RecvOutcome {
+    Event(EventEnvelope),
+    Timeout,
+    Closed(CloseReason),
+}
+
+/// A subscriber's view of the event stream. The queue behind it is bounded
+/// ([`EVENT_QUEUE_CAPACITY`]); a slow reader gets `stream.lagged`, never an unbounded backlog.
+pub trait EventStream: Send {
+    fn epoch(&self) -> &str;
+    /// Blocks up to `timeout`. The first item is always `stream.hello`; replay or `stream.lagged`
+    /// follow per `semantics.md` section 7, and `stream.hello` repeats after 15 s of silence.
+    fn recv_timeout(&mut self, timeout: Duration) -> RecvOutcome;
+    /// Idempotent; releases the subscriber slot. Adapters call it on client disconnect or window close.
+    fn close(&mut self);
 }
 
 /// Per-subscriber queue depth (docs/41 section 5.1).
 pub const EVENT_QUEUE_CAPACITY: usize = 1024;
-
-/// A subscriber's bounded queue. The service keeps the [`SyncSender`]; a full queue means the
-/// subscriber lagged, so the service drops the backlog and sends `stream.lagged`. A
-/// disconnected channel means the subscriber is gone.
-#[derive(Debug)]
-pub struct EventSubscription {
-    rx: Receiver<EventEnvelope>,
-}
-
-impl EventSubscription {
-    /// A queue of `capacity` events and its producer end.
-    pub fn bounded(capacity: usize) -> (SyncSender<EventEnvelope>, EventSubscription) {
-        let (tx, rx) = sync_channel(capacity);
-        (tx, EventSubscription { rx })
-    }
-
-    /// Blocks up to `timeout`; `Disconnected` once the service dropped the producer.
-    pub fn recv_timeout(&self, timeout: Duration) -> Result<EventEnvelope, RecvTimeoutError> {
-        self.rx.recv_timeout(timeout)
-    }
-
-    pub fn try_recv(&self) -> Result<EventEnvelope, TryRecvError> {
-        self.rx.try_recv()
-    }
-}
