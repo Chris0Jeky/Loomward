@@ -30,6 +30,16 @@ CONTROL_CHARS = re.compile('[' + ''.join(f'{chr(a)}-{chr(b)}' for a, b in _HIDDE
 FORBIDDEN_BUTTONS = re.compile(r'kill|suspend|trim|terminate|end task|priority|execute|apply|\bmove\b|\brun\b|delete', re.I)
 
 
+
+def wait_until(page, expression: str, arg=None, timeout_ms: int = 9000) -> None:
+    # page.wait_for_function polls through page-side eval, which the app's CSP (no
+    # 'unsafe-eval') blocks whenever the predicate is not already true; page.evaluate is not.
+    deadline = time.monotonic() + timeout_ms / 1000
+    while not page.evaluate(expression, arg):
+        if time.monotonic() > deadline:
+            raise AssertionError(f'timed out waiting for: {expression}')
+        time.sleep(0.05)
+
 def ok(cond: bool, msg: str) -> None:
     if not cond:
         raise AssertionError(msg)
@@ -403,7 +413,7 @@ def check_companion(page: Page, base: str, shoot) -> None:
     # the view keeps sampling
     seq = lambda: int(re.search(r'Sample ([\d,]+) at', main.inner_text()).group(1).replace(',', ''))
     before = seq()
-    page.wait_for_function('(b) => { const m = /Sample ([\\d,]+) at/.exec(document.querySelector("main").innerText); return m && Number(m[1].replace(/,/g, "")) > b; }', arg=before, timeout=9000)
+    wait_until(page, '(b) => { const m = /Sample ([\\d,]+) at/.exec(document.querySelector("main").innerText); return m && Number(m[1].replace(/,/g, "")) > b; }', before, 9000)
     print('PASS Companion: bounded list with coverage, unknowns with reasons, split ledger, explanation, read-only budgets, live sampling')
     shoot('companion')
 

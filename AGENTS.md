@@ -17,7 +17,7 @@ duplicate/unused-file inspection, backups, and understandable process/RAM contro
 ruling: **meaning, residency and permission are separate systems.**
 
 Python reference app + browser UI (tested on Windows), Rust native workspace (first compiled and
-tested here on 2026-10-09; the Tauri shell is still unbuilt), MCP read-only reference, 112-task
+tested here on 2026-10-09; the Tauri 2 desktop shell first built on 2026-10-10, #164), MCP read-only reference, 112-task
 `LW-*` backlog.
 
 ## Where the ChatGPT material stands
@@ -43,16 +43,16 @@ Python 3.14.3 (`py -3`), cargo/rustc 1.97.1, rustup 1.29.0, Node 24.13.1, npm 11
 a first measurement and must be reported as such. On Windows use `codex.cmd`, `npm.cmd` and
 `npx.cmd`; the unsigned `.ps1` shims are blocked by this machine's execution policy.
 
-## Proving checks by seam (measured on Windows 2026-10-09, `evidence/v3/`)
+## Proving checks by seam (measured on Windows 2026-10-09; counts refreshed 2026-10-10, `evidence/v3/`)
 
 | You changed | Run |
 |---|---|
-| Python reference, schemas, JS boundary, fixtures | `py -3 scripts/verify.py` (212 tests with 1 symlink-privilege skip, 2 JS syntax, 9 JS boundary, 80 cross-language fixtures; it also runs the Rust gates when cargo is present) |
-| Rust workspace (`crates/*`, glob) | `cargo fmt --all --check`, `cargo test --workspace` (155 on Windows: core 30, engine 4, http 30, lab 14, learn 8, protocol 35, telemetry 24, windows 10), `cargo clippy --workspace --all-targets -- -D warnings`; add `--all-features` for the `loomward-windows` fixture lab |
+| Python reference, schemas, JS boundary, fixtures | `py -3 scripts/verify.py` (216 tests with 1 symlink-privilege skip, 2 JS syntax, 9 JS boundary, 80 cross-language fixtures; it also runs the Rust gates when cargo is present) |
+| Rust workspace (`crates/*`, glob) | `cargo fmt --all --check`, `cargo test --workspace` (240 on Windows: core 30, engine 61, http 30, lab 22, learn 8, protocol 35, telemetry 25, windows 29; native scan tests assert the elevation refusal on an elevated host such as hosted CI and run fully otherwise), `cargo clippy --workspace --all-targets -- -D warnings`; add `--all-features` for the `loomward-windows` fixture lab |
 | Browser UI | `py -3 scripts/test_ui.py` (14 Chromium checks; Playwright installed here) |
 | Svelte app (`app/`) | `npm.cmd --prefix app run check`, `run test`, `run build`, then `py -3 scripts/test_app.py` (Playwright e2e incl. Atlas and Observatory); add `--live-serve` when you touch `loomward-http` or an app transport |
 | Python, Rust and the legacy browser UI in one go | `py -3 scripts/verify.py --ui` (it does not run the Svelte app checks: run that row separately) |
-| Tauri shell (`native/`) | excluded from the root workspace; build it separately (never built yet) |
+| Tauri shell (`native/`) | excluded from the root workspace: `cargo build`, `cargo test` (7 + 1 ignored) and `cargo clippy --all-targets -- -D warnings` with `--manifest-path native/Cargo.toml`, then `native/target/debug/loomward-desktop.exe --self-test`; `native/tests/webview2_probe.py` drives the real window |
 | Docs only | `git diff --check` plus the links you touched |
 
 Missing tooling is UNVERIFIED, never PASS. New behaviour lands with the test that pins it. Never
