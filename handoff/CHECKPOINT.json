@@ -5,7 +5,7 @@
   "version": "0.3.0-dev",
   "base_commit": "1e51c3b",
   "branch": "main",
-  "phase": "reference-and-native-verified-on-windows-no-effects",
+  "phase": "v0.3 wave 1: native crates landed, architecture in revision, no effects",
   "read_first": [
     "AGENTS.md",
     "handoff/START-HERE.md",
@@ -14,7 +14,7 @@
     "docs/40-parallel-work-packs.md"
   ],
   "reference": {
-    "python_tests": 185,
+    "python_tests": 212,
     "browser_checks": 14,
     "js_boundary_assertions": 9,
     "js_python_parity_cases": 80,
@@ -41,19 +41,23 @@
     "providers_connected": 0
   },
   "native": {
-    "rust_written_tests": 20,
-    "rust_tests_run_on_windows": 19,
+    "crates": {
+      "loomward-core": "v1 planner + v2 allocator port (222 parity cases, #107), portable scanner, policy, transaction simulation",
+      "loomward-windows": "handle-derived identity, volume capabilities, opt-in fixture lab (#108)",
+      "loomward-telemetry": "read-only memory/process/disk snapshots and rates (#109)",
+      "loomward-lab": "deterministic scale lab and enumeration benchmarks (#111)"
+    },
+    "rust_tests_on_windows": 54,
     "compiled": true,
     "toolchain": "rustc 1.97.1",
     "fmt_clippy_clean": true,
-    "cargo_lock": "committed, 34 packages",
-    "tauri": "uncompiled synthetic scaffold",
-    "planner": "v1 baseline, not ported"
+    "tauri": "unbuilt; superseded for v0.3 by the plan in docs/41 (PR #110)",
+    "enumeration": "GetFileInformationByHandleEx(FileIdExtdDirectoryInfo), 8 workers: 3M files in 0.558 s warm (5.38M files/s, 9.2 MiB RSS); cold cache unmeasured"
   },
   "learning": {
-    "student": "weighted multinomial Naive Bayes reference, unchanged",
+    "student": "weighted Naive Bayes; Rust port loomward-learn with exact Python parity (#113)",
     "teacher_mock_http_tested": true,
-    "actual_model_tested": false,
+    "actual_model_tested": "synthetic-only: GPT-6.1 Sol through codex exec, 10/10 schema-valid 25-item batches, median 21.8 s (#116); no personal data",
     "personal_dataset_evaluated": false
   },
   "experiments": {
@@ -64,15 +68,17 @@
     "windows_performance_claim": false
   },
   "next_local_issues": [
-    "LW-064",
-    "LW-003",
-    "LW-004"
+    "LW-103",
+    "LW-005",
+    "LW-106",
+    "LW-105",
+    "LW-101"
   ],
   "optional_independent_starts": [
     "LW-065",
     "LW-068"
   ],
-  "backlog_count": 100,
+  "backlog_count": 112,
   "remote_publication": true,
   "independent_subagents_used": false,
   "hard_gates": [
@@ -84,7 +90,11 @@
   ],
   "evidence": [
     "evidence/v3/README.md",
-    "evidence/v3/windows-verify.txt",
+    "evidence/v3/windows-native.md",
+    "evidence/v3/telemetry.md",
+    "evidence/v3/planner-v2-rust.md",
+    "evidence/v3/ui-prototype/",
+    "docs/research/enumeration-spike.md",
     "evidence/v2/final-suite.txt",
     "evidence/v2/ui-final.txt",
     "evidence/v2/standalone-checks.json",
@@ -95,5 +105,21 @@
     "repository": "Chris0Jeky/Loomward (public)",
     "harness": "AGENTS.md is the single agent baseline; estate laws supersede handoff/ process rules",
     "tier": "T1 sandbox (.agent-harness/tier.json)"
-  }
+  },
+  "ui": {
+    "prototype": "app/prototype: woven atlas treemap + Observatory sunburst + gauges, synthetic (#112)",
+    "app_shell": "Svelte 5 shell in review (#114)"
+  },
+  "architecture": {
+    "docs": "docs/41-43 and contracts/v3 merged (#110), revision 2 after a cross-vendor review",
+    "errata": "binding verification findings for implementing lanes: issue #117",
+    "owner_decisions_2026_10_10": [
+      "whole-volume roots via native grant",
+      "L15b teacher sandbox authorised",
+      "10M lab tier on E: only",
+      "T1 and Muse proxy network confirmed"
+    ]
+  },
+  "backlog_github_map": "backlog/github-issues.json (#4-#105)",
+  "teacher_confinement": "partially achievable with CLI flags; synthetic-only until LW-111 enforcement canaries pass (#116)"
 }

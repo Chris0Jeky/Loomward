@@ -1,4 +1,4 @@
-> Historical v0.1 status. The current expansion matrix and test counts are in [37-expansion-verification.md](37-expansion-verification.md).
+> Historical v0.1 status, with a v0.3 section at the end. The v0.2 matrix is in [37-expansion-verification.md](37-expansion-verification.md); v0.3 is planned in [41](41-v03-architecture.md)-[43](43-v03-lanes.md).
 
 # Implementation status: initial authoring pass
 
@@ -51,3 +51,20 @@ GitHub account access and naming were inspected. The connector did not expose a 
 ## Next work
 
 Use handoff/LOCAL-AGENT-PROMPT.md and the first critical-path pack. Establish real Windows behavior and native compilation, then native identities/capabilities/protocol. Do not skip directly to unattended cleanup, source deletion or broad process control.
+
+## v0.3 status (9 October 2026, Windows 11, rustc 1.97.1, Python 3.14.3)
+
+The v0.2 bundle is on the public `main` with its history (#2). Everything below ran on Windows; hosted CI
+runs Python 3.11/3.13 and the Rust workspace on ubuntu and windows.
+
+| Area | State on `main` | Evidence |
+|---|---|---|
+| Python reference | 212 tests (1 symlink-privilege skip); two Windows bugs and eleven review findings fixed test-first (#2, #106) | `evidence/v3/README.md` |
+| `loomward-core` | v1 planner plus the v2 allocator port; 222 parity cases equal Python field by field (#107) | `evidence/v3/planner-v2-rust.md` |
+| `loomward-windows` | handle-derived identity, volume capabilities, opt-in disposable fixture lab; read-only (#108) | `evidence/v3/windows-native.md` |
+| `loomward-telemetry` | read-only memory, process and disk observations with honest unknowns (#109) | `evidence/v3/telemetry.md` |
+| `loomward-lab` | deterministic synthetic scale trees and the enumeration spike: 3M files in 0.558 s warm (#111) | `docs/research/enumeration-spike.md` |
+| `app/prototype` | woven atlas + Observatory signature prototype on synthetic data (#112) | `evidence/v3/ui-prototype/` |
+
+Not established: a persistent native catalogue, the scan engine, the view service, the desktop shell, any real-disk
+scan, cold-cache or HDD timings, a WinDirStat comparison, a connected teacher. No file or process effect exists.
