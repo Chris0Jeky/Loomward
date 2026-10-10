@@ -8,6 +8,8 @@ const s={capacity:{cpu_slots:1,memory_mib:512},jobs:[{id:'first',demand:{cpu_slo
 assert.equal(simulateAdmission(s).accepted[0].job_id,'first');assert.equal(simulateAdmission(s).deferred[0].job_id,'other');
 assert.equal(simulateAdmission({...s,telemetry_age_seconds:31}).accepted.length,0);
 assert.equal(simulateAdmission({...s,capacity:{cpu_slots:null,memory_mib:512}}).accepted.length,0);
+// An omitted capacity dimension is unknown, as in Python scheduler.vector(unknown=True), never 0.
+{const r=simulateAdmission({capacity:{cpu_slots:4},jobs:[{id:'j',demand:{memory_mib:100},priority:0}]});assert.equal(r.capacity.memory_mib,null);assert.equal(r.accepted.length,0);assert.ok(JSON.stringify(r).includes('unknown_memory_mib'));}
 assert.throws(()=>simulateAdmission({...s,execute:true}));
 assert.throws(()=>simulateAdmission({...s,capacity:{cpu_slots:true}}));
 assert.throws(()=>requestFor('catalog_search',false));

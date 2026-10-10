@@ -1,0 +1,76 @@
+/*
+ * Two token sets (docs/41 section 13). Fonts are the ones Windows ships: Sitka for the display face,
+ * Segoe UI Variable for the interface, Cascadia Mono for numerics. Nothing is fetched at runtime.
+ *
+ * The three threads never blend: meaning, residency and permission each keep one hue and one
+ * stroke pattern (solid / dashed / hatched), so colour is never the only carrier.
+ */
+:root {
+  --font-display: 'Sitka Display', 'Sitka Heading', 'Sitka Text', Cambria, Georgia, 'Times New Roman', serif;
+  --font-ui: 'Segoe UI Variable Text', 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'Cascadia Mono', 'Cascadia Code', Consolas, 'Courier New', monospace;
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --dur: 220ms;
+  --gutter: 16px;
+  color-scheme: dark;
+}
+
+/* Woven atlas: deep ink, parchment text, saffron/teal/heather threads, calm and warm. */
+:root,
+:root[data-theme='woven-atlas'] {
+  --bg: #0d1320;
+  --bg-weave: #101828;
+  --surface: #141c2d;
+  --raised: #1a2438;
+  --line: #2a3650;
+  --text: #ece5d3;
+  --muted: #a1a9ba;
+  --accent: #dcb46a;
+  --accent-ink: #1a1305;
+  --focus: #f3d18a;
+  --meaning: #e2b158;
+  --residency: #5db7ae;
+  --permission: #c48ad2;
+  --ok: #7fc59a;
+  --warn: #e6b565;
+  --danger: #ef8a7d;
+  --radius: 10px;
+  --glow: none;
+  --num-font: var(--font-ui);
+  --head-font: var(--font-display);
+  --head-weight: 600;
+  --head-tracking: 0.01em;
+  --chrome-line: linear-gradient(90deg, var(--meaning), var(--residency), var(--permission));
+}
+
+/* Observatory: dark instrument panel, monospace numerics, cool glow, sharper corners. */
+:root[data-theme='observatory'] {
+  --bg: #06080b;
+  --bg-weave: #080b10;
+  --surface: #0c1117;
+  --raised: #111922;
+  --line: #1d2b38;
+  --text: #cfe3e6;
+  --muted: #8aa0a8;
+  --accent: #4fe0ee;
+  --accent-ink: #021417;
+  --focus: #8ff0f8;
+  --meaning: #ffcf5e;
+  --residency: #4fe0ee;
+  --permission: #ff7bc6;
+  --ok: #64e0a0;
+  --warn: #ffcf5e;
+  --danger: #ff7a70;
+  --radius: 4px;
+  --glow: 0 0 14px color-mix(in srgb, var(--accent) 38%, transparent);
+  --num-font: var(--font-mono);
+  --head-font: var(--font-ui);
+  --head-weight: 500;
+  --head-tracking: 0.08em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur: 0ms;
+  }
+}
