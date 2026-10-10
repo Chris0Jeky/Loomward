@@ -149,23 +149,25 @@ def run_a11y(browser: Browser, base: str, check) -> None:
         check(m['rail'] not in ('sticky', 'fixed'), f"1.4.10 the rail does not pin at {w}x{h}")
         page.context.close()
 
-    page = new_page(1280, 800)
-    goto(page, base, 'tiers', 'Tiers')
-    m = page.evaluate("() => ({ p: getComputedStyle(document.querySelector('.masthead')).position, h: document.querySelector('.masthead').getBoundingClientRect().height })")
-    check(m['p'] == 'sticky' and m['h'] / 800 < 0.30, f"the masthead stays sticky on a roomy window and takes {m['h'] / 800:.0%} of it")
-    # 2.4.11: a focused control is never under the sticky masthead (scroll-padding on the root)
-    hidden_under = page.evaluate("""() => {
-      const mh = document.querySelector('.masthead').getBoundingClientRect().bottom, out = [];
-      for (const el of document.querySelectorAll('main button:not(:disabled), main input, main select, main a[href], .rail a')) {
-        const r0 = el.getBoundingClientRect(); if (!r0.width || !r0.height) continue;
-        window.scrollTo(0, window.scrollY + r0.top - 20); // the control sits just below the top edge, under a sticky masthead
-        el.focus(); const r = el.getBoundingClientRect();
-        if (r.top < mh - 0.5 && r.bottom > 0) out.push(`${el.tagName} ${(el.textContent || el.getAttribute('aria-label') || '').trim().slice(0, 30)} top ${r.top.toFixed(0)} < ${mh.toFixed(0)}`);
-      }
-      return out;
-    }""")
-    check(not hidden_under, f'2.4.11 no focused control sits under the sticky masthead: {hidden_under[:3]}')
-    page.context.close()
+    # 2.4.11: a focused control is never under the sticky masthead (scroll-padding and the rail offset follow its measured
+    # height). The masthead wraps to ~160 px between 761 and 999 px wide, which a fixed 112 px did not cover (#169).
+    for w, h in ((1280, 800), (900, 600), (800, 700)):
+        page = new_page(w, h)
+        goto(page, base, 'tiers', 'Tiers')
+        m = page.evaluate("() => ({ p: getComputedStyle(document.querySelector('.masthead')).position, h: document.querySelector('.masthead').getBoundingClientRect().height })")
+        check(m['p'] == 'sticky' and m['h'] / h < 0.30, f"the masthead stays sticky at {w}x{h} and takes {m['h'] / h:.0%} of it ({m['h']:.0f}px)")
+        hidden_under = page.evaluate("""() => {
+          const mh = document.querySelector('.masthead').getBoundingClientRect().bottom, out = [];
+          for (const el of document.querySelectorAll('main button:not(:disabled), main input, main select, main a[href], .rail a')) {
+            const r0 = el.getBoundingClientRect(); if (!r0.width || !r0.height) continue;
+            window.scrollTo(0, window.scrollY + r0.top - 20); // the control sits just below the top edge, under a sticky masthead
+            el.focus(); const r = el.getBoundingClientRect();
+            if (r.top < mh - 0.5 && r.bottom > 0) out.push(`${el.tagName} ${(el.textContent || el.getAttribute('aria-label') || '').trim().slice(0, 30)} top ${r.top.toFixed(0)} < ${mh.toFixed(0)}`);
+          }
+          return out;
+        }""")
+        check(not hidden_under, f'2.4.11 no focused control sits under the sticky masthead at {w}x{h}: {hidden_under[:3]}')
+        page.context.close()
 
     # --- unique names, row headers, dangling references (2.4.6, 4.1.2, 1.3.1) ---------------------------------------
     page = new_page()
