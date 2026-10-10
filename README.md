@@ -20,7 +20,7 @@ Research prototype, not a file manager or system optimiser.
 - **Rust crates** (`crates/`): `loomward-core`, `loomward-windows`, `loomward-telemetry`,
   `loomward-lab`, `loomward-learn` (plus `loomward-cli`). The Rust workspace was first compiled
   and tested on 2026-10-09; [Measured results](#measured-results) says which have recorded evidence.
-- The **Svelte app shell** (`app/`), on a **mock transport only**: today it ships the Explorer
+- The **Svelte app shell** (`app/`), on a **mock transport only**: today it ships the Explorer,
   Tiers, Companion and Grants & health views over synthetic data (#119), with Atlas and
   Observatory in review. With no engine it shows "unavailable", never demo data.
 - The **woven-atlas / Observatory prototype** (`app/prototype/`): canvas treemap, sunburst and
