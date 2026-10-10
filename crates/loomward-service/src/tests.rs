@@ -1040,29 +1040,6 @@ fn a_failed_mutation_spawn_keeps_queue_order_and_liveness() {
     );
 }
 
-/// A malformed stored node-ID key refuses to open the service instead of becoming zero bytes.
-#[test]
-fn a_malformed_node_id_key_refuses_to_open() {
-    let tmp = tempfile::tempdir().unwrap();
-    drop(open(tmp.path(), DatasetClass::Synthetic));
-    for bad in ["zz".repeat(32), "00".repeat(31), "+0".repeat(32)] {
-        rusqlite::Connection::open(tmp.path().join("state.db"))
-            .unwrap()
-            .execute("UPDATE meta SET value=?1 WHERE key='node_id_key'", [&bad])
-            .unwrap();
-        let opened = Service::open(Config {
-            state_dir: tmp.path().to_path_buf(),
-            dataset: DatasetClass::Synthetic,
-            allow_personal: false,
-            grant_roots: vec![],
-        });
-        assert!(
-            opened.err().is_some_and(|e| e.contains("malformed")),
-            "{bad}"
-        );
-    }
-}
-
 /// #185 item 2: a mutation whose thread could not be spawned never ran, so its request_id is
 /// free: a protocol-following retry runs instead of replaying `no worker`.
 #[test]
@@ -1183,4 +1160,37 @@ fn grants_past_64_active_roots_are_refused_by_rule() {
     let grant = crate::db::roots(&svc.inner.db(), Some(granted[0])).unwrap()[0].grant;
     svc.inner.revoke(grant).unwrap();
     assert!(svc.inner.grant(&dirs[64], "cli_flag").unwrap().1);
+}
+
+/// #185 item 5: node IDs are bound to the session (`semantics.md` section 5). The key is never
+/// persisted, so an ID minted before a reopen of the same catalogue is plain `not_found`.
+#[test]
+fn node_ids_do_not_survive_a_reopen() {
+    let tmp = tempfile::tempdir().unwrap();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (root, _) = fixture(&svc, 2);
+    let id = root_slice(&svc, root)["nodes"][1]["node_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    ok(
+        "node.inspect",
+        call(&svc, "node.inspect", json!({"node_id": id})),
+    );
+    let instance = svc.inner.instance.clone();
+    drop(svc);
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    assert_eq!(svc.inner.instance, instance, "same catalogue instance");
+    let e = err(call(&svc, "node.inspect", json!({"node_id": id})));
+    assert_eq!((e.code, e.detail), (ErrorCode::NotFound, None));
+    // The same row is reachable again through a fresh read in this session.
+    let fresh = root_slice(&svc, root)["nodes"][1]["node_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(fresh, id);
+    ok(
+        "node.inspect",
+        call(&svc, "node.inspect", json!({"node_id": fresh})),
+    );
 }

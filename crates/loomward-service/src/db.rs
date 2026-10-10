@@ -39,45 +39,6 @@ pub fn instance(conn: &Connection) -> Sql<String> {
     )
 }
 
-/// The per-install node-ID key, created once from the OS random source. Not owner data, so it
-/// does not move `state_rev`.
-pub fn install_key(conn: &Connection) -> Sql<[u8; 32]> {
-    let read = |conn: &Connection| -> Sql<Option<String>> {
-        conn.query_row(
-            "SELECT value FROM st.meta WHERE key='node_id_key'",
-            [],
-            |r| r.get(0),
-        )
-        .optional()
-    };
-    let hex = match read(conn)? {
-        Some(h) => h,
-        None => {
-            let mut raw = [0u8; 32];
-            getrandom::fill(&mut raw).expect("OS random source");
-            let fresh: String = raw.iter().map(|b| format!("{b:02x}")).collect();
-            conn.execute(
-                "INSERT OR IGNORE INTO st.meta(key,value) VALUES('node_id_key',?1)",
-                [&fresh],
-            )?;
-            read(conn)?.unwrap_or(fresh)
-        }
-    };
-    // A damaged key must stop the service, never silently become a weaker (zeroed) key.
-    if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(rusqlite::Error::FromSqlConversionFailure(
-            0,
-            rusqlite::types::Type::Text,
-            "the stored node-ID key is malformed".into(),
-        ));
-    }
-    let mut key = [0u8; 32];
-    for (i, b) in key.iter_mut().enumerate() {
-        *b = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).expect("checked hex");
-    }
-    Ok(key)
-}
-
 /// `born_run` of each catalogue row id. Row ids are never reused (AUTOINCREMENT) and a row keeps
 /// its `born_run` for life, so a lookup outside the reader's transaction cannot misattribute one.
 pub fn born_runs(conn: &Connection, table: &str, ids: &[i64]) -> Sql<Vec<(i64, i64)>> {

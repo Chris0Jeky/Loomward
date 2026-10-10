@@ -5,7 +5,7 @@
 //!   (`semantics.md` sections 1 and 2): every call returns by its deadline;
 //! - the 10-minute idempotency cache of mutations, replaying retained outcomes and never executing
 //!   twice (errata #117 N4), and `expected_state_rev` preconditions;
-//! - node IDs sealed with a per-install HMAC key over catalogue instance, row and `born_run`, and
+//! - node IDs sealed with a per-session HMAC key over catalogue instance, row and `born_run`, and
 //!   session-bound cursors (section 5, partial #15);
 //! - provenance: a synthetic session accepts only fixture or identity-verified registered lab
 //!   roots; a personal session needs `allow_personal` and stays teacher-disabled (ADR-V3-15);
@@ -105,7 +105,6 @@ impl Service {
         let engine = Engine::open(EngineConfig::new(state_dir.clone(), config.dataset))
             .map_err(|e| format!("engine refused to open: {e}"))?;
         let conn = db::open(&state_dir).map_err(|e| format!("state store: {e}"))?;
-        let key = db::install_key(&conn).map_err(|e| format!("state store: {e}"))?;
         let instance = db::instance(&conn).map_err(|e| format!("state store: {e}"))?;
         let inner = Arc::new(Inner {
             dataset: config.dataset,
@@ -115,7 +114,7 @@ impl Service {
             catalog,
             db: Mutex::new(conn),
             instance,
-            ids: ids::NodeIds::new(key),
+            ids: ids::NodeIds::session(),
             cursors: cursors::Cursors::new(4096),
             idem: idem::Idempotency::new(ttl),
             mutation: Mutex::new(()),
