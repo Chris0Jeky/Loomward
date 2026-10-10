@@ -33,11 +33,17 @@
   $effect(() => {
     document.title = `${current?.title ?? 'Loomward'} · Loomward`;
   });
+  // The masthead wraps between about 760 and 1000 px (up to ~160 px tall), so the room kept free for it
+  // (scroll-padding, the rail's sticky offset) is measured, not guessed. WCAG 2.4.11.
+  let mastheadH = $state(0);
+  $effect(() => {
+    if (mastheadH > 0) document.documentElement.style.setProperty('--masthead-h', `${mastheadH}px`);
+  });
 </script>
 
 <a class="skip" href="#main" onclick={(e) => { e.preventDefault(); document.getElementById('main')?.focus(); }}>Skip to content</a>
 
-<header class="masthead">
+<header class="masthead" bind:offsetHeight={mastheadH}>
   <div class="brand">
     <span class="wordmark">Loomward</span>
     <span class="tagline">{themeLabel[theme.current]}</span>
@@ -111,7 +117,7 @@
 
   /* Sticky chrome only where the viewport can spare it: at 200% to 400% zoom (a narrow or short CSS viewport)
      it would cover most of the page and every focused control (WCAG 1.4.10, 2.4.11). */
-  :global(html) { scroll-padding-top: 112px; }
+  :global(html) { scroll-padding-top: calc(var(--masthead-h, 112px) + 16px); }
   .masthead {
     position: sticky; top: 0; z-index: 5;
     display: flex; flex-wrap: wrap; align-items: center; gap: 10px 20px;
@@ -144,7 +150,7 @@
   .thread-rule { flex-basis: 100%; height: 3px; border-radius: 2px; background: var(--chrome-line); opacity: 0.85; }
 
   .frame { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 20px; padding: 20px var(--gutter); max-width: 1500px; margin: 0 auto; }
-  .rail { display: flex; flex-direction: column; gap: 2px; position: sticky; top: 96px; align-self: start; }
+  .rail { display: flex; flex-direction: column; gap: 2px; position: sticky; top: calc(var(--masthead-h, 96px) + 16px); align-self: start; }
   .rail a {
     padding: 8px 12px; text-decoration: none; color: var(--muted); border-left: 2px solid transparent;
     transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease);

@@ -12,7 +12,7 @@
   import { createWovenTreemap, drawSwatch } from '../../../viz/woven-treemap.js';
   import Inspector from './Inspector.svelte';
   import RegionList from './RegionList.svelte';
-  import { SliceNav, announceSlice, canvasLabel, describeNode, describeSize, formatApprox, pathTo, readPalette, type SliceKey } from './shared.svelte';
+  import { SliceNav, announceSlice, canvasLabel, deniedBelow, describeNode, describeSize, formatApprox, pathTo, readPalette, type SliceKey } from './shared.svelte';
   import { Say } from '../../lib/ui/say.svelte';
   import LoadError from './LoadError.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
@@ -35,6 +35,7 @@
 
   const shown = $derived(hovered ?? selected);
   const provisional = $derived(nav.slice?.aggregate_state === 'provisional_live');
+  const denied = $derived(deniedBelow(nav.slice));
   const pathNames = $derived(shown ? pathTo(shown, nav.slice, nav.trail.map((c) => c.name)) : []);
 
   onMount(() => {
@@ -44,13 +45,13 @@
     const off = [
       t.on('hover', (e: { node: NodeInfo | null; clientX: number; clientY: number; viaKeyboard: boolean }) => {
         hovered = e.node;
-        if (e.node && e.viaKeyboard) say.say(describeNode(e.node));
+        if (e.node && e.viaKeyboard) say.say(describeNode(e.node, denied));
         if (e.node && !e.viaKeyboard && well) {
           const r = well.getBoundingClientRect();
-          tip = { x: e.clientX - r.left, y: e.clientY - r.top, name: e.node.name, sub: describeSize(e.node) };
+          tip = { x: e.clientX - r.left, y: e.clientY - r.top, name: e.node.name, sub: describeSize(e.node, denied) };
         } else tip = null;
       }),
-      t.on('select', (n: NodeInfo) => { selected = n; say.say(describeNode(n)); }),
+      t.on('select', (n: NodeInfo) => { selected = n; say.say(describeNode(n, denied)); }),
       t.on('drill', (n: NodeInfo) => { hovered = null; tip = null; void nav.drill(n.id, n.name); }),
       t.on('back', () => {
         hovered = null;
@@ -98,12 +99,18 @@
   $effect(() => { tm?.setThreads({ ...show }); });
   $effect(() => { tm?.setBasis(nav.basis); });
 
+  function dismissTip(e: KeyboardEvent) {
+    if (e.key !== 'Escape' || !tip) return;
+    tip = null;
+    e.stopImmediatePropagation();
+  }
+
   function inspectById(id: string) {
     const n = tm?.info(id) ?? null;
     if (!n) return;
     selected = n;
     hovered = null;
-    say.say(describeNode(n));
+    say.say(describeNode(n, denied));
   }
 
   // Basis radiogroup: arrow keys move the choice.
@@ -152,7 +159,8 @@
   });
 </script>
 
-<!-- WCAG 1.4.13: the hover tooltip can be dismissed without moving the pointer -->
+<!-- WCAG 1.4.13: the hover tooltip can be dismissed without moving the pointer. On the canvas, Escape that dismisses a tooltip
+     is spent on that: it does not also go back up a level (the canvas's own handler never sees it). -->
 <svelte:window onkeydown={(e) => { if (e.key === 'Escape' && tip) tip = null; }} />
 
 <div class="top">
@@ -196,6 +204,7 @@
         tabindex="0"
         aria-label="Woven treemap of the slice. Arrow keys move between regions, Enter opens one, Escape goes back."
         onblur={() => say.clear()}
+        onkeydowncapture={dismissTip}
       ></canvas>
       {#if tip}
         <div class="tip" style:left={`${Math.min(tip.x + 16, (well?.clientWidth ?? 0) - 240)}px`} style:top={`${tip.y + 18}px`}>

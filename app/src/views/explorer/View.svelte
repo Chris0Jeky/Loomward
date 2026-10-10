@@ -221,7 +221,7 @@
   {#if error}
     <p class="bad" role="alert">{error} <button class="btn" type="button" onclick={() => void (trail.length ? show() : loadStarts())}>Try again</button></p>
   {/if}
-  {#if notice}<p class="muted" role="status">{notice}</p>{/if}
+  <p id="explorer-notice" class="muted live" class:has={!!notice} role="status">{notice}</p>
 
   <div class="tbl-wrap" aria-busy={busy}>
     <table class="tbl">
