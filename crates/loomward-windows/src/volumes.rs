@@ -107,6 +107,7 @@ mod native {
         }
     }
     pub(super) fn enumerate() -> io::Result<Vec<Volume>> {
+        crate::win::non_elevated()?;
         let mut name = vec![0u16; 1024];
         let search = Search(unsafe { FindFirstVolumeW(name.as_mut_ptr(), name.len() as u32) });
         if search.0 == INVALID_HANDLE_VALUE {

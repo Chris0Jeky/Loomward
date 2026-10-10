@@ -393,8 +393,8 @@ No hosted CI, Linux run, elevated-host execution, durable catalogue/L8 integrati
 real personal roots, cloud-placeholder hydration, ACL mutation, sustained scale or reboot/restart
 experiment was run here. Job-thread creation failure cleanup and the exit guard's panic-unwind
 path are implemented but were not fault-injected. Engine teardown was tested with an outstanding
-runner reference, not a blocked enumeration syscall. The earlier grant-revocation/start race and
-checkpoint starvation under continuous churn remain separate #184 follow-ups.
+runner reference, not a blocked enumeration syscall. The grant-revocation/start race was later fixed
+by a per-root gate (#212); checkpoint starvation under continuous churn remains a #184 follow-up.
 
 While a scan is actively armed, NTFS ancestor rename can still be blocked by its list-access
 handle. Pins are released before terminal job publication, which the real parent-rename test

@@ -97,6 +97,12 @@ parent handle** (`NtCreateFile` with `RootDirectory`) and validated **after open
 never listed; the no-hydration guarantee is scoped to tested providers. Buffer and end-of-directory semantics are
 specified. Reason: a listed attribute can change before open, and `RECALL_ON_DATA_ACCESS` directories hydrate on
 enumeration.
+**Absent-ID rule (#194).** Find enumerates by path even though its ancestors are pinned. It must
+verify matching `FileIdInfo` identities on the original directory handle and the pinned directory;
+an unavailable query refuses Find before any entry is emitted, for synthetic and personal roots
+alike. The listing is incomplete with `IdentityUnverified`, so the run stays partial and cannot
+establish absence. List-time reparse, offline and recall revalidation reports `Refused`, consistently
+with opens. Native metadata and directory opens all require a non-elevated token.
 
 ## ADR-V3-06: SQLite catalogue, single writer thread, per-directory transactions, integer storage
 
