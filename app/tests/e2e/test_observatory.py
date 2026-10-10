@@ -140,7 +140,7 @@ def run(ctx) -> dict:
     check('U+202E RLO' in badges(crumbs(page).last), 'observatory breadcrumb: override badge')
     page.wait_for_timeout(1000)
     drawn = drawn_texts(page)
-    check(drew_prefix_of(drawn, 'reportsU+202Etxt.exe'), 'observatory canvas label source: the folder is drawn as its escaped form (fitted)')
+    check(drew_prefix_of(drawn, 'reportsU+202E RLOtxt.exe'), 'observatory canvas label source: the folder is drawn as its escaped form (fitted)')
     check(not any(h in t for t in drawn for h in HIDDEN), 'observatory canvas never draws a raw hidden character (inside)')
     check('U+202E' in page.locator('#obs-live').inner_text(), 'observatory aria-live speaks the escaped name')
     crumbs(page).first.click()
