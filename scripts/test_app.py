@@ -15,8 +15,10 @@ security boundary, and "unavailable" once the process is gone.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import subprocess
+from types import SimpleNamespace
 import sys
 import threading
 import time
@@ -215,7 +217,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--browser', default=None, help='path to a Chromium executable')
     ap.add_argument('--screenshots', type=Path)
-    ap.add_argument('--view-shots', type=Path, help='directory for the product-view screenshots (evidence/v3/app-views)')
+    ap.add_argument('--view-shots', type=Path, help='directory for view screenshots and results from both view lanes (evidence/v3/app-views); omitted = none')
     ap.add_argument('--live-serve', action='store_true', help='run the http leg against the real loomward-serve binary')
     a = ap.parse_args()
     if not (DIST / 'index.html').exists():
@@ -306,6 +308,30 @@ def main() -> None:
         page.evaluate("location.hash = '#/explorer'")
         expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
         print('PASS routes: view, unknown view, back')
+
+        # --- view modules (lane L10): app/tests/e2e/test_<view>.py, each owned by its view's lane ----
+        if a.view_shots:
+            a.view_shots.mkdir(parents=True, exist_ok=True)
+
+        def view_shot(name: str, full: bool = True) -> None:
+            if not a.view_shots:
+                return
+            page.wait_for_timeout(200)
+            page.screenshot(path=str(a.view_shots / name), full_page=full)
+
+        ctx = SimpleNamespace(page=page, base=base, check=check, dialogs=dialogs, view_shot=view_shot)
+        view_results = {}
+        for mod_path in sorted((ROOT / 'app' / 'tests' / 'e2e').glob('test_*.py')):
+            spec = importlib.util.spec_from_file_location(mod_path.stem, mod_path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            print(f'--- {mod_path.name}')
+            view_results[mod_path.stem] = mod.run(ctx)
+        if a.view_shots:
+            (a.view_shots / 'results.json').write_text(json.dumps(view_results, indent=2) + chr(10), encoding='utf-8')
+        page.set_viewport_size({'width': 1360, 'height': 900})
+        page.goto(f'{base}/?transport=mock#/explorer')
+        expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
 
         # --- themes ----------------------------------------------------------------------------
         atlas = theme_snapshot(page)

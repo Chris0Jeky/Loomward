@@ -526,6 +526,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "loomward-engine"
+version = "0.1.0"
+dependencies = [
+ "loomward-protocol",
+ "serde_json",
+]
+
+[[package]]
 name = "loomward-http"
 version = "0.1.0"
 dependencies = [
@@ -547,6 +555,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "tempfile",
  "windows-sys",
 ]
 

@@ -1,72 +1,153 @@
 /*
- * Two token sets (docs/41 section 13). Fonts are the ones Windows ships: Sitka for the display face,
- * Segoe UI Variable for the interface, Cascadia Mono for numerics. Nothing is fetched at runtime.
+ * The single token source for the app and the viz modules (docs/41 section 13), adopted from the
+ * prototype (app/prototype/styles.css). Fonts are the ones Windows ships: Sitka for display,
+ * Segoe UI Variable for the interface, Cascadia Mono for Observatory numerics. Nothing is fetched.
  *
- * The three threads never blend: meaning, residency and permission each keep one hue and one
- * stroke pattern (solid / dashed / hatched), so colour is never the only carrier.
+ * Three threads, never one fill:
+ *   warp     = meaning:    natural dyes (--dye-1..8), --undyed when there is no meaning
+ *   weft     = residency:  metals by tier, hot bright to cold dark (--weft-hot/warm/cold), --weft-hollow
+ *   selvedge = permission: brass stitches (--selvedge); --unknown for the dotted "unknown" stitch
+ * Each thread also differs in structure (vertical, horizontal, edge stitch), so colour is never the
+ * only carrier. --meaning, --residency and --permission name one representative of each for chrome.
  */
 :root {
-  --font-display: 'Sitka Display', 'Sitka Heading', 'Sitka Text', Cambria, Georgia, 'Times New Roman', serif;
+  --font-display: 'Sitka Display', 'Sitka Heading', 'Sitka Text', Sitka, Cambria, Georgia, serif;
+  --font-serif-text: 'Sitka Text', 'Sitka Small', Sitka, Cambria, Georgia, serif;
   --font-ui: 'Segoe UI Variable Text', 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
+  --font-ui-display: 'Segoe UI Variable Display', 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
   --font-mono: 'Cascadia Mono', 'Cascadia Code', Consolas, 'Courier New', monospace;
-  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
   --dur: 220ms;
   --gutter: 16px;
   color-scheme: dark;
 }
 
-/* Woven atlas: deep ink, parchment text, saffron/teal/heather threads, calm and warm. */
+/* Woven atlas: deep ink, warm linen, a dyer's palette, calm motion. */
 :root,
 :root[data-theme='woven-atlas'] {
-  --bg: #0d1320;
-  --bg-weave: #101828;
-  --surface: #141c2d;
-  --raised: #1a2438;
-  --line: #2a3650;
-  --text: #ece5d3;
-  --muted: #a1a9ba;
-  --accent: #dcb46a;
-  --accent-ink: #1a1305;
-  --focus: #f3d18a;
-  --meaning: #e2b158;
-  --residency: #5db7ae;
-  --permission: #c48ad2;
-  --ok: #7fc59a;
-  --warn: #e6b565;
-  --danger: #ef8a7d;
-  --radius: 10px;
+  --bg: #0e0f15;
+  --bg-weave: #1a1712;
+  --surface: #13141b;
+  --raised: #191a22;
+  --line: #2a2a31;
+  --line-strong: #3b3a40;
+  --text: #ece5d6;
+  --muted: #ada595;
+  --faint: #918a7d;
+  --accent: #e2bf6a;
+  --accent-ink: #1b1508;
+  --focus: #f0d48e;
+  --ok: #8fb878;
+  --warn: #e2bf6a;
+  --danger: #e08a72;
+  --radius: 3px;
   --glow: none;
   --num-font: var(--font-ui);
   --head-font: var(--font-display);
-  --head-weight: 600;
-  --head-tracking: 0.01em;
-  --chrome-line: linear-gradient(90deg, var(--meaning), var(--residency), var(--permission));
+  --head-weight: 400;
+  --head-tracking: 0;
+
+  --cloth-ink: #0a0b10;
+  --cloth-frame: #15161d;
+  --cloth-head: #1d1e27;
+  --cloth-scrim: rgba(10, 11, 16, 0.78);
+  --cloth-label: #f1eadb;
+  --cloth-label-dim: #b9b09e;
+  --cloth-fringe: #4a4740;
+  --cloth-loose: #6d675c;
+  --cloth-cursor: #f6dc94;
+  --cloth-hover: #fff6e0;
+  --cloth-shuttle: rgba(255, 236, 190, 0.55);
+  --cloth-track: #24252d;
+  --cloth-scale: #4a4840;
+
+  --dye-1: #4d7cc0; /* woad */
+  --dye-2: #c4573f; /* madder */
+  --dye-3: #9070c0; /* orchil */
+  --dye-4: #3d9e88; /* verdigris */
+  --dye-5: #9c7350; /* walnut */
+  --dye-6: #c66b8f; /* rosehip */
+  --dye-7: #5d6a92; /* indigo slate */
+  --dye-8: #7f9c48; /* weld green */
+  --undyed: #6f6a61;
+  --neutral-thread: #34343a;
+  --weft-hot: #e6e7eb; /* silver */
+  --weft-warm: #9aa1ad; /* pewter */
+  --weft-cold: #565b66; /* iron */
+  --weft-hollow: #b6d2e6;
+  --selvedge: #e2bf6a; /* brass */
+  --unknown: #8f897d;
+
+  --gauge-track: #26262c;
+  --gauge-value: #e2bf6a;
+  --gauge-glow: rgba(226, 191, 106, 0.45);
+
+  --meaning: var(--dye-1);
+  --residency: var(--weft-warm);
+  --permission: var(--selvedge);
+  --chrome-line: linear-gradient(90deg, var(--dye-2), var(--dye-1), var(--dye-4), var(--weft-warm), var(--selvedge));
 }
 
-/* Observatory: dark instrument panel, monospace numerics, cool glow, sharper corners. */
+/* Observatory: a dark instrument panel, cool and precise, monospace numerics. */
 :root[data-theme='observatory'] {
-  --bg: #06080b;
-  --bg-weave: #080b10;
-  --surface: #0c1117;
-  --raised: #111922;
-  --line: #1d2b38;
-  --text: #cfe3e6;
-  --muted: #8aa0a8;
-  --accent: #4fe0ee;
-  --accent-ink: #021417;
-  --focus: #8ff0f8;
-  --meaning: #ffcf5e;
-  --residency: #4fe0ee;
-  --permission: #ff7bc6;
+  --bg: #05080c;
+  --bg-weave: #0a1724;
+  --surface: #0a0f15;
+  --raised: #0e151d;
+  --line: #15212c;
+  --line-strong: #22323f;
+  --text: #d9e8f3;
+  --muted: #8aa2b5;
+  --faint: #6f879a;
+  --accent: #62e0ff;
+  --accent-ink: #001820;
+  --focus: #8beaff;
   --ok: #64e0a0;
-  --warn: #ffcf5e;
+  --warn: #ffc65c;
   --danger: #ff7a70;
-  --radius: 4px;
-  --glow: 0 0 14px color-mix(in srgb, var(--accent) 38%, transparent);
+  --radius: 3px;
+  --glow: 0 0 14px color-mix(in srgb, var(--accent) 30%, transparent);
   --num-font: var(--font-mono);
-  --head-font: var(--font-ui);
-  --head-weight: 500;
-  --head-tracking: 0.08em;
+  --head-font: var(--font-ui-display);
+  --head-weight: 600;
+  --head-tracking: 0.01em;
+
+  --cloth-ink: #04070b;
+  --cloth-frame: #0b1219;
+  --cloth-head: #0f1922;
+  --cloth-scrim: rgba(4, 7, 11, 0.8);
+  --cloth-label: #e6f4ff;
+  --cloth-label-dim: #8fb0c6;
+  --cloth-fringe: #22313d;
+  --cloth-loose: #3a5162;
+  --cloth-cursor: #8beaff;
+  --cloth-hover: #ffffff;
+  --cloth-shuttle: rgba(140, 235, 255, 0.5);
+  --cloth-track: #13202b;
+  --cloth-scale: #2c4252;
+
+  --dye-1: #5aa0ff;
+  --dye-2: #ff6b57;
+  --dye-3: #b48cff;
+  --dye-4: #3fd6b0;
+  --dye-5: #c99c6c;
+  --dye-6: #ff7fb3;
+  --dye-7: #7d8fc4;
+  --dye-8: #a6d65a;
+  --undyed: #4f5a68;
+  --neutral-thread: #1e2a35;
+  --weft-hot: #f2f7ff;
+  --weft-warm: #9fb3cc;
+  --weft-cold: #506176;
+  --weft-hollow: #9fd8ff;
+  --selvedge: #ffc65c;
+  --unknown: #7d8a97;
+
+  --gauge-track: #122029;
+  --gauge-value: #62e0ff;
+  --gauge-glow: rgba(98, 224, 255, 0.6);
+
+  --chrome-line: linear-gradient(90deg, var(--dye-2), var(--dye-1), var(--dye-4), var(--weft-warm), var(--selvedge));
 }
 
 @media (prefers-reduced-motion: reduce) {

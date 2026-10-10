@@ -117,6 +117,8 @@ export interface TreeSlice {
   complete: boolean;
   live: boolean;
   ordering: 'exact' | 'approximate_live' | 'approximate_files';
+  /** PR #110 makes this required: 'provisional_live' sums come from a running scan and must look provisional. */
+  aggregate_state?: 'consistent' | 'provisional_live';
   truncated: boolean;
   nodes: SliceNode[];
 }

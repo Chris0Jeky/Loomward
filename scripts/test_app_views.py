@@ -194,7 +194,7 @@ def check_explorer_mock(page: Page, base: str, shoot) -> None:
     main = page.locator('main')
 
     # hidden and bidi characters are shown as badges and never reach the DOM as themselves
-    expect(main.get_by_text('U+202E RLO', exact=True)).to_be_visible()
+    expect(main.get_by_text('U+202E RLO', exact=True).first).to_be_visible()  # the corpus also has an RLO folder (L10)
     expect(main.get_by_text('U+200B ZWSP', exact=True)).to_be_visible()
     expect(main.get_by_text('U+200D ZWJ', exact=True)).to_be_visible()
     ok(CONTROL_CHARS.search(main.inner_text()) is None, 'no bidi or zero-width character is left in the rendered text, only badges')
