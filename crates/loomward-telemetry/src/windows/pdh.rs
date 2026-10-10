@@ -150,6 +150,23 @@ fn parse_array<T>(
     Ok(result)
 }
 
+fn reconcile_instances<T>(array: &mut CounterArray<T>, expanded: CounterArray<()>) {
+    let mut instances: BTreeSet<_> = expanded.rows.into_iter().map(|row| row.instance).collect();
+    // Collection and expansion can see different instances; neither side gives a complete total.
+    for row in &mut array.rows {
+        if !instances.remove(&row.instance) {
+            row.value = Err("instance_churn".into());
+        }
+    }
+    array
+        .rows
+        .extend(instances.into_iter().map(|instance| CounterRow {
+            instance,
+            value: Err("instance_churn".into()),
+        }));
+    array.malformed += expanded.malformed;
+}
+
 impl PdhSampler {
     fn collect(&mut self) -> Result<(), String> {
         unsafe {
@@ -236,8 +253,7 @@ impl PdhSampler {
     ) -> Result<CounterArray<T>, String> {
         let counter = self.counter(kind)?;
         let expanded = self.expand(kind, counter)?;
-        let instances: BTreeSet<_> = expanded.rows.into_iter().map(|row| row.instance).collect();
-        // Retry churn during sizing; discard instances that disappeared at this expansion.
+        // Retry churn during sizing; reconcile collection with the fresh expansion.
         for _ in 0..3 {
             let (mut length, mut count) = (0, 0);
             let status = unsafe {
@@ -276,8 +292,7 @@ impl PdhSampler {
                 return Err(format!("PdhGetFormattedCounterArrayW data: {status:#x}"));
             }
             let mut array = parse_array(&buffer, length as usize, count as usize, decode)?;
-            array.rows.retain(|row| instances.contains(&row.instance));
-            array.malformed += expanded.malformed;
+            reconcile_instances(&mut array, expanded);
             return Ok(array);
         }
         Err("counter_instances_changed_during_three_buffer_attempts".into())
@@ -732,12 +747,20 @@ fn gpu_rows(
                 .filter_map(|e| e.busy_fraction)
                 .reduce(f64::max);
         } else {
-            adapter.unknowns.push(unknown(
-                "engine_busy_fraction",
-                engine_error
-                    .as_deref()
-                    .unwrap_or("missing_or_invalid_engine_instances"),
-            ));
+            let reason = engine_error
+                .as_deref()
+                .or_else(|| {
+                    adapter
+                        .engines
+                        .iter()
+                        .flat_map(|e| &e.unknowns)
+                        .find(|u| u.field == "busy_fraction")
+                        .map(|u| u.reason.as_str())
+                })
+                .unwrap_or("missing_or_invalid_engine_instances");
+            adapter
+                .unknowns
+                .push(unknown("engine_busy_fraction", reason));
         }
     }
     Observation::Observed {
@@ -919,9 +942,9 @@ mod tests {
         let mut snapshot = unsupported_snapshot();
         let Observation::Observed { value } = gpu_rows(
             array(vec![
-                (A_3D, Ok(20.0)),
+                (A_3D, Ok(40.0)),
                 (A_3D_2, Ok(40.0)),
-                (A_COPY, Ok(90.0)),
+                (A_COPY, Ok(60.0)),
                 (B_3D, Ok(125.0)),
             ]),
             array(vec![(A, Ok(1024)), (B, Ok(2048))]),
@@ -932,12 +955,101 @@ mod tests {
         };
         assert_eq!(value.len(), 2);
         assert_eq!(value[0].adapter_id, "luid_0x00000000_0x00001234");
-        assert_eq!(value[0].engine_busy_fraction, Some(0.9));
-        assert_eq!(value[0].engines[0].busy_fraction, Some(0.6));
+        assert_eq!(value[0].engine_busy_fraction, Some(0.8));
+        assert_eq!(value[0].engines[0].busy_fraction, Some(0.8));
         assert_eq!(value[1].engine_busy_fraction, Some(1.0));
         assert_eq!(value[0].dedicated_used_bytes, Some(1024));
         assert_eq!(value[0].shared_used_bytes, Some(512));
         assert!(value[0].dedicated_total_bytes.is_none());
+    }
+
+    fn assert_gpu_instance_unknown(rows: &[(&str, u32, f64)], expanded: &[&str], reason: &str) {
+        let (data, length) = buffer(rows);
+        let mut engines = parse_array(&data, length, rows.len(), double).unwrap();
+        let paths: Vec<u16> = expanded
+            .iter()
+            .flat_map(|instance| {
+                format!("\\GPU Engine({instance})\\Utilization Percentage\0")
+                    .encode_utf16()
+                    .collect::<Vec<_>>()
+            })
+            .chain([0])
+            .collect();
+        reconcile_instances(&mut engines, expanded_instances(&paths).unwrap());
+        let mut snapshot = unsupported_snapshot();
+        let Observation::Observed { value } = gpu_rows(
+            Ok(engines),
+            array(vec![(A, Ok(1024)), (B, Ok(2048))]),
+            array(vec![(A, Ok(512)), (B, Ok(256))]),
+            &mut snapshot,
+        ) else {
+            panic!("no adapters")
+        };
+        assert_eq!(value.len(), 2);
+        assert!(value[0].engine_busy_fraction.is_none());
+        assert!(value[0]
+            .unknowns
+            .iter()
+            .any(|u| u.field == "engine_busy_fraction" && u.reason == reason));
+        let engine = value[0]
+            .engines
+            .iter()
+            .find(|e| e.engine_type.as_deref() == Some("3D"))
+            .unwrap();
+        assert!(engine.busy_fraction.is_none());
+        assert!(engine
+            .unknowns
+            .iter()
+            .any(|u| u.field == "busy_fraction" && u.reason == reason));
+        let copy = value[0]
+            .engines
+            .iter()
+            .find(|e| e.engine_type.as_deref() == Some("Copy"))
+            .unwrap();
+        assert_eq!(copy.busy_fraction, Some(0.6));
+        assert_eq!(value[0].dedicated_used_bytes, Some(1024));
+        assert_eq!(value[0].shared_used_bytes, Some(512));
+        assert_eq!(value[1].engine_busy_fraction, Some(0.2));
+        assert_eq!(value[1].engines[0].busy_fraction, Some(0.2));
+        assert_eq!(snapshot.pdh_malformed_instances, 0);
+        assert!(snapshot.pdh_unknowns.is_empty());
+    }
+
+    #[test]
+    fn removed_gpu_instance_makes_only_its_type_and_adapter_unknown() {
+        assert_gpu_instance_unknown(
+            &[
+                (A_3D, 0, 40.0),
+                (A_3D_2, 0, 40.0),
+                (A_COPY, 0, 60.0),
+                (B_3D, 0, 20.0),
+            ],
+            &[A_3D, A_COPY, B_3D],
+            "instance_churn",
+        );
+    }
+
+    #[test]
+    fn new_gpu_instance_makes_only_its_type_and_adapter_unknown() {
+        assert_gpu_instance_unknown(
+            &[(A_3D, 0, 40.0), (A_COPY, 0, 60.0), (B_3D, 0, 20.0)],
+            &[A_3D, A_3D_2, A_COPY, B_3D],
+            "instance_churn",
+        );
+    }
+
+    #[test]
+    fn invalid_gpu_instance_status_makes_only_its_type_and_adapter_unknown() {
+        assert_gpu_instance_unknown(
+            &[
+                (A_3D, 0, 40.0),
+                (A_3D_2, PDH_CSTATUS_NO_INSTANCE, 0.0),
+                (A_COPY, 0, 60.0),
+                (B_3D, 0, 20.0),
+            ],
+            &[A_3D, A_3D_2, A_COPY, B_3D],
+            &format!("invalid_counter_sample: {PDH_CSTATUS_NO_INSTANCE:#x}"),
+        );
     }
 
     #[test]
