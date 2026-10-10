@@ -158,7 +158,8 @@ Rules:
     continues live.
   - Same epoch but older than the buffer: `stream.lagged { reason: "replay_gap", dropped: null, resync: all }`.
   - Different or unknown epoch: `stream.lagged { reason: "epoch_changed", dropped: null, resync: all }`.
-- A subscriber whose queue (1,024 events) overflows receives `stream.lagged { reason: "subscriber_overflow",
+- A live subscriber whose unread cursor falls outside the retained replay buffer (1,024 events or
+  60 seconds, whichever is smaller) receives `stream.lagged { reason: "subscriber_overflow",
   dropped, resync }` and the stream continues; the `seq` gap is visible.
 - After `stream.lagged`, clients MUST refetch every resource named in `resync` before trusting incremental
   events again. Clients MUST apply events idempotently and ignore any `seq` at or below the last applied in the
