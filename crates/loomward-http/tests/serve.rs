@@ -1206,10 +1206,32 @@ fn symlink_inside_static_root_pointing_outside_is_refused() {
     let link = base.join("dist").join("escape.txt");
     let _ = std::fs::remove_file(&link);
     #[cfg(unix)]
-    let made = std::os::unix::fs::symlink(&outside, &link);
+    let escape = {
+        std::os::unix::fs::symlink(&outside, &link).expect(
+            "security regression requires a real symlink fixture; setup failure is not a pass",
+        );
+        "/escape.txt"
+    };
+    // A file symlink needs Developer Mode or the symlink privilege. A directory junction needs
+    // neither, so hosts without the privilege still exercise an escape; fixture failure fails.
     #[cfg(windows)]
-    let made = std::os::windows::fs::symlink_file(&outside, &link);
-    made.expect("security regression requires a real symlink fixture; setup failure is not a pass");
+    let escape = if std::os::windows::fs::symlink_file(&outside, &link).is_ok() {
+        "/escape.txt"
+    } else {
+        let target = base.join("outside");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("secret.txt"), b"TOPSECRET").unwrap();
+        let made = std::process::Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(base.join("dist").join("escape-dir"))
+            .arg(&target)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "junction fixture failed: {made:?}");
+        "/escape-dir/secret.txt"
+    };
     let (h, _) = start_with(
         fixture(),
         Options {
@@ -1228,7 +1250,7 @@ fn symlink_inside_static_root_pointing_outside_is_refused() {
     // The link resolves outside the root, so it is refused and never leaks.
     let r = exchange(
         h.addr(),
-        &format!("GET /escape.txt HTTP/1.1\r\n{}", host(&h)),
+        &format!("GET {escape} HTTP/1.1\r\n{}", host(&h)),
         b"",
     );
     assert_eq!(r.status, 404);
