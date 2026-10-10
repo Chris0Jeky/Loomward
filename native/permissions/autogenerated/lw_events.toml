@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-lw-events"
+description = "Enables the lw_events command without any pre-configured scope."
+commands.allow = ["lw_events"]
+
+[[permission]]
+identifier = "deny-lw-events"
+description = "Denies the lw_events command without any pre-configured scope."
+commands.deny = ["lw_events"]
