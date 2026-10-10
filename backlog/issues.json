@@ -1262,9 +1262,7 @@
     "milestone": "V3",
     "priority": "P0",
     "status": "done",
-    "depends_on": [
-      "LW-103"
-    ],
+    "depends_on": [],
     "body_file": "backlog/issues/LW-104.md"
   },
   {
@@ -1330,9 +1328,7 @@
     "milestone": "V3",
     "priority": "P0",
     "status": "done",
-    "depends_on": [
-      "LW-021"
-    ],
+    "depends_on": [],
     "body_file": "backlog/issues/LW-110.md"
   },
   {
