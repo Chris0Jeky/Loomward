@@ -43,5 +43,8 @@ Chapters 00-22 preserve the initial project. Chapters 23-40 expand it. Start wit
 - [38: Run and inspect the v0.2 reference](38-reference-operating-guide.md)
 - [39: Expansion architecture decisions](39-architecture-decisions-v2.md)
 - [40: Local execution packs and ownership](40-parallel-work-packs.md)
+- [41: Loomward v0.3 architecture: the "Woven" programme](41-v03-architecture.md)
+- [42: v0.3 architecture decision records](42-v03-adrs.md)
+- [43: v0.3 parallel implementation plan](43-v03-lanes.md)
 
 [Expansion research references](EXPANSION-SOURCES.md) · [Backlog](../backlog/INDEX.md) · [Contract index](../contracts/v2/README.md) · [Handoff](../handoff/START-HERE.md)
