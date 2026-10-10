@@ -12,11 +12,14 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Test seams inside the service: a delay before one command runs, and a run counter.
+/// Test seams inside the service: a delay before one command runs, a run counter, the order
+/// commands finished their delay in, and a one-shot forced mutation-thread spawn failure.
 #[derive(Default)]
 pub(crate) struct Hooks {
     pub delay: Mutex<Option<(Command, Duration)>>,
     pub runs: Mutex<HashMap<Command, usize>>,
+    pub order: Mutex<Vec<Command>>,
+    pub fail_spawn: std::sync::atomic::AtomicBool,
 }
 
 impl Hooks {
@@ -28,6 +31,7 @@ impl Hooks {
                 std::thread::sleep(d);
             }
         }
+        self.order.lock().unwrap().push(c);
     }
 }
 
@@ -871,4 +875,94 @@ fn root_and_volume_ids_from_a_rebuilt_catalogue_never_select_a_new_row() {
     // Catalogue projections carry the bound spelling too.
     let slice = root_slice(&svc, svc.inner.root_row(&new_b).unwrap());
     assert_eq!(slice["root_generations"][0]["root_id"], new_b.as_str());
+}
+
+fn declare_with_deadline(svc: &Service, volume: &str, deadline: i64) -> ResponseEnvelope {
+    let mut r = request(
+        "volumes.declare_tier",
+        json!({"volume_id": volume, "tier": 2}),
+    );
+    r.deadline_ms = Some(Int::new(deadline).unwrap());
+    svc.call(r, &CallContext::http())
+}
+
+/// SEC-1: a flood of ticketed mutations cannot starve the owner's revocation, and the queue of
+/// outstanding tickets is capped.
+#[test]
+fn revocation_never_queues_behind_a_full_mutation_queue() {
+    let tmp = tempfile::tempdir().unwrap();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (root, grant) = register(&svc, 1);
+    *svc.inner.hooks.delay.lock().unwrap() =
+        Some((Command::VolumesDeclareTier, Duration::from_millis(1500)));
+    for _ in 0..crate::MAX_PENDING {
+        let e = err(declare_with_deadline(&svc, "vo_flood", 1));
+        assert_eq!(e.code, ErrorCode::DeadlineExceeded);
+    }
+    let e = err(declare_with_deadline(&svc, "vo_flood", 1));
+    assert_eq!(
+        (e.code, e.retryable),
+        (ErrorCode::Busy, true),
+        "65th refused"
+    );
+    let t = Instant::now();
+    ok(
+        "roots.revoke",
+        call(
+            &svc,
+            "roots.revoke",
+            json!({"root_id": svc.inner.root_id(root), "purge_catalog": false}),
+        ),
+    );
+    ok(
+        "grants.revoke",
+        call(
+            &svc,
+            "grants.revoke",
+            json!({"grant_id": format!("gr_{grant}")}),
+        ),
+    );
+    assert!(
+        t.elapsed() < Duration::from_millis(1000),
+        "revocation did not wait for the blocked queue head"
+    );
+    *svc.inner.hooks.delay.lock().unwrap() = None;
+}
+
+/// H2: a mutation whose thread could not be spawned never takes a ticket, so a later mutation
+/// still waits for an earlier one, and the queue keeps moving.
+#[test]
+fn a_failed_mutation_spawn_keeps_queue_order_and_liveness() {
+    let tmp = tempfile::tempdir().unwrap();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    *svc.inner.hooks.delay.lock().unwrap() =
+        Some((Command::BudgetsSet, Duration::from_millis(300)));
+    let mut first = request("budgets.set", json!({"pool": "learning", "max_workers": 1}));
+    first.deadline_ms = Some(Int::new(1).unwrap());
+    assert_eq!(
+        err(svc.call(first, &CallContext::http())).code,
+        ErrorCode::DeadlineExceeded
+    );
+    svc.inner
+        .hooks
+        .fail_spawn
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        err(declare_with_deadline(&svc, "vo_failed", 5000)).code,
+        ErrorCode::ResourceBudget
+    );
+    // Ran (an unknown volume), within its deadline, and only after the earlier mutation.
+    assert_eq!(
+        err(declare_with_deadline(&svc, "vo_later", 5000)).code,
+        ErrorCode::NotFound
+    );
+    assert_eq!(
+        *svc.inner.hooks.order.lock().unwrap(),
+        vec![Command::BudgetsSet, Command::VolumesDeclareTier]
+    );
+    assert_eq!(
+        err(declare_with_deadline(&svc, "vo_last", 5000)).code,
+        ErrorCode::NotFound,
+        "the queue is still live"
+    );
 }

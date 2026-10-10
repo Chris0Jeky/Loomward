@@ -70,10 +70,10 @@ pub(crate) struct Inner {
     mutation: Mutex<()>,
     /// Mutations run one at a time in arrival order (tickets), so a mutation whose caller timed
     /// out still lands before any later one: the owner's next choice is never overtaken by the
-    /// earlier request it replaced (errata #117 N4).
+    /// earlier request it replaced (errata #117 N4). At most [`MAX_PENDING`] tickets are
+    /// outstanding; revocations and the picker take none.
     // ponytail: one global FIFO for mutations; per-resource queues if contention shows.
-    turn: (Mutex<u64>, std::sync::Condvar),
-    tickets: std::sync::atomic::AtomicU64,
+    turn: (Mutex<Queue>, std::sync::Condvar),
     /// One native dialog at a time (#167): a second request is `busy`, never a stacked dialog.
     dialog: Mutex<()>,
     #[cfg(test)]
@@ -119,8 +119,7 @@ impl Service {
             cursors: cursors::Cursors::new(4096),
             idem: idem::Idempotency::new(ttl),
             mutation: Mutex::new(()),
-            turn: (Mutex::new(0), std::sync::Condvar::new()),
-            tickets: std::sync::atomic::AtomicU64::new(0),
+            turn: (Mutex::new(Queue::default()), std::sync::Condvar::new()),
             dialog: Mutex::new(()),
             #[cfg(test)]
             hooks: Default::default(),
@@ -180,6 +179,26 @@ pub(crate) fn is_mutation(c: Command) -> bool {
             | TelemetrySubscribe
             | TelemetryUnsubscribe
             | BudgetsSet
+    )
+}
+
+/// Ticketed mutations issued but not yet settled; one more is `busy` before any work runs.
+pub(crate) const MAX_PENDING: u64 = 64;
+
+/// The mutation FIFO: tickets `serving..issued` are outstanding. A ticket is issued only once its
+/// thread exists, so only a settled head ticket ever advances `serving`.
+#[derive(Default)]
+pub(crate) struct Queue {
+    issued: u64,
+    serving: u64,
+}
+
+/// Revocation must never wait behind other mutations (its state change is serialised by
+/// `Inner::mutation`), and the folder picker waits on the owner: neither takes a ticket.
+fn is_ticketed(c: Command) -> bool {
+    !matches!(
+        c,
+        Command::RootsRequestGrant | Command::RootsRevoke | Command::GrantsRevoke
     )
 }
 
@@ -347,7 +366,19 @@ impl Service {
             "expected_state_rev": request.expected_state_rev,
             "expected_generation": request.expected_generation,
         });
+        let busy = |id: RequestId| {
+            let e = fail(
+                ErrorCode::Busy,
+                "too many mutations are pending; retry shortly",
+            );
+            ResponseEnvelope::error(Some(id), retry_flag(command, e), None)
+        };
+        // A ticketed mutation claims its key and takes its ticket under the queue lock, so the
+        // cap check, the claim and the ticket are one step.
+        let mut queue = is_ticketed(command)
+            .then(|| self.inner.turn.0.lock().unwrap_or_else(|e| e.into_inner()));
         match self.inner.idem.claim(&id, &fingerprint) {
+            idem::Claim::Full => return busy(id),
             idem::Claim::Conflict => {
                 let e = with_reason(
                     fail(
@@ -360,41 +391,49 @@ impl Service {
             }
             idem::Claim::Wait => {}
             idem::Claim::Run => {
-                // The folder picker waits on the owner; it must never hold up a revocation.
-                let ticket = (command != Command::RootsRequestGrant).then(|| {
-                    self.inner
-                        .tickets
-                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-                });
+                let ticket = match &queue {
+                    Some(q) if q.issued - q.serving >= MAX_PENDING => {
+                        self.inner.idem.release(&id);
+                        return busy(id);
+                    }
+                    Some(q) => Some(q.issued),
+                    None => None,
+                };
                 let inner = self.inner.clone();
                 let key = id.to_string();
-                let spawned = std::thread::Builder::new()
-                    .name("lw-mutation".into())
-                    .spawn(move || {
-                        let mut settle = Settle {
-                            inner: inner.clone(),
-                            key,
-                            ticket,
-                            outcome: None,
-                        };
-                        if let Some(t) = ticket {
-                            let mut serving =
-                                inner.turn.0.lock().unwrap_or_else(|e| e.into_inner());
-                            while *serving != t {
-                                serving = inner
-                                    .turn
-                                    .1
-                                    .wait(serving)
-                                    .unwrap_or_else(|e| e.into_inner());
+                #[cfg(test)]
+                let forced = self
+                    .inner
+                    .hooks
+                    .fail_spawn
+                    .swap(false, std::sync::atomic::Ordering::SeqCst);
+                #[cfg(not(test))]
+                let forced = false;
+                let spawned = if forced {
+                    Err(std::io::Error::other("forced spawn failure"))
+                } else {
+                    std::thread::Builder::new()
+                        .name("lw-mutation".into())
+                        .spawn(move || {
+                            let mut settle = Settle {
+                                inner: inner.clone(),
+                                key,
+                                ticket,
+                                outcome: None,
+                            };
+                            if let Some(t) = ticket {
+                                let mut queue =
+                                    inner.turn.0.lock().unwrap_or_else(|e| e.into_inner());
+                                while queue.serving != t {
+                                    queue =
+                                        inner.turn.1.wait(queue).unwrap_or_else(|e| e.into_inner());
+                                }
                             }
-                        }
-                        settle.outcome = Some(inner.respond(&request, command, &ctx, started));
-                    });
+                            settle.outcome = Some(inner.respond(&request, command, &ctx, started));
+                        })
+                };
                 if spawned.is_err() {
-                    // Never reached the queue: pass the turn on so later mutations are not stuck.
-                    if let Some(t) = ticket {
-                        Settle::advance(&self.inner, t);
-                    }
+                    // No thread: the ticket is never issued, so the queue order is untouched.
                     let e = fail(ErrorCode::ResourceBudget, "no worker");
                     self.inner.idem.finish(
                         &id,
@@ -402,8 +441,12 @@ impl Service {
                     );
                     return ResponseEnvelope::error(Some(id), e, None);
                 }
+                if let Some(q) = queue.as_mut() {
+                    q.issued += 1;
+                }
             }
         }
+        drop(queue);
         self.inner.idem.wait(&id, deadline).unwrap_or_else(|| {
             ResponseEnvelope::error(
                 Some(id),
@@ -427,10 +470,11 @@ struct Settle {
 }
 
 impl Settle {
+    /// Only the head ticket settles (each waits for its turn), so this is `serving += 1`.
     fn advance(inner: &Inner, ticket: u64) {
-        let mut serving = inner.turn.0.lock().unwrap_or_else(|e| e.into_inner());
-        *serving = ticket + 1;
-        drop(serving);
+        let mut queue = inner.turn.0.lock().unwrap_or_else(|e| e.into_inner());
+        queue.serving = ticket + 1;
+        drop(queue);
         inner.turn.1.notify_all();
     }
 }
