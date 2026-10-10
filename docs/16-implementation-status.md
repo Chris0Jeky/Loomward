@@ -151,3 +151,31 @@ Not established: personal (real-disk) scans through the product (still gated: `p
 #206 and #240 are done, #184's remainder is not); P4 at 250k (#148); P12 at or under 1% (#160); the 10M tier
 complete rather than partial; cold-cache timings; service, contract and UI wiring for duplicates, applications
 and desktop contexts. No file or process effect exists.
+
+## v0.3 status, wave 6 (10 October 2026, late; counts measured at `6052bad`)
+
+The sections above are kept as history. This wave merged, each with a fresh-context review (Opus, Sonnet,
+a security audit or a cross-vendor Muse lens) and green CI; the desktop shell was re-proved locally:
+
+| Area | State on `main` | Evidence |
+|---|---|---|
+| Personal-scan gates | #184 closed by an audit of all 15 items plus the last fix (checkpoint starvation) and the watch-lifetime disclosure (#274); #206 and #240 closed in wave 5. One gate remains in review: re-prove containment before every relist (#269, PR #278). `personal_scan_gated_184` still refuses personal scans | `evidence/v3/gate-184-closeout.md` |
+| Scan pipeline | listed directory handles released and reopened by verified identity on NTFS and ReFS only; cancelled runs keep partial totals; duplicate identities counted; exact relist counters (#262) | `evidence/v3/scan-followups-180.md` |
+| Engine API | a granted root binds to its exact catalogue row and instance; the teacher gate fails closed (#256) | engine tests |
+| Service | bounded read permits with deadline interrupts; one CLI and picker deny-list; strong lab identity and canonical digests; validation before side effects; authenticated root IDs; legacy stores still migrate (#265) | service tests |
+| Catalogue | link counts cover the visible tree only and are rebuilt on revocation (#270) | `crates/loomward-catalog/HANDOFF.md` |
+| Duplicates | a failed representative skips only itself and its partition is re-verified; verified groups survive a late stop (#261, #267) | `evidence/v3/duplicate-reader-bughunt.md` |
+| Desktop contexts | shortcut reads walk each component relative to its parent without following reparse points; removable media untouched; capped, feature-gated content reads (#257) | `evidence/v3/shell-lw044-lw045.md` |
+| Contracts | jobs carry an engine-monotonic `seq` and a per-job `rev`; the app orders and merges by them (#272) | `contracts/v3/semantics.md` |
+| Tests and tooling | e2e P9 gates the median of five warm runs at 50 ms; race-free async checks (#271); `#![forbid(unsafe_code)]` in four more crates and an accurate unsafe inventory (#259, #263) | `scripts/test_app_timing.py` |
+
+Counts (Windows, at `6052bad`): Rust 631 (apps 18, catalog 115, core 30, engine 143, http 56, lab 26, learn 8,
+protocol 36, service 58, shell 23, telemetry 33, windows 82, doc 3); app 255 vitest plus Playwright e2e, `--a11y`
+and `--live-serve`; Python 222.
+
+Process note: from this wave, the driver updates this file and `handoff/CHECKPOINT.json` once per wave
+(AGENTS.md says so), so feature PRs no longer carry status edits.
+
+Not established: personal scans through the product (one gate in review, then an explicit opening step);
+P4 at 250k (#148); P12 at or under 1% (#160); service, contract and UI wiring for duplicates, applications and
+desktop contexts; the desktop shell in hosted CI (#276). No file or process effect exists.
