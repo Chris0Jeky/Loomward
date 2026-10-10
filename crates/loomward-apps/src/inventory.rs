@@ -124,10 +124,26 @@ pub fn inventory(reader: &impl RegistryReader) -> Vec<ProviderInventory> {
         let mut result = ProviderInventory {
             provider,
             state: read.state,
-            reason: read.reason,
+            reason: if read.state == ProviderState::Available {
+                None
+            } else {
+                Some(
+                    read.reason
+                        .filter(|reason| !reason.trim().is_empty())
+                        .unwrap_or_else(|| "registry provider coverage is not available".into()),
+                )
+            },
             applications: Vec::new(),
         };
-        for entry in read.entries {
+        let entries = if matches!(
+            read.state,
+            ProviderState::Available | ProviderState::Partial
+        ) {
+            read.entries
+        } else {
+            Vec::new()
+        };
+        for entry in entries {
             let mut incomplete = false;
             let mut text = |name: &str| {
                 let evidence = text_evidence(entry.values.get(name));

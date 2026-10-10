@@ -34,6 +34,13 @@ use std::{
 };
 
 /// How an [`Engine`] is opened.
+///
+/// Construct with [`EngineConfig::new`]; fields cannot be exhaustively specified by callers.
+/// ```compile_fail
+/// use loomward_engine::EngineConfig;
+/// use loomward_protocol::DatasetClass;
+/// let config = EngineConfig { state_dir: "fixture".into(), dataset_class: DatasetClass::Synthetic };
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct EngineConfig {

@@ -2166,3 +2166,168 @@ fn a_directory_excluded_for_one_scan_keeps_its_references_and_memberships() {
         1
     );
 }
+
+/// #240 HIGH: a completed full traversal while a directory is excluded must not retire or
+/// delete anything under it: its contents were never observed, so their absence is unknown. A
+/// genuinely absent subtree still retires at the same traversal.
+#[test]
+fn a_completed_traversal_never_retires_the_subtree_of_an_excluded_directory() {
+    let (temp, c, grant, root, run) = setup();
+    let w = c.writer();
+    let proj = directory("proj", 5);
+    let gone = directory("gone", 9);
+    w.call(listing(run, root, vec![], vec![proj.clone(), gone]))
+        .unwrap();
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    let id = |name: &str| -> i64 {
+        db.query_row("SELECT id FROM dir WHERE name=?1", [name], |r| r.get(0))
+            .unwrap()
+    };
+    let proj_id = id("proj");
+    let sub = directory("sub", 6);
+    w.call(listing(run, proj_id, vec![], vec![sub.clone()]))
+        .unwrap();
+    let mut doc = identified("doc", 7, 100);
+    doc.created_ft = Some(1);
+    w.call(listing(run, id("sub"), vec![doc.clone()], vec![]))
+        .unwrap();
+    let mut old = identified("old", 10, 5);
+    old.created_ft = Some(1);
+    w.call(listing(run, id("gone"), vec![old], vec![])).unwrap();
+    let file = |name: &str| -> (i64, i64) {
+        db.query_row("SELECT id,born_run FROM file WHERE name=?1", [name], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap()
+    };
+    let (doc_row, old_row) = (file("doc"), file("old"));
+    let reference = |row: i64| -> i64 {
+        let WriteReply::Reference(reference) = w
+            .call(WriteCommand::ObjectReference {
+                node: NodeKey::File(row),
+                observed_at_ns: 3,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        reference
+    };
+    let (kept, retired) = (reference(doc_row.0), reference(old_row.0));
+    let st = Connection::open(temp.path().join("state.db")).unwrap();
+    st.execute(
+        "INSERT INTO collection(name,kind,created_at_ns) VALUES('labelled','human',3)",
+        [],
+    )
+    .unwrap();
+    st.execute("INSERT INTO collection_member VALUES(1,?1,3)", [kept])
+        .unwrap();
+    end(w, run, "completed");
+    let binding = |reference: i64| -> (String, bool, i64, i64) {
+        st.query_row(
+            "SELECT state,retired,row_id,born_run FROM object_ref WHERE id=?1",
+            [reference],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap()
+    };
+    let bound = ("resolved".to_string(), false, doc_row.0, doc_row.1);
+    assert_eq!(binding(kept), bound);
+    // `proj` is a placeholder for one scan; `gone` is really gone. The root listing is complete
+    // and the run completes a full traversal.
+    let run = begin(w, grant, 5);
+    let mut placeholder = proj.clone();
+    placeholder.attrs |= 0x1000 | 0x400000;
+    placeholder.flags = 1 << 3;
+    let WriteCommand::DirListing(mut l) = listing(run, root, vec![], vec![placeholder]) else {
+        panic!()
+    };
+    l.skipped = 1;
+    w.call(WriteCommand::DirListing(l)).unwrap();
+    end(w, run, "completed");
+    assert_eq!(
+        db.query_row("SELECT generation FROM root", [], |r| r
+            .get::<_, Option<i64>>(0))
+            .unwrap(),
+        Some(run),
+        "the traversal was full"
+    );
+    assert_eq!(binding(kept), bound, "unknown is never absent");
+    assert_eq!(
+        st.query_row(
+            "SELECT state,retired FROM object_ref WHERE id=?1",
+            [retired],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?))
+        )
+        .unwrap(),
+        ("unresolved".into(), true),
+        "a genuinely absent subtree still retires"
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM dir WHERE name='gone'", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    // It returns as a normal directory: the same rows, binding and membership.
+    let run = begin(w, grant, 7);
+    w.call(listing(run, root, vec![], vec![proj])).unwrap();
+    w.call(listing(run, proj_id, vec![], vec![sub])).unwrap();
+    w.call(listing(run, id("sub"), vec![doc], vec![])).unwrap();
+    end(w, run, "completed");
+    assert_eq!(file("doc"), doc_row);
+    assert_eq!(binding(kept), bound);
+    assert_eq!(
+        st.query_row(
+            "SELECT count(*) FROM collection_member WHERE object_ref_id=?1",
+            [kept],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+}
+
+/// #240 MEDIUM: breakdowns and unique totals anchored at an excluded directory never count the
+/// stale files still listed inside it.
+#[test]
+fn breakdown_and_unique_totals_at_an_excluded_directory_count_nothing() {
+    let (temp, c, grant, root, run) = setup();
+    let w = c.writer();
+    let proj = directory("proj", 5);
+    w.call(listing(run, root, vec![], vec![proj.clone()]))
+        .unwrap();
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    let proj_id: i64 = db
+        .query_row("SELECT id FROM dir WHERE name='proj'", [], |r| r.get(0))
+        .unwrap();
+    let mut top = identified("top.txt", 8, 30);
+    top.extension = Some("txt".into());
+    top.family = "document".into();
+    w.call(listing(run, proj_id, vec![top], vec![])).unwrap();
+    end(w, run, "completed");
+    let run = begin(w, grant, 5);
+    let mut placeholder = proj;
+    placeholder.attrs |= 0x1000;
+    placeholder.flags = 1 << 3;
+    w.call(listing(run, root, vec![], vec![placeholder]))
+        .unwrap();
+    end(w, run, "completed");
+    let mut reader = c.reader().unwrap();
+    let b = reader
+        .breakdown(proj_id, "extension", Basis::Logical, 10, 1_000_000)
+        .unwrap();
+    assert!(b.buckets.is_empty(), "{:?}", b.buckets);
+    assert_eq!((b.other.files, b.unknown.files), (0, 0));
+    assert!(!b.complete);
+    let sums = reader
+        .inspect(NodeKey::Dir(proj_id))
+        .unwrap()
+        .subtree
+        .unwrap();
+    assert_eq!(
+        (sums.unique_objects, sums.unique_allocated_bytes),
+        (None, None),
+        "unknown, never zero"
+    );
+}

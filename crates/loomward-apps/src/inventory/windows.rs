@@ -2,12 +2,12 @@ use super::*;
 use std::ptr::{null, null_mut};
 use windows_sys::Win32::{
     Foundation::{
-        ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_ITEMS, ERROR_PATH_NOT_FOUND,
-        ERROR_SUCCESS,
+        ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_INVALID_DATA, ERROR_NO_MORE_ITEMS,
+        ERROR_PATH_NOT_FOUND, ERROR_SUCCESS,
     },
     System::Registry::{
-        RegCloseKey, RegEnumKeyExW, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER,
-        HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
+        RegCloseKey, RegEnumKeyExW, RegOpenKeyExW, RegQueryInfoKeyW, RegQueryValueExW, HKEY,
+        HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
     },
 };
 
@@ -39,6 +39,7 @@ fn access(view: RegistryView) -> (HKEY, u32) {
     match view {
         RegistryView::Machine64 => (HKEY_LOCAL_MACHINE, KEY_READ | KEY_WOW64_64KEY),
         RegistryView::Machine32 => (HKEY_LOCAL_MACHINE, KEY_READ | KEY_WOW64_32KEY),
+        // HKCU SOFTWARE (including Uninstall) is shared, not redirected by WOW64.
         RegistryView::CurrentUser => (HKEY_CURRENT_USER, KEY_READ | KEY_WOW64_64KEY),
     }
 }
@@ -117,75 +118,315 @@ impl RegistryReader for WindowsRegistry {
             Ok(key) => key,
             Err(status) => return failure(status),
         };
-        let mut result = RegistryRead {
-            state: ProviderState::Available,
-            reason: None,
-            entries: Vec::new(),
+        read_subkeys(&Subkeys { root, rights })
+    }
+}
+
+trait SubkeyReader {
+    fn count(&self) -> Result<u32, u32>;
+    fn name(&self, index: u32) -> Result<Option<String>, u32>;
+    fn entry(&self, name: &str) -> Result<RegistryEntry, u32>;
+}
+
+struct Subkeys {
+    root: Key,
+    rights: u32,
+}
+
+impl SubkeyReader for Subkeys {
+    fn count(&self) -> Result<u32, u32> {
+        let mut count = 0;
+        // SAFETY: live root, valid count output, unused outputs are null.
+        let status = unsafe {
+            RegQueryInfoKeyW(
+                self.root.0,
+                null_mut(),
+                null_mut(),
+                null(),
+                &mut count,
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                null_mut(),
+            )
         };
-        for index in 0..MAX_ENTRIES {
-            // Windows registry key names are at most 255 characters, plus a terminator.
-            let mut name = [0u16; 256];
-            let mut length = name.len() as u32;
-            // SAFETY: live key, valid name buffer and length, unused outputs are null.
-            let status = unsafe {
-                RegEnumKeyExW(
-                    root.0,
-                    index,
-                    name.as_mut_ptr(),
-                    &mut length,
-                    null(),
-                    null_mut(),
-                    null_mut(),
-                    null_mut(),
-                )
-            };
-            if status == ERROR_NO_MORE_ITEMS {
-                return result;
+        if status == ERROR_SUCCESS {
+            Ok(count)
+        } else {
+            Err(status)
+        }
+    }
+
+    fn name(&self, index: u32) -> Result<Option<String>, u32> {
+        // Windows registry key names are at most 255 characters, plus a terminator.
+        let mut name = [0u16; 256];
+        let mut length = name.len() as u32;
+        // SAFETY: live root, valid name buffer and length, unused outputs are null.
+        let status = unsafe {
+            RegEnumKeyExW(
+                self.root.0,
+                index,
+                name.as_mut_ptr(),
+                &mut length,
+                null(),
+                null_mut(),
+                null_mut(),
+                null_mut(),
+            )
+        };
+        if status == ERROR_NO_MORE_ITEMS {
+            return Ok(None);
+        }
+        if status != ERROR_SUCCESS {
+            return Err(status);
+        }
+        if length as usize >= name.len() {
+            return Err(ERROR_INVALID_DATA);
+        }
+        String::from_utf16(&name[..length as usize])
+            .map(Some)
+            .map_err(|_| ERROR_INVALID_DATA)
+    }
+
+    fn entry(&self, name: &str) -> Result<RegistryEntry, u32> {
+        let key = open(self.root.0, &wide(name), self.rights)?;
+        let values = FIELDS
+            .into_iter()
+            .filter_map(|field| read_value(&key, field).map(|value| (field.into(), value)))
+            .collect();
+        Ok(RegistryEntry {
+            key: name.into(),
+            values,
+        })
+    }
+}
+
+fn checked_count(
+    reader: &impl SubkeyReader,
+    previous: Option<u32>,
+    result: &mut RegistryRead,
+) -> Option<u32> {
+    match reader.count() {
+        Ok(count) => {
+            if previous.is_some_and(|previous| previous != count) {
+                partial(
+                    result,
+                    "registry subkey count changed during inventory".into(),
+                );
             }
-            if status != ERROR_SUCCESS || length as usize >= name.len() {
+            Some(count)
+        }
+        Err(status) => {
+            partial(
+                result,
+                format!("registry subkey count unreadable (Windows error {status})"),
+            );
+            None
+        }
+    }
+}
+
+fn read_subkeys(reader: &impl SubkeyReader) -> RegistryRead {
+    let mut result = RegistryRead {
+        state: ProviderState::Available,
+        reason: None,
+        entries: Vec::new(),
+    };
+    let before = checked_count(reader, None, &mut result);
+    let mut names = Vec::new();
+    // Snapshot names before reading entries so deletions cannot shift later read indices.
+    for index in 0..=MAX_ENTRIES {
+        match reader.name(index) {
+            Ok(Some(_)) if index == MAX_ENTRIES => {
+                partial(&mut result, "registry entry budget exceeded".into());
+                break;
+            }
+            Ok(Some(name)) => names.push(name),
+            Ok(None) => break,
+            Err(status) => {
                 partial(
                     &mut result,
                     format!("registry enumeration incomplete (Windows error {status})"),
                 );
-                return result;
+                break;
             }
-            let key_name = match String::from_utf16(&name[..length as usize]) {
-                Ok(name) => name,
-                Err(_) => {
-                    partial(&mut result, "registry subkey has invalid UTF-16".into());
-                    continue;
-                }
-            };
-            name[length as usize] = 0;
-            let key = match open(root.0, &name[..=length as usize], rights) {
-                Ok(key) => key,
-                Err(status) => {
-                    partial(
-                        &mut result,
-                        format!(
-                            "registry subkey unreadable or disappeared (Windows error {status})"
-                        ),
-                    );
-                    continue;
-                }
-            };
-            let values = FIELDS
-                .into_iter()
-                .filter_map(|field| read_value(&key, field).map(|value| (field.into(), value)))
-                .collect();
-            result.entries.push(RegistryEntry {
-                key: key_name,
-                values,
-            });
         }
-        partial(&mut result, "registry entry budget reached".into());
-        result
     }
+    let after = checked_count(reader, before, &mut result);
+    if after.is_some_and(|count| count.min(MAX_ENTRIES) as usize != names.len()) {
+        partial(
+            &mut result,
+            "registry subkey count changed during enumeration".into(),
+        );
+    }
+    for name in names {
+        match reader.entry(&name) {
+            Ok(entry) => result.entries.push(entry),
+            Err(status) => partial(
+                &mut result,
+                format!("registry subkey unreadable or disappeared (Windows error {status})"),
+            ),
+        }
+    }
+    checked_count(reader, after, &mut result);
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+
+    #[derive(Clone, Copy)]
+    enum Mutation {
+        None,
+        DeleteReadKey,
+        DeleteNextKey,
+        DeleteDuringEnumeration,
+        AddDuringEnumeration,
+        AddDuringRead,
+        CountDenied,
+    }
+
+    struct FakeSubkeys {
+        names: RefCell<Vec<String>>,
+        mutation: Mutation,
+    }
+
+    impl FakeSubkeys {
+        fn new(count: u32, mutation: Mutation) -> Self {
+            Self {
+                names: RefCell::new((0..count).map(|i| format!("synthetic-{i}")).collect()),
+                mutation,
+            }
+        }
+    }
+
+    impl SubkeyReader for FakeSubkeys {
+        fn count(&self) -> Result<u32, u32> {
+            if matches!(self.mutation, Mutation::CountDenied) {
+                Err(ERROR_ACCESS_DENIED)
+            } else {
+                Ok(self.names.borrow().len() as u32)
+            }
+        }
+
+        fn name(&self, index: u32) -> Result<Option<String>, u32> {
+            let mut names = self.names.borrow_mut();
+            if index == 1 {
+                match self.mutation {
+                    Mutation::DeleteDuringEnumeration => {
+                        names.remove(0);
+                    }
+                    Mutation::AddDuringEnumeration => names.push("synthetic-added".into()),
+                    _ => {}
+                }
+            }
+            Ok(names.get(index as usize).cloned())
+        }
+
+        fn entry(&self, name: &str) -> Result<RegistryEntry, u32> {
+            let mut names = self.names.borrow_mut();
+            if !names.iter().any(|n| n == name) {
+                return Err(ERROR_FILE_NOT_FOUND);
+            }
+            if name == "synthetic-0" {
+                match self.mutation {
+                    Mutation::DeleteReadKey => {
+                        names.remove(0);
+                    }
+                    Mutation::DeleteNextKey => {
+                        names.remove(1);
+                    }
+                    Mutation::AddDuringRead => names.push("synthetic-added".into()),
+                    _ => {}
+                }
+            }
+            Ok(RegistryEntry {
+                key: name.into(),
+                values: BTreeMap::new(),
+            })
+        }
+    }
+
+    fn assert_partial(result: &RegistryRead) {
+        assert_eq!(result.state, ProviderState::Partial);
+        assert!(result.reason.as_ref().is_some_and(|r| !r.is_empty()));
+    }
+
+    #[test]
+    fn snapshot_names_preserves_remaining_keys_after_deletion() {
+        let result = read_subkeys(&FakeSubkeys::new(3, Mutation::DeleteReadKey));
+        assert_eq!(
+            result
+                .entries
+                .iter()
+                .map(|e| e.key.as_str())
+                .collect::<Vec<_>>(),
+            ["synthetic-0", "synthetic-1", "synthetic-2"]
+        );
+        assert_partial(&result);
+    }
+
+    #[test]
+    fn vanished_snapshot_key_reports_partial() {
+        let result = read_subkeys(&FakeSubkeys::new(3, Mutation::DeleteNextKey));
+        assert_partial(&result);
+        assert!(result.reason.as_ref().unwrap().contains("disappeared"));
+        assert_eq!(
+            result
+                .entries
+                .iter()
+                .map(|e| e.key.as_str())
+                .collect::<Vec<_>>(),
+            ["synthetic-0", "synthetic-2"]
+        );
+    }
+
+    #[test]
+    fn count_changes_during_enumeration_report_partial() {
+        for mutation in [
+            Mutation::DeleteDuringEnumeration,
+            Mutation::AddDuringEnumeration,
+        ] {
+            let result = read_subkeys(&FakeSubkeys::new(3, mutation));
+            assert_partial(&result);
+            assert!(result.reason.as_ref().unwrap().contains("count changed"));
+        }
+    }
+
+    #[test]
+    fn count_changes_during_entry_reads_report_partial() {
+        let result = read_subkeys(&FakeSubkeys::new(3, Mutation::AddDuringRead));
+        assert_partial(&result);
+        assert!(result.reason.as_ref().unwrap().contains("count changed"));
+        assert_eq!(result.entries.len(), 3);
+    }
+
+    #[test]
+    fn unreadable_count_cannot_claim_available() {
+        let result = read_subkeys(&FakeSubkeys::new(3, Mutation::CountDenied));
+        assert_partial(&result);
+        assert_eq!(result.entries.len(), 3);
+    }
+
+    #[test]
+    fn only_more_than_entry_budget_is_truncated() {
+        for count in [0, MAX_ENTRIES - 1, MAX_ENTRIES, MAX_ENTRIES + 1] {
+            let result = read_subkeys(&FakeSubkeys::new(count, Mutation::None));
+            assert_eq!(result.entries.len(), count.min(MAX_ENTRIES) as usize);
+            if count > MAX_ENTRIES {
+                assert_partial(&result);
+                assert!(result.reason.as_ref().unwrap().contains("budget"));
+            } else {
+                assert_eq!(result.state, ProviderState::Available);
+                assert!(result.reason.is_none());
+            }
+        }
+    }
 
     #[test]
     fn registry_access_is_read_only_and_views_are_explicit() {

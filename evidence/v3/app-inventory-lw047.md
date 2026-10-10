@@ -11,7 +11,7 @@ Starting source: `cf27a4ec6734026d1bb3a9d0b393c7e294e4eb60`, branch
 - Platform-neutral `RegistryReader`, raw values, application evidence, scopes,
   and provider reports. Missing, known and unknown fields remain distinct.
 - Windows adapter reads the Uninstall views of HKLM 64-bit, HKLM 32-bit
-  (WOW6432Node via redirection), and the current HKCU 64-bit view. Both root and
+  (WOW6432Node via redirection), and the shared current HKCU view. Both root and
   entry handles use `KEY_READ` and the explicit `KEY_WOW64_*` flag. Handles close
   on all return paths. Other users' hives are outside coverage.
 - Duplicates are retained separately with their provider/view and registry key;
@@ -29,7 +29,7 @@ Starting source: `cf27a4ec6734026d1bb3a9d0b393c7e294e4eb60`, branch
 - Denied root opens report denied; missing roots report unavailable; other open
   failures, failed subkey reads, malformed fields and truncation report partial,
   with a reason. The adapter caps each view at 2,048 subkeys and each queried
-  value at 4,096 bytes; reaching either budget cannot imply complete coverage.
+  value at 4,096 bytes; exceeding either budget cannot imply complete coverage.
   Enumeration is a live observation, not an atomic snapshot during concurrent
   installer changes.
 - Packaged apps report unavailable: the installed `windows-sys` 0.61.2 bindings
@@ -123,3 +123,104 @@ here. The driver can carry the exact failure above to the engine owner separatel
 - No commit, push, PR, release, installation or application effect was performed.
 
 Recommended commit: `feat(apps): add read-only application inventory`.
+
+## Follow-ups after #229 (#53)
+
+2026-10-10. This addendum supersedes the original enumeration behavior above;
+the original proving results remain historical evidence. All fixture names and
+values are synthetic. No host application names, counts or registry dumps are
+recorded.
+
+- Windows enumeration now snapshots bounded subkey names before reading each
+  entry by name. Deleting an already-read key cannot shift later entry reads.
+  A vanished or unreadable named key yields Partial with a reason. Subkey counts
+  are queried before enumeration, after enumeration and after entry reads;
+  changed or unreadable counts also yield Partial. The snapshot length is checked
+  against the bounded observed count. The private `SubkeyReader` seam lets the
+  native adapter and synthetic reader use the same enumeration algorithm.
+- Denied and Unavailable readers contribute no applications even if they return
+  entries. Available and Partial readers retain their evidence.
+- Enumeration probes one name beyond the 2,048-entry budget. Exactly the budget
+  remains Available when otherwise intact; only a further name means truncation.
+- `inventory()` normalises any reader's coverage report: Available has no reason;
+  every other state has a nonblank reason. Existing nonblank failure reasons are
+  preserved, and missing/blank reasons receive a metadata-free fallback.
+- The source guard now includes Rust and Win32 filesystem discovery/effect APIs,
+  environment access and `ExpandEnvironmentStrings`, and WMI/COM entry points,
+  alongside the existing process and installer guard. It is a lexical source
+  tripwire, not a proof against aliases, indirect dependencies or every API.
+
+### HKCU 32-bit coverage
+
+No extra provider was added. Microsoft's
+[registry keys affected by WOW64 table](https://learn.microsoft.com/en-us/windows/win32/winprog64/shared-registry-keys)
+classifies `HKEY_CURRENT_USER\SOFTWARE` as shared. Subkeys inherit that behavior
+unless an exception is listed; the Uninstall path has no exception. Consequently
+32-bit applications using the standard per-user Uninstall path share the same
+physical key as 64-bit applications. A `KEY_WOW64_32KEY` pass over that path would
+duplicate the current provider, not establish a distinct redirected view.
+
+An installer can explicitly write a nonstandard literal HKCU `WOW6432Node` path,
+just as it can choose another arbitrary key. That is not a WOW64 redirect of this
+Uninstall provider and is outside its documented standard-path coverage. The
+existing `CurrentUser` provenance denotes the current-user shared Uninstall key,
+not proof of an application's architecture. No provider may infer architecture
+from this view.
+
+Count checks use the read-only
+[RegQueryInfoKeyW](https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regqueryinfokeyw)
+API. They do not make the inventory atomic: same-count replacement or mutation
+between checks can remain undetected, and value changes can still race reads.
+
+### Regression and mutation results
+
+The two boundary regressions first failed against the original `inventory()`.
+The six Windows fake-reader regressions first failed against the original
+interleaved index algorithm after extraction behind the private reader seam.
+After the fixes, `cargo test -p loomward-apps` passed all **18 tests**.
+
+Each selected mutation below compiled, ran one selected test and failed that test.
+Source bytes were restored in a `finally` block after every mutation.
+
+| Test | Mutation detected |
+| --- | --- |
+| `denied_and_unavailable_readers_cannot_publish_entries` | Restore unconditional entry publication |
+| `coverage_reasons_are_normalised_for_any_reader` | Restore raw reasons; separately remove the non-Available fallback |
+| `snapshot_names_preserves_remaining_keys_after_deletion` | Restore interleaved enumeration and entry reads; a surviving key is skipped |
+| `vanished_snapshot_key_reports_partial` | Restore interleaved reads; a deleted next key goes unnoticed |
+| `count_changes_during_enumeration_report_partial` | Remove count comparison; deletion/addition during enumeration claims Available |
+| `count_changes_during_entry_reads_report_partial` | Remove count comparison; an addition during reads claims Available |
+| `unreadable_count_cannot_claim_available` | Ignore the failed count query |
+| `only_more_than_entry_budget_is_truncated` | Restore truncation when enumeration ends at exactly the budget |
+| `runtime_source_has_no_effect_or_discovery_api` | Five separate source-comment markers: `std::fs::read_dir`, `CreateFileW`, `ExpandEnvironmentStringsW`, `IWbemLocator`, `CoCreateInstance` |
+
+Fourteen mutations were detected in total: nine for the eight new regression
+tests and five for the expanded existing source guard. The guard markers are
+inert comments; the mutation runs execute no forbidden API.
+
+### Follow-up gates
+
+All commands ran on Windows from the follow-up worktree after restoring every
+mutation. No dependencies or lockfile entries changed.
+
+| Command | Result |
+| --- | --- |
+| `cargo fmt --all --check` | PASS, exit 0 |
+| `cargo test -p loomward-apps` | PASS, 18 passed, 0 failed |
+| `cargo test --workspace` | PASS, exit 0; 481 passed, 0 failed, 0 ignored; default parallel scheduling |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | PASS, exit 0 |
+| `git diff --check` | PASS, exit 0 |
+
+The workspace result above is a new run, not a reinterpretation of the original
+failed run. It does not establish the cause of that historical engine failure.
+
+### NOT verified and residual risk
+
+No installer churn or ACL changes were induced in a real registry. The fake
+reader deterministically exercises deletion, addition, missing names and count
+query denial. A live read remains a bounded observation rather than an atomic
+inventory. Nonstandard registry paths, other users, general packaged apps and
+portable discovery remain outside coverage. No service, UI or contract wiring,
+application effects, commits or pushes are included in this follow-up.
+
+Recommended commit: `fix(apps): preserve inventory coverage during registry churn`.

@@ -6,6 +6,42 @@ use loomward_protocol::{DatasetClass, RootId};
 mod followups;
 
 #[test]
+fn granted_root_rejects_foreign_instance_tags_before_opening_a_path() {
+    let state = tempfile::tempdir().unwrap();
+    let grant = root();
+    let _conn = duplicate_grant_store(state.path(), &grant);
+    rusqlite::Connection::open(state.path().join("catalog.db"))
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);
+            INSERT INTO meta VALUES('instance_id','fixture-instance');
+            CREATE TABLE root(id INTEGER PRIMARY KEY,grant_id INTEGER);
+            INSERT INTO root VALUES(7,1);",
+        )
+        .unwrap();
+    let engine = Engine::open(EngineConfig::new(
+        state.path().to_owned(),
+        DatasetClass::Synthetic,
+    ))
+    .unwrap();
+    for id in [
+        "rt_7_00000000",
+        "rt_7_",
+        "rt_7_f3ed013d_extra",
+        "rt_8_00000000",
+    ] {
+        assert_eq!(
+            engine
+                .granted_root(RootId::new(id).unwrap(), 1)
+                .unwrap_err(),
+            EngineError::PermissionDenied {
+                message: "grant_root_mismatch".into()
+            }
+        );
+    }
+}
+
+#[test]
 fn duplicate_content_is_gated_for_personal_grants() {
     let mut grant = root();
     grant.dataset_class = DatasetClass::Personal;
@@ -254,15 +290,41 @@ pub(super) fn root() -> GrantedRoot {
 }
 #[test]
 fn dataset_class_is_checked_before_start_or_refresh() {
-    let e = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Personal)).unwrap();
-    let root = root();
-    for result in [e.scan_start(&root, None), e.scan_refresh(&root, None)] {
-        assert_eq!(
-            result.unwrap_err().to_body().message.as_str(),
-            "dataset_class_mismatch"
-        );
+    for dataset in [DatasetClass::Synthetic, DatasetClass::Personal] {
+        let engine = Engine::open(EngineConfig::new("unused".into(), dataset)).unwrap();
+        let mut grant = root();
+        grant.dataset_class = dataset;
+        assert!(engine.check_root(&grant).is_ok());
+        // Matching roots reach the (uninstalled) sink, rather than the class refusal.
+        for result in [
+            engine.scan_start(&grant, None),
+            engine.scan_refresh(&grant, None),
+        ] {
+            assert_eq!(
+                result.unwrap_err(),
+                EngineError::unavailable(Component::Scan)
+            );
+        }
+        grant.dataset_class = match dataset {
+            DatasetClass::Synthetic => DatasetClass::Personal,
+            DatasetClass::Personal => DatasetClass::Synthetic,
+        };
+        for result in [
+            engine.scan_start(&grant, None),
+            engine.scan_refresh(&grant, None),
+        ] {
+            assert_eq!(
+                result.unwrap_err(),
+                EngineError::PermissionDenied {
+                    message: "dataset_class_mismatch".into(),
+                }
+            );
+        }
+        assert!(engine.jobs.root_jobs(grant.root_id()).is_empty());
+        assert!(engine.scan_roots.lock().unwrap().is_empty());
     }
 }
+
 #[test]
 fn same_run_obsolete_final_is_rejected_n1() {
     let sink = MemorySink::default();
@@ -1680,11 +1742,13 @@ fn granted_root_comes_only_from_an_active_durable_grant() {
     insert(1, &file_id, "active");
     insert(2, &file_id, "revoked");
     insert(3, &[9; 16], "active");
-    // Catalogue root row `g` observes grant `g`.
+    // Catalogue root row `g` observes grant `g`; tags match the service's wire spelling.
     rusqlite::Connection::open(state.path().join("catalog.db"))
         .unwrap()
         .execute_batch(
-            "CREATE TABLE root(id INTEGER PRIMARY KEY,grant_id INTEGER);
+            "CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);
+             INSERT INTO meta VALUES('instance_id','fixture-instance');
+             CREATE TABLE root(id INTEGER PRIMARY KEY,grant_id INTEGER);
              INSERT INTO root VALUES(1,1),(2,2),(3,3),(4,4);",
         )
         .unwrap();
@@ -1693,10 +1757,12 @@ fn granted_root_comes_only_from_an_active_durable_grant() {
         DatasetClass::Synthetic,
     ))
     .unwrap();
-    let rt = |row: i64| RootId::new(format!("rt_{row}_0a1b2c3d")).unwrap();
+    // SHA-256('fixture-instance') first four bytes, independently computed fixture.
+    let rt = |row: i64| RootId::new(format!("rt_{row}_f3ed013d")).unwrap();
     let message =
         |r: EngineResult<GrantedRoot>| r.unwrap_err().to_body().message.as_str().to_owned();
     let root = engine.granted_root(rt(1), 1).unwrap();
+    assert_eq!(root.root_id(), &rt(1));
     assert_eq!(root.path(), root_dir.path());
     assert_eq!(root.dataset_class(), DatasetClass::Synthetic);
     assert_eq!(message(engine.granted_root(rt(2), 2)), "grant_not_active");
