@@ -451,3 +451,272 @@ fn confirmation_failure_closes_writer_and_recovery_retries() {
     assert!(after[1..].iter().all(|r| r.1 == "unresolved" && r.2));
     assert_eq!(pending_count(temp.path()), 0);
 }
+
+#[test]
+fn batch_dirtying_uses_latest_revisions_and_both_move_chains_after_rejection() {
+    let (temp, conn, _) = fixture();
+    conn.execute_batch(
+        "DELETE FROM st.collection_member; DELETE FROM st.object_ref; DELETE FROM stage_entry",
+    )
+    .unwrap();
+    let (tx, rx) = bounded(16);
+    let mut replies = Vec::new();
+    let listing = |dir_id, files, dirs| {
+        WriteCommand::DirListing(DirListing {
+            run_id: 2,
+            dir_id,
+            files,
+            dirs,
+            state: "complete".into(),
+            skipped: 0,
+            errors: 0,
+        })
+    };
+    let cycle = observation("cycle", 7, 42);
+    for command in [
+        listing(
+            1,
+            vec![],
+            vec![observation("A", 6, 42), observation("B", 7, 42)],
+        ),
+        listing(3, vec![], vec![observation("x", 8, 42)]),
+        listing(5, vec![observation("item", 9, 42)], vec![]),
+        listing(4, vec![], vec![observation("x", 8, 42)]),
+        listing(4, vec![], vec![observation("rolled-back", 10, 42), cycle]),
+        listing(5, vec![observation("new-item", 9, 42)], vec![]),
+    ] {
+        let (reply, result) = bounded(1);
+        tx.send(Pending {
+            command,
+            reply,
+            _permit: BytePermit {
+                quota: Arc::new((Mutex::new(0), Condvar::new())),
+                bytes: 0,
+            },
+        })
+        .unwrap();
+        replies.push(result);
+    }
+    drop(tx);
+    let timings = Arc::new(Mutex::new(WriterTimings::default()));
+    let (alive, _) = bounded(0);
+    work(conn, rx, timings.clone(), alive, None);
+    let mut revisions = Vec::new();
+    for (i, reply) in replies.into_iter().enumerate() {
+        let result = reply.recv().unwrap();
+        if i == 4 {
+            assert!(matches!(
+                result,
+                Err(Error::Invalid("directory identity cycle"))
+            ));
+        } else if let WriteReply::Listing { revision } = result.unwrap() {
+            revisions.push(revision);
+        } else {
+            panic!();
+        }
+    }
+    let timing = timings.lock().unwrap();
+    assert_eq!(timing.transactions, 1);
+    assert_eq!(
+        timing.dirty_updates, 4,
+        "each surviving directory is dirtied once per transaction"
+    );
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    for (id, expected) in [
+        (1, revisions[4]),
+        (3, revisions[3]),
+        (4, revisions[4]),
+        (5, revisions[4]),
+    ] {
+        assert_eq!(
+            db.query_row(
+                "SELECT dirty_rev,subtree_rev,dirty_run,sub_complete FROM dir WHERE id=?1",
+                [id],
+                |r| Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, bool>(3)?
+                ))
+            )
+            .unwrap(),
+            (expected, expected, 2, false)
+        );
+    }
+    assert_eq!(
+        db.query_row("SELECT parent_id FROM dir WHERE id=5", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        4
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM dir WHERE name='rolled-back'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn extension_cache_cannot_reuse_a_rolled_back_id_or_family() {
+    let (temp, conn, _) = fixture();
+    conn.execute_batch(
+        "DELETE FROM st.collection_member; DELETE FROM st.object_ref; DELETE FROM stage_entry",
+    )
+    .unwrap();
+    let (tx, rx) = bounded(2);
+    let mut replies = Vec::new();
+    for families in [vec!["data", "image"], vec!["document"]] {
+        let files = families
+            .into_iter()
+            .enumerate()
+            .map(|(i, family)| {
+                let mut o = observation(&format!("file-{i}"), i as u8 + 10, 42);
+                o.extension = Some("new-extension".into());
+                o.family = family.into();
+                o
+            })
+            .collect();
+        let (reply, result) = bounded(1);
+        tx.send(Pending {
+            command: WriteCommand::DirListing(DirListing {
+                run_id: 2,
+                dir_id: 1,
+                files,
+                dirs: vec![],
+                state: "complete".into(),
+                skipped: 0,
+                errors: 0,
+            }),
+            reply,
+            _permit: BytePermit {
+                quota: Arc::new((Mutex::new(0), Condvar::new())),
+                bytes: 0,
+            },
+        })
+        .unwrap();
+        replies.push(result);
+    }
+    drop(tx);
+    let (alive, _) = bounded(0);
+    work(
+        conn,
+        rx,
+        Arc::new(Mutex::new(WriterTimings::default())),
+        alive,
+        None,
+    );
+    assert!(matches!(
+        replies.remove(0).recv().unwrap(),
+        Err(Error::Invalid("conflicting extension family"))
+    ));
+    replies.remove(0).recv().unwrap().unwrap();
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT family FROM ext JOIN file ON file.ext_id=ext.id",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "document"
+    );
+}
+
+#[test]
+fn rejected_single_pass_publication_discards_intents_before_the_next_witness() {
+    let (temp, conn, command) = fixture();
+    let before = bindings(temp.path());
+    let old = old_listing(temp.path());
+    // Publication fails after pending intents have committed; a later unrelated witness must not confirm them.
+    conn.execute_batch("CREATE TRIGGER reject_publication BEFORE UPDATE ON dir BEGIN SELECT RAISE(ABORT,'synthetic rejection'); END").unwrap();
+    let writer = Writer::start(conn).unwrap();
+    assert!(matches!(writer.call(command), Err(Error::Sql(_))));
+    assert_eq!(pending_count(temp.path()), 0);
+    assert_eq!(bindings(temp.path()), before);
+    assert_eq!(old_listing(temp.path()), old);
+    assert_eq!(writer.timings().validation_dry_run_seconds, 0.0);
+    writer.call(WriteCommand::Barrier).unwrap();
+    assert_eq!(bindings(temp.path()), before);
+    assert_memberships(temp.path());
+}
+
+#[test]
+fn prepared_file_matches_survive_until_publication_without_recopied_or_rematched_rows() {
+    let (temp, mut conn, command) = fixture();
+    let timings = Arc::new(Mutex::new(WriterTimings::default()));
+    let prepared = prepare_state(&mut conn, &command, &HashSet::new()).unwrap();
+    assert!(matches!(prepared, Some(Prepared::Listing)));
+    assert_eq!(pending_count(temp.path()), 4);
+    conn.execute_batch("CREATE TEMP TRIGGER no_rematch BEFORE UPDATE ON old_file BEGIN SELECT RAISE(ABORT,'second match'); END;
+        CREATE TEMP TRIGGER no_recopy BEFORE DELETE ON old_file BEGIN SELECT RAISE(ABORT,'second copy'); END;
+        PRAGMA main.synchronous=FULL").unwrap();
+    let mut context = Context {
+        timings,
+        parents: HashMap::new(),
+        dirty: Vec::new(),
+        extensions: HashMap::new(),
+        revision: 0,
+        fenced_listings: HashSet::new(),
+    };
+    let tx = conn.transaction().unwrap();
+    tx.execute("UPDATE revision SET catalog_rev=catalog_rev+1", [])
+        .unwrap();
+    context.revision = tx
+        .query_row("SELECT catalog_rev FROM revision", [], |r| r.get(0))
+        .unwrap();
+    apply(&tx, &command, &mut context, prepared).unwrap();
+    context.flush_dirty(&tx).unwrap();
+    tx.execute("INSERT INTO meta(key,value) SELECT 'reference_publication',publication_token FROM st.pending_reference LIMIT 1 ON CONFLICT(key) DO UPDATE SET value=excluded.value", []).unwrap();
+    tx.commit().unwrap();
+    conn.execute_batch("PRAGMA main.synchronous=NORMAL")
+        .unwrap();
+    crate::db::reconcile_references(&mut conn).unwrap();
+    assert_eq!(pending_count(temp.path()), 0);
+    assert_eq!(
+        bindings(temp.path())[0],
+        (1, "resolved".into(), false, 2, 1)
+    );
+    assert_eq!(
+        old_listing(temp.path()).1,
+        vec![(2, "link".into()), (4, "nested".into())]
+    );
+}
+
+#[test]
+fn file_matching_prefers_exact_name_and_consumes_each_old_row_once() {
+    let (_temp, conn, _) = fixture();
+    old_files(&conn, 1).unwrap();
+    let identity = [2; 16];
+    assert_eq!(
+        match_file(&conn, "link", None, Some(&identity), Some(42))
+            .unwrap()
+            .unwrap()
+            .0,
+        2
+    );
+    assert_eq!(
+        match_file(&conn, "renamed", None, Some(&identity), Some(42))
+            .unwrap()
+            .unwrap()
+            .0,
+        1
+    );
+    assert!(match_file(&conn, "a", None, Some(&identity), Some(42))
+        .unwrap()
+        .is_none());
+    assert!(
+        match_file(&conn, "omitted", None, Some(&[3; 16]), Some(100))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        conn.query_row("SELECT used FROM old_file WHERE id=3", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        -1
+    );
+}
