@@ -386,13 +386,18 @@ fn placement_deadline_before_and_after_input_is_an_error() {
     ));
 }
 
+/// Checks planner parity on builder scenarios: builder-produced scenarios must
+/// match the Python reference planner field by field. It does not validate
+/// the builder itself.
 #[test]
-fn placement_python_reference_parity_through_generated_fixture_file() {
+fn placement_planner_parity_on_builder_scenarios() {
     use std::process::Command;
     match Command::new("py").args(["-3", "--version"]).output() {
         Ok(o) if o.status.success() => (),
         _ => {
-            eprintln!("UNVERIFIED: placement parity requires Python via py -3");
+            eprintln!(
+                "SKIP: placement planner parity on builder scenarios requires Python via py -3"
+            );
             return;
         }
     }
@@ -852,4 +857,160 @@ fn placement_save_committed_at_the_deadline_returns_the_saved_proposal() {
         .expect("a committed save is reported, not a deadline error");
     assert!(saved.proposal_id.is_some());
     assert_eq!(engine.proposals_list(&store).unwrap().proposals.len(), 1);
+}
+
+#[test]
+fn placement_zero_relief_group_is_excluded_and_rest_still_plans() {
+    let mut inp = input();
+    let mut zero = subtree("zero");
+    zero.totals = from_value(json!({"files": 2, "dirs": 1, "logical_bytes": "200",
+        "allocated_bytes": "0", "allocation_unknown_files": 0, "skipped": 0,
+        "failed": 0, "complete": true, "stream_coverage": "default_stream_only",
+        "unique_objects": 1, "unique_allocated_bytes": "0", "multi_link_entries": 2
+    }))
+    .unwrap();
+    inp.snapshot.subtrees.push(zero);
+    let mut zfiles = vec![file("z_a"), file("z_b")];
+    for f in &mut zfiles {
+        f.object.as_mut().unwrap().file_id = [7; 16];
+        f.link_observation.as_mut().unwrap().object = f.object.clone().unwrap();
+        f.allocated_bytes = Some(0);
+        f.link_observation.as_mut().unwrap().allocation = "0".into();
+    }
+    inp.files.insert("cg_zero".into(), zfiles);
+    let req = request();
+    let built = build_scenario(&inp, &req, deadline()).unwrap();
+    assert_eq!(built.scenario["groups"].as_array().unwrap().len(), 1);
+    assert_eq!(built.scenario["groups"][0]["id"], "cg_one");
+    assert!(
+        built
+            .assumptions
+            .iter()
+            .any(|s| s.as_str().contains("zero relief") && s.as_str().contains('1')),
+        "assumptions: {:?}",
+        built.assumptions
+    );
+    let plan = engine()
+        .placement_simulate(&inp, &req, deadline(), None)
+        .unwrap();
+    assert_eq!(plan.proposals.len(), 1);
+    assert_eq!(plan.proposals[0].group_id.as_str(), "cg_one");
+}
+
+#[test]
+fn placement_unknown_cluster_uses_4kib_lower_bound_with_disclosure() {
+    let mut all_unknown = input();
+    all_unknown.snapshot.volumes[0].cluster_bytes = None;
+    all_unknown.snapshot.volumes[1].cluster_bytes = None;
+    let built = build_scenario(&all_unknown, &request(), deadline()).unwrap();
+    assert_eq!(built.candidates.groups[0].destination_bytes, Bytes(8192));
+    assert!(
+        built
+            .assumptions
+            .iter()
+            .any(|s| s.as_str().contains("4 KiB") && s.as_str().contains('1')),
+        "assumptions: {:?}",
+        built.assumptions
+    );
+    // placement.candidates rounds with the same assumption, so its note discloses it as well.
+    let candidates_request = from_value(json!({"source_volume_id":"vo_source","basis":"root_children","max_groups":4,"min_bytes":"0"})).unwrap();
+    let view = engine()
+        .placement_candidates(&all_unknown, &candidates_request, deadline())
+        .unwrap();
+    assert!(
+        view.note.as_str().contains("4 KiB"),
+        "note: {}",
+        view.note.as_str()
+    );
+    let mut mixed = input();
+    let mut extra = volume("vo_extra", 1000, 1000, 2);
+    extra.cluster_bytes = None;
+    mixed.snapshot.volumes.push(extra);
+    let built = build_scenario(&mixed, &request(), deadline()).unwrap();
+    assert_eq!(built.candidates.groups[0].destination_bytes, Bytes(8192));
+    assert!(
+        built
+            .assumptions
+            .iter()
+            .any(|s| s.as_str().contains("4 KiB")),
+        "assumptions: {:?}",
+        built.assumptions
+    );
+}
+
+#[test]
+fn placement_children_of_pre_rejected_parent_are_disclosed_not_planned() {
+    let mut inp = input();
+    inp.snapshot.subtrees.clear();
+    inp.files.clear();
+    let mut parent = subtree("aaa_parent");
+    parent.totals = from_value(json!({"files": 2, "dirs": 1, "logical_bytes": "400",
+        "allocated_bytes": "400", "allocation_unknown_files": 0, "skipped": 0,
+        "failed": 0, "complete": false, "stream_coverage": "default_stream_only",
+        "unique_objects": 1, "unique_allocated_bytes": "100", "multi_link_entries": 2
+    }))
+    .unwrap();
+    let parent_node = parent.node_id.clone();
+    let parent_group = parent.group_id.clone();
+    inp.snapshot.subtrees.push(parent);
+    for (id, fid) in [("zzz_child1", [21u8; 16]), ("zzz_child2", [22u8; 16])] {
+        let mut child = subtree(id);
+        child.ancestors = vec![parent_node.clone()];
+        child.root_child = false;
+        inp.snapshot.subtrees.push(child.clone());
+        let mut files = vec![file(&format!("{id}_a")), file(&format!("{id}_b"))];
+        for f in &mut files {
+            f.object.as_mut().unwrap().file_id = fid;
+            f.link_observation.as_mut().unwrap().object = f.object.clone().unwrap();
+        }
+        inp.files.insert(child.group_id.as_str().into(), files);
+    }
+    let mut pfiles = vec![file("p_a"), file("p_b")];
+    for f in &mut pfiles {
+        f.object.as_mut().unwrap().file_id = [20; 16];
+        f.link_observation.as_mut().unwrap().object = f.object.clone().unwrap();
+    }
+    inp.files.insert(parent_group.as_str().into(), pfiles);
+    let mut req = request();
+    req.overrides = BoundedVec::new(vec![]).unwrap();
+    let built = build_scenario(&inp, &req, deadline()).unwrap();
+    assert!(built
+        .pre_rejected
+        .iter()
+        .any(|r| r.group_id == parent_group));
+    assert!(
+        built
+            .assumptions
+            .iter()
+            .any(|s| s.as_str().contains("2") && s.as_str().contains("ancestor was pre-rejected")),
+        "assumptions: {:?}",
+        built.assumptions
+    );
+}
+
+#[test]
+fn placement_unusable_volume_numbers_stay_unknown_in_tier_view() {
+    for mode in 0..4 {
+        let mut inp = input();
+        let mut bad = volume("vo_bad", 100, 50, 2);
+        match mode {
+            0 => bad.volume.free_bytes = Some(Bytes(200)),
+            1 => bad.reserve_bytes = Bytes(200),
+            2 => bad.cluster_bytes = Some(0),
+            // Zero capacity: no free fraction exists, and the view must not fail as a whole.
+            _ => {
+                bad.volume.capacity_bytes = Some(Bytes(0));
+                bad.volume.free_bytes = Some(Bytes(0));
+                bad.reserve_bytes = Bytes(0);
+            }
+        }
+        inp.snapshot.volumes.push(bad);
+        let model = engine().placement_model(&inp, deadline()).unwrap();
+        let view = model
+            .volumes
+            .iter()
+            .find(|v| v.volume_id.as_str() == "vo_bad")
+            .unwrap();
+        assert_eq!(view.pressure, TierVolumePressure::Unknown, "mode {mode}");
+    }
 }
