@@ -200,7 +200,7 @@
               {@const denied = r.access === 'denied'}
               <tr class:sel={explain?.row.process_ref === r.process_ref}>
                 <th scope="row">
-                  <button class="link" type="button" onclick={() => void explainRow(r)} aria-label={`Explain ${escapedName(r.name)}`}><VisibleName name={r.name} /></button>
+                  <button class="link" type="button" onclick={() => void explainRow(r)} aria-label={`Explain ${escapedName(r.name)}, process ${r.pid}`}><VisibleName name={r.name} /></button>
                   <span class="muted small num">pid {r.pid}</span>
                   {#if r.loomward_owned}<span class="tag">Loomward</span>{/if}
                   {#if hasHiddenCharacters(r.name)}<span class="tag warn">hidden characters</span>{/if}
