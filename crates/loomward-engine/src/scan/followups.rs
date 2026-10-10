@@ -1,0 +1,628 @@
+//! Synthetic regression oracles for #180.
+use super::*;
+use std::sync::{atomic::AtomicUsize, Mutex};
+
+type Hook = dyn Fn(&RootId, &ScanMessage, &MemorySink) -> crate::EngineResult<()> + Send + Sync;
+struct ProbeWriter {
+    sink: MemorySink,
+    hook: Box<Hook>,
+}
+impl ScanSink for ProbeWriter {
+    fn recover_interrupted(&self) -> crate::EngineResult<()> {
+        self.sink.recover_interrupted()
+    }
+    fn begin_run(&self, root: &RootId, run: u64, scope: &RunScope) -> crate::EngineResult<()> {
+        self.sink.begin_run(root, run, scope)
+    }
+    fn prepare_listing(
+        &self,
+        root: &RootId,
+        run: u64,
+        parent: Option<u64>,
+        name: &[u16],
+        identity: OpenedIdentity,
+    ) -> crate::EngineResult<ListingTicket> {
+        self.sink.prepare_listing(root, run, parent, name, identity)
+    }
+    fn refresh_listing(
+        &self,
+        root: &RootId,
+        run: u64,
+        ticket: ListingTicket,
+    ) -> crate::EngineResult<ListingTicket> {
+        self.sink.refresh_listing(root, run, ticket)
+    }
+    fn consume(&self, root: &RootId, message: ScanMessage) -> crate::EngineResult<()> {
+        let notice = match &message {
+            ScanMessage::ListingDone {
+                run,
+                ticket,
+                outcome,
+            } => Some(ScanMessage::ListingDone {
+                run: *run,
+                ticket: *ticket,
+                outcome: *outcome,
+            }),
+            ScanMessage::DirFinal {
+                run,
+                ticket,
+                sums,
+                complete,
+            } => Some(ScanMessage::DirFinal {
+                run: *run,
+                ticket: *ticket,
+                sums: *sums,
+                complete: *complete,
+            }),
+            _ => None,
+        };
+        self.sink.consume(root, message)?;
+        notice.map_or(Ok(()), |message| (self.hook)(root, &message, &self.sink))
+    }
+    fn finish_run(
+        &self,
+        root: &RootId,
+        run: u64,
+        scope: &RunScope,
+        complete: bool,
+    ) -> crate::EngineResult<()> {
+        self.sink.finish_run(root, run, scope, complete)
+    }
+    fn fence_root(&self, root: &RootId) -> crate::EngineResult<()> {
+        self.sink.fence_root(root)
+    }
+}
+fn scan(source: &impl DirSource, sink: Arc<dyn ScanSink>) -> ScanReport {
+    run_scan(
+        source,
+        &root(),
+        1,
+        sink,
+        Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions {
+            workers: 1,
+            ..Default::default()
+        },
+    )
+    .unwrap()
+}
+fn obsolete() -> crate::EngineError {
+    crate::EngineError::StaleGeneration {
+        message: "synthetic dirty epoch".into(),
+        detail: Some(
+            loomward_protocol::Detail::new(std::collections::BTreeMap::from([(
+                "reason".into(),
+                serde_json::json!("listing_revision_changed"),
+            )]))
+            .unwrap(),
+        ),
+    }
+}
+
+struct CounterTree(AtomicUsize);
+impl DirSource for CounterTree {
+    type Dir = u64;
+    fn strategy(&self) -> Strategy {
+        Strategy::Portable
+    }
+    fn open_root(&self, p: &std::path::Path) -> Result<(u64, OpenedIdentity), SourceError> {
+        Tree.open_root(p)
+    }
+    fn open_child(&self, p: &u64, e: &RawEntry<'_>) -> Result<(u64, OpenedIdentity), SourceError> {
+        if e.file_id == Some(FileIdObs::Id64(4)) {
+            return Err(SourceError::AccessDenied);
+        }
+        Tree.open_child(p, e)
+    }
+    fn list(&self, dir: &u64, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+        if *dir == 1 {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            for (id, attributes) in [(4, 0x10), (5, 0x410)] {
+                let e = RawEntry {
+                    name: &[id as u16],
+                    file_id: Some(FileIdObs::Id64(id)),
+                    attributes,
+                    reparse_tag: None,
+                    end_of_file: 0,
+                    allocation_size: Some(0),
+                    creation: None,
+                    last_write: None,
+                    change: None,
+                    last_access: None,
+                };
+                if sink(e) == Flow::Stop {
+                    return ListOutcome::Incomplete(IncompleteReason::Cancelled);
+                }
+            }
+        }
+        Tree.list(dir, sink)
+    }
+}
+#[test]
+fn relists_replace_examined_skipped_and_failed_counts() {
+    let source = CounterTree(Default::default());
+    let sink = Arc::new(DirtyWriter {
+        sink: MemorySink::default(),
+        dirtied: AtomicBool::new(false),
+        on_final: false,
+        always: false,
+    });
+    let report = scan(&source, sink);
+    assert!(source.0.load(Ordering::Relaxed) > 1);
+    assert_eq!((report.examined, report.skipped, report.failed), (4, 1, 1));
+    assert!(!report.complete);
+}
+
+struct CollisionTree;
+impl DirSource for CollisionTree {
+    type Dir = u64;
+    fn strategy(&self) -> Strategy {
+        Strategy::Portable
+    }
+    fn open_root(&self, p: &std::path::Path) -> Result<(u64, OpenedIdentity), SourceError> {
+        Tree.open_root(p)
+    }
+    fn open_child(&self, p: &u64, e: &RawEntry<'_>) -> Result<(u64, OpenedIdentity), SourceError> {
+        Tree.open_child(p, e)
+    }
+    fn list(&self, dir: &u64, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+        Tree.list(dir, &mut |mut e| {
+            if *dir == 1 {
+                let flow = sink(e.clone());
+                if flow == Flow::Stop {
+                    return flow;
+                }
+                e.name = &[121];
+            }
+            sink(e)
+        })
+    }
+}
+#[test]
+fn duplicate_identity_is_counted_and_never_complete() {
+    let report = scan(&CollisionTree, Arc::new(MemorySink::default()));
+    assert_eq!(report.duplicate_identity, 1);
+    assert!(!report.complete);
+    let report = scan(&Tree, Arc::new(MemorySink::default()));
+    assert_eq!(report.duplicate_identity, 0);
+    assert!(report.complete);
+    let source = MovingTree {
+        x_listings: Default::default(),
+        unique: true,
+    };
+    let report = scan(&source, Arc::new(MemorySink::default()));
+    assert_eq!(report.duplicate_identity, 1);
+    assert!(!report.complete);
+}
+
+#[test]
+fn a_clean_relist_does_not_erase_duplicate_identity_evidence() {
+    struct Source(AtomicUsize);
+    impl DirSource for Source {
+        type Dir = u64;
+        fn strategy(&self) -> Strategy {
+            Strategy::Portable
+        }
+        fn open_root(&self, p: &std::path::Path) -> Result<(u64, OpenedIdentity), SourceError> {
+            Tree.open_root(p)
+        }
+        fn open_child(
+            &self,
+            p: &u64,
+            e: &RawEntry<'_>,
+        ) -> Result<(u64, OpenedIdentity), SourceError> {
+            Tree.open_child(p, e)
+        }
+        fn list(&self, d: &u64, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+            if *d == 1 && self.0.fetch_add(1, Ordering::Relaxed) == 0 {
+                CollisionTree.list(d, sink)
+            } else {
+                Tree.list(d, sink)
+            }
+        }
+    }
+    let sink = Arc::new(DirtyWriter {
+        sink: MemorySink::default(),
+        dirtied: AtomicBool::new(false),
+        on_final: false,
+        always: false,
+    });
+    let report = scan(&Source(AtomicUsize::new(0)), sink.clone());
+    assert_eq!(report.duplicate_identity, 1);
+    assert!(!report.complete);
+    assert!(!sink.sink.sweep_allowed(root().root_id()));
+}
+
+#[derive(Default)]
+struct NameOnlyTree {
+    opens: AtomicUsize,
+    listings: Mutex<Vec<usize>>,
+}
+impl DirSource for NameOnlyTree {
+    type Dir = (u64, usize);
+    fn strategy(&self) -> Strategy {
+        Strategy::Portable
+    }
+    fn open_root(&self, _: &std::path::Path) -> Result<(Self::Dir, OpenedIdentity), SourceError> {
+        Ok(((1, 0), identity(1)))
+    }
+    fn open_child(
+        &self,
+        _: &Self::Dir,
+        _: &RawEntry<'_>,
+    ) -> Result<(Self::Dir, OpenedIdentity), SourceError> {
+        let mut id = identity(2);
+        id.id = None;
+        id.basis = IdBasis::None;
+        Ok(((2, self.opens.fetch_add(1, Ordering::Relaxed) + 1), id))
+    }
+    fn list(&self, dir: &Self::Dir, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+        if dir.0 == 2 {
+            self.listings.lock().unwrap().push(dir.1);
+        }
+        Tree.list(&dir.0, &mut |mut e| {
+            if dir.0 == 1 {
+                e.file_id = None;
+            }
+            sink(e)
+        })
+    }
+}
+#[test]
+fn dirty_name_only_parent_and_child_are_listed_once_per_round() {
+    let seen = Mutex::new(std::collections::HashSet::new());
+    let sink = Arc::new(ProbeWriter {
+        sink: MemorySink::default(),
+        hook: Box::new(move |root, message, sink| {
+            if let ScanMessage::ListingDone { ticket, .. } = message {
+                if seen.lock().unwrap().insert(ticket.dir) {
+                    sink.dirty_again(root, ticket.dir);
+                    return Err(obsolete());
+                }
+            }
+            Ok(())
+        }),
+    });
+    let source = NameOnlyTree::default();
+    let report = scan(&source, sink);
+    assert!(report.complete, "{report:?}");
+    assert_eq!(source.listings.lock().unwrap().len(), 2);
+}
+#[test]
+fn name_only_relisting_uses_the_freshly_opened_handle() {
+    let dirtied = AtomicBool::new(false);
+    let sink = Arc::new(ProbeWriter {
+        sink: MemorySink::default(),
+        hook: Box::new(move |root, message, sink| {
+            if let ScanMessage::ListingDone { ticket, .. } = message {
+                if !dirtied.swap(true, Ordering::Relaxed) {
+                    sink.dirty_again(root, ticket.dir);
+                    return Err(obsolete());
+                }
+            }
+            Ok(())
+        }),
+    });
+    let source = NameOnlyTree::default();
+    let report = scan(&source, sink);
+    assert!(report.complete, "{report:?}");
+    assert_eq!(*source.listings.lock().unwrap(), [1, 2]);
+}
+
+struct PanicUnderArena;
+impl DirSource for PanicUnderArena {
+    type Dir = u64;
+    fn strategy(&self) -> Strategy {
+        Strategy::Portable
+    }
+    fn open_root(&self, p: &std::path::Path) -> Result<(u64, OpenedIdentity), SourceError> {
+        Tree.open_root(p)
+    }
+    fn open_child(&self, p: &u64, e: &RawEntry<'_>) -> Result<(u64, OpenedIdentity), SourceError> {
+        Tree.open_child(p, e)
+    }
+    fn list(&self, dir: &u64, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+        Tree.list(dir, sink)
+    }
+    fn can_reopen(&self, _: OpenedIdentity) -> bool {
+        panic!("synthetic panic under arena lock")
+    }
+}
+#[test]
+fn poisoned_arena_fails_the_run_and_releases_bytes() {
+    let sink = Arc::new(MemorySink::default());
+    let bytes = Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let writer = sink.clone();
+    let budget = bytes.clone();
+    std::thread::spawn(move || {
+        let report = run_scan(
+            &PanicUnderArena,
+            &root(),
+            1,
+            writer,
+            budget,
+            Arc::new(AtomicBool::new(false)),
+            ScanOptions {
+                workers: 1,
+                ..Default::default()
+            },
+        );
+        let _ = tx.send(report);
+    });
+    let report = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("a poisoned arena must terminate the run");
+    assert_eq!(
+        report.unwrap_err().to_body().message.as_str(),
+        "scan worker panicked"
+    );
+    assert!(!sink.sweep_allowed(root().root_id()));
+    assert_eq!(bytes.used(), 0);
+}
+
+#[test]
+fn reopen_failure_or_changed_identity_keeps_the_run_partial() {
+    struct Source(u8, AtomicUsize);
+    impl DirSource for Source {
+        type Dir = u64;
+        fn strategy(&self) -> Strategy {
+            Strategy::Portable
+        }
+        fn open_root(&self, p: &std::path::Path) -> Result<(u64, OpenedIdentity), SourceError> {
+            Tree.open_root(p)
+        }
+        fn open_child(
+            &self,
+            p: &u64,
+            e: &RawEntry<'_>,
+        ) -> Result<(u64, OpenedIdentity), SourceError> {
+            Tree.open_child(p, e)
+        }
+        fn list(&self, dir: &u64, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+            self.1.fetch_add(1, Ordering::Relaxed);
+            Tree.list(dir, sink)
+        }
+        fn can_reopen(&self, _: OpenedIdentity) -> bool {
+            true
+        }
+        fn reopen(
+            &self,
+            _: &std::path::Path,
+            _: OpenedIdentity,
+            expected: OpenedIdentity,
+        ) -> Result<(u64, OpenedIdentity), SourceError> {
+            if self.0 == 2 {
+                return Err(SourceError::AccessDenied);
+            }
+            let Some(FileIdObs::Id64(id)) = expected.id else {
+                unreachable!()
+            };
+            Ok((id, if self.0 == 1 { identity(99) } else { expected }))
+        }
+    }
+    for mode in [0, 1, 2] {
+        let source = Source(mode, AtomicUsize::new(0));
+        let sink = Arc::new(DirtyWriter {
+            sink: MemorySink::default(),
+            dirtied: AtomicBool::new(false),
+            on_final: true,
+            always: false,
+        });
+        let report = scan(&source, sink.clone());
+        assert_eq!(report.complete, mode == 0);
+        assert_eq!(sink.sink.sweep_allowed(root().root_id()), mode == 0);
+        assert_eq!(report.failed, u64::from(mode != 0));
+        assert_eq!(
+            report.totals.files, 1,
+            "unknown remains the prior observation"
+        );
+        assert_eq!(
+            source.1.load(Ordering::Relaxed),
+            if mode == 0 { 3 } else { 2 }
+        );
+    }
+}
+
+// A large owned handle makes the arena's retained-versus-transient cost observable in a small tree.
+struct LargeDir {
+    id: u64,
+    _storage: [u8; 65536],
+}
+struct ReopenTree;
+impl DirSource for ReopenTree {
+    type Dir = LargeDir;
+    fn strategy(&self) -> Strategy {
+        Strategy::Portable
+    }
+    fn open_root(&self, _: &std::path::Path) -> Result<(LargeDir, OpenedIdentity), SourceError> {
+        Ok((
+            LargeDir {
+                id: 1,
+                _storage: [0; 65536],
+            },
+            identity(1),
+        ))
+    }
+    fn open_child(
+        &self,
+        _: &LargeDir,
+        e: &RawEntry<'_>,
+    ) -> Result<(LargeDir, OpenedIdentity), SourceError> {
+        let Some(FileIdObs::Id64(id)) = e.file_id else {
+            unreachable!()
+        };
+        Ok((
+            LargeDir {
+                id,
+                _storage: [0; 65536],
+            },
+            identity(id),
+        ))
+    }
+    fn list(&self, dir: &LargeDir, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+        if dir.id == 96 {
+            return ListOutcome::Complete;
+        }
+        Tree.list(&1, &mut |mut e| {
+            e.file_id = Some(FileIdObs::Id64(dir.id + 1));
+            sink(e)
+        })
+    }
+    fn can_reopen(&self, _: OpenedIdentity) -> bool {
+        true
+    }
+    fn reopen(
+        &self,
+        _: &std::path::Path,
+        _: OpenedIdentity,
+        expected: OpenedIdentity,
+    ) -> Result<(LargeDir, OpenedIdentity), SourceError> {
+        let Some(FileIdObs::Id64(id)) = expected.id else {
+            unreachable!()
+        };
+        Ok((
+            LargeDir {
+                id,
+                _storage: [0; 65536],
+            },
+            expected,
+        ))
+    }
+}
+#[test]
+fn listed_handles_release_arena_capacity_for_later_directories() {
+    let bytes = Arc::new(crate::budgets::ByteBudget::new(4 * 1024 * 1024));
+    let report = run_scan(
+        &ReopenTree,
+        &root(),
+        1,
+        Arc::new(MemorySink::default()),
+        bytes.clone(),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions {
+            workers: 1,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(report.complete, "{report:?}");
+    assert_eq!(report.totals.dirs, 95);
+    assert_eq!(bytes.used(), 0);
+}
+
+#[test]
+fn reopened_handles_remain_bounded_by_the_arena_reservation() {
+    let seen = Mutex::new(std::collections::HashSet::new());
+    let sink = Arc::new(ProbeWriter {
+        sink: MemorySink::default(),
+        hook: Box::new(move |root, message, sink| {
+            if let ScanMessage::ListingDone { ticket, .. } = message {
+                if seen.lock().unwrap().insert(ticket.dir) {
+                    sink.dirty_again(root, ticket.dir);
+                    return Err(obsolete());
+                }
+            }
+            Ok(())
+        }),
+    });
+    let bytes = Arc::new(crate::budgets::ByteBudget::new(4 * 1024 * 1024));
+    let report = run_scan(
+        &ReopenTree,
+        &root(),
+        1,
+        sink.clone(),
+        bytes.clone(),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions {
+            workers: 1,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        report.limit_hit,
+        "reopening every large handle cannot fit the arena"
+    );
+    assert!(!report.complete);
+    assert_eq!(report.failed, 0, "a budget limit is not an I/O error");
+    assert!(!sink.sink.sweep_allowed(root().root_id()));
+    assert_eq!(bytes.used(), 0);
+}
+
+#[cfg(windows)]
+#[test]
+fn native_listed_handles_are_closed_before_finalization() {
+    use loomward_windows::enumerate::{NativeDir, NativeSource};
+    if skip_elevated() {
+        return;
+    }
+    struct TrackedDir(NativeDir, Arc<AtomicUsize>);
+    impl Drop for TrackedDir {
+        fn drop(&mut self) {
+            self.1.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+    struct Source(NativeSource, Arc<AtomicUsize>);
+    impl DirSource for Source {
+        type Dir = TrackedDir;
+        fn strategy(&self) -> Strategy {
+            self.0.strategy()
+        }
+        fn open_root(
+            &self,
+            p: &std::path::Path,
+        ) -> Result<(TrackedDir, OpenedIdentity), SourceError> {
+            let (d, id) = self.0.open_root(p)?;
+            self.1.fetch_add(1, Ordering::Relaxed);
+            Ok((TrackedDir(d, self.1.clone()), id))
+        }
+        fn open_child(
+            &self,
+            p: &TrackedDir,
+            e: &RawEntry<'_>,
+        ) -> Result<(TrackedDir, OpenedIdentity), SourceError> {
+            let (d, id) = self.0.open_child(&p.0, e)?;
+            self.1.fetch_add(1, Ordering::Relaxed);
+            Ok((TrackedDir(d, self.1.clone()), id))
+        }
+        fn list(&self, d: &TrackedDir, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+            self.0.list(&d.0, sink)
+        }
+        fn can_reopen(&self, id: OpenedIdentity) -> bool {
+            self.0.can_reopen(id)
+        }
+    }
+    let temp = canonical_tempdir();
+    std::fs::create_dir(temp.path().join("child")).unwrap();
+    let live = Arc::new(AtomicUsize::new(0));
+    let source = Source(NativeSource::default(), live.clone());
+    let expected = source.open_root(temp.path()).unwrap().1;
+    let grant = GrantedRoot::new(
+        RootId::new("rt_handle_fixture").unwrap(),
+        temp.path().to_owned(),
+        DatasetClass::Synthetic,
+        expected,
+    );
+    let sink = Arc::new(ProbeWriter {
+        sink: MemorySink::default(),
+        hook: Box::new(move |_, message, _| {
+            if matches!(message, ScanMessage::DirFinal { .. }) {
+                assert_eq!(live.load(Ordering::Relaxed), 0);
+            }
+            Ok(())
+        }),
+    });
+    let report = run_scan(
+        &source,
+        &grant,
+        1,
+        sink,
+        Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions::default(),
+    )
+    .unwrap();
+    assert!(report.complete);
+}

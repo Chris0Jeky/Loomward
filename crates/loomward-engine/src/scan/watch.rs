@@ -281,7 +281,6 @@ struct RepairSink {
     inner: Arc<dyn ScanSink>,
     valid: Mutex<bool>,
     reparented: AtomicBool,
-    outside_scope: AtomicU64,
 }
 impl ScanSink for RepairSink {
     fn root_identity_changed(&self, root: &RootId) {
@@ -314,12 +313,6 @@ impl ScanSink for RepairSink {
     }
     fn consume(&self, root: &RootId, message: ScanMessage) -> EngineResult<()> {
         match &message {
-            ScanMessage::ListingDone {
-                outcome: ListOutcome::Incomplete(IncompleteReason::OutsideScope),
-                ..
-            } => {
-                self.outside_scope.fetch_add(1, Ordering::Relaxed);
-            }
             ScanMessage::ListingDone {
                 outcome: ListOutcome::Incomplete(reason),
                 ..
@@ -411,7 +404,6 @@ fn reconcile<S: DirSource>(
         inner: sink.clone(),
         valid: Mutex::new(true),
         reparented: AtomicBool::new(false),
-        outside_scope: AtomicU64::new(0),
     });
     // Every scan needs a full baseline: no watcher history survives between scans.
     options.scope = RunScope::FullRoot;
@@ -431,7 +423,7 @@ fn reconcile<S: DirSource>(
     // while it was listed (#178). Its changes are in the watcher's epochs, but coverage is only
     // claimed after a pass that settled; until then the next pass is a full one.
     let mut settled = report.complete;
-    let mut examined = report.examined;
+    let mut attempted = report.enumeration_attempts;
     for attempt in 0..=MAX_RELISTS {
         checkpoint();
         let mut state = dirty.lock().unwrap();
@@ -453,7 +445,7 @@ fn reconcile<S: DirSource>(
             state = dirty.lock().unwrap();
             if state.clean() && !cancel.load(Ordering::Acquire) {
                 report.complete = true;
-                report.examined = examined;
+                report.enumeration_attempts = attempted;
                 report.elapsed_seconds = start.elapsed().as_secs_f64();
                 return Ok(report);
             }
@@ -461,7 +453,7 @@ fn reconcile<S: DirSource>(
                 break;
             }
         }
-        if attempt == MAX_RELISTS || examined >= options.max_entries {
+        if attempt == MAX_RELISTS || attempted >= options.max_entries {
             break;
         }
         covered = state.epoch;
@@ -483,9 +475,8 @@ fn reconcile<S: DirSource>(
         drop(state);
         let full = matches!(options.scope, RunScope::FullRoot);
         let mut pass_options = options.clone();
-        pass_options.max_entries -= examined;
+        pass_options.max_entries -= attempted;
         *repair.valid.lock().unwrap() = true;
-        repair.outside_scope.store(0, Ordering::Relaxed);
         let next = run_scan(
             source,
             root,
@@ -499,23 +490,23 @@ fn reconcile<S: DirSource>(
         // A targeted pass is partial by construction (outside-scope directories); only a full
         // pass reports whether the tree settled.
         settled = !full || next.complete;
-        examined += next.examined;
+        attempted += next.enumeration_attempts;
+        report.examined = next.examined;
+        report.duplicate_identity = next.duplicate_identity;
         report.enumeration_worker_seconds += next.enumeration_worker_seconds;
         report.enumeration_wall_seconds += next.enumeration_wall_seconds;
         report.staging_seconds += next.staging_seconds;
         report.aggregation_seconds += next.aggregation_seconds;
         report.persistence_seconds += next.persistence_seconds;
         report.totals = next.totals;
-        report.skipped += next.skipped;
-        report.failed += next
-            .failed
-            .saturating_sub(repair.outside_scope.load(Ordering::Relaxed));
+        report.skipped = next.skipped;
+        report.failed = next.failed;
         report.limit_hit |= next.limit_hit;
         report.strategy = next.strategy;
     }
     sink.watch_dirty(root.root_id())?;
     report.complete = false;
-    report.examined = examined;
+    report.enumeration_attempts = attempted;
     report.elapsed_seconds = start.elapsed().as_secs_f64();
     Ok(report)
 }
@@ -526,6 +517,80 @@ mod tests {
     use std::{collections::HashMap, path::PathBuf};
     type DirectoryRows = BTreeMap<Vec<u16>, (Option<FileIdObs>, u32, u64)>;
     type Rows = HashMap<FileIdObs, DirectoryRows>;
+    #[test]
+    fn watcher_reports_latest_counts_but_limits_all_enumeration_attempts() {
+        use super::super::tests::{root, DirtyWriter, Tree};
+        struct Source;
+        impl DirSource for Source {
+            type Dir = u64;
+            fn strategy(&self) -> Strategy {
+                Strategy::Portable
+            }
+            fn open_root(
+                &self,
+                path: &std::path::Path,
+            ) -> Result<(u64, OpenedIdentity), SourceError> {
+                Tree.open_root(path)
+            }
+            fn open_child(
+                &self,
+                parent: &u64,
+                entry: &RawEntry<'_>,
+            ) -> Result<(u64, OpenedIdentity), SourceError> {
+                Tree.open_child(parent, entry)
+            }
+            fn list(&self, dir: &u64, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+                Tree.list(dir, &mut |entry| {
+                    if *dir == 1 {
+                        let mut skipped = entry.clone();
+                        skipped.name = &[115];
+                        skipped.attributes = 0x410;
+                        if sink(skipped) == Flow::Stop {
+                            return Flow::Stop;
+                        }
+                    }
+                    sink(entry)
+                })
+            }
+        }
+        for cap in [6, 10] {
+            let sink = Arc::new(DirtyWriter {
+                sink: MemorySink::default(),
+                dirtied: AtomicBool::new(false),
+                on_final: false,
+                always: false,
+            });
+            let dirty = Mutex::new(Dirty::default());
+            let checkpoints = std::sync::atomic::AtomicUsize::new(0);
+            let report = reconcile(
+                &Source,
+                &root(),
+                1,
+                sink,
+                Arc::new(ByteBudget::new(crate::budgets::SCAN_BYTES)),
+                Arc::new(AtomicBool::new(false)),
+                ScanOptions {
+                    workers: 1,
+                    max_entries: cap,
+                    ..Default::default()
+                },
+                &dirty,
+                || {
+                    if checkpoints.fetch_add(1, Ordering::Relaxed) == 1 {
+                        dirty.lock().unwrap().record(vec![Change::RootDirty]);
+                    }
+                    true
+                },
+            )
+            .unwrap();
+            assert_eq!(report.complete, cap == 10);
+            assert_eq!(report.limit_hit, cap == 6);
+            assert_eq!(report.enumeration_attempts, if cap == 10 { 8 } else { 6 });
+            if cap == 10 {
+                assert_eq!((report.examined, report.skipped, report.failed), (3, 1, 0));
+            }
+        }
+    }
     #[derive(Default)]
     pub(super) struct RecordingSink {
         pub(super) memory: MemorySink,

@@ -476,6 +476,66 @@ impl DirSource for NativeSource {
         )?;
         opened(file, entry.file_id, self.strategy())
     }
+    fn can_reopen(&self, identity: OpenedIdentity) -> bool {
+        matches!(identity.basis, IdBasis::Listed | IdBasis::PostOpen)
+            && identity.id.and_then(FileIdObs::nonzero).is_some()
+            && identity.volume_serial.is_some()
+    }
+    fn reopen(
+        &self,
+        root: &Path,
+        root_identity: OpenedIdentity,
+        identity: OpenedIdentity,
+    ) -> Result<(NativeDir, OpenedIdentity), SourceError> {
+        if !self.can_reopen(identity) {
+            return Err(SourceError::IdentityUnverified);
+        }
+        let (anchor, observed) = self.open_root(root)?;
+        if observed.id != root_identity.id || observed.volume_serial != root_identity.volume_serial
+        {
+            return Err(SourceError::IdentityChanged);
+        }
+        let _thread = self.cancel.register()?;
+        if self.cancel.is_cancelled() {
+            return Err(SourceError::Io(ERROR_OPERATION_ABORTED as i32));
+        }
+        let mut descriptor: FILE_ID_DESCRIPTOR = unsafe { zeroed() };
+        descriptor.dwSize = size_of::<FILE_ID_DESCRIPTOR>() as u32;
+        match identity.id.unwrap() {
+            FileIdObs::Id64(id) => {
+                descriptor.Type = FileIdType;
+                descriptor.Anonymous.FileId = id as i64;
+            }
+            FileIdObs::Id128(id) => {
+                descriptor.Type = ExtendedFileIdType;
+                descriptor.Anonymous.ExtendedFileId.Identifier = id;
+            }
+        }
+        let handle = unsafe {
+            OpenFileById(
+                anchor.file.as_raw_handle(),
+                &descriptor,
+                FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                null(),
+                FILE_FLAG_BACKUP_SEMANTICS
+                    | FILE_FLAG_OPEN_REPARSE_POINT
+                    | FILE_FLAG_OPEN_NO_RECALL,
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(last_error());
+        }
+        let result = opened(
+            unsafe { File::from_raw_handle(handle) },
+            identity.id,
+            self.strategy(),
+        )?;
+        if result.1.volume_serial != identity.volume_serial {
+            return Err(SourceError::IdentityChanged);
+        }
+        Ok(result)
+    }
     fn list(&self, dir: &NativeDir, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
         let _thread = match self.cancel.register() {
             Ok(h) => h,

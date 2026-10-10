@@ -155,6 +155,19 @@ pub trait DirSource: Send + Sync {
     }
     /// Open an explicitly granted path, without following its final reparse component.
     fn open_root(&self, path: &Path) -> Result<(Self::Dir, OpenedIdentity), SourceError>;
+    /// Whether a unique identity can replace a retained handle between listings.
+    fn can_reopen(&self, _identity: OpenedIdentity) -> bool {
+        false
+    }
+    /// Reopen a previously observed identity on the still-verified root's volume.
+    fn reopen(
+        &self,
+        _root: &Path,
+        _root_identity: OpenedIdentity,
+        _identity: OpenedIdentity,
+    ) -> Result<(Self::Dir, OpenedIdentity), SourceError> {
+        Err(SourceError::Unsupported)
+    }
     /// Enumerate metadata, returning Complete only on native end-of-directory.
     fn list(&self, dir: &Self::Dir, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome;
     /// Open a single child name relative to its validated parent.

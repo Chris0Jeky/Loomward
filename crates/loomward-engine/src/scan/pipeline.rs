@@ -8,7 +8,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
         mpsc::{self, Receiver, SyncSender, TrySendError},
         Arc, Condvar, Mutex,
     },
@@ -24,7 +24,7 @@ const TASK_CAPACITY: usize = 1024;
 pub struct ScanOptions {
     /// Own enumeration worker count, 1..=32.
     pub workers: usize,
-    /// Entire-run examined-entry limit.
+    /// Entire-run enumeration-attempt limit, including relists.
     pub max_entries: u64,
     /// Maximum directories, also clamped by the arena byte reservation.
     pub max_dirs: usize,
@@ -59,12 +59,16 @@ pub struct ScanReport {
     pub strategy: Strategy,
     /// A finite entry, depth or directory limit was reached.
     pub limit_hit: bool,
-    /// Entries examined, including excluded metadata.
+    /// Entries in each directory's latest listing, including excluded metadata.
     pub examined: u64,
+    /// Enumeration attempts across all listings, including relists; used for the run limit.
+    pub enumeration_attempts: u64,
     /// Deliberately skipped entries.
     pub skipped: u64,
     /// Failed child opens or listings.
     pub failed: u64,
+    /// Unique directory identities sighted twice in one listing or under another parent.
+    pub duplicate_identity: u64,
     /// Wall-clock elapsed seconds, including parallel overlap.
     pub elapsed_seconds: f64,
     /// Sum of worker time spent enumerating and handing off chunks (not exclusive CPU time).
@@ -86,7 +90,11 @@ struct Slot<D> {
     listings: u32,
     /// The parent's listing number in which this directory was last sighted.
     seen: u32,
-    dir: Arc<D>,
+    dir: Option<Arc<D>>,
+    identity: Option<(u64, FileIdObs)>,
+    round: u32,
+    /// Latest listing's examined, skipped and failed counts.
+    counts: [u64; 3],
     depth: usize,
     own: Sums,
     listed: bool,
@@ -121,6 +129,9 @@ struct Envelope {
 }
 struct Shared<'a, S: DirSource> {
     source: &'a S,
+    root_path: &'a std::path::Path,
+    root_identity: OpenedIdentity,
+    round: AtomicU32,
     run: u64,
     options: ScanOptions,
     tasks: Mutex<Tasks<S::Dir>>,
@@ -132,9 +143,8 @@ struct Shared<'a, S: DirSource> {
     bytes: Arc<ByteBudget>,
     cancel: Arc<AtomicBool>,
     writer_failed: Arc<AtomicBool>,
-    examined: AtomicU64,
-    skipped: AtomicU64,
-    failures: AtomicU64,
+    attempted: AtomicU64,
+    duplicate_identity: AtomicU64,
     enumeration_ns: AtomicU64,
     strategy: Mutex<Strategy>,
     limit_hit: AtomicBool,
@@ -145,6 +155,8 @@ struct Shared<'a, S: DirSource> {
     held: Mutex<(usize, usize)>,
     arena_bytes: usize,
     node_bytes: usize,
+    handle_bytes: usize,
+    handles: AtomicUsize,
 }
 /// One held child's share of [`Shared::held`], returned when the child is adopted or dropped.
 struct Held<'a>(&'a Mutex<(usize, usize)>, usize);
@@ -159,10 +171,16 @@ impl<S: DirSource> Shared<'_, S> {
     /// Hold one more sighted child if the arena reservation still covers every slot and held
     /// child at the per-node estimate plus every held name, and the directory cap allows it.
     fn hold(&self, name_bytes: usize) -> Option<Held<'_>> {
-        let slots = self.arena.lock().unwrap().len();
+        let arena = self.arena.lock().unwrap();
+        let slots = arena.len();
+        let handles = self.handles.load(Ordering::Relaxed);
         let mut held = self.held.lock().unwrap();
         let fits = slots + held.0 < self.max_dirs
-            && (slots + held.0 + 1) * self.node_bytes + held.1 + name_bytes <= self.arena_bytes;
+            && (slots + held.0 + 1) * self.node_bytes
+                + (handles + held.0 + 1) * self.handle_bytes
+                + held.1
+                + name_bytes
+                <= self.arena_bytes;
         fits.then(|| {
             held.0 += 1;
             held.1 += name_bytes;
@@ -225,10 +243,24 @@ impl<S: DirSource> Shared<'_, S> {
             _permit: None,
         })
     }
-    fn finish_slot(&self, index: usize, own: Sums, complete: bool) -> EngineResult<()> {
+    fn finish_slot(
+        &self,
+        index: usize,
+        own: Sums,
+        complete: bool,
+        counts: [u64; 3],
+    ) -> EngineResult<()> {
         let mut arena = self.arena.lock().unwrap();
         arena[index].own = own;
         arena[index].listed = complete;
+        arena[index].counts = counts;
+        if arena[index]
+            .identity
+            .is_some_and(|key| self.source.can_reopen(reopen_identity(key)))
+            && arena[index].dir.take().is_some()
+        {
+            self.handles.fetch_sub(1, Ordering::Relaxed);
+        }
         Ok(())
     }
     /// Aggregate every slot bottom-up; `send` also publishes each directory's final.
@@ -315,6 +347,7 @@ impl<S: DirSource> Shared<'_, S> {
             slot.listings += 1;
             (slot.ticket, slot.listings)
         };
+        let mut counts = [0u64; 3];
         let mut own = Sums::ZERO;
         let mut complete = true;
         let mut entries = Vec::new();
@@ -336,11 +369,12 @@ impl<S: DirSource> Shared<'_, S> {
             }
             count += 1;
             if count > self.options.max_listing_entries
-                || self.examined.fetch_add(1, Ordering::Relaxed) >= self.options.max_entries
+                || self.attempted.fetch_add(1, Ordering::Relaxed) >= self.options.max_entries
             {
                 stopped = Some(IncompleteReason::Limit);
                 return Flow::Stop;
             }
+            counts[0] += 1;
             let mut excluded = refused_attributes(raw.attributes)
                 || raw.name == [46, 108, 111, 111, 109, 119, 97, 114, 100];
             let mut child = None;
@@ -350,7 +384,7 @@ impl<S: DirSource> Shared<'_, S> {
                     // Not opened, but not an exclusion either: it stays a plain, unlisted entry.
                     complete = false;
                     stopped = Some(IncompleteReason::Limit);
-                    self.skipped.fetch_add(1, Ordering::Relaxed);
+                    counts[1] += 1;
                 } else {
                     match self.source.open_child(&task.dir, &raw) {
                         Ok((dir, identity)) => {
@@ -366,13 +400,13 @@ impl<S: DirSource> Shared<'_, S> {
                         Err(reason) => {
                             traversal_error = Some(reason);
                             complete = false;
-                            self.failures.fetch_add(1, Ordering::Relaxed);
+                            counts[2] += 1;
                         }
                     }
                 }
             }
             if excluded {
-                self.skipped.fetch_add(1, Ordering::Relaxed);
+                counts[1] += 1;
             }
             let entry = Entry {
                 name: raw.name.to_vec(),
@@ -441,12 +475,16 @@ impl<S: DirSource> Shared<'_, S> {
                     };
                     if let Some(index) = known {
                         let mut arena = self.arena.lock().unwrap();
-                        if index != PENDING && arena[index].parent == Some(task.slot) {
+                        if index != PENDING
+                            && arena[index].parent == Some(task.slot)
+                            && arena[index].seen != listing
+                        {
                             arena[index].seen = listing;
                         } else {
                             // Already sighted under another parent: it moved during the run,
                             // and this listing's aggregate cannot attribute it.
                             complete = false;
+                            self.duplicate_identity.fetch_add(1, Ordering::Relaxed);
                         }
                         return Flow::Continue;
                     }
@@ -490,8 +528,11 @@ impl<S: DirSource> Shared<'_, S> {
         }
         if outcome != ListOutcome::Complete {
             complete = false;
-            if outcome != ListOutcome::Incomplete(IncompleteReason::Limit) {
-                self.failures.fetch_add(1, Ordering::Relaxed);
+            if !matches!(
+                outcome,
+                ListOutcome::Incomplete(IncompleteReason::Limit | IncompleteReason::OutsideScope)
+            ) {
+                counts[2] += 1;
             }
         }
         if !self.flush(ticket, &mut entries, &mut permit) {
@@ -509,7 +550,7 @@ impl<S: DirSource> Shared<'_, S> {
                 complete = false;
             }
         }
-        self.finish_slot(task.slot, own, complete)
+        self.finish_slot(task.slot, own, complete, counts)
     }
     /// Prepare one child sighted by a published listing and queue it. `Ok(false)` means the
     /// parent's aggregate cannot claim this child (moved, unpublished or over the arena cap).
@@ -558,15 +599,25 @@ impl<S: DirSource> Shared<'_, S> {
                     arena[index].seen = listing;
                 }
                 arena[index].ticket = child_ticket;
+                arena[index].identity = reopen_key(identity);
                 if let Some(key) = key {
                     self.discovered.lock().unwrap().insert(key, index);
                 }
-                self.tasks.lock().unwrap().queue.push_back(Task {
-                    dir: arena[index].dir.clone(),
-                    slot: index,
-                    depth: arena[index].depth,
-                });
-                self.ready.notify_one();
+                if arena[index].round != self.round.load(Ordering::Relaxed) {
+                    // Use the freshly validated sighting, never the slot's old name-only handle.
+                    let dir = Arc::new(dir);
+                    if arena[index].dir.is_none() {
+                        self.handles.fetch_add(1, Ordering::Relaxed);
+                    }
+                    arena[index].dir = Some(dir.clone());
+                    arena[index].round = self.round.load(Ordering::Relaxed);
+                    self.tasks.lock().unwrap().queue.push_back(Task {
+                        dir,
+                        slot: index,
+                        depth: arena[index].depth,
+                    });
+                    self.ready.notify_one();
+                }
                 return Ok(claimed);
             }
             if arena.len() >= self.max_dirs {
@@ -574,11 +625,15 @@ impl<S: DirSource> Shared<'_, S> {
                 return Ok(false);
             }
             let index = arena.len();
+            self.handles.fetch_add(1, Ordering::Relaxed);
             arena.push(Slot {
                 parent: Some(task.slot),
                 listings: 0,
                 seen: listing,
-                dir: Arc::new(dir),
+                dir: Some(Arc::new(dir)),
+                identity: reopen_key(identity),
+                round: self.round.load(Ordering::Relaxed),
+                counts: [0; 3],
                 depth: task.depth + 1,
                 own: Sums::ZERO,
                 listed: false,
@@ -597,7 +652,11 @@ impl<S: DirSource> Shared<'_, S> {
         }
         // The arena reservation also covers every queued handle/task: no recursive
         // enumeration retains another native buffer or parent callback on the stack.
-        let dir = self.arena.lock().unwrap()[slot].dir.clone();
+        let dir = self.arena.lock().unwrap()[slot]
+            .dir
+            .as_ref()
+            .unwrap()
+            .clone();
         self.tasks.lock().unwrap().queue.push_back(Task {
             dir,
             slot,
@@ -656,6 +715,18 @@ fn directory_key(identity: OpenedIdentity) -> Option<(Option<u64>, FileIdObs)> {
             .map(|id| (identity.volume_serial, id))
     } else {
         None
+    }
+}
+fn reopen_key(identity: OpenedIdentity) -> Option<(u64, FileIdObs)> {
+    directory_key(identity).and_then(|(volume, id)| volume.map(|volume| (volume, id)))
+}
+fn reopen_identity((volume, id): (u64, FileIdObs)) -> OpenedIdentity {
+    OpenedIdentity {
+        id: Some(id),
+        volume_serial: Some(volume),
+        basis: IdBasis::PostOpen,
+        attributes: 0,
+        reparse_tag: None,
     }
 }
 fn listing_revision_changed(e: &EngineError) -> bool {
@@ -778,11 +849,10 @@ pub fn run_scan<S: DirSource>(
     let _arena_permit = bytes
         .acquire(reservation, &cancel, &failed)
         .ok_or_else(cancelled)?;
-    let node_bytes = std::mem::size_of::<Slot<S::Dir>>()
-        + std::mem::size_of::<Task<S::Dir>>()
+    let node_bytes = std::mem::size_of::<Slot<S::Dir>>() + 128; // Identity and catalogue map buckets.
+    let handle_bytes = std::mem::size_of::<Task<S::Dir>>()
         + std::mem::size_of::<S::Dir>()
-        + 2 * std::mem::size_of::<usize>()
-        + 128; // Identity-set buckets and the retained handle's Arc allocation.
+        + 2 * std::mem::size_of::<usize>();
     let max_dirs = options.max_dirs.min(arena_bytes / node_bytes);
     let (dir, identity) =
         source
@@ -835,6 +905,9 @@ pub fn run_scan<S: DirSource>(
         depth: 0,
     });
     let shared = Shared {
+        root_path: root.path(),
+        root_identity: identity,
+        round: AtomicU32::new(1),
         source,
         run,
         options: options.clone(),
@@ -856,9 +929,8 @@ pub fn run_scan<S: DirSource>(
         bytes: bytes.clone(),
         cancel: cancel.clone(),
         writer_failed: failed.clone(),
-        examined: AtomicU64::new(0),
-        skipped: AtomicU64::new(0),
-        failures: AtomicU64::new(0),
+        attempted: AtomicU64::new(0),
+        duplicate_identity: AtomicU64::new(0),
         enumeration_ns: AtomicU64::new(0),
         strategy: Mutex::new(source.strategy()),
         limit_hit: AtomicBool::new(false),
@@ -867,12 +939,17 @@ pub fn run_scan<S: DirSource>(
         held: Mutex::new((0, 0)),
         arena_bytes,
         node_bytes,
+        handle_bytes,
+        handles: AtomicUsize::new(1),
     };
     shared.arena.lock().unwrap().push(Slot {
         parent: None,
         listings: 0,
         seen: 0,
-        dir,
+        dir: Some(dir),
+        identity: reopen_key(identity),
+        round: 1,
+        counts: [0; 3],
         depth: 0,
         own: Sums::ZERO,
         listed: false,
@@ -942,9 +1019,13 @@ pub fn run_scan<S: DirSource>(
             if attempt == 2 {
                 break;
             }
+            // Workers are joined before the coordinator takes arena -> tasks -> catalog_dirs;
+            // workers take arena -> catalog_dirs -> discovered -> tasks and never reverse it.
+            shared.round.fetch_add(1, Ordering::Relaxed);
             let mut arena = shared.arena.lock().unwrap();
             let mut tasks = shared.tasks.lock().unwrap();
             tasks.done = false;
+            let slot_bytes = arena.len() * shared.node_bytes;
             for dir in dirty {
                 let Some(&index) = shared.catalog_dirs.lock().unwrap().get(&dir) else {
                     result = Err(EngineError::Internal {
@@ -961,8 +1042,42 @@ pub fn run_scan<S: DirSource>(
                         break;
                     }
                 };
+                slot.round = shared.round.load(Ordering::Relaxed);
+                let dir = match &slot.dir {
+                    Some(dir) => dir.clone(),
+                    None => {
+                        if slot_bytes
+                            + (shared.handles.load(Ordering::Relaxed) + 1) * shared.handle_bytes
+                            > shared.arena_bytes
+                        {
+                            shared.limit_hit.store(true, Ordering::Release);
+                            slot.listed = false;
+                            continue;
+                        }
+                        let expected = reopen_identity(
+                            slot.identity
+                                .expect("released handle has a unique identity"),
+                        );
+                        match source.reopen(shared.root_path, shared.root_identity, expected) {
+                            Ok((dir, identity))
+                                if identity.id == expected.id
+                                    && identity.volume_serial == expected.volume_serial =>
+                            {
+                                let dir = Arc::new(dir);
+                                shared.handles.fetch_add(1, Ordering::Relaxed);
+                                slot.dir = Some(dir.clone());
+                                dir
+                            }
+                            _ => {
+                                slot.listed = false;
+                                slot.counts[2] = slot.counts[2].max(1);
+                                continue;
+                            }
+                        }
+                    }
+                };
                 tasks.queue.push_back(Task {
-                    dir: slot.dir.clone(),
+                    dir,
                     slot: index,
                     depth: slot.depth,
                 });
@@ -971,7 +1086,7 @@ pub fn run_scan<S: DirSource>(
                 break;
             }
         }
-        if !reconciled {
+        if !reconciled && result.is_ok() {
             // Finals were never accepted: still report the partial sums of what was listed,
             // never a zero standing in for unknown.
             let aggregation = Instant::now();
@@ -998,8 +1113,20 @@ pub fn run_scan<S: DirSource>(
             }),
         )
     });
-    let slot = &shared.arena.lock().unwrap()[0];
+    // A worker panic fails the run; recover only to finish it as incomplete, never to resume work.
+    let arena = shared
+        .arena
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let slot = &arena[0];
+    let counts = arena.iter().fold([0u64; 3], |mut totals, slot| {
+        for (total, count) in totals.iter_mut().zip(slot.counts) {
+            *total += count;
+        }
+        totals
+    });
     let complete = slot.complete
+        && shared.duplicate_identity.load(Ordering::Relaxed) == 0
         && !cancel.load(Ordering::Acquire)
         && worker_result.is_ok()
         && writer_result.is_ok();
@@ -1017,12 +1144,14 @@ pub fn run_scan<S: DirSource>(
         complete,
         strategy,
         limit_hit: shared.limit_hit.load(Ordering::Acquire),
-        examined: shared
-            .examined
+        examined: counts[0],
+        enumeration_attempts: shared
+            .attempted
             .load(Ordering::Relaxed)
             .min(options.max_entries),
-        skipped: shared.skipped.load(Ordering::Relaxed),
-        failed: shared.failures.load(Ordering::Relaxed),
+        skipped: counts[1],
+        failed: counts[2],
+        duplicate_identity: shared.duplicate_identity.load(Ordering::Relaxed),
         elapsed_seconds: start.elapsed().as_secs_f64(),
         enumeration_worker_seconds: shared.enumeration_ns.load(Ordering::Relaxed) as f64 / 1e9,
         enumeration_wall_seconds,
