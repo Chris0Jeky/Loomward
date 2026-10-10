@@ -1,3 +1,72 @@
+# PR #147 fix-round receipt - 2026-10-10
+
+## Changed
+
+Uncommitted fixes on `feat/l2-catalog`, starting HEAD
+`6bbeb81ecd4d7f60d27f39c506398b5b65a4dd56`. The driver commits and pushes.
+The initial worktree was clean; the driver's query budget CAS loop is preserved.
+
+- F1: use the same deterministic, creation-aware file matching in state preparation
+  and publication. Commit a surviving hard-link row/born-run binding before deleting
+  the old location; retire the reference when no continuity remains. Test:
+  `surviving_hardlink_keeps_the_durable_reference_and_membership` (direct and staged,
+  collection membership retained, later absence retires the binding).
+- F2: creation changes allocate new row IDs and born-run values, including during
+  incomplete refresh. Retire old subtree references first; quarantine directories
+  as hidden `absent_pending` tombstones and clear their native identities. Replacement
+  directories start `unlisted`, with no inherited descendants or totals. Extended
+  `creation_time_edits_retire_directory_and_file_bindings_without_auto_reattachment`
+  checks a later-run partial refresh, old incarnation rejection, descendant reference
+  retirement and exact totals after relisting. The existing reused-creation-time
+  explicit-reconciliation regression remains unchanged and green.
+- F3: advance the catalogue revision for each command inside its savepoint, retaining
+  commit batching. Dirty propagation coalesces within each input, rather than across
+  distinct inputs. `two_listings_in_one_writer_batch_reject_the_older_final` queues both
+  listings before starting the actual writer loop, rejects the 150-byte final and
+  accepts the 200-byte final.
+- F4: advance the search watermark at each returned row. Test:
+  `budgeted_search_resumes_after_the_last_returned_match` interrupts inside a SQLite
+  batch after matches, then checks all 60 results appear exactly once.
+
+## Verified
+
+Windows, cargo/rustc 1.97.1: `cargo fmt --all --check`, `cargo test --workspace`
+(207 passed, zero failed/ignored; 45 catalogue tests),
+`cargo clippy --workspace --all-targets -- -D warnings`, and `git diff --check` pass.
+All existing errata tests and `sql_rollup_matches_brute_force_for_random_trees` pass.
+The final four regression tests each fail with exit 101 against the committed
+pre-fix production sources. Exact working bytes were restored afterward;
+`evidence/pr147-fix-regressions.json` records failures, proof and source hashes.
+
+The hot path changed, so the synthetic 1M bench was rerun:
+`cargo run -p loomward-catalog --release --example bench -- --rows 1000000`.
+It checks 1,000,000 files plus 1,001 directories, all indexes and the accounting oracle,
+and removes its temporary directory. Receipt: `../../evidence/v3/bench/catalog-1m.json`.
+P4: 54.307 s, **18,432 rows/s; target 250,000 still missed**. Dirty updates: 3,001.
+P6/P7/P8 p95: 43.443/1.049/15.847 ms; P8 hit its budget in all 21 probes.
+This is one warm host measurement, not an isolated speedup or throughput ceiling.
+
+## NOT verified
+
+Hosted CI/review threads, 10M, cold cache, HTTP/native scanner integration,
+physical power-loss durability, Python/UI. No commit, push or other external action.
+Coordinator-owned root status/checkpoint documents are left for driver integration.
+
+## Residual risk
+
+P4 remains materially below target; 1M P6/P14 are not their 10M gates. Reference
+binding collisions retain the existing unique constraint and fail closed; this round
+proves the reviewed one-reference hard-link case. Hidden quarantined rows remain
+until the existing full-traversal sweep. State-first retirement is conservative
+if subsequent derived publication fails.
+
+`../../HUMAN_TODO.md` was read and preserved; q-1/q-2/q-5 are now closed in live
+state, unlike the historical receipt below. This fix round requires no new owner
+choice. The driver owns the reviewed commit, push and cleanup of this worktree.
+Recommended commit: `fix(catalog): preserve continuity and fence aggregate revisions`.
+
+---
+
 # L2 round 2 receipt - 2026-10-10
 
 ## Changed
