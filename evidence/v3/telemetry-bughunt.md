@@ -88,9 +88,3 @@ instances with partial native coverage, not a complete adapter inventory. The ex
 has no per-field PDH coverage/reason channel; this lane adds none. Process rows can still describe
 an exited process until the next enumeration, carrying their original observation time.
 Consumers of native totals must read `sum_unknowns` before treating a saturated sum as exact.
-
-- `Preserve telemetry samples across unchanged lease renewals`
-- `Keep valid GPU observations when malformed instances appear`
-- `Align process denial rows with native totals`
-- `Reject telemetry reads after the last lease expires`
-- `Check process byte sums and report overflow coverage`
