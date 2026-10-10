@@ -313,7 +313,7 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     check('hidden character' not in page.locator('main .ctl').first.inner_text(), 'badge: the visible text is still only the code')
 
     # --- 2.5.8: target size ---------------------------------------------------------------------------------------------
-    for view, heading in (('explorer', 'Explorer'), ('atlas', 'Atlas'), ('tiers', 'Tiers'), ('companion', 'Companion'), ('health', 'Grants & health')):
+    for view, heading in (('explorer', 'Explorer'), ('atlas', 'Atlas'), ('observatory', 'Observatory'), ('tiers', 'Tiers'), ('companion', 'Companion'), ('health', 'Grants & health')):
         goto(page, base, view, heading)
         page.wait_for_timeout(300)
         small = page.evaluate("""() => [...document.querySelectorAll('button, a[href], select, input')].filter((el) => !el.closest('.skip') && !el.classList.contains('skip')).flatMap((el) => {
