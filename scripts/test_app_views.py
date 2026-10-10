@@ -464,6 +464,112 @@ def check_health(page: Page, base: str, shoot) -> None:
     print('PASS Grants & health: revoke root and grant with confirmation, state reflected, all effects off')
 
 
+ROOTS = 'main section[aria-labelledby="h-roots"]'
+SCAN_CLEAN, SCAN_DIRTY = '[mock] lab-complete', '[mock] lab-unreadable-folders'
+
+
+def check_scan_controls(page: Page, base: str, shots: Path | None) -> None:
+    """Scan, Refresh and Cancel on a granted root, on the mock transport: a lab root scans, a fixture root is
+    refused with the service's reason, a running scan is indeterminate, a partial scan says partial."""
+    page.set_viewport_size({'width': 1440, 'height': 900})
+    page.goto(f'{base}/?transport=mock#/health')
+    page.reload()  # a same-URL goto is only a hash change: reload for a fresh mock
+    expect(page.get_by_role('heading', name='Grants & health', level=1)).to_be_visible()
+    section = page.locator(ROOTS)
+    live = section.locator('p.scanlive')
+    cards = section.locator('ul.scans li')
+    clean = cards.filter(has_text=SCAN_CLEAN)
+    dirty = cards.filter(has_text=SCAN_DIRTY)
+    fixture = cards.first
+    table_row = lambda root: section.locator('tbody tr', has_text=root)
+
+    def shoot(name: str) -> None:
+        if not shots:
+            return
+        for tag, (w, h) in VIEWPORTS.items():
+            page.set_viewport_size({'width': w, 'height': h})
+            page.wait_for_timeout(300)
+            head, body = section.locator('#h-scans').bounding_box(), section.locator('ul.scans').bounding_box()
+            top = page.evaluate('scrollY')
+            page.screenshot(path=str(shots / f'{name}-{tag}.png'), full_page=True, clip={
+                'x': max(0, head['x'] - 8), 'y': head['y'] + top - 8, 'width': body['width'] + 16, 'height': body['y'] + body['height'] - head['y'] + 16})
+        page.set_viewport_size({'width': 1440, 'height': 900})
+
+    def scan_btn(row, root: str):
+        return row.get_by_role('button', name=f'Scan {root}', exact=True)
+
+    def cancel_btn(row, root: str):
+        return row.get_by_role('button', name=f'Cancel scan of {root}', exact=True)
+
+    # idle: a Scan button on each active root, no Refresh before a first scan, a status region that is already in the page
+    expect(live).to_have_attribute('role', 'status')
+    ok(live.inner_text() == '', 'the scan status region is in the page and empty before any scan')
+    expect(scan_btn(clean, SCAN_CLEAN)).to_be_visible()
+    expect(clean.get_by_role('button', name=re.compile('^Refresh'))).to_have_count(0)
+    expect(table_row(SCAN_CLEAN)).to_contain_text('never scanned')
+    ok(not re.search(r'Scanning|Finished|Cancelled', clean.inner_text()), 'an unscanned root claims no scan result')
+    ok(clean.get_by_role('button').count() == 1, 'an unscanned root offers Scan and nothing else')
+    shoot('scan-idle')
+
+    # refused: the mock answers a fixture root the way the service answers a non-lab root in a synthetic session
+    fixture.get_by_role('button', name=re.compile('^Scan ')).click()
+    expect(fixture.locator('.problem')).to_contain_text('registered lab roots only')
+    expect(live).to_contain_text('registered lab roots only')
+    ok(fixture.locator('.job').count() == 0, 'a refused scan leaves no scan job on the root')
+    shoot('scan-refused')
+
+    # running: indeterminate (text and elapsed time, no bar that fills, no percentage), Cancel in the same place
+    scan_btn(clean, SCAN_CLEAN).click()
+    expect(cancel_btn(clean, SCAN_CLEAN)).to_be_focused()
+    expect(clean).to_contain_text('Scanning')
+    expect(clean).to_contain_text('No progress is reported until the scan ends')
+    expect(clean).to_contain_text(re.compile(r'elapsed [1-9]\d* s'))
+    ok(clean.locator('[role=progressbar], [role=meter], progress, meter').count() == 0, 'a running scan has no progress bar or meter')
+    ok('%' not in clean.inner_text(), 'a running scan shows no percentage')
+    expect(live).to_contain_text('Scanning')
+    shoot('scan-running')
+
+    # completed: complete coverage only because the mock root is complete; counts; focus stays on the one button
+    expect(clean).to_contain_text('Finished, complete coverage', timeout=9000)
+    expect(clean).to_contain_text('1,284 files, 212 folders')
+    expect(clean).to_contain_text(re.compile(r'took \d+ s'))
+    expect(live).to_contain_text('Finished, complete coverage')
+    expect(scan_btn(clean, SCAN_CLEAN)).to_be_focused()
+    expect(clean.get_by_role('button', name=f'Refresh scan of {SCAN_CLEAN}', exact=True)).to_be_visible()
+    ok('partial' not in clean.locator('.job').inner_text().lower(), 'a complete scan is not called partial')
+    expect(table_row(SCAN_CLEAN).locator('td').nth(4)).to_have_text('1,284')
+
+    # refresh then cancel: Refresh goes away, focus follows to Cancel, the root ends cancelled and not complete-covered
+    clean.get_by_role('button', name=f'Refresh scan of {SCAN_CLEAN}', exact=True).click()
+    expect(cancel_btn(clean, SCAN_CLEAN)).to_be_focused()
+    cancel_btn(clean, SCAN_CLEAN).click()
+    expect(clean).to_contain_text('Cancelled', timeout=5000)
+    expect(clean).to_contain_text('not published as a complete scan')
+    expect(live).to_contain_text('Cancelled')
+
+    # partial: the root has unreadable folders, so the finished scan says partial and keeps the gap in view
+    scan_btn(dirty, SCAN_DIRTY).click()
+    expect(dirty).to_contain_text('Finished, partial coverage', timeout=9000)
+    expect(dirty).to_contain_text('4 could not be read')
+    expect(dirty).to_contain_text('lower bounds')
+    ok('complete coverage' not in dirty.locator('.job').inner_text().lower(), 'a partial scan is never called complete')
+    expect(table_row(SCAN_DIRTY).locator('td').nth(3)).to_contain_text('partial')
+    shoot('scan-partial')
+
+    # leaving the view mid-scan loses nothing: the Explorer refetches on tree.invalidated, and the result is here on return
+    scan_btn(dirty, SCAN_DIRTY).click()
+    expect(cancel_btn(dirty, SCAN_DIRTY)).to_be_visible()
+    page.evaluate("location.hash = '#/explorer'")
+    expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
+    page.wait_for_timeout(5200)
+    expect(rows(page).first).to_be_visible()
+    page.evaluate("location.hash = '#/health'")
+    expect(page.get_by_role('heading', name='Grants & health', level=1)).to_be_visible()
+    expect(section.locator('ul.scans li', has_text=SCAN_DIRTY)).to_contain_text('Finished, partial coverage')
+    ok(section.locator('p.scanlive').inner_text() == '', 'a scan that ended while the view was away is not announced again on return')
+    print('PASS scan controls: idle, refused, running indeterminate, complete, refresh and cancel, partial, survives leaving the view')
+
+
 def check_narrow(page: Page, base: str) -> None:
     page.set_viewport_size({'width': 390, 'height': 844})
     for view in ('explorer', 'tiers', 'companion', 'health'):
@@ -535,5 +641,6 @@ def run_views(page: Page, base: str, shots: Path | None) -> None:
     check_tiers(page, base, shoot)
     check_companion(page, base, shoot)
     check_health(page, base, shoot)
+    check_scan_controls(page, base, shots)
     check_narrow(page, base)
     check_narrow_wide_fonts(page, base)
