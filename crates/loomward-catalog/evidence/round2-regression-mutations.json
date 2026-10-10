@@ -1,0 +1,45 @@
+{
+  "scope": "synthetic SQLite counterexamples on Windows; original source restored after each mutation campaign",
+  "results": [
+    {
+      "item": "N1",
+      "test": "obsolete_same_run_final_cannot_publish_current_revision",
+      "command": "cargo test -p loomward-catalog --test writer obsolete_same_run_final_cannot_publish_current_revision -- --exact",
+      "exit_code": 101,
+      "regression_detected": true,
+      "seconds": 5.438164700011839
+    },
+    {
+      "item": "N2",
+      "test": "targeted_run_keeps_an_unrelated_pending_tombstone",
+      "command": "cargo test -p loomward-catalog --test writer targeted_run_keeps_an_unrelated_pending_tombstone -- --exact",
+      "exit_code": 101,
+      "regression_detected": true,
+      "seconds": 2.4163082000013674
+    },
+    {
+      "item": "N3",
+      "test": "refs_64_bit_fallback_cannot_reparent_or_bind_durable_references",
+      "command": "cargo test -p loomward-catalog --test writer refs_64_bit_fallback_cannot_reparent_or_bind_durable_references -- --exact",
+      "exit_code": 101,
+      "regression_detected": true,
+      "seconds": 2.434856199994101
+    },
+    {
+      "item": "partial_8",
+      "test": "b_first_reparent_invalidates_both_chains_before_cancelled_repair",
+      "command": "cargo test -p loomward-catalog --test writer b_first_reparent_invalidates_both_chains_before_cancelled_repair -- --exact",
+      "exit_code": 101,
+      "regression_detected": true,
+      "seconds": 2.126223300001584
+    },
+    {
+      "item": "partial_10",
+      "test": "reused_creation_time_keeps_retired_incarnation_until_explicit_reconciliation",
+      "command": "cargo test -p loomward-catalog --test writer reused_creation_time_keeps_retired_incarnation_until_explicit_reconciliation -- --exact",
+      "exit_code": 101,
+      "regression_detected": true,
+      "seconds": 2.2103254000103334
+    }
+  ]
+}
