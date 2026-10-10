@@ -36,7 +36,7 @@ from urllib.parse import urlsplit
 from playwright.sync_api import Page, expect, sync_playwright
 
 from test_app_a11y import run_a11y
-from test_app_views import run_views
+from test_app_views import run_views, wait_until
 
 ROOT = Path(__file__).resolve().parents[1]
 TOKEN = 'a1b2c3d4e5f60718293a4b5c6d7e8f90'
@@ -161,6 +161,11 @@ def check(cond: bool, msg: str) -> None:
     if not cond:
         raise AssertionError(msg)
     print('PASS', msg)
+
+
+def check_resume(page: Page) -> None:
+    wait_until(page, lambda: f'{EPOCH}.0' in engine.resume_ids)
+    check(all(re.fullmatch(rf'{EPOCH}\.\d+', i) for i in engine.resume_ids), f'the event stream resumes with the epoch-qualified id: {engine.resume_ids[:2]}')
 
 
 def theme_snapshot(page: Page) -> dict:
@@ -298,6 +303,7 @@ def main() -> None:
     a = ap.parse_args()
     if not (DIST / 'index.html').exists():
         sys.exit('app/dist is missing: run `npm.cmd --prefix app run build` first')
+    subprocess.run([sys.executable, str(ROOT / 'scripts/test_app_timing.py')], check=True)
     if a.live_serve:
         return run_live_serve(a.browser)
 
@@ -428,6 +434,7 @@ def main() -> None:
         # --- themes ----------------------------------------------------------------------------
         atlas = theme_snapshot(page)
         page.get_by_role('button', name='Observatory').click()
+        expect(page.locator('html')).to_have_attribute('data-theme', 'observatory')
         obs = theme_snapshot(page)
         check(atlas['theme'] == 'woven-atlas' and obs['theme'] == 'observatory', 'theme toggle switches data-theme')
         check(atlas['bg'] != obs['bg'], 'the two themes have different backgrounds')
@@ -440,6 +447,7 @@ def main() -> None:
         expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
         check(theme_snapshot(page)['theme'] == 'observatory', 'theme choice survives a reload')
         page.get_by_role('button', name='Woven atlas').click()
+        expect(page.locator('html')).to_have_attribute('data-theme', 'woven-atlas')
         check(theme_snapshot(page)['theme'] == 'woven-atlas', 'back to woven atlas')
 
         # --- accessibility basics, motion, narrow screens ---------------------------------------
@@ -478,7 +486,9 @@ def main() -> None:
         check(TOKEN in engine.tokens_seen and 'session.hello' in engine.calls, 'calls and the event stream carry the token header')
         check('Mock' not in page.get_by_role('status', name='Session status').inner_text(), 'http mode is not labelled mock')
         shot('http-connected.png')
-        page.reload()
+        # Connected follows session.hello; wait for the stream too before deliberately dropping it.
+        with page.expect_response(lambda r: r.url.endswith('/api/v3/events') and r.status == 200):
+            page.reload()
         expect(page.get_by_role('status', name='Session status')).to_contain_text('Connected')
         print('PASS a reload of the tab keeps the session without the fragment')
 
@@ -491,7 +501,7 @@ def main() -> None:
         expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
         print('PASS drop to unavailable and recover')
         # the reconnect resumes with the full frame id `<epoch>.<seq>`; a bare seq makes the real service answer epoch_changed
-        check(bool(engine.resume_ids) and all(re.fullmatch(rf'{EPOCH}\.\d+', i) for i in engine.resume_ids), f'the event stream resumes with the epoch-qualified id: {engine.resume_ids[:2]}')
+        check_resume(page)
 
         # --- product views (lane L13): Explorer, Tiers, Companion, Grants & health ------------------
         run_views(page, base, a.view_shots)
