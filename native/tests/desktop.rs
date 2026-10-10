@@ -600,7 +600,7 @@ fn raw_ipc_enforces_encoded_size_duplicates_and_remote_origin_denial() {
 #[test]
 fn picked_folder_uses_grant_rules_and_fences_profiles_and_stores() {
     use loomward_desktop::dialogs::validate_picked_folder;
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(".").unwrap();
     let profile = tmp.path().join("profiles").join("fixture-user");
     let allowed = profile.join("Documents").join("lab");
     for path in [

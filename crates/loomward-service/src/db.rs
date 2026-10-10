@@ -176,9 +176,9 @@ pub fn root_for_grant(conn: &Connection, grant: i64) -> Sql<Option<i64>> {
     .optional()
 }
 
-pub fn lab_root(conn: &Connection, volume_key: &str, file_id: &[u8]) -> Sql<Option<i64>> {
+pub fn lab_root(conn: &Connection, volume_key: &str, file_id: &[u8]) -> Sql<Option<String>> {
     conn.query_row(
-        "SELECT id FROM st.lab_root WHERE volume_key=?1 AND root_file_id=?2",
+        "SELECT manifest_digest FROM st.lab_root WHERE volume_key=?1 AND root_file_id=?2",
         params![volume_key, file_id],
         |r| r.get(0),
     )

@@ -74,6 +74,287 @@ fn open(dir: &Path, dataset: DatasetClass) -> Service {
 
 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+#[test]
+fn hardening_reads_stay_bounded_after_the_caller_times_out() {
+    let tmp = tempfile::tempdir_in(".").unwrap();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    svc.inner
+        .hooks
+        .closed
+        .lock()
+        .unwrap()
+        .push((Command::HealthGet, "after"));
+    for _ in 0..8 {
+        let mut r = request("health.get", json!({}));
+        r.deadline_ms = Some(Int::new(1).unwrap());
+        assert_eq!(
+            err(svc.call(r, &CallContext::http())).code,
+            ErrorCode::DeadlineExceeded
+        );
+    }
+    let overflow = call(&svc, "health.get", json!({}));
+    svc.inner.hooks.open(Command::HealthGet, "after");
+    assert_eq!(err(overflow).code, ErrorCode::Busy);
+    svc.inner.hooks.until("read permits released", |_| {
+        *svc.inner.reads.lock().unwrap() == 0
+    });
+    ok("health.get", call(&svc, "health.get", json!({})));
+}
+
+#[test]
+fn hardening_grant_alias_cannot_revoke() {
+    let tmp = tempfile::tempdir_in(".").unwrap();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (root, grant) = register(&svc, 1);
+    let response = call(
+        &svc,
+        "grants.revoke",
+        json!({"grant_id": format!("gr_0{grant}")}),
+    );
+    assert_eq!(err(response).code, ErrorCode::NotFound);
+    assert_eq!(
+        crate::db::roots(&svc.inner.db(), Some(root)).unwrap()[0].grant_state,
+        "active"
+    );
+    ok(
+        "grants.revoke",
+        call(
+            &svc,
+            "grants.revoke",
+            json!({"grant_id": format!("gr_{grant}")}),
+        ),
+    );
+}
+
+#[test]
+fn hardening_root_and_volume_ids_cannot_be_forged() {
+    let tmp = tempfile::tempdir_in(".").unwrap();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (root, _) = register(&svc, 1);
+    for (prefix, row) in [("rt_", root), ("vo_", 1)] {
+        let genuine = if prefix == "rt_" {
+            svc.inner.root_id(row)
+        } else {
+            svc.inner.volume_id(row)
+        };
+        let forged = genuine.replacen(
+            &format!("{prefix}{row}_"),
+            &format!("{prefix}{}_", row + 1),
+            1,
+        );
+        let read = |id: &str| {
+            if prefix == "rt_" {
+                svc.inner.root_row(id)
+            } else {
+                svc.inner.volume_row(id)
+            }
+        };
+        assert_eq!(read(&genuine).unwrap(), row);
+        assert!(read(&forged).is_err());
+    }
+    let ids = crate::ids::NodeIds::new([42; 32]);
+    let (first, second) = ("fixture-instance-53847", "fixture-instance-83288");
+    let a = ids.row_id("rt_", 1, first);
+    let b = ids.row_id("rt_", 1, second);
+    assert_eq!(
+        a.split('_').nth(2),
+        b.split('_').nth(2),
+        "synthetic 32-bit hint collision"
+    );
+    assert!(ids.open_row_id("rt_", &a, second).is_err());
+    assert_ne!(a, b);
+}
+
+#[test]
+fn hardening_synthetic_telemetry_is_refused_by_the_service() {
+    let tmp = tempfile::tempdir_in(".").unwrap();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    for (command, payload) in [
+        (
+            "telemetry.subscribe",
+            json!({"subscription_id": null, "channels": ["system"], "interval_ms": 1000}),
+        ),
+        (
+            "telemetry.unsubscribe",
+            json!({"subscription_id": "sb_fixture"}),
+        ),
+        ("telemetry.snapshot", json!({"channels": ["system"]})),
+        ("processes.list", json!({"sort": "name_asc", "limit": 10})),
+        ("processes.explain", json!({"process_ref": "pc_fixture"})),
+    ] {
+        let e = err(call(&svc, command, payload));
+        assert_eq!(e.code, ErrorCode::CapabilityUnavailable, "{command}: {e:?}");
+        assert_eq!(
+            e.message.as_str(),
+            "process observation requires a personal session"
+        );
+    }
+}
+
+#[test]
+fn hardening_invalid_lab_and_startup_leave_no_files() {
+    let tmp = tempfile::tempdir_in(".").unwrap();
+    let state = tmp.path().join("state");
+    let root = state.join("refused-lab");
+    assert!(crate::lab::register(&state, &root, "s", "S", "sha256:00").is_err());
+    assert!(!state.exists());
+    if native_identity_available() {
+        let unknown = tmp.path().join("unregistered");
+        std::fs::create_dir(&unknown).unwrap();
+        assert!(Service::open(Config {
+            state_dir: state.clone(),
+            dataset: DatasetClass::Synthetic,
+            allow_personal: false,
+            grant_roots: vec![unknown]
+        })
+        .is_err());
+        assert!(!state.exists());
+    }
+    assert!(Service::open(Config {
+        state_dir: state.clone(),
+        dataset: DatasetClass::Synthetic,
+        allow_personal: false,
+        grant_roots: vec![tmp.path().join("missing")],
+    })
+    .is_err());
+    assert!(!state.exists());
+    assert!(crate::lab::register(
+        Path::new(r"\\server\share\state"),
+        &tmp.path().join("lab"),
+        "s",
+        "S",
+        "sha256:00"
+    )
+    .is_err());
+    assert!(!tmp.path().join("lab").exists());
+}
+
+#[test]
+fn hardening_expired_sql_reads_do_not_start_or_resume() {
+    let tmp = tempfile::tempdir_in(".").unwrap();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    fixture(&svc, 20);
+    let work = crate::ReadWork {
+        deadline: Instant::now() + Duration::from_secs(10),
+        interrupt: Mutex::new(None),
+    };
+    let mut reader = work.reader(&svc.inner.catalog).unwrap();
+    reader.set_deadline(Instant::now());
+    let req = loomward_catalog::SearchRequest {
+        root_id: None,
+        text: "report".into(),
+        extension: None,
+        min_bytes: None,
+        kind: "any".into(),
+        limit: 10,
+        cursor: None,
+        work_budget: 50_000_000,
+    };
+    assert!(matches!(
+        reader.search(&req),
+        Err(loomward_catalog::Error::Cancelled)
+    ));
+    let dir: i64 = svc
+        .inner
+        .db()
+        .query_row("SELECT id FROM main.dir WHERE parent_id IS NULL", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert!(matches!(
+        reader.breakdown(
+            dir,
+            "extension",
+            loomward_catalog::Basis::Logical,
+            10,
+            50_000_000
+        ),
+        Err(loomward_catalog::Error::Cancelled)
+    ));
+    let expired = crate::ReadWork {
+        deadline: Instant::now(),
+        interrupt: Mutex::new(None),
+    };
+    assert!(
+        matches!(expired.reader(&svc.inner.catalog), Err(e) if e.code == ErrorCode::DeadlineExceeded)
+    );
+    reader.set_deadline(Instant::now() + Duration::from_secs(10));
+    assert!(!reader.search(&req).unwrap().items.is_empty());
+    assert!(!reader
+        .breakdown(
+            dir,
+            "extension",
+            loomward_catalog::Basis::Logical,
+            10,
+            50_000_000
+        )
+        .unwrap()
+        .buckets
+        .is_empty());
+}
+
+#[test]
+fn hardening_picker_cooldown_survives_cancellation_and_new_ids() {
+    struct Dialog(std::sync::atomic::AtomicUsize);
+    impl NativeDialogs for Dialog {
+        fn pick_folder(&self) -> Option<std::path::PathBuf> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            None
+        }
+        fn confirm_disclosure(&self, _: &DisclosureSummary) -> bool {
+            false
+        }
+    }
+    let tmp = tempfile::tempdir_in(".").unwrap();
+    let svc = open(tmp.path(), DatasetClass::Personal);
+    let dialog = Arc::new(Dialog(std::sync::atomic::AtomicUsize::new(0)));
+    let ctx = CallContext::tauri(dialog.clone());
+    let first = request("roots.request_grant", json!({"purpose": "metadata_scan"}));
+    ok("roots.request_grant", svc.call(first.clone(), &ctx));
+    ok("roots.request_grant", svc.call(first, &ctx));
+    assert_eq!(
+        err(svc.call(
+            request("roots.request_grant", json!({"purpose": "metadata_scan"})),
+            &ctx
+        ))
+        .code,
+        ErrorCode::Busy
+    );
+    assert_eq!(dialog.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    *svc.inner.picker_last.lock().unwrap() = Some(Instant::now() - Duration::from_secs(3));
+    ok(
+        "roots.request_grant",
+        svc.call(
+            request("roots.request_grant", json!({"purpose": "metadata_scan"})),
+            &ctx,
+        ),
+    );
+    assert_eq!(dialog.0.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+#[test]
+fn hardening_grant_checks_the_registered_digest_before_writes() {
+    if !native_identity_available() {
+        return;
+    }
+    let tmp = tempfile::tempdir_in(".").unwrap();
+    let state = tmp.path().join("state");
+    let root = tmp.path().join("lab");
+    crate::lab::register(&state, &root, "s", "S", "sha256:00").unwrap();
+    let svc = open(&state, DatasetClass::Synthetic);
+    svc.inner
+        .db()
+        .execute("UPDATE st.lab_root SET manifest_digest='invalid'", [])
+        .unwrap();
+    assert!(svc.inner.grant(&root, "cli_flag").is_err());
+    assert_eq!(crate::db::active_grants(&svc.inner.db()).unwrap(), 0);
+    svc.inner
+        .db()
+        .execute("UPDATE st.lab_root SET manifest_digest='sha256:00'", [])
+        .unwrap();
+    assert!(svc.inner.grant(&root, "cli_flag").is_ok());
+}
+
 fn request(command: &str, payload: Value) -> RequestEnvelope {
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     serde_json::from_value(json!({
@@ -213,7 +494,7 @@ fn root_slice(svc: &Service, root: i64) -> Payload {
 
 #[test]
 fn every_command_answers_a_complete_envelope_and_core_reads_serve_the_catalogue() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(".").unwrap();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     let (root, _) = fixture(&svc, 5);
     let examples =
@@ -322,7 +603,7 @@ fn every_command_answers_a_complete_envelope_and_core_reads_serve_the_catalogue(
 
 #[test]
 fn ingress_refuses_before_any_command_runs() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(".").unwrap();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     // Not on this adapter, then wave 3: neither runs.
     let e = err(call(
@@ -355,7 +636,7 @@ fn ingress_refuses_before_any_command_runs() {
 
 #[test]
 fn deadlines_bound_the_wait_and_set_retry_flags() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(".").unwrap();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     *svc.inner.hooks.delay.lock().unwrap() = Some((Command::RootsList, Duration::from_millis(400)));
     let mut r = request("roots.list", json!({}));
@@ -401,7 +682,7 @@ fn declare(
 /// Errata #117 N4: tier=2 times out, the owner then sets tier=5; recovery must never resend 2.
 #[test]
 fn n4_recovery_replays_the_retained_outcome_and_never_overwrites_a_later_choice() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(".").unwrap();
     let svc = Service::open_with(
         Config {
             state_dir: tmp.path().into(),
@@ -497,7 +778,7 @@ fn n4_recovery_replays_the_retained_outcome_and_never_overwrites_a_later_choice(
 
 #[test]
 fn cursors_go_stale_when_their_revision_moves_and_never_cross_requests() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(".").unwrap();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     let (root, grant) = fixture(&svc, 6);
     let anchor = root_slice(&svc, root)["anchor_node_id"]
@@ -557,7 +838,7 @@ fn cursors_go_stale_when_their_revision_moves_and_never_cross_requests() {
 
 #[test]
 fn node_ids_are_sealed_and_tampering_is_not_found() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(".").unwrap();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     let (root, _) = fixture(&svc, 2);
     let slice = root_slice(&svc, root);
@@ -583,7 +864,7 @@ fn node_ids_are_sealed_and_tampering_is_not_found() {
         );
     }
     // Another install's key opens nothing here.
-    let other_tmp = tempfile::tempdir().unwrap();
+    let other_tmp = tempfile::tempdir_in(".").unwrap();
     let other = open(other_tmp.path(), DatasetClass::Synthetic);
     let (other_root, _) = fixture(&other, 2);
     let foreign = root_slice(&other, other_root)["nodes"][1]["node_id"]
@@ -605,7 +886,7 @@ fn node_ids_are_sealed_and_tampering_is_not_found() {
 
 #[test]
 fn provenance_synthetic_accepts_only_identity_verified_lab_roots() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(".").unwrap();
     let state = tmp.path().join("state");
     let owner = tmp.path().join("owner-folder");
     std::fs::create_dir_all(&owner).unwrap();
@@ -740,7 +1021,7 @@ impl ScanSink for FenceProbe {
 
 #[test]
 fn revocation_commits_first_then_fences_then_emits_and_is_monotone() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(".").unwrap();
     let svc = Service::open_with(
         Config {
             state_dir: tmp.path().into(),
@@ -847,7 +1128,7 @@ fn register(svc: &Service, file_id: u8) -> (i64, i64) {
 /// refused with `catalog_instance_changed` and never selects the row that now has its number.
 #[test]
 fn root_and_volume_ids_from_a_rebuilt_catalogue_never_select_a_new_row() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(".").unwrap();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     let (a, _) = register(&svc, 1);
     register(&svc, 2);
@@ -942,7 +1223,7 @@ fn declare_with_deadline(svc: &Service, volume: &str, deadline: i64) -> Response
 /// outstanding tickets is capped.
 #[test]
 fn revocation_never_queues_behind_a_full_mutation_queue() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(".").unwrap();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     let (root, grant) = register(&svc, 1);
     let (volumes, _) = ok("volumes.list", call(&svc, "volumes.list", json!({})));
@@ -1021,7 +1302,7 @@ fn revocation_never_queues_behind_a_full_mutation_queue() {
 /// still waits for an earlier one, and the queue keeps moving.
 #[test]
 fn a_failed_mutation_spawn_keeps_queue_order_and_liveness() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(".").unwrap();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     *svc.inner.hooks.delay.lock().unwrap() =
         Some((Command::BudgetsSet, Duration::from_millis(300)));
@@ -1059,7 +1340,7 @@ fn a_failed_mutation_spawn_keeps_queue_order_and_liveness() {
 /// free: a protocol-following retry runs instead of replaying `no worker`.
 #[test]
 fn a_failed_spawn_leaves_the_request_id_free_for_a_retry() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(".").unwrap();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     svc.inner
         .hooks
@@ -1082,7 +1363,7 @@ fn a_failed_spawn_leaves_the_request_id_free_for_a_retry() {
 /// revocation still runs.
 #[test]
 fn revocation_runs_with_the_idempotency_slot_cap_full() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(".").unwrap();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     let (root, grant) = register(&svc, 1);
     for _ in 0..crate::idem::MAX_SLOTS {
@@ -1119,7 +1400,7 @@ fn revocation_runs_with_the_idempotency_slot_cap_full() {
 /// still shows every active root (then the newest revoked ones), in id order, at most 64.
 #[test]
 fn roots_list_keeps_active_roots_past_64_revoked_rows() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(".").unwrap();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     let all: Vec<(i64, i64)> = (1..=70).map(|i| register(&svc, i)).collect();
     for (_, grant) in &all[..66] {
@@ -1149,7 +1430,7 @@ fn roots_list_keeps_active_roots_past_64_revoked_rows() {
 /// re-granting an active root and granting after a revocation still work.
 #[test]
 fn grants_past_64_active_roots_are_refused_by_rule() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(".").unwrap();
     let state = tmp.path().join("state");
     let svc = open(&state, DatasetClass::Personal);
     let dirs: Vec<std::path::PathBuf> = (0..65)
@@ -1197,7 +1478,7 @@ fn native_identity_available() -> bool {
 /// persisted, so an ID minted before a reopen of the same catalogue is plain `not_found`.
 #[test]
 fn node_ids_do_not_survive_a_reopen() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(".").unwrap();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     let (root, _) = fixture(&svc, 2);
     let id = root_slice(&svc, root)["nodes"][1]["node_id"]
@@ -1279,7 +1560,7 @@ fn lab() -> Option<Lab> {
         eprintln!("skipped: elevated token; the native scan refuses elevation (invariant 2)");
         return None;
     }
-    let tmp = tempfile::tempdir_in(std::fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+    let tmp = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
     let state = tmp.path().join("state");
     let path = tmp.path().join("lab-scan");
     crate::lab::register(&state, &path, "seed-scan", "S", "sha256:00").unwrap();
@@ -1692,7 +1973,7 @@ fn scan_cancel_is_acknowledged_and_never_publishes_a_complete_generation() {
 /// and a synthetic fixture root (no path, no lab registration) is refused.
 #[test]
 fn scan_start_is_refused_outside_registered_lab_roots() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(".").unwrap();
     let personal = open(&tmp.path().join("personal"), DatasetClass::Personal);
     let e = err(call(
         &personal,
@@ -1741,7 +2022,7 @@ fn entry(name: &str, bytes: u64, dir: bool) -> loomward_engine::scan::Entry {
 #[test]
 fn obsolete_listing_revisions_are_refused_and_never_complete() {
     use loomward_engine::scan::source::{IdBasis, ListOutcome, OpenedIdentity};
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(".").unwrap();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     let (root, grant) = register(&svc, 7);
     let dir = crate::db::active_root_dir(&svc.inner.db(), root)
@@ -1835,7 +2116,7 @@ fn a_wide_lab_tree_matches_the_walk_under_parallel_workers() {
 #[test]
 fn a_failed_end_run_releases_the_root() {
     use loomward_engine::scan::source::{IdBasis, ListOutcome, OpenedIdentity};
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(".").unwrap();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     let (root, grant) = register(&svc, 9);
     let dir = crate::db::active_root_dir(&svc.inner.db(), root)
@@ -1900,7 +2181,7 @@ fn a_failed_end_run_releases_the_root() {
 /// #206 LOW: no `tree.invalidated` follows a revocation that fenced the root's writer.
 #[test]
 fn no_tree_invalidated_after_the_writer_is_fenced() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(".").unwrap();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     let (root, grant) = register(&svc, 11);
     let dir = crate::db::active_root_dir(&svc.inner.db(), root)
@@ -1928,7 +2209,7 @@ fn no_tree_invalidated_after_the_writer_is_fenced() {
 /// records `identity_changed` and `roots.changed` follows, exactly as at scan start.
 #[test]
 fn a_scan_that_finds_the_root_swapped_records_identity_changed() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(".").unwrap();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     let (root, grant) = register(&svc, 12);
     let dir = crate::db::active_root_dir(&svc.inner.db(), root)

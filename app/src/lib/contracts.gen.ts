@@ -304,7 +304,7 @@ export interface RootGrantRequest {
 export interface RootGrantResult {
   outcome: "granted" | "cancelled_by_user" | "refused";
   root: Root | null;
-  refusal: null | "volume_root" | "reparse_or_placeholder" | "not_a_directory" | "contains_state_dir" | "inside_state_dir" | "already_granted" | "network_or_removable_unsupported" | "identity_unavailable" | "synthetic_session_requires_lab_root";
+  refusal: null | "volume_root" | "reparse_or_placeholder" | "not_a_directory" | "contains_state_dir" | "inside_state_dir" | "already_granted" | "network_or_removable_unsupported" | "protected_profile_or_store" | "identity_unavailable" | "synthetic_session_requires_lab_root";
 }
 
 export interface RootRevokeRequest {

@@ -54,6 +54,15 @@ pub struct Catalog {
     writer: std::sync::Arc<Writer>,
 }
 impl Catalog {
+    /// Inspect existing stores without creating, migrating or repairing anything.
+    pub fn validate_stores(dir: &Path, dataset: &str) -> Result<()> {
+        db::local_path(dir)?;
+        db::inspect(&dir.join("state.db"), dataset)?;
+        match db::inspect(&dir.join("catalog.db"), dataset) {
+            Ok(_) | Err(Error::CorruptDatabase) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
     pub fn open(dir: &Path, dataset: &str) -> Result<Self> {
         db::local_path(dir)?;
         if !matches!(dataset, "synthetic" | "personal") {

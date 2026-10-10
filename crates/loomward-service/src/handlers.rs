@@ -47,6 +47,7 @@ fn basis(b: Basis) -> CBasis {
 fn grant_number(id: &str) -> Result<i64, ErrorBody> {
     id.strip_prefix("gr_")
         .and_then(|n| n.parse().ok())
+        .filter(|n: &i64| *n > 0 && format!("gr_{n}") == id)
         .ok_or_else(|| fail(ErrorCode::NotFound, "unknown grant"))
 }
 
@@ -72,10 +73,23 @@ impl Inner {
         req: &RequestEnvelope,
         command: Command,
         ctx: &CallContext,
+        work: Option<&crate::ReadWork>,
     ) -> Handled {
         #[cfg(test)]
         self.hooks.before(command);
         use Command::*;
+        if self.dataset != DatasetClass::Personal
+            && matches!(
+                command,
+                TelemetrySubscribe
+                    | TelemetryUnsubscribe
+                    | TelemetrySnapshot
+                    | ProcessesList
+                    | ProcessesExplain
+            )
+        {
+            return unavailable("process observation requires a personal session");
+        }
         let handled = match command {
             SessionHello => self.hello(ctx),
             HealthGet => self.health(),
@@ -122,8 +136,8 @@ impl Inner {
             NodeInspect => {
                 self.node_read(req, |reader, key| reader.inspect(key).map(|d| encode(&d)))
             }
-            SearchQuery => self.search(req),
-            StatsBreakdown => self.breakdown(req),
+            SearchQuery => self.search(req, work),
+            StatsBreakdown => self.breakdown(req, work),
             TiersModel | PlacementCandidates | PlacementSimulate | ProposalsList | ProposalsGet => {
                 unavailable("placement is not wired to the catalogue yet")
             }
@@ -470,6 +484,15 @@ impl Inner {
         let Ok(_dialog) = self.dialog.try_lock() else {
             return Err(fail(ErrorCode::Busy, "a native dialog is already open"));
         };
+        let mut last = self.picker_last.lock().unwrap_or_else(|e| e.into_inner());
+        if last.is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(2)) {
+            return Err(fail(
+                ErrorCode::Busy,
+                "native picker cooldown; retry shortly",
+            ));
+        }
+        *last = Some(std::time::Instant::now());
+        drop(last);
         let Some(picked) = dialogs.pick_folder() else {
             return Ok(out(
                 json!({"outcome": "cancelled_by_user", "root": null, "refusal": null}),
@@ -748,7 +771,7 @@ impl Inner {
         self.sealed(value, revs)
     }
 
-    fn search(&self, req: &RequestEnvelope) -> Handled {
+    fn search(&self, req: &RequestEnvelope, work: Option<&crate::ReadWork>) -> Handled {
         let r: SearchRequest = req.decode_payload()?;
         let revs = self.revisions()?;
         let root = r.root_id.as_ref().map(|id| self.root_row(id)).transpose()?;
@@ -774,7 +797,7 @@ impl Inner {
                 }
             },
         };
-        let mut reader = self.catalog.reader().map_err(catalog_error)?;
+        let mut reader = self.read_reader(work)?;
         let page = reader
             .search(&loomward_catalog::SearchRequest {
                 root_id: root,
@@ -789,7 +812,7 @@ impl Inner {
                 .into(),
                 limit: r.limit.get() as usize,
                 cursor,
-                // SQLite VM steps; the deadline still bounds the caller's wait.
+                // SQLite VM steps, additionally interrupted at the request deadline.
                 work_budget: 50_000_000,
             })
             .map_err(catalog_error)?;
@@ -808,10 +831,10 @@ impl Inner {
         self.sealed(value, revs)
     }
 
-    fn breakdown(&self, req: &RequestEnvelope) -> Handled {
+    fn breakdown(&self, req: &RequestEnvelope, work: Option<&crate::ReadWork>) -> Handled {
         let r: BreakdownRequest = req.decode_payload()?;
         let revs = self.revisions()?;
-        let mut reader = self.catalog.reader().map_err(catalog_error)?;
+        let mut reader = self.read_reader(work)?;
         let key = self.node(&r.node_id, &mut reader)?;
         let NodeKey::Dir(dir) = key else {
             return Err(fail(
@@ -829,5 +852,12 @@ impl Inner {
             .breakdown(dir, by, basis(r.basis), r.limit.get() as usize, 50_000_000)
             .map_err(catalog_error)?;
         self.sealed(encode(&b)?, revs)
+    }
+
+    fn read_reader(&self, work: Option<&crate::ReadWork>) -> Result<Reader, ErrorBody> {
+        match work {
+            Some(work) => work.reader(&self.catalog),
+            None => self.catalog.reader().map_err(catalog_error),
+        }
     }
 }

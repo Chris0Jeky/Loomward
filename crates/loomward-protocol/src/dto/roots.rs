@@ -134,6 +134,7 @@ pub enum RootGrantResultRefusal {
     InsideStateDir,
     AlreadyGranted,
     NetworkOrRemovableUnsupported,
+    ProtectedProfileOrStore,
     IdentityUnavailable,
     SyntheticSessionRequiresLabRoot,
 }

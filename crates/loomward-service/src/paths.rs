@@ -9,6 +9,124 @@
 use loomward_protocol::RootGrantResultRefusal as Refusal;
 use std::path::{Path, PathBuf};
 
+/// Resolve a local destination before creating it; reject unsafe existing ancestors.
+pub fn prospective_dir(path: &Path) -> Result<PathBuf, String> {
+    if network_path(path) {
+        return Err("network_or_removable_unsupported".into());
+    }
+    let absolute = std::path::absolute(path).map_err(|_| "cannot resolve directory")?;
+    let mut ancestor = absolute.as_path();
+    let mut missing = Vec::new();
+    loop {
+        match std::fs::symlink_metadata(ancestor) {
+            Ok(meta) => {
+                if meta.file_type().is_symlink() || unsafe_attributes(&meta) {
+                    return Err("reparse_or_placeholder".into());
+                }
+                if !meta.is_dir() {
+                    return Err("not_a_directory".into());
+                }
+                // Check every existing ancestor before canonicalisation can follow it.
+                for parent in ancestor.ancestors().skip(1) {
+                    let meta = std::fs::symlink_metadata(parent)
+                        .map_err(|_| "cannot inspect directory")?;
+                    if meta.file_type().is_symlink() || unsafe_attributes(&meta) {
+                        return Err("reparse_or_placeholder".into());
+                    }
+                }
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                missing.push(ancestor.file_name().ok_or("cannot resolve directory")?);
+                ancestor = ancestor.parent().ok_or("cannot resolve directory")?;
+            }
+            Err(_) => return Err("cannot inspect directory".into()),
+        }
+    }
+    let mut resolved = ancestor
+        .canonicalize()
+        .map_err(|_| "cannot resolve directory")?;
+    if network_path(&resolved) {
+        return Err("network_or_removable_unsupported".into());
+    }
+    for part in missing.iter().rev() {
+        resolved.push(part);
+    }
+    Ok(resolved)
+}
+
+/// Shared CLI/picker fence. The explicit native volume-root exception remains.
+pub fn validate_profile_root(root: &Path, profile: &Path) -> Result<(), String> {
+    let folded = |p: &Path| p.to_string_lossy().replace('/', "\\").to_lowercase();
+    let (r, p) = (folded(root), folded(profile));
+    if root.parent().is_some() && (r == p || p.starts_with(&(r.clone() + "\\"))) {
+        return Err("whole profiles are not eligible".into());
+    }
+    let profiles = profile.parent().ok_or("profile unavailable")?;
+    if root
+        .parent()
+        .is_some_and(|parent| folded(parent) == folded(profiles))
+    {
+        return Err("whole profiles are not eligible".into());
+    }
+    for component in root.components() {
+        if [
+            ".ssh",
+            ".aws",
+            ".azure",
+            ".gnupg",
+            ".kube",
+            ".codex",
+            ".claude",
+            "appdata",
+            ".mozilla",
+            ".config",
+            "user data",
+            "browser profiles",
+            "login data",
+            "keychains",
+        ]
+        .contains(
+            &component
+                .as_os_str()
+                .to_string_lossy()
+                .to_lowercase()
+                .as_str(),
+        ) {
+            return Err("credential and browser stores are not eligible".into());
+        }
+    }
+    Ok(())
+}
+
+fn check_profile(root: &Path) -> Result<(), Refusal> {
+    let profile = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"));
+    let profile = profile
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/unavailable/profile"));
+    let profile = profile.canonicalize().unwrap_or(profile);
+    validate_profile_root(root, &profile).map_err(|_| Refusal::ProtectedProfileOrStore)
+}
+
+pub(crate) fn check_new_root(root: &Path, state: &Path) -> Result<PathBuf, String> {
+    let root = prospective_dir(root)?;
+    if root.parent().is_none() {
+        return Err("volume_root".into());
+    }
+    check_profile(&root).map_err(crate::refusal_name)?;
+    let ancestor = root
+        .ancestors()
+        .find(|p| p.is_dir())
+        .ok_or("root parent unavailable")?;
+    if loomward_windows::volumes::is_removable(ancestor).map_err(|_| "identity_unavailable")? {
+        return Err("network_or_removable_unsupported".into());
+    }
+    if root.starts_with(state) || state.starts_with(&root) {
+        return Err("lab root overlaps the state directory".into());
+    }
+    Ok(root)
+}
+
 /// Static files must be disjoint from all active grants and the state directory.
 pub fn validate_static_dir(
     dir: Option<&Path>,
@@ -72,6 +190,12 @@ pub fn check_root(
     if canonical.parent().is_none() && !allow_volume_root {
         return Err(Refusal::VolumeRoot);
     }
+    check_profile(&canonical)?;
+    if loomward_windows::volumes::is_removable(&canonical)
+        .map_err(|_| Refusal::IdentityUnavailable)?
+    {
+        return Err(Refusal::NetworkOrRemovableUnsupported);
+    }
     if let Some(state) = state_dir {
         if canonical.starts_with(state) {
             return Err(Refusal::InsideStateDir);
@@ -92,12 +216,7 @@ pub fn check_root(
 /// `--grant-root` list: every root canonicalised, or the first refusal named by rule and position,
 /// never by path (private paths stay out of logs).
 pub fn validate_roots(roots: &[PathBuf], state_dir: Option<&Path>) -> Result<Vec<PathBuf>, String> {
-    let state = state_dir
-        .map(|d| {
-            d.canonicalize()
-                .map_err(|_| "--state-dir must name an existing directory".to_string())
-        })
-        .transpose()?;
+    let state = state_dir.map(prospective_dir).transpose()?;
     let mut out: Vec<PathBuf> = Vec::new();
     for (i, root) in roots.iter().enumerate() {
         let canonical = check_root(root, state.as_deref(), &out, false).map_err(|r| {
@@ -148,8 +267,70 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hardening_profile_and_store_fence_is_shared_with_cli_roots() {
+        let tmp = tempfile::tempdir_in(".").unwrap();
+        let profile = tmp.path().join("profiles").join("fixture");
+        let allowed = profile.join("Documents").join("lab");
+        std::fs::create_dir_all(&allowed).unwrap();
+        let profile = profile.canonicalize().unwrap();
+        assert!(validate_profile_root(&allowed.canonicalize().unwrap(), &profile).is_ok());
+        for relative in [
+            ".ssh",
+            ".aws",
+            ".azure",
+            ".gnupg",
+            ".kube",
+            ".codex",
+            ".claude",
+            "AppData",
+            ".mozilla",
+            "User Data",
+        ] {
+            let store = profile.join(relative).join("nested");
+            std::fs::create_dir_all(&store).unwrap();
+            assert_eq!(
+                check_root(&store, None, &[], false),
+                Err(Refusal::ProtectedProfileOrStore)
+            );
+            assert!(validate_profile_root(&store.canonicalize().unwrap(), &profile).is_err());
+        }
+        assert!(validate_profile_root(&profile, &profile).is_err());
+        assert!(validate_profile_root(profile.parent().unwrap(), &profile).is_err());
+        let other = profile.parent().unwrap().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        assert!(validate_profile_root(&other, &profile).is_err());
+        assert!(check_root(&allowed, None, &[], false).is_ok());
+    }
+
+    #[test]
+    fn hardening_prospective_paths_reject_network_before_any_inspection() {
+        for path in [
+            r"\\?\GLOBALROOT\Device\fixture",
+            r"\\server\share\lab",
+            r"\\?\UNC\server\share\lab",
+        ] {
+            assert_eq!(
+                prospective_dir(Path::new(path)).unwrap_err(),
+                "network_or_removable_unsupported"
+            );
+        }
+        let tmp = tempfile::tempdir_in(".").unwrap();
+        let state = tmp.path().join("missing").join("state");
+        let canonical = prospective_dir(&state).unwrap();
+        assert_eq!(
+            canonical,
+            tmp.path()
+                .canonicalize()
+                .unwrap()
+                .join("missing")
+                .join("state")
+        );
+        assert!(!state.exists());
+    }
+
+    #[test]
     fn refusals_by_rule() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tempfile::tempdir_in(".").unwrap();
         let base = tmp.path().canonicalize().unwrap();
         let (a, b, state) = (base.join("a"), base.join("a").join("b"), base.join("state"));
         for d in [&a, &b, &state] {
@@ -195,7 +376,7 @@ mod tests {
     /// #224: an unresolvable stored grant compares as text instead of failing the start.
     #[test]
     fn an_offline_grant_is_compared_lexically() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tempfile::tempdir_in(".").unwrap();
         let dist = tmp.path().join("dist");
         std::fs::create_dir_all(&dist).unwrap();
         let canonical = dist.canonicalize().unwrap();
