@@ -64,6 +64,8 @@ class FakeEngine:
         self.events: queue.Queue[dict] = queue.Queue()
         self.seq = 0
         self.server: ThreadingHTTPServer | None = None
+        self.process_error: str | None = None
+        self.telemetry_calls: list[dict] = []
 
     @property
     def base(self) -> str:
@@ -81,10 +83,22 @@ class FakeEngine:
             effects = {k: False for k in 'file_move file_delete file_rename file_write content_read process_kill process_suspend process_priority memory_trim uninstall elevation'.split()}
             return {
                 'protocol': 'loomward/3', 'engine_version': 'view-fake', 'adapter': 'http', 'dataset_class': 'synthetic', 'session_started_at': '2026-10-01T00:00:00Z',
-                'enumeration_strategy': 'std_read_dir', 'capabilities': {'observation': {}, 'effects': effects},
+                'enumeration_strategy': 'std_read_dir', 'capabilities': {'observation': {'process_observation': self.process_error is not None}, 'effects': effects},
                 'features': {k: False for k in ('grant_picker', 'disclosure_dialog', 'teacher_available', 'telemetry_available', 'gpu_available')},
                 'limits': {'max_request_bytes': 65536, 'max_slice_nodes': 6000, 'max_page_items': 200},
             }
+        if self.process_error is not None:
+            if cmd in ('telemetry.subscribe', 'telemetry.unsubscribe'):
+                self.telemetry_calls.append(req)
+                if cmd == 'telemetry.unsubscribe':
+                    return {'subscription_id': p['subscription_id'], 'stopped': True}
+                result = json.loads((ROOT / 'contracts/v3/examples/commands/telemetry.subscribe.result.json').read_text())
+                result['subscription_id'] = f'sub_fake_{len(self.telemetry_calls)}'
+                return result
+            if cmd in ('telemetry.snapshot', 'processes.list', 'tree.slice'):
+                if cmd == 'processes.list' and self.process_error:
+                    return (self.process_error, 'synthetic process observation failure')
+                return json.loads((ROOT / f'contracts/v3/examples/commands/{cmd}.result.json').read_text())
         if cmd == 'tree.slice':
             delay, root = self.slice_queue.pop(0) if self.slice_queue else (0.0, 'Fake Root')
             time.sleep(delay)
@@ -373,6 +387,46 @@ def check_tiers(page: Page, base: str, shoot) -> None:
 
 # --- Companion --------------------------------------------------------------------------------------
 
+def check_process_strip_failures(browser) -> None:
+    engine = FakeEngine()
+    engine.process_error = ''
+    engine.start()
+    page = browser.new_page()
+    errors = []
+    page.on('pageerror', lambda e: errors.append(str(e)))
+    start = datetime(2026, 10, 10, 12, tzinfo=timezone.utc)
+    page.clock.install(time=start)
+    try:
+        page.goto(f'{engine.base}/#token={TOKEN}')
+        page.evaluate("location.hash = '#/observatory'")
+        strip = page.get_by_role('region', name='Processes', exact=True)
+        expect(strip.get_by_role('link')).to_have_count(1)
+        engine.invalidate()
+        for _ in range(30):
+            if len(engine.telemetry_calls) >= 3:
+                break
+            page.wait_for_timeout(100)
+        ok([r['command'] for r in engine.telemetry_calls[:3]] == ['telemetry.subscribe', 'telemetry.unsubscribe', 'telemetry.subscribe'],
+           'process strip: session epoch change releases the old lease before subscribing again')
+        ok(engine.telemetry_calls[1]['payload']['subscription_id'] == 'sub_fake_1', 'process strip: epoch change releases the correct subscription')
+        for i, code in enumerate(('partial_coverage', 'capability_unavailable'), 1):
+            strip.get_by_role('link').first.focus()
+            engine.process_error = code
+            page.clock.set_system_time(start + timedelta(seconds=16 * (2 * i - 1)))
+            expect(strip.get_by_role('status')).to_contain_text('not sampled' if code == 'partial_coverage' else 'unavailable')
+            expect(strip.get_by_text('synthetic process observation failure', exact=True)).to_be_visible()
+            expect(strip.get_by_role('link')).to_have_count(0)
+            expect(strip.get_by_role('heading', name='Processes', exact=True)).to_be_focused()
+            ok(True, f'process strip: {code} stays visible and moves row focus to the stable heading')
+            engine.process_error = ''
+            page.clock.set_system_time(start + timedelta(seconds=32 * i))
+            expect(strip.get_by_role('link')).to_have_count(1)
+        ok(not errors, f'process strip failures: no page errors {errors}')
+    finally:
+        page.close()
+        engine.stop()
+
+
 def check_process_strip(browser, base: str, shots: Path | None) -> None:
     page = browser.new_page(viewport={'width': 1440, 'height': 1000})
     errors = []
@@ -599,6 +653,7 @@ def run_views(page: Page, base: str, shots: Path | None) -> None:
 
     page.set_viewport_size({'width': 1360, 'height': 900})
     check_process_strip(page.context.browser, base, shots)
+    check_process_strip_failures(page.context.browser)
     check_explorer_mock(page, base, shoot)
     engine = FakeEngine()
     engine.start()

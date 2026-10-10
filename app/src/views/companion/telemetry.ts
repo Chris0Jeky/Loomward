@@ -30,7 +30,8 @@ export class TelemetryLease {
       if (this.closed) this.release(result.subscription_id);
       else { this.id = result.subscription_id; this.renewAt = this.now() + LEASE_RENEW_MS; }
     } catch (e) {
-      if (e instanceof LoomwardError && e.code === 'not_found') { this.id = null; this.renewAt = 0; }
+      this.renewAt = 0;
+      if (e instanceof LoomwardError && e.code === 'not_found') this.id = null;
       throw e;
     }
   }

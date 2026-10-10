@@ -157,7 +157,7 @@
       call: async () => {
         const c = session.client;
         if (!c) throw new Error('no session');
-        feed ??= new ObservatoryFeed(c, processesAvailable);
+        feed = feed?.forSession(c, processesAvailable, session.epoch) ?? new ObservatoryFeed(c, processesAvailable, Date.now, session.epoch);
         return feed.read(processLens);
       },
       onSample: ({ result, meta, processes }) => {

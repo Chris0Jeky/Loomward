@@ -11,6 +11,7 @@
   let shown = $state<ProcessReading | null>(null);
   let waiting = $state<ProcessReading | null>(null);
   let rowsEl = $state<HTMLOListElement>();
+  let headingEl = $state<HTMLHeadingElement>();
   let now = $state(Date.now());
   const label = (sort: ProcessLens) => sort === 'cpu_desc' ? 'machine CPU' : 'private commit';
   const rows = $derived(stripRows(shown?.list?.rows ?? [], shown?.lens ?? lens));
@@ -20,8 +21,12 @@
     const next = reading;
     untrack(() => {
       now = Date.now();
-      if (shown && next?.list && rowsEl?.contains(document.activeElement)) waiting = next;
-      else { shown = next; waiting = null; }
+      const focused = rowsEl?.contains(document.activeElement);
+      if (shown && next?.list && focused) waiting = next;
+      else {
+        if (focused) headingEl?.focus();
+        shown = next; waiting = null;
+      }
     });
   });
 
@@ -39,7 +44,7 @@
 
 <section class="process-strip" aria-labelledby="strip-h">
   <div class="strip-top">
-    <h2 id="strip-h">Processes</h2>
+    <h2 id="strip-h" bind:this={headingEl} tabindex="-1">Processes</h2>
     <label>Process lens
       <select bind:value={lens} {onchange} disabled={paused}>
         <option value="cpu_desc">CPU</option>

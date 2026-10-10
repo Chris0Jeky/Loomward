@@ -12,8 +12,14 @@ export class ObservatoryFeed {
   private dueAt = 0;
   private sort: ProcessLens | null = null;
 
-  constructor(private readonly client: Client, private readonly processesAvailable: boolean, private readonly now = Date.now) {
+  constructor(private readonly client: Client, private readonly processesAvailable: boolean, private readonly now = Date.now, private readonly epoch = 0) {
     this.lease = new TelemetryLease(client, processesAvailable ? ['system', 'gpu', 'disks', 'processes'] : ['system', 'gpu', 'disks'], 1000, now);
+  }
+
+  forSession(client: Client, processesAvailable: boolean, epoch: number): ObservatoryFeed {
+    if (!this.closed && this.client === client && this.processesAvailable === processesAvailable && this.epoch === epoch) return this;
+    this.close();
+    return new ObservatoryFeed(client, processesAvailable, this.now, epoch);
   }
 
   async read(lens: ProcessLens) {

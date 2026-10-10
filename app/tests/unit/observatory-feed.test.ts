@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Client } from '../../src/lib/transport/client';
 import { createMockTransport } from '../../src/lib/transport/mock';
-import type { RequestEnvelope } from '../../src/lib/contracts.gen';
+import type { ErrorCode, RequestEnvelope } from '../../src/lib/contracts.gen';
 import { ObservatoryFeed } from '../../src/views/observatory/feed';
 import { TelemetryLease } from '../../src/views/companion/telemetry';
 
@@ -69,6 +69,66 @@ describe('Observatory shared telemetry feed', () => {
     expect(calls[0]!.payload?.channels).toEqual(['system', 'gpu', 'disks']);
     expect(count('processes.list')).toBe(0);
     feed.close();
+  });
+
+  it('releases the old client lease and sends the next poll only to the replacement client', async () => {
+    const old = setup(), next = setup();
+    await old.feed.read('cpu_desc');
+    const feed = old.feed.forSession(next.client, true, 0);
+    expect(feed).not.toBe(old.feed);
+    expect(old.calls.at(-1)).toMatchObject({ command: 'telemetry.unsubscribe', payload: { subscription_id: 'sub_mock_1' } });
+    const oldCalls = old.calls.length;
+    await feed.read('cpu_desc');
+    expect(old.calls).toHaveLength(oldCalls);
+    expect(next.calls.map((c) => c.command)).toEqual(['telemetry.subscribe', 'telemetry.snapshot', 'processes.list']);
+    feed.close();
+  });
+
+  it('reuses an unchanged session, but releases and recreates the feed on epoch and capability changes', async () => {
+    const { feed, client, calls, count } = setup();
+    await feed.read('cpu_desc');
+    expect(feed.forSession(client, true, 0)).toBe(feed);
+    const restarted = feed.forSession(client, true, 1);
+    expect(restarted).not.toBe(feed);
+    expect(count('telemetry.unsubscribe')).toBe(1);
+    expect((await restarted.read('cpu_desc')).processes?.list).not.toBeNull();
+    const disabled = restarted.forSession(client, false, 1);
+    expect(disabled).not.toBe(restarted);
+    expect(count('telemetry.unsubscribe')).toBe(2);
+    expect((await disabled.read('cpu_desc')).processes).toBeNull();
+    expect(calls.filter((c) => c.command === 'telemetry.subscribe').at(-1)!.payload?.channels).toEqual(['system', 'gpu', 'disks']);
+    const enabled = disabled.forSession(client, true, 1);
+    expect(count('telemetry.unsubscribe')).toBe(3);
+    expect((await enabled.read('cpu_desc')).processes?.list).not.toBeNull();
+    expect(count('processes.list')).toBe(3);
+    enabled.close();
+  });
+
+  it.each(['internal_error', 'not_found'] satisfies ErrorCode[])('retries after a %s renewal failure even if the wall clock moves back', async (code) => {
+    let time = 1000, fail = false;
+    const inner = createMockTransport();
+    const calls: RequestEnvelope[] = [];
+    const client = new Client({ ...inner, call: async (req, signal) => {
+      calls.push(req);
+      if (req.command === 'telemetry.subscribe' && fail) {
+        fail = false;
+        time = 5000; // Clock correction while a renewal is in flight.
+        return { protocol: 'loomward/3', request_id: req.request_id, ok: false, error: { code, message: 'synthetic renewal failure', retryable: true, detail: null } };
+      }
+      return inner.call(req, signal);
+    } });
+    const lease = new TelemetryLease(client, ['system'], 1000, () => time);
+    await lease.ensure();
+    time += 20000;
+    fail = true;
+    await expect(lease.ensure()).rejects.toMatchObject({ code });
+    await lease.ensure();
+    const subscriptions = calls.filter((c) => c.command === 'telemetry.subscribe');
+    expect(subscriptions).toHaveLength(3);
+    expect(subscriptions[2]!.payload?.subscription_id).toBe(code === 'not_found' ? null : 'sub_mock_1');
+    await lease.ensure();
+    expect(calls.filter((c) => c.command === 'telemetry.subscribe')).toHaveLength(3);
+    lease.close();
   });
 
   it('releases a subscription that finishes after the view has closed', async () => {

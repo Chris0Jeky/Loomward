@@ -59,6 +59,7 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
   const revokedRoots = new Map<string, Timestamp>();
   const revokedGrants = new Map<string, Timestamp>();
   const subscriptions = new Map<string, { channels: TelemetryChannel[]; expiresAt: number }>();
+  let subscriptionSeq = 0;
   let stateRev = 1;
   let sampleSeq = 0;
 
@@ -316,7 +317,7 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
     'placement.candidates': candidates,
     'placement.simulate': simulate,
     'telemetry.subscribe': (p): TelemetrySubscription => {
-      const id = typeof p.subscription_id === 'string' ? p.subscription_id : `sub_mock_${subscriptions.size + 1}`;
+      const id = typeof p.subscription_id === 'string' ? p.subscription_id : `sub_mock_${++subscriptionSeq}`;
       if (typeof p.subscription_id === 'string' && (subscriptions.get(id)?.expiresAt ?? 0) <= now().getTime()) fail('not_found', 'unknown or expired subscription');
       subscriptions.set(id, { channels: p.channels as TelemetryChannel[], expiresAt: now().getTime() + 60_000 });
       return { subscription_id: id, channels: p.channels as TelemetrySubscription['channels'], interval_ms: p.interval_ms as TelemetrySubscription['interval_ms'], expires_at: new Date(now().getTime() + 60_000).toISOString() };
