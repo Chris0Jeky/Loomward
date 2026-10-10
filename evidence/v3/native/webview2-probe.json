@@ -88,6 +88,11 @@
     {
       "pass": true,
       "check": "window close tears down the open streams"
+    },
+    {
+      "pass": true,
+      "check": "P9 layout + first draw of 2,500 nodes within 50 ms in WebView2 (median)",
+      "median_ms": 16.0
     }
   ],
   "webview2": "154.0.4258.62",
@@ -97,5 +102,52 @@
     "loomward-desktop: page load: closed 1 event stream(s) of webview \"main\"",
     "loomward-desktop: page load: closed 2 event stream(s) of webview \"main\"",
     "loomward-desktop: window close: closed 2 event stream(s) of webview \"main\""
-  ]
+  ],
+  "p9": {
+    "nodes": 2500,
+    "runs": [
+      {
+        "layout_ms": 33.39999997615814,
+        "first_paint_ms": 5.100000023841858,
+        "layout_plus_paint_ms": 38.5,
+        "slice_to_paint_wall_ms": 39.5,
+        "cells": 353
+      },
+      {
+        "layout_ms": 10,
+        "first_paint_ms": 6.399999976158142,
+        "layout_plus_paint_ms": 16.399999976158142,
+        "slice_to_paint_wall_ms": 89.89999997615814,
+        "cells": 353
+      },
+      {
+        "layout_ms": 10.899999976158142,
+        "first_paint_ms": 5.0999999940395355,
+        "layout_plus_paint_ms": 15.999999970197678,
+        "slice_to_paint_wall_ms": 17.399999976158142,
+        "cells": 353
+      },
+      {
+        "layout_ms": 7.5999999940395355,
+        "first_paint_ms": 5.0999999940395355,
+        "layout_plus_paint_ms": 12.699999988079071,
+        "slice_to_paint_wall_ms": 13.199999988079071,
+        "cells": 353
+      },
+      {
+        "layout_ms": 8.099999994039536,
+        "first_paint_ms": 3.5,
+        "layout_plus_paint_ms": 11.599999994039536,
+        "slice_to_paint_wall_ms": 12.199999988079071,
+        "cells": 353
+      }
+    ],
+    "median_layout_plus_paint_ms": 15.999999970197678,
+    "budget_ms": 50,
+    "viewport": [
+      1440,
+      1000,
+      1.25
+    ]
+  }
 }

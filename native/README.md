@@ -40,7 +40,7 @@ Bundling is off (`bundle.active: false`); no installer is built.
 
 | Command | Arguments | Returns | Notes |
 |---|---|---|---|
-| `lw_call` | `Uint8Array` containing a UTF-8 JSON `RequestEnvelope` | `ResponseEnvelope` | The raw body is checked against 64 KiB before JSON parsing; `RequestEnvelope::from_slice` refuses duplicate keys at every depth. Already-parsed JSON IPC is refused. At most four calls are admitted before blocking work is spawned. `roots.request_grant` in a synthetic session and `grants.create_disclosure` in a personal one are refused here before the service (`synthetic_session_requires_lab_root`, `confinement_not_enforced`). |
+| `lw_call` | `Uint8Array` containing a UTF-8 JSON `RequestEnvelope` | `ResponseEnvelope` | The raw body is checked against 64 KiB before our JSON parsing; `RequestEnvelope::from_slice` refuses duplicate keys at every depth. Already-parsed JSON IPC is refused, but a JSON content type is parsed by Tauri before this command's Raw check: the raw size/duplicate guarantees do not protect that earlier parsing. At most four calls are admitted before blocking work is spawned; a full cap rejects with `busy:` before dispatch and the app retries once after 500 ms with the same bytes. `roots.request_grant` in a synthetic session and `grants.create_disclosure` in a personal one are refused here before the service (`synthetic_session_requires_lab_root`, `confinement_not_enforced`). |
 | `lw_events` | `{ channel: Channel<EventEnvelope>, lastEpoch: string \| null, lastSeq: number \| null }` | `null` once `stream.hello` is on the channel | The service's stream is pumped into the channel, `stream.hello` heartbeat after 15 s of silence included. At four streams the oldest is evicted; drop guards release slots on pump panics. A page load or window close tears that window's streams down. A `lastSeq` without a valid `lastEpoch` resumes from an unknown epoch (`stream.lagged`, `epoch_changed`). This command uses Tauri's parsed arguments; it does not claim raw size or duplicate-key enforcement. |
 
 `capabilities/default.json` grants the `main` window `allow-lw-call` and `allow-lw-events` and
@@ -49,10 +49,12 @@ process or updater). `build.rs` declares the two commands to the ACL, so an unli
 refused. The CSP in `tauri.conf.json` allows only same-origin scripts and styles and IPC.
 Main-document navigation stays on the embedded origin and new windows are denied. Production
 assets ignore `?transport=mock`; mock UI checks require a development build. The client turns
-events queued for over five seconds into one `stream.lagged` resync notice, discarding stale
-backlog until fresh events arrive. Channel delivery remains fire-and-forget, not an acknowledged
+live events older than five seconds into one `stream.lagged` resync notice, discarding stale
+backlog until fresh events arrive. On a same-epoch resume, events through the first hello's
+`last_seq` are retained replay and bypass this age check; the resume tracker still deduplicates
+them. Later heartbeats cannot widen that exemption. Channel delivery remains fire-and-forget, not an acknowledged
 or bounded renderer queue.
-The WebView2 probe gives each run a private test profile under its output directory, so debug
+The WebView2 probe gives each run a private test profile under ignored `.loomward/webview2-profiles/`, so debug
 options do not share the application's normal profile or another run's environment.
 
 ## Native dialogs
@@ -60,11 +62,17 @@ options do not share the application's normal profile or another run's environme
 `DesktopDialogs` (`src/dialogs.rs`) implements `NativeDialogs` in Rust; the webview cannot open
 either dialog. The folder picker (`rfd`) never opens in a synthetic session. Its result goes
 through the service's grant-root validator (native selection permits volume roots), then refuses
-whole profiles and credential/browser stores; the service must still check state overlap,
+whole profiles and credential/browser stores (including `.docker`, `.cargo`, `.npm`,
+`.terraform.d` and `.gemini`); the service must still check state overlap,
 dataset provenance and native identity when granting. Concurrent dialog requests decline.
+The picker is owned by the main window and declines before opening if no owner is configured.
+Sibling profile fencing applies only inside named `Users`, `profiles` or `Documents and Settings`
+directories; a nonstandard profile location does not fence unrelated siblings.
 The disclosure box is a main-window-owned Win32 `MessageBoxW` whose default button is Cancel,
-listing every item with non-ASCII characters escaped as `\u{..}`. Text over 2,048 characters
-declines without truncation. Personal disclosure is refused by both the adapter and the dialog
+listing every item with non-ASCII characters escaped as `\u{..}` and literal backslashes doubled.
+More than four items, 2,048 characters or 20 conservative display lines (wrapping estimated at
+80 characters per line, including fixed text) declines without truncation. This temporary budget
+is not a guarantee for every display scale: personal disclosure is refused by both the adapter and the dialog
 implementation until LW-111 provides scrolling confirmation and the confinement gate passes.
 
 ## For lane L8 (the real service)

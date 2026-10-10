@@ -3,7 +3,7 @@
 use loomward_engine::events::EventResume;
 use loomward_engine::jobs::JobSpec;
 use loomward_engine::{Component, Engine, EngineConfig, EngineError, EngineResult};
-use loomward_protocol::{DatasetClass, ErrorCode, JobId, JobKind};
+use loomward_protocol::{DatasetClass, Detail, ErrorCode, JobId, JobKind};
 use serde_json::{from_value, json};
 use std::path::PathBuf;
 
@@ -26,10 +26,78 @@ fn assert_unavailable<T>(result: EngineResult<T>, component: Component) {
 
 #[test]
 fn open_touches_nothing_and_keeps_config() {
-    let e = engine(DatasetClass::Synthetic);
-    assert_eq!(e.config().dataset_class, DatasetClass::Synthetic);
-    assert_eq!(e.config().state_dir, PathBuf::from("unused-state-dir"));
-    assert!(!PathBuf::from("unused-state-dir").exists());
+    let temp = tempfile::tempdir().unwrap();
+    let absent = temp.path().join("absent").join("state");
+    let file = temp.path().join("file");
+    std::fs::write(&file, b"synthetic sentinel").unwrap();
+    for path in [absent, file.clone(), temp.path().to_owned()] {
+        for dataset in [DatasetClass::Synthetic, DatasetClass::Personal] {
+            let config = EngineConfig::new(path.clone(), dataset);
+            let e = Engine::open(config.clone()).unwrap();
+            assert_eq!(e.config().dataset_class, dataset);
+            assert_eq!(e.config().state_dir, path);
+            assert_eq!(e.config(), &config);
+            drop(e);
+        }
+    }
+    assert!(!temp.path().join("absent").exists());
+    assert_eq!(std::fs::read(file).unwrap(), b"synthetic sentinel");
+    assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn structured_error_details_survive_wire_serialization() {
+    let detail = |key: &str, value: &str| {
+        Some(
+            Detail::new(std::collections::BTreeMap::from([(
+                key.into(),
+                json!(value),
+            )]))
+            .unwrap(),
+        )
+    };
+    let table = [
+        (
+            EngineError::Busy {
+                message: "scan active".into(),
+                detail: detail("job_id", "jb_fixture"),
+            },
+            ErrorCode::Busy,
+            "job_id",
+            "jb_fixture",
+            true,
+        ),
+        (
+            EngineError::StaleGeneration {
+                message: "state moved".into(),
+                detail: detail("reason", "state_rev_changed"),
+            },
+            ErrorCode::StaleGeneration,
+            "reason",
+            "state_rev_changed",
+            true,
+        ),
+        (
+            EngineError::Internal {
+                message: "overflow".into(),
+                detail: detail("reason", "byte_overflow"),
+            },
+            ErrorCode::InternalError,
+            "reason",
+            "byte_overflow",
+            false,
+        ),
+    ];
+    for (error, code, key, value, retryable) in table {
+        let body = error.to_body();
+        assert_eq!(body.code, code);
+        assert_eq!(body.retryable, retryable);
+        assert_eq!(
+            serde_json::to_value(&body).unwrap()["detail"],
+            json!({key: value})
+        );
+        assert_eq!(loomward_protocol::ErrorBody::from(error), body);
+    }
 }
 
 #[test]

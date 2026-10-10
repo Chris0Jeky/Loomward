@@ -64,7 +64,7 @@ pub fn configure<R: Runtime>(builder: Builder<R>, desktop: Arc<Desktop>) -> Buil
                     .build()?;
                 #[cfg(windows)]
                 if let Some(dialogs) = app.try_state::<Arc<crate::dialogs::DesktopDialogs>>() {
-                    dialogs.set_owner(window.hwnd()?.0 as isize);
+                    dialogs.set_owner(&window)?;
                 }
                 let _ = window;
             }

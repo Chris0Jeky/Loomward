@@ -47,6 +47,22 @@ describe('tauri transport', () => {
     const api: TauriApi = { invoke: async () => { throw 'boom'; }, Channel };
     await expect(new Client(await createTauriTransport(api)).call('roots.list', {})).rejects.toBeInstanceOf(TransportError);
   });
+  it.each([false, true])('retries transport busy only once with the same raw request (still busy: %s)', async (stillBusy) => {
+    const bodies: unknown[] = [];
+    const sleeps: number[] = [];
+    const api: TauriApi = { Channel, invoke: async (_, body) => {
+      bodies.push(body);
+      if (bodies.length === 1 || stillBusy) throw 'busy: at most four calls in flight';
+      return { ok: true };
+    } };
+    const t = await createTauriTransport(api, { sleep: async (ms) => { sleeps.push(ms); } });
+    const call = t.call({ protocol: 'loomward/3', request_id: 'r_busy', command: 'session.hello', payload: {} });
+    if (stillBusy) await expect(call).rejects.toBeInstanceOf(TransportError);
+    else expect(await call).toEqual({ ok: true });
+    expect(sleeps).toEqual([500]);
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toBe(bodies[0]);
+  });
   describe('liveness', () => {
     const mk = (opts: { rejectEvents?: number } = {}) => {
       const channels: FakeChannel<unknown>[] = [];
@@ -81,6 +97,24 @@ describe('tauri transport', () => {
       channels[0]!.onmessage({ ...ev(3), at: new Date().toISOString() });
       stop();
       expect(got).toEqual(['stream.lagged', 'roots.changed']);
+    });
+    it('replays retained events older than five seconds up to the first hello watermark, then guards live backlog', async () => {
+      const { api, channels } = mk();
+      const t = await createTauriTransport(api);
+      const got: string[] = [];
+      const stop = t.subscribe((e) => got.push(`${e.event}:${e.seq}`), () => {}, { epoch: 'e1', seq: 1 });
+      try {
+        await until(() => channels.length === 1);
+        const channel = channels[0]!;
+        const old = new Date(Date.now() - 60_000).toISOString();
+        channel.onmessage(env('e1', 3, 'stream.hello', { epoch: 'e1', last_seq: 3, oldest_replayable_seq: 1 }));
+        for (const seq of [1, 2, 3, 3]) channel.onmessage({ ...ev(seq), at: old });
+        // A later heartbeat must not widen the initial replay exemption.
+        channel.onmessage(env('e1', 4, 'stream.hello', { epoch: 'e1', last_seq: 4, oldest_replayable_seq: 1 }));
+        channel.onmessage({ ...ev(4), at: old });
+        channel.onmessage({ ...ev(5), at: new Date().toISOString() });
+        expect(got).toEqual(['stream.hello:3', 'roots.changed:2', 'roots.changed:3', 'stream.hello:4', 'stream.lagged:4', 'roots.changed:5']);
+      } finally { stop(); }
     });
 
     it('reports closed when the channel goes silent past the heartbeat window, then resubscribes from the last seq', async () => {
