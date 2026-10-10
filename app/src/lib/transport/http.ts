@@ -1,6 +1,6 @@
-import type { EventEnvelope, RequestEnvelope, ResponseEnvelope } from '../types';
+import type { EventEnvelope, RequestEnvelope, ResponseEnvelope } from '../contracts.gen';
 import { SseParser, type SseLimits } from './sse';
-import { asEvent, TransportError, type StreamState, type Transport } from './transport';
+import { asEvent, ResumeTracker, TransportError, type StreamState, type Transport } from './transport';
 
 export interface HttpOptions {
   /** Origin of loomward-serve, no trailing slash. */
@@ -77,9 +77,9 @@ export function createHttpTransport(opts: HttpOptions): Transport {
       }
     },
 
-    subscribe(onEvent, onState, lastSeq) {
+    subscribe(onEvent, onState, resume) {
       const stop = new AbortController();
-      let lastId: number | null = lastSeq ?? null;
+      const tracker = new ResumeTracker(resume ?? null);
       let delay = BACKOFF_START_MS;
 
       const emit = (state: StreamState) => {
@@ -90,7 +90,8 @@ export function createHttpTransport(opts: HttpOptions): Transport {
         while (!stop.signal.aborted) {
           try {
             const h: Record<string, string> = { ...headers, Accept: 'text/event-stream' };
-            if (lastId !== null) h['Last-Event-ID'] = String(lastId);
+            // The frame id is `<epoch>.<seq>`; a bare seq reads as another epoch to the service (`epoch_changed`).
+            if (tracker.point) h['Last-Event-ID'] = `${tracker.point.epoch}.${tracker.point.seq}`;
             const res = await doFetch(`${opts.base}/api/v3/events`, {
               headers: h,
               cache: 'no-store',
@@ -114,8 +115,7 @@ export function createHttpTransport(opts: HttpOptions): Transport {
                   } catch {
                     /* garbled frame: dropped */
                   }
-                  if (!ev) continue;
-                  lastId = ev.seq;
+                  if (!ev || !tracker.accept(ev)) continue;
                   onEvent(ev);
                 }
               }

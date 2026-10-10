@@ -1,4 +1,4 @@
-import type { ExtFamily, CoverageState } from '../types';
+import type { ExtFamily, CoverageState } from '../contracts.gen';
 
 /**
  * Deterministic synthetic catalogue for the mock transport: up to 6,000 nodes, parents before

@@ -1,9 +1,9 @@
 import type {
-  Basis, DatasetClass, EntryPage, EntryRow, ErrorCode, EventEnvelope, GrantList, Health, RequestEnvelope,
+  EventKey, EventMap, Basis, DatasetClass, EntryPage, EntryRow, ErrorCode, EventEnvelope, GrantList, Health, RequestEnvelope,
   ResponseEnvelope, Root, RootList, SearchRequest, SessionInfo, SliceNode, TreeChildrenRequest, TreeSlice,
   TreeSliceRequest, Threads,
-} from '../types';
-import type { TelemetrySample } from '../types.views';
+} from '../contracts.gen';
+import type { TelemetrySample } from '../contracts.gen';
 import { createViewMock } from './mock-views';
 import { generateTree, prng, type SynthNode } from './synth';
 import type { Transport } from './transport';
@@ -19,6 +19,15 @@ export interface MockOptions {
 
 const DATASET: DatasetClass = 'synthetic';
 const GRANTED_AT = '2026-10-01T09:00:00Z';
+/** The synthetic catalogue never changes, so its revision is fixed. The state.db revision comes from the view mock. */
+const CATALOG_REV = '1';
+const EPOCH = 'e_mock_epoch';
+/** Which revision scopes (semantics.md section 5) a command's response is read at: catalogue, state.db, both, or neither. */
+const REVS: Partial<Record<string, 'c' | 's' | 'cs'>> = {
+  'health.get': 'c', 'tree.children': 'c', 'search.query': 'c',
+  'roots.list': 'cs', 'tree.slice': 'cs', 'placement.candidates': 'cs', 'placement.simulate': 'cs',
+  'roots.revoke': 's', 'grants.list': 's', 'grants.revoke': 's', 'volumes.list': 's', 'tiers.model': 's',
+};
 
 class CommandFailure extends Error {
   constructor(readonly code: ErrorCode, message: string) {
@@ -108,6 +117,8 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     return { anchor, generation: '1', items, next_cursor: end < all.length ? cursorOf(end) : null, total: all.length, budget_hit: false };
   };
 
+  /** Roots whose subtree the anchor covers: the atlas covers all, anything below covers its own root. */
+  const rootsUnder = (n: SynthNode): SynthNode[] => (n.kind === 'atlas' ? tree.rootIndexes.map((i) => tree.nodes[i]!) : topOf(n).slice(0, 1));
   const slice = (p: TreeSliceRequest): TreeSlice => {
     const a = isObj(p.anchor) ? p.anchor : fail('invalid_request', 'anchor required');
     const anchor =
@@ -139,7 +150,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     }
     const live = provisional(anchor);
     return {
-      anchor_node_id: anchor.id, basis, root_generations: [], complete: !truncated, live,
+      anchor_node_id: anchor.id, basis, root_generations: rootsUnder(anchor).map((r) => ({ root_id: rootId(r), generation: CATALOG_REV })), complete: !truncated, live,
       aggregate_state: live ? 'provisional_live' : 'consistent', ordering: live ? 'approximate_live' : 'exact', truncated, nodes: out,
     };
   };
@@ -196,8 +207,12 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     root_id: rootId(n), display_path: { text: `[mock] ${n.name}`, truncated: false }, origin: 'fixture', dataset_class: DATASET,
     volume_id: n.index === tree.rootIndexes[0] ? 'vo_c' : 'vo_g',
     granted_at: GRANTED_AT, granted_via: 'fixture', grant_state: views.revokedRoots.has(rootId(n)) ? 'revoked' : 'active',
-    scan: { state: 'complete', finished_at: GRANTED_AT, coverage: n.coverage },
-    totals: { files: n.files, dirs: n.dirs, logical_bytes: n.logical.toString(), allocated_bytes: n.allocated === null ? null : n.allocated.toString(), skipped: 0, failed: 0, complete: n.coverage === 'complete' },
+    scan: { state: 'complete', last_job_id: null, generation: CATALOG_REV, finished_at: GRANTED_AT, coverage: n.coverage },
+    totals: {
+      files: n.files, dirs: n.dirs, logical_bytes: n.logical.toString(), allocated_bytes: n.allocated === null ? null : n.allocated.toString(),
+      allocation_unknown_files: n.unknownFiles, skipped: 0, failed: 0, complete: n.coverage === 'complete', stream_coverage: 'default_stream_only',
+      unique_objects: null, unique_allocated_bytes: null, multi_link_entries: 0, // the synthetic catalogue has no native file IDs: unknown, not zero
+    },
   });
 
   const handlers: Record<string, (payload: Record<string, unknown>) => unknown> = {
@@ -222,7 +237,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     'grants.list': (): GrantList => ({
       grants: [
         ...tree.rootIndexes.map((i, k) => ({ grant_id: `gr_mock_root_${k}`, kind: 'metadata_root' as const, root_id: rootId(tree.nodes[i]!), granted_at: GRANTED_AT, granted_via: 'fixture' as const, revoked_at: views.revokedRoots.get(rootId(tree.nodes[i]!)) ?? null })),
-        { grant_id: 'gr_mock_teacher_0', kind: 'teacher_disclosure' as const, recipient: 'codex_cli', dataset_class: DATASET, fields: ['name', 'extension'], item_count: 25, payload_digest: 'sha256:' + '0'.repeat(64), created_at: GRANTED_AT, expires_at: '2026-10-01T10:00:00Z', revoked_at: views.revokedGrants.get('gr_mock_teacher_0') ?? null, used: false, confirmed_via: 'synthetic_policy' as const },
+        { grant_id: 'gr_mock_teacher_0', kind: 'teacher_disclosure' as const, recipient: 'codex_cli_gpt_6_1_sol', dataset_class: DATASET, fields: ['name', 'extension'], item_count: 25, payload_digest: 'sha256:' + '0'.repeat(64), created_at: GRANTED_AT, expires_at: '2026-10-01T10:00:00Z', revoked_at: views.revokedGrants.get('gr_mock_teacher_0') ?? null, used: false, confirmed_via: 'synthetic_policy' as const },
       ],
     }),
     'tree.slice': (p) => slice(p as unknown as TreeSliceRequest),
@@ -239,7 +254,14 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     const h = Object.hasOwn(handlers, req.command) ? handlers[req.command] : undefined;
     if (!h) return err('capability_unavailable', `the mock transport does not implement ${req.command}`);
     try {
-      return { ...base, ok: true, result: h((req.payload ?? {}) as Record<string, unknown>), meta: { served_at: now().toISOString(), elapsed_ms: 0, dataset_class: DATASET, budget_hit: false } };
+      const result = h((req.payload ?? {}) as Record<string, unknown>) as Record<string, unknown>;
+      const scope = REVS[req.command] ?? '';
+      // Read after the handler, so a mutation reports the revision it committed.
+      const meta = {
+        served_at: now().toISOString(), elapsed_ms: 0, dataset_class: DATASET, budget_hit: false,
+        catalog_rev: scope.includes('c') ? CATALOG_REV : null, state_rev: scope.includes('s') ? views.stateRev() : null,
+      };
+      return { ...base, ok: true, result, meta };
     } catch (e) {
       if (e instanceof CommandFailure) return err(e.code, e.message);
       throw e;
@@ -249,14 +271,17 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
   return {
     mode: 'mock',
     call: async (req) => respond(req),
-    subscribe(onEvent, onState) {
+    subscribe(onEvent, onState, resume) {
       let live = true;
       // Asynchronous like a real stream: the caller has finished wiring before anything arrives.
       queueMicrotask(() => {
         if (!live) return;
         onState('open');
-        const hello: EventEnvelope = { protocol: 'loomward/3', seq: 0, event: 'stream.hello', at: now().toISOString(), data: {} };
-        onEvent(hello);
+        const at = now().toISOString();
+        const env = <E extends EventKey>(event: E, data: EventMap[E]): EventEnvelope => ({ protocol: 'loomward/3', epoch: EPOCH, seq: 0, event, at, catalog_rev: null, state_rev: null, data: data as unknown as EventEnvelope['data'] });
+        // The mock emits no sequenced events, so last_seq stays 0 and a resume in this epoch has nothing to replay.
+        onEvent(env('stream.hello', { session_started_at: t0, epoch: EPOCH, last_seq: 0, oldest_replayable_seq: 1, dataset_class: DATASET }));
+        if (resume && resume.epoch !== EPOCH) onEvent(env('stream.lagged', { reason: 'epoch_changed', dropped: null, resync: ['roots', 'volumes', 'jobs', 'tree', 'learning'] }));
       });
       return () => { live = false; };
     },

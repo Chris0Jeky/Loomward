@@ -1,4 +1,4 @@
-import type { NullableBytes } from '../types';
+import type { NullableBytes } from '../contracts.gen';
 
 const UNITS = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB', 'EiB'];
 
