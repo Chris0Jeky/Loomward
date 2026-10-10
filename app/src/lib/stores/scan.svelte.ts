@@ -1,5 +1,5 @@
 import type { EventEnvelope, Job, JobResult, ScanProgressEvent } from '../contracts.gen';
-import { applyJob, applyProgress, announcement, fromList, isActive, refusalText, viewOf, type Book, type ScanView } from '../scan/model';
+import { applyJob, applyProgress, announcement, isActive, lostJob, refusalText, viewOf, type Book, type ScanView } from '../scan/model';
 import { LoomwardError } from '../transport/client';
 import { session } from './session.svelte';
 
@@ -44,12 +44,26 @@ class Scans {
     this.commit(applyJob(this.book, job));
   }
 
-  /** Replaces the book from the service's own list: the truth after a mount, reconnect or lagged stream. */
+  /**
+   * Brings the book up to date with the service's own list (after a mount, reconnect or lagged stream). The list is a
+   * bounded page, so a root it leaves out keeps its last known finished scan; a scan that was running and is left out
+   * is asked for by id, and when the service no longer knows it, it is shown as lost rather than as still scanning.
+   */
   async sync(): Promise<void> {
     const c = session.client;
     if (!c) return;
     const { result } = await c.call('jobs.list', { kinds: ['scan'], limit: 50 });
-    this.commit(fromList(result.jobs));
+    this.commit(result.jobs.reduce(applyJob, this.book));
+    const listed = new Set(result.jobs.map((j) => j.job_id));
+    for (const job of Object.values(this.book)) {
+      if (!isActive(job.state) || listed.has(job.job_id)) continue;
+      try {
+        this.apply((await c.call('jobs.get', { job_id: job.job_id })).result.job);
+      } catch (e) {
+        if (!(e instanceof LoomwardError)) throw e;
+        if (e.code === 'not_found') this.apply(lostJob(job, new Date().toISOString()));
+      }
+    }
   }
 
   async start(rootId: string, mode: 'full' | 'refresh'): Promise<void> {
@@ -114,7 +128,7 @@ class Scans {
       const was = before[rootId] ? viewOf(before[rootId], 0) : null;
       const now = viewOf(job, 0);
       if (was?.activity === now.activity && before[rootId]?.job_id === job.job_id) continue;
-      if (was?.active && !now.active) this.settled++;
+      if (was && !now.active && (was.active || before[rootId]?.job_id !== job.job_id)) this.settled++;
       if (was || now.active) this.change = { rootId, text: announcement(now), n: ++this.n };
     }
   }

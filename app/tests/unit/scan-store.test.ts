@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CommandKey, EventEnvelope, Job, JobState } from '../../src/lib/contracts.gen';
+import type { CommandKey, ErrorCode, EventEnvelope, Job, JobState } from '../../src/lib/contracts.gen';
 import { scans } from '../../src/lib/stores/scan.svelte';
 import { session } from '../../src/lib/stores/session.svelte';
 import { Client } from '../../src/lib/transport/client';
@@ -51,13 +51,82 @@ describe('the scan store follows the event stream', () => {
     expect(scans.settled).toBe(settled);
     session.client = null;
   });
+});
 
-  it('forgets a scan the service no longer lists when it syncs', async () => {
-    scans.onEvent(ev('job.state', { job: job('completed', { coverage: 'complete' }) }));
-    session.client = new Client({ call: async (r: { request_id: string }) => ({ protocol: 'loomward/3', request_id: r.request_id, ok: true, result: { jobs: [] }, meta: {} }) } as unknown as Transport);
+type Reply = unknown | { error: { code: ErrorCode; message: string; detail?: Record<string, unknown> | null } };
+/** A client whose engine is a function; `calls` records the commands it was asked. */
+function clientWith(handler: (command: string, payload: Record<string, unknown>) => Reply) {
+  const calls: string[] = [];
+  const transport = {
+    call: async (r: { request_id: string; command: string; payload: Record<string, unknown> }) => {
+      calls.push(r.command);
+      const h = handler(r.command, r.payload) as { error?: object } | null;
+      const base = { protocol: 'loomward/3', request_id: r.request_id };
+      return h && typeof h === 'object' && 'error' in h ? { ...base, ok: false, error: { retryable: false, detail: null, ...h.error } } : { ...base, ok: true, result: h, meta: {} };
+    },
+  } as unknown as Transport;
+  return { client: new Client(transport), calls };
+}
+
+describe('settling and syncing keep what was known', () => {
+  beforeEach(fresh);
+  afterEach(() => { session.client = null; });
+
+  it('settles when a newer finished scan replaces an older finished one for the same root', () => {
+    scans.onEvent(ev('job.state', { job: job('completed', { coverage: 'complete', finished_at: '2026-10-10T10:00:05Z' }) }));
+    const settled = scans.settled;
+    scans.onEvent(ev('job.state', { job: job('completed', { job_id: 'jb_2', created_at: '2026-10-10T11:00:00Z', coverage: 'partial', finished_at: '2026-10-10T11:00:05Z' }) }));
+    expect(scans.view('rt_a', 0)?.activity).toBe('partial');
+    expect(scans.settled).toBe(settled + 1);
+  });
+
+  it('does not settle for a replay of the same finished job', () => {
+    const done = job('completed', { coverage: 'complete', finished_at: '2026-10-10T10:00:05Z' });
+    scans.onEvent(ev('job.state', { job: done }));
+    const settled = scans.settled;
+    scans.onEvent(ev('job.state', { job: done }));
+    expect(scans.settled).toBe(settled);
+  });
+
+  it('keeps a finished scan the jobs.list answer leaves out, and says nothing', async () => {
+    scans.onEvent(ev('job.state', { job: job('completed', { coverage: 'complete', finished_at: '2026-10-10T10:00:05Z' }) }));
+    const said = scans.change?.n;
+    const { client, calls } = clientWith(() => ({ jobs: [] }));
+    session.client = client;
     await scans.sync();
-    expect(scans.view('rt_a', 0)).toBeNull();
-    session.client = null;
+    expect(scans.view('rt_a', 0)?.activity).toBe('completed');
+    expect(scans.change?.n).toBe(said);
+    expect(calls).toEqual(['jobs.list']);
+  });
+
+  it('asks the service about a running scan the list leaves out, and applies the answer', async () => {
+    scans.onEvent(ev('job.state', { job: job('running', { started_at: '2026-10-10T10:00:01Z' }) }));
+    const { client, calls } = clientWith((c) => (c === 'jobs.list' ? { jobs: [] } : { job: job('completed', { coverage: 'complete', finished_at: '2026-10-10T10:00:05Z' }) }));
+    session.client = client;
+    await scans.sync();
+    expect(calls).toEqual(['jobs.list', 'jobs.get']);
+    expect(scans.view('rt_a', 0)?.activity).toBe('completed');
+  });
+
+  it('says so when the service no longer knows a scan that was running, never leaving it scanning', async () => {
+    scans.onEvent(ev('job.state', { job: job('running', { started_at: '2026-10-10T10:00:01Z' }) }));
+    const { client } = clientWith((c) => (c === 'jobs.list' ? { jobs: [] } : { error: { code: 'not_found', message: 'no such job' } }));
+    session.client = client;
+    await scans.sync();
+    const v = scans.view('rt_a', 0)!;
+    expect(v.activity).toBe('failed');
+    expect(v.active).toBe(false);
+    expect(v.detail).toContain('no longer lists this scan');
+    expect(scans.change?.text).toContain('no longer lists this scan');
+  });
+
+  it('does not claim a scan is running when the service is busy for another reason', async () => {
+    const { client, calls } = clientWith(() => ({ error: { code: 'busy', message: 'too many mutations are pending; retry shortly' } }));
+    session.client = client;
+    await scans.start('rt_a', 'full');
+    expect(scans.problems.rt_a).toContain('too many mutations are pending');
+    expect(scans.problems.rt_a).not.toContain('already running');
+    expect(calls).toEqual(['scan.start']); // no running job was named, so none is looked up
   });
 });
 
