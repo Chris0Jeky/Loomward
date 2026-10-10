@@ -1348,7 +1348,7 @@ fn followup_stored_grants_refuse_static_without_recording_new_grants() {
             &tmp.path().join("lab"),
             "s",
             "S",
-            "sha256:00",
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
         )
         .unwrap_err();
         assert!(err.contains("identity_unavailable"), "{err}");
@@ -1361,8 +1361,22 @@ fn followup_stored_grants_refuse_static_without_recording_new_grants() {
     let dist = tmp.path().join("dist");
     let old = dist.join("stored-lab");
     let new = tmp.path().join("new-lab");
-    lab::register(&state, &old, "s", "S", "sha256:00").unwrap();
-    lab::register(&state, &new, "s", "S", "sha256:00").unwrap();
+    lab::register(
+        &state,
+        &old,
+        "s",
+        "S",
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    )
+    .unwrap();
+    lab::register(
+        &state,
+        &new,
+        "s",
+        "S",
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    )
+    .unwrap();
     let cfg = |roots| Config {
         state_dir: state.clone(),
         dataset: DatasetClass::Synthetic,
@@ -1397,7 +1411,7 @@ fn followup_proposed_static_overlap_leaves_no_active_grant() {
             &tmp.path().join("lab"),
             "s",
             "S",
-            "sha256:00",
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
         )
         .unwrap_err();
         assert!(err.contains("identity_unavailable"), "{err}");
@@ -1408,7 +1422,14 @@ fn followup_proposed_static_overlap_leaves_no_active_grant() {
     let tmp = tempfile::tempdir_in(".").unwrap();
     let state = tmp.path().join("state");
     let grant = tmp.path().join("dist/lab");
-    lab::register(&state, &grant, "s", "S", "sha256:00").unwrap();
+    lab::register(
+        &state,
+        &grant,
+        "s",
+        "S",
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    )
+    .unwrap();
     followup_refused_start(&state, &tmp.path().join("dist"), Some(&grant), false);
     let service = Service::open(Config {
         state_dir: state,

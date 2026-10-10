@@ -141,12 +141,30 @@ impl Service {
                 }
             }
         }
-        if destination.join("state.db").exists() {
+        for name in ["state.db", "catalog.db"] {
+            if !destination.join(name).exists() || (name == "catalog.db" && static_dir.is_none()) {
+                continue;
+            }
             let existing = rusqlite::Connection::open_with_flags(
-                destination.join("state.db"),
+                destination.join(name),
                 rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
             )
             .map_err(|_| "cannot inspect stored grants")?;
+            // V1 grants migrate from the catalogue; newer or corrupt derived stores add none.
+            if name == "catalog.db"
+                && !existing
+                    .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                    .is_ok_and(|version| version == 1)
+            {
+                continue;
+            }
+            // Empty and pre-v2 state stores have no grant table yet; keep preflight read-only.
+            if !existing
+                .query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='root_grant')", [], |r| r.get::<_, bool>(0))
+                .map_err(|_| "cannot inspect stored grants")?
+            {
+                continue;
+            }
             let mut stmt = existing
                 .prepare("SELECT display_path FROM root_grant WHERE state='active'")
                 .map_err(|_| "cannot inspect stored grants")?;

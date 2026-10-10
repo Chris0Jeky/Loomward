@@ -75,6 +75,138 @@ fn open(dir: &Path, dataset: DatasetClass) -> Service {
 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 #[test]
+fn review_empty_state_starts() {
+    let tmp = tempfile::tempdir_in(".").unwrap();
+    rusqlite::Connection::open(tmp.path().join("state.db"))
+        .unwrap()
+        .close()
+        .unwrap();
+    drop(open(tmp.path(), DatasetClass::Synthetic));
+    let db = rusqlite::Connection::open(tmp.path().join("state.db")).unwrap();
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        loomward_catalog::SCHEMA_VERSION
+    );
+}
+
+fn v1_store(dir: &Path) {
+    for (name, schema) in [
+        (
+            "catalog.db",
+            include_str!("../../loomward-catalog/tests/fixtures/catalog-v1.sql"),
+        ),
+        (
+            "state.db",
+            include_str!("../../loomward-catalog/tests/fixtures/state-v1.sql"),
+        ),
+    ] {
+        let db = rusqlite::Connection::open(dir.join(name)).unwrap();
+        db.execute_batch(schema).unwrap();
+        db.pragma_update(None, "application_id", loomward_catalog::APPLICATION_ID)
+            .unwrap();
+        db.pragma_update(None, "user_version", 1).unwrap();
+        db.execute("INSERT INTO meta VALUES('dataset_class','synthetic')", [])
+            .unwrap();
+    }
+}
+
+#[test]
+fn review_v1_state_migrates_and_starts() {
+    let tmp = tempfile::tempdir_in(".").unwrap();
+    v1_store(tmp.path());
+    let db = rusqlite::Connection::open(tmp.path().join("state.db")).unwrap();
+    db.execute(
+        "INSERT INTO collection VALUES(1,'Fixture collection','human',0)",
+        [],
+    )
+    .unwrap();
+    db.close().unwrap();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    assert_eq!(
+        svc.inner
+            .db()
+            .query_row("SELECT name FROM st.collection WHERE id=1", [], |r| r
+                .get::<_, String>(0))
+            .unwrap(),
+        "Fixture collection"
+    );
+    assert!(tmp.path().join("state.before-v1.db").exists());
+}
+
+#[test]
+fn review_stored_overlap_is_refused_before_store_changes() {
+    for legacy in [false, true] {
+        let tmp = tempfile::tempdir_in(".").unwrap();
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir(&dist).unwrap();
+        let dist = dist.canonicalize().unwrap();
+        if legacy {
+            v1_store(&state);
+            let db = rusqlite::Connection::open(state.join("catalog.db")).unwrap();
+            db.execute(
+                "INSERT INTO volume VALUES(1,'fixture','Fixture','{}','{}','{}',1,0)",
+                [],
+            )
+            .unwrap();
+            db.execute("INSERT INTO root_grant VALUES(1,1,zeroblob(16),?1,'fixture','fixture','active',0,NULL)", [dist.to_str().unwrap()]).unwrap();
+        } else {
+            drop(loomward_catalog::Catalog::open(&state, "synthetic").unwrap());
+            let db = rusqlite::Connection::open(state.join("state.db")).unwrap();
+            db.execute("INSERT INTO root_grant(volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns) VALUES('fixture',zeroblob(16),?1,'fixture','fixture','active',0)", [dist.to_str().unwrap()]).unwrap();
+            db.pragma_update(None, "journal_mode", "DELETE").unwrap();
+            let db = rusqlite::Connection::open(state.join("catalog.db")).unwrap();
+            db.pragma_update(None, "journal_mode", "DELETE").unwrap();
+        }
+        let before: std::collections::BTreeMap<_, _> = std::fs::read_dir(&state)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.is_file())
+            .map(|p| (p.clone(), std::fs::read(p).unwrap()))
+            .collect();
+        let error = Service::open_with_static(
+            Config {
+                state_dir: state.clone(),
+                dataset: DatasetClass::Synthetic,
+                allow_personal: false,
+                grant_roots: vec![],
+            },
+            Some(&dist),
+        )
+        .err()
+        .expect("stored overlap must be refused");
+        assert!(error.contains("overlaps"), "{error}");
+        let after: std::collections::BTreeMap<_, _> = std::fs::read_dir(&state)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.is_file())
+            .map(|p| (p.clone(), std::fs::read(p).unwrap()))
+            .collect();
+        assert!(
+            before == after,
+            "refused startup changed the store (legacy={legacy})"
+        );
+    }
+}
+
+#[test]
+fn review_lab_digest_refusals_leave_no_files() {
+    let tmp = tempfile::tempdir_in(".").unwrap();
+    let state = tmp.path().join("state");
+    let root = tmp.path().join("lab");
+    for digest in ["sha256:00".to_owned(), format!("sha256:{}", "A".repeat(64))] {
+        assert_eq!(
+            crate::lab::register(&state, &root, "s", "S", &digest).unwrap_err(),
+            "invalid lab manifest digest"
+        );
+        assert!(!state.exists());
+        assert!(!root.exists());
+    }
+}
+
+#[test]
 fn hardening_reads_stay_bounded_after_the_caller_times_out() {
     let tmp = tempfile::tempdir_in(".").unwrap();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
@@ -196,7 +328,14 @@ fn hardening_invalid_lab_and_startup_leave_no_files() {
     let tmp = tempfile::tempdir_in(".").unwrap();
     let state = tmp.path().join("state");
     let root = state.join("refused-lab");
-    assert!(crate::lab::register(&state, &root, "s", "S", "sha256:00").is_err());
+    assert!(crate::lab::register(
+        &state,
+        &root,
+        "s",
+        "S",
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    )
+    .is_err());
     assert!(!state.exists());
     if native_identity_available() {
         let unknown = tmp.path().join("unregistered");
@@ -223,7 +362,7 @@ fn hardening_invalid_lab_and_startup_leave_no_files() {
         &tmp.path().join("lab"),
         "s",
         "S",
-        "sha256:00"
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000"
     )
     .is_err());
     assert!(!tmp.path().join("lab").exists());
@@ -340,7 +479,14 @@ fn hardening_grant_checks_the_registered_digest_before_writes() {
     let tmp = tempfile::tempdir_in(".").unwrap();
     let state = tmp.path().join("state");
     let root = tmp.path().join("lab");
-    crate::lab::register(&state, &root, "s", "S", "sha256:00").unwrap();
+    crate::lab::register(
+        &state,
+        &root,
+        "s",
+        "S",
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    )
+    .unwrap();
     let svc = open(&state, DatasetClass::Synthetic);
     svc.inner
         .db()
@@ -350,7 +496,7 @@ fn hardening_grant_checks_the_registered_digest_before_writes() {
     assert_eq!(crate::db::active_grants(&svc.inner.db()).unwrap(), 0);
     svc.inner
         .db()
-        .execute("UPDATE st.lab_root SET manifest_digest='sha256:00'", [])
+        .execute("UPDATE st.lab_root SET manifest_digest='sha256:0000000000000000000000000000000000000000000000000000000000000000'", [])
         .unwrap();
     assert!(svc.inner.grant(&root, "cli_flag").is_ok());
 }
@@ -918,7 +1064,14 @@ fn provenance_synthetic_accepts_only_identity_verified_lab_roots() {
     );
     // A registered lab root is accepted, and listed as lab_generated.
     let lab = tmp.path().join("lab-s1");
-    crate::lab::register(&state, &lab, "seed-1", "S", "sha256:00").unwrap();
+    crate::lab::register(
+        &state,
+        &lab,
+        "seed-1",
+        "S",
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    )
+    .unwrap();
     let lab = lab.canonicalize().unwrap();
     let svc = Service::open(cfg(vec![lab.clone()], DatasetClass::Synthetic, false)).unwrap();
     let (roots, _) = ok("roots.list", call(&svc, "roots.list", json!({})));
@@ -944,7 +1097,14 @@ fn provenance_synthetic_accepts_only_identity_verified_lab_roots() {
     assert!(e.contains("synthetic_session_requires_lab_root"), "{e}");
     // Registration refuses a non-empty directory.
     std::fs::write(owner.join("x.txt"), b"x").unwrap();
-    assert!(crate::lab::register(&state, &owner, "s", "S", "sha256:00").is_err());
+    assert!(crate::lab::register(
+        &state,
+        &owner,
+        "s",
+        "S",
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    )
+    .is_err());
     // A personal session needs the explicit flag and serves no teacher.
     let personal = tmp.path().join("personal");
     assert!(Service::open(Config {
@@ -1563,7 +1723,14 @@ fn lab() -> Option<Lab> {
     let tmp = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
     let state = tmp.path().join("state");
     let path = tmp.path().join("lab-scan");
-    crate::lab::register(&state, &path, "seed-scan", "S", "sha256:00").unwrap();
+    crate::lab::register(
+        &state,
+        &path,
+        "seed-scan",
+        "S",
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    )
+    .unwrap();
     let path = path.canonicalize().unwrap();
     std::fs::write(path.join("top.bin"), [0u8; 100]).unwrap();
     std::fs::create_dir_all(path.join("a").join("deep")).unwrap();

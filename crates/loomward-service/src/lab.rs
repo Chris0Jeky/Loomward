@@ -9,9 +9,7 @@ use loomward_protocol::RootGrantResultRefusal as Refusal;
 use std::path::Path;
 
 pub(crate) fn valid_digest(digest: &str) -> bool {
-    digest
-        .strip_prefix("sha256:")
-        .is_some_and(|s| !s.is_empty() && s.len() <= 64 && s.bytes().all(|c| c.is_ascii_hexdigit()))
+    loomward_protocol::Digest::new(digest).is_ok()
 }
 
 pub(crate) fn log_digest(digest: &str) -> Result<(), Refusal> {
@@ -110,6 +108,15 @@ pub fn register(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn review_lab_digests_are_canonical() {
+        assert!(valid_digest(&format!("sha256:{}", "0a".repeat(32))));
+        for digest in ["sha256:00".to_owned(), format!("sha256:{}", "A".repeat(64))] {
+            assert!(!valid_digest(&digest), "{digest}");
+            assert_eq!(log_digest(&digest), Err(Refusal::IdentityUnavailable));
+        }
+    }
+
     #[test]
     fn hardening_lab_identity_refuses_legacy_width() {
         let mut object = loomward_windows::identity::ObjectKey {
