@@ -33,7 +33,7 @@ are included in prompts or public evidence.
 ```powershell
 py -3 experiments/teacher_spike/spike.py --self-check
 py -3 experiments/teacher_spike/spike.py --inspect
-py -3 experiments/teacher_spike/spike.py --runs 10 --canary-runs 3
+py -3 experiments/teacher_spike/spike.py --allow-cloud --runs 10 --canary-runs 3
 # Separate positive controls; this intentionally is NOT a hardened invocation:
 py -3 experiments/teacher_spike/spike.py --full-access-control
 ```

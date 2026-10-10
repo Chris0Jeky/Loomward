@@ -247,8 +247,10 @@ def inspect_cli(exe: Path, raw_dir: Path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--exe", type=Path)
-    parser.add_argument("--runs", type=int, default=10, choices=range(0, 11))
-    parser.add_argument("--canary-runs", type=int, default=3, choices=range(0, 4))
+    parser.add_argument("--runs", type=int, default=0, choices=range(0, 11))
+    parser.add_argument("--canary-runs", type=int, default=0, choices=range(0, 4))
+    parser.add_argument("--allow-cloud", action="store_true",
+                        help="Required for any run that calls the authenticated model provider")
     parser.add_argument("--self-check", action="store_true")
     parser.add_argument("--inspect", action="store_true", help="Local CLI probes only; no teacher runs")
     parser.add_argument("--full-access-control", action="store_true",
@@ -257,6 +259,10 @@ def main():
     if args.self_check:
         self_check()
         return
+    if not args.inspect and not args.allow_cloud:
+        parser.error("teacher runs call the cloud model provider: pass --allow-cloud with explicit --runs/--canary-runs")
+    if args.allow_cloud and not (args.runs or args.canary_runs or args.full_access_control):
+        parser.error("--allow-cloud needs an explicit --runs and/or --canary-runs count")
     exe = args.exe or native_exe()
     stamp = time.strftime("%Y%m%d-%H%M%S")
     raw_dir = ROOT / ".loomward/teacher_spike" / stamp
