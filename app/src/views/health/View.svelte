@@ -81,10 +81,10 @@
     try {
       if (p.kind === 'root') {
         const { result } = await c.call('roots.revoke', { root_id: p.id, purge_catalog: purge });
-        done = `Revoked ${p.label} at ${formatTime(result.revoked_at)}. ${result.purged ? "Loomward's own catalogue rows for it were deleted." : 'Its catalogue rows were kept.'} No scanned file was touched.`;
+        done = `Revoked ${escapedName(p.label)} at ${formatTime(result.revoked_at)}. ${result.purged ? "Loomward's own catalogue rows for it were deleted." : 'Its catalogue rows were kept.'} No scanned file was touched.`;
       } else {
         const { result } = await c.call('grants.revoke', { grant_id: p.id });
-        done = `Revoked ${p.label} at ${formatTime(result.revoked_at)}.`;
+        done = `Revoked ${escapedName(p.label)} at ${formatTime(result.revoked_at)}.`;
       }
       pending = null;
       await load();

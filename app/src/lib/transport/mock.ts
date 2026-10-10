@@ -215,6 +215,12 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     },
   });
 
+  const HOSTILE_ROOT_ID = 'rt_mock_9';
+  const hostileRoot = (): Root => ({
+    ...rootRow(tree.nodes[tree.rootIndexes[1]!]!), root_id: HOSTILE_ROOT_ID, display_path: { text: '[mock] reports‮txt.exe', truncated: false },
+    grant_state: views.revokedRoots.has(HOSTILE_ROOT_ID) ? 'revoked' : 'active',
+  });
+
   const handlers: Record<string, (payload: Record<string, unknown>) => unknown> = {
     'session.hello': (): SessionInfo => ({
       protocol: 'loomward/3', engine_version: 'mock-0.3 (no engine)', adapter: 'http', dataset_class: DATASET, session_started_at: t0,
@@ -233,10 +239,12 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
       jobs_running: 0, last_error: null,
       warnings: [{ code: 'telemetry_unavailable', message: 'The mock transport has no GPU or disk counters; those figures are unknown.', at: t0 }],
     }),
-    'roots.list': (): RootList => ({ roots: tree.rootIndexes.map((i) => rootRow(tree.nodes[i]!)) }),
+    // A third root whose path hides a right-to-left override: Grants & health must show and speak it escaped.
+    'roots.list': (): RootList => ({ roots: [...tree.rootIndexes.map((i) => rootRow(tree.nodes[i]!)), hostileRoot()] }),
     'grants.list': (): GrantList => ({
       grants: [
         ...tree.rootIndexes.map((i, k) => ({ grant_id: `gr_mock_root_${k}`, kind: 'metadata_root' as const, root_id: rootId(tree.nodes[i]!), granted_at: GRANTED_AT, granted_via: 'fixture' as const, revoked_at: views.revokedRoots.get(rootId(tree.nodes[i]!)) ?? null })),
+        { grant_id: 'gr_mock_root_2', kind: 'metadata_root' as const, root_id: HOSTILE_ROOT_ID, granted_at: GRANTED_AT, granted_via: 'fixture' as const, revoked_at: views.revokedRoots.get(HOSTILE_ROOT_ID) ?? null },
         { grant_id: 'gr_mock_teacher_0', kind: 'teacher_disclosure' as const, recipient: 'codex_cli_gpt_6_1_sol', dataset_class: DATASET, fields: ['name', 'extension'], item_count: 25, payload_digest: 'sha256:' + '0'.repeat(64), created_at: GRANTED_AT, expires_at: '2026-10-01T10:00:00Z', revoked_at: views.revokedGrants.get('gr_mock_teacher_0') ?? null, used: false, confirmed_via: 'synthetic_policy' as const },
       ],
     }),

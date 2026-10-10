@@ -251,6 +251,15 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     expect(page.locator('p.ok.live')).to_be_focused()
     check(not active(page).startswith('BODY'), f'2.4.3 focus is not dropped to the body after Revoke ({active(page)})')
 
+    # the result text is read from a focused status: a hidden character in a root path is spelled out there too
+    goto(page, base, 'health', 'Grants & health')
+    row = page.locator('main section[aria-labelledby="h-roots"] tbody tr', has_text='reports')
+    row.get_by_role('button', name=re.compile('^Revoke…')).click()
+    page.get_by_role('group', name=re.compile('Revoke root access')).get_by_role('button', name='Revoke', exact=True).click()
+    expect(page.locator('p.ok.live')).to_contain_text('Revoked')
+    said = page.locator('p.ok.live').inner_text()
+    check('U+202E' in said and '‮' not in said, f'4.1.3 invariant: the Revoke result spells the hidden character out, not raw: "{said[:60]}"')
+
     goto(page, base, 'companion', 'Companion')
     expect(page.locator('main table.procs tbody tr').first).to_be_visible()
     page.get_by_role('button', name=re.compile('^Explain')).first.click()
