@@ -35,16 +35,15 @@ def main():
     data = json.loads(result.stdout)
     runs = data["runs"]
     assert len(runs) >= 20 and len({r["process_id"] for r in runs}) == len(runs)
-    assert data["root"] == "10M lab tier on an internal HDD"
+    assert data["root"] == "10M lab tier (E: scale lab)"
     assert data["oracle_passed_all_runs"]
     assert all(r["oracle"] == "exact-manifest" if r["complete"] else
                r["limit_hit"] and not r["sweep_allowed"] and r["allocated_bytes"] is None
                for r in runs)
     data["recorded_utc"] = datetime.now(timezone.utc).isoformat()
     data["machine"] = {
-        "os": platform.platform(), "cpu": "Intel Core i5-13600K (14 cores, 20 logical processors)",
-        "installed_ram_bytes": 34_359_738_368, "visible_ram_bytes": 34_064_613_376,
-        "volume": "internal SATA HDD, ST2000DM006-2DM164, NTFS",
+        "os": platform.platform(),
+        "hardware": "withheld from public evidence (evidence/v3/README.md, 10 October 2026 correction)",
         "state_disk": "none; aggregate-only memory sink",
     }
     data["generation"] = {
@@ -79,7 +78,7 @@ def main():
         "lifetime peak memory includes manifest oracle validation and scan setup",
         "scan wall is run_scan only; excludes CLI manifest planning, process startup and grant construction",
         "mixed lab uses zero sparse payloads, 256 files/bucket and occasional 40-component paths; not every doc 41 distribution",
-        "E: HDD run does not qualify the G: warm full-scan P2 target",
+        "an E: scale-lab run does not qualify the G: warm full-scan P2 target",
         "no WinDirStat comparison, cold-cache, reboot, elevation or standby-list flush",
     ]
     data["initial_attempt"] = {
