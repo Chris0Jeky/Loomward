@@ -1,3 +1,164 @@
+# Catalogue P4d (#148): single publication and transaction-wide dirtying - 2026-10-10
+
+## Changed
+
+Uncommitted on `perf/catalog-writer-p4d`, starting/final HEAD
+`f910c89372e827d42791b25a9de30b87720663fc`. Initially clean; no commit or push.
+The driver owns integration and commits. Owned changes: `src/writer.rs`,
+`src/writer/publication_tests.rs`, this handoff and
+[benchmark evidence](../../evidence/v3/bench/catalog-1m.json). Previous receipts and
+negative results are preserved below and in the JSON history.
+
+- Dirty seeds carry their input revision and run. A reverse-order pass updates each
+  surviving directory/ancestor once before transaction commit. Newest revisions win;
+  a rejected savepoint truncates only its seeds and invalidates parent/extension caches.
+  Reparenting still seeds both chains. The same-run final and rollup-oracle tests pass.
+- Remove the rollback-only publication. Reference preparation still commits pending
+  intents in a state-only FULL transaction; original bindings stay untouched. Only
+  a catalogue FULL commit with its matching witness can confirm those intents, and
+  confirmation precedes acknowledgement. A rejected publication discards unmatched
+  intents before the next command's witness; commit failures and both crash boundaries
+  retain their existing recovery rules. No transaction writes both persistent files.
+- Reference preparation copies old files and matches each incoming file once. The
+  existing TEMP continuity table retains matched IDs in input order, and publication
+  consumes them against the immutable old-file names instead of recopying/rematching.
+  Staged intent-bearing listings now decode twice, down from three including the old
+  dry run. They still decode one chunk at a time; a whole-listing memory cache was not added.
+- Matching keeps replacement invalidation, exact-name preference, native-identity
+  fallback, lowest-ID ties and one-time consumption. `UPDATE ... RETURNING` folds
+  selection/consumption into one statement after the replacement UPDATE (two
+  statements rather than up to four). Creation/incarnation and partial rules remain.
+- The existing 1,024-entry extension cache now survives successful commands and
+  transactions; rollback clears it so IDs/families cannot outlive their SQLite rows.
+  Family conflicts still reject. Directory identity prefetch was measured and removed:
+  27,110 -> 27,017 directories/s in a separate 100k-directory probe, no end-to-end gain.
+  Its tested replacement invalidation complexity does not remain in production.
+
+Main memory settings remain **256 MiB catalogue cache, `temp_store=MEMORY`**,
+4 KiB pages and the main-only 16,384-page checkpoint threshold. State stays FULL.
+No schema, public API, dependency, live index or file/process effect change.
+The parked P4b bulk/file-temp proposal and rejected P4c branch were read as history;
+no bulk-copy, spill or cache-policy changes were imported.
+
+## Verified
+
+Windows 11 shared host, rustc 1.97.1. Required gates all exit 0:
+
+```text
+cargo fmt --all --check
+cargo test --workspace                         # 415 passed, zero failed/ignored
+cargo clippy --workspace --all-targets -- -D warnings
+git diff --check
+cargo run -p loomward-catalog --release --example bench -- --rows 1000000
+```
+
+Catalogue: **74 passed**. N1/N2, partial #8/#10, ReFS downgrade, failed staged-listing
+fences, pending references, #171 FULL sync/restoration, membership/crash recovery
+and the random-tree rollup oracle remain green. No existing test was weakened.
+The final five new tests killed seven production mutations (all exit 101 from
+executed assertions, no compilation failures):
+
+| Test | Mutations caught |
+| --- | --- |
+| `batch_dirtying_uses_latest_revisions_and_both_move_chains_after_rejection` | process seeds oldest-first; retain rejected seeds |
+| `extension_cache_cannot_reuse_a_rolled_back_id_or_family` | retain cache after rollback |
+| `rejected_single_pass_publication_discards_intents_before_the_next_witness` | restore a second publication pass; omit reference reconciliation |
+| `prepared_file_matches_survive_until_publication_without_recopied_or_rematched_rows` | ignore prepared matches (SQLite triggers reject a second copy/match) |
+| `file_matching_prefers_exact_name_and_consumes_each_old_row_once` | prefer identity before exact name |
+
+Production bytes were restored exactly, then the full workspace gates passed.
+Source hashes, mutant logs/results, raw runs and per-run query p95s are in the JSON
+and task-owned gitignored `.loomward/p4d/` logs.
+
+The final comparison is **A1/B1/A2/B2/A3/B3**, using a separate detached checkout
+of frozen main `f910c89` and the final source on this branch.
+Own benchmarks never overlapped; other lanes shared the host. Each 1M run passed
+its accounting oracle, all-index assertions and temporary-directory cleanup.
+Earlier candidate runs are preserved and excluded from this final comparison.
+
+| Phase (seconds unless count; independent medians) | Main | P4d |
+| --- | ---: | ---: |
+| P4 elapsed | 24.606703 | 23.940871 |
+| Staging | 1.015632 | 0.973567 |
+| State preparation | 0.002928 | 0.002990 |
+| Validation dry run | 0.000000 | 0.000000 |
+| Publication INSERT + inline indexes | 11.041618 | 10.695370 |
+| Name validation | 0.825385 | 0.880638 |
+| Publication total | 14.468008 | 14.063854 |
+| Invalidation | 0.015184 | 0.004358 |
+| COMMIT timer | 7.237958 | 7.144347 |
+| Transactions through P4 | 76 | 74 |
+| Dirty UPDATEs | 3001 | 2071 |
+| EndRun rollup | 0.005020 | 0.005049 |
+| EndRun multilink | 2.121585 | 2.081686 |
+| EndRun checkpoint | 0.316737 | 0.329681 |
+
+After invalidation is inside the COMMIT timer; before it is inside publication.
+These independent per-metric medians are not additive. EndRun is outside P4.
+Inline index maintenance remains inside INSERT, and still dominates with COMMIT.
+Dirty UPDATEs fall about 31 percent and invalidation time about 71 percent.
+
+| Gate (median; min-max of three run summaries) | Main | P4d |
+| --- | ---: | ---: |
+| P4 rows/s | 40,680 (37,963-43,211) | 41,811 (40,875-42,804) |
+| P6 p50 ms | 73.674 (73.192-73.897) | 74.119 (73.020-74.565) |
+| P7_logical p50 ms | 1.242 (1.205-1.266) | 1.276 (1.222-1.290) |
+| P7_allocated p50 ms | 0.963 (0.942-0.989) | 0.972 (0.957-1.015) |
+| P8 p50 ms | 23.676 (23.610-23.943) | 23.146 (22.755-23.838) |
+| Reference refresh rows/s | 15,193 (14,898-15,276) | 24,793 (24,500-26,137) |
+
+Fresh P4 improves **1.028x** in these pairs; the small gain is
+within uncontrolled shared-host variability. **250k remains unmet**. P6/P7 p50
+medians rise 0.6-2.8 percent; P8 p50 improves. P95s have larger spikes, especially
+P6/P8. Both P6 variants exceed 60 ms in these runs. Query non-regression is subject
+to the bounded remeasurement below, not asserted from these three noisy pairs.
+P6 still has 2,500 nodes and a payload below 1.5 MB; all 63 P8 probes hit the budget.
+
+The separate reference-refresh experiment publishes 99,999 surviving files from
+a 100k single-directory listing and rebinds a precious reference from an omitted
+hard-link name to its survivor. Three interleaved pairs all assert file/byte totals,
+the resolved survivor binding and no pending intents. Median wall time:
+**6.582 -> 4.033 s**, throughput
+**1.632x**. This is reference-path evidence, not the 1M P4 gate.
+Temporary harness sources are embedded in the JSON for reproduction; the examples
+were removed from both checkouts after measuring.
+
+| 100k reference refresh phase (seconds) | Main | P4d |
+| --- | ---: | ---: |
+| state_prepare_seconds | 4.287549 | 2.727513 |
+| validation_dry_run_seconds | 1.637038 | 0.000000 |
+| listing_seconds | 2.017196 | 0.997620 |
+| file_insert_seconds | 0.509946 | 0.485549 |
+| commit_seconds | 0.169722 | 0.168053 |
+
+## NOT verified
+
+250k throughput; strict query non-regression; 10M,
+cold cache, controlled/exclusive host load, process RSS, HTTP/native enumeration
+integration, Python/UI, hosted CI or physical power-loss/storage fsync behavior.
+The remaining second decode and directory identity lookups are unchanged costs.
+
+## Residual risk
+
+The committed-witness recovery protocol, rather than a rollback-only publication,
+now protects bindings after rejection. Existing crash/commit-failure tests and new
+mutation proofs cover that boundary; physical power-loss behavior remains unproved.
+Deferred seeds add writer scratch proportional to directories dirtied in an atomic
+listing/batch; peak RSS is not measured. The unchanged cache/WAL thresholds are not
+OS memory/WAL caps. Shared-host timing cannot qualify a universal performance claim.
+
+Recommended commits:
+
+1. `perf(catalog): reuse publication matches and batch dirty updates`
+2. `bench(catalog): record P4d shared-host comparisons`
+
+This worktree remains owned by the driver, with uncommitted changes and gitignored
+`.loomward/p4d/` evidence plus rebuildable `target/`; it is not removal-ready.
+The separate benchmark checkout and retained synthetic query fixtures are task-owned
+and are removed after the final recheck. No personal inventory was used.
+
+---
+
 # Catalogue P4 (#148): bounded streaming publications - 2026-10-10
 
 ## Changed
