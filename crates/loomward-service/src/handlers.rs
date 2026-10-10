@@ -194,7 +194,14 @@ impl Inner {
             .ok_or_else(|| fail(ErrorCode::InternalError, "root has no directory row"))?;
         let id = RootId::new(self.root_id(row)).expect("rt_ id");
         self.scan.bind(&id, root.grant, dir);
-        let granted = self.engine.granted_root(id.clone(), root.grant);
+        let granted = self.engine.granted_root(
+            id.clone(),
+            root.grant,
+            &loomward_engine::scan::CatalogRootIdentity {
+                row,
+                instance: self.instance.clone(),
+            },
+        );
         if matches!(&granted, Err(loomward_engine::EngineError::PermissionDenied { message })
             if message == "root_identity_changed")
         {

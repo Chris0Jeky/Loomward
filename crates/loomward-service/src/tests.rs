@@ -1589,6 +1589,30 @@ fn lab() -> Option<Lab> {
     })
 }
 
+#[cfg(windows)]
+#[test]
+fn service_minted_root_id_round_trips_through_the_engine() {
+    let Some(lab) = lab() else { return };
+    let inner = &lab.svc.inner;
+    let row = inner.root_row(&lab.root).unwrap();
+    let grant = crate::db::roots(&inner.db(), Some(row)).unwrap()[0].grant;
+    let id = RootId::new(&lab.root).unwrap();
+    let root = inner
+        .engine
+        .granted_root(
+            id.clone(),
+            grant,
+            &loomward_engine::scan::CatalogRootIdentity {
+                row,
+                instance: inner.instance.clone(),
+            },
+        )
+        .unwrap();
+    assert_eq!(root.root_id(), &id);
+    assert_eq!(root.path().canonicalize().unwrap(), lab.path);
+    assert_eq!(root.dataset_class(), DatasetClass::Synthetic);
+}
+
 /// Independent walk: (files, dirs below the root, logical bytes); reparse points are neither
 /// followed nor counted, as the scan's exclusion rule says.
 #[cfg(windows)]

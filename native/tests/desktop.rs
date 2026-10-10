@@ -429,7 +429,8 @@ fn call_saturation_is_busy_through_tauri_ipc_and_recovers_after_release() {
 #[test]
 fn nonstandard_profile_parent_does_not_fence_unrelated_siblings() {
     use loomward_desktop::dialogs::validate_picked_folder;
-    let tmp = tempfile::tempdir().unwrap();
+    // The system temp directory is inside AppData, which the shared grant validator refuses.
+    let tmp = tempfile::tempdir_in(".").unwrap();
     let profile = tmp.path().join("fixture-home");
     let sibling = tmp.path().join("fixture-dataset");
     std::fs::create_dir(&profile).unwrap();
@@ -444,7 +445,7 @@ fn nonstandard_profile_parent_does_not_fence_unrelated_siblings() {
 #[test]
 fn picker_fences_additional_credential_stores_case_insensitively() {
     use loomward_desktop::dialogs::validate_picked_folder;
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(".").unwrap();
     let profile = tmp.path().join("profiles/fixture-user");
     for store in [".docker", ".CARGO", ".npm", ".terraform.d", ".gemini"] {
         let path = profile.join(store).join("nested");

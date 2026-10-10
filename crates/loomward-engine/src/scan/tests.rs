@@ -3,7 +3,7 @@ use crate::{Engine, EngineConfig};
 use loomward_protocol::{DatasetClass, RootId};
 
 #[test]
-fn granted_root_rejects_foreign_instance_tags_before_opening_a_path() {
+fn granted_root_rejects_foreign_catalogue_identities_before_opening_a_path() {
     let state = tempfile::tempdir().unwrap();
     let grant = root();
     let _conn = duplicate_grant_store(state.path(), &grant);
@@ -21,15 +21,23 @@ fn granted_root_rejects_foreign_instance_tags_before_opening_a_path() {
         DatasetClass::Synthetic,
     ))
     .unwrap();
-    for id in [
-        "rt_7_00000000",
-        "rt_7_",
-        "rt_7_f3ed013d_extra",
-        "rt_8_00000000",
+    for (row, instance) in [
+        (7, "foreign-instance"),
+        (7, ""),
+        (8, "fixture-instance"),
+        (0, "fixture-instance"),
+        (-7, "fixture-instance"),
     ] {
         assert_eq!(
             engine
-                .granted_root(RootId::new(id).unwrap(), 1)
+                .granted_root(
+                    RootId::new("rt_opaque").unwrap(),
+                    1,
+                    &CatalogRootIdentity {
+                        row,
+                        instance: instance.into()
+                    },
+                )
                 .unwrap_err(),
             EngineError::PermissionDenied {
                 message: "grant_root_mismatch".into()
@@ -1728,7 +1736,7 @@ fn granted_root_comes_only_from_an_active_durable_grant() {
     insert(1, &file_id, "active");
     insert(2, &file_id, "revoked");
     insert(3, &[9; 16], "active");
-    // Catalogue root row `g` observes grant `g`; tags match the service's wire spelling.
+    // Catalogue root row `g` observes grant `g`.
     rusqlite::Connection::open(state.path().join("catalog.db"))
         .unwrap()
         .execute_batch(
@@ -1743,33 +1751,49 @@ fn granted_root_comes_only_from_an_active_durable_grant() {
         DatasetClass::Synthetic,
     ))
     .unwrap();
-    // SHA-256('fixture-instance') first four bytes, independently computed fixture.
-    let rt = |row: i64| RootId::new(format!("rt_{row}_f3ed013d")).unwrap();
+    let rt = |row: i64| RootId::new(format!("rt_opaque_{row}")).unwrap();
+    let catalog_root = |row| CatalogRootIdentity {
+        row,
+        instance: "fixture-instance".into(),
+    };
     let message =
         |r: EngineResult<GrantedRoot>| r.unwrap_err().to_body().message.as_str().to_owned();
-    let root = engine.granted_root(rt(1), 1).unwrap();
+    let root = engine.granted_root(rt(1), 1, &catalog_root(1)).unwrap();
     assert_eq!(root.root_id(), &rt(1));
     assert_eq!(root.path(), root_dir.path());
     assert_eq!(root.dataset_class(), DatasetClass::Synthetic);
-    assert_eq!(message(engine.granted_root(rt(2), 2)), "grant_not_active");
-    assert_eq!(message(engine.granted_root(rt(4), 4)), "grant_not_active");
     assert_eq!(
-        message(engine.granted_root(rt(3), 3)),
+        message(engine.granted_root(rt(2), 2, &catalog_root(2))),
+        "grant_not_active"
+    );
+    assert_eq!(
+        message(engine.granted_root(rt(4), 4, &catalog_root(4))),
+        "grant_not_active"
+    );
+    assert_eq!(
+        message(engine.granted_root(rt(3), 3, &catalog_root(3))),
         "root_identity_changed"
     );
-    // #206: a root ID and an active grant that do not belong together are refused.
+    // #206: a catalogue root and an active grant that do not belong together are refused.
     assert_eq!(
-        message(engine.granted_root(rt(3), 1)),
+        message(engine.granted_root(rt(3), 1, &catalog_root(3))),
         "grant_root_mismatch"
     );
     assert_eq!(
-        message(engine.granted_root(RootId::new("rt_granted").unwrap(), 1)),
+        message(engine.granted_root(
+            rt(1),
+            1,
+            &CatalogRootIdentity {
+                row: 1,
+                instance: "foreign-instance".into(),
+            }
+        )),
         "grant_root_mismatch"
     );
     // The row's class, not the caller's, reaches the engine's class check.
     conn.execute("UPDATE meta SET value='personal'", [])
         .unwrap();
-    let personal = engine.granted_root(rt(1), 1).unwrap();
+    let personal = engine.granted_root(rt(1), 1, &catalog_root(1)).unwrap();
     assert_eq!(personal.dataset_class(), DatasetClass::Personal);
     engine
         .set_scan_sink(Arc::new(MemorySink::default()))
