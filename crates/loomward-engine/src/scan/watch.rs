@@ -15,7 +15,9 @@ use std::{
 
 type RelativeDir = Vec<Vec<u16>>;
 const MAX_DIRTY: usize = 1024;
-const MAX_RELISTS: usize = 3;
+// Four: a directory moved during a full pass is noticed one pass later since #178 (the same-run
+// dedupe sends no reparent signal), and a run must still fit the post-publication drain.
+const MAX_RELISTS: usize = 4;
 
 #[derive(Default)]
 struct Dirty {
@@ -261,6 +263,14 @@ impl ScanSink for RepairSink {
         self.inner
             .prepare_listing(root, run, parent, name, identity)
     }
+    fn refresh_listing(
+        &self,
+        root: &RootId,
+        run: u64,
+        ticket: ListingTicket,
+    ) -> EngineResult<ListingTicket> {
+        self.inner.refresh_listing(root, run, ticket)
+    }
     fn consume(&self, root: &RootId, message: ScanMessage) -> EngineResult<()> {
         match &message {
             ScanMessage::ListingDone {
@@ -368,7 +378,11 @@ fn reconcile<S: DirSource>(
         cancel.clone(),
         options.clone(),
     )?;
-    let mut valid = *repair.valid.lock().unwrap() && report.complete;
+    let mut valid = *repair.valid.lock().unwrap() && !report.limit_hit;
+    // A full pass can also be partial without any listing failure: a directory moved or vanished
+    // while it was listed (#178). Its changes are in the watcher's epochs, but coverage is only
+    // claimed after a pass that settled; until then the next pass is a full one.
+    let mut settled = report.complete;
     let mut examined = report.examined;
     for attempt in 0..=MAX_RELISTS {
         checkpoint();
@@ -382,7 +396,7 @@ fn reconcile<S: DirSource>(
         if !valid || state.failed || state.stopped || cancel.load(Ordering::Acquire) {
             break;
         }
-        if state.clean() {
+        if state.clean() && settled {
             // finish_run owns the repair rollup and only now may finalise absence/generation.
             sink.begin_run(root.root_id(), run, &RunScope::FullRoot)?;
             sink.finish_run(root.root_id(), run, &RunScope::FullRoot, true)?;
@@ -403,7 +417,8 @@ fn reconcile<S: DirSource>(
             break;
         }
         covered = state.epoch;
-        options.scope = if state.root.is_some() {
+        // Clean here means the last full pass did not settle and the watcher holds nothing to target.
+        options.scope = if state.root.is_some() || state.clean() {
             RunScope::FullRoot
         } else {
             let ids: Option<Vec<u64>> = state
@@ -414,6 +429,7 @@ fn reconcile<S: DirSource>(
             ids.map(RunScope::Targeted).unwrap_or(RunScope::FullRoot)
         };
         drop(state);
+        let full = matches!(options.scope, RunScope::FullRoot);
         let mut pass_options = options.clone();
         pass_options.max_entries -= examined;
         *repair.valid.lock().unwrap() = true;
@@ -428,6 +444,9 @@ fn reconcile<S: DirSource>(
             pass_options,
         )?;
         valid = *repair.valid.lock().unwrap() && !next.limit_hit;
+        // A targeted pass is partial by construction (outside-scope directories); only a full
+        // pass reports whether the tree settled.
+        settled = !full || next.complete;
         examined += next.examined;
         report.enumeration_worker_seconds += next.enumeration_worker_seconds;
         report.persistence_seconds += next.persistence_seconds;
@@ -536,6 +555,16 @@ mod native_tests {
                 .unwrap()
                 .insert(ticket.dir, id.id.unwrap());
             Ok(ticket)
+        }
+        fn refresh_listing(
+            &self,
+            root: &RootId,
+            run: u64,
+            ticket: ListingTicket,
+        ) -> EngineResult<ListingTicket> {
+            // A refreshed listing re-sends every entry; drop what the rejected one staged.
+            self.stages.lock().unwrap().remove(&ticket.dir);
+            self.memory.refresh_listing(root, run, ticket)
         }
         fn consume(&self, root: &RootId, message: ScanMessage) -> EngineResult<()> {
             match &message {

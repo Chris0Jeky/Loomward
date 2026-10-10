@@ -31,7 +31,8 @@ change. The lane made no commit, push, release, elevation, journal mutation or r
   each adapter's existing `finish_run` repair/publication contract.
 - Watches survive between scans, mark idle changes stale, stop/join on grant revocation and
   engine teardown, and are re-established before a subsequent scan if coverage has failed.
-  Three reconciliation passes and the original aggregate entry budget bound a run; unsettled
+  Four reconciliation passes (four since merging #178: a directory moved during a full pass is
+  noticed one pass later) and the original aggregate entry budget bound a run; unsettled
   roots remain partial/repairing rather than looping indefinitely.
 
 ## Verified
