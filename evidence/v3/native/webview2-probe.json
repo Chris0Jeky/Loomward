@@ -1,0 +1,128 @@
+{
+  "checks": [
+    {
+      "pass": true,
+      "check": "app served from the embedded dist",
+      "origin": "http://tauri.localhost"
+    },
+    {
+      "pass": true,
+      "check": "the app sees the Tauri IPC and selects the tauri transport"
+    },
+    {
+      "pass": true,
+      "check": "the CSP blocks an injected inline script",
+      "violated": "script-src-elem"
+    },
+    {
+      "pass": true,
+      "check": "lw_call session.hello over real IPC",
+      "adapter": "tauri"
+    },
+    {
+      "pass": true,
+      "check": "roots.request_grant refused in the synthetic session (no picker)",
+      "refusal": "synthetic_session_requires_lab_root"
+    },
+    {
+      "pass": true,
+      "check": "every non-lw command is refused by the ACL",
+      "refusals": {
+        "plugin:event|listen": "event.listen not allowed. Permissions associated with this command: core:event:allow-listen, core:event:default",
+        "plugin:window|close": "window.close not allowed. Permissions associated with this command: core:window:allow-close",
+        "plugin:webview|create_webview_window": "webview.create_webview_window not allowed. Permissions associated with this command: core:webview:allow-create-webview-window",
+        "plugin:app|version": "app.version not allowed. Permissions associated with this command: core:app:allow-version, core:app:default",
+        "plugin:path|resolve_directory": "path.resolve_directory not allowed. Permissions associated with this command: core:path:allow-resolve-directory, core:path:default",
+        "plugin:dialog|open": "dialog.open not allowed. Plugin not found",
+        "plugin:fs|read_file": "fs.read_file not allowed. Plugin not found",
+        "plugin:shell|execute": "shell.execute not allowed. Plugin not found",
+        "lw_delete": "lw_delete not allowed. Command not found"
+      }
+    },
+    {
+      "pass": true,
+      "check": "lw_events: stream.hello first on the Channel"
+    },
+    {
+      "pass": true,
+      "check": "stream.hello heartbeat after 15 s of silence on the real Channel",
+      "gap_s": 15.01
+    },
+    {
+      "pass": true,
+      "check": "a page reload tears down the old document's streams"
+    },
+    {
+      "pass": true,
+      "check": "P9 layout + first draw of 2,500 nodes within 50 ms in WebView2 (median)",
+      "median_ms": 17.5
+    },
+    {
+      "pass": true,
+      "check": "WM_CLOSE posted to the shell window"
+    },
+    {
+      "pass": true,
+      "check": "the shell exits cleanly after the window closes",
+      "code": 0
+    },
+    {
+      "pass": true,
+      "check": "window close tears down the open streams"
+    }
+  ],
+  "webview2": "154.0.4258.62",
+  "origin": "http://tauri.localhost",
+  "p9": {
+    "nodes": 2500,
+    "runs": [
+      {
+        "layout_ms": 18.5,
+        "first_paint_ms": 6.2,
+        "layout_plus_paint_ms": 24.7,
+        "slice_to_paint_wall_ms": 27.1,
+        "cells": 353
+      },
+      {
+        "layout_ms": 7.1,
+        "first_paint_ms": 4,
+        "layout_plus_paint_ms": 11.1,
+        "slice_to_paint_wall_ms": 12.2,
+        "cells": 353
+      },
+      {
+        "layout_ms": 9.3,
+        "first_paint_ms": 8.2,
+        "layout_plus_paint_ms": 17.5,
+        "slice_to_paint_wall_ms": 19.3,
+        "cells": 353
+      },
+      {
+        "layout_ms": 8,
+        "first_paint_ms": 4,
+        "layout_plus_paint_ms": 12,
+        "slice_to_paint_wall_ms": 13.7,
+        "cells": 353
+      },
+      {
+        "layout_ms": 12,
+        "first_paint_ms": 7.4,
+        "layout_plus_paint_ms": 19.4,
+        "slice_to_paint_wall_ms": 20.9,
+        "cells": 353
+      }
+    ],
+    "median_layout_plus_paint_ms": 17.5,
+    "budget_ms": 50,
+    "viewport": [
+      1440,
+      1000,
+      1.25
+    ]
+  },
+  "shell_log": [
+    "loomward-desktop: page load: closed 2 event stream(s) of webview \"main\"",
+    "loomward-desktop: page load: closed 1 event stream(s) of webview \"main\"",
+    "loomward-desktop: window close: closed 2 event stream(s) of webview \"main\""
+  ]
+}
