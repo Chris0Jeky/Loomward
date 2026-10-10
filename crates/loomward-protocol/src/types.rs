@@ -470,7 +470,8 @@ id_newtype!(
     /// Teacher payload preview id.
     PreviewId, "tp_");
 id_newtype!(
-    /// Process reference; encodes pid plus start time so PID reuse cannot alias. Observation only.
+    /// Process reference: pid plus start time, so PID reuse cannot alias; when the start time is
+    /// unknown, image name, pid and parent pid (that exact tuple can alias). Observation only.
     ProcessRef, "pc_");
 id_newtype!(
     /// Student model id.

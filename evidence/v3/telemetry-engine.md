@@ -31,7 +31,7 @@ putting these into its event envelopes and implementing event-stream overflow/re
 |---|---|---|
 | `Memory` physical/commit fields | `SystemSample.memory` | Exact decimal-string bytes, null when missing; physical load fraction is unchanged |
 | logical CPU count / system busy fraction | `SystemSample.cpu` | Count / machine fraction; whole system channel is null when CPU capacity is unknown, never a fabricated zero count |
-| process PID + exact creation FILETIME | `ProcessRow.process_ref`, `started_at` | Instance key uses exact ticks; display RFC3339 UTC retains 100 ns; missing creation time produces a sample-scoped key so PID reuse cannot reconnect it |
+| process PID + exact creation FILETIME | `ProcessRow.process_ref`, `started_at` | Instance key uses exact ticks; display RFC3339 UTC retains 100 ns; missing creation time falls back to image name, PID and parent PID, so a later process reusing that exact tuple can alias; explanations carry their `observed_at` and never claim the process is still alive |
 | process private commit / private working set / total working set | corresponding `ProcessRow` fields | Separate decimal-string bytes; EX2 absence remains null; shared working sets are never unique physical RAM |
 | two-sample process CPU / I/O | `ProcessRow.cpu_fraction`, read/write rates | Machine-normalised fraction and numeric bytes/s; first/missing/regressed counters stay null |
 | process unknowns / enumeration totals | row access, `ProcessSummary`, `ProcessList`, explanation facts | Failed opens with access denial are denied; partial reads limited; reasons retained verbatim in bounded explanation facts; list count is enumerated count (including denied), not invented complete coverage |

@@ -271,7 +271,7 @@ impl PdhSampler {
             let expanded = self.expand(kind, counter);
             self.expansion_ms += started.elapsed().as_secs_f64() * 1000.0;
             self.expansions += 1;
-            self.next_expansion[index] = self.sample_sequence.saturating_add(10);
+            self.next_expansion[index] = audit_schedule(self.sample_sequence, expanded.is_ok());
             Some(expanded?)
         } else {
             None
@@ -839,6 +839,16 @@ fn localized_path(buffer: &[PDH_COUNTER_INFO_W], length: usize) -> Result<Vec<u1
     Ok(path[..=end].to_vec())
 }
 
+/// Next sample at which a counter's wildcard audit is due: ten samples after a successful
+/// expansion, the very next sample after a failed one (the instance list is then in doubt).
+fn audit_schedule(sequence: u64, expansion_ok: bool) -> u64 {
+    if expansion_ok {
+        sequence.saturating_add(10)
+    } else {
+        sequence.saturating_add(1)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -884,14 +894,21 @@ mod tests {
         let mut sampler = PdhSampler::default();
         sampler.sample_sequence = 1;
         assert!(sampler.expansion_due(Counter::GpuEngine));
-        sampler.next_expansion[Counter::GpuEngine as usize] = 11;
+        // A successful audit at sample 1 is next due at sample 11, through the same schedule
+        // `array()` uses.
+        sampler.next_expansion[Counter::GpuEngine as usize] = audit_schedule(1, true);
         for sequence in 2..11 {
             sampler.sample_sequence = sequence;
             assert!(!sampler.expansion_due(Counter::GpuEngine));
         }
         sampler.sample_sequence = 11;
         assert!(sampler.expansion_due(Counter::GpuEngine));
-        sampler.next_expansion[Counter::GpuEngine as usize] = 21;
+        // A failed audit (churn during expansion) is retried on the very next sample, so later
+        // samples are never left unreconciled while the instance list is in doubt.
+        sampler.next_expansion[Counter::GpuEngine as usize] = audit_schedule(11, false);
+        sampler.sample_sequence = 12;
+        assert!(sampler.expansion_due(Counter::GpuEngine));
+        // Invalid returned values request an immediate audit too.
         sampler.next_expansion[Counter::GpuEngine as usize] = 0;
         assert!(sampler.expansion_due(Counter::GpuEngine));
     }
