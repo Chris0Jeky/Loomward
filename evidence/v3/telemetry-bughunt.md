@@ -1,7 +1,9 @@
 # Telemetry bug-hunt verification
 
-10 October 2026. Branch `fix/telemetry-bughunt`, tested HEAD
-`cf27a4e` with the lane diff, measured before it was committed. Platform: Windows.
+10 October 2026. Branch `fix/telemetry-bughunt`, review fixes tested over HEAD
+`a89962c` with the uncommitted lane diff. Platform: Windows. The original lane
+receipt was measured over `cf27a4e` before its commit; this update records the final
+behaviour after review of PR #237.
 All new regression inputs are synthetic. No benchmark was performed.
 This receipt supplements the historical [engine telemetry evidence](telemetry-engine.md).
 
@@ -10,8 +12,9 @@ This receipt supplements the historical [engine telemetry evidence](telemetry-en
 | Finding | Confirmation and repair | Source |
 |---|---|---|
 | 1: renewal drops queued samples | Confirmed: an unchanged renewal left zero queued events rather than one. Preserve generation, queued and in-flight events when the channel set is unchanged, including reordered channels and interval changes. Preserve the next deadline on keep-alive renewal; a channel change still invalidates the previous projection. | `crates/loomward-engine/src/telemetry/mod.rs:149` |
-| 2: malformed GPU instance erases valid adapters | Confirmed: a malformed instance changed a valid adapter's busy fraction from `Some(0.1)` to `None`. Skip unidentifiable instances, count/report them and keep identified values under partial native coverage. Query-wide failures and identifiable invalid/churned instances still make the affected aggregates unknown. | `crates/loomward-telemetry/src/windows/pdh.rs:654` |
-| 3: denial totals disagree with rows | Confirmed: a failed field query with access denial produced a Limited row. Native aggregation and row mapping now share `Process::access_denied`, covering any denied field. | `crates/loomward-telemetry/src/lib.rs:100`, `crates/loomward-engine/src/telemetry/mapping.rs:72` |
+| 2: malformed GPU engine load appears exact | Review confirmed that retaining `Some(0.1)` while an unidentifiable engine carries 80% load understates utilisation without a wire-level partial marker. Any parser-malformed or unidentifiable engine instance now nulls every adapter's aggregate and per-type engine busy values. Keep identified adapters and their attributable memory values, malformed counts and partial native status. Identifiable invalid/churned instances still affect only their type and adapter. | `crates/loomward-telemetry/src/windows/pdh.rs:654` |
+| 3: denial totals disagree with rows | Review narrowed the shared `Process::access_denied` rule to access denial on `process_handle_fields`, where opening the handle failed. Only these rows are Denied and counted in denial totals. A denied individual field remains Limited, retaining available memory and CPU figures. | `crates/loomward-telemetry/src/lib.rs:100`, `crates/loomward-engine/src/telemetry/mapping.rs:78` |
+| Review LOW: unbounded malformed-instance reasons | Retain every malformed-instance count but emit at most one `pdh_unknowns` entry per GPU field per snapshot, including mixed parser/name failures. Remove duplicate query-error entries already recorded by `record_array`. | `crates/loomward-telemetry/src/windows/pdh.rs:667` |
 | 4: reads race with lease expiry | Confirmed independently for snapshot, list and explanation: all returned success with only expired leases. Their shared accessor now checks for a live lease, expires state and clears the retained sample before returning `partial_coverage`. Normal reads do not traverse the pending-event queue. | `crates/loomward-engine/src/telemetry/mod.rs:66` |
 | Process byte sums | Synthetic inputs `u64::MAX`, 1 and 2 reproduced unchecked-addition overflow. Check both sums, saturate as labelled lower bounds and keep row/count coverage. Mark both fresh and cached native snapshots partial when sums have overflow reasons. | `crates/loomward-telemetry/src/lib.rs:127`, `crates/loomward-telemetry/src/windows.rs:358` |
 
@@ -26,37 +29,53 @@ not an exact total. A legacy totals object without the array still deserializes.
 
 ## Verified
 
-Each new test failed for its intended behavior with its fix removed, and passed after restoration.
-The mutation runner restored the changed source bytes exactly, including on failure.
+All five added or revised regression tests failed against the pre-fix behaviour and passed
+after the fixes. Eight targeted mutations then removed coverage, denial or deduplication guards; each failed by
+assertion with exit 101. The runner restored changed source bytes exactly in a `finally` block.
 
 | Regression | Mutation and red result |
 |---|---|
-| `unchanged_channel_renewal_preserves_queued_samples_and_generation` | Restore original renewal block: queued count 0 instead of 1. |
-| `unchanged_renewal_during_mapping_preserves_the_pending_sample` | Restore original renewal block: pending event discarded, count 0 instead of 1. |
-| `malformed_gpu_instances_preserve_identified_adapters_with_partial_coverage` | Restore original `gpu_rows`: valid busy fraction becomes `None`. Covers two adapters, all three arrays and both rejected names and parser-level malformed instances. |
-| `partial_access_denial_matches_process_totals_and_rows` | Restore original row mapping: Limited instead of Denied for a field query. |
-| `expired_leases_make_all_retained_reads_unavailable_before_worker_wakes` | Remove read-side expiry: all three endpoints serve retained data and keep it. |
-| `process_sum_overflow_is_a_visible_lower_bound_and_does_not_hide_rows` | Independently remove working-set and private-commit checked addition: each mutation panics on overflow. Also checks normal sums, deduplicated reasons, counts and legacy deserialization. |
-| `overflowed_sums_mark_partial_coverage_without_hiding_processes` | Remove overflow coverage marker: status remains observed rather than partial. |
+| `malformed_gpu_instances_preserve_identified_adapters_with_partial_coverage` | Remove parser-level malformed coverage: an adapter busy fraction stays populated. |
+| Same two-adapter test | Remove unidentified-name coverage: an adapter busy fraction stays populated. |
+| `malformed_gpu_instance_cannot_become_a_zero_or_partial_total` | Remove both coverage flags: the restored main assertion fails because aggregate busy remains populated. Identified dedicated/shared memory assertions remain. |
+| Same two-adapter test | Remove per-type coverage guard: aggregate busy is null but per-type busy remains populated. |
+| `handle_denial_is_denied_and_field_denial_is_limited` | Restore broad denial rule: a readable row with a denied field is Denied instead of Limited. Includes a no-handle Denied control. |
+| `process_totals_count_only_handle_access_denials` | Restore broad denial rule: field denial increments totals to 1 instead of 0. The no-handle control increments to 1; observed memory sums remain available. |
+| `malformed_gpu_unknowns_are_bounded_per_field_per_snapshot` | Remove engine-field deduplication: 34 entries instead of 3. |
+| Same bounded-unknowns test | Remove memory-field deduplication: 65 entries instead of 3. Covers 96 malformed rows across three fields, with and without additional parser-level malformed counts. |
 
-Seven new tests; eight discriminating mutations. The existing changed-channel mapping race,
-per-adapter unknown/churn, observation-time, native lease and cadence tests remain green.
+Two added tests and three revised tests in this review-fix pass. The original lane also
+mutation-tested renewal, pending mapping, read-side lease expiry and both overflow paths;
+those implementations are unchanged. The full applicable suites recheck them along with
+per-adapter unknown/churn, observation-time, native lease and cadence behaviour.
 
 | Required gate | Result |
 |---|---|
 | `cargo fmt --all --check` | PASS |
-| `cargo test --workspace` | PASS: 434 passed, 0 failed, 0 ignored |
-| `cargo test -p loomward-telemetry -p loomward-engine --all-features` | PASS: 145 passed, 0 failed, 0 ignored |
+| `cargo test --workspace` | PASS: 456 passed, 0 failed, 0 ignored |
+| `cargo test -p loomward-telemetry -p loomward-engine --all-features` | PASS on restored-source retry: 149 passed, 0 failed, 0 ignored; initial scan/watch assertion failure retained below |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | PASS: no warnings |
 | `git diff --check` | PASS |
 
 Tested `git diff -- crates` SHA-256:
-`f186d2e5c15a2c5754757a4e40882aaa6e1825147b7fade98c28642c8f5a2782`.
+`b7e35edb5905e56a09f95da33dd78ff541157d7e1985aaac4c0ff75557e2ff85`.
 Raw check logs and reversible mutation helpers remain in gitignored local state; they are not
 publication artifacts.
 
+The first all-features run failed in the unchanged
+`scan::watch::native_tests::concurrent_scan_start_reserves_root_before_touching_watch`:
+the cancellation result had length 0 rather than 1. The test passed in isolation;
+the full all-features suite passed both on committed HEAD and with the review fixes
+restored. This establishes an intermittent result, not its scheduling cause or a
+repair. No scan/watch code or test was changed, and the initial failure log is retained.
+This is the #228 race (cancellation stopped the watch before collecting jobs), fixed on main by #233;
+this branch was measured on a base without that fix.
+
 ## Questions and declined changes
 
+- **Scan/watch cancellation follow-up:** declined in this telemetry slice because the
+  failing assertion is outside the changed seam. The driver should investigate the
+  cancellation-result failure separately; its cause remains unverified.
 - **First status of a newly appeared PDH rate instance:** Microsoft defines `PDH_CSTATUS_NEW_DATA`
   as valid changed raw data, including on rate counters; it does not mean a newly appeared
   instance or an invalid first sample. [Counter status documentation](https://learn.microsoft.com/en-us/windows/win32/perfctrs/checking-pdh-interface-return-values).
@@ -83,8 +102,10 @@ P12 result remains the historical 1.005203% MISS against the <=1% target in issu
 
 ## Residual risk
 
-Unidentifiable GPU instances cannot be attributed to an adapter: retained numbers describe identified
-instances with partial native coverage, not a complete adapter inventory. The existing v3 projection
-has no per-field PDH coverage/reason channel; this lane adds none. Process rows can still describe
+Unidentifiable GPU engine instances cannot be attributed to an adapter: all engine-derived
+values remain unknown across adapters, while identified memory values remain attributable.
+The existing v3 projection has no per-field PDH coverage/reason channel; this lane adds none.
+Native status remains partial and adapter inventory may be incomplete. Process rows can still describe
 an exited process until the next enumeration, carrying their original observation time.
 Consumers of native totals must read `sum_unknowns` before treating a saturated sum as exact.
+The intermittent scan/watch cancellation assertion remains unresolved despite the passing retry.

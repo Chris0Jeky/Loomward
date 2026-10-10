@@ -97,10 +97,12 @@ pub struct Process {
 }
 
 impl Process {
+    /// Access denied while opening the process, not while querying an individual field.
     pub fn access_denied(&self) -> bool {
-        self.unknowns
-            .iter()
-            .any(|u| u.reason == "access_denied" || u.windows_error == Some(5))
+        self.unknowns.iter().any(|u| {
+            u.field == "process_handle_fields"
+                && (u.reason == "access_denied" || u.windows_error == Some(5))
+        })
     }
 }
 
@@ -619,6 +621,45 @@ fn unsupported_snapshot() -> Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_totals_count_only_handle_access_denials() {
+        let mut totals = ProcessTotals::default();
+        for field in [
+            "io_counters",
+            "handle_count",
+            "session_id",
+            "private_working_set_bytes",
+        ] {
+            let row = Process {
+                working_set_bytes: Some(200),
+                private_commit_bytes: Some(100),
+                protected_or_unknown: true,
+                unknowns: vec![Unknown {
+                    field: field.into(),
+                    reason: "access_denied".into(),
+                    windows_error: Some(5),
+                }],
+                ..Process::default()
+            };
+            totals.observe(&row, true);
+            assert_eq!(totals.access_denied, 0);
+        }
+        let row = Process {
+            protected_or_unknown: true,
+            unknowns: vec![Unknown {
+                field: "process_handle_fields".into(),
+                reason: "access_denied".into(),
+                windows_error: Some(5),
+            }],
+            ..Process::default()
+        };
+        totals.observe(&row, false);
+        assert_eq!(totals.access_denied, 1);
+        assert_eq!(totals.opened, 4);
+        assert_eq!(totals.working_set_observed, 4);
+        assert_eq!(totals.working_set_sum_bytes, 800);
+    }
 
     #[test]
     fn process_sum_overflow_is_a_visible_lower_bound_and_does_not_hide_rows() {

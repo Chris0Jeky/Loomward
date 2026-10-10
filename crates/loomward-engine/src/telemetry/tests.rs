@@ -135,10 +135,14 @@ fn unchanged_channel_renewal_preserves_queued_samples_and_generation() {
 }
 
 #[test]
-fn partial_access_denial_matches_process_totals_and_rows() {
+fn handle_denial_is_denied_and_field_denial_is_limited() {
     let at = mapping::processes_observed_at(&raw()).unwrap();
     for field in [
         "process_handle_fields",
+        "io_counters",
+        "handle_count",
+        "session_id",
+        "private_working_set_bytes",
         "memory",
         "start_and_cpu_times",
         "io_bytes",
@@ -150,10 +154,28 @@ fn partial_access_denial_matches_process_totals_and_rows() {
             reason: "access_denied".into(),
             windows_error: Some(5),
         });
+        if field == "process_handle_fields" {
+            process = Process {
+                unknowns: process.unknowns,
+                protected_or_unknown: true,
+                ..Process::default()
+            };
+        } else {
+            process.rates.cpu_fraction = Some(0.25);
+        }
+        let row = mapping::process_row(&process, 1, &at);
         assert_eq!(
-            mapping::process_row(&process, 1, &at).access,
-            ProcessRowAccess::Denied
+            row.access,
+            if field == "process_handle_fields" {
+                ProcessRowAccess::Denied
+            } else {
+                ProcessRowAccess::Limited
+            }
         );
+        if field != "process_handle_fields" {
+            assert_eq!(row.working_set_bytes, Some(Bytes::from(200)));
+            assert_eq!(row.cpu_fraction.unwrap().get(), 0.25);
+        }
     }
 }
 
