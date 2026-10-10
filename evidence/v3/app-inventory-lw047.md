@@ -2,7 +2,7 @@
 
 2026-10-10. Windows 11, `x86_64-pc-windows-msvc`, rustc/cargo 1.97.1.
 Starting source: `cf27a4ec6734026d1bb3a9d0b393c7e294e4eb60`, branch
-`feat/app-inventory-lw047`. Results below cover the uncommitted lane diff.
+`feat/app-inventory-lw047`. Results below were measured on the lane diff before it was committed.
 
 ## Changed surface and coverage
 
