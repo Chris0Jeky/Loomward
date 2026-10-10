@@ -2,6 +2,9 @@ use super::*;
 use crate::{Engine, EngineConfig};
 use loomward_protocol::{DatasetClass, RootId};
 
+#[path = "followups.rs"]
+mod followups;
+
 #[test]
 fn granted_root_rejects_foreign_instance_tags_before_opening_a_path() {
     let state = tempfile::tempdir().unwrap();
@@ -1262,13 +1265,16 @@ fn moved_directory_is_discovered_once_and_marks_the_run_partial() {
     }
 }
 
-struct DirtyWriter {
-    sink: MemorySink,
-    dirtied: AtomicBool,
-    on_final: bool,
-    always: bool,
+pub(super) struct DirtyWriter {
+    pub(super) sink: MemorySink,
+    pub(super) dirtied: AtomicBool,
+    pub(super) on_final: bool,
+    pub(super) always: bool,
 }
 impl ScanSink for DirtyWriter {
+    fn watch_dirty(&self, root: &RootId) -> crate::EngineResult<()> {
+        self.sink.watch_dirty(root)
+    }
     fn refresh_listing(
         &self,
         root: &RootId,
@@ -1374,7 +1380,11 @@ fn stale_listing_and_final_relist_the_dirty_directory() {
             }
         );
         assert_eq!(sink.sink.totals(root.root_id()), Some(report.totals));
-        assert!(report.examined > 2, "dirty directory must be relisted");
+        assert_eq!(report.examined, 2, "relists replace report counters");
+        assert!(
+            report.enumeration_attempts > report.examined,
+            "relists still consume the run limit"
+        );
         assert_eq!(bytes.used(), 0);
     }
 }
@@ -1485,7 +1495,7 @@ impl ScanSink for FailedWriter {
 }
 #[cfg(windows)]
 #[test]
-fn native_dirty_epoch_relists_the_retained_handle() {
+fn native_dirty_epoch_relists_by_verified_identity() {
     if skip_elevated() {
         return;
     }
@@ -1521,7 +1531,7 @@ fn native_dirty_epoch_relists_the_retained_handle() {
     assert_eq!(report.totals.files, 1);
     assert_eq!(report.totals.dirs, 1);
     assert_eq!(report.totals.logical, 123);
-    assert_eq!(report.examined, 3);
+    assert_eq!(report.examined, 2);
     assert_eq!(sink.sink.totals(root.root_id()), Some(report.totals));
     assert_eq!(bytes.used(), 0);
 }
@@ -1647,6 +1657,10 @@ fn targeted_pipeline_never_establishes_absence_outside_scope() {
     )
     .unwrap();
     assert!(!report.complete);
+    assert_eq!(
+        report.failed, 0,
+        "outside-scope publication is not an I/O failure"
+    );
     assert!(!sink.sweep_allowed(root.root_id()));
     assert_eq!(report.totals.files, 1);
 }

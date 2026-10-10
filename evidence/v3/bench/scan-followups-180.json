@@ -1,0 +1,238 @@
+{
+  "issue": 180,
+  "platform": "Windows",
+  "branch": "fix/scan-followups-180",
+  "base_head": "befd890614f2fae864a1acabfed657792ec1445d",
+  "state": "uncommitted; no push or external writes",
+  "source_sha256": {
+    "contracts/v3/semantics.md": "daf3527c1f367e492eabe617d54aa6f7a5b4459e8ef504f58c009383569ea3df",
+    "crates/loomward-engine/src/scan/pipeline.rs": "49939c59c62097e919d8f43dc2ff143ac5b6f15e98529acbf3fad1b9ec0207d2",
+    "crates/loomward-engine/src/scan/tests.rs": "2364e47b668c61797d5d8b907b1386488c922c9cd7304e2dddacb352c976c03d",
+    "crates/loomward-engine/src/scan/followups.rs": "2a6cb8e1cda3a8f897ac01e40ef640ca5020fbdeae312102b426a84713d98a50",
+    "crates/loomward-engine/src/scan/watch.rs": "58a83f36cf1016bb9c2e8f1d9b4906818a6f567eec37e392d6e04f891eeda2ba",
+    "crates/loomward-windows/src/enumerate/mod.rs": "70271a414c5fcff87cb0d55ff493368e94f03e1aef7693eebef2e98104057585",
+    "crates/loomward-windows/src/enumerate/native.rs": "1fdaa5fc316d4805d70536b8c5cb20f10f3da22c4b9e5c4964f0febbe0b53e9a",
+    "crates/loomward-windows/src/enumerate/tests.rs": "f6e7d751a4b5661ea3d77bb987e3bb27ccd33eed71591852e8275fc6e47308e8",
+    "crates/loomward-lab/src/windows.rs": "0d9e89081345b370128c6eeda9c395bdbbdfbba862fc4725c967df5a31c9a408"
+  },
+  "handle_probe": {
+    "fixture": "synthetic temporary directory",
+    "share": "read/write/delete",
+    "rename_succeeded": true,
+    "remove_directory_succeeded": true,
+    "held_handle_delete_pending": true,
+    "recreate_name_while_held_succeeded": true
+  },
+  "arena": {
+    "reservation_bytes": 16777216,
+    "legacy_native_node_bytes": 344,
+    "listed_native_node_bytes": 344,
+    "live_native_handle_task_bytes": 56,
+    "legacy_upper_slots": 48770,
+    "new_upper_slots": 48770,
+    "all_unlisted_upper_slots_before_names": 41943,
+    "qualification": "layout and budget estimates, not a scale run"
+  },
+  "synthetic_capacity_control": {
+    "arena_bytes": 1048576,
+    "owned_handle_bytes": 65544,
+    "with_release_descendants": 95,
+    "with_release_complete": true,
+    "release_mutation_descendants": 14,
+    "release_mutation_limit_hit": true
+  },
+  "gates": [
+    {
+      "command": "cargo fmt --all --check",
+      "exit_code": 0,
+      "elapsed_seconds": 4.534
+    },
+    {
+      "command": "cargo test --workspace",
+      "exit_code": 0,
+      "elapsed_seconds": 64.067,
+      "passed": 513,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p loomward-windows -p loomward-engine --all-features",
+      "exit_code": 0,
+      "elapsed_seconds": 23.305,
+      "passed": 198,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo clippy --workspace --all-targets --all-features -- -D warnings",
+      "exit_code": 0,
+      "elapsed_seconds": 22.605
+    },
+    {
+      "command": "git diff --check",
+      "exit_code": 0,
+      "elapsed_seconds": 0.172
+    }
+  ],
+  "mutations": [
+    {
+      "mutation": "f4-release",
+      "command": "cargo test -p loomward-engine --all-features --lib listed_handles_ -- --nocapture",
+      "exit_code": 101,
+      "behavioral_failure": true,
+      "failed_tests": [
+        "test scan::tests::followups::listed_handles_release_arena_capacity_for_later_directories ... FAILED",
+        "test scan::tests::followups::native_listed_handles_are_closed_before_finalization ... FAILED"
+      ]
+    },
+    {
+      "mutation": "f4-reopen",
+      "command": "cargo test -p loomward-windows --all-features --lib reopen_follows_identity -- --nocapture",
+      "exit_code": 101,
+      "behavioral_failure": true,
+      "failed_tests": [
+        "test enumerate::tests::reopen_follows_identity_after_rename_and_rejects_changed_volume_or_root ... FAILED"
+      ]
+    },
+    {
+      "mutation": "f4-root-validation",
+      "command": "cargo test -p loomward-windows --all-features --lib reopen_follows_identity -- --nocapture",
+      "exit_code": 101,
+      "behavioral_failure": true,
+      "failed_tests": [
+        "test enumerate::tests::reopen_follows_identity_after_rename_and_rejects_changed_volume_or_root ... FAILED"
+      ]
+    },
+    {
+      "mutation": "f4-volume-validation",
+      "command": "cargo test -p loomward-windows --all-features --lib reopen_follows_identity -- --nocapture",
+      "exit_code": 101,
+      "behavioral_failure": true,
+      "failed_tests": [
+        "test enumerate::tests::reopen_follows_identity_after_rename_and_rejects_changed_volume_or_root ... FAILED"
+      ]
+    },
+    {
+      "mutation": "f4-engine-identity-validation",
+      "command": "cargo test -p loomward-engine --all-features --lib reopen_failure_or_changed_identity -- --nocapture",
+      "exit_code": 101,
+      "behavioral_failure": true,
+      "failed_tests": [
+        "test scan::tests::followups::reopen_failure_or_changed_identity_keeps_the_run_partial ... FAILED"
+      ]
+    },
+    {
+      "mutation": "f4-reopen-budget",
+      "command": "cargo test -p loomward-engine --all-features --lib reopened_handles_remain_bounded -- --nocapture",
+      "exit_code": 101,
+      "behavioral_failure": true,
+      "failed_tests": [
+        "test scan::tests::followups::reopened_handles_remain_bounded_by_the_arena_reservation ... FAILED"
+      ]
+    },
+    {
+      "mutation": "f5-counter",
+      "command": "cargo test -p loomward-engine --all-features --lib duplicate_identity_is_counted -- --nocapture",
+      "exit_code": 101,
+      "behavioral_failure": true,
+      "failed_tests": [
+        "test scan::tests::followups::duplicate_identity_is_counted_and_never_complete ... FAILED"
+      ]
+    },
+    {
+      "mutation": "f5-partial",
+      "command": "cargo test -p loomward-engine --all-features --lib a_clean_relist_does_not_erase -- --nocapture",
+      "exit_code": 101,
+      "behavioral_failure": true,
+      "failed_tests": [
+        "test scan::tests::followups::a_clean_relist_does_not_erase_duplicate_identity_evidence ... FAILED"
+      ]
+    },
+    {
+      "mutation": "f6-coalesce",
+      "command": "cargo test -p loomward-engine --all-features --lib dirty_name_only_parent_and_child -- --nocapture",
+      "exit_code": 101,
+      "behavioral_failure": true,
+      "failed_tests": [
+        "test scan::tests::followups::dirty_name_only_parent_and_child_are_listed_once_per_round ... FAILED"
+      ]
+    },
+    {
+      "mutation": "fresh-name-only-handle",
+      "command": "cargo test -p loomward-engine --all-features --lib name_only_relisting_uses -- --nocapture",
+      "exit_code": 101,
+      "behavioral_failure": true,
+      "failed_tests": [
+        "test scan::tests::followups::name_only_relisting_uses_the_freshly_opened_handle ... FAILED"
+      ]
+    },
+    {
+      "mutation": "f6-counters",
+      "command": "cargo test -p loomward-engine --all-features --lib relists_replace_examined -- --nocapture",
+      "exit_code": 101,
+      "behavioral_failure": true,
+      "failed_tests": [
+        "test scan::tests::followups::relists_replace_examined_skipped_and_failed_counts ... FAILED"
+      ]
+    },
+    {
+      "mutation": "poisoned-arena",
+      "command": "cargo test -p loomward-engine --all-features --lib poisoned_arena_fails -- --nocapture",
+      "exit_code": 101,
+      "behavioral_failure": true,
+      "failed_tests": [
+        "test scan::tests::followups::poisoned_arena_fails_the_run_and_releases_bytes ... FAILED"
+      ]
+    },
+    {
+      "mutation": "poisoned-arena-recovery",
+      "command": "cargo test -p loomward-engine --all-features --lib poisoned_arena_fails -- --nocapture",
+      "exit_code": 101,
+      "behavioral_failure": true,
+      "failed_tests": [
+        "test scan::tests::followups::poisoned_arena_fails_the_run_and_releases_bytes ... FAILED"
+      ]
+    },
+    {
+      "mutation": "watch-latest-counters",
+      "command": "cargo test -p loomward-engine --all-features --lib watcher_reports_latest_counts -- --nocapture",
+      "exit_code": 101,
+      "behavioral_failure": true,
+      "failed_tests": [
+        "test scan::watch::tests::watcher_reports_latest_counts_but_limits_all_enumeration_attempts ... FAILED"
+      ]
+    },
+    {
+      "mutation": "watch-attempt-budget",
+      "command": "cargo test -p loomward-engine --all-features --lib watcher_reports_latest_counts -- --nocapture",
+      "exit_code": 101,
+      "behavioral_failure": true,
+      "failed_tests": [
+        "test scan::watch::tests::watcher_reports_latest_counts_but_limits_all_enumeration_attempts ... FAILED"
+      ]
+    },
+    {
+      "mutation": "outside-scope-not-failed",
+      "command": "cargo test -p loomward-engine --all-features --lib targeted_pipeline_never_establishes_absence_outside_scope -- --nocapture",
+      "exit_code": 101,
+      "behavioral_failure": true,
+      "failed_tests": [
+        "test scan::tests::targeted_pipeline_never_establishes_absence_outside_scope ... FAILED"
+      ]
+    },
+    {
+      "mutation": "pipeline-attempt-report",
+      "command": "cargo test -p loomward-engine --all-features --lib stale_listing_and_final_relist -- --nocapture",
+      "exit_code": 101,
+      "behavioral_failure": true,
+      "failed_tests": [
+        "test scan::tests::stale_listing_and_final_relist_the_dirty_directory ... FAILED"
+      ]
+    }
+  ],
+  "not_verified": [
+    "scale benchmarks",
+    "hosted CI",
+    "physical ReFS or unsupported OpenFileById filesystems"
+  ]
+}

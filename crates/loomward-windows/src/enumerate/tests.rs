@@ -105,6 +105,69 @@ fn placeholders_and_reparse_attributes_are_refused() {
     }
     assert!(!refused_attributes(0x10));
 }
+
+#[cfg(windows)]
+#[test]
+fn reopen_follows_identity_after_rename_and_rejects_changed_volume_or_root() {
+    if skip_elevated() {
+        return;
+    }
+    let temp = canonical_tempdir();
+    let child = temp.path().join("child");
+    std::fs::create_dir(&child).unwrap();
+    std::fs::write(child.join("original"), b"synthetic").unwrap();
+    for strategy in [Strategy::Extended, Strategy::Both] {
+        let source = NativeSource::with_strategy(strategy);
+        let (parent, root_identity) = source.open_root(temp.path()).unwrap();
+        let mut expected = None;
+        assert_eq!(
+            source.list(&parent, &mut |entry| {
+                if entry.name == "child".encode_utf16().collect::<Vec<_>>() {
+                    expected = Some(source.open_child(&parent, &entry).unwrap().1);
+                }
+                Flow::Continue
+            }),
+            ListOutcome::Complete
+        );
+        let expected = expected.unwrap();
+        drop(parent);
+        let moved = temp.path().join("moved");
+        std::fs::rename(&child, &moved).unwrap();
+        std::fs::create_dir(&child).unwrap();
+        let (dir, observed) = source.reopen(temp.path(), root_identity, expected).unwrap();
+        assert_eq!(observed.id, expected.id);
+        let mut names = Vec::new();
+        assert_eq!(
+            source.list(&dir, &mut |e| {
+                names.push(e.name.to_vec());
+                Flow::Continue
+            }),
+            ListOutcome::Complete
+        );
+        assert_eq!(names, vec!["original".encode_utf16().collect::<Vec<_>>()]);
+        drop(dir);
+        let mut wrong_volume = expected;
+        wrong_volume.volume_serial = expected.volume_serial.map(|n| n.wrapping_add(1));
+        assert!(matches!(
+            source.reopen(temp.path(), root_identity, wrong_volume),
+            Err(SourceError::IdentityChanged)
+        ));
+        let mut wrong_root = root_identity;
+        wrong_root.volume_serial = wrong_volume.volume_serial;
+        assert!(matches!(
+            source.reopen(temp.path(), wrong_root, expected),
+            Err(SourceError::IdentityChanged)
+        ));
+        let mut name_only = expected;
+        name_only.basis = IdBasis::NonUnique;
+        assert!(matches!(
+            source.reopen(temp.path(), root_identity, name_only),
+            Err(SourceError::IdentityUnverified)
+        ));
+        std::fs::remove_dir(&child).unwrap();
+        std::fs::rename(&moved, &child).unwrap();
+    }
+}
 #[cfg(windows)]
 #[test]
 fn native_handle_relative_open_and_all_strategy_widths() {
