@@ -2,7 +2,7 @@
 use crate::{enumerate::OpenedIdentity, identity::ObservedIdentity};
 #[cfg(any(windows, test))]
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     sync::atomic::Ordering,
     time::Instant,
 };
@@ -319,48 +319,63 @@ fn group(entries: &[Entry], reader: &mut impl ContentReader, meter: &mut Meter) 
     for indices in groups {
         // Exact comparison partitions even hash collisions; no digest establishes equality.
         let mut partitions: Vec<Vec<usize>> = Vec::new();
-        for index in indices {
-            let mut placed = false;
-            let mut position = 0;
-            while position < partitions.len() {
-                let partition = &mut partitions[position];
-                match reader.equal(partition[0], index, entries, meter) {
-                    Ok(true) => {
-                        partition.push(index);
-                        placed = true;
-                        break;
-                    }
-                    Ok(false) => position += 1,
-                    Err(failed) => {
-                        skip(&mut report, failed.entry, failed.reason);
-                        if failed.entry == index || budget_reason(failed.reason) {
+        let mut pending = VecDeque::from(indices);
+        loop {
+            while let Some(index) = pending.pop_front() {
+                let mut placed = false;
+                let mut position = 0;
+                while position < partitions.len() {
+                    let partition = &mut partitions[position];
+                    match reader.equal(partition[0], index, entries, meter) {
+                        Ok(true) => {
+                            partition.push(index);
                             placed = true;
                             break;
                         }
-                        // Retry the innocent candidate against the next surviving representative.
-                        partition.remove(0);
-                        if partition.is_empty() {
-                            partitions.remove(position);
+                        Ok(false) => position += 1,
+                        Err(failed) => {
+                            skip(&mut report, failed.entry, failed.reason);
+                            if failed.entry == index || budget_reason(failed.reason) {
+                                placed = true;
+                                break;
+                            }
+                            // A failed witness invalidates its partition's earlier comparisons.
+                            let survivors = partitions.remove(position);
+                            pending.push_front(index);
+                            for &survivor in survivors[1..].iter().rev() {
+                                pending.push_front(survivor);
+                            }
+                            placed = true;
+                            break;
                         }
                     }
                 }
+                if !placed {
+                    partitions.push(vec![index]);
+                }
             }
-            if !placed {
-                partitions.push(vec![index]);
+            for mut partition in partitions.drain(..) {
+                let representative = partition[0];
+                let mut failed_representative = false;
+                partition.retain(
+                    |&index| match reader.validate(index, &entries[index], meter) {
+                        Ok(()) => true,
+                        Err(reason) => {
+                            skip(&mut report, index, reason);
+                            failed_representative |=
+                                index == representative && !budget_reason(reason);
+                            false
+                        }
+                    },
+                );
+                if failed_representative {
+                    pending.extend(partition);
+                } else if partition.len() > 1 {
+                    report.groups.push(partition);
+                }
             }
-        }
-        for mut partition in partitions {
-            partition.retain(
-                |&index| match reader.validate(index, &entries[index], meter) {
-                    Ok(()) => true,
-                    Err(reason) => {
-                        skip(&mut report, index, reason);
-                        false
-                    }
-                },
-            );
-            if partition.len() > 1 {
-                report.groups.push(partition);
+            if pending.is_empty() {
+                break;
             }
         }
     }

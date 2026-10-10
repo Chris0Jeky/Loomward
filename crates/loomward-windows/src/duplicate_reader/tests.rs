@@ -143,6 +143,151 @@ fn core_hash_collision_requires_exact_partitioning() {
     let report = group(&entries, &mut Collision, &mut Meter::new(Budget::test()));
     assert_eq!(report.groups, vec![vec![1, 2]]);
 }
+
+struct ChangingRepresentative {
+    comparisons: Vec<(usize, usize)>,
+    survivors_equal: bool,
+    fail_survivor: bool,
+    fail_at_validation: bool,
+}
+impl ContentReader for ChangingRepresentative {
+    fn validate(&mut self, index: usize, _: &Entry, _: &Meter) -> Result<(), Reason> {
+        if self.fail_at_validation && index == 0 && !self.comparisons.is_empty() {
+            Err(Reason::ChangedDuringRead)
+        } else {
+            Ok(())
+        }
+    }
+    fn hash(
+        &mut self,
+        index: usize,
+        entry: &Entry,
+        partial: bool,
+        meter: &mut Meter,
+    ) -> Result<[u8; 32], Reason> {
+        Collision.hash(index, entry, partial, meter)
+    }
+    fn equal(
+        &mut self,
+        left: usize,
+        right: usize,
+        _: &[Entry],
+        meter: &mut Meter,
+    ) -> Result<bool, Skip> {
+        self.comparisons.push((left, right));
+        meter.reserve(8).map_err(|reason| Skip {
+            entry: right,
+            reason,
+        })?;
+        meter.consumed(8); // Both four-byte comparison inputs, including failed attempts.
+        match (left, right) {
+            (0, 1..=4) if self.fail_survivor => Ok(true),
+            (0, 5) => Err(Skip {
+                entry: 0,
+                reason: Reason::ChangedDuringRead,
+            }),
+            (0, 1 | 2) => Ok(true), // R witnesses A, then B; neither hash proves equality.
+            (0, 3) if self.fail_at_validation => Ok(false),
+            (0, 3) => Err(Skip {
+                entry: 0,
+                reason: Reason::ChangedDuringRead,
+            }),
+            (1, 2 | 3) if self.fail_survivor => Ok(true),
+            (1, 4) if self.fail_survivor => Err(Skip {
+                entry: 1,
+                reason: Reason::SharingViolation,
+            }),
+            (2, 3) if self.fail_survivor => Ok(self.survivors_equal),
+            (1, 2) => Ok(self.survivors_equal),
+            _ => Ok(false),
+        }
+    }
+}
+fn changing_representative(
+    survivors_equal: bool,
+    fail_survivor: bool,
+    fail_at_validation: bool,
+    bytes: u64,
+) -> (Report, Vec<(usize, usize)>) {
+    let entries: Vec<_> = (1..=if fail_survivor { 6 } else { 4 })
+        .map(|id| synthetic_entry(id, "1", 4))
+        .collect();
+    let mut reader = ChangingRepresentative {
+        comparisons: Vec::new(),
+        survivors_equal,
+        fail_survivor,
+        fail_at_validation,
+    };
+    let report = group(
+        &entries,
+        &mut reader,
+        &mut Meter::new(Budget {
+            bytes,
+            ..Budget::test()
+        }),
+    );
+    assert!(report.partial);
+    assert_eq!(report.skipped[0].entry, 0);
+    assert_eq!(report.skipped[0].reason, Reason::ChangedDuringRead);
+    (report, reader.comparisons)
+}
+#[test]
+fn core_failed_representative_reverifies_different_survivors() {
+    let (report, comparisons) = changing_representative(false, false, false, 100);
+    assert!(
+        report.groups.is_empty(),
+        "X and Y differ despite matching R"
+    );
+    assert_eq!(
+        comparisons,
+        [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]
+    );
+    assert_eq!(report.skipped.len(), 1);
+    assert_eq!(report.stop, None);
+    assert_eq!(report.bytes_read, 56); // Eight hash bytes plus six two-input comparisons.
+}
+#[test]
+fn core_failed_representative_reverifies_equal_survivors() {
+    let (report, comparisons) = changing_representative(true, false, false, 100);
+    assert_eq!(report.groups, [vec![1, 2]]);
+    assert_eq!(comparisons, [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3)]);
+    assert_eq!(report.skipped.len(), 1);
+    assert_eq!(report.stop, None);
+    assert_eq!(report.bytes_read, 48);
+}
+#[test]
+fn core_failed_representative_reverification_budget_is_partial() {
+    let (report, comparisons) = changing_representative(true, false, false, 39);
+    assert!(
+        report.groups.is_empty(),
+        "unexamined survivors cannot be grouped"
+    );
+    assert!(comparisons.contains(&(1, 2)));
+    assert_eq!(report.stop, Some(Reason::ByteBudget));
+    assert_eq!(report.bytes_read, 32);
+}
+#[test]
+fn core_failed_representative_reverification_handles_another_failure() {
+    let (report, comparisons) = changing_representative(false, true, false, 200);
+    assert!(report.groups.is_empty());
+    assert!(comparisons.contains(&(1, 2)) && comparisons.contains(&(1, 3)));
+    assert!(
+        comparisons.contains(&(2, 3)),
+        "second failed witness also dissolves its partition"
+    );
+    assert_eq!(report.skipped.len(), 2);
+    assert_eq!(report.skipped[1].entry, 1);
+    assert_eq!(report.skipped[1].reason, Reason::SharingViolation);
+    assert_eq!(report.bytes_read, 124);
+}
+#[test]
+fn core_final_failed_representative_reverifies_survivors() {
+    let (report, comparisons) = changing_representative(false, false, true, 100);
+    assert!(report.groups.is_empty());
+    assert!(comparisons.contains(&(1, 2)));
+    assert_eq!(report.skipped.len(), 1);
+    assert_eq!(report.stop, None);
+}
 #[test]
 fn core_identity_is_volume_scoped_and_empty_files_claim_nothing() {
     let entries = [
@@ -408,6 +553,50 @@ mod native {
         assert_eq!(r.skipped.len(), 1);
         assert_eq!(r.skipped[0].entry, 0);
         assert_eq!(r.skipped[0].reason, Reason::ChangedDuringRead);
+    }
+    #[test]
+    fn native_failed_representative_reverification_uses_shared_budget() {
+        for bytes in [100, 55] {
+            let Some(temp) = fixture() else { return };
+            for name in ["a", "b", "c", "d"] {
+                fs::write(temp.path().join(name), b"same").unwrap();
+            }
+            let entries = ["a", "b", "c", "d"].map(|name| entry(temp.path(), name));
+            let mut changed = false;
+            let mut comparisons = Vec::new();
+            let report = inspect_with_hook(
+                temp.path(),
+                &root_id(temp.path()),
+                &entries,
+                Budget {
+                    bytes,
+                    ..Budget::test()
+                },
+                |event, index| {
+                    if event == Event::Compare {
+                        comparisons.push(index);
+                        if index == 3 && !changed {
+                            fs::write(temp.path().join("a"), b"changed").unwrap();
+                            changed = true;
+                        }
+                    }
+                },
+            )
+            .unwrap();
+            assert!(report.partial);
+            assert_eq!(report.skipped[0].entry, 0);
+            assert_eq!(report.skipped[0].reason, Reason::ChangedDuringRead);
+            assert_eq!(comparisons, [1, 2, 3, 2, 3]);
+            if bytes == 100 {
+                assert_eq!(report.groups, [vec![1, 2, 3]]);
+                assert_eq!(report.bytes_read, 64);
+                assert_eq!(report.stop, None);
+            } else {
+                assert!(report.groups.is_empty());
+                assert_eq!(report.bytes_read, 48);
+                assert_eq!(report.stop, Some(Reason::ByteBudget));
+            }
+        }
     }
     #[test]
     fn native_final_validation_drops_changed_member() {
