@@ -10,7 +10,7 @@ const env = (epoch: string, seq: number, event: EventEnvelope['event'], data: Re
 const ev = (seq: number, epoch = 'e1') => env(epoch, seq, 'roots.changed', {});
 /** `stream.hello` is unsequenced: its envelope seq is the current last_seq. */
 const hello = (epoch: string, last: number) => env(epoch, last, 'stream.hello', { session_started_at: '2026-10-01T00:00:00Z', epoch, last_seq: last, oldest_replayable_seq: 1, dataset_class: 'synthetic' });
-const lagged = (epoch: string, reason: string) => env(epoch, 0, 'stream.lagged', { reason, dropped: null, resync: ['roots'] });
+const lagged = (epoch: string, reason: string, seq = 0) => env(epoch, seq, 'stream.lagged', { reason, dropped: null, resync: ['roots'] });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 const asFetch = (f: (url: string, init: RequestInit) => Promise<Response>) => f as unknown as typeof fetch;
 const idOf = (init: RequestInit) => (JSON.parse(init.body as string) as { request_id: string }).request_id;
@@ -132,6 +132,17 @@ describe('http transport', () => {
     );
     expect(ids).toEqual(['e1.40', 'e2.4', 'e2.4']);
     expect(got).toEqual(['stream.hello:e2.3', 'stream.lagged:e2.0', 'roots.changed:e2.4']);
+  });
+
+  it.each([0, 6])('delivers subscriber_overflow with seq %i (unsequenced or equal to the last applied) and keeps the resume point', async (seq) => {
+    const { ids, got } = await replay([[hello('e1', 5), ev(6), lagged('e1', 'subscriber_overflow', seq)], []]);
+    expect(got).toEqual(['stream.hello:e1.5', 'roots.changed:e1.6', `stream.lagged:e1.${seq}`]);
+    expect(ids).toEqual([undefined, 'e1.6', 'e1.6']);
+  });
+
+  it('advances the resume point past a subscriber_overflow lagged that carries a later seq', async () => {
+    const { ids } = await replay([[hello('e1', 5), ev(6), lagged('e1', 'subscriber_overflow', 9)], []]);
+    expect(ids).toEqual([undefined, 'e1.9', 'e1.9']);
   });
 
   it('after replay_gap resumes from the hello last_seq, not from the stale seq or the lagged seq 0', async () => {

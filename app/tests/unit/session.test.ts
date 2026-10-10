@@ -25,6 +25,15 @@ describe('session resync', () => {
     expect(session.epoch).toBe(before + 1);
   });
 
+  it('ignores a hello without a string epoch', () => {
+    feed(hello('e1'));
+    const before = session.epoch;
+    feed(env('stream.hello', {}));
+    expect(session.epoch).toBe(before);
+    feed(hello('e2')); // the recorded epoch was not overwritten by the malformed hello
+    expect(session.epoch).toBe(before + 1);
+  });
+
   it.each(['epoch_changed', 'replay_gap', 'subscriber_overflow'])('resyncs on stream.lagged %s', (reason) => {
     const before = session.epoch;
     feed(lagged(reason));

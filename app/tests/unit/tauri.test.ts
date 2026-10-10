@@ -98,6 +98,21 @@ describe('tauri transport', () => {
       expect(got).toEqual(['stream.hello:e2.3', 'stream.lagged:e2.0', 'roots.changed:e2.4']);
     });
 
+    it.each([0, 9])('delivers a subscriber_overflow lagged with seq %i and keeps the resume point', async (seq) => {
+      const { api, channels, resumes } = mk();
+      const t = await createTauriTransport(api, { idleMs: 40, sleep: async () => {} });
+      const got: string[] = [];
+      const stop = t.subscribe((e) => got.push(`${e.event}:${e.epoch}.${e.seq}`), () => {}, null);
+      await until(() => channels.length === 1);
+      channels[0]!.onmessage(env('e1', 4, 'stream.hello', { epoch: 'e1', last_seq: 4, oldest_replayable_seq: 1 }));
+      channels[0]!.onmessage(ev(9));
+      channels[0]!.onmessage(env('e1', seq, 'stream.lagged', { reason: 'subscriber_overflow', dropped: 3, resync: ['roots'] }));
+      await until(() => channels.length === 2);
+      stop();
+      expect(got).toEqual(['stream.hello:e1.4', 'roots.changed:e1.9', `stream.lagged:e1.${seq}`]);
+      expect(resumes[1]).toEqual(['e1', 9]);
+    });
+
     it('stays open while messages keep arriving', async () => {
       const { api, channels } = mk();
       const t = await createTauriTransport(api, { idleMs: 60, sleep: async () => {} });

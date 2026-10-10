@@ -107,6 +107,7 @@ class Session {
   private onEvent(ev: EventEnvelope): void {
     if (ev.event === 'stream.hello') {
       const next = (ev.data as unknown as StreamHello).epoch;
+      if (typeof next !== 'string') return;
       if (this.streamEpoch !== null && this.streamEpoch !== next) this.epoch++; // restarted engine
       this.streamEpoch = next;
     } else if (ev.event === 'stream.lagged' || ev.event === 'tree.invalidated' || ev.event === 'roots.changed') {

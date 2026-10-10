@@ -34,7 +34,7 @@ export interface ResumePoint {
  * transport must drop. `stream.hello` is unsequenced and never advances the point inside an epoch,
  * or a reconnect that dropped mid-replay would skip the events still to come. A new epoch, and the
  * `epoch_changed` / `replay_gap` laggeds, jump to the hello's `last_seq`: the client refetches
- * everything then, so older events are moot. Those laggeds may carry `seq` 0.
+ * everything then, so older events are moot. Every `stream.lagged` is delivered whatever its `seq` (it may be 0).
  */
 export class ResumeTracker {
   point: ResumePoint | null;
@@ -52,10 +52,15 @@ export class ResumeTracker {
       }
       return true;
     }
-    const reason = ev.event === 'stream.lagged' ? (ev.data as { reason?: unknown }).reason : null;
-    if (reason === 'epoch_changed' || reason === 'replay_gap') {
-      const seq = Math.max(this.helloLast ?? 0, this.point?.epoch === ev.epoch ? this.point.seq : 0);
-      this.point = { epoch: ev.epoch, seq };
+    if (ev.event === 'stream.lagged') {
+      // A control event: always delivered, never deduplicated, whatever seq it carries (the examples use 0).
+      const same = this.point?.epoch === ev.epoch;
+      const reason = (ev.data as { reason?: unknown }).reason;
+      if (reason === 'epoch_changed' || reason === 'replay_gap') {
+        this.point = { epoch: ev.epoch, seq: Math.max(this.helloLast ?? 0, same ? this.point!.seq : 0) };
+      } else if (same && ev.seq > this.point!.seq) {
+        this.point!.seq = ev.seq; // subscriber_overflow: the stream continues, the gap is visible in seq
+      }
       return true;
     }
     if (this.point?.epoch === ev.epoch) {
