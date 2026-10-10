@@ -573,6 +573,17 @@ fn unsupported_protocol_is_distinct_and_echoes_a_valid_request_id() {
     let r = rejected(br#"{"protocol":"loomward/4","request_id":"bad id!","command":"session.hello","payload":{}}"#);
     assert_eq!(r.error.code, ErrorCode::UnsupportedProtocol);
     assert!(r.request_id.is_none());
+    // A missing request_id is not echoed.
+    let r = rejected(br#"{"protocol":"loomward/4","command":"session.hello","payload":{}}"#);
+    assert_eq!(r.error.code, ErrorCode::UnsupportedProtocol);
+    assert!(r.request_id.is_none());
+    match r.into_response() {
+        ResponseEnvelope::Err(e) => {
+            assert!(e.request_id.is_none());
+            assert_eq!(serde_json::to_value(&e).unwrap()["request_id"], Value::Null);
+        }
+        ResponseEnvelope::Ok(_) => panic!("a rejection is an error response"),
+    }
     // The protocol is judged before anything else is looked at.
     let r = rejected(br#"{"protocol":"loomward/4","request_id":"r_78","command":"files.erase","payload":[1],"extra":true}"#);
     assert_eq!(r.error.code, ErrorCode::UnsupportedProtocol);
