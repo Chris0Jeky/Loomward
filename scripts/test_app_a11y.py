@@ -103,6 +103,30 @@ def tab_to(page: Page, selector: str, limit: int = 60) -> bool:
     return False
 
 
+def cursor_roundtrip(page: Page, live, crumbs, check) -> None:
+    """Open a region that is not the first with the keyboard, go back, and the cursor is still on it (announced on refocus)."""
+    drilled = ''
+    for k in range(1, 6):
+        page.keyboard.press('Home')
+        for _ in range(k):
+            page.keyboard.press('ArrowRight')
+        page.wait_for_timeout(200)
+        page.keyboard.press('Enter')
+        page.wait_for_timeout(300)
+        if crumbs.count() == 2:
+            drilled = crumbs.last.inner_text()
+            break
+    check(bool(drilled), f'a non-first region could be opened with the keyboard ({drilled})')
+    page.wait_for_timeout(1000)
+    page.keyboard.press('Escape')
+    expect(crumbs).to_have_count(1)
+    page.wait_for_timeout(1000)
+    page.keyboard.press('Shift+Tab')
+    page.keyboard.press('Tab')
+    expect(live).to_contain_text(drilled)
+    check(True, f'#157 back lands the keyboard cursor on the region just left ("{drilled}")')
+
+
 def run_a11y(browser: Browser, base: str, check) -> None:
     errors: list[str] = []
 
@@ -134,6 +158,7 @@ def run_a11y(browser: Browser, base: str, check) -> None:
       const mh = document.querySelector('.masthead').getBoundingClientRect().bottom, out = [];
       for (const el of document.querySelectorAll('main button:not(:disabled), main input, main select, main a[href], .rail a')) {
         const r0 = el.getBoundingClientRect(); if (!r0.width || !r0.height) continue;
+        window.scrollTo(0, window.scrollY + r0.top - 20); // the control sits just below the top edge, under a sticky masthead
         el.focus(); const r = el.getBoundingClientRect();
         if (r.top < mh - 0.5 && r.bottom > 0) out.push(`${el.tagName} ${(el.textContent || el.getAttribute('aria-label') || '').trim().slice(0, 30)} top ${r.top.toFixed(0)} < ${mh.toFixed(0)}`);
       }
@@ -258,6 +283,13 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     bg = css_rgb(page.evaluate("getComputedStyle(document.querySelector('input[type=search]')).backgroundColor"))
     check(ratio(ph, bg) >= 4.5, f'1.4.3 the placeholder reads at {ratio(ph, bg):.2f}:1')
 
+    # a hidden-character badge is introduced to assistive technology (CSS generated content is read, and stays out of innerText)
+    goto(page, base, 'explorer', 'Explorer')
+    expect(page.locator('main .ctl').first).to_be_attached()
+    before = page.evaluate("getComputedStyle(document.querySelector('main .ctl'), '::before').content")
+    check('hidden character' in before, f'badge: assistive technology hears "hidden character" before the code ({before})')
+    check('hidden character' not in page.locator('main .ctl').first.inner_text(), 'badge: the visible text is still only the code')
+
     # --- 2.5.8: target size ---------------------------------------------------------------------------------------------
     for view, heading in (('explorer', 'Explorer'), ('atlas', 'Atlas'), ('tiers', 'Tiers'), ('companion', 'Companion'), ('health', 'Grants & health')):
         goto(page, base, view, heading)
@@ -324,32 +356,26 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     expect(live).to_contain_text('Already at the top')
     check(True, '4.1.3 Escape at the top level says so')
 
-    # the cursor survives drill and back
-    drilled = ''
-    for k in range(1, 6):
-        page.keyboard.press('Home')
-        for _ in range(k):
-            page.keyboard.press('ArrowRight')
-        page.wait_for_timeout(200)
-        page.keyboard.press('Enter')
-        page.wait_for_timeout(300)
-        if crumbs.count() == 2:
-            drilled = crumbs.last.inner_text()
-            break
-    check(bool(drilled), f'a non-first region could be opened with the keyboard ({drilled})')
-    page.wait_for_timeout(1000)
+    cursor_roundtrip(page, live, crumbs, check)
+
+    # 1.4.13: the hover tooltip can be dismissed with Escape
+    box = page.locator('main canvas').first.bounding_box()
+    page.mouse.move(box['x'] + box['width'] * 0.3, box['y'] + box['height'] * 0.4)
+    page.wait_for_timeout(300)
+    check(page.locator('main .tip').count() == 1, 'hovering a region shows the tooltip')
     page.keyboard.press('Escape')
-    expect(crumbs).to_have_count(1)
-    page.wait_for_timeout(1000)
-    page.keyboard.press('Shift+Tab')
-    page.keyboard.press('Tab')
-    expect(live).to_contain_text(drilled)
-    check(True, f'#157 back lands the keyboard cursor on the region just left ("{drilled}")')
+    check(page.locator('main .tip').count() == 0, '1.4.13 Escape dismisses the tooltip')
     page.context.close()
 
     # --- Observatory: announcements, pause, gauge text -----------------------------------------------------------------------------
     page = new_page()
     goto(page, base, 'observatory', 'Observatory')
+    expect(page.locator('main .orbit .help')).to_contain_text('nodes')
+    page.wait_for_timeout(800)
+    obs_crumbs = page.locator('main nav[aria-label="Location"] button')
+    check(tab_to(page, 'main canvas'), 'the sunburst is a Tab stop')
+    expect(page.locator('#obs-live')).to_contain_text('Enter opens it')
+    cursor_roundtrip(page, page.locator('#obs-live'), obs_crumbs, check)
     page.locator('main details.as-text summary').click()
     row = page.locator('main details.as-text li', has=page.locator('button.inspect')).first
     row.locator('button.inspect').click()
