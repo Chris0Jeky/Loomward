@@ -9,6 +9,28 @@
 use loomward_protocol::RootGrantResultRefusal as Refusal;
 use std::path::{Path, PathBuf};
 
+/// Static files must be disjoint from all active grants and the state directory.
+pub fn validate_static_dir(
+    dir: Option<&Path>,
+    roots: &[PathBuf],
+    state: Option<&Path>,
+) -> Result<Option<PathBuf>, String> {
+    let Some(dir) = dir else { return Ok(None) };
+    let dir = dir.canonicalize().map_err(|_| "cannot resolve --static")?;
+    if !dir.is_dir() {
+        return Err("--static must name a directory".into());
+    }
+    for protected in roots.iter().map(PathBuf::as_path).chain(state) {
+        let protected = protected
+            .canonicalize()
+            .map_err(|_| "cannot resolve a protected directory")?;
+        if dir.starts_with(&protected) || protected.starts_with(&dir) {
+            return Err("--static overlaps a grant root or the state directory".into());
+        }
+    }
+    Ok(Some(dir))
+}
+
 /// Checks one root and returns it canonicalised.
 pub fn check_root(
     root: &Path,

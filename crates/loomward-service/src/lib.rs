@@ -90,12 +90,26 @@ impl Service {
         Self::open_with(config, idem::TTL, true)
     }
 
+    /// Refuses static overlap with stored and proposed grants before recording any new grant.
+    pub fn open_with_static(config: Config, static_dir: Option<&Path>) -> Result<Service, String> {
+        Self::open_stores(config, idem::TTL, true, static_dir)
+    }
+
     /// `scan_writer: false` leaves the engine without a catalogue scan writer (tests that install
     /// their own probe).
     pub(crate) fn open_with(
         config: Config,
         ttl: Duration,
         scan_writer: bool,
+    ) -> Result<Service, String> {
+        Self::open_stores(config, ttl, scan_writer, None)
+    }
+
+    fn open_stores(
+        config: Config,
+        ttl: Duration,
+        scan_writer: bool,
+        static_dir: Option<&Path>,
     ) -> Result<Service, String> {
         if config.dataset == DatasetClass::Personal && !config.allow_personal {
             return Err("a personal session requires --allow-personal".into());
@@ -114,6 +128,12 @@ impl Service {
         let engine = Engine::open(EngineConfig::new(state_dir.clone(), config.dataset))
             .map_err(|e| format!("engine refused to open: {e}"))?;
         let conn = db::open(&state_dir).map_err(|e| format!("state store: {e}"))?;
+        if static_dir.is_some() {
+            let mut protected = config.grant_roots.clone();
+            protected
+                .extend(db::active_root_paths(&conn).map_err(|e| format!("state store: {e}"))?);
+            paths::validate_static_dir(static_dir, &protected, Some(&state_dir))?;
+        }
         let instance = db::instance(&conn).map_err(|e| format!("state store: {e}"))?;
         let lookups = db::open(&state_dir).map_err(|e| format!("state store: {e}"))?;
         let inner = Arc::new_cyclic(|weak| Inner {
