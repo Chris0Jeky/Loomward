@@ -6,7 +6,7 @@
   "median_persistence_seconds": 0.12997405000001694,
   "median_wall_seconds": 0.205443,
   "platform": "Windows 11",
-  "root": "G:\\loomward-lab\\scale\\mixed-1000000",
+  "root": "lab:mixed-1000000",
   "runs": [
     {
       "allocated_bytes": "7246288",
