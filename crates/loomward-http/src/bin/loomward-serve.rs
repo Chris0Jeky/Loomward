@@ -205,6 +205,14 @@ mod tests {
             .into_iter(),
         )
         .unwrap();
+        #[cfg(windows)]
+        if loomward_windows::enumerate::running_elevated() {
+            // Elevated hosts (hosted CI) refuse every grant: the volume query opens nothing elevated.
+            let refused = paths::validate_roots(&args.grant_roots, Some(&state)).unwrap_err();
+            assert!(refused.contains("identity_unavailable"), "{refused}");
+            std::fs::remove_dir_all(base).unwrap();
+            return;
+        }
         let roots = paths::validate_roots(&args.grant_roots, Some(&state)).unwrap();
         assert_ne!(roots, args.grant_roots);
         let options = args.http_options(&roots);
