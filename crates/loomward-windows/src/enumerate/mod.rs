@@ -70,6 +70,10 @@ pub enum IncompleteReason {
     Cancelled,
     /// Access denied part-way.
     AccessDenied,
+    /// Reparse, offline or recall attributes were refused during revalidation.
+    Refused,
+    /// The path-based fallback could not bind its pins to the original handle.
+    IdentityUnverified,
     /// A native error code.
     Io(i32),
     /// A record failed buffer validation, or a zero-byte success could not grow the buffer.
@@ -271,7 +275,7 @@ pub fn query_stop(code: u32, cancelled: bool) -> ListOutcome {
 #[cfg(windows)]
 mod native;
 #[cfg(windows)]
-pub(crate) use native::open_watch_root;
+pub(crate) use native::{non_elevated, open_watch_root};
 #[cfg(windows)]
 pub use native::{running_elevated, IoCancellation, NativeDir, NativeSource};
 #[cfg(test)]
