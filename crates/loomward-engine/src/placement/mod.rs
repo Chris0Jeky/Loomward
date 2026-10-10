@@ -180,7 +180,6 @@ impl Engine {
                     (v.capacity_bytes, v.free_bytes),
                     (Some(cap), Some(free)) if free.get() > cap.get()
                 ) || matches!(v.capacity_bytes, Some(cap) if reserve_bytes.get() > cap.get())
-                    || matches!(v.capacity_bytes, Some(cap) if cap.get() == 0)
                     || cluster_bytes == Some(0));
             let fraction = if unusable {
                 None

@@ -990,13 +990,19 @@ fn placement_children_of_pre_rejected_parent_are_disclosed_not_planned() {
 
 #[test]
 fn placement_unusable_volume_numbers_stay_unknown_in_tier_view() {
-    for mode in 0..3 {
+    for mode in 0..4 {
         let mut inp = input();
         let mut bad = volume("vo_bad", 100, 50, 2);
         match mode {
             0 => bad.volume.free_bytes = Some(Bytes(200)),
             1 => bad.reserve_bytes = Bytes(200),
-            _ => bad.cluster_bytes = Some(0),
+            2 => bad.cluster_bytes = Some(0),
+            // Zero capacity: no free fraction exists, and the view must not fail as a whole.
+            _ => {
+                bad.volume.capacity_bytes = Some(Bytes(0));
+                bad.volume.free_bytes = Some(Bytes(0));
+                bad.reserve_bytes = Bytes(0);
+            }
         }
         inp.snapshot.volumes.push(bad);
         let model = engine().placement_model(&inp, deadline()).unwrap();
