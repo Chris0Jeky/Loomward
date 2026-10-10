@@ -145,7 +145,7 @@ mod tests {
                 "{unc}"
             );
         }
-        assert!(rule(&[PathBuf::from(r"\\server\share")], None)
+        assert!(rule(&[PathBuf::from(r"\\server\share")], Some(&state))
             .ends_with("network_or_removable_unsupported"));
         // A refusal names the rule and the position, never the path.
         assert!(!rule(&[a.clone(), b.clone()], None).contains(&*base.to_string_lossy()));

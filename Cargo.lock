@@ -642,8 +642,10 @@ dependencies = [
  "hyper",
  "hyper-util",
  "loomward-protocol",
+ "loomward-service",
  "serde_json",
  "subtle",
+ "tempfile",
  "tokio",
 ]
 
