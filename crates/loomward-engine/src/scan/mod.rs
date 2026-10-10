@@ -25,6 +25,20 @@ pub(crate) struct RootGate {
 }
 
 /// Trusted root resolved from an active durable grant by the service, never from wire paths.
+///
+/// Callers cannot change the granted path or mint a root from their own identity observation.
+/// ```compile_fail
+/// fn replace_path(root: &mut loomward_engine::scan::GrantedRoot) {
+///     root.path = "fixture".into();
+/// }
+/// ```
+/// ```compile_fail
+/// use loomward_engine::scan::{GrantedRoot, source::OpenedIdentity};
+/// use loomward_protocol::{DatasetClass, RootId};
+/// fn mint(identity: OpenedIdentity) {
+///     GrantedRoot::new(RootId::new("rt_fixture").unwrap(), "fixture".into(), DatasetClass::Synthetic, identity);
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GrantedRoot {
     root_id: RootId,
@@ -243,13 +257,23 @@ impl Engine {
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .and_then(|c| {
-            c.query_row("SELECT id FROM root WHERE grant_id=?1", [grant_id], |r| {
-                r.get::<_, i64>(0)
-            })
+            c.query_row(
+                "SELECT id,(SELECT value FROM meta WHERE key='instance_id')
+                 FROM root WHERE grant_id=?1",
+                [grant_id],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+            )
             .optional()
         })
         .map_err(|_| denied("grant store unavailable"))?
-        .is_some_and(|row| root_id.as_str().starts_with(&format!("rt_{row}_")));
+        .is_some_and(|(row, instance)| {
+            use sha2::{Digest, Sha256};
+            let tag: String = Sha256::digest(instance.as_bytes())[..4]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            root_id.as_str() == format!("rt_{row}_{tag}")
+        });
         if !paired {
             return Err(denied("grant_root_mismatch"));
         }
