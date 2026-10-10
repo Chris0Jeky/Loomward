@@ -19,9 +19,9 @@ use windows_sys::Win32::{
         RemoteDesktop::ProcessIdToSessionId,
         SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX},
         Threading::{
-            GetActiveProcessorCount, GetProcessHandleCount, GetProcessIoCounters, GetProcessTimes,
-            OpenProcess, QueryFullProcessImageNameW, IO_COUNTERS,
-            PROCESS_QUERY_LIMITED_INFORMATION,
+            GetActiveProcessorCount, GetCurrentProcess, GetCurrentThread, GetProcessHandleCount,
+            GetProcessIoCounters, GetProcessTimes, GetThreadTimes, OpenProcess,
+            QueryFullProcessImageNameW, IO_COUNTERS, PROCESS_QUERY_LIMITED_INFORMATION,
         },
     },
 };
@@ -50,6 +50,66 @@ fn failure(field: &str, code: u32) -> Unknown {
 
 fn ticks(time: FILETIME) -> u64 {
     (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime)
+}
+
+pub(super) fn own_usage() -> Observation<OwnUsage> {
+    let mut memory = PROCESS_MEMORY_COUNTERS_EX {
+        cb: size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+        ..Default::default()
+    };
+    let (mut start, mut end, mut kernel, mut user) = (
+        FILETIME::default(),
+        FILETIME::default(),
+        FILETIME::default(),
+        FILETIME::default(),
+    );
+    // Pseudo handles are observation-only and never closed.
+    unsafe {
+        if GetProcessTimes(
+            GetCurrentProcess(),
+            &mut start,
+            &mut end,
+            &mut kernel,
+            &mut user,
+        ) == 0
+        {
+            return Observation::Unknown {
+                reason: "own process CPU query failed".into(),
+            };
+        }
+        let cpu_seconds = (ticks(kernel) as f64 + ticks(user) as f64) / 10_000_000.0;
+        if GetThreadTimes(
+            GetCurrentThread(),
+            &mut start,
+            &mut end,
+            &mut kernel,
+            &mut user,
+        ) == 0
+        {
+            return Observation::Unknown {
+                reason: "calling thread CPU query failed".into(),
+            };
+        }
+        let calling_thread_cpu_seconds = (ticks(kernel) as f64 + ticks(user) as f64) / 10_000_000.0;
+        if GetProcessMemoryInfo(
+            GetCurrentProcess(),
+            (&mut memory as *mut PROCESS_MEMORY_COUNTERS_EX).cast(),
+            memory.cb,
+        ) == 0
+        {
+            return Observation::Unknown {
+                reason: "own process memory query failed".into(),
+            };
+        }
+        Observation::Observed {
+            value: OwnUsage {
+                cpu_seconds,
+                calling_thread_cpu_seconds,
+                private_commit_bytes: memory.PrivateUsage as u64,
+                peak_private_commit_bytes: memory.PeakPagefileUsage as u64,
+            },
+        }
+    }
 }
 
 fn memory() -> Memory {
