@@ -645,6 +645,7 @@ dependencies = [
  "loomward-protocol",
  "loomward-service",
  "serde_json",
+ "socket2",
  "subtle",
  "tempfile",
  "tokio",
