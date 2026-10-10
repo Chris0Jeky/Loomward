@@ -71,6 +71,7 @@ pub(crate) fn destroy_in(_: &Path, _: &Path) -> io::Result<()> {
 
 #[cfg(windows)]
 fn scoped(root: &Path, base: &Path) -> io::Result<PathBuf> {
+    crate::win::non_elevated()?;
     use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
     if !root.is_absolute()
         || !base.is_absolute()
@@ -242,6 +243,7 @@ fn preflight(root: &Path, manifest: &Manifest) -> io::Result<()> {
 
 #[cfg(windows)]
 fn check_streams(path: &Path, listed: &HashSet<PathBuf>) -> io::Result<()> {
+    crate::win::non_elevated()?;
     use windows_sys::Win32::{Foundation::*, Storage::FileSystem::*};
     struct Search(HANDLE);
     impl Drop for Search {
