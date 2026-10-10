@@ -711,6 +711,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "loomward-shell"
+version = "0.1.0"
+dependencies = [
+ "loomward-windows",
+ "tempfile",
+ "windows-sys",
+]
+
+[[package]]
 name = "loomward-telemetry"
 version = "0.1.0"
 dependencies = [
