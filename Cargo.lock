@@ -368,14 +368,20 @@ dependencies = [
 name = "loomward-engine"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.4.3",
  "loomward-protocol",
+ "loomward-windows",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
 name = "loomward-lab"
 version = "0.1.0"
 dependencies = [
+ "loomward-engine",
+ "loomward-protocol",
+ "loomward-windows",
  "serde",
  "serde_json",
  "windows-sys",

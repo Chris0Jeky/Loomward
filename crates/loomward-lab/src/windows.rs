@@ -980,9 +980,127 @@ fn destroy(input: &str) -> io::Result<()> {
     Ok(())
 }
 
+fn scan_median(mut values: Vec<f64>) -> f64 {
+    values.sort_by(f64::total_cmp);
+    let middle = values.len() / 2;
+    if values.len() % 2 == 0 {
+        (values[middle - 1] + values[middle]) / 2.
+    } else {
+        values[middle]
+    }
+}
+
+fn scan_tier_files(tier: &str) -> io::Result<u64> {
+    match tier {
+        "S" => Ok(100_000),
+        "M" => Ok(1_000_000),
+        _ => Err(invalid("tier must be S or M; oversized stress is separate")),
+    }
+}
+
+fn bench_scan(args: &[String]) -> io::Result<()> {
+    use loomward_engine::{
+        budgets::{ByteBudget, SCAN_BYTES},
+        scan::{run_scan, GrantedRoot, MemorySink, ScanOptions},
+    };
+    use loomward_protocol::RootId;
+    use loomward_windows::enumerate::NativeSource;
+    use std::sync::atomic::AtomicBool;
+    let mut tier = None;
+    let mut runs = None;
+    if args.len() != 4 {
+        return Err(invalid("bench scan --tier S|M --runs N"));
+    }
+    for pair in args.chunks_exact(2) {
+        match pair[0].as_str() {
+            "--tier" if tier.is_none() => tier = Some(pair[1].as_str()),
+            "--runs" if runs.is_none() => {
+                runs = Some(
+                    pair[1]
+                        .parse::<u64>()
+                        .map_err(|_| invalid("invalid runs"))?,
+                )
+            }
+            _ => return Err(invalid("unknown or duplicate scan bench option")),
+        }
+    }
+    let tier = tier.ok_or_else(|| invalid("missing tier"))?;
+    let files = scan_tier_files(tier)?;
+    let runs = runs.ok_or_else(|| invalid("missing runs"))?;
+    if !(1..=100).contains(&runs) {
+        return Err(invalid("runs must be 1..=100"));
+    }
+    let input = format!(r"G:\loomward-lab\scale\mixed-{files}");
+    let scope = Scope::open(&input, false)?;
+    let _busy = Busy::take(&scope)?;
+    let manifest = scope.manifest()?;
+    if manifest.expected.files != files {
+        return Err(invalid("tier manifest file count mismatch"));
+    }
+    let root = GrantedRoot::for_lab(RootId::new("rt_scan_lab").unwrap(), scope.root.join("data"))
+        .map_err(|e| invalid(e.to_string()))?;
+    let mut measurements = Vec::new();
+    for run in 1..=runs {
+        let sink = Arc::new(MemorySink::default());
+        let report = run_scan(
+            &NativeSource::default(),
+            &root,
+            run,
+            sink.clone(),
+            Arc::new(ByteBudget::new(SCAN_BYTES)),
+            Arc::new(AtomicBool::new(false)),
+            ScanOptions::default(),
+        )
+        .map_err(|e| invalid(e.to_string()))?;
+        if !report.complete
+            || report.totals.files != manifest.expected.files
+            || report.totals.dirs != manifest.expected.directories
+            || report.totals.logical != manifest.expected.logical_bytes
+            || report.totals.allocated != Some(manifest.file_data_allocation_bytes)
+            || sink.totals(root.root_id()) != Some(report.totals)
+        {
+            return Err(invalid(format!(
+                "scan disagrees with complete manifest: {:?}",
+                report.totals
+            )));
+        }
+        measurements.push(serde_json::json!({"run":run,"wall_seconds":report.elapsed_seconds,"files_per_second":files as f64/report.elapsed_seconds,"enumeration_worker_seconds":report.enumeration_worker_seconds,"persistence_seconds":report.persistence_seconds,"files":report.totals.files,"directories":report.totals.dirs,"logical_bytes":report.totals.logical.to_string(),"allocated_bytes":report.totals.allocated.map(|n|n.to_string()),"complete":report.complete}));
+        eprintln!(
+            "scan {tier} {run}/{runs}: {:.3}s, {:.0} files/s, sink {:.3}s",
+            report.elapsed_seconds,
+            files as f64 / report.elapsed_seconds,
+            report.persistence_seconds
+        );
+    }
+    let median_wall = scan_median(
+        measurements
+            .iter()
+            .map(|m| m["wall_seconds"].as_f64().unwrap())
+            .collect(),
+    );
+    let median_enumeration = scan_median(
+        measurements
+            .iter()
+            .map(|m| m["enumeration_worker_seconds"].as_f64().unwrap())
+            .collect(),
+    );
+    let median_persistence = scan_median(
+        measurements
+            .iter()
+            .map(|m| m["persistence_seconds"].as_f64().unwrap())
+            .collect(),
+    );
+    let result = serde_json::json!({"schema_version":1,"platform":"Windows 11","tier":tier,"root":input,"source":"native production enumerator","sink":"aggregate-only in-memory staging; no SQLite","cache":"warm/uncontrolled; existing generated fixture","workers":8,"buffer_kib":16,"shared_byte_budget":SCAN_BYTES,"manifest_matched_all_runs":true,"median_wall_seconds":median_wall,"median_enumeration_worker_seconds":median_enumeration,"median_persistence_seconds":median_persistence,"runs":measurements});
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
 pub fn run() -> io::Result<()> {
     require_non_elevated()?;
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a == "bench") && args.get(1).is_some_and(|a| a == "scan") {
+        return bench_scan(&args[2..]);
+    }
     let Some(command) = args.first() else {
         return Err(invalid("generate|bench|destroy --root G:\\loomward-lab\\scale\\NAME [--files N --seed S --profile dev|media|mixed] [--threads N] [--strategy std-single|std-parallel|find|handle --buffer-kib N --cache-label LABEL]"));
     };
@@ -1073,6 +1191,15 @@ pub fn run() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn m_tier_stays_one_million_n6() {
+        assert_eq!(scan_tier_files("M").unwrap(), 1_000_000);
+        assert_eq!(scan_tier_files("S").unwrap(), 100_000);
+        assert!(scan_tier_files("oversized").is_err());
+        assert_eq!(scan_median(vec![1., 4., 2., 3.]), 2.5);
+        assert_eq!(scan_median(vec![1., 3., 2.]), 2.);
+    }
 
     struct LogScope(PathBuf);
 
