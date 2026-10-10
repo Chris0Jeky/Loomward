@@ -204,7 +204,8 @@ mod tests {
             validate_static_dir(Some(&dist), &[elsewhere], None),
             Ok(Some(canonical.clone()))
         );
-        assert!(validate_static_dir(Some(&dist), &[dist.join("gone")], None).is_err());
+        // Stored grant paths are canonical (long names), as check_root records them.
+        assert!(validate_static_dir(Some(&dist), &[canonical.join("gone")], None).is_err());
         assert!(lexical_overlap(&canonical, &canonical.join("gone")));
         assert!(lexical_overlap(
             &canonical.join("x"),
