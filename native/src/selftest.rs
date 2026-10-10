@@ -292,7 +292,7 @@ pub fn run(log: &mut dyn FnMut(&str)) -> bool {
     );
 
     report(
-        "lw_events: a fifth stream per window is refused; window close tears all down",
+        "lw_events: a fifth stream evicts the oldest; window close tears all down",
         (|| {
             // Earlier checks' pumps stop within PUMP_POLL; start from a quiet service.
             wait_until(Duration::from_secs(3), || service.open_streams() == 0);
@@ -305,8 +305,8 @@ pub fn run(log: &mut dyn FnMut(&str)) -> bool {
             }
             let (tx, _rx) = sink();
             check(
-                desktop.open_stream("selftest-d", None, None, tx).is_err(),
-                "fifth stream opened",
+                desktop.open_stream("selftest-d", None, None, tx).is_ok(),
+                "fifth stream refused",
             )?;
             check(desktop.open_streams("selftest-d") == 4, "four open")?;
             desktop.close_webview("selftest-d");

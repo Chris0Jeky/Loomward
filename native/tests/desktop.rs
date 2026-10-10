@@ -140,8 +140,14 @@ fn disclosure_dialog_accept_and_decline_paths() {
         let s = summary(wire, None);
         for answer in [true, false] {
             let (dialogs, shown) = recording(dataset, answer);
-            assert_eq!(dialogs.confirm_disclosure(&s), answer);
-            assert_eq!(shown.lock().unwrap().len(), 1);
+            assert_eq!(
+                dialogs.confirm_disclosure(&s),
+                answer && dataset == DatasetClass::Synthetic
+            );
+            assert_eq!(
+                shown.lock().unwrap().len(),
+                usize::from(dataset == DatasetClass::Synthetic)
+            );
         }
         // A summary of the other class is declined without asking.
         let (dialogs, shown) = recording(dataset, true);
@@ -189,14 +195,28 @@ fn invoke(
     cmd: &str,
     body: Value,
 ) -> Result<tauri::ipc::InvokeResponseBody, Value> {
+    let body = if cmd == "lw_call" {
+        tauri::ipc::InvokeBody::Raw(serde_json::to_vec(&body["request"]).unwrap())
+    } else {
+        tauri::ipc::InvokeBody::Json(body)
+    };
+    invoke_body(webview, cmd, body, webview.url().unwrap())
+}
+
+fn invoke_body(
+    webview: &tauri::WebviewWindow<tauri::test::MockRuntime>,
+    cmd: &str,
+    body: tauri::ipc::InvokeBody,
+    url: tauri::Url,
+) -> Result<tauri::ipc::InvokeResponseBody, Value> {
     tauri::test::get_ipc_response(
         webview,
         tauri::webview::InvokeRequest {
             cmd: cmd.into(),
             callback: tauri::ipc::CallbackFn(0),
             error: tauri::ipc::CallbackFn(1),
-            url: webview.url().unwrap(),
-            body: tauri::ipc::InvokeBody::Json(body),
+            url,
+            body,
             headers: Default::default(),
             invoke_key: tauri::test::INVOKE_KEY.to_string(),
         },
@@ -266,6 +286,292 @@ fn the_webview_may_invoke_exactly_lw_call_and_lw_events() {
     }));
 }
 
+#[test]
+fn disclosure_length_budget_declines_without_truncating() {
+    use loomward_desktop::dialogs::MAX_DISCLOSURE_CHARS;
+    let items = (0..25)
+        .map(|i| {
+            json!({ "handle": format!("i{i:02}"), "name": "n".repeat(256),
+        "extension": "txt", "context": "c".repeat(512), "size_bucket": 0 })
+        })
+        .collect();
+    let long = summary("synthetic", Some(items));
+    assert!(disclosure_text(&long).len() > MAX_DISCLOSURE_CHARS);
+    let (dialogs, shown) = recording(DatasetClass::Synthetic, true);
+    assert!(!dialogs.confirm_disclosure(&long));
+    assert!(shown.lock().unwrap().is_empty());
+    assert!(dialogs.confirm_disclosure(&summary("synthetic", None)));
+    let mut items: Vec<_> = (0..3)
+        .map(|i| {
+            json!({ "handle": format!("i{i:02}"),
+        "name": "n", "extension": "txt", "context": "c", "size_bucket": 0 })
+        })
+        .collect();
+    let mut extra =
+        MAX_DISCLOSURE_CHARS - disclosure_text(&summary("synthetic", Some(items.clone()))).len();
+    for item in &mut items {
+        let add = extra.min(511);
+        item["context"] = json!("c".repeat(add + 1));
+        extra -= add;
+    }
+    assert_eq!(extra, 0);
+    let exact = summary("synthetic", Some(items.clone()));
+    assert_eq!(disclosure_text(&exact).len(), MAX_DISCLOSURE_CHARS);
+    assert!(dialogs.confirm_disclosure(&exact));
+    let last = items.last_mut().unwrap();
+    last["context"] = json!(format!("{}c", last["context"].as_str().unwrap()));
+    assert!(!dialogs.confirm_disclosure(&summary("synthetic", Some(items))));
+}
+
+#[test]
+fn concurrent_disclosure_is_declined() {
+    use std::sync::mpsc;
+    let (started, rx) = mpsc::channel();
+    let (release, wait) = mpsc::channel();
+    let wait = Mutex::new(wait);
+    let count = AtomicUsize::new(0);
+    let dialogs = Arc::new(DesktopDialogs::with_prompt(
+        DatasetClass::Synthetic,
+        move |_, _| {
+            if count.fetch_add(1, Ordering::SeqCst) == 0 {
+                started.send(()).unwrap();
+                wait.lock().unwrap().recv().unwrap();
+            }
+            true
+        },
+    ));
+    let d = dialogs.clone();
+    let first = std::thread::spawn(move || d.confirm_disclosure(&summary("synthetic", None)));
+    rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    let second = dialogs.confirm_disclosure(&summary("synthetic", None));
+    release.send(()).unwrap();
+    assert!(first.join().unwrap());
+    assert!(!second, "a second dialog was admitted");
+}
+
+#[test]
+fn visible_escapes_all_non_ascii_including_every_reported_invisible() {
+    for c in [
+        '\u{2800}',
+        '\u{3164}',
+        '\u{115F}',
+        '\u{1160}',
+        '\u{FFA0}',
+        '\u{034F}',
+        '\u{FE00}',
+        '\u{FE0F}',
+        '\u{E0000}',
+        '\u{E007F}',
+        '\u{2028}',
+        '\u{2029}',
+        '\u{17B4}',
+        '\u{17B5}',
+    ] {
+        assert_eq!(visible(&c.to_string()), format!("\\u{{{:04X}}}", c as u32));
+    }
+    assert_eq!(visible("Lab file.txt"), "Lab file.txt");
+}
+
+#[test]
+fn calls_are_capped_and_unwinding_releases_the_permit() {
+    let (_, desktop) = fixture_desktop(Duration::from_millis(30)).unwrap();
+    let mut permits: Vec<_> = (0..loomward_desktop::MAX_CALLS)
+        .map(|_| desktop.begin_call().unwrap())
+        .collect();
+    assert!(desktop.begin_call().is_err());
+    let permit = permits.pop().unwrap();
+    assert!(std::panic::catch_unwind(move || {
+        let _permit = permit;
+        panic!("synthetic service panic");
+    })
+    .is_err());
+    assert!(desktop.begin_call().is_ok());
+}
+
+#[test]
+fn fifth_stream_evicts_only_the_oldest() {
+    use std::sync::mpsc;
+    let (service, desktop) = fixture_desktop(Duration::from_millis(30)).unwrap();
+    let mut receivers = Vec::new();
+    for _ in 0..5 {
+        let (tx, rx) = mpsc::channel();
+        desktop
+            .open_stream("main", None, None, move |e| tx.send(e).is_ok())
+            .unwrap();
+        rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        receivers.push(rx);
+    }
+    assert!(wait_until(Duration::from_secs(3), || service
+        .open_streams()
+        == 4));
+    assert_eq!(desktop.open_streams("main"), 4);
+    assert!(wait_until(Duration::from_secs(3), || {
+        matches!(
+            receivers[0].try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        )
+    }));
+    assert!(receivers[1..]
+        .iter()
+        .all(|rx| !matches!(rx.try_recv(), Err(mpsc::TryRecvError::Disconnected))));
+    desktop.close_webview("main");
+}
+
+#[test]
+fn pump_panic_releases_both_adapter_and_service_slots() {
+    let (service, desktop) = fixture_desktop(Duration::from_millis(30)).unwrap();
+    let mut first = true;
+    desktop
+        .open_stream("main", None, None, move |_| {
+            if first {
+                first = false;
+                true
+            } else {
+                panic!("synthetic sink panic")
+            }
+        })
+        .unwrap();
+    assert!(wait_until(Duration::from_secs(3), || desktop
+        .open_streams("main")
+        == 0
+        && service.open_streams() == 0));
+    desktop.open_stream("main", None, None, |_| true).unwrap();
+    assert_eq!(desktop.open_streams("main"), 1);
+    desktop.close_webview("main");
+}
+
+#[test]
+fn navigation_accepts_only_the_embedded_origin() {
+    for url in [
+        "http://tauri.localhost/index.html#/atlas",
+        "tauri://localhost/index.html",
+    ] {
+        assert!(shell::local_navigation(&url.parse().unwrap()));
+    }
+    for url in [
+        "https://remote.invalid/",
+        "http://tauri.localhost.evil.invalid/",
+        "http://tauri.localhost:81/",
+        "http://user@tauri.localhost/",
+        "file:///fixture",
+        "data:text/html,fixture",
+    ] {
+        assert!(!shell::local_navigation(&url.parse().unwrap()), "{url}");
+    }
+}
+
+#[test]
+fn raw_ipc_enforces_encoded_size_duplicates_and_remote_origin_denial() {
+    use tauri::ipc::InvokeBody;
+    let (_, desktop) = fixture_desktop(Duration::from_millis(30)).unwrap();
+    let mut context = tauri::generate_context!();
+    context.config_mut().app.windows.clear();
+    let app = shell::configure(tauri::test::mock_builder(), Arc::new(desktop))
+        .build(context)
+        .unwrap();
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+        .build()
+        .unwrap();
+    let url = webview.url().unwrap();
+    let mut bytes = serde_json::to_vec(&envelope("session.hello", json!({}))).unwrap();
+    bytes.resize(65536, b' ');
+    let response = invoke_body(
+        &webview,
+        "lw_call",
+        InvokeBody::Raw(bytes.clone()),
+        url.clone(),
+    )
+    .unwrap();
+    assert_eq!(response.deserialize::<Value>().unwrap()["ok"], true);
+    bytes.push(b' ');
+    assert!(invoke_body(&webview, "lw_call", InvokeBody::Raw(bytes), url.clone()).is_err());
+    for payload in [
+        r#"{"protocol":"loomward/3","request_id":"r_dup","command":"session.hello","command":"roots.list","payload":{}}"#,
+        r#"{"protocol":"loomward/3","request_id":"r_dup","command":"session.hello","payload":{"x":1,"x":2}}"#,
+    ] {
+        let r = invoke_body(
+            &webview,
+            "lw_call",
+            InvokeBody::Raw(payload.as_bytes().to_vec()),
+            url.clone(),
+        )
+        .unwrap();
+        let r: Value = r.deserialize().unwrap();
+        assert_eq!(r["ok"], false, "{r}");
+        assert!(
+            r["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("duplicate"),
+            "{r}"
+        );
+    }
+    let request = envelope("session.hello", json!({}));
+    assert!(invoke_body(
+        &webview,
+        "lw_call",
+        InvokeBody::Json(json!({"request": request})),
+        url
+    )
+    .is_err());
+    assert!(invoke_body(
+        &webview,
+        "lw_call",
+        InvokeBody::Raw(serde_json::to_vec(&request).unwrap()),
+        "https://remote.invalid/".parse().unwrap()
+    )
+    .is_err());
+}
+
+#[test]
+fn picked_folder_uses_grant_rules_and_fences_profiles_and_stores() {
+    use loomward_desktop::dialogs::validate_picked_folder;
+    let tmp = tempfile::tempdir().unwrap();
+    let profile = tmp.path().join("profiles").join("fixture-user");
+    let allowed = profile.join("Documents").join("lab");
+    for path in [
+        &allowed,
+        &profile.join(".ssh"),
+        &profile.join("AppData").join("browser"),
+        &profile.join(".aws"),
+        &tmp.path().join("profiles").join("other-fixture"),
+    ] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    assert_eq!(
+        validate_picked_folder(&allowed, &profile).unwrap(),
+        allowed.canonicalize().unwrap()
+    );
+    for path in [
+        &profile,
+        &profile.parent().unwrap().to_path_buf(),
+        &profile.join(".ssh"),
+        &profile.join("AppData").join("browser"),
+        &profile.join(".aws"),
+        &tmp.path().join("profiles").join("other-fixture"),
+        &tmp.path().join("missing"),
+    ] {
+        assert!(validate_picked_folder(path, &profile).is_err());
+    }
+    for path in [
+        r"\\fixture\share",
+        r"\\?\UNC\fixture\share",
+        r"\\.\fixture",
+        r"\\?\GLOBALROOT\fixture",
+    ] {
+        assert!(validate_picked_folder(Path::new(path), &profile).is_err());
+    }
+    let volume = allowed.ancestors().last().unwrap();
+    assert!(
+        validate_picked_folder(volume, &profile).is_ok(),
+        "native volume selection is allowed"
+    );
+    assert!(
+        loomward_service::paths::check_root(volume, None, &[], false).is_err(),
+        "CLI volume grant is refused"
+    );
+}
+
 /// The real Win32 box: Enter's default is Cancel, OK accepts, Cancel declines. A helper thread
 /// finds the box by title and presses a button, so no human is needed, but it does need an
 /// interactive desktop session.
@@ -295,7 +601,29 @@ fn native_disclosure_box_defaults_to_cancel_and_maps_both_buttons() {
             }
             None
         });
-        let accepted = message_box(DISCLOSURE_TITLE, &text);
+        // SAFETY: the built-in STATIC class creates a synthetic owner for the ignored UI test.
+        let class: Vec<u16> = "STATIC".encode_utf16().chain(Some(0)).collect();
+        let owner = unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::CreateWindowExW(
+                0,
+                class.as_ptr(),
+                class.as_ptr(),
+                0,
+                0,
+                0,
+                100,
+                100,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            )
+        };
+        assert!(!owner.is_null());
+        let accepted = message_box(owner as isize, DISCLOSURE_TITLE, &text);
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::DestroyWindow(owner);
+        }
         let default = clicker.join().unwrap().expect("the box never appeared");
         assert_eq!(default, IDCANCEL, "Enter must decline");
         assert_eq!(accepted, want, "button {button}");

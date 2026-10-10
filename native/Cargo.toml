@@ -23,6 +23,7 @@ tauri-build = { version = "2.6", features = [] }
 [dependencies]
 loomward-protocol = { path = "../crates/loomward-protocol" }
 loomward-http = { path = "../crates/loomward-http" }
+loomward-service = { path = "../crates/loomward-service" }
 serde = "1"
 serde_json = "1"
 # No default features: no tray, no devtools, no plugins. `wry` and the compression of embedded
@@ -34,6 +35,7 @@ rfd = { version = "0.17", default-features = false, features = ["common-controls
 windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Console"] }
 
 [dev-dependencies]
+tempfile = "3"
 # `test` adds Tauri's mock runtime, so tests drive the real IPC and ACL without a webview.
 tauri = { version = "2.10", default-features = false, features = ["wry", "compression", "common-controls-v6", "custom-protocol", "test"] }
 

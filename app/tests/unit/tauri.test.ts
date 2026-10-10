@@ -12,16 +12,17 @@ const ev = (seq: number, epoch = 'e1') => env(epoch, seq, 'roots.changed');
 
 describe('tauri transport', () => {
   it('invokes lw_call with the request and lw_events with a channel, lastEpoch and lastSeq', async () => {
-    const calls: [string, Record<string, unknown> | undefined][] = [];
+    const calls: [string, Record<string, unknown> | Uint8Array | undefined][] = [];
     let channel!: FakeChannel<unknown>;
     const api: TauriApi = {
       invoke: async (cmd, args) => {
         calls.push([cmd, args]);
         if (cmd === 'lw_call') {
-          const r = args!.request as { request_id: string };
+          expect(args).toBeInstanceOf(Uint8Array);
+          const r = JSON.parse(new TextDecoder().decode(args as Uint8Array)) as { request_id: string };
           return { protocol: 'loomward/3', request_id: r.request_id, ok: true, result: { roots: [] }, meta: { served_at: 'x', elapsed_ms: 0, dataset_class: 'synthetic', budget_hit: false } };
         }
-        channel = args!.channel as FakeChannel<unknown>;
+        channel = (args as Record<string, unknown>).channel as FakeChannel<unknown>;
         return null;
       },
       Channel,
@@ -55,10 +56,11 @@ describe('tauri transport', () => {
       const api: TauriApi = {
         invoke: async (cmd, args) => {
           if (cmd !== 'lw_events') return null;
-          lastSeqs.push(args!.lastSeq);
-          resumes.push([args!.lastEpoch, args!.lastSeq]);
+          const a = args as Record<string, unknown>;
+          lastSeqs.push(a.lastSeq);
+          resumes.push([a.lastEpoch, a.lastSeq]);
           if (rejects-- > 0) throw 'engine gone';
-          channels.push(args!.channel as FakeChannel<unknown>);
+          channels.push(a.channel as FakeChannel<unknown>);
           return null;
         },
         Channel,
@@ -66,6 +68,20 @@ describe('tauri transport', () => {
       return { api, channels, lastSeqs, resumes };
     };
     const until = async (cond: () => boolean) => { for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 5)); };
+
+    it('surfaces one lagged event for a stalled renderer, discards stale backlog, then accepts fresh data', async () => {
+      const { api, channels } = mk();
+      const t = await createTauriTransport(api);
+      const got: string[] = [];
+      const stop = t.subscribe((e) => got.push(e.event), () => {});
+      await until(() => channels.length === 1);
+      const old = new Date(Date.now() - 10_000).toISOString();
+      channels[0]!.onmessage({ ...ev(1), at: old });
+      channels[0]!.onmessage({ ...ev(2), at: old });
+      channels[0]!.onmessage({ ...ev(3), at: new Date().toISOString() });
+      stop();
+      expect(got).toEqual(['stream.lagged', 'roots.changed']);
+    });
 
     it('reports closed when the channel goes silent past the heartbeat window, then resubscribes from the last seq', async () => {
       const { api, channels, lastSeqs, resumes } = mk();
