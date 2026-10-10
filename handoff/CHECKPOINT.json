@@ -49,26 +49,30 @@
       "loomward-learn": "student model port with exact Python parity (#113)",
       "loomward-protocol": "v3 envelopes, complete per-command validation, duplicate-key refusal, ViewService trait (#133)",
       "loomward-engine": "C2 skeleton (#140) + L7 scan pipeline (#162), L12 placement (#158), L11b telemetry (#161)",
-      "loomward-http": "loomward-serve: loopback HTTP + SSE adapter, token/Host/Origin checks, FixtureService until L8 (#143)"
+      "loomward-http": "loomward-serve: loopback HTTP + SSE adapter, token/Host/Origin checks, FixtureService until L8 (#143)",
+      "loomward-catalog": "durable SQLite catalogue: revision 2 + errata, pending-reference retirement, FULL sync for intents (#173); P4 ~53k rows/s (#187); auto-rollback guard (#208)",
+      "loomward-service": "the ViewService over engine and catalogue (#179, #197); catalogue-backed scan writer and scan.start for synthetic lab roots (#205)"
     },
-    "rust_tests_on_windows": 240,
+    "rust_tests_on_windows": 410,
     "compiled": true,
     "toolchain": "rustc 1.97.1",
     "fmt_clippy_clean": true,
     "tauri": "first built 2026-10-10 (#164): lw_call/lw_events only, CSP, Rust-only dialogs, self-test 10/10, WebView2 probe 13/13, Atlas P9 17.5 ms",
     "enumeration": "GetFileInformationByHandleEx(FileIdExtdDirectoryInfo), 8 workers: 3M files in 0.558 s warm (5.38M files/s, 9.2 MiB RSS); cold cache unmeasured",
     "rust_tests_by_crate": {
+      "loomward-catalog": 69,
       "loomward-core": 30,
-      "loomward-engine": 61,
-      "loomward-http": 30,
+      "loomward-engine": 106,
+      "loomward-http": 40,
       "loomward-lab": 22,
       "loomward-learn": 8,
       "loomward-protocol": 35,
-      "loomward-telemetry": 25,
-      "loomward-windows": 29
+      "loomward-service": 35,
+      "loomward-telemetry": 28,
+      "loomward-windows": 37
     },
-    "change_tracking": "non-elevated: ReadDirectoryChangesW overflows as zero-byte completions (64 KiB recommended); unprivileged USN works through directory handles on G:/E: without names, 1.84M rec/s (#138)",
-    "scan": "M tier 1M files ~4.9M files/s warm, 20/20 exact manifests (#162); elevated tokens refused (hosted CI pins it)"
+    "change_tracking": "L16: guarded ReadDirectoryChangesW watchers scoped to each scan (#183, #202); attribute/ACL hints; identity-based absence; USN accelerator not implemented",
+    "scan": "M tier 1M files ~4.9M files/s warm, 20/20 exact manifests (#162); through the product for synthetic lab roots (#205); personal scans gated on #206/#184; elevated tokens refused"
   },
   "learning": {
     "student": "weighted Naive Bayes; Rust port loomward-learn with exact Python parity (#113)",
