@@ -1,8 +1,9 @@
 # Scan robustness: #201 and #184
 
 Measured 2026-10-10 on Windows, non-elevated, with disposable synthetic NTFS fixtures.
-Branch: `fix/scan-start-race-and-burst-flake`; starting and final HEAD:
-`f910c89372e827d42791b25a9de30b87720663fc`. The Rust diff is uncommitted; no push occurred.
+Branch: `fix/scan-start-race-and-burst-flake` (PR #212), measured on the working tree over base
+`f910c89`, before it was committed. After review, the oracle counts every RootDirty source (not only
+channel overflow) and the per-root gate recovers from poisoning; the loaded runs predate those two edits.
 Other lanes shared the host throughout. No existing timeout or reconciliation limit changed.
 
 ## Changed and cause
@@ -29,7 +30,7 @@ The bounded 16-batch native-to-dispatch channel drops hints under load. The exis
 records `RootDirty`, so reconciliation correctly performs full passes rather than the one
 `Targeted` pass containing both rename parents that the test previously required.
 
-- `scan/watch.rs:31`, `:149`: retain a test-only channel-overflow count in `Dirty`.
+- `scan/watch.rs:31`, `:149`: retain a test-only count of RootDirty signals from any source in `Dirty`.
 - `scan/watch.rs:33`, `:477`: retain actual full-relist count, excluding baseline and final
   publication (both also use `FullRoot` labels). These fields/increments are absent outside tests.
 - `scan/watch.rs:1328`, `:1416`: accept either the existing targeted parent reconcile or an
@@ -112,11 +113,6 @@ Raw logs, result JSON and harnesses are gitignored in `.loomward/scan-robustness
 contains final loaded evidence; `gate-*.log` and `mutations.json` retain the gate/mutation proof.
 The frozen binaries remain in `%TEMP%/lw-flake-proof/` for local replay and are not publication
 artifacts. No load child survives either harness exit.
-
-Recommended commits:
-
-1. `Accept full-root burst reconciliation after watcher overflow`
-2. `Reserve scan roots before starting watches and serialize revocation`
 
 ## NOT verified
 

@@ -28,7 +28,7 @@ struct Dirty {
     failed: bool,
     rename_pending: bool,
     #[cfg(all(test, windows))]
-    channel_overflows: u64,
+    root_dirty_signals: u64,
     #[cfg(all(test, windows))]
     full_relists: u64,
 }
@@ -41,6 +41,11 @@ impl Dirty {
             self.epoch += 1;
             match change {
                 Change::RootDirty => {
+                    // Any source (channel overflow, kernel buffer overflow, decode failure) counts.
+                    #[cfg(all(test, windows))]
+                    {
+                        self.root_dirty_signals += 1;
+                    }
                     self.root = Some(self.epoch);
                     self.dirs.clear();
                     self.rename_pending = false;
@@ -144,10 +149,6 @@ impl RootWatch {
                 let mut state = state.lock().unwrap();
                 let mut changed = false;
                 if overflow.swap(false, Ordering::AcqRel) {
-                    #[cfg(test)]
-                    {
-                        state.channel_overflows += 1;
-                    }
                     state.record(vec![Change::RootDirty]);
                     changed = true;
                 }
@@ -1327,13 +1328,13 @@ mod native_tests {
 
     fn rename_parents_relisted(
         scopes: &[RunScope],
-        channel_overflows: u64,
+        root_dirty_signals: u64,
         full_relists: u64,
     ) -> bool {
         scopes
             .iter()
             .any(|scope| matches!(scope, RunScope::Targeted(ids) if ids.len() >= 2))
-            || (channel_overflows > 0 && full_relists > 0)
+            || (root_dirty_signals > 0 && full_relists > 0)
     }
 
     #[test]
@@ -1416,14 +1417,14 @@ mod native_tests {
             let state = watch.dirty.lock().unwrap();
             let scopes = sink.scopes.lock().unwrap();
             eprintln!(
-                "burst move_sub={move_sub} channel_overflows={} full_relists={} scopes={scopes:?}; fresh rows and sums match",
-                state.channel_overflows, state.full_relists,
+                "burst move_sub={move_sub} root_dirty_signals={} full_relists={} scopes={scopes:?}; fresh rows and sums match",
+                state.root_dirty_signals, state.full_relists,
             );
             assert!(
                 move_sub
                     || rename_parents_relisted(
                         &scopes,
-                        state.channel_overflows,
+                        state.root_dirty_signals,
                         state.full_relists
                     ),
                 "old and new rename parents must both be relisted, targeted or full after overflow"

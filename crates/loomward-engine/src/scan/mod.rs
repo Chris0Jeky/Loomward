@@ -222,10 +222,17 @@ impl Engine {
             .ok_or_else(|| EngineError::unavailable(Component::Scan))?;
         let gate = self.scan_root_gate(root.root_id());
         // Reserve before any probe/stop/start, and retain through job submission.
-        let revoked = gate.try_lock().map_err(|_| EngineError::Busy {
-            message: "root already starting or revoking".into(),
-            detail: None,
-        })?;
+        // A panic elsewhere must not leave the root Busy forever: recover a poisoned gate.
+        let revoked = match gate.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(EngineError::Busy {
+                    message: "root already starting or revoking".into(),
+                    detail: None,
+                })
+            }
+        };
         if *revoked {
             return Err(EngineError::PermissionDenied {
                 message: "root revoked".into(),
@@ -390,7 +397,9 @@ impl Engine {
     /// Cancel all active scan jobs for a revoked root. Commit revocation before calling this.
     pub fn scan_cancel_root(&self, root: &RootId) -> EngineResult<Vec<Job>> {
         let gate = self.scan_root_gate(root);
-        let mut revoked = gate.lock().unwrap();
+        let mut revoked = gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *revoked = true;
         #[cfg(windows)]
         {
