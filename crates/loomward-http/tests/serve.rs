@@ -1209,11 +1209,7 @@ fn symlink_inside_static_root_pointing_outside_is_refused() {
     let made = std::os::unix::fs::symlink(&outside, &link);
     #[cfg(windows)]
     let made = std::os::windows::fs::symlink_file(&outside, &link);
-    if let Err(e) = made {
-        eprintln!("SKIP symlink_inside_static_root_pointing_outside_is_refused: OS refused to create link: {e}");
-        let _ = std::fs::remove_dir_all(&base);
-        return;
-    }
+    made.expect("security regression requires a real symlink fixture; setup failure is not a pass");
     let (h, _) = start_with(
         fixture(),
         Options {
@@ -1393,7 +1389,8 @@ fn corp_and_coop_are_same_origin_on_every_response() {
     let mut head = String::new();
     loop {
         let mut line = String::new();
-        reader.read_line(&mut line).unwrap();
+        let bytes = reader.read_line(&mut line).unwrap();
+        assert_ne!(bytes, 0, "EOF before SSE response headers completed: {head}");
         head.push_str(&line);
         if line == "\r\n" {
             break;
