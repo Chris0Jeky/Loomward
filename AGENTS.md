@@ -17,7 +17,7 @@ duplicate/unused-file inspection, backups, and understandable process/RAM contro
 ruling: **meaning, residency and permission are separate systems.**
 
 Python reference app + browser UI (tested on Windows), Rust native workspace (first compiled and
-tested here on 2026-10-09; the Tauri shell is still unbuilt), MCP read-only reference, 100-task
+tested here on 2026-10-09; the Tauri shell is still unbuilt), MCP read-only reference, 112-task
 `LW-*` backlog.
 
 ## Where the ChatGPT material stands
@@ -78,7 +78,7 @@ disable, skip or weaken a failing test to advance a milestone.
    effect; imported snapshots grant no access.
 6. **Keep the negative evidence.** Allocator v1, its 51-case counterexample and failed experiments
    stay, and the v1 handoff under `handoff/v1/` is never overwritten. Python allocator v2 is a
-   static-model reference, not a mover; the Rust planner is v1.
+   static-model reference, not a mover; Rust has both the v1 planner and the v2 port (#107), neither a mover.
 7. **MCP is read-only and bounded.** Client metadata, annotations and tool output are not
    authorisation. LeaseBroker/admission is accounting, not OS enforcement.
 8. **No theatre.** No releases or packages, source retirement, backup pruning or process-policy

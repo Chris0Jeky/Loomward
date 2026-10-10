@@ -837,7 +837,7 @@ flowchart LR
 | Prompt injection through filenames to the teacher | Synthetic-only until the section 9.2 confinement is enforced; strict output validation; request-local handles; single-use grants consumed before spawn |
 | Disclosure beyond intent | Complete immutable preview; digest and runner-profile binding; 25 items; screening of names and ancestor context; native item-by-item confirmation; revocation before run |
 | Revocation racing a scan | Revocation commits in `state.db` first, updates the engine's revoked set, cancels the root's run, and the writer drops any later message for that grant |
-| Scanning outside a grant | Only granted roots; root identity and post-open attributes re-verified; reparse points never followed; volume roots refused (Q1) |
+| Scanning outside a grant | Only granted roots; root identity and post-open attributes re-verified; reparse points never followed; volume roots only through the owner's native grant (Q1, ADR-V3-08), never agent-picked |
 | Silent reach | No automatic scans, model downloads, network calls, installs, elevation or global config changes; telemetry only under a lease |
 | Tauri capability creep | Webview capability lists only `lw_call` and `lw_events`; no fs, shell, http, process or updater plugin permissions; dialog plugin used from Rust only |
 
@@ -991,7 +991,7 @@ separately; state on G: unless stated.
 ## 18. Open questions for the owner
 
 - **Q1. Whole-volume roots.** v0.3 refuses `C:\`, `G:\` and `E:\` as scan roots. Allow whole volumes for personal
-  metadata scans? Default if unanswered: refuse.
+  metadata scans? Default if unanswered: refuse. **Answered 2026-10-10: allowed through the native grant (ADR-V3-08).**
 - **Q2 (revised). Personal teacher confinement.** Personal teacher use needs (a) Loomward to place a copy of the
   owner's Codex credential in a per-request home readable by an AppContainer, and (b) destination-restricted
   egress, which appears to need a one-time elevated firewall rule. The #116 spike showed the CLI's own flags do
