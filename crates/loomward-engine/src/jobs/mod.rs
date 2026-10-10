@@ -457,6 +457,8 @@ mod tests {
             strategy: crate::scan::source::Strategy::Portable,
             limit_hit: false,
             examined: 1,
+            enumeration_attempts: 1,
+            duplicate_identity: 0,
             skipped: 0,
             failed: 0,
             elapsed_seconds: 1.,
