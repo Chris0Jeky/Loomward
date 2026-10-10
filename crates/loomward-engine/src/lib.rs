@@ -6,8 +6,9 @@
 //! entry points remain explicitly unavailable. No catalogue durability is implied by the
 //! aggregate-only in-memory fixture sink.
 //!
-//! The engine exposes no generic command and accepts no path from a caller: the service resolves
-//! a granted root from `state.db` and passes a [`scan::GrantedRoot`]. Nothing here performs a
+//! The engine exposes no generic command and accepts no path from a caller: it mints a
+//! [`scan::GrantedRoot`] only from an active grant row in its own `state.db`
+//! ([`Engine::granted_root`]), named by the service. Nothing here performs a
 //! file or process effect (AGENTS.md invariant 1).
 
 #![forbid(unsafe_code)]
@@ -88,5 +89,14 @@ impl Engine {
     /// The configuration the engine was opened with.
     pub fn config(&self) -> &EngineConfig {
         &self.config
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Engine {
+    fn drop(&mut self) {
+        for watch in self.scan_watches.get_mut().unwrap().values() {
+            watch.stop();
+        }
     }
 }

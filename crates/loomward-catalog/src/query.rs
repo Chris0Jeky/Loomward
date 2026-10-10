@@ -328,6 +328,13 @@ impl Drop for WorkGuard<'_> {
         let _ = self.conn.progress_handler(0, None::<fn() -> bool>);
     }
 }
+fn is_budget_interrupt(e: &Error) -> bool {
+    matches!(
+        e,
+        Error::Sql(rusqlite::Error::SqliteFailure(err, _))
+            if err.code == rusqlite::ErrorCode::OperationInterrupted
+    )
+}
 
 impl Reader {
     pub(crate) fn open(dir: &Path) -> Result<Self> {
@@ -460,8 +467,15 @@ if c.catalog_rev!=catalog_rev||c.catalog_instance!=catalog_instance{return Err(E
                     if more{break;}
                 }Ok(())
             })();
-            if let Err(e)=result {if guard.hit(){hit=true;}else{return Err(e);}}
-            hit|=guard.hit();drop(guard);
+            if let Err(e) = result {
+                if guard.hit() && is_budget_interrupt(&e) {
+                    hit = true;
+                } else {
+                    return Err(e);
+                }
+            }
+            hit |= guard.hit();
+            drop(guard);
             if more{rows.truncate(req.limit);if let Some(row)=rows.last(){(last_kind,last_id)=row_key(row);}}
             let next_cursor=if more||hit {Some(SearchCursor{catalog_rev,catalog_instance:catalog_instance.clone(),text:req.text.clone(),extension:req.extension.clone(),min_bytes:req.min_bytes,kind:req.kind.clone(),root_id:req.root_id,last_kind,last_id})}else{None};
             let mut paths=HashMap::new();let mut items=Vec::new();for r in rows {let mut row=r.entry();if let Some(parent)=r.parent {let p=if let Some(p)=paths.get(&parent){p}else{paths.insert(parent,node_path(conn,NodeKey::Dir(parent))?);paths.get(&parent).unwrap()};row.location_hint=Some(DisplayPath::bounded(p.ancestors.iter().map(|p|p.name.as_str()).collect::<Vec<_>>().join("\\"),p.truncated));}items.push(row);}
@@ -557,7 +571,7 @@ if c.catalog_rev!=catalog_rev||c.catalog_instance!=catalog_instance{return Err(E
         let hit = guard.hit();
         drop(guard);
         if let Err(e) = result {
-            if !hit {
+            if !hit || !is_budget_interrupt(&e) {
                 return Err(e);
             }
         }

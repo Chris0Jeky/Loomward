@@ -4,6 +4,15 @@
 Python 3.14.3, Node 24.13.1, cargo/rustc 1.97.1. Every result here is the first run of its kind:
 the v0.1 and v0.2 authoring passes had neither Windows nor a Rust toolchain.
 
+## Public evidence correction (10 October 2026)
+
+The volume JSON companion is now a **synthetic format example**, not the original
+host inventory. Current volume and telemetry receipts omit the owner's exact
+storage topology/capacities and workstation usage observations. Historical test
+and software timing results retain their original scope; no native rerun is
+claimed. Earlier commits and PR diffs may retain removed values. See
+[windows-native.md](windows-native.md) and [telemetry.md](telemetry.md).
+
 ## Provenance of the import
 
 The ChatGPT deliverables arrived in the owner's local `Resources/` folder (gitignored, not

@@ -1187,6 +1187,8 @@ export interface EngineSample {
 
 /** No command line, no environment, no window titles (privacy). */
 export interface ProcessRow {
+  /** Process enumeration time, independent of the containing system sample; retained rows keep this time. */
+  observed_at: Timestamp;
   process_ref: ProcessRef;
   pid: number;
   name: string;
@@ -1197,7 +1199,7 @@ export interface ProcessRow {
   private_working_set_bytes: NullableBytes;
   /** Total working set, including shared pages. */
   working_set_bytes: NullableBytes;
-  /** Machine-normalised over the sample interval; null on the first sample. */
+  /** Machine-normalised over the interval between process enumerations (row observed_at), not the containing system sample interval; null on the first process sample. */
   cpu_fraction: NullableFraction;
   io_read_bytes_per_s: NullableRate;
   io_write_bytes_per_s: NullableRate;

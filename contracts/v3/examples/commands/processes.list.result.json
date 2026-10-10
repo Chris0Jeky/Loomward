@@ -15,7 +15,8 @@
       "io_write_bytes_per_s": 0.0,
       "gpu_dedicated_bytes": null,
       "access": "full",
-      "loomward_owned": false
+      "loomward_owned": false,
+      "observed_at": "2026-10-09T12:00:00Z"
     }
   ],
   "observed_count": 212,

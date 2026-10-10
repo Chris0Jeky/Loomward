@@ -199,3 +199,46 @@ fn windows_engine_fields_have_structural_truths_without_assuming_token_rights() 
     })
     .unwrap();
 }
+
+#[cfg(windows)]
+#[test]
+fn one_hz_lease_keeps_process_age_visible_between_enumerations() {
+    let e = engine();
+    let subscribed = lease(&e, None, 1000);
+    let first = latest(&e);
+    let first_row_time = first.processes.as_ref().unwrap().top[0].observed_at.clone();
+    let until = Instant::now() + Duration::from_secs(10);
+    let second = loop {
+        let current = latest(&e);
+        if current.sample_seq > first.sample_seq {
+            break current;
+        }
+        assert!(Instant::now() < until);
+        thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(
+        second.processes.as_ref().unwrap().top[0].observed_at,
+        first_row_time
+    );
+    assert_ne!(second.observed_at, first_row_time);
+    assert!(second.engine.as_ref().unwrap().threads.is_none());
+    assert!(second
+        .engine
+        .as_ref()
+        .unwrap()
+        .private_commit_bytes
+        .is_some());
+    validate("TelemetrySample", &to_value(&second).unwrap());
+    let process_list = e
+        .processes_list(&from_value(json!({"sort":"working_set_desc","limit":10})).unwrap())
+        .unwrap();
+    assert_eq!(process_list.observed_at, first_row_time);
+    assert!(process_list
+        .rows
+        .iter()
+        .all(|row| row.observed_at == first_row_time));
+    e.telemetry_release(&SubscriptionRefRequest {
+        subscription_id: subscribed.subscription_id,
+    })
+    .unwrap();
+}

@@ -58,21 +58,41 @@ Owner, in chat: whole volumes (`C:\`, `G:\`, `E:\`) may be personal scan roots w
 in the native grant dialog (ADR-V3-08); agents still never pick a volume root. The 10M-entry synthetic
 lab tier runs on `E:\loomward-lab\scale` only; `G:` stays capped at 2M (ADR-V3-17).
 
-## q-8 — Teacher sandbox path: AppContainer profile or inference broker — OPEN
+## q-8 — Teacher sandbox path — ANSWERED 2026-10-10, BROKER-FIRST
 
 The L15b spike (#174) found that an AppContainer launch without a registered profile is refused by
-Windows before anything runs, so no enforcement could be measured. Choose the path in the agent-hq
-inbox (cockpit) or in chat; nothing personal is sent either way until q-5 is also answered.
+Windows before anything runs, so no enforcement could be measured. Owner chose option (b), inference broker first, in chat on 2026-10-10 at 18:51 UTC.
+Authorised now: bounded broker design/development and synthetic-only tests. No personal metadata
+is sent until q-5 is separately answered. This is an architecture decision, not evidence that a
+broker is already integrated or qualified.
 
-- [ ] **loomward-teacher-sandbox-path: How should Loomward's teacher (Sol via Codex) be confined before it may ever see your real file metadata: register a Windows AppContainer profile, or build an inference broker instead?**
+- [x] **loomward-teacher-sandbox-path: How should Loomward's teacher (Sol via Codex) be confined before it may ever see your real file metadata: register a Windows AppContainer profile, or build an inference broker instead?**
   - (a) Register an AppContainer profile for the spike: Agents may call CreateAppContainerProfile for one named Loomward test profile under your account, rerun the L15b canaries (filesystem, network, tools, child processes) and delete the profile afterwards. The firewall rule (q-6) still waits for you if endpoint-only egress is wanted.
-    + Measures real OS enforcement on this machine; + Removable with DeleteAppContainerProfile; - Writes a per-user Windows registration; - codex.exe still cannot authenticate inside the container, so a broker may be needed anyway; - Endpoint-only egress still needs q-6
-  - (b) Build an inference broker instead (recommended): Agents design and build a small broker: it holds your Codex login, accepts only bounded synthetic-then-redacted requests from Loomward, talks only to the model endpoint, and gives the teacher no file or shell access. No Windows profile or firewall change.
-    + No Windows registration or firewall change; + Solves the login problem the container cannot; + The boundary is code we test, not a policy we hope holds; - More engineering than option a; - Its own security review
+    + Measures real OS enforcement on this machine; + Removable with DeleteAppContainerProfile; - Writes a per-user Windows registration; - Contained Codex never started, so authentication remains untested; a broker may still be useful; - Endpoint-only egress still needs q-6
+  - (b) Build an inference broker instead (recommended): Agents design and build a small broker: it accepts only bounded requests from Loomward and uses a supported inference-only transport with no file, shell or child-agent tools. Start with synthetic tests. Explicit app authentication, account/model eligibility, personal-data disclosure (q-5), and any paid API fallback are separate gates; do not copy or reuse an existing Codex credential. Endpoint selection in code is not proof of OS-enforced egress isolation. No Windows profile or firewall change.
+    + No Windows registration or firewall change; + Avoids relying on a full agent executor; supported authentication still needs verification; + The boundary is code we test, not a policy we hope holds; - More engineering than option a; - Its own security review
   - (c) Both: broker as the design, profile only to measure: Build the broker (b), and also allow the one-off profile registration (a) purely to measure what an AppContainer enforces, deleting it afterwards.
     + Most evidence; - Most work; - Still writes the per-user registration
   - (d) Not now: keep the teacher synthetic-only: No further sandbox work; the teacher stays on synthetic data indefinitely and LW-111 stays blocked.
     + No new trust boundary; - The learning pillar never uses the teacher on your real organisation
-  - Why: The spike showed the container route needs a Windows registration and still leaves the login problem; a broker avoids both and keeps the boundary in tested code.
+  - Why: The spike observed a pre-execution launch refusal; it did not test authentication or confinement. A provisioned-profile retry is an experiment, not a proven fix. A broker reduces the capabilities that must be contained, provided its transport is genuinely inference-only and its authentication is explicitly approved.
   - Why an agent may not decide: It decides whether agents may write a Windows security registration under your account and which trust boundary guards your personal metadata; that is yours to choose.
   - Source: `decisions/loomward-teacher-sandbox-path.json`
+
+
+### Recorded scope of the q-8 choice
+
+- Build and test a small inference-only boundary with synthetic fixtures first. No shell,
+  filesystem, MCP, child-agent, or arbitrary tool execution exposed by its request contract.
+- App authentication and account/model eligibility remain unverified. Do not copy existing
+  Codex credentials or silently fall back to a paid API. New authentication is a separate approval.
+- No AppContainer profile registration, ACL edits, firewall changes, or other Windows security
+  changes are authorised by this choice. q-6 remains separate.
+- q-5 personal-data disclosure and provider-connected tier review remain open. No claim of
+  OS-enforced endpoint isolation follows from validating requests in application code.
+- Read-only diagnosis of the separate Kraspyon CLI/model and sandbox startup problems was also
+  approved. Machine access must be available and authorised before diagnosis; this does not
+  permit changing model entitlements, authentication, ACLs, or runtime security settings.
+- The linked `decisions/loomward-teacher-sandbox-path.json` was not present in this repository
+  when checked. This section is the durable repository record; no external decision inbox
+  has been marked complete by this change.

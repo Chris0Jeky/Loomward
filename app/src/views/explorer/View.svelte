@@ -8,6 +8,7 @@
   import { hasHiddenCharacters } from '../../lib/format/names';
   import { formatCount, formatTime } from '../../lib/format/time';
   import { LoomwardError } from '../../lib/transport/client';
+  import { FALLBACK_NOTICE, onRefetchError } from './refetch';
   import { session } from '../../lib/stores/session.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import type { Basis, EntryPage, EntryRow, NodeId } from '../../lib/contracts.gen';
@@ -45,6 +46,9 @@
   let abort: AbortController | null = null;
   /** `EntryPage.generation` of the first page of the current view; a later page from another one means the folder changed. */
   let pageGen: string | null = null;
+
+  /** IDs that have listed successfully: the saved breadcrumbs a later `not_found` falls back from. */
+  let seenIds = new Set<NodeId>();
 
   const here = $derived(trail[trail.length - 1]);
 
@@ -84,6 +88,7 @@
       total = page.total;
       next = page.next_cursor;
       budgetHit = page.budget_hit;
+      if (!searching && here) seenIds.add(here.id);
       if (hadFocus) {
         await tick();
         // only if the reader is still there: on the button, or on the body because the button just went away
@@ -94,6 +99,24 @@
       if (mine !== gen) return;
       if (e instanceof LoomwardError && e.code === 'stale_generation' && !restarted) {
         return await restart('The listing changed under the cursor, so it starts again from the top.');
+      }
+      if (!searching && !append && here && onRefetchError(e, seenIds.has(here.id)) === 'fallback') {
+        // A saved breadcrumb went stale (restart, rebuild, resync): drop it and reload the
+        // starting points. A `not_found` for a node just clicked stays an error below.
+        // Forgetting the ID first keeps a reused ID from falling back twice in a row.
+        seenIds.delete(here.id);
+        trail = [];
+        rows = [];
+        total = null;
+        next = null;
+        budgetHit = false;
+        pageGen = null;
+        error = '';
+        busy = false;
+        // Set after the reload (the fresh `show()` inside clears the status region on entry),
+        // and only if no newer search, click or refresh superseded the reload meanwhile.
+        if (await loadStarts()) notice = FALLBACK_NOTICE;
+        return;
       }
       error = session.handle(e);
       if (!append) {
@@ -130,7 +153,8 @@
     void show();
   }
 
-  async function loadStarts(): Promise<void> {
+  /** True when this request completed and its view is still the newest one. */
+  async function loadStarts(): Promise<boolean> {
     const c = session.client!;
     // Same guard as show(): a newer view or a newer starting-point request supersedes this one.
     abort?.abort();
@@ -138,18 +162,26 @@
     const ctl = (abort = new AbortController());
     try {
       const { result } = await c.call('tree.slice', { anchor: { kind: 'atlas' }, depth: 1, max_nodes: 16, min_share: 0, basis: 'logical', include_files: false }, { signal: ctl.signal });
-      if (mine !== gen) return;
+      if (mine !== gen) return false;
       starts = result.nodes.filter((n) => n.parent === 0).map((n) => ({ id: n.node_id, name: n.name }));
       trail = starts[0] ? [starts[0]] : [];
       error = '';
-      if (trail.length) await show();
-      else { rows = []; total = null; next = null; }
+      if (!trail.length) {
+        rows = [];
+        total = null;
+        next = null;
+        return true;
+      }
+      await show();
+      // show() advances `gen` exactly once for a fresh view; any newer action advances it further.
+      return gen === mine + 1;
     } catch (e) {
-      if (mine !== gen) return;
+      if (mine !== gen) return false;
       rows = [];
       total = null;
       next = null;
       error = session.handle(e);
+      return false;
     }
   }
 

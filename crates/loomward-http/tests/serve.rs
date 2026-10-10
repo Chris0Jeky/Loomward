@@ -890,3 +890,280 @@ fn at_most_four_streams_and_close_on_disconnect() {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+#[test]
+fn gates_precede_a_stalled_body() {
+    let (h, _) = start_with(
+        fixture(),
+        Options {
+            read_timeout: Duration::from_millis(500),
+            ..Options::default()
+        },
+    );
+    let good = call_head(&h, 100, "");
+    for head in [
+        good.replace(&host(&h), "Host: evil.example"),
+        format!("{good}\r\nOrigin: http://evil.example"),
+        good.replace(h.token(), &"0".repeat(64)),
+    ] {
+        let mut tcp = connect(h.addr());
+        tcp.write_all(format!("{head}\r\nConnection: close\r\n\r\n").as_bytes())
+            .unwrap();
+        let mut raw = Vec::new();
+        tcp.read_to_end(&mut raw).unwrap();
+        assert_eq!(
+            Response::parse(&raw).status,
+            403,
+            "gate lost to the stalled body"
+        );
+    }
+    assert_eq!(call(&h, HELLO).status, 200);
+}
+
+fn non_readers_release_connections(
+    write_timeout: Duration,
+    connection_lifetime: Duration,
+    name: &str,
+) {
+    let base = static_tree(name);
+    std::fs::write(base.join("dist/large.bin"), vec![0; 4 * 1024 * 1024]).unwrap();
+    let (h, _) = start_with(
+        fixture(),
+        Options {
+            static_dir: Some(base.join("dist")),
+            write_timeout,
+            connection_lifetime,
+            ..Options::default()
+        },
+    );
+    let clients: Vec<_> = (0..16)
+        .map(|_| {
+            let socket = socket2::Socket::new(
+                socket2::Domain::IPV4,
+                socket2::Type::STREAM,
+                Some(socket2::Protocol::TCP),
+            )
+            .unwrap();
+            socket.set_recv_buffer_size(1024).unwrap();
+            socket.connect(&h.addr().into()).unwrap();
+            let mut tcp: TcpStream = socket.into();
+            // Pipeline enough responses to exceed Windows socket buffering without reading.
+            tcp.write_all(
+                format!("GET /large.bin HTTP/1.1\r\n{}\r\n\r\n", host(&h))
+                    .repeat(32)
+                    .as_bytes(),
+            )
+            .unwrap();
+            tcp
+        })
+        .collect();
+    // Give the accepted requests time to fill each client's small receive window.
+    std::thread::sleep(Duration::from_millis(300));
+    let t = Instant::now();
+    assert_eq!(call(&h, HELLO).status, 200);
+    assert!(
+        t.elapsed() < Duration::from_secs(8),
+        "17th client starved for {:?}",
+        t.elapsed()
+    );
+    drop(clients);
+    drop(h);
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+#[test]
+fn sixteen_non_readers_release_connections_at_the_write_deadline() {
+    non_readers_release_connections(
+        Duration::from_secs(1),
+        Duration::from_secs(60),
+        "write-deadline",
+    );
+}
+
+#[test]
+fn sixteen_non_readers_release_connections_at_the_lifetime_cap() {
+    non_readers_release_connections(
+        Duration::from_secs(60),
+        Duration::from_secs(1),
+        "lifetime-cap",
+    );
+}
+
+#[test]
+fn static_roots_cannot_overlap_grants_or_state_in_either_direction() {
+    let base = static_tree("scope");
+    let dist = base.join("dist");
+    let child = dist.join("assets");
+    for protected in [&base, &dist, &child] {
+        for state in [false, true] {
+            let options = Options {
+                static_dir: Some(dist.clone()),
+                grant_roots: if state {
+                    vec![]
+                } else {
+                    vec![protected.canonicalize().unwrap()]
+                },
+                state_dir: state.then(|| protected.join(".").to_path_buf()),
+                ..Options::default()
+            };
+            let err = serve(Arc::new(fixture()), options)
+                .err()
+                .expect("overlapping static root accepted");
+            assert!(err.to_string().contains("overlaps"));
+        }
+    }
+    let sibling = base.join("dist-other");
+    std::fs::create_dir_all(&sibling).unwrap();
+    let (h, _) = start_with(
+        fixture(),
+        Options {
+            static_dir: Some(dist),
+            grant_roots: vec![sibling.canonicalize().unwrap()],
+            state_dir: Some(sibling),
+            ..Options::default()
+        },
+    );
+    assert_eq!(
+        exchange(h.addr(), &format!("GET / HTTP/1.1\r\n{}", host(&h)), b"").status,
+        200
+    );
+    drop(h);
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+#[test]
+fn static_files_are_limited_to_four_mib() {
+    let base = static_tree("size-limit");
+    std::fs::write(base.join("dist/edge.bin"), vec![0; 4 * 1024 * 1024]).unwrap();
+    std::fs::write(base.join("dist/large.bin"), vec![0; 4 * 1024 * 1024 + 1]).unwrap();
+    let (h, _) = start_with(
+        fixture(),
+        Options {
+            static_dir: Some(base.join("dist")),
+            ..Options::default()
+        },
+    );
+    for (path, status) in [("edge.bin", 200), ("large.bin", 404)] {
+        let res = exchange(
+            h.addr(),
+            &format!("GET /{path} HTTP/1.1\r\n{}", host(&h)),
+            b"",
+        );
+        assert_eq!(res.status, status);
+    }
+    drop(h);
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+#[test]
+fn a_second_bind_to_the_serve_port_is_refused() {
+    let (h, _) = start();
+    assert!(serve(
+        Arc::new(fixture()),
+        Options {
+            bind: h.addr(),
+            ..Options::default()
+        }
+    )
+    .is_err());
+    #[cfg(windows)]
+    {
+        let hostile = socket2::Socket::new(
+            socket2::Domain::IPV4,
+            socket2::Type::STREAM,
+            Some(socket2::Protocol::TCP),
+        )
+        .unwrap();
+        hostile.set_reuse_address(true).unwrap();
+        assert!(
+            hostile.bind(&h.addr().into()).is_err(),
+            "SO_REUSEADDR shared the token-bearing port"
+        );
+    }
+    assert_eq!(call(&h, HELLO).status, 200);
+}
+
+#[test]
+fn serve_binary_excludes_its_state_directory_from_static_files() {
+    let base = static_tree("cli-state");
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_loomward-serve"))
+        .args([
+            "--static",
+            base.to_str().unwrap(),
+            "--state-dir",
+            base.join("dist/.").to_str().unwrap(),
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let end = Instant::now() + Duration::from_secs(8);
+    let exited = loop {
+        if child.try_wait().unwrap().is_some() {
+            break true;
+        }
+        if Instant::now() >= end {
+            child.kill().unwrap();
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let output = child.wait_with_output().unwrap();
+    assert!(exited, "unsafe static server started instead of refusing");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("overlaps"));
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+#[test]
+fn sse_connections_outlive_the_non_sse_lifetime_cap() {
+    let (h, svc) = start_with(
+        fixture().with_stream_limits(Duration::from_millis(100), 1024),
+        Options {
+            connection_lifetime: Duration::from_millis(300),
+            ..Options::default()
+        },
+    );
+    let mut sse = open_events(&h, "").ok().unwrap();
+    assert_eq!(sse.next().event, "stream.hello");
+    std::thread::sleep(Duration::from_millis(700));
+    assert_eq!(sse.next().event, "stream.hello");
+    assert_eq!(svc.open_streams(), 1);
+}
+
+/// `loomward-serve`'s real configuration: the engine service behind the same boundary.
+#[test]
+fn the_engine_service_answers_through_the_adapter() {
+    let tmp = tempfile::tempdir().unwrap();
+    let service = loomward_service::Service::open(loomward_service::Config {
+        state_dir: tmp.path().into(),
+        dataset: DatasetClass::Synthetic,
+        allow_personal: false,
+        grant_roots: vec![],
+    })
+    .unwrap();
+    let h = serve(Arc::new(service), Options::default()).unwrap();
+    let v = call(&h, HELLO).json();
+    assert_eq!(v["ok"], true);
+    assert_eq!(
+        v["result"]["engine_version"]
+            .as_str()
+            .unwrap()
+            .split('/')
+            .next(),
+        Some("loomward-service")
+    );
+    assert_eq!(v["result"]["adapter"], "http");
+    let roots = call(
+        &h,
+        r#"{"protocol":"loomward/3","request_id":"r_2","command":"roots.list","payload":{}}"#,
+    )
+    .json();
+    assert_eq!(roots["result"]["roots"], json!([]));
+    assert!(
+        roots["meta"]["state_rev"].is_string(),
+        "state reads carry their revision"
+    );
+    let grant = call(&h, r#"{"protocol":"loomward/3","request_id":"r_3","command":"roots.request_grant","payload":{"purpose":"metadata_scan"}}"#).json();
+    assert_eq!(grant["error"]["code"], "capability_unavailable");
+}

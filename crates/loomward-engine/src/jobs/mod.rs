@@ -55,6 +55,7 @@ impl JobContext {
             crate::scan::source::Strategy::Portable => {
                 loomward_protocol::EnumerationStrategy::StdReadDir
             }
+            // FileIdBothDirectoryInfo has no wire value yet (#190 item 3): stay unknown.
             crate::scan::source::Strategy::Both => return,
         };
         let progress=serde_json::from_value(serde_json::json!({"phase":"done","strategy":strategy,"examined":report.examined,"indexed_files":report.totals.files,"indexed_dirs":report.totals.dirs,"skipped":report.skipped,"failed":report.failed,"logical_bytes":report.totals.logical.to_string(),"allocated_bytes":report.totals.allocated.map(|n|n.to_string()),"pending_dirs":0,"writer_queue_depth":0,"entries_per_second":report.examined as f64/report.elapsed_seconds.max(0.000001),"elapsed_ms":(report.elapsed_seconds*1000.) as u64,"limit_hit":report.limit_hit})).expect("bounded scan progress");
@@ -90,6 +91,28 @@ pub(crate) struct Registry {
 impl Registry {
     fn prune(records: &mut HashMap<JobId, Record>) {
         records.retain(|_, r| r.terminal.is_none_or(|t| t.elapsed() < TERMINAL_RETENTION));
+    }
+    /// Mark a submitted job failed because its worker thread could not start, and
+    /// publish the terminal state so subscribers never wait forever. This is the
+    /// single owner of the spawn-failure transition; `submit` calls it.
+    pub(crate) fn mark_spawn_failed(&self, job_id: &JobId, events: &Bus) -> EngineError {
+        let mut records = self.records.lock().unwrap();
+        let r = records.get_mut(job_id).unwrap();
+        r.job.state = JobState::Failed;
+        r.job.finished_at = Some(timestamp());
+        r.terminal = Some(Instant::now());
+        r.job.error = Some(
+            EngineError::Internal {
+                message: "job thread unavailable".into(),
+                detail: None,
+            }
+            .to_body(),
+        );
+        emit(events, &r.job);
+        EngineError::Internal {
+            message: "job thread unavailable".into(),
+            detail: None,
+        }
     }
     pub fn submit(
         self: &Arc<Self>,
@@ -142,26 +165,33 @@ impl Registry {
                     interrupt,
                 },
             );
+            emit(&events, &job);
         }
         let registry = self.clone();
         let id = job.job_id.clone();
+        let thread_events = events.clone();
         let spawn = std::thread::Builder::new()
             .name(format!("loomward-{}", id.as_str()))
             .spawn(move || {
                 {
                     let mut records = registry.records.lock().unwrap();
                     let r = records.get_mut(&id).unwrap();
-                    if !r.cancel.load(Ordering::Acquire) {
+                    if r.cancel.load(Ordering::Acquire) {
+                        // Cancelled before the worker started: CancelRequested was
+                        // already published by `cancel`, so only record the start
+                        // attempt without re-emitting the same state.
+                        r.job.started_at = Some(timestamp());
+                    } else {
                         r.job.state = JobState::Running;
+                        r.job.started_at = Some(timestamp());
+                        emit(&thread_events, &r.job);
                     }
-                    r.job.started_at = Some(timestamp());
-                    emit(&events, &r.job);
                 }
                 let context = JobContext {
                     job_id: id.clone(),
                     cancel: cancel.clone(),
                     registry: Arc::downgrade(&registry),
-                    events: events.clone(),
+                    events: thread_events.clone(),
                 };
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     runner(context, spec)
@@ -192,25 +222,10 @@ impl Registry {
                 }
                 r.job.finished_at = Some(timestamp());
                 r.terminal = Some(Instant::now());
-                emit(&events, &r.job);
+                emit(&thread_events, &r.job);
             });
         if spawn.is_err() {
-            let mut records = self.records.lock().unwrap();
-            let r = records.get_mut(&job.job_id).unwrap();
-            r.job.state = JobState::Failed;
-            r.job.finished_at = Some(timestamp());
-            r.terminal = Some(Instant::now());
-            r.job.error = Some(
-                EngineError::Internal {
-                    message: "job thread unavailable".into(),
-                    detail: None,
-                }
-                .to_body(),
-            );
-            return Err(EngineError::Internal {
-                message: "job thread unavailable".into(),
-                detail: None,
-            });
+            return Err(self.mark_spawn_failed(&job.job_id, &events));
         }
         Ok(job)
     }
@@ -220,10 +235,13 @@ impl Registry {
             let r = records.get_mut(id).ok_or_else(|| EngineError::NotFound {
                 message: "job not found".into(),
             })?;
-            if r.terminal.is_none() {
-                r.cancel.store(true, Ordering::Release);
-                r.job.state = JobState::CancelRequested;
+            if r.terminal.is_some() || r.job.state == JobState::CancelRequested {
+                // Idempotent: an already-terminal job or an already-requested
+                // cancel publishes no duplicate event.
+                return Ok(r.job.clone());
             }
+            r.cancel.store(true, Ordering::Release);
+            r.job.state = JobState::CancelRequested;
             emit(events, &r.job);
             (r.job.clone(), r.interrupt.clone())
         };
@@ -410,5 +428,227 @@ mod tests {
         records.get_mut(&job.job_id).unwrap().terminal = Some(Instant::now() - TERMINAL_RETENTION);
         Registry::prune(&mut records);
         assert!(!records.contains_key(&job.job_id));
+    }
+    fn drain(stream: &mut Box<dyn loomward_protocol::EventStream>) {
+        while let loomward_protocol::RecvOutcome::Event(_) = stream.recv_timeout(Duration::ZERO) {}
+    }
+    fn job_states(
+        stream: &mut Box<dyn loomward_protocol::EventStream>,
+        deadline: Instant,
+    ) -> Vec<String> {
+        let mut states = Vec::new();
+        while Instant::now() < deadline {
+            while let loomward_protocol::RecvOutcome::Event(event) =
+                stream.recv_timeout(Duration::ZERO)
+            {
+                if event.event != EventName::JobState {
+                    continue;
+                }
+                states.push(
+                    event.data["job"]["state"]
+                        .as_str()
+                        .unwrap_or("?")
+                        .to_string(),
+                );
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        states
+    }
+    #[test]
+    fn submit_publishes_queued_before_running() {
+        let e = engine();
+        let mut stream = e.subscribe_events(None).unwrap();
+        drain(&mut stream);
+        let runner: JobRunner = Arc::new(|ctx, _| {
+            while !ctx.is_cancelled() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Ok(CoverageState::Cancelled)
+        });
+        let job = e
+            .jobs
+            .submit(
+                JobSpec::new(JobKind::Refit, None),
+                runner,
+                e.events.clone(),
+                None,
+            )
+            .unwrap();
+        assert_eq!(job.state, JobState::Queued);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut states = Vec::new();
+        while Instant::now() < deadline {
+            while let loomward_protocol::RecvOutcome::Event(event) =
+                stream.recv_timeout(Duration::ZERO)
+            {
+                if event.event != EventName::JobState {
+                    continue;
+                }
+                states.push(
+                    event.data["job"]["state"]
+                        .as_str()
+                        .unwrap_or("?")
+                        .to_string(),
+                );
+            }
+            if states.contains(&"queued".to_string()) && states.contains(&"running".to_string()) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(
+            states.contains(&"queued".to_string()),
+            "submission published no Queued event: {:?}",
+            states
+        );
+        assert_eq!(
+            states.first().map(|s| s.as_str()),
+            Some("queued"),
+            "first event was not Queued: {:?}",
+            states
+        );
+        let _ = e.job_cancel(&job.job_id);
+    }
+    #[test]
+    fn spawn_failure_marks_failed_and_publishes_terminal_event() {
+        let e = engine();
+        let mut stream = e.subscribe_events(None).unwrap();
+        drain(&mut stream);
+        let runner: JobRunner = Arc::new(|_, _| {
+            std::thread::sleep(Duration::from_millis(500));
+            Ok(CoverageState::Complete)
+        });
+        let job = e
+            .jobs
+            .submit(
+                JobSpec::new(JobKind::Refit, None),
+                runner,
+                e.events.clone(),
+                None,
+            )
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while e.job_status(&job.job_id).unwrap().state != JobState::Running {
+            assert!(Instant::now() < deadline, "job never reached Running");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        drain(&mut stream);
+        let _ = e.jobs.mark_spawn_failed(&job.job_id, &e.events);
+        assert_eq!(
+            e.job_status(&job.job_id).unwrap().state,
+            JobState::Failed,
+            "spawn failure did not mark the job Failed"
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut saw_failed = false;
+        while Instant::now() < deadline {
+            while let loomward_protocol::RecvOutcome::Event(event) =
+                stream.recv_timeout(Duration::ZERO)
+            {
+                if event.event != EventName::JobState {
+                    continue;
+                }
+                if &event.data["job"]["state"] == "failed" {
+                    saw_failed = true;
+                }
+            }
+            if saw_failed {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(
+            saw_failed,
+            "spawn failure published no Failed terminal event"
+        );
+    }
+    #[test]
+    fn cancel_is_idempotent_with_no_duplicate_event() {
+        let e = engine();
+        // The runner lingers after a cancel request so a second cancel lands
+        // while the job is still non-terminal.
+        let runner: JobRunner = Arc::new(|ctx, _| {
+            while !ctx.is_cancelled() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            std::thread::sleep(Duration::from_millis(300));
+            Ok(CoverageState::Cancelled)
+        });
+        let mut stream = e.subscribe_events(None).unwrap();
+        drain(&mut stream);
+        let job = e
+            .jobs
+            .submit(
+                JobSpec::new(JobKind::Refit, None),
+                runner,
+                e.events.clone(),
+                None,
+            )
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while e.job_status(&job.job_id).unwrap().state != JobState::Running {
+            assert!(Instant::now() < deadline, "job never reached Running");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        drain(&mut stream);
+        assert_eq!(
+            e.job_cancel(&job.job_id).unwrap().state,
+            JobState::CancelRequested
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut saw_requested = false;
+        while Instant::now() < deadline {
+            while let loomward_protocol::RecvOutcome::Event(event) =
+                stream.recv_timeout(Duration::ZERO)
+            {
+                if event.event != EventName::JobState {
+                    continue;
+                }
+                if &event.data["job"]["state"] == "cancel_requested" {
+                    saw_requested = true;
+                }
+            }
+            if saw_requested {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(saw_requested, "first cancel published no request");
+        drain(&mut stream);
+        // Still non-terminal: the runner lingers 300ms after the request.
+        assert_eq!(
+            e.job_status(&job.job_id).unwrap().state,
+            JobState::CancelRequested
+        );
+        assert_eq!(
+            e.job_cancel(&job.job_id).unwrap().state,
+            JobState::CancelRequested
+        );
+        std::thread::sleep(Duration::from_millis(100));
+        let states = job_states(&mut stream, Instant::now() + Duration::from_millis(50));
+        assert!(
+            states.is_empty(),
+            "second cancel re-emitted state: {:?}",
+            states
+        );
+        // After terminal completion a further cancel stays silent.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while e.job_status(&job.job_id).unwrap().state != JobState::Cancelled {
+            assert!(Instant::now() < deadline, "job never reached Cancelled");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        drain(&mut stream);
+        assert_eq!(
+            e.job_cancel(&job.job_id).unwrap().state,
+            JobState::Cancelled
+        );
+        std::thread::sleep(Duration::from_millis(100));
+        let states = job_states(&mut stream, Instant::now() + Duration::from_millis(50));
+        assert!(
+            states.is_empty(),
+            "terminal cancel re-emitted state: {:?}",
+            states
+        );
     }
 }

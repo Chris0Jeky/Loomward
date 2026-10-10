@@ -223,7 +223,7 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
       const limited = access === 'limited';
       const ws = commit * (0.55 + rnd() * 0.5);
       rows.push({
-        process_ref: `pc_${pid}_${(pid * 2654435761 >>> 0).toString(36)}`, pid, name, started_at: denied ? null : new Date(Date.UTC(2026, 9, 1, 6, 0) + pid * 1000).toISOString(),
+        observed_at: iso(), process_ref: `pc_${pid}_${(pid * 2654435761 >>> 0).toString(36)}`, pid, name, started_at: denied ? null : new Date(Date.UTC(2026, 9, 1, 6, 0) + pid * 1000).toISOString(),
         private_commit_bytes: denied ? null : str(gib(commit)), private_working_set_bytes: denied || limited ? null : str(gib(ws * 0.8)), working_set_bytes: denied ? null : str(gib(ws)),
         cpu_fraction: denied ? null : Math.round(rnd() * rnd() * 400) / 1000, io_read_bytes_per_s: denied ? null : Math.round(rnd() * rnd() * 4e7), io_write_bytes_per_s: denied ? null : Math.round(rnd() * rnd() * 2e7),
         gpu_dedicated_bytes: denied || rnd() < 0.7 ? null : str(gib(rnd() * 1.5)), access, loomward_owned: owned,

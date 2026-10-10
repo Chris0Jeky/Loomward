@@ -11,9 +11,9 @@ Run `npm.cmd --prefix app run build` first.
 zoom reflow, control-edge contrast, canvas keyboard and forced-colours states, on the mock transport.
 
 `--live-serve` replaces the Python servers with the real `loomward-serve --static app/dist` binary
-(lane L6, its FixtureService answering from contracts/v3/examples): the static files under the
-server's own CSP header, the fragment-token handshake, calls and the SSE stream through the real
-security boundary, and "unavailable" once the process is gone.
+(lane L6) over the engine service (lane L8) on a fresh synthetic state directory: the static files
+under the server's own CSP header, the fragment-token handshake, calls and the SSE stream through
+the real security boundary, and "unavailable" once the process is gone.
 """
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ import importlib.util
 import json
 import re
 import subprocess
+import tempfile
 from types import SimpleNamespace
 import sys
 import threading
@@ -171,10 +172,11 @@ def theme_snapshot(page: Page) -> dict:
 
 
 def run_live_serve(browser_path: str | None) -> None:
-    """The app's http transport against the real loomward-serve binary (lane L6)."""
+    """The app's http transport against the real loomward-serve binary (lane L6) and engine service (L8)."""
     subprocess.run(['cargo', 'build', '-q', '-p', 'loomward-http', '--bin', 'loomward-serve'], cwd=ROOT, check=True)
     exe = ROOT / 'target' / 'debug' / ('loomward-serve.exe' if sys.platform == 'win32' else 'loomward-serve')
-    proc = subprocess.Popen([str(exe), '--static', str(DIST)], stdout=subprocess.PIPE, text=True)
+    state = tempfile.TemporaryDirectory(prefix='lw-live-serve-')
+    proc = subprocess.Popen([str(exe), '--state-dir', state.name, '--static', str(DIST)], stdout=subprocess.PIPE, text=True)
     try:
         url = (proc.stdout.readline() if proc.stdout else '').strip()
         check(url.startswith('http://127.0.0.1:') and '/#token=' in url, 'loomward-serve printed the fragment-token URL')
@@ -204,6 +206,12 @@ def run_live_serve(browser_path: str | None) -> None:
             expect(status).to_contain_text('Dataset synthetic')
             expect(status).to_contain_text('Browser')
             check(page.evaluate(f"""async () => (await fetch('/api/v3/call', {{method: 'POST', body: '{{}}', headers: {{'Content-Type': 'application/json'}}}})).status""") == 403, 'a call without the token header is refused')
+            hello = page.evaluate("""async (token) => (await (await fetch('/api/v3/call', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Loomward-Token': token},
+                body: JSON.stringify({protocol: 'loomward/3', request_id: 'live_1', command: 'session.hello', payload: {}})})).json())""", token)
+            check(hello['ok'] and hello['result']['engine_version'].startswith('loomward-service/'), 'the engine service answers, not the fixtures')
+            roots = page.evaluate("""async (token) => (await (await fetch('/api/v3/call', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Loomward-Token': token},
+                body: JSON.stringify({protocol: 'loomward/3', request_id: 'live_2', command: 'roots.list', payload: {}})})).json())""", token)
+            check(roots['ok'] and roots['result']['roots'] == [] and roots['meta']['state_rev'] is not None, 'a fresh synthetic catalogue lists no roots, never demo data')
             page.wait_for_timeout(1500)  # the SSE stream stays open: still connected
             expect(status).to_contain_text('Connected')
             print('PASS http transport connected through loomward-serve')
@@ -221,6 +229,8 @@ def run_live_serve(browser_path: str | None) -> None:
     finally:
         if proc.poll() is None:
             proc.kill()
+            proc.wait(timeout=10)
+        state.cleanup()
     print('ALL PASS (live serve)')
 
 

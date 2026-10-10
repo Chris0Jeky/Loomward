@@ -83,14 +83,14 @@ synthetic file; foreign ADS preserving its content; sparse/compressed attributes
 read-only/hidden/system flags; >260 UTF-16-unit extended-length paths; Unicode/emoji; real
 volume bounds; and explicit unknowns/invalid capacity. The deny-share fixture holds a native
 share_mode(0) file handle, verifies another content open is denied, releases it and verifies
-content access resumes. The current G: fixtures used FileId128, not fallback.
+content access resumes. The disposable fixture run used FileId128, not fallback.
 
 CLI proof after the last change:
 
 ```text
-cargo run -p loomward-windows --features fixtures --bin loomward-fixtures -- create --root G:/loomward-lab/fixtures/sol-w-native
-cargo run -p loomward-windows --features fixtures --bin loomward-fixtures -- create --root G:/loomward-lab/fixtures/sol-w-native
-cargo run -p loomward-windows --features fixtures --bin loomward-fixtures -- destroy --root G:/loomward-lab/fixtures/sol-w-native
+cargo run -p loomward-windows --features fixtures --bin loomward-fixtures -- create --root <approved-lab-root>/fixtures/native-example
+cargo run -p loomward-windows --features fixtures --bin loomward-fixtures -- create --root <approved-lab-root>/fixtures/native-example
+cargo run -p loomward-windows --features fixtures --bin loomward-fixtures -- destroy --root <approved-lab-root>/fixtures/native-example
 ```
 
 All three exited 0. The manifest had 21 entries (including attempted privilege-dependent
@@ -114,36 +114,21 @@ filesystems, real offline/removable events, cloud placeholders and concurrent ho
 remain unverified. Tauri/WebView2, hosted CI, integration into a native catalogue or executor,
 and performance/backup/deletion safety gates were outside this lane.
 
-## Real volume inventory
+## Volume observation receipt (public-data correction, 10 October 2026)
 
-Recorded at 2026-10-09T19:53:31+00:00 by:
+The original native volume command completed successfully without elevation. Its
+host inventory was mistakenly retained here after only GUID/serial redaction.
+Mount assignments, exact capacities/free space and volume topology have now been
+removed from the current document and JSON companion.
 
-```text
-cargo run -p loomward-windows --features fixtures --bin loomward-fixtures -- volumes --json
-```
+[windows-native-volumes.json](windows-native-volumes.json) is now an explicitly
+**synthetic format example**, containing one fictional volume. Its values, device
+count, mount and capability mix do not describe the owner's computer and must not
+be cited as native measurement evidence. The public test results above are
+historical receipts; this documentation correction did not rerun the native tests.
 
-The command exited 0 and returned nine volumes. Exact CLI JSON is in
-[windows-native-volumes.json](windows-native-volumes.json), with no volume labels, device vendor/
-serial strings, file names, content or user inventories. Capacity is a point-in-time snapshot;
-free space can change while other work runs. All fields shown below were read without elevation.
-Unmounted volumes are visible volumes with no mount paths, not invented empty disks.
-
-| Volume GUID path | Mounts | FS | Total bytes | Free/available bytes | Bus | Seek penalty | TRIM |
-|---|---|---|---:|---:|---|---|---|
-| `\\?\Volume{redacted-1}\` | `(unmounted)` | FAT32 | 100663296 | 60779520 | nvme | False | True |
-| `\\?\Volume{redacted-2}\` | `F:\` | NTFS | 524283904 | 487948288 | nvme | False | True |
-| `\\?\Volume{redacted-3}\` | `G:\` | NTFS | 998613946368 | 219926507520 | nvme | False | True |
-| `\\?\Volume{redacted-4}\` | `(unmounted)` | NTFS | 567275520 | 86945792 | nvme | False | True |
-| `\\?\Volume{redacted-5}\` | `C:\` | NTFS | 1999323557888 | 130351624192 | nvme | False | True |
-| `\\?\Volume{redacted-6}\` | `D:\` | NTFS | 524283904 | 485605376 | sata | True | False |
-| `\\?\Volume{redacted-7}\` | `E:\` | NTFS | 1999373398016 | 912848498688 | sata | True | False |
-| `\\?\Volume{redacted-8}\` | `(unmounted)` | NTFS | 497020928 | 33746944 | sata | True | False |
-| `\\?\Volume{redacted-9}\` | `(unmounted)` | NTFS | 950005760 | 84369408 | nvme | False | True |
-
-All observed NTFS volumes report hard-link/ADS/sparse/compression/reparse/case-sensitive-search
-support and are writable by filesystem flag; this is not a file-access or operation grant.
-FAT32 reports those six capabilities false. All nine report fixed drive type, non-removable
-media and current filesystem availability. No benchmark or physical-device enumeration ran.
+Removing current-tree diagnostics does not erase earlier Git commits, PR diffs,
+forks or cached copies. No history rewrite was performed.
 
 ## Residual risk
 

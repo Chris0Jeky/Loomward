@@ -134,13 +134,13 @@ mod windows {
             .parse()
             .unwrap();
         let result = json!({
-            "schema_version":2, "phase_seconds":seconds, "full_duration":seconds>=600, "platform":"Windows 11", "profile":"release", "source_base":option_env!("LOOMWARD_BENCH_BASE").unwrap_or("unrecorded"),
+            "schema_version":3, "phase_seconds":seconds, "full_duration":seconds>=600, "platform":"Windows 11", "profile":"release", "source_base":option_env!("LOOMWARD_BENCH_BASE").unwrap_or("unrecorded"),
             "scope":"read-only personal observations; persisted evidence is aggregates only",
-            "method":"GetProcessTimes sums all engine-process threads; GetThreadTimes measures the harness main thread. Non-main CPU is reported separately without attributing possible Windows library helper threads to the sampler. Same engine: phase_seconds idle then phase_seconds leased, all channels at 1000 ms, renewal every 30 s, bounded events drained every second.",
+            "method":"GetProcessTimes sums all engine-process threads; GetThreadTimes measures the harness main thread. Non-main CPU is reported separately without attributing possible Windows library helper threads to the sampler. Same engine: phase_seconds idle then phase_seconds leased, all channels leased at 1000 ms, process enumeration at most every 15 s with retained row timestamps, current system and own counters every tick, renewal every 30 s, bounded events drained every second.",
             "idle":idle, "leased":live,
             "P12": {"target_percent_one_core_above_idle":1.0,"overhead_percent_one_core":overhead,"pass":overhead<=1.0,"no_lease_sampling":{"samples":idle["sampling_count"],"events":idle["events_drained"],"pass":idle["sampling_count"]==0 && idle["events_drained"]==0}},
             "P13": {"target_percent_one_core":0.5,"target_private_commit_bytes":(80 * 1024 * 1024).to_string(),"idle_percent_one_core":idle_cpu,"idle_peak_private_commit_bytes":idle_commit.to_string(),"pass":idle_cpu<=0.5 && idle_commit<=80 * 1024 * 1024},
-            "limitations":["Uncontrolled concurrent host workloads and cache conditions.","C2 engine with telemetry only: catalogue, scan, learning and teacher pools remain stubs.","A single phase per condition, no p95 or repeatability claim. Phase costs are elapsed wall time, not CPU attribution.","Per-process GPU memory is unsupported; adapter capacity remains unknown when no native observation exists."]
+            "limitations":["Uncontrolled concurrent host workloads and cache conditions.","Benchmark activates telemetry only; catalogue, scan, learning and teacher workloads are not exercised.","A single phase per condition, no p95 or repeatability claim. Phase costs are elapsed wall time, not CPU attribution.","Per-process GPU memory is unsupported; adapter capacity remains unknown when no native observation exists."]
         });
         if let Some(parent) = std::path::Path::new(&output).parent() {
             std::fs::create_dir_all(parent).unwrap();

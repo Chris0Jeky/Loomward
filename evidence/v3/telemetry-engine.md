@@ -1,7 +1,7 @@
-# Engine telemetry: L11b baseline and L11c follow-up (LW-050, LW-107)
+# Engine telemetry: L11b/L11c history and P12 follow-up (LW-050, LW-107, #160)
 
-The L11b section below is historical evidence. Its retained-sample behavior and P12 result are
-superseded by the L11c follow-up at the end of this receipt.
+The earlier sections retain historical evidence. The P12 follow-up at the end records the current
+process cadence, observation-time semantics and measured overhead.
 
 10 October 2026, Windows 11, rustc 1.97.1. Worktree `feat/l11b-telemetry-engine`, base
 `3462de4e450c43ae6bfadff2de8c070e8885be8f` (C2 and native telemetry revision 2). Driver commits;
@@ -272,3 +272,117 @@ hash collisions remain possible; no effects are offered or authorised. Native ac
 unsupported GPU fields and first rates remain unknown. Periodic audits can detect expansion-only
 churn up to ten collections later; returned invalid CStatus still makes that value unknown immediately.
 `HUMAN_TODO.md` was read and left unchanged: q-5 remains open and q-6 is not yet needed.
+
+
+## P12 follow-up: separately timed process observations (#160)
+
+10 October 2026, Windows 11, rustc 1.97.1, branch `perf/telemetry-p12`, starting head
+`7ab31b076af378684f4bf316c75f609c404d8ec8`. Changes are uncommitted for the driver; no push, PR or merge.
+Personal observations stayed in memory; published results are aggregates only.
+
+### Changed
+
+- Leased process enumeration refreshes no faster than every fifteen seconds; standalone sampling
+  still enumerates on every call. System/own counters retain the fastest lease interval.
+  The baseline measured 22.482 ms of process work per tick,
+  dominating the baseline. The five-second full-duration trial measured 1.817606% above idle
+  (119 enumerations / 594 ticks), still a miss; its process work averaged 21.438 ms per tick.
+  Fifteen seconds and scratch-buffer reuse are the bounded follow-up, retaining the trial in
+  `trial_five_seconds`. A later copy-avoidance trial measured 1.346351%; it was discarded
+  and remains in `discarded_copy_avoidance_trial`. The retained fifteen-second version
+  is a strict near miss at 1.005203% (40 enumerations / 592 ticks). Single uncontrolled
+  runs do not establish which individual change caused the difference.
+  Lease-union changes discard the cache and rate history.
+- Every process row carries its enumeration `observed_at`, through the closed v3 schema,
+  Rust DTO, generated TypeScript, fixtures and mock producer. Process lists and explanations
+  retain that same time; Companion displays the full timestamp, including seconds.
+  CPU/I/O rates use the interval between process observations, not intervening system ticks.
+- Own-process counters are queried each tick without a Toolhelp snapshot on intervening ticks.
+  Its thread count is null unless enumerated on that tick. An unobserved native enumeration
+  time is null. Retained unknowns, totals, access failures and truncation stay visible.
+- Requests outside the sampled lease union return `partial_coverage` with a not-sampled reason,
+  distinct from hardware unavailable. Collection already follows that union; this fixes mapping.
+- Lease generations discard events mapped under an earlier renewal shape, and renewal removes
+  queued events for that subscription. Mapping remains outside the mutex.
+- The process-image query uses one sampler-owned scratch buffer, removing per-process allocation and large-buffer zeroing.
+  No handle cache, new privilege, mutation right, dependency or process control was added.
+
+### Verified
+
+`cargo fmt --all --check`, `cargo test --workspace` (324 tests),
+`cargo clippy --workspace --all-targets -- -D warnings`, and `git diff --check` passed.
+The reference verifier passed (216 Python tests with the existing symlink-privilege skip,
+JavaScript syntax/boundary/parity and Rust gates). App check, 154 unit tests, build, generated
+binding check and Playwright e2e (including live fixture HTTP) passed, including exact visible row timestamps and narrow layouts.
+No existing test was weakened or disabled.
+
+Regressions cover retained rows/time, rates/own counters, union-change reset, null unsampled
+time, all five not-sampled channels, list/explanation times, real Windows one-Hz lease freshness,
+and renewal during out-of-lock mapping. The not-sampled assertion failed against the old mapping;
+disabling the generation guard made the renewal test fail, and restoring it passed.
+
+### P12/P13 measurement
+
+Both runs used the existing release harness: the same engine/process within each run,
+600 seconds idle then 600 seconds leased, all channels requested at 1 Hz, renewal every 30 s,
+and bounded events/snapshots drained every second. `GetProcessTimes` measures all engine-process
+threads; `GetThreadTimes` measures the harness main. Neither phase timers nor non-main CPU
+are attributed exclusively to the sampler. Development checks ran during idle phases; this lane ran
+no compilation, tests or concurrent telemetry benchmark during either full leased phase. Idle zeroes
+are observations at Windows CPU-time counter precision, not infinitely precise zero overhead.
+
+| Metric | Fresh pre-change baseline | P12 follow-up |
+|---|---:|---:|
+| CPU above idle, % of one core | 2.450510 | 1.005203 (MISS; target <= 1%) |
+| Leased CPU seconds / elapsed seconds | 14.703125 / 600.002589 | 6.046875 / 600.002919 |
+| Idle CPU, % of one core | 0.000000 | 0.002604 |
+| Completed sampler ticks | 595 | 592 |
+| Process snapshots | One per tick | 40 |
+| Drained events | 595 | 592 |
+| Idle peak private commit, bytes | 1003520 | 950272 |
+| Idle samples / events | 0 / 0 | 0 / 0 |
+
+| Phase, elapsed wall ms per completed sampler tick | Before | After |
+|---|---:|---:|
+| System counters | 0.288 | 0.769 |
+| Process snapshot syscall | 6.635 | 1.079 |
+| Per-process opens/queries (including current own queries) | 12.628 | 4.886 |
+| Process walk/aggregation | 3.219 | 0.586 |
+| PDH collect | 1.370 | 4.250 |
+| Wildcard audit | 0.479 | 0.797 |
+| PDH decode | 0.872 | 1.391 |
+| Other native residual | 0.042 | 0.023 |
+| Rates/projection | 0.263 | 0.765 |
+| Event DTO mapping | 0.367 | 1.139 |
+
+The process phases are amortized over all ticks, including retained-row ticks. The baseline's
+other-native timer included the newly separated system counter timer; this table subtracts that
+overlap. Raw aggregates are preserved unchanged. The event-mapping timer excludes main-thread
+snapshot remapping, which is included in whole-process CPU. The decrease in matched-duration
+P12 overhead is 59.0%. The historical L11c result was 1.997391%; its entire
+receipt remains under `before_l11c`, with L11b and the earlier diagnostic profile also retained.
+
+Measured and current source hashes, release binary hashes, raw phase totals and the fresh baseline are in
+[bench/telemetry.json](bench/telemetry.json). The baseline binary was preserved before behavior
+edits; its individual instrumented source hashes were not captured. The retained measured code is restored
+exactly; only explanatory Markdown differs. The rebuilt executable has its own hash, and was not
+remeasured after restoring the code. The prior short diagnostics
+were used to select phases/cadence, not to qualify P12.
+
+Recommended commits: `Reduce leased telemetry overhead without hiding observation age`;
+then `Measure P12 after process cadence changes`.
+
+### NOT verified
+
+No hosted CI, Linux, native desktop/WebView2 acceptance, native telemetry over HTTP, controlled repeats,
+p95 claim or GPU-using process churn soak. Handle caching was not added; process identity/rates
+still require matching exact creation time, and cached rows never grant effects. External consumers
+of the closed v3 ProcessRow contract need regenerated bindings for required `observed_at`.
+
+### Residual risk
+
+This is one uncontrolled run per condition, so the result does not establish repeatability across
+machines or workloads. Rows may describe an exited process until the next enumeration; their
+original time stays visible and is never proof of liveness. Process metadata can refresh later than
+fifteen seconds with coarser lease ticks or scheduling/collection delay. Unknown rates/access/GPU fields
+remain unknown. Existing wildcard-audit churn behavior and the sampler-panic notification/release LOW are unchanged by this lane.

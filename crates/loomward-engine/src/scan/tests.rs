@@ -6,7 +6,7 @@ use std::{
     sync::{atomic::AtomicBool, Arc},
     time::Duration,
 };
-fn identity(id: u64) -> OpenedIdentity {
+pub(super) fn identity(id: u64) -> OpenedIdentity {
     OpenedIdentity {
         id: Some(FileIdObs::Id64(id)),
         basis: IdBasis::Listed,
@@ -15,7 +15,7 @@ fn identity(id: u64) -> OpenedIdentity {
         reparse_tag: None,
     }
 }
-fn root() -> GrantedRoot {
+pub(super) fn root() -> GrantedRoot {
     GrantedRoot::new(
         RootId::new("rt_test").unwrap(),
         "unused".into(),
@@ -161,7 +161,103 @@ fn reparent_invalidates_both_chains_and_restart_repairs() {
     assert_eq!(sink.totals(root.root_id()), Some(report.totals));
     assert!(!sink.is_repairing(root.root_id()));
 }
-struct Tree;
+pub(super) struct Tree;
+
+struct ReplacementTree {
+    id: u64,
+    attributes: u32,
+    listed_id: bool,
+    name_only: bool,
+}
+impl DirSource for ReplacementTree {
+    type Dir = u64;
+    fn strategy(&self) -> Strategy {
+        Strategy::Portable
+    }
+    fn open_root(&self, path: &std::path::Path) -> Result<(u64, OpenedIdentity), SourceError> {
+        Tree.open_root(path)
+    }
+    fn open_child(&self, _: &u64, _: &RawEntry<'_>) -> Result<(u64, OpenedIdentity), SourceError> {
+        let mut id = identity(self.id);
+        if self.name_only {
+            if self.listed_id {
+                id.basis = IdBasis::NonUnique;
+            } else {
+                id.id = None;
+                id.basis = IdBasis::None;
+            }
+        } else if !self.listed_id {
+            id.basis = IdBasis::PostOpen;
+        }
+        Ok((self.id, id))
+    }
+    fn list(&self, dir: &u64, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+        Tree.list(dir, &mut |mut e| {
+            if *dir == 1 {
+                e.file_id = self.listed_id.then_some(FileIdObs::Id64(self.id));
+                e.attributes = self.attributes;
+            }
+            sink(e)
+        })
+    }
+}
+fn replacement_matches_fresh(attributes: u32, listed_id: bool, name_only: bool) {
+    let root = root();
+    let sink = Arc::new(MemorySink::default());
+    let scan = |source: &ReplacementTree, run, sink| {
+        run_scan(
+            source,
+            &root,
+            run,
+            sink,
+            Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+            Arc::new(AtomicBool::new(false)),
+            ScanOptions {
+                workers: 1,
+                ..ScanOptions::default()
+            },
+        )
+        .unwrap()
+    };
+    let first = ReplacementTree {
+        id: 2,
+        attributes: 0x10,
+        listed_id,
+        name_only,
+    };
+    assert!(scan(&first, 1, sink.clone()).complete);
+    let next = ReplacementTree {
+        id: if refused_attributes(attributes) { 2 } else { 4 },
+        attributes,
+        listed_id,
+        name_only,
+    };
+    assert!(scan(&next, 2, sink.clone()).complete);
+    let fresh = Arc::new(MemorySink::default());
+    let expected = scan(&next, 3, fresh.clone());
+    assert_eq!(
+        sink.totals(root.root_id()),
+        Some(expected.totals),
+        "retained totals must equal a fresh scan"
+    );
+    assert_eq!(sink.totals(root.root_id()), fresh.totals(root.root_id()));
+}
+#[test]
+fn same_name_new_directory_identity_matches_fresh_scan() {
+    replacement_matches_fresh(0x10, true, false);
+}
+#[test]
+fn directory_becoming_reparse_or_offline_matches_fresh_scan() {
+    for refused in [0x400, 0x1000, 0x40000, 0x400000] {
+        replacement_matches_fresh(0x10 | refused, true, false);
+    }
+}
+#[test]
+fn post_open_and_name_only_directory_presence_matches_fresh_scan() {
+    replacement_matches_fresh(0x10, false, false);
+    replacement_matches_fresh(0x10, false, true);
+    replacement_matches_fresh(0x10, true, true);
+}
 impl DirSource for Tree {
     type Dir = u64;
     fn strategy(&self) -> Strategy {
@@ -230,6 +326,82 @@ fn staged_pipeline_has_exact_totals_and_releases_bytes() {
     );
     assert_eq!(sink.totals(root.root_id()), Some(report.totals));
     assert_eq!(bytes.used(), 0);
+}
+/// Records which listings were published before each child ticket was requested.
+#[derive(Default)]
+struct OrderProbe {
+    sink: MemorySink,
+    published: std::sync::Mutex<Vec<u64>>,
+    early: std::sync::Mutex<Vec<u64>>,
+}
+impl ScanSink for OrderProbe {
+    fn recover_interrupted(&self) -> crate::EngineResult<()> {
+        self.sink.recover_interrupted()
+    }
+    fn begin_run(&self, root: &RootId, run: u64, scope: &RunScope) -> crate::EngineResult<()> {
+        self.sink.begin_run(root, run, scope)
+    }
+    fn prepare_listing(
+        &self,
+        root: &RootId,
+        run: u64,
+        parent: Option<u64>,
+        name: &[u16],
+        identity: OpenedIdentity,
+    ) -> crate::EngineResult<ListingTicket> {
+        if let Some(p) = parent {
+            if !self.published.lock().unwrap().contains(&p) {
+                self.early.lock().unwrap().push(p);
+            }
+        }
+        self.sink.prepare_listing(root, run, parent, name, identity)
+    }
+    fn refresh_listing(
+        &self,
+        root: &RootId,
+        run: u64,
+        ticket: ListingTicket,
+    ) -> crate::EngineResult<ListingTicket> {
+        self.sink.refresh_listing(root, run, ticket)
+    }
+    fn consume(&self, root: &RootId, message: ScanMessage) -> crate::EngineResult<()> {
+        if let ScanMessage::ListingDone { ticket, .. } = &message {
+            self.published.lock().unwrap().push(ticket.dir);
+        }
+        self.sink.consume(root, message)
+    }
+    fn finish_run(
+        &self,
+        root: &RootId,
+        run: u64,
+        scope: &RunScope,
+        complete: bool,
+    ) -> crate::EngineResult<()> {
+        self.sink.finish_run(root, run, scope, complete)
+    }
+    fn fence_root(&self, root: &RootId) -> crate::EngineResult<()> {
+        self.sink.fence_root(root)
+    }
+}
+/// A durable writer creates child rows when the parent listing publishes, so no child ticket may
+/// be requested before its parent's ListingDone reached the writer.
+#[test]
+fn child_tickets_follow_the_parent_publication() {
+    let sink = Arc::new(OrderProbe::default());
+    let report = run_scan(
+        &Tree,
+        &root(),
+        1,
+        sink.clone(),
+        Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions::default(),
+    )
+    .unwrap();
+    assert!(report.complete);
+    assert_eq!(report.totals.dirs, 1);
+    assert_eq!(sink.published.lock().unwrap().len(), 2);
+    assert!(sink.early.lock().unwrap().is_empty());
 }
 #[test]
 fn incomplete_listing_does_not_authorize_absence() {
@@ -696,9 +868,9 @@ fn oversized_stress_is_separate_with_partial_oracle_n6() {
     assert!(!sink.sweep_allowed(root.root_id()));
 }
 struct FailedWriter(MemorySink);
-struct MovingTree {
-    x_listings: std::sync::atomic::AtomicUsize,
-    unique: bool,
+pub(super) struct MovingTree {
+    pub(super) x_listings: std::sync::atomic::AtomicUsize,
+    pub(super) unique: bool,
 }
 impl DirSource for MovingTree {
     type Dir = u64;
@@ -1226,4 +1398,154 @@ fn skip_elevated() -> bool {
     );
     eprintln!("skipped: elevated token; the native scan refuses elevation (invariant 2)");
     true
+}
+
+/// #144: a root is minted only from an active grant row in the engine's own `state.db`, with the
+/// row's path, identity and dataset class; a mismatched class is refused at start and refresh.
+#[cfg(windows)]
+#[test]
+fn granted_root_comes_only_from_an_active_durable_grant() {
+    if skip_elevated() {
+        return;
+    }
+    let state = canonical_tempdir();
+    let root_dir = canonical_tempdir();
+    let (_, identity) = loomward_windows::enumerate::NativeSource::default()
+        .open_root(root_dir.path())
+        .unwrap();
+    let file_id = match identity.id.unwrap() {
+        FileIdObs::Id128(id) => id.to_vec(),
+        FileIdObs::Id64(id) => id.to_le_bytes().to_vec(),
+    };
+    let volume = format!("vsn_{}", identity.volume_serial.unwrap());
+    let conn = rusqlite::Connection::open(state.path().join("state.db")).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);
+         INSERT INTO meta VALUES('dataset_class','synthetic');
+         CREATE TABLE root_grant(id INTEGER PRIMARY KEY,display_path TEXT,volume_key TEXT,root_file_id BLOB,state TEXT);",
+    )
+    .unwrap();
+    let path = root_dir.path().to_string_lossy().into_owned();
+    let insert = |id: i64, file_id: &[u8], state: &str| {
+        conn.execute(
+            "INSERT INTO root_grant VALUES(?1,?2,?3,?4,?5)",
+            rusqlite::params![id, path, volume, file_id, state],
+        )
+        .unwrap();
+    };
+    insert(1, &file_id, "active");
+    insert(2, &file_id, "revoked");
+    insert(3, &[9; 16], "active");
+    let engine = Engine::open(EngineConfig::new(
+        state.path().to_path_buf(),
+        DatasetClass::Synthetic,
+    ))
+    .unwrap();
+    let id = || RootId::new("rt_granted").unwrap();
+    let message =
+        |r: EngineResult<GrantedRoot>| r.unwrap_err().to_body().message.as_str().to_owned();
+    let root = engine.granted_root(id(), 1).unwrap();
+    assert_eq!(root.path(), root_dir.path());
+    assert_eq!(root.dataset_class(), DatasetClass::Synthetic);
+    assert_eq!(message(engine.granted_root(id(), 2)), "grant_not_active");
+    assert_eq!(message(engine.granted_root(id(), 4)), "grant_not_active");
+    assert_eq!(
+        message(engine.granted_root(id(), 3)),
+        "root_identity_changed"
+    );
+    // The row's class, not the caller's, reaches the engine's class check.
+    conn.execute("UPDATE meta SET value='personal'", [])
+        .unwrap();
+    let personal = engine.granted_root(id(), 1).unwrap();
+    assert_eq!(personal.dataset_class(), DatasetClass::Personal);
+    engine
+        .set_scan_sink(Arc::new(MemorySink::default()))
+        .unwrap();
+    for result in [
+        engine.scan_start(&personal, None),
+        engine.scan_refresh(&personal, None),
+    ] {
+        assert_eq!(
+            result.unwrap_err().to_body().message.as_str(),
+            "dataset_class_mismatch"
+        );
+    }
+}
+
+/// A sink without watch support (the trait default) scans with no watcher and no lasting pins.
+#[cfg(windows)]
+struct Unwatched(MemorySink);
+#[cfg(windows)]
+impl ScanSink for Unwatched {
+    fn recover_interrupted(&self) -> crate::EngineResult<()> {
+        self.0.recover_interrupted()
+    }
+    fn begin_run(&self, root: &RootId, run: u64, scope: &RunScope) -> crate::EngineResult<()> {
+        self.0.begin_run(root, run, scope)
+    }
+    fn prepare_listing(
+        &self,
+        root: &RootId,
+        run: u64,
+        parent: Option<u64>,
+        name: &[u16],
+        identity: OpenedIdentity,
+    ) -> crate::EngineResult<ListingTicket> {
+        self.0.prepare_listing(root, run, parent, name, identity)
+    }
+    fn refresh_listing(
+        &self,
+        root: &RootId,
+        run: u64,
+        ticket: ListingTicket,
+    ) -> crate::EngineResult<ListingTicket> {
+        self.0.refresh_listing(root, run, ticket)
+    }
+    fn consume(&self, root: &RootId, message: ScanMessage) -> crate::EngineResult<()> {
+        self.0.consume(root, message)
+    }
+    fn finish_run(
+        &self,
+        root: &RootId,
+        run: u64,
+        scope: &RunScope,
+        complete: bool,
+    ) -> crate::EngineResult<()> {
+        self.0.finish_run(root, run, scope, complete)
+    }
+    fn fence_root(&self, root: &RootId) -> crate::EngineResult<()> {
+        self.0.fence_root(root)
+    }
+}
+#[cfg(windows)]
+#[test]
+fn a_sink_without_watch_support_scans_unwatched() {
+    if skip_elevated() {
+        return;
+    }
+    let temp = canonical_tempdir();
+    std::fs::create_dir(temp.path().join("child")).unwrap();
+    std::fs::write(temp.path().join("child").join("synthetic"), [0u8; 7]).unwrap();
+    let (_, identity) = loomward_windows::enumerate::NativeSource::default()
+        .open_root(temp.path())
+        .unwrap();
+    let root = GrantedRoot::new(
+        RootId::new("rt_unwatched").unwrap(),
+        temp.path().to_path_buf(),
+        DatasetClass::Synthetic,
+        identity,
+    );
+    let e = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Synthetic)).unwrap();
+    let sink = Arc::new(Unwatched(MemorySink::default()));
+    e.set_scan_sink(sink.clone()).unwrap();
+    let job = e.scan_start(&root, None).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while e.job_status(&job.job_id).unwrap().state != loomward_protocol::JobState::Completed {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(e.scan_watches.lock().unwrap().is_empty());
+    assert_eq!(sink.0.totals(root.root_id()).unwrap().logical, 7);
+    // No watch pin outlives the scan: the user can rename the scanned folder.
+    std::fs::rename(temp.path().join("child"), temp.path().join("renamed")).unwrap();
 }

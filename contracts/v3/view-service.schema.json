@@ -1670,8 +1670,9 @@
     "ProcessRow": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["process_ref", "pid", "name", "started_at", "private_commit_bytes", "private_working_set_bytes", "working_set_bytes", "cpu_fraction", "io_read_bytes_per_s", "io_write_bytes_per_s", "gpu_dedicated_bytes", "access", "loomward_owned"],
+      "required": ["observed_at", "process_ref", "pid", "name", "started_at", "private_commit_bytes", "private_working_set_bytes", "working_set_bytes", "cpu_fraction", "io_read_bytes_per_s", "io_write_bytes_per_s", "gpu_dedicated_bytes", "access", "loomward_owned"],
       "properties": {
+        "observed_at": { "$ref": "#/$defs/Timestamp", "$comment": "Process enumeration time, independent of the containing system sample; retained rows keep this time." },
         "process_ref": { "$ref": "#/$defs/ProcessRef" },
         "pid": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
         "name": { "type": "string", "maxLength": 260 },
@@ -1679,7 +1680,7 @@
         "private_commit_bytes": { "$ref": "#/$defs/NullableBytes", "$comment": "PROCESS_MEMORY_COUNTERS_EX2.PrivateUsage (commit charge), not resident memory." },
         "private_working_set_bytes": { "$ref": "#/$defs/NullableBytes", "$comment": "PROCESS_MEMORY_COUNTERS_EX2.PrivateWorkingSetSize where supported, else null." },
         "working_set_bytes": { "$ref": "#/$defs/NullableBytes", "$comment": "Total working set, including shared pages." },
-        "cpu_fraction": { "$ref": "#/$defs/NullableFraction", "$comment": "Machine-normalised over the sample interval; null on the first sample." },
+        "cpu_fraction": { "$ref": "#/$defs/NullableFraction", "$comment": "Machine-normalised over the interval between process enumerations (row observed_at), not the containing system sample interval; null on the first process sample." },
         "io_read_bytes_per_s": { "$ref": "#/$defs/NullableRate" },
         "io_write_bytes_per_s": { "$ref": "#/$defs/NullableRate" },
         "gpu_dedicated_bytes": { "$ref": "#/$defs/NullableBytes", "$comment": "GPU Process Memory dedicated usage for this process; may include shared allocations, so rows are never summed into an adapter total." },
