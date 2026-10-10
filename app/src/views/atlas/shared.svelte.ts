@@ -3,7 +3,7 @@ import { formatBytes } from '../../lib/format/bytes';
 import { escapedName } from '../../lib/format/names';
 import { session } from '../../lib/stores/session.svelte';
 import type { Anchor, Basis, TreeSlice } from '../../lib/contracts.gen';
-import type { NodeInfo, Palette } from '../../../viz/types.js';
+import type { NodeInfo, Palette, SliceLike } from '../../../viz/types.js';
 
 /** Read the viz palette from the CSS tokens of the current theme (styles/tokens.css is the only source). */
 export function readPalette(): Palette {
@@ -32,14 +32,36 @@ export const canvasLabel = (name: string) => escapedName(name);
 /** Byte label for a lossy layout number (exact strings are shown wherever the slice has them). */
 export const formatApprox = (n: number) => formatBytes(String(Math.max(0, Math.round(n))));
 
+/** What a keyboard cursor or an Inspect press says about a region (denied and unknown parts included). */
+export function describeSize(n: NodeInfo): string {
+  const src = n.src;
+  if (!src) return `${formatApprox(n.size)} · ${n.synthetic === 'fold' ? (n.folded === null ? 'some items folded, count unknown' : `${n.folded} items folded`) : 'not in this slice'}`;
+  const z = n.zero.filter((x) => x.coverage === 'denied').length;
+  return `${formatApprox(n.size)}${z ? ` · ${z} access denied` : ''}${src.size_unknown_files ? ` · ${src.size_unknown_files} alloc unknown` : ''}`;
+}
+export const describeNode = (n: NodeInfo): string => `${canvasLabel(n.name)}, ${describeSize(n)}.${n.drillable ? ' Enter opens it.' : ''}`;
+
 /**
- * Names from the start of the trail to `node`, every directory between the slice anchor and a deep
- * descendant included. Parent links come from the renderer's `info`; the slice root is the last crumb
- * (it keeps the crumb's label, e.g. "All roots"), so it is not repeated.
+ * Names from the start of the trail to `node`, read from the current slice rather than from renderer
+ * state (which can lag a slice behind, e.g. a node selected before it was drilled into): the node is
+ * found in `slice.nodes` by id and parent indices lead up to the anchor at index 0, whose name is the
+ * last crumb already ("All roots"), so it is not repeated. A synthetic cell (a fold or the loose
+ * remainder) is not in the slice: it is named after the real node it sits in. Parents precede
+ * children, so the walk only moves to a smaller index; a malformed slice (a parent at or after its
+ * child, a second root) ends the walk instead of looping.
  */
-export function pathTo(node: NodeInfo, info: (id: string) => NodeInfo | null, trail: string[]): string[] {
-  const below: string[] = [];
-  for (let n: NodeInfo | null = node; n?.parentId; n = info(n.parentId)) below.push(n.name);
+export function pathTo(node: Pick<NodeInfo, 'id' | 'name' | 'parentId' | 'src'>, slice: SliceLike | null | undefined, trail: string[]): string[] {
+  const nodes = slice?.nodes ?? [];
+  const find = (id: string | null) => (id === null ? -1 : nodes.findIndex((n) => n.node_id === id));
+  const own = node.src ? find(node.id) : -1;
+  const below: string[] = own >= 0 ? [] : [node.name];
+  let i = own >= 0 ? own : find(node.parentId);
+  for (let steps = 0; i > 0 && steps < nodes.length; steps++) {
+    below.push(nodes[i]!.name);
+    const p = nodes[i]!.parent;
+    if (p === null || p >= i) break;
+    i = p;
+  }
   return [...trail, ...below.reverse()];
 }
 

@@ -232,7 +232,8 @@ def run(ctx) -> dict:
     # --- provisional slice: a scanning root is woven loose and says so ---------------------------
     page.locator('main details.as-text button', has_text='Synthetic Beta').click()
     expect(page.locator('main .status')).to_contain_text('provisional')
-    check('provisional' in page.locator('#atlas-live').inner_text().lower(), 'aria-live says the slice is provisional')
+    expect(page.locator('#atlas-live')).to_contain_text('provisional')  # the live text lands a beat after the slice (see Say)
+    print('PASS aria-live says the slice is provisional')
     page.wait_for_timeout(800)
     ctx.view_shot('atlas-provisional-1440.png')
     crumbs(page).first.click()

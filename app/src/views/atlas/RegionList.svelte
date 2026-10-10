@@ -15,6 +15,8 @@
   }
   let { slice, onopen, oninspect }: Props = $props();
 
+  const KIND: Record<string, string> = { dir: 'folder', file: 'file', root: 'root folder', volume: 'volume', atlas: 'all roots', other: 'folded items' };
+
   /** Size under the slice's basis, with unknown never shown as 0 B. */
   function sizeText(n: SliceNode, allocated: boolean): string {
     const b = parseBytes(n.size_bytes);
@@ -31,7 +33,11 @@
     return slice.nodes
       .filter((n) => n.parent === 0)
       .map((n) => {
-        const notes: string[] = [];
+        const notes: string[] = [KIND[n.kind] ?? n.kind];
+        const t = n.threads;
+        notes.push(t.residency.tier === null ? 'residency unknown' : `tier ${t.residency.tier}`);
+        if (t.meaning.state !== 'none') notes.push(`meaning ${t.meaning.state}${t.meaning.label ? ` ${escapedName(t.meaning.label)}` : ''}`);
+        if (t.permission.state !== 'granted' && t.permission.state !== 'denied') notes.push(`permission ${t.permission.state}`);
         if (n.coverage === 'denied' || n.threads.permission.state === 'denied') notes.push('access denied: size and contents unknown');
         else if (n.coverage !== 'complete') notes.push(`coverage ${n.coverage.replaceAll('_', ' ')}`);
         if (n.size_unknown_files > 0) notes.push(`${formatCount(n.size_unknown_files)} with unknown allocation`);
@@ -75,7 +81,7 @@
   ol { margin: 8px 0 0; padding: 0 0 0 1.4em; max-height: 280px; overflow: auto; }
   li { padding: 2px 0; overflow-wrap: anywhere; }
   .open { font: inherit; color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
-  .inspect { font: inherit; font-size: 0.78rem; color: var(--muted); background: none; border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; margin-left: 6px; cursor: pointer; }
+  .inspect { font: inherit; font-size: 0.78rem; color: var(--muted); background: none; border: 1px solid var(--control-line); border-radius: 999px; padding: 0 8px; margin-left: 6px; cursor: pointer; }
   .inspect:hover { color: var(--text); border-color: var(--line-strong); }
   .size { color: var(--muted); margin-left: 8px; }
   .notes { display: block; color: var(--faint); font-size: 0.8rem; }
