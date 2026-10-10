@@ -259,7 +259,11 @@ fn every_command_answers_a_complete_envelope_and_core_reads_serve_the_catalogue(
         .unwrap()
         .values()
         .all(|v| v == false));
-    assert_eq!(hello["capabilities"]["observation"]["metadata_scan"], false);
+    // Synthetic sessions scan registered lab roots on Windows (personal scans wait for #184).
+    assert_eq!(
+        hello["capabilities"]["observation"]["metadata_scan"],
+        cfg!(windows)
+    );
     // Atlas and volume slice nodes are anchors too; their sealed IDs open again.
     let slice = |anchor: Value| {
         call(
@@ -379,6 +383,7 @@ fn n4_recovery_replays_the_retained_outcome_and_never_overwrites_a_later_choice(
             grant_roots: vec![],
         },
         Duration::from_millis(1500),
+        true,
     )
     .unwrap();
     fixture(&svc, 1);
@@ -709,7 +714,17 @@ impl ScanSink for FenceProbe {
 #[test]
 fn revocation_commits_first_then_fences_then_emits_and_is_monotone() {
     let tmp = tempfile::tempdir().unwrap();
-    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let svc = Service::open_with(
+        Config {
+            state_dir: tmp.path().into(),
+            dataset: DatasetClass::Synthetic,
+            allow_personal: false,
+            grant_roots: vec![],
+        },
+        crate::idem::TTL,
+        false,
+    )
+    .unwrap();
     let probe = Arc::new(FenceProbe {
         state: svc.inner.state_dir.clone(),
         seen: Mutex::new(vec![]),
@@ -998,4 +1013,485 @@ fn a_malformed_node_id_key_refuses_to_open() {
             "{bad}"
         );
     }
+}
+
+/// Test gate inside the scan writer: once armed, the first child ticket blocks (after the root
+/// listing published) until released, so a test can act mid-scan deterministically.
+#[derive(Default)]
+pub(crate) struct Gate {
+    armed: Mutex<bool>,
+    reached: std::sync::atomic::AtomicBool,
+}
+
+impl Gate {
+    pub fn pass(&self, child: bool) {
+        if !child {
+            return;
+        }
+        while *self.armed.lock().unwrap() {
+            self.reached
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    #[cfg(windows)]
+    fn arm(&self) {
+        *self.armed.lock().unwrap() = true;
+    }
+    #[cfg(windows)]
+    fn release(&self) {
+        *self.armed.lock().unwrap() = false;
+    }
+    #[cfg(windows)]
+    fn wait_reached(&self) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !self.reached.load(std::sync::atomic::Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "the scan never reached the gate");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
+/// A registered, granted lab root filled with a small synthetic tree:
+/// `top.bin` (100), `a/{1,2,3}.bin` (10, 20, 30), `a/deep/x.bin` (5), and an empty `b`.
+#[cfg(windows)]
+struct Lab {
+    _tmp: tempfile::TempDir,
+    path: std::path::PathBuf,
+    svc: Service,
+    root: String,
+}
+
+#[cfg(windows)]
+fn lab() -> Option<Lab> {
+    if loomward_windows::enumerate::running_elevated() {
+        eprintln!("skipped: elevated token; the native scan refuses elevation (invariant 2)");
+        return None;
+    }
+    let tmp = tempfile::tempdir_in(std::fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+    let state = tmp.path().join("state");
+    let path = tmp.path().join("lab-scan");
+    crate::lab::register(&state, &path, "seed-scan", "S", "sha256:00").unwrap();
+    let path = path.canonicalize().unwrap();
+    std::fs::write(path.join("top.bin"), [0u8; 100]).unwrap();
+    std::fs::create_dir_all(path.join("a").join("deep")).unwrap();
+    for (n, size) in [(1, 10), (2, 20), (3, 30)] {
+        std::fs::write(path.join("a").join(format!("{n}.bin")), vec![0u8; size]).unwrap();
+    }
+    std::fs::write(path.join("a").join("deep").join("x.bin"), [0u8; 5]).unwrap();
+    std::fs::create_dir(path.join("b")).unwrap();
+    let svc = Service::open(Config {
+        state_dir: state,
+        dataset: DatasetClass::Synthetic,
+        allow_personal: false,
+        grant_roots: vec![path.clone()],
+    })
+    .unwrap();
+    let (roots, _) = ok("roots.list", call(&svc, "roots.list", json!({})));
+    let root = roots["roots"][0]["root_id"].as_str().unwrap().to_owned();
+    Some(Lab {
+        _tmp: tmp,
+        path,
+        svc,
+        root,
+    })
+}
+
+/// Independent walk: (files, dirs below the root, logical bytes); reparse points are neither
+/// followed nor counted, as the scan's exclusion rule says.
+#[cfg(windows)]
+fn walk(dir: &Path) -> (u64, u64, u64) {
+    use std::os::windows::fs::MetadataExt;
+    let mut t = (0, 0, 0);
+    for e in std::fs::read_dir(dir).unwrap() {
+        let e = e.unwrap();
+        let m = std::fs::symlink_metadata(e.path()).unwrap();
+        if m.file_attributes() & 0x400 != 0 {
+            continue;
+        }
+        if m.is_dir() {
+            let (f, d, b) = walk(&e.path());
+            t = (t.0 + f, t.1 + d + 1, t.2 + b);
+        } else {
+            t = (t.0 + 1, t.1, t.2 + m.len());
+        }
+    }
+    t
+}
+
+#[cfg(windows)]
+fn start(svc: &Service, root: &str, mode: &str) -> String {
+    let (job, _) = ok(
+        "scan.start",
+        call(svc, "scan.start", json!({"root_id": root, "mode": mode})),
+    );
+    job["job"]["job_id"].as_str().unwrap().to_owned()
+}
+
+#[cfg(windows)]
+fn settle(svc: &Service, job: &str) -> Payload {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let (j, _) = ok("jobs.get", call(svc, "jobs.get", json!({"job_id": job})));
+        let state = j["job"]["state"].as_str().unwrap();
+        if matches!(state, "completed" | "failed" | "cancelled") {
+            return j["job"].as_object().unwrap().clone();
+        }
+        assert!(Instant::now() < deadline, "{j:?}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(windows)]
+fn lab_slice(svc: &Service, root: &str) -> Payload {
+    ok(
+        "tree.slice",
+        call(svc, "tree.slice", json!({"anchor": {"kind": "root", "root_id": root}, "depth": 3, "max_nodes": 256, "min_share": 0.0, "basis": "logical", "include_files": true})),
+    )
+    .0
+}
+
+/// (files, dirs, logical) of the slice's anchor node.
+#[cfg(windows)]
+fn slice_totals(slice: &Payload) -> (u64, u64, u64) {
+    let n = &slice["nodes"][0];
+    (
+        n["files"].as_u64().unwrap(),
+        n["dirs"].as_u64().unwrap(),
+        n["logical_bytes"].as_str().unwrap().parse().unwrap(),
+    )
+}
+
+#[cfg(windows)]
+fn child_named(slice: &Payload, name: &str) -> Option<String> {
+    slice["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["parent"] == json!(0) && n["name"] == name)
+        .map(|n| n["node_id"].as_str().unwrap().to_owned())
+}
+
+#[cfg(windows)]
+#[test]
+fn scan_start_publishes_a_lab_tree_matching_an_independent_walk_with_live_events() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    let mut events = svc.subscribe(None);
+    let job = start(svc, &lab.root, "full");
+    let done = settle(svc, &job);
+    assert_eq!(done["state"], "completed", "{done:?}");
+    assert_eq!(done["coverage"], "complete");
+    let slice = lab_slice(svc, &lab.root);
+    assert_eq!(slice_totals(&slice), walk(&lab.path));
+    assert_eq!(slice_totals(&slice), (5, 3, 165));
+    assert_eq!(slice["aggregate_state"], "consistent", "{slice:?}");
+    let (roots, _) = ok("roots.list", call(svc, "roots.list", json!({})));
+    assert_eq!(roots["roots"][0]["scan"]["coverage"], "complete");
+    // Events: catalogue revisions arrive before the job's terminal state, each after its commit.
+    let mut seen = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(Instant::now() < deadline, "{seen:?}");
+        match events.recv_timeout(Duration::from_secs(2)) {
+            RecvOutcome::Event(e) => {
+                e.validate().unwrap();
+                if e.event == EventName::TreeInvalidated {
+                    assert!(e.catalog_rev.is_some());
+                    assert_eq!(e.data["root_id"], lab.root.as_str());
+                }
+                let terminal =
+                    e.event == EventName::JobState && e.data["job"]["state"] == "completed";
+                seen.push(e.event);
+                if terminal {
+                    break;
+                }
+            }
+            RecvOutcome::Timeout => {}
+            other => panic!("{other:?}"),
+        }
+    }
+    assert!(seen.contains(&EventName::ScanProgress), "{seen:?}");
+    let last_tree = seen
+        .iter()
+        .rposition(|e| *e == EventName::TreeInvalidated)
+        .expect("tree.invalidated");
+    assert!(last_tree < seen.len() - 1);
+    // A refresh scans the same root again to the same totals.
+    assert_eq!(
+        settle(svc, &start(svc, &lab.root, "refresh"))["state"],
+        "completed"
+    );
+    assert_eq!(slice_totals(&lab_slice(svc, &lab.root)), (5, 3, 165));
+}
+
+/// #184 MEDIUM-1 for the durable writer: a directory deleted and recreated under the same name
+/// (same creation time, new file ID) is a new row; the old row and its subtree are absent.
+#[cfg(windows)]
+#[test]
+fn absence_is_decided_by_identity_when_a_directory_is_replaced_at_its_name() {
+    use std::os::windows::fs::{FileTimesExt, OpenOptionsExt};
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    assert_eq!(
+        settle(svc, &start(svc, &lab.root, "full"))["state"],
+        "completed"
+    );
+    let old = child_named(&lab_slice(svc, &lab.root), "a").unwrap();
+    let a = lab.path.join("a");
+    let created = std::fs::metadata(&a).unwrap().created().unwrap();
+    std::fs::remove_dir_all(&a).unwrap();
+    std::fs::create_dir(&a).unwrap();
+    std::fs::write(a.join("new.bin"), [0u8; 7]).unwrap();
+    // Same name, same creation time: only the native identity tells the directories apart.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(0x0200_0000) // FILE_FLAG_BACKUP_SEMANTICS opens a directory
+        .open(&a)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_created(created))
+        .unwrap();
+    assert_eq!(std::fs::metadata(&a).unwrap().created().unwrap(), created);
+    assert_eq!(
+        settle(svc, &start(svc, &lab.root, "refresh"))["state"],
+        "completed"
+    );
+    let slice = lab_slice(svc, &lab.root);
+    assert_eq!(slice_totals(&slice), walk(&lab.path));
+    assert_eq!(slice_totals(&slice), (2, 2, 107));
+    let new = child_named(&slice, "a").unwrap();
+    assert_ne!(
+        new, old,
+        "a replaced directory is a new row, never the old identity"
+    );
+    assert_eq!(
+        err(call(svc, "node.inspect", json!({"node_id": old}))).code,
+        ErrorCode::NotFound
+    );
+}
+
+/// Excluded entries (here a junction, a reparse point) are never followed and never present.
+#[cfg(windows)]
+#[test]
+fn excluded_entries_never_count_as_present() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    assert_eq!(
+        settle(svc, &start(svc, &lab.root, "full"))["state"],
+        "completed"
+    );
+    assert!(child_named(&lab_slice(svc, &lab.root), "b").is_some());
+    std::fs::remove_dir(lab.path.join("b")).unwrap();
+    let made = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J", "b", "a"])
+        .current_dir(&lab.path)
+        .output()
+        .unwrap();
+    assert!(made.status.success(), "{made:?}");
+    let done = settle(svc, &start(svc, &lab.root, "refresh"));
+    assert_eq!(done["state"], "completed", "{done:?}");
+    assert!(done["progress"]["skipped"].as_u64().unwrap() >= 1);
+    let slice = lab_slice(svc, &lab.root);
+    assert!(
+        child_named(&slice, "b").is_none(),
+        "an excluded entry is not present"
+    );
+    assert_eq!(slice_totals(&slice), walk(&lab.path));
+    assert_eq!(slice_totals(&slice), (5, 2, 165));
+}
+
+/// Revocation mid-scan: the grant commits revoked first, the run is cancelled and the writer
+/// fenced; nothing more is written for the root and its catalogue run ends cancelled.
+#[cfg(windows)]
+#[test]
+fn revocation_mid_scan_commits_cancels_and_fences_the_writer() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    svc.inner.scan.gate.arm();
+    let job = start(svc, &lab.root, "full");
+    svc.inner.scan.gate.wait_reached();
+    let rows = || crate::db::counts(&svc.inner.db()).unwrap();
+    ok(
+        "roots.revoke",
+        call(
+            svc,
+            "roots.revoke",
+            json!({"root_id": lab.root, "purge_catalog": false}),
+        ),
+    );
+    let at_revoke = rows();
+    svc.inner.scan.gate.release();
+    let done = settle(svc, &job);
+    assert_eq!(done["state"], "cancelled", "{done:?}");
+    assert_eq!(rows(), at_revoke, "nothing is written after revocation");
+    let run_state: String = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT state FROM main.scan_run ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(run_state, "cancelled");
+    let id = RootId::new(lab.root.clone()).unwrap();
+    let commands = svc.inner.catalog.writer().timings().commands;
+    assert_eq!(
+        svc.inner
+            .scan
+            .begin_run(&id, u64::MAX, &RunScope::FullRoot)
+            .unwrap_err()
+            .to_body()
+            .code,
+        ErrorCode::PermissionDenied,
+        "the fenced writer refuses the revoked grant"
+    );
+    assert_eq!(
+        svc.inner.catalog.writer().timings().commands,
+        commands,
+        "the fence refuses before reaching the catalogue writer"
+    );
+    assert_eq!(
+        err(call(
+            svc,
+            "scan.start",
+            json!({"root_id": lab.root, "mode": "full"})
+        ))
+        .code,
+        ErrorCode::PermissionDenied
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn scan_cancel_is_acknowledged_and_never_publishes_a_complete_generation() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    svc.inner.scan.gate.arm();
+    let job = start(svc, &lab.root, "full");
+    svc.inner.scan.gate.wait_reached();
+    let (ack, _) = ok(
+        "scan.cancel",
+        call(svc, "scan.cancel", json!({"job_id": job})),
+    );
+    assert_eq!(ack["job"]["state"], "cancel_requested");
+    svc.inner.scan.gate.release();
+    assert_eq!(settle(svc, &job)["state"], "cancelled");
+    let (roots, _) = ok("roots.list", call(svc, "roots.list", json!({})));
+    assert_ne!(roots["roots"][0]["scan"]["coverage"], "complete");
+    assert!(roots["roots"][0]["scan"]["generation"].is_null());
+    // The root scans to completion afterwards.
+    assert_eq!(
+        settle(svc, &start(svc, &lab.root, "full"))["state"],
+        "completed"
+    );
+}
+
+/// Scans are offered to synthetic lab roots only: a personal session waits for #184's gates,
+/// and a synthetic fixture root (no path, no lab registration) is refused.
+#[test]
+fn scan_start_is_refused_outside_registered_lab_roots() {
+    let tmp = tempfile::tempdir().unwrap();
+    let personal = open(&tmp.path().join("personal"), DatasetClass::Personal);
+    let e = err(call(
+        &personal,
+        "scan.start",
+        json!({"root_id": "rt_x", "mode": "full"}),
+    ));
+    assert_eq!(e.code, ErrorCode::CapabilityUnavailable);
+    assert_eq!(reason(&e), Some("personal_scan_gated_184"));
+    let synthetic = open(&tmp.path().join("synthetic"), DatasetClass::Synthetic);
+    let (root, _) = fixture(&synthetic, 1);
+    let e = err(call(
+        &synthetic,
+        "scan.start",
+        json!({"root_id": synthetic.inner.root_id(root), "mode": "full"}),
+    ));
+    assert_eq!(e.code, ErrorCode::PermissionDenied);
+    assert_eq!(reason(&e), Some("synthetic_session_requires_lab_root"));
+}
+
+fn entry(name: &str, bytes: u64, dir: bool) -> loomward_engine::scan::Entry {
+    loomward_engine::scan::Entry {
+        name: name.encode_utf16().collect(),
+        file_id: None,
+        identity_eligible: false,
+        attributes: if dir { 0x10 } else { 0x20 },
+        reparse_tag: None,
+        logical: bytes,
+        allocated: Some(bytes),
+        creation: None,
+        last_write: None,
+        change: None,
+        last_access: None,
+        excluded: false,
+        traversal_error: None,
+    }
+}
+
+/// N1 in the durable writer: a refreshed listing makes its old ticket obsolete; the obsolete
+/// listing's chunks and publication are refused, what it staged publishes upsert-only, and only
+/// the current listing can complete (and so establish absence).
+#[test]
+fn obsolete_listing_revisions_are_refused_and_never_complete() {
+    use loomward_engine::scan::source::{IdBasis, ListOutcome, OpenedIdentity};
+    let tmp = tempfile::tempdir().unwrap();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (root, grant) = register(&svc, 7);
+    let dir = crate::db::active_root_dir(&svc.inner.db(), root)
+        .unwrap()
+        .unwrap();
+    let id = RootId::new(svc.inner.root_id(root)).unwrap();
+    let sink = &svc.inner.scan;
+    sink.bind(&id, grant, dir);
+    sink.begin_run(&id, 41, &RunScope::FullRoot).unwrap();
+    let identity = OpenedIdentity {
+        id: None,
+        basis: IdBasis::None,
+        volume_serial: None,
+        attributes: 0x10,
+        reparse_tag: None,
+    };
+    let old = sink.prepare_listing(&id, 41, None, &[], identity).unwrap();
+    let listing = |ticket, names: &[&str]| ScanMessage::DirListing {
+        run: 41,
+        ticket,
+        entries: names.iter().map(|n| entry(n, 1, false)).collect(),
+    };
+    sink.consume(&id, listing(old, &["stale.bin"])).unwrap();
+    let new = sink.refresh_listing(&id, 41, old).unwrap();
+    assert_ne!(new.input_revision, old.input_revision);
+    let obsolete = sink.consume(&id, listing(old, &["late.bin"])).unwrap_err();
+    assert_eq!(
+        obsolete.to_body().detail.unwrap().get("reason").unwrap(),
+        "listing_revision_changed"
+    );
+    let done = |ticket| ScanMessage::ListingDone {
+        run: 41,
+        ticket,
+        outcome: ListOutcome::Complete,
+    };
+    assert!(sink.consume(&id, done(old)).is_err());
+    let files = || -> Vec<String> {
+        let conn = svc.inner.db();
+        let mut s = conn
+            .prepare("SELECT name FROM main.file ORDER BY name")
+            .unwrap();
+        let names = s.query_map([], |r| r.get(0)).unwrap();
+        names.map(Result::unwrap).collect()
+    };
+    // The refresh published the obsolete stage upsert-only.
+    assert_eq!(files(), vec!["stale.bin".to_string()]);
+    sink.consume(&id, listing(new, &["kept.bin"])).unwrap();
+    sink.consume(&id, done(new)).unwrap();
+    assert_eq!(files(), vec!["kept.bin".to_string()]);
+    sink.finish_run(&id, 41, &RunScope::FullRoot, true).unwrap();
+    assert_eq!(
+        sink.consume(&id, listing(new, &["after.bin"]))
+            .unwrap_err()
+            .to_body()
+            .code,
+        ErrorCode::StaleGeneration,
+        "an ended run accepts nothing"
+    );
 }
