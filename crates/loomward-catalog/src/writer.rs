@@ -297,37 +297,48 @@ pub struct WriterTimings {
 struct Context {
     timings: Arc<Mutex<WriterTimings>>,
     parents: HashMap<i64, Option<i64>>,
-    marked: HashSet<i64>,
+    dirty: Vec<(i64, i64, i64)>,
+    extensions: HashMap<String, (i64, String)>,
     revision: i64,
     fenced_listings: HashSet<(i64, i64)>,
 }
 impl Context {
-    fn dirty(&mut self, conn: &Connection, start: i64, run: i64) -> Result<()> {
+    fn dirty(&mut self, start: i64, run: i64) {
+        self.dirty.push((start, self.revision, run));
+    }
+    fn flush_dirty(&mut self, conn: &Connection) -> Result<()> {
         let started = Instant::now();
-        let mut current = Some(start);
-        let mut count = 0;
+        let mut marked = HashSet::new();
         let mut update = conn.prepare_cached(
             "UPDATE dir SET subtree_rev=?2,dirty_rev=?2,dirty_run=?3,sub_complete=0 WHERE id=?1",
         )?;
-        while let Some(id) = current {
-            if !self.marked.insert(id) {
-                break;
-            }
-            update.execute(params![id, self.revision, run])?;
-            self.timings.lock().expect("timing lock").dirty_updates += 1;
-            current = if let Some(parent) = self.parents.get(&id) {
-                *parent
-            } else {
-                let parent =
-                    conn.query_row("SELECT parent_id FROM dir WHERE id=?1", [id], |r| r.get(0))?;
-                self.parents.insert(id, parent);
-                parent
-            };
-            count += 1;
-            if count > 512 {
-                return Err(Error::Invalid("directory identity cycle"));
+        // Newest seeds win: every ancestor retains its latest input revision, not the batch's first.
+        for &(start, revision, run) in self.dirty.iter().rev() {
+            let mut current = Some(start);
+            let mut count = 0;
+            while let Some(id) = current {
+                if !marked.insert(id) {
+                    break;
+                }
+                update.execute(params![id, revision, run])?;
+                self.timings.lock().expect("timing lock").dirty_updates += 1;
+                current = if let Some(parent) = self.parents.get(&id) {
+                    *parent
+                } else {
+                    let parent =
+                        conn.query_row("SELECT parent_id FROM dir WHERE id=?1", [id], |r| {
+                            r.get(0)
+                        })?;
+                    self.parents.insert(id, parent);
+                    parent
+                };
+                count += 1;
+                if count > 512 {
+                    return Err(Error::Invalid("directory identity cycle"));
+                }
             }
         }
+        self.dirty.clear();
         self.timings
             .lock()
             .expect("timing lock")
@@ -362,7 +373,8 @@ fn work(
     let mut context = Context {
         timings,
         parents: HashMap::new(),
-        marked: HashSet::new(),
+        dirty: Vec::new(),
+        extensions: HashMap::new(),
         revision: 0,
         fenced_listings: HashSet::new(),
     };
@@ -388,7 +400,6 @@ fn work(
             &mut conn,
             &batch[0].command,
             &context.fenced_listings,
-            &context.timings,
         ));
         context
             .timings
@@ -426,18 +437,27 @@ fn work(
                         )?;
                         context.revision =
                             save.query_row("SELECT catalog_rev FROM revision", [], |r| r.get(0))?;
-                        context.marked.clear();
+                        let dirty_start = context.dirty.len();
                         let result = apply(&save, &p.command, &mut context, prepared);
+                        // The witness commits atomically with the catalogue publication.
+                        let result = result.and_then(|reply| {
+                            save.execute("INSERT INTO meta(key,value) SELECT 'reference_publication',publication_token FROM st.pending_reference LIMIT 1 ON CONFLICT(key) DO UPDATE SET value=excluded.value", [])?;
+                            Ok(reply)
+                        });
                         match result {
-                            Ok(reply) => {
-                                // The witness commits atomically with the catalogue publication.
-                                save.execute("INSERT INTO meta(key,value) SELECT 'reference_publication',publication_token FROM st.pending_reference LIMIT 1 ON CONFLICT(key) DO UPDATE SET value=excluded.value", [])?;
-                                save.commit()?;
-                                Ok(reply)
-                            }
+                            Ok(reply) => match save.commit() {
+                                Ok(()) => Ok(reply),
+                                Err(e) => {
+                                    context.dirty.truncate(dirty_start);
+                                    context.extensions.clear();
+                                    context.parents.clear();
+                                    Err(Error::Sql(e))
+                                }
+                            },
                             Err(e) => {
                                 drop(save);
-                                context.marked.clear();
+                                context.dirty.truncate(dirty_start);
+                                context.extensions.clear();
                                 context.parents.clear();
                                 Err(e)
                             }
@@ -481,7 +501,15 @@ fn work(
                 if let Some(PublicationCrash::Observe(observe)) = crash {
                     observe(&tx, false);
                 }
-                let committed = tx.commit();
+                // After an auto-rollback the connection is in autocommit mode: flushing dirty marks
+                // would commit them one by one for a batch that never happened. COMMIT then fails.
+                let committed = if tx.is_autocommit() {
+                    tx.commit().map_err(Error::Sql)
+                } else {
+                    context
+                        .flush_dirty(&tx)
+                        .and_then(|()| tx.commit().map_err(Error::Sql))
+                };
                 context.timings.lock().expect("timing lock").commit_seconds +=
                     commit_start.elapsed().as_secs_f64();
                 {
@@ -495,9 +523,10 @@ fn work(
                 if let Err(e) = committed {
                     failed = true;
                     results.clear();
-                    results.push(Err(Error::Sql(e)));
+                    results.push(Err(e));
                     context.parents.clear();
-                    context.marked.clear();
+                    context.dirty.clear();
+                    context.extensions.clear();
                 }
             }
             Err(e) => {
@@ -567,12 +596,15 @@ fn state_revision(conn: &Connection) -> Result<()> {
     )?;
     Ok(())
 }
+enum Prepared {
+    Id(i64),
+    Listing,
+}
 fn prepare_state(
     conn: &mut Connection,
     c: &WriteCommand,
     fenced: &HashSet<(i64, i64)>,
-    timings: &Arc<Mutex<WriterTimings>>,
-) -> Result<Option<i64>> {
+) -> Result<Option<Prepared>> {
     match c {
         WriteCommand::RegisterRoot(o) => {
             let dataset: String = conn.query_row(
@@ -632,7 +664,7 @@ fn prepare_state(
             let grant = tx.last_insert_rowid();
             state_revision(&tx)?;
             tx.commit()?;
-            Ok(Some(grant))
+            Ok(Some(Prepared::Id(grant)))
         }
         WriteCommand::RevokeGrant {
             grant_id,
@@ -653,22 +685,22 @@ fn prepare_state(
         WriteCommand::ObjectReference {
             node,
             observed_at_ns,
-        } => reference(conn, *node, None, *observed_at_ns).map(Some),
+        } => reference(conn, *node, None, *observed_at_ns).map(|id| Some(Prepared::Id(id))),
         WriteCommand::ReconcileReference {
             reference_id,
             node,
             observed_at_ns,
-        } => reference(conn, *node, Some(*reference_id), *observed_at_ns).map(Some),
+        } => reference(conn, *node, Some(*reference_id), *observed_at_ns)
+            .map(|id| Some(Prepared::Id(id))),
         WriteCommand::DirListing(l) => {
-            retire_files(
+            let prepared = retire_files(
                 conn,
                 l.run_id,
                 l.dir_id,
                 Some((&l.files, &l.dirs)),
                 l.state == "complete",
-                timings,
             )?;
-            Ok(None)
+            Ok(prepared.then_some(Prepared::Listing))
         }
         WriteCommand::ListingDone {
             run_id,
@@ -676,16 +708,15 @@ fn prepare_state(
             outcome,
             ..
         } => {
-            retire_files(
+            let prepared = retire_files(
                 conn,
                 *run_id,
                 *dir_id,
                 None,
                 matches!(outcome, ListingOutcome::Complete)
                     && !fenced.contains(&(*run_id, *dir_id)),
-                timings,
             )?;
-            Ok(None)
+            Ok(prepared.then_some(Prepared::Listing))
         }
         WriteCommand::EndRun { run_id, state, .. } if state == "completed" => {
             retire_pending(conn, *run_id)?;
@@ -761,48 +792,17 @@ fn retire_files(
     dir: i64,
     incoming: Option<(&[Observation], &[Observation])>,
     complete: bool,
-    timings: &Arc<Mutex<WriterTimings>>,
-) -> Result<()> {
+) -> Result<bool> {
     active_run(conn, run, Some(dir))?;
     if !conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM st.object_ref WHERE state='resolved')",
         [],
         |r| r.get::<_, bool>(0),
     )? {
-        return Ok(());
+        return Ok(false);
     }
-    // Exercise every publication rejection before any precious binding can change.
-    {
-        let started = Instant::now();
-        let tx = conn.transaction()?;
-        let mut validation = Context {
-            timings: Arc::new(Mutex::new(WriterTimings::default())),
-            parents: HashMap::new(),
-            marked: HashSet::new(),
-            revision: tx.query_row("SELECT catalog_rev+1 FROM revision", [], |r| r.get(0))?,
-            fenced_listings: HashSet::new(),
-        };
-        let result = publish(
-            &tx,
-            run,
-            dir,
-            if complete {
-                ListingOutcome::Complete
-            } else {
-                ListingOutcome::Incomplete("partial".into())
-            },
-            (0, 0),
-            &mut validation,
-            incoming,
-        );
-        tx.rollback()?;
-        timings
-            .lock()
-            .expect("timing lock")
-            .validation_dry_run_seconds += started.elapsed().as_secs_f64();
-        result?;
-    }
-    conn.execute_batch("CREATE TEMP TABLE IF NOT EXISTS continuity_entry(kind INTEGER,name TEXT,raw BLOB,identity BLOB,created_ft INTEGER);CREATE INDEX IF NOT EXISTS continuity_by_identity ON continuity_entry(kind,identity,created_ft);CREATE INDEX IF NOT EXISTS continuity_by_name ON continuity_entry(kind,name,raw);DELETE FROM continuity_entry")?;
+    // Unmatched pending intents are discarded after rejection; bindings change only after a committed witness.
+    conn.execute_batch("CREATE TEMP TABLE IF NOT EXISTS continuity_entry(kind INTEGER,name TEXT,raw BLOB,identity BLOB,created_ft INTEGER,matched_id INTEGER);CREATE INDEX IF NOT EXISTS continuity_by_identity ON continuity_entry(kind,identity,created_ft);CREATE INDEX IF NOT EXISTS continuity_by_name ON continuity_entry(kind,name,raw);DELETE FROM continuity_entry")?;
     old_files(conn, dir)?;
     let fs: Option<String> = conn.query_row("SELECT v.filesystem FROM dir d JOIN root r ON r.id=d.root_id JOIN volume v ON v.id=r.volume_id WHERE d.id=?1", [dir], |r| r.get(0))?;
     let mut direct = incoming;
@@ -812,7 +812,7 @@ fn retire_files(
         )?;
         let mut rows = chunks.query(params![run, dir])?;
         let mut insert =
-            conn.prepare_cached("INSERT INTO continuity_entry VALUES(?1,?2,?3,?4,?5)")?;
+            conn.prepare_cached("INSERT INTO continuity_entry VALUES(?1,?2,?3,?4,?5,?6)")?;
         loop {
             let decoded;
             let (files, dirs) = if let Some(direct) = direct.take() {
@@ -828,16 +828,26 @@ fn retire_files(
             for (kind, entries) in [(1, files), (0, dirs)] {
                 for o in entries {
                     let identity = native_id(o, fs.as_deref());
-                    insert.execute(params![kind, o.name, o.name_utf16, identity, o.created_ft])?;
-                    if kind == 1 {
+                    let matched = if kind == 1 {
                         match_file(
                             conn,
                             &o.name,
                             o.name_utf16.as_deref(),
                             identity,
                             o.created_ft,
-                        )?;
-                    }
+                        )?
+                        .map(|m| m.0)
+                    } else {
+                        None
+                    };
+                    insert.execute(params![
+                        kind,
+                        o.name,
+                        o.name_utf16,
+                        identity,
+                        o.created_ft,
+                        matched
+                    ])?;
                 }
             }
         }
@@ -852,7 +862,8 @@ fn retire_files(
             FROM st.object_ref o WHERE o.kind='file' AND o.state='resolved' AND o.catalog_instance=(SELECT value FROM meta WHERE key='instance_id') AND EXISTS(SELECT 1 FROM file f JOIN old_file x ON x.id=f.id WHERE f.id=o.row_id AND f.born_run=o.born_run AND x.used=0 AND EXISTS(SELECT 1 FROM old_file s WHERE s.used=1 AND s.identity=f.file_id AND s.created_ft IS f.created_ft))", [token])?;
         tx.commit()?;
     }
-    retire_selected(conn,"WITH RECURSIVE replaced(id) AS (SELECT d.id FROM dir d JOIN continuity_entry e ON e.kind=0 AND e.identity IS d.file_id AND e.created_ft IS NOT d.created_ft AND (d.file_id IS NOT NULL OR (d.parent_id=?1 AND e.name=d.name AND e.raw IS d.name_utf16)) WHERE d.root_id=(SELECT root_id FROM dir WHERE id=?1) UNION ALL SELECT d.id FROM dir d JOIN replaced x ON d.parent_id=x.id) SELECT o.id FROM st.object_ref o JOIN file f ON f.id=o.row_id WHERE o.kind='file' AND o.state='resolved' AND f.dir_id=?1 AND o.catalog_instance=(SELECT value FROM meta WHERE key='instance_id') AND o.born_run=f.born_run AND NOT EXISTS(SELECT 1 FROM continuity_entry e WHERE e.kind=1 AND e.identity=f.file_id AND e.created_ft IS f.created_ft) AND (?2 OR EXISTS(SELECT 1 FROM continuity_entry e WHERE e.kind=1 AND ((e.name=f.name AND e.raw IS f.name_utf16) OR e.identity=f.file_id))) UNION SELECT o.id FROM st.object_ref o WHERE o.state='resolved' AND o.catalog_instance=(SELECT value FROM meta WHERE key='instance_id') AND ((o.kind='dir' AND o.row_id IN (SELECT id FROM replaced)) OR (o.kind='file' AND o.row_id IN (SELECT id FROM file WHERE dir_id IN (SELECT id FROM replaced))))",params![dir,complete])
+    retire_selected(conn,"WITH RECURSIVE replaced(id) AS (SELECT d.id FROM dir d JOIN continuity_entry e ON e.kind=0 AND e.identity IS d.file_id AND e.created_ft IS NOT d.created_ft AND (d.file_id IS NOT NULL OR (d.parent_id=?1 AND e.name=d.name AND e.raw IS d.name_utf16)) WHERE d.root_id=(SELECT root_id FROM dir WHERE id=?1) UNION ALL SELECT d.id FROM dir d JOIN replaced x ON d.parent_id=x.id) SELECT o.id FROM st.object_ref o JOIN file f ON f.id=o.row_id WHERE o.kind='file' AND o.state='resolved' AND f.dir_id=?1 AND o.catalog_instance=(SELECT value FROM meta WHERE key='instance_id') AND o.born_run=f.born_run AND NOT EXISTS(SELECT 1 FROM continuity_entry e WHERE e.kind=1 AND e.identity=f.file_id AND e.created_ft IS f.created_ft) AND (?2 OR EXISTS(SELECT 1 FROM continuity_entry e WHERE e.kind=1 AND ((e.name=f.name AND e.raw IS f.name_utf16) OR e.identity=f.file_id))) UNION SELECT o.id FROM st.object_ref o WHERE o.state='resolved' AND o.catalog_instance=(SELECT value FROM meta WHERE key='instance_id') AND ((o.kind='dir' AND o.row_id IN (SELECT id FROM replaced)) OR (o.kind='file' AND o.row_id IN (SELECT id FROM file WHERE dir_id IN (SELECT id FROM replaced))))",params![dir,complete])?;
+    Ok(true)
 }
 fn full_traversal(conn: &Connection, run: i64, root: i64) -> Result<bool> {
     Ok(conn.query_row("WITH RECURSIVE visible(id) AS (SELECT id FROM dir WHERE root_id=?2 AND parent_id IS NULL UNION ALL SELECT d.id FROM dir d JOIN visible v ON d.parent_id=v.id WHERE d.listing_state!='absent_pending') SELECT mode!='targeted' AND NOT EXISTS(SELECT 1 FROM dir WHERE id IN (SELECT id FROM visible) AND (seen_run!=?1 OR listing_state!='complete')) FROM scan_run WHERE id=?1",params![run,root],|r|r.get(0))?)
@@ -868,11 +879,14 @@ fn apply(
     conn: &Connection,
     c: &WriteCommand,
     ctx: &mut Context,
-    prepared: Option<i64>,
+    prepared: Option<Prepared>,
 ) -> Result<WriteReply> {
     match c {
         WriteCommand::RegisterRoot(o) => {
-            let grant = prepared.ok_or(Error::Invalid("grant not committed"))?;
+            let grant = match prepared {
+                Some(Prepared::Id(id)) => id,
+                _ => return Err(Error::Invalid("grant not committed")),
+            };
             let (root_id, dir) = crate::db::derive_root(conn, grant, Some(o))?;
             Ok(WriteReply::Root {
                 grant_id: grant,
@@ -910,14 +924,17 @@ fn apply(
             conn,
             l.run_id,
             l.dir_id,
-            if l.state == "complete" {
-                ListingOutcome::Complete
-            } else {
-                ListingOutcome::Incomplete(l.state.clone())
-            },
-            (l.skipped, l.errors),
+            (
+                if l.state == "complete" {
+                    ListingOutcome::Complete
+                } else {
+                    ListingOutcome::Incomplete(l.state.clone())
+                },
+                (l.skipped, l.errors),
+            ),
             ctx,
             Some((&l.files, &l.dirs)),
+            matches!(prepared, Some(Prepared::Listing)),
         ),
         WriteCommand::StageChunk {
             run_id,
@@ -945,16 +962,19 @@ fn apply(
             conn,
             *run_id,
             *dir_id,
-            if matches!(outcome, ListingOutcome::Complete)
-                && ctx.fenced_listings.contains(&(*run_id, *dir_id))
-            {
-                ListingOutcome::Incomplete("partial".into())
-            } else {
-                outcome.clone()
-            },
-            (*skipped, *errors),
+            (
+                if matches!(outcome, ListingOutcome::Complete)
+                    && ctx.fenced_listings.contains(&(*run_id, *dir_id))
+                {
+                    ListingOutcome::Incomplete("partial".into())
+                } else {
+                    outcome.clone()
+                },
+                (*skipped, *errors),
+            ),
             ctx,
             None,
+            matches!(prepared, Some(Prepared::Listing)),
         ),
         WriteCommand::DirFinal {
             run_id,
@@ -1016,9 +1036,12 @@ fn apply(
             rollup(conn, *root_id, false)?;
             Ok(WriteReply::Done)
         }
-        WriteCommand::ObjectReference { .. } | WriteCommand::ReconcileReference { .. } => Ok(
-            WriteReply::Reference(prepared.ok_or(Error::Invalid("reference not committed"))?),
-        ),
+        WriteCommand::ObjectReference { .. } | WriteCommand::ReconcileReference { .. } => {
+            Ok(WriteReply::Reference(match prepared {
+                Some(Prepared::Id(id)) => id,
+                _ => return Err(Error::Invalid("reference not committed")),
+            }))
+        }
         WriteCommand::Barrier => Ok(WriteReply::Done),
     }
 }
@@ -1072,31 +1095,20 @@ fn match_file(
     created: Option<i64>,
 ) -> Result<Option<FileMatch>> {
     conn.prepare_cached("UPDATE old_file SET used=-1 WHERE used=0 AND identity IS ?1 AND created_ft IS NOT ?2 AND (identity IS NOT NULL OR (name=?3 AND raw IS ?4))")?.execute(params![identity,created,name,raw])?;
-    let same = conn.prepare_cached("SELECT id,name,raw FROM old_file WHERE name=?1 AND raw IS ?2 AND identity IS ?3 AND created_ft IS ?4 AND used=0 ORDER BY id LIMIT 1")?.query_row(params![name,raw,identity,created], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
-    let matched = if same.is_some() {
-        same
-    } else if let Some(identity) = identity {
-        conn.prepare_cached("SELECT id,name,raw FROM old_file WHERE identity=?1 AND created_ft IS ?2 AND used=0 ORDER BY id LIMIT 1")?.query_row(params![identity,created], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?
-    } else {
-        None
-    };
-    if let Some((id, _, _)) = &matched {
-        conn.prepare_cached("UPDATE old_file SET used=1 WHERE id=?1")?
-            .execute([id])?;
-    }
-    Ok(matched)
+    Ok(conn.prepare_cached("UPDATE old_file SET used=1 WHERE id=coalesce((SELECT id FROM old_file WHERE name=?1 AND raw IS ?2 AND identity IS ?3 AND created_ft IS ?4 AND used=0 ORDER BY id LIMIT 1),(SELECT id FROM old_file WHERE identity=?3 AND created_ft IS ?4 AND used=0 ORDER BY id LIMIT 1)) RETURNING id,name,raw")?
+        .query_row(params![name,raw,identity,created], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?)
 }
 type FileMatch = (i64, String, Option<Vec<u8>>);
 fn publish(
     conn: &Connection,
     run: i64,
     dir: i64,
-    outcome: ListingOutcome,
-    counts: (u64, u64),
+    status: (ListingOutcome, (u64, u64)),
     ctx: &mut Context,
     mut direct: Option<(&[Observation], &[Observation])>,
+    prepared: bool,
 ) -> Result<WriteReply> {
-    let (skipped, errors) = counts;
+    let (outcome, (skipped, errors)) = status;
     let listing_start = Instant::now();
     let mut file_seconds = 0.0;
     let mut seen_seconds = 0.0;
@@ -1106,7 +1118,11 @@ fn publish(
     let complete = matches!(outcome, ListingOutcome::Complete);
     let coverage = outcome.coverage()?;
     let is_direct = direct.is_some();
-    let has_old = old_files(conn, dir)?;
+    let has_old = if prepared {
+        conn.query_row("SELECT EXISTS(SELECT 1 FROM old_file)", [], |r| r.get(0))?
+    } else {
+        old_files(conn, dir)?
+    };
     conn.execute_batch("CREATE TEMP TABLE IF NOT EXISTS listing_seen(kind INTEGER,id INTEGER,PRIMARY KEY(kind,id));DELETE FROM listing_seen;CREATE TEMP TABLE IF NOT EXISTS listing_names(name TEXT,raw BLOB,kind INTEGER);DELETE FROM listing_names")?;
     let mut own = Totals {
         complete,
@@ -1114,11 +1130,16 @@ fn publish(
     };
     let mut noid = 0i64;
     let mut members_changed = false;
-    let mut extensions = HashMap::new();
     let mut chunks = conn.prepare_cached(
         "SELECT entries FROM stage_entry WHERE run_id=?1 AND dir_id=?2 ORDER BY seq",
     )?;
     let mut rows = chunks.query(params![run, dir])?;
+    let mut continuity = if prepared {
+        Some(conn.prepare_cached("SELECT f.id,f.name,f.raw FROM continuity_entry c LEFT JOIN old_file f ON f.id=c.matched_id WHERE c.kind=1 ORDER BY c.rowid")?)
+    } else {
+        None
+    };
+    let mut matches = continuity.as_mut().map(|s| s.query([])).transpose()?;
     let mut entry_count = 0;
     loop {
         let decoded;
@@ -1148,7 +1169,12 @@ fn publish(
             own.newest_ft = own.newest_ft.max(o.modified_ft);
             let identity = native_id(o, fs.as_deref());
             noid += i64::from(identity.is_none());
-            let matched = if has_old {
+            let matched = if let Some(matches) = &mut matches {
+                let row = matches.next()?.ok_or(Error::CorruptDatabase)?;
+                row.get::<_, Option<i64>>(0)?
+                    .map(|id| -> rusqlite::Result<FileMatch> { Ok((id, row.get(1)?, row.get(2)?)) })
+                    .transpose()?
+            } else if has_old {
                 match_file(
                     conn,
                     &o.name,
@@ -1167,7 +1193,7 @@ fn publish(
             };
             members_changed |= id.is_none();
             let ext = if let Some(ext) = &o.extension {
-                if let Some((id, family)) = extensions.get(ext) {
+                if let Some((id, family)) = ctx.extensions.get(ext) {
                     if family != &o.family {
                         return Err(Error::Invalid("conflicting extension family"));
                     }
@@ -1183,8 +1209,8 @@ fn publish(
                     if family != o.family {
                         return Err(Error::Invalid("conflicting extension family"));
                     }
-                    if extensions.len() < 1024 {
-                        extensions.insert(ext.clone(), (id, family));
+                    if ctx.extensions.len() < 1024 {
+                        ctx.extensions.insert(ext.clone(), (id, family));
                     }
                     Some(id)
                 }
@@ -1241,7 +1267,7 @@ fn publish(
             if let Some((id, parent, _, _, _, created)) = &old_dir {
                 if *created != o.created_ft {
                     let parent = parent.ok_or(Error::Invalid("cannot replace root"))?;
-                    ctx.dirty(conn, parent, run)?;
+                    ctx.dirty(parent, run);
                     conn.execute("WITH RECURSIVE replaced(id) AS (SELECT ?1 UNION ALL SELECT d.id FROM dir d JOIN replaced x ON d.parent_id=x.id) UPDATE dir SET listing_state='absent_pending',file_id=NULL,id_quality='path_observation',id_basis='none' WHERE id IN (SELECT id FROM replaced)", [id])?;
                     conn.execute(
                         "UPDATE dir SET listing_rev=listing_rev+1 WHERE id=?1",
@@ -1257,9 +1283,9 @@ fn publish(
                     if cycle {
                         return Err(Error::Invalid("directory identity cycle"));
                     }
-                    ctx.dirty(conn, parent, run)?;
+                    ctx.dirty(parent, run);
                     ctx.parents.insert(id, Some(dir));
-                    ctx.dirty(conn, id, run)?;
+                    ctx.dirty(id, run);
                     members_changed = true;
                     conn.execute(
                         "UPDATE dir SET listing_rev=listing_rev+1 WHERE id=?1",
@@ -1281,7 +1307,7 @@ fn publish(
                 conn.prepare_cached("INSERT INTO dir(root_id,parent_id,name,name_utf16,file_id,id_quality,id_basis,depth,attrs,reparse_tag,flags,created_ft,modified_ft,changed_ft,listing_state,born_run,seen_run) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,'unlisted',?15,0)")?.execute(params![root,dir,o.name,o.name_utf16,identity,quality,if identity.is_some(){o.id_basis.as_str()}else{"none"},depth+1,o.attrs,o.reparse_tag,o.flags,o.created_ft,o.modified_ft,o.changed_ft,run])?;
                 let id = conn.last_insert_rowid();
                 ctx.parents.insert(id, Some(dir));
-                ctx.dirty(conn, id, run)?;
+                ctx.dirty(id, run);
                 members_changed = true;
                 id
             };
@@ -1325,7 +1351,7 @@ fn publish(
         own.newest_ft = sums.5;
     }
     conn.execute("UPDATE dir SET listing_state=?2,seen_run=?3,listing_rev=listing_rev+?4,own_files=?5,own_logical=?6,own_allocated=?7,own_alloc_unknown=?8,own_noid=?9,own_newest_ft=?10,own_skipped=?11,own_errors=?12,listing_outcome=?13 WHERE id=?1",params![dir,if complete{"complete"}else{"incomplete"},run,i64::from(members_changed),own.files as i64,own.logical as i64,own.allocated as i64,own.allocation_unknown as i64,noid,own.newest_ft,skipped as i64,errors as i64,coverage])?;
-    ctx.dirty(conn, dir, run)?;
+    ctx.dirty(dir, run);
     conn.execute(
         "DELETE FROM stage_entry WHERE run_id=?1 AND dir_id=?2",
         params![run, dir],
