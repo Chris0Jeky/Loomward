@@ -555,7 +555,7 @@ if c.catalog_rev!=catalog_rev||c.catalog_instance!=catalog_instance{return Err(E
         } else {
             ""
         };
-        let sql=format!("WITH RECURSIVE tree(id) AS (SELECT ?1 UNION ALL SELECT d.id FROM dir d JOIN tree t ON d.parent_id=t.id WHERE d.listing_state NOT IN ('absent_pending','excluded')) SELECT {group} bucket,sum({bytes}),count(*),({unknown}({group})='unknown') unknown FROM file f JOIN tree t ON t.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id WHERE f.flags & {EXCLUDED_FLAGS} = 0 GROUP BY bucket,unknown ORDER BY sum({bytes}) DESC");
+        let sql=format!("WITH RECURSIVE tree(id) AS (SELECT id FROM dir WHERE id=?1 AND listing_state!='excluded' UNION ALL SELECT d.id FROM dir d JOIN tree t ON d.parent_id=t.id WHERE d.listing_state NOT IN ('absent_pending','excluded')) SELECT {group} bucket,sum({bytes}),count(*),({unknown}({group})='unknown') unknown FROM file f JOIN tree t ON t.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id WHERE f.flags & {EXCLUDED_FLAGS} = 0 GROUP BY bucket,unknown ORDER BY sum({bytes}) DESC");
         let guard = WorkGuard::new(conn, work_budget, self.deadline)?;
         let mut buckets = Vec::new();
         let mut unknown_bytes = 0_u64;
@@ -754,11 +754,12 @@ fn durable_quality(conn: &Connection, r: &Raw) -> Result<String> {
 }
 fn unique_totals(conn: &Connection, r: &Raw) -> Result<(Option<u64>, Option<String>, u64)> {
     let id = match r.key {
-        NodeKey::Dir(id) => id,
+        // An excluded directory's contents are unknown, never zero.
+        NodeKey::Dir(id) if r.flags & EXCLUDED_FLAGS == 0 => id,
         _ => return Ok((None, None, 0)),
     };
     let guard = WorkGuard::new(conn, 2_000_000, None)?;
-    let result=conn.query_row("WITH RECURSIVE tree(id) AS (SELECT ?1 UNION ALL SELECT d.id FROM dir d JOIN tree t ON d.parent_id=t.id WHERE d.listing_state NOT IN ('absent_pending','excluded')), objects AS (SELECT file_id,max(allocated) allocated,sum(allocated IS NULL) unknown,sum((flags & ?2)!=0 OR coalesce(link_count,0)>1) links,count(*) names FROM file WHERE dir_id IN (SELECT id FROM tree) AND flags & ?3 = 0 GROUP BY file_id) SELECT count(file_id),coalesce(sum(allocated),0),coalesce(sum(unknown),0),coalesce(sum(file_id IS NULL),0),coalesce(sum(links),0) FROM objects",params![id,HARDLINK_SUSPECTED,EXCLUDED_FLAGS],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?)));
+    let result=conn.query_row("WITH RECURSIVE tree(id) AS (SELECT id FROM dir WHERE id=?1 AND listing_state!='excluded' UNION ALL SELECT d.id FROM dir d JOIN tree t ON d.parent_id=t.id WHERE d.listing_state NOT IN ('absent_pending','excluded')), objects AS (SELECT file_id,max(allocated) allocated,sum(allocated IS NULL) unknown,sum((flags & ?2)!=0 OR coalesce(link_count,0)>1) links,count(*) names FROM file WHERE dir_id IN (SELECT id FROM tree) AND flags & ?3 = 0 GROUP BY file_id) SELECT count(file_id),coalesce(sum(allocated),0),coalesce(sum(unknown),0),coalesce(sum(file_id IS NULL),0),coalesce(sum(links),0) FROM objects",params![id,HARDLINK_SUSPECTED,EXCLUDED_FLAGS],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?)));
     match result {
         Ok((count, bytes, unknown, noid, links)) => Ok((
             (noid == 0).then_some(count as u64),

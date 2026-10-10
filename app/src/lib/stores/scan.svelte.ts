@@ -54,14 +54,21 @@ class Scans {
     if (!c) return;
     const { result } = await c.call('jobs.list', { kinds: ['scan'], limit: 50 });
     this.commit(result.jobs.reduce(applyJob, this.book));
+    for (const job of result.jobs) if (job.root_id && this.book[job.root_id]?.job_id === job.job_id) this.clearConfirmationProblem(job.root_id);
     const listed = new Set(result.jobs.map((j) => j.job_id));
     for (const job of Object.values(this.book)) {
       if (!isActive(job.state) || listed.has(job.job_id)) continue;
       try {
         this.apply((await c.call('jobs.get', { job_id: job.job_id })).result.job);
+        this.clearConfirmationProblem(job.root_id!);
       } catch (e) {
-        if (!(e instanceof LoomwardError)) throw e;
-        if (e.code === 'not_found') this.apply(lostJob(job, new Date().toISOString()));
+        if (e instanceof LoomwardError && e.code === 'not_found') {
+          this.apply(lostJob(job, new Date().toISOString()));
+          this.clearConfirmationProblem(job.root_id!);
+        } else {
+          this.setProblem(job.root_id!, `Could not confirm this scan's state: ${e instanceof Error ? e.message : 'unexpected failure'}`);
+          if (!(e instanceof LoomwardError)) throw e;
+        }
       }
     }
   }
@@ -106,6 +113,10 @@ class Scans {
     } catch (e) {
       if (!(e instanceof LoomwardError)) throw e;
     }
+  }
+
+  private clearConfirmationProblem(rootId: string): void {
+    if (this.problems[rootId]?.startsWith("Could not confirm this scan's state:")) this.setProblem(rootId, null);
   }
 
   private setProblem(rootId: string, text: string | null): void {

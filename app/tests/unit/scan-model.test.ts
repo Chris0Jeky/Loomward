@@ -95,6 +95,20 @@ describe('applying job snapshots', () => {
     expect(stale.rt_a?.progress?.indexed_files).toBe(80);
   });
 
+  it('merges every monotonic progress counter independently in either arrival order', () => {
+    const a = done({ progress: progress({ examined: 100, indexed_files: 80, indexed_dirs: 20, skipped: 8, failed: 4,
+      logical_bytes: '9007199254740993', allocated_bytes: '9007199254740995', elapsed_ms: 4000, limit_hit: true }) });
+    const b = done({ progress: progress({ examined: 120, indexed_files: 70, indexed_dirs: 10, skipped: 2, failed: 1,
+      logical_bytes: '9007199254740992', allocated_bytes: null, elapsed_ms: 3000, pending_dirs: 2, writer_queue_depth: 3 }) });
+    for (const [first, second] of [[a, b], [b, a]]) {
+      expect(applyJob(applyJob({}, first!), second!).rt_a?.progress).toMatchObject({
+        examined: 120, indexed_files: 80, indexed_dirs: 20, skipped: 8, failed: 4,
+        logical_bytes: '9007199254740993', allocated_bytes: '9007199254740995', elapsed_ms: 4000, limit_hit: true,
+        pending_dirs: 2, writer_queue_depth: 3,
+      });
+    }
+  });
+
   it('keeps the progress already seen when a later snapshot carries none', () => {
     let b = applyJob({}, job('running'));
     b = applyProgress(b, 'rt_a', 'jb_1', progress());

@@ -20,6 +20,7 @@ pub struct DesktopDialogs {
     ask: Box<Prompt>,
     active: Mutex<()>,
     owner: Arc<AtomicIsize>,
+    picker: Mutex<Option<rfd::FileDialog>>,
 }
 
 impl DesktopDialogs {
@@ -33,8 +34,19 @@ impl DesktopDialogs {
         dialogs
     }
 
-    pub fn set_owner(&self, hwnd: isize) {
-        self.owner.store(hwnd, Ordering::SeqCst);
+    pub fn set_owner<R: tauri::Runtime>(
+        &self,
+        window: &tauri::WebviewWindow<R>,
+    ) -> tauri::Result<()> {
+        #[cfg(windows)]
+        self.owner
+            .store(window.hwnd()?.0 as isize, Ordering::SeqCst);
+        *self.picker.lock().unwrap_or_else(|e| e.into_inner()) = Some(
+            rfd::FileDialog::new()
+                .set_title("Loomward: choose a folder to observe (metadata only)")
+                .set_parent(window),
+        );
+        Ok(())
     }
 
     pub fn with_prompt(
@@ -46,6 +58,7 @@ impl DesktopDialogs {
             ask: Box::new(ask),
             active: Mutex::new(()),
             owner: Arc::new(AtomicIsize::new(0)),
+            picker: Mutex::new(None),
         }
     }
 }
@@ -53,6 +66,9 @@ impl DesktopDialogs {
 pub const DISCLOSURE_TITLE: &str = "Loomward: send these items to the teacher?";
 /// Conservative temporary MessageBox budget; personal use needs LW-111's scrolling dialog.
 pub const MAX_DISCLOSURE_CHARS: usize = 2048;
+pub const MAX_DISCLOSURE_ITEMS: usize = 4;
+/// Include conservative wrapping at 80 characters, rather than counting newlines alone.
+pub const MAX_DISCLOSURE_LINES: usize = 20;
 
 impl NativeDialogs for DesktopDialogs {
     /// Never opens in a synthetic session: an owner-picked folder is personal data
@@ -62,9 +78,8 @@ impl NativeDialogs for DesktopDialogs {
             return None;
         }
         let _active = self.active.try_lock().ok()?;
-        let picked = rfd::FileDialog::new()
-            .set_title("Loomward: choose a folder to observe (metadata only)")
-            .pick_folder()?;
+        let picker = self.picker.lock().ok()?.clone()?;
+        let picked = picker.pick_folder()?;
         let profile = std::env::var_os("USERPROFILE")?;
         validate_picked_folder(&picked, Path::new(&profile)).ok()
     }
@@ -78,7 +93,14 @@ impl NativeDialogs for DesktopDialogs {
             return false;
         };
         let text = disclosure_text(summary);
-        text.chars().count() <= MAX_DISCLOSURE_CHARS && (self.ask)(DISCLOSURE_TITLE, &text)
+        summary.items.len() <= MAX_DISCLOSURE_ITEMS
+            && text.chars().count() <= MAX_DISCLOSURE_CHARS
+            && text
+                .lines()
+                .map(|line| line.chars().count().div_ceil(80).max(1))
+                .sum::<usize>()
+                <= MAX_DISCLOSURE_LINES
+            && (self.ask)(DISCLOSURE_TITLE, &text)
     }
 }
 
@@ -139,13 +161,40 @@ pub fn visible(s: &str) -> String {
     s.chars()
         .map(|c| {
             let hidden = !matches!(c, ' '..='~');
-            if hidden {
+            if c == '\\' {
+                "\\\\".to_string()
+            } else if hidden {
                 format!("\\u{{{:04X}}}", c as u32)
             } else {
                 c.to_string()
             }
         })
         .collect()
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn picker_keeps_the_main_window_handle() {
+        let mut context = tauri::generate_context!();
+        context.config_mut().app.windows.clear();
+        let app = tauri::test::mock_builder().build(context).unwrap();
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        let dialogs = DesktopDialogs::new(DatasetClass::Personal);
+        assert!(dialogs.picker.lock().unwrap().is_none());
+        dialogs.set_owner(&window).unwrap();
+        let picker = dialogs.picker.lock().unwrap();
+        // rfd's stored parent must carry the mock runtime's nonzero native handle.
+        let configured = format!("{:?}", picker.as_ref().unwrap());
+        assert!(
+            configured.contains(&format!("hwnd: {}", dialogs.owner.load(Ordering::SeqCst))),
+            "{configured}"
+        );
+    }
 }
 
 /// An app-owned warning box whose default button is Cancel, so Enter declines.

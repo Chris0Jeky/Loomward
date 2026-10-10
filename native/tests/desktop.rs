@@ -317,7 +317,10 @@ fn disclosure_length_budget_declines_without_truncating() {
     assert_eq!(extra, 0);
     let exact = summary("synthetic", Some(items.clone()));
     assert_eq!(disclosure_text(&exact).len(), MAX_DISCLOSURE_CHARS);
-    assert!(dialogs.confirm_disclosure(&exact));
+    assert!(
+        !dialogs.confirm_disclosure(&exact),
+        "wrapping also consumes the height budget"
+    );
     let last = items.last_mut().unwrap();
     last["context"] = json!(format!("{}c", last["context"].as_str().unwrap()));
     assert!(!dialogs.confirm_disclosure(&summary("synthetic", Some(items))));
@@ -351,6 +354,8 @@ fn concurrent_disclosure_is_declined() {
 
 #[test]
 fn visible_escapes_all_non_ascii_including_every_reported_invisible() {
+    assert_eq!(visible(r"\u{202E}"), r"\\u{202E}");
+    assert_ne!(visible(r"\u{202E}"), visible("\u{202E}"));
     for c in [
         '\u{2800}',
         '\u{3164}',
@@ -370,6 +375,82 @@ fn visible_escapes_all_non_ascii_including_every_reported_invisible() {
         assert_eq!(visible(&c.to_string()), format!("\\u{{{:04X}}}", c as u32));
     }
     assert_eq!(visible("Lab file.txt"), "Lab file.txt");
+}
+
+#[test]
+fn disclosure_height_budget_declines_short_many_items_and_wrapped_lines() {
+    for (count, context) in [(25, "c".to_string()), (3, "c".repeat(400))] {
+        let items = (0..count)
+            .map(|i| {
+                json!({ "handle": format!("i{i:02}"),
+            "name": "n", "extension": "txt", "context": context, "size_bucket": 0 })
+            })
+            .collect();
+        let s = summary("synthetic", Some(items));
+        assert!(disclosure_text(&s).len() < loomward_desktop::dialogs::MAX_DISCLOSURE_CHARS);
+        let (dialogs, shown) = recording(DatasetClass::Synthetic, true);
+        assert!(!dialogs.confirm_disclosure(&s));
+        assert!(shown.lock().unwrap().is_empty());
+        assert!(dialogs.confirm_disclosure(&summary("synthetic", None)));
+    }
+}
+
+#[test]
+fn call_saturation_is_busy_through_tauri_ipc_and_recovers_after_release() {
+    let (_, desktop) = fixture_desktop(Duration::from_millis(30)).unwrap();
+    let desktop = Arc::new(desktop);
+    let mut context = tauri::generate_context!();
+    context.config_mut().app.windows.clear();
+    let app = shell::configure(tauri::test::mock_builder(), desktop.clone())
+        .build(context)
+        .unwrap();
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+        .build()
+        .unwrap();
+    let mut permits: Vec<_> = (0..loomward_desktop::MAX_CALLS)
+        .map(|_| desktop.begin_call().unwrap())
+        .collect();
+    let body = json!({ "request": envelope("session.hello", json!({})) });
+    assert!(invoke(&webview, "lw_call", body.clone())
+        .unwrap_err()
+        .as_str()
+        .unwrap()
+        .starts_with("busy:"));
+    permits.pop();
+    assert_eq!(
+        invoke(&webview, "lw_call", body)
+            .unwrap()
+            .deserialize::<Value>()
+            .unwrap()["ok"],
+        true
+    );
+}
+
+#[test]
+fn nonstandard_profile_parent_does_not_fence_unrelated_siblings() {
+    use loomward_desktop::dialogs::validate_picked_folder;
+    let tmp = tempfile::tempdir().unwrap();
+    let profile = tmp.path().join("fixture-home");
+    let sibling = tmp.path().join("fixture-dataset");
+    std::fs::create_dir(&profile).unwrap();
+    std::fs::create_dir(&sibling).unwrap();
+    assert_eq!(
+        validate_picked_folder(&sibling, &profile).unwrap(),
+        sibling.canonicalize().unwrap()
+    );
+    assert!(validate_picked_folder(&profile, &profile).is_err());
+}
+
+#[test]
+fn picker_fences_additional_credential_stores_case_insensitively() {
+    use loomward_desktop::dialogs::validate_picked_folder;
+    let tmp = tempfile::tempdir().unwrap();
+    let profile = tmp.path().join("profiles/fixture-user");
+    for store in [".docker", ".CARGO", ".npm", ".terraform.d", ".gemini"] {
+        let path = profile.join(store).join("nested");
+        std::fs::create_dir_all(&path).unwrap();
+        assert!(validate_picked_folder(&path, &profile).is_err(), "{store}");
+    }
 }
 
 #[test]
@@ -512,6 +593,57 @@ fn pump_panic_releases_both_adapter_and_service_slots() {
     desktop.open_stream("main", None, None, |_| true).unwrap();
     assert_eq!(desktop.open_streams("main"), 1);
     desktop.close_webview("main");
+}
+
+#[test]
+fn pump_receive_panic_releases_both_slots_and_allows_reopen() {
+    struct PanicService(Arc<loomward_http::fixture::FixtureService>);
+    struct PanicStream {
+        inner: Box<dyn EventStream>,
+        first: bool,
+    }
+    impl EventStream for PanicStream {
+        fn epoch(&self) -> &str {
+            self.inner.epoch()
+        }
+        fn recv_timeout(&mut self, timeout: Duration) -> loomward_protocol::RecvOutcome {
+            if !self.first {
+                panic!("synthetic pump receive panic");
+            }
+            self.first = false;
+            self.inner.recv_timeout(timeout)
+        }
+        fn close(&mut self) {
+            self.inner.close();
+        }
+    }
+    impl ViewService for PanicService {
+        fn call(&self, request: RequestEnvelope, ctx: &CallContext) -> ResponseEnvelope {
+            self.0.call(request, ctx)
+        }
+        fn subscribe(&self, resume: Option<(String, u64)>) -> Box<dyn EventStream> {
+            Box::new(PanicStream {
+                inner: self.0.subscribe(resume),
+                first: true,
+            })
+        }
+    }
+    let (service, _) = fixture_desktop(Duration::from_millis(30)).unwrap();
+    let desktop = Desktop::new(
+        Arc::new(PanicService(service.clone())),
+        DatasetClass::Synthetic,
+        Arc::new(DesktopDialogs::with_prompt(
+            DatasetClass::Synthetic,
+            |_, _| false,
+        )),
+    );
+    for _ in 0..5 {
+        desktop.open_stream("main", None, None, |_| true).unwrap();
+        assert!(wait_until(Duration::from_secs(3), || desktop
+            .open_streams("main")
+            == 0
+            && service.open_streams() == 0));
+    }
 }
 
 #[test]

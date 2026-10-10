@@ -63,13 +63,21 @@ pub fn validate_profile_root(root: &Path, profile: &Path) -> Result<(), String> 
         return Err("whole profiles are not eligible".into());
     }
     let profiles = profile.parent().ok_or("profile unavailable")?;
-    if root
-        .parent()
-        .is_some_and(|parent| folded(parent) == folded(profiles))
+    // Siblings of the profile are other profiles only under a real profiles directory (#253).
+    let profiles_directory = profiles.file_name().is_some_and(|name| {
+        matches!(
+            name.to_string_lossy().to_lowercase().as_str(),
+            "users" | "profiles" | "documents and settings"
+        )
+    });
+    if profiles_directory
+        && root
+            .parent()
+            .is_some_and(|parent| folded(parent) == folded(profiles))
     {
         return Err("whole profiles are not eligible".into());
     }
-    for component in root.components() {
+    for component in root.strip_prefix(profiles).unwrap_or(root).components() {
         if [
             ".ssh",
             ".aws",
@@ -85,6 +93,11 @@ pub fn validate_profile_root(root: &Path, profile: &Path) -> Result<(), String> 
             "browser profiles",
             "login data",
             "keychains",
+            ".docker",
+            ".cargo",
+            ".npm",
+            ".terraform.d",
+            ".gemini",
         ]
         .contains(
             &component

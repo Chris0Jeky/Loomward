@@ -2,8 +2,9 @@
 // Lives outside the component so the call pattern can be tested: which commands a sort change makes,
 // and when a new sample is shown or kept waiting.
 import type { Client } from '../../lib/transport/client';
-import type { OwnBudgets, ProcessList, TelemetrySample } from '../../lib/contracts.gen';
+import type { OwnBudgets, ProcessList, ProcessRow, TelemetrySample } from '../../lib/contracts.gen';
 import type { ProcessSort } from '../../lib/derived';
+import { parseBytes } from '../../lib/format/bytes';
 import { readProcesses, TelemetryLease } from './telemetry';
 
 export const POLL_MS = 3000;
@@ -31,6 +32,7 @@ export class ProcessTable {
 
   private ticket = 0;
   private lease: TelemetryLease | null = null;
+  private retained: ProcessList | null = null;
 
   constructor(private readonly deps: TableDeps) {}
 
@@ -71,6 +73,7 @@ export class ProcessTable {
       ]);
       if (mine !== this.ticket) return;
       this.sample = s.result;
+      this.retained = null;
       if (this.deps.holdsFocus()) this.waiting = p.result; else { this.list = p.result; this.waiting = null; }
       if (b) this.budgets = b.result;
       this.error = '';
@@ -82,28 +85,36 @@ export class ProcessTable {
 
   /**
    * The sort or the row limit changed. Running, that is one more poll. Paused, the sampler lease has been
-   * released and must stay released: ask only for the rows under the new order. The engine answers from
-   * its last stored sample, so the table still shows the sample it was paused on.
+   * released and must stay released: sort only the retained rows. A larger limit cannot fetch unseen rows.
    */
   async reorder(): Promise<void> {
     if (!this.paused) return this.tick();
-    const c = this.deps.client();
-    if (!c || !this.deps.available()) return;
-    const mine = ++this.ticket;
-    try {
-      const p = await readProcesses(c, this.sort, this.limit);
-      if (mine !== this.ticket) return;
-      this.list = p.result;
-      this.waiting = null;
-      this.error = '';
-    } catch (e) {
-      if (mine !== this.ticket) return;
-      this.error = this.deps.handle(e);
-    }
+    this.retained ??= this.list;
+    const retained = this.retained;
+    if (!retained) return;
+    const value = (r: ProcessRow): number | bigint | null => {
+      if (r.access === 'denied') return null;
+      switch (this.sort) {
+        case 'private_desc': return parseBytes(r.private_commit_bytes);
+        case 'working_set_desc': return parseBytes(r.working_set_bytes);
+        case 'cpu_desc': return r.cpu_fraction;
+        case 'io_desc': return r.io_read_bytes_per_s === null || r.io_write_bytes_per_s === null ? null : r.io_read_bytes_per_s + r.io_write_bytes_per_s;
+        case 'gpu_desc': return parseBytes(r.gpu_dedicated_bytes);
+        case 'name_asc': return null;
+      }
+    };
+    const rows = [...retained.rows].sort((a, b) => {
+      if (this.sort === 'name_asc') return a.name.localeCompare(b.name) || a.pid - b.pid;
+      const x = value(a), y = value(b);
+      if (x === null || y === null) return x === y ? a.pid - b.pid : x === null ? 1 : -1;
+      return x === y ? a.pid - b.pid : x > y ? -1 : 1;
+    }).slice(0, this.limit);
+    this.list = { ...retained, rows, truncated: retained.truncated || rows.length < retained.rows.length };
+    this.waiting = null;
   }
 
   /** Focus left the table: show the sample that was kept back. */
   release(): void {
-    if (this.waiting) { this.list = this.waiting; this.waiting = null; }
+    if (this.waiting) { this.list = this.waiting; this.waiting = null; this.retained = null; }
   }
 }

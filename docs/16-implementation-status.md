@@ -112,3 +112,42 @@ Not established: personal (real-disk) scans through the product, gated on #206 (
 visible, held names charged to the byte budget) and the rest of #184; P4 at 250k (#148); P12 at or under 1%
 (#160); cold-cache or HDD timings; the teacher on real data (q-8 answered broker-first on 10 October, design in `docs/superpowers/specs/2026-10-10-synthetic-inference-broker-design.md`; q-5 still open). An intermittent
 native watch test failure under heavy host load is tracked (#201). No file or process effect exists.
+
+## v0.3 status, wave 5 (10 October 2026, night; counts measured at `ee39877`)
+
+The sections above are kept as history. This wave merged, each with a fresh-context review (Opus, Sonnet, a
+security audit or a cross-vendor Muse lens) and green CI; the desktop shell, which CI does not build, was
+re-proved locally:
+
+| Area | State on `main` | Evidence |
+|---|---|---|
+| Scan robustness | per-root start gate and fenced revocation (#212); cancellation collects jobs before stopping the watch, a real race, 18% to 0 under load (#233); burst oracle accepts overflow FullRoot (#201 fixed, 43% to 0); revocation test made deterministic (#227) | `evidence/v3/scan-robustness-201-184.md`, `evidence/v3/scan-cancellation-228.md` |
+| Scan writer (gates personal scans) | excluded entries stay visible, flagged and uncounted; held names charged to the byte budget; `identity_changed` recorded; stale prepares relist; failed EndRun releases the root (#225, closes #206); a completed scan never retires an excluded directory's subtree (#252, closes #240) | catalogue tests `tests/writer.rs` |
+| Catalogue | P4d: dirty ancestors once per transaction, one publication per listing, reference refresh 1.63x (#216); guards pinned by 29 new tests (#251) | `crates/loomward-catalog/HANDOFF.md`, `evidence/v3/bench/catalog-1m.json` |
+| 10M lab (L17a) | E:-only 10M tier; 20 fresh native runs, p50 546k observed files/s, partial by design at the arena cap; limit outcomes are not errors (#215); G: capped at 2M per ADR-V3-17 (#242) | `evidence/v3/bench/scan-10m.json` |
+| Windows identity | Find without identity assurance refused; every native open refuses elevation; list-time refusals stay `Refused` (#217) | `docs/42-v03-adrs.md` |
+| Duplicates (LW-012, new) | staged size, partial hash, full hash and byte comparison through pinned, revalidated handles; synthetic and lab roots only (`content_read_gated` for personal); reader feature-gated to the engine, inspection on `Engine` with an active-grant recheck and revocation (#234, #244) | `evidence/v3/duplicates-lw012.md`, `evidence/v3/duplicate-reader-hardening-238.md` |
+| Applications (LW-047, new) | read-only Uninstall registry inventory with scopes, provenance and honest provider states; churn reads partial (#229, #249) | `evidence/v3/app-inventory-lw047.md` |
+| Desktop contexts (LW-044/045, new) | known folders with redirection as data; a pure, bounded `.lnk` parser with target health; no COM, no execution (#245) | `evidence/v3/shell-lw044-lw045.md` |
+| Telemetry | renewals keep samples; an unattributable GPU engine nulls busy values; `Denied` means no process handle; no reads after the last lease (#237) | `evidence/v3/telemetry-bughunt.md` |
+| loomward-serve | stored and picker grants in the static overlap check (offline grants compared as text), graceful lifetime drain, bounded static reads (#221); security behaviour pinned (#209) | `crates/loomward-http/tests/serve.rs` |
+| Desktop shell | dialog, IPC, stream, navigation and picker hardening; P9 back in the WebView2 probe (#226) | `evidence/v3/native/webview2-probe.json` |
+| App | Observatory process strip with observed ages (#214); scan, refresh and cancel for lab roots in Grants & health (#222); follow-ups (#250); an order-dependent e2e check fixed (#243) | `evidence/v3/app-views/` |
+| Contracts and docs | idempotency keyed by `request_id` per session (#220); README drift (#232); wave-4 checkpoint (#210) | `contracts/v3/semantics.md` |
+
+Counts (Windows, at `ee39877`): Rust 516 (apps 10, catalog 78, core 30, engine 125, http 55, lab 26, learn 8,
+protocol 35, service 40, shell 15, telemetry 33, windows 61); app 248 vitest (at `befd890`) plus Playwright e2e,
+`--a11y` and `--live-serve`; Python 221. Later merges in this wave add catalogue (#251, #252), app (#250) and
+apps (#249) tests.
+
+Public evidence: on 10 October the owner replaced workstation diagnostics with synthetic public evidence; new
+receipts withhold host hardware (processor, memory, device model, media) and private paths.
+
+Teacher: q-8 answered broker-first (inference broker, synthetic only, no credential reuse, no paid fallback,
+no Windows security change); the design spec is `docs/superpowers/specs/2026-10-10-synthetic-inference-broker-design.md`,
+and the owner is carrying that lane. q-5 (personal-data disclosure) stays open.
+
+Not established: personal (real-disk) scans through the product (still gated: `personal_scan_gated_184`;
+#206 and #240 are done, #184's remainder is not); P4 at 250k (#148); P12 at or under 1% (#160); the 10M tier
+complete rather than partial; cold-cache timings; service, contract and UI wiring for duplicates, applications
+and desktop contexts. No file or process effect exists.
