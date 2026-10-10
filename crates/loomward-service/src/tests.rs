@@ -13,13 +13,18 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Test seams inside the service: a delay before one command runs, a run counter, the order
-/// commands finished their delay in, and a one-shot forced mutation-thread spawn failure.
+/// commands finished their delay in, a one-shot forced mutation-thread spawn failure, and named
+/// gates a handler blocks at while the test holds them closed (`"locked"`: `volumes.declare_tier`
+/// holding `Inner::mutation`; `"after"`: any command after its handler returned, locks released).
 #[derive(Default)]
 pub(crate) struct Hooks {
     pub delay: Mutex<Option<(Command, Duration)>>,
     pub runs: Mutex<HashMap<Command, usize>>,
     pub order: Mutex<Vec<Command>>,
     pub fail_spawn: std::sync::atomic::AtomicBool,
+    pub closed: Mutex<Vec<(Command, &'static str)>>,
+    pub arrived: Mutex<Vec<(Command, &'static str)>>,
+    pub opened: std::sync::Condvar,
 }
 
 impl Hooks {
@@ -32,6 +37,28 @@ impl Hooks {
             }
         }
         self.order.lock().unwrap().push(c);
+    }
+
+    pub fn gate(&self, c: Command, at: &'static str) {
+        self.arrived.lock().unwrap().push((c, at));
+        let mut closed = self.closed.lock().unwrap();
+        while closed.contains(&(c, at)) {
+            closed = self.opened.wait(closed).unwrap();
+        }
+    }
+
+    pub fn open(&self, c: Command, at: &'static str) {
+        self.closed.lock().unwrap().retain(|g| *g != (c, at));
+        self.opened.notify_all();
+    }
+
+    /// Waits (bounded only by a generous safety timeout) until `cond` holds.
+    pub fn until(&self, what: &str, cond: impl Fn(&Self) -> bool) {
+        let give_up = Instant::now() + Duration::from_secs(60);
+        while !cond(self) {
+            assert!(Instant::now() < give_up, "never reached: {what}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 }
 
@@ -903,40 +930,76 @@ fn revocation_never_queues_behind_a_full_mutation_queue() {
     let tmp = tempfile::tempdir().unwrap();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     let (root, grant) = register(&svc, 1);
-    *svc.inner.hooks.delay.lock().unwrap() =
-        Some((Command::VolumesDeclareTier, Duration::from_millis(1500)));
-    for _ in 0..crate::MAX_PENDING {
-        let e = err(declare_with_deadline(&svc, "vo_flood", 1));
-        assert_eq!(e.code, ErrorCode::DeadlineExceeded);
+    let (volumes, _) = ok("volumes.list", call(&svc, "volumes.list", json!({})));
+    let volume = volumes["volumes"][0]["volume_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let hooks = &svc.inner.hooks;
+    const DECLARE: Command = Command::VolumesDeclareTier;
+    *hooks.closed.lock().unwrap() = vec![(DECLARE, "locked"), (DECLARE, "after")];
+    // The queue head holds `Inner::mutation`; 63 more wait for their tickets; the 65th is busy.
+    assert_eq!(
+        err(declare_with_deadline(&svc, &volume, 1)).code,
+        ErrorCode::DeadlineExceeded
+    );
+    hooks.until("the head holds the mutation lock", |h| {
+        h.arrived.lock().unwrap().contains(&(DECLARE, "locked"))
+    });
+    for _ in 1..crate::MAX_PENDING {
+        assert_eq!(
+            err(declare_with_deadline(&svc, &volume, 1)).code,
+            ErrorCode::DeadlineExceeded
+        );
     }
-    let e = err(declare_with_deadline(&svc, "vo_flood", 1));
+    let e = err(declare_with_deadline(&svc, &volume, 1));
     assert_eq!(
         (e.code, e.retryable),
         (ErrorCode::Busy, true),
         "65th refused"
     );
-    let t = Instant::now();
-    ok(
-        "roots.revoke",
-        call(
-            &svc,
-            "roots.revoke",
-            json!({"root_id": svc.inner.root_id(root), "purge_catalog": false}),
-        ),
-    );
-    ok(
-        "grants.revoke",
-        call(
-            &svc,
+    // The revocation waits only for the lock the head holds, never for the queue behind it.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let svc = &svc;
+        let tx = tx.clone();
+        scope.spawn(move || {
+            let mut r = request(
+                "roots.revoke",
+                json!({"root_id": svc.inner.root_id(root), "purge_catalog": false}),
+            );
+            r.deadline_ms = Some(Int::new(60_000).unwrap());
+            tx.send(svc.call(r, &CallContext::http())).unwrap();
+        });
+        hooks.until("the revocation is running", |h| {
+            h.runs.lock().unwrap().contains_key(&Command::RootsRevoke)
+        });
+        // The head commits and releases the lock, then stays unsettled at its "after" gate, so
+        // no queued ticket can start: only the revocation can take the lock now.
+        hooks.open(DECLARE, "locked");
+        let revoked = rx.recv_timeout(Duration::from_secs(60)).unwrap();
+        ok("roots.revoke", revoked);
+        assert!(hooks.arrived.lock().unwrap().contains(&(DECLARE, "after")));
+        assert_eq!(
+            hooks.runs.lock().unwrap()[&DECLARE],
+            1,
+            "no queued mutation ran before the revocation"
+        );
+        assert_eq!(
+            crate::db::declarations(&svc.inner.db(), "fixture").unwrap(),
+            vec![Some(2)],
+            "the head's declaration committed under the lock first"
+        );
+        ok(
             "grants.revoke",
-            json!({"grant_id": format!("gr_{grant}")}),
-        ),
-    );
-    assert!(
-        t.elapsed() < Duration::from_millis(1000),
-        "revocation did not wait for the blocked queue head"
-    );
-    *svc.inner.hooks.delay.lock().unwrap() = None;
+            call(
+                svc,
+                "grants.revoke",
+                json!({"grant_id": format!("gr_{grant}")}),
+            ),
+        );
+        hooks.open(DECLARE, "after");
+    });
 }
 
 /// H2: a mutation whose thread could not be spawned never takes a ticket, so a later mutation
