@@ -167,6 +167,7 @@ review finished (its post-merge review found a defect, fixed in #267); the deskt
 | Catalogue | link counts cover the visible tree only and are rebuilt on revocation (#270) | `crates/loomward-catalog/HANDOFF.md` |
 | Duplicates | a failed representative skips only itself and its partition is re-verified; verified groups survive a late stop (#261, #267) | `evidence/v3/duplicate-reader-bughunt.md` |
 | Desktop contexts | shortcut reads walk each component relative to its parent without following reparse points; removable media untouched; capped, feature-gated content reads (#257) | `evidence/v3/shell-lw044-lw045.md` |
+| Desktop shell | disclosure capped by items, wrapped lines and characters; backslashes escaped; wider profile and credential fences; picker owned by the main window; busy calls retried once; retained replay preserved; WebView2 P9 16 ms median (#253) | `evidence/v3/native/webview2-probe.json` |
 | Contracts | jobs carry an engine-monotonic `seq` and a per-job `rev`; the app orders and merges by them (#272) | `contracts/v3/semantics.md` |
 | Tests and tooling | e2e P9 gates the median of five warm runs at 50 ms; race-free async checks (#271); `#![forbid(unsafe_code)]` in four more crates and an accurate unsafe inventory (#259, #263) | `scripts/test_app_timing.py` |
 
