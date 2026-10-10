@@ -80,3 +80,35 @@ Measured: M-tier scan 1M files at about 4.9M files/s warm with 20/20 exact manif
 In review or in flight on 10 October 2026 (afternoon): the SQLite catalogue (#147, parked after two review rounds; a superseding durability fix for #171 is in progress; P4 is about 16k rows/s against 250k, #148), the service (L8, after the catalogue), engine telemetry follow-ups (#160, #163), and the L15b teacher sandbox spike.
 
 Not established: the view service, a persistent native catalogue on main, cold-cache or HDD timings, a WinDirStat comparison, a connected teacher. No file or process effect exists.
+
+## v0.3 status, wave 4 (10 October 2026, evening; `main` at f910c89)
+
+The earlier section above is kept as history. Since then these merged, each with a fresh-context review and green
+CI:
+
+| Area | State on `main` | Evidence |
+|---|---|---|
+| Catalogue (`loomward-catalog`) | durable SQLite catalogue on revision 2 plus errata: crash-safe pending-reference retirement, FULL sync for intent-bearing publications (#173); P4 3.2x to about 53k rows/s at 1M rows (#187); query errors never hidden as budget cuts (#203) | `crates/loomward-catalog/HANDOFF.md`, `evidence/v3/bench/catalog-1m.json` |
+| Scan pipeline | identity dedupe, dirty-epoch relists, moved or vanished folders report partial, never a wrong total (#178); child tickets follow the parent's publication (#205) | `evidence/v3/scan-l7.md` |
+| Change tracking (L16) | guarded `ReadDirectoryChangesW` watchers feeding dirty epochs (#183); scoped to each scan, so they never block the user's renames between scans; attribute and ACL hints; identity-based absence (#202) | `evidence/v3/l16-change-tracking.md` |
+| View service (L8) | `loomward-service`, the `ViewService` over the engine and catalogue: instance-bound IDs, revocation never queued, bounded admission (#179); session-bound node IDs, roots past 64, device-path refusal (#197); **scans through the product for synthetic lab roots**: catalogue-backed scan writer, `GrantedRoot` only from an active durable grant (#205) | `crates/loomward-service/` |
+| `loomward-serve` | runs the engine service (`--fixtures` for the contract examples); gates before any body drain, write deadlines, SSE stall release, exclusive port, static-scope refusal (#195) | `crates/loomward-http/tests/serve.rs` |
+| Jobs and placement | `Queued` is published, spawn failures publish their terminal state, cancel is idempotent (#199); placement zero relief, unknown clusters, hidden descendants, unusable volumes read Unknown (#200) | engine tests |
+| Telemetry | P12 lease overhead 2.45% to 1.005% of one core; process rows carry their own `observed_at` (contract addition) (#207) | `evidence/v3/telemetry-engine.md`, `evidence/v3/bench/telemetry.json` |
+| App | WCAG second half (#188); Explorer returns to its starting points when a saved breadcrumb goes stale (#204); README status brought current (#192) | `scripts/test_app_a11y.py` |
+| Tooling | `verify.py --app` (#186); text checked out as LF everywhere (#193) | `scripts/verify.py` |
+
+Counts (Windows): Rust 410 (catalog 69, core 30, engine 106, http 40, lab 22, learn 8, protocol 35, service 35,
+telemetry 28, windows 37), plus the desktop shell's 7; app 174 vitest plus Playwright e2e and `--a11y`; Python 221.
+
+Measured on a shared host (other lanes running): P4 about 44.5k rows/s median in an interleaved A/B (53k when
+measured alone earlier); a first-scan bulk-load candidate (-31%) and a spill-bounded cache (-37.5%) were rejected and
+recorded (#208, branch `perf/catalog-p4b-parked`); P12 1.005% against 1%; L16 hint latency p50 0.32 ms.
+
+In review or in flight: the catalogue auto-rollback guard (#208), loomward-http security tests (#209), the 10M lab
+tier on E: (L17a).
+
+Not established: personal (real-disk) scans through the product, gated on #206 (excluded entries must stay
+visible, held names charged to the byte budget) and the rest of #184; P4 at 250k (#148); P12 at or under 1%
+(#160); cold-cache or HDD timings; the teacher on real data (owner decisions q-8, then q-5). An intermittent
+native watch test failure under heavy host load is tracked (#201). No file or process effect exists.

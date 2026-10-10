@@ -3,9 +3,9 @@
   "schema_version": 2,
   "as_of": "2026-10-10",
   "version": "0.3.0-dev",
-  "base_commit": "ce84800",
+  "base_commit": "f910c89",
   "branch": "main",
-  "phase": "v0.3 wave 3: scan pipeline, placement, engine telemetry, the first desktop shell build and WCAG fixes on main; catalogue parked behind a superseding durability fix (#171); service (L8) next; no effects",
+  "phase": "v0.3 wave 4: durable catalogue, the L8 view service and scans through the product for synthetic lab roots, scan-scoped change tracking, P4 53k rows/s and P12 1.005% on main; personal scans gated on #206 and #184; no effects",
   "read_first": [
     "AGENTS.md",
     "handoff/START-HERE.md",
@@ -49,26 +49,30 @@
       "loomward-learn": "student model port with exact Python parity (#113)",
       "loomward-protocol": "v3 envelopes, complete per-command validation, duplicate-key refusal, ViewService trait (#133)",
       "loomward-engine": "C2 skeleton (#140) + L7 scan pipeline (#162), L12 placement (#158), L11b telemetry (#161)",
-      "loomward-http": "loomward-serve: loopback HTTP + SSE adapter, token/Host/Origin checks, FixtureService until L8 (#143)"
+      "loomward-http": "loomward-serve: loopback HTTP + SSE adapter over loomward-service; token/Host/Origin checks; explicit fixture mode retained; product scans limited to synthetic lab roots (#179, #195, #205)",
+      "loomward-catalog": "durable SQLite catalogue: revision 2 + errata, pending-reference retirement, FULL sync for intents (#173); P4 ~53k rows/s (#187); auto-rollback guard (#208)",
+      "loomward-service": "the ViewService over engine and catalogue (#179, #197); catalogue-backed scan writer and scan.start for synthetic lab roots (#205)"
     },
-    "rust_tests_on_windows": 240,
+    "rust_tests_on_windows": 410,
     "compiled": true,
     "toolchain": "rustc 1.97.1",
     "fmt_clippy_clean": true,
     "tauri": "first built 2026-10-10 (#164): lw_call/lw_events only, CSP, Rust-only dialogs, self-test 10/10, WebView2 probe 13/13, Atlas P9 17.5 ms",
     "enumeration": "GetFileInformationByHandleEx(FileIdExtdDirectoryInfo), 8 workers: 3M files in 0.558 s warm (5.38M files/s, 9.2 MiB RSS); cold cache unmeasured",
     "rust_tests_by_crate": {
+      "loomward-catalog": 69,
       "loomward-core": 30,
-      "loomward-engine": 61,
-      "loomward-http": 30,
+      "loomward-engine": 106,
+      "loomward-http": 40,
       "loomward-lab": 22,
       "loomward-learn": 8,
       "loomward-protocol": 35,
-      "loomward-telemetry": 25,
-      "loomward-windows": 29
+      "loomward-service": 35,
+      "loomward-telemetry": 28,
+      "loomward-windows": 37
     },
-    "change_tracking": "non-elevated: ReadDirectoryChangesW overflows as zero-byte completions (64 KiB recommended); unprivileged USN works through directory handles on G:/E: without names, 1.84M rec/s (#138)",
-    "scan": "M tier 1M files ~4.9M files/s warm, 20/20 exact manifests (#162); elevated tokens refused (hosted CI pins it)"
+    "change_tracking": "L16: guarded ReadDirectoryChangesW watchers scoped to each scan (#183, #202); attribute/ACL hints; identity-based absence; USN accelerator not implemented",
+    "scan": "M tier 1M files ~4.9M files/s warm, 20/20 exact manifests (#162); through the product for synthetic lab roots (#205); personal scans gated on #206/#184; elevated tokens refused"
   },
   "learning": {
     "student": "weighted Naive Bayes; Rust port loomward-learn with exact Python parity (#113)",
@@ -84,11 +88,12 @@
     "windows_performance_claim": false
   },
   "next_local_issues": [
-    "LW-005 (#171 superseding #147)",
-    "LW-103 (L8 service)",
-    "LW-018 follow-ups (#167)",
-    "LW-050 follow-ups (#160, #163)",
-    "LW-111 (L15b sandbox spike)"
+    "#206 (scan writer: excluded entries visible, held names in the byte budget) before personal scans",
+    "#184 remainder (concurrent start_scan, revocation race)",
+    "#148 (P4 toward 250k: receipt pipelining)",
+    "#160 (P12 to at or under 1%)",
+    "LW-056 (L17 10M lab tier and scale benchmarks)",
+    "LW-111 (teacher sandbox, waiting on owner q-8)"
   ],
   "optional_independent_starts": [
     "LW-065",
@@ -115,7 +120,12 @@
     "evidence/v2/ui-final.txt",
     "evidence/v2/standalone-checks.json",
     "evidence/v2/benchmarks.json",
-    "evidence/v2/verification-summary.json"
+    "evidence/v2/verification-summary.json",
+    "evidence/v3/l16-change-tracking.md",
+    "evidence/v3/bench/catalog-1m.json",
+    "evidence/v3/telemetry-engine.md",
+    "evidence/v3/bench/telemetry.json",
+    "crates/loomward-catalog/HANDOFF.md"
   ],
   "estate": {
     "repository": "Chris0Jeky/Loomward (public)",
@@ -137,5 +147,49 @@
     ]
   },
   "backlog_github_map": "backlog/github-issues.json (#4-#105, #120-#131); follow-ups #141-#171",
-  "teacher_confinement": "partially achievable with CLI flags; synthetic-only until LW-111 enforcement canaries pass (#116)"
+  "teacher_confinement": "synthetic-only; an unregistered AppContainer refused the probe before it ran (#174); owner decision q-8 (AppContainer profile or inference broker) is open, then q-5",
+  "wave4": {
+    "merged": [
+      "#173",
+      "#177",
+      "#178",
+      "#179",
+      "#183",
+      "#186",
+      "#187",
+      "#188",
+      "#189",
+      "#192",
+      "#193",
+      "#195",
+      "#197",
+      "#199",
+      "#200",
+      "#202",
+      "#203",
+      "#204",
+      "#205",
+      "#207"
+    ],
+    "rust_tests_by_crate": {
+      "catalog": 69,
+      "core": 30,
+      "engine": 106,
+      "http": 40,
+      "lab": 22,
+      "learn": 8,
+      "protocol": 35,
+      "service": 35,
+      "telemetry": 28,
+      "windows": 37
+    },
+    "rust_tests": 410,
+    "app_vitest": 174,
+    "python_tests": 221,
+    "scan_through_product": "synthetic lab roots only (#205); personal sessions answer capability_unavailable (personal_scan_gated_184)",
+    "parked_or_rejected": [
+      "perf/catalog-p4b-parked (bulk load, -31% P4)",
+      "spill-bounded temp cache (-37.5% P4, #208)"
+    ]
+  }
 }
