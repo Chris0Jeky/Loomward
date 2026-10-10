@@ -5,12 +5,13 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { formatBytes, parseBytes } from '../../lib/format/bytes';
+  import { escapedName } from '../../lib/format/names';
   import { formatCount, formatTime } from '../../lib/format/time';
   import { session } from '../../lib/stores/session.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
+  import { firstTrusted, isSound, type Outcome } from './plan';
   import type { CandidateGroup, GroupOverride, HeatPolicy, PlacementCandidates, PlacementPlan, PreRejectReason, RejectReason, ReliefPolicy, TierInfo, TierModel, TierVolume } from '../../lib/types.views';
 
-  type Outcome = { plan: PlacementPlan } | { error: string };
   interface Assumption { heat: '' | '0.1' | '0.5' | '0.9'; free: boolean }
 
   const HEAT: { id: HeatPolicy; label: string; note: string }[] = [
@@ -143,12 +144,9 @@
     shown = 'unknown_is_ineligible';
   }
 
-  /** The plan is only trusted for display when it says it is a simulation that changed nothing. */
-  const sound = (p: PlacementPlan) => p.mode === 'simulation' && p.filesystem_changed === false && p.proposals.every((x) => x.executable === false);
-
   const detail = $derived(outcomes && shown !== 'none' ? outcomes[shown] : null);
   const detailPlan = $derived(detail && 'plan' in detail ? detail.plan : null);
-  const firstPlan = $derived(outcomes ? Object.values(outcomes).find((o): o is { plan: PlacementPlan } => 'plan' in o)?.plan ?? null : null);
+  const firstPlan = $derived(firstTrusted(outcomes));
   const baseline = $derived(firstPlan ? BigInt(firstPlan.baseline_shortfall_bytes) : null);
 </script>
 
@@ -168,7 +166,7 @@
             <span class="tag tier" title={v.tier.note}>{tierLabel(v.tier)}</span>
             {#if !v.online}<span class="tag bad">offline</span>{/if}
           </header>
-          <div class="meter" role="img" aria-label={`${v.display_name} free space ${percent(v.free_fraction)}; watch below ${percent(model.policy.watch_free_fraction)}, pressure below ${percent(model.policy.pressure_free_fraction)}`}>
+          <div class="meter" role="img" aria-label={`${escapedName(v.display_name)} free space ${percent(v.free_fraction)}; watch below ${percent(model.policy.watch_free_fraction)}, pressure below ${percent(model.policy.pressure_free_fraction)}`}>
             {#if used !== null}<div class={`used ${v.pressure}`} style={`width:${(used * 100).toFixed(1)}%`}></div>{/if}
             <span class="tick" style={`left:${((1 - model.policy.watch_free_fraction) * 100).toFixed(1)}%`} title="watch watermark"></span>
             <span class="tick hard" style={`left:${((1 - model.policy.pressure_free_fraction) * 100).toFixed(1)}%`} title="pressure watermark"></span>
@@ -218,7 +216,7 @@
                 {/each}
               </td>
               <td class="whatif">
-                <select aria-label={`Assumed heat for ${g.name}`} value={a.heat} onchange={(e) => (assume[g.group_id] = { ...a, heat: e.currentTarget.value as Assumption['heat'] })}>
+                <select aria-label={`Assumed heat for ${escapedName(g.name)}`} value={a.heat} onchange={(e) => (assume[g.group_id] = { ...a, heat: e.currentTarget.value as Assumption['heat'] })}>
                   <option value="">Heat: as observed</option><option value="0.1">Assume cold (0.1)</option><option value="0.5">Assume warm (0.5)</option><option value="0.9">Assume hot (0.9)</option>
                 </select>
                 <label class="chk"><input type="checkbox" checked={a.free} onchange={(e) => (assume[g.group_id] = { ...a, free: e.currentTarget.checked })} /> Assume not pinned, active or protected</label>
@@ -268,7 +266,7 @@
             {@const o = outcomes[h.id]}
             <tr class:current={shown === h.id}>
               <th scope="row">{h.label}<div class="muted small">{h.note}</div></th>
-              {#if 'plan' in o && sound(o.plan)}
+              {#if 'plan' in o && isSound(o.plan)}
                 <td class="r num">{o.plan.proposals.length}</td><td class="r num">{formatBytes(o.plan.transfer_bytes)}</td>
                 <td class="r num">{formatBytes(o.plan.shortfall_bytes)}</td><td>{o.plan.satisfied ? 'Met' : 'Not met'}</td>
               {:else}
@@ -291,7 +289,7 @@
   </section>
 {:else if detail && 'error' in detail}
   <section class="panel"><p class="bad" role="alert">{detail.error}</p></section>
-{:else if detailPlan && !sound(detailPlan)}
+{:else if detailPlan && !isSound(detailPlan)}
   <section class="panel"><p class="bad" role="alert">The engine's reply was not a simulation that leaves the filesystem unchanged, so it is not shown.</p></section>
 {:else if detailPlan}
   {@const p = detailPlan}

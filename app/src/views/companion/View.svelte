@@ -5,7 +5,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { formatBytes, parseBytes } from '../../lib/format/bytes';
-  import { hasHiddenCharacters } from '../../lib/format/names';
+  import { escapedName, hasHiddenCharacters } from '../../lib/format/names';
   import { formatCount, formatTime } from '../../lib/format/time';
   import { LoomwardError } from '../../lib/transport/client';
   import { session } from '../../lib/stores/session.svelte';
@@ -187,7 +187,7 @@
               {@const denied = r.access === 'denied'}
               <tr class:sel={explain?.row.process_ref === r.process_ref}>
                 <td>
-                  <button class="link" type="button" onclick={() => void explainRow(r)} aria-label={`Explain ${r.name}`}><VisibleName name={r.name} /></button>
+                  <button class="link" type="button" onclick={() => void explainRow(r)} aria-label={`Explain ${escapedName(r.name)}`}><VisibleName name={r.name} /></button>
                   <span class="muted small num">pid {r.pid}</span>
                   {#if r.loomward_owned}<span class="tag">Loomward</span>{/if}
                   {#if hasHiddenCharacters(r.name)}<span class="tag warn">hidden characters</span>{/if}
