@@ -1469,17 +1469,20 @@ fn absence_is_decided_by_identity_when_a_directory_is_replaced_at_its_name() {
     );
 }
 
-/// Excluded entries (here a junction, a reparse point) are never followed and never present.
+/// #206 MEDIUM-1, invariant 4: a directory replaced by a junction (a reparse point) between two
+/// scans stays visible as an `excluded` entry flagged `reparse_not_followed`. It is never
+/// followed and never counted, the replaced directory's old row retires, and the root's coverage
+/// is not complete while the job still reports the skip.
 #[cfg(windows)]
 #[test]
-fn excluded_entries_never_count_as_present() {
+fn a_junction_replacing_a_directory_stays_visible_as_excluded() {
     let Some(lab) = lab() else { return };
     let svc = &lab.svc;
     assert_eq!(
         settle(svc, &start(svc, &lab.root, "full"))["state"],
         "completed"
     );
-    assert!(child_named(&lab_slice(svc, &lab.root), "b").is_some());
+    let old = child_named(&lab_slice(svc, &lab.root), "b").unwrap();
     std::fs::remove_dir(lab.path.join("b")).unwrap();
     let made = std::process::Command::new("cmd")
         .args(["/C", "mklink", "/J", "b", "a"])
@@ -1491,12 +1494,43 @@ fn excluded_entries_never_count_as_present() {
     assert_eq!(done["state"], "completed", "{done:?}");
     assert!(done["progress"]["skipped"].as_u64().unwrap() >= 1);
     let slice = lab_slice(svc, &lab.root);
-    assert!(
-        child_named(&slice, "b").is_none(),
-        "an excluded entry is not present"
+    let b = slice["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["parent"] == json!(0) && n["name"] == "b")
+        .expect("the junction stays visible");
+    assert_eq!(b["coverage"], "excluded", "{b:?}");
+    assert_eq!(b["threads"]["permission"]["state"], "excluded", "{b:?}");
+    assert_eq!(
+        b["threads"]["permission"]["reason"], "reparse_not_followed",
+        "{b:?}"
     );
+    assert_eq!(
+        (b["files"].as_u64(), b["dirs"].as_u64()),
+        (Some(0), Some(0))
+    );
+    assert_ne!(
+        slice["nodes"][0]["coverage"], "complete",
+        "an excluded child keeps the root from claiming complete coverage"
+    );
+    // Never followed and never counted: the totals still equal a walk that skips reparse points.
     assert_eq!(slice_totals(&slice), walk(&lab.path));
     assert_eq!(slice_totals(&slice), (5, 2, 165));
+    assert_eq!(
+        err(call(svc, "node.inspect", json!({"node_id": old}))).code,
+        ErrorCode::NotFound,
+        "the replaced directory's row retired"
+    );
+    // A second scan keeps the same excluded row (no churn) and still completes.
+    let kept = child_named(&lab_slice(svc, &lab.root), "b").unwrap();
+    assert_eq!(
+        settle(svc, &start(svc, &lab.root, "refresh"))["state"],
+        "completed"
+    );
+    let again = lab_slice(svc, &lab.root);
+    assert_eq!(child_named(&again, "b"), Some(kept));
+    assert_eq!(slice_totals(&again), (5, 2, 165));
 }
 
 /// Revocation mid-scan: the grant commits revoked first, the run is cancelled and the writer

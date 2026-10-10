@@ -15,8 +15,11 @@
 //! - **N2 and absence.** Only a complete `ListingDone` reaches the writer as complete; every other
 //!   outcome (outside scope included) is upsert-only. Absence follows the writer's identity-first
 //!   matching: an observation carries a file ID only when the engine found it eligible, otherwise
-//!   it matches by name. Excluded entries (reparse, offline, recall, state directory, depth limit)
-//!   are never published, so they never count as present; they are counted as skipped.
+//!   it matches by name. Excluded entries (reparse points, offline or recall-on-access
+//!   placeholders, the state directory) are published with `reparse_not_followed`,
+//!   `cloud_placeholder` or `excluded_state_dir` and stay visible as `excluded`; the catalogue
+//!   never counts them in totals, a known directory that becomes excluded is replaced (its old
+//!   subtree retires), and the parent counts them as skipped, so its coverage is never complete.
 //! - **Partial #8.** The writer reparents a directory inside the new parent's publication and
 //!   dirties both ancestor chains in that transaction, cancelled run or not. A child ticket is
 //!   resolved after that publication, so no ticket carries an `old_parent`.
@@ -41,6 +44,9 @@ use std::sync::{Mutex, Weak};
 use std::time::{Duration, Instant};
 
 const NAME_LOSSY: u32 = 1 << 9;
+const EXCLUDED_STATE_DIR: u32 = 1 << 5;
+const REPARSE_NOT_FOLLOWED: u32 = 1 << 4;
+const CLOUD_PLACEHOLDER: u32 = 1 << 3;
 const IDENTITY_UNAVAILABLE: u32 = 1 << 8;
 const ENUMERATION_ERROR: u32 = 1 << 7;
 const ACCESS_DENIED: u32 = 1 << 6;
@@ -143,11 +149,8 @@ fn name(raw: &[u16]) -> (String, Option<Vec<u8>>) {
     }
 }
 
-/// One listed entry as a catalogue observation; `None` for an excluded entry.
-fn observation(e: &Entry) -> Option<Observation> {
-    if e.excluded {
-        return None;
-    }
+/// One listed entry as a catalogue observation, excluded entries included (docs/41 section 3).
+fn observation(e: &Entry) -> Observation {
     let (text, raw) = name(&e.name);
     let file_id = e.file_id.filter(|_| e.identity_eligible).and_then(id_bytes);
     let directory = e.attributes & 0x10 != 0;
@@ -158,6 +161,18 @@ fn observation(e: &Entry) -> Option<Observation> {
         .filter(|(stem, ext)| !stem.is_empty() && !ext.is_empty() && ext.chars().count() <= 32)
         .map(|(_, ext)| ext);
     let mut flags = 0;
+    if e.excluded {
+        // The engine excludes refused attributes (never opened) and the state directory.
+        if e.attributes & 0x400 != 0 {
+            flags |= REPARSE_NOT_FOLLOWED;
+        }
+        if e.attributes & (0x1000 | 0x40000 | 0x400000) != 0 {
+            flags |= CLOUD_PLACEHOLDER;
+        }
+        if flags == 0 {
+            flags |= EXCLUDED_STATE_DIR;
+        }
+    }
     if raw.is_some() {
         flags |= NAME_LOSSY;
     }
@@ -169,7 +184,7 @@ fn observation(e: &Entry) -> Option<Observation> {
         Some(_) => flags |= ENUMERATION_ERROR,
         None => {}
     }
-    Some(Observation {
+    Observation {
         name: text,
         name_utf16: raw,
         id_basis: if file_id.is_some() { "listed" } else { "none" }.into(),
@@ -186,7 +201,7 @@ fn observation(e: &Entry) -> Option<Observation> {
         attrs: e.attributes,
         reparse_tag: e.reparse_tag,
         flags,
-    })
+    }
 }
 
 fn outcome(o: ListOutcome) -> ListingOutcome {
@@ -498,7 +513,7 @@ impl ScanSink for CatalogScanSink {
                     (catalog_run, listing.seq)
                 };
                 let (mut files, mut dirs) = (Vec::new(), Vec::new());
-                for o in entries.iter().filter_map(observation) {
+                for o in entries.iter().map(observation) {
                     if o.attrs & 0x10 != 0 {
                         dirs.push(o);
                     } else {

@@ -314,9 +314,10 @@ impl<S: DirSource> Shared<'_, S> {
             let mut traversal_error = None;
             if !excluded && raw.attributes & 0x10 != 0 {
                 if task.depth >= MAX_DEPTH {
+                    // Not opened, but not an exclusion either: it stays a plain, unlisted entry.
                     complete = false;
                     stopped = Some(IncompleteReason::Limit);
-                    excluded = true;
+                    self.skipped.fetch_add(1, Ordering::Relaxed);
                 } else {
                     match self.source.open_child(&task.dir, &raw) {
                         Ok((dir, identity)) => {

@@ -1925,3 +1925,167 @@ fn queued_staged_publications_isolate_failure_and_commit_other_directories() {
     );
     assert_eq!(w.queued_bytes(), 0);
 }
+
+/// #206 MEDIUM-1: a directory that becomes a placeholder under the same identity is replaced (its
+/// old subtree and references retire), the excluded entries stay visible, are never counted, and
+/// do not stop a full traversal from completing.
+#[test]
+fn excluded_entries_stay_visible_uncounted_and_replace_an_old_subtree() {
+    let (temp, c, grant, root, run) = setup();
+    let w = c.writer();
+    let mut cloud = identified("cloud", 5, 0);
+    cloud.attrs = 0x10;
+    cloud.created_ft = Some(1);
+    w.call(listing(
+        run,
+        root,
+        vec![identified("kept", 2, 10)],
+        vec![cloud.clone()],
+    ))
+    .unwrap();
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    let old: i64 = db
+        .query_row("SELECT id FROM dir WHERE name='cloud'", [], |r| r.get(0))
+        .unwrap();
+    let mut inner = identified("inner", 3, 100);
+    inner.created_ft = Some(1);
+    w.call(listing(run, old, vec![inner], vec![])).unwrap();
+    let inner: i64 = db
+        .query_row("SELECT id FROM file WHERE name='inner'", [], |r| r.get(0))
+        .unwrap();
+    let WriteReply::Reference(reference) = w
+        .call(WriteCommand::ObjectReference {
+            node: NodeKey::File(inner),
+            observed_at_ns: 3,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    w.call(WriteCommand::EndRun {
+        run_id: run,
+        state: "completed".into(),
+        finished_at_ns: 4,
+    })
+    .unwrap();
+    let WriteReply::Run(run) = w
+        .call(WriteCommand::BeginRun {
+            grant_id: grant,
+            mode: "refresh".into(),
+            strategy: "fixture".into(),
+            started_at_ns: 5,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    // Same identity and creation time, now an online-only placeholder; plus a symbolic link file.
+    let mut placeholder = cloud;
+    placeholder.attrs = 0x10 | 0x1000 | 0x400000;
+    placeholder.flags = 1 << 3;
+    let mut link = identified("link", 4, 50);
+    link.attrs = 0x400;
+    link.flags = 1 << 4;
+    let WriteCommand::DirListing(mut l) = listing(
+        run,
+        root,
+        vec![identified("kept", 2, 10), link],
+        vec![placeholder.clone()],
+    ) else {
+        panic!()
+    };
+    l.skipped = 2;
+    w.call(WriteCommand::DirListing(l)).unwrap();
+    let st = Connection::open(temp.path().join("state.db")).unwrap();
+    assert_eq!(
+        st.query_row(
+            "SELECT state,retired FROM object_ref WHERE id=?1",
+            [reference],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?))
+        )
+        .unwrap(),
+        ("unresolved".into(), true),
+        "the subtree behind a now-excluded directory is no longer claimed"
+    );
+    w.call(WriteCommand::EndRun {
+        run_id: run,
+        state: "completed".into(),
+        finished_at_ns: 6,
+    })
+    .unwrap();
+    let (id, state, flags, seen): (i64, String, i64, i64) = db
+        .query_row(
+            "SELECT id,listing_state,flags,seen_run FROM dir WHERE name='cloud'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_ne!(id, old, "the old row is replaced, never reused");
+    assert_eq!((state.as_str(), flags, seen), ("excluded", 1 << 3, run));
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM file WHERE name='inner'", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    // Visible but never counted: the root counts `kept` only, and is not complete.
+    assert_eq!(
+        db.query_row(
+            "SELECT own_files,own_logical,sub_files,sub_dirs,sub_logical,sub_complete FROM dir WHERE id=?1",
+            [root],
+            |r| Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, bool>(5)?
+            ))
+        )
+        .unwrap(),
+        (1, 10, 1, 0, 10, false)
+    );
+    assert_eq!(
+        db.query_row("SELECT flags FROM file WHERE name='link'", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1 << 4
+    );
+    // The excluded directory needs no listing: the full traversal completed the root.
+    assert_eq!(
+        db.query_row("SELECT state,generation FROM root", [], |r| Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, Option<i64>>(1)?
+        )))
+        .unwrap(),
+        ("complete".into(), Some(run))
+    );
+    // A third run keeps the same excluded row.
+    let WriteReply::Run(run) = w
+        .call(WriteCommand::BeginRun {
+            grant_id: grant,
+            mode: "refresh".into(),
+            strategy: "fixture".into(),
+            started_at_ns: 7,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    w.call(listing(
+        run,
+        root,
+        vec![identified("kept", 2, 10)],
+        vec![placeholder],
+    ))
+    .unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT id FROM dir WHERE name='cloud' AND listing_state='excluded'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        id
+    );
+}

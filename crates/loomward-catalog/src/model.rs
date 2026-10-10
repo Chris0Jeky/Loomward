@@ -2,6 +2,10 @@ use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 
 pub const HARDLINK_SUSPECTED: u32 = 1 << 2;
+/// `cloud_placeholder`, `reparse_not_followed` and `excluded_state_dir`: an entry the scan saw
+/// but deliberately did not follow. It stays visible (listing state `excluded` for a directory)
+/// and is never counted in totals.
+pub const EXCLUDED_FLAGS: u32 = (1 << 3) | (1 << 4) | (1 << 5);
 pub const FLAG_NAMES: [&str; 10] = [
     "sensitive_name",
     "protected_context",
