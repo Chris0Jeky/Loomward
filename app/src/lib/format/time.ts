@@ -9,3 +9,12 @@ export function formatTime(v: string | null | undefined): string {
 export function formatCount(v: number | null | undefined): string {
   return typeof v === 'number' ? v.toLocaleString('en-GB') : 'unknown';
 }
+
+/** Elapsed time for a scan: whole seconds, then minutes; null or negative is "unknown", not 0. */
+export function formatDuration(v: number | null | undefined): string {
+  if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return 'unknown';
+  const s = Math.floor(v / 1000);
+  if (s < 60) return `${s} s`;
+  const m = Math.floor(s / 60);
+  return m < 60 ? `${m} min ${s % 60} s` : `${Math.floor(m / 60)} h ${m % 60} min`;
+}
