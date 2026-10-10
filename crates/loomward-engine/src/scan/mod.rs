@@ -4,7 +4,7 @@ pub mod sink;
 pub mod source;
 #[cfg(test)]
 mod tests;
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 pub mod watch;
 use crate::{Component, Engine, EngineError, EngineResult};
 use loomward_protocol::{DatasetClass, Job, JobId, JobKind, RootId, ScanBudget};
@@ -198,20 +198,33 @@ impl Engine {
         #[cfg(windows)]
         {
             let watch = {
-                let mut watches = self.scan_watches.lock().unwrap();
-                if let Some(watch) = watches.get(root.root_id()) {
+                let existing = self
+                    .scan_watches
+                    .lock()
+                    .unwrap()
+                    .get(root.root_id())
+                    .cloned();
+                let healthy = if let Some(watch) = &existing {
                     watch.validate(&root)?;
-                    if !watch.healthy() {
-                        watches.remove(root.root_id()).unwrap().stop();
+                    watch.healthy()
+                } else {
+                    false
+                };
+                let watch = if healthy {
+                    existing.unwrap()
+                } else {
+                    if let Some(watch) = existing {
+                        watch.stop();
                     }
-                }
-                if !watches.contains_key(root.root_id()) {
-                    watches.insert(
-                        root.root_id().clone(),
-                        watch::RootWatch::start(&root, sink.clone())?,
-                    );
-                }
-                let watch = watches[root.root_id()].clone();
+                    let watch = watch::RootWatch::start(&root, sink.clone())?;
+                    let replaced = self
+                        .scan_watches
+                        .lock()
+                        .unwrap()
+                        .insert(root.root_id().clone(), watch.clone());
+                    drop(replaced);
+                    watch
+                };
                 watch.validate(&root)?;
                 watch
             };
@@ -268,8 +281,11 @@ impl Engine {
     /// Cancel all active scan jobs for a revoked root. Commit revocation before calling this.
     pub fn scan_cancel_root(&self, root: &RootId) -> EngineResult<Vec<Job>> {
         #[cfg(windows)]
-        if let Some(watch) = self.scan_watches.lock().unwrap().remove(root) {
-            watch.stop();
+        {
+            let watch = self.scan_watches.lock().unwrap().remove(root);
+            if let Some(watch) = watch {
+                watch.stop();
+            }
         }
         self.jobs
             .root_jobs(root)

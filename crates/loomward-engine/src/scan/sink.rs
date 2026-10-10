@@ -192,7 +192,7 @@ struct MemoryState {
     next_rev: u64,
     roots: HashMap<RootId, MemoryRoot>,
 }
-type StagedListing = (Sums, HashSet<Vec<u16>>);
+type StagedListing = (Sums, HashSet<(Option<FileIdObs>, Vec<u16>)>);
 #[derive(Debug, Default)]
 struct MemoryRoot {
     active: Option<u64>,
@@ -479,8 +479,14 @@ impl ScanSink for MemorySink {
                     .entry((run, ticket.dir, ticket.input_revision))
                     .or_insert_with(|| (Sums::ZERO, HashSet::new()));
                 for e in entries {
-                    if e.attributes & 0x10 != 0 {
-                        staged.1.insert(e.name.clone());
+                    if !e.excluded
+                        && e.traversal_error != Some(super::source::SourceError::Refused)
+                        && e.attributes & 0x10 != 0
+                    {
+                        let id = e.file_id.filter(|_| e.identity_eligible);
+                        staged
+                            .1
+                            .insert((id, if id.is_some() { vec![] } else { e.name }));
                     }
                     if !e.excluded && e.attributes & 0x10 == 0 {
                         staged.0 = staged.0.checked_add(Sums {
@@ -508,7 +514,14 @@ impl ScanSink for MemorySink {
                 r.dirs.get_mut(&ticket.dir).unwrap().own = staged.0;
                 if outcome == ListOutcome::Complete {
                     for d in r.dirs.values_mut().filter(|d| d.parent == Some(ticket.dir)) {
-                        d.absent = !staged.1.contains(&d.name);
+                        d.absent = !staged.1.contains(&(
+                            d.id,
+                            if d.id.is_some() {
+                                vec![]
+                            } else {
+                                d.name.clone()
+                            },
+                        ));
                     }
                 }
                 // Publishing this listing does not change the inputs reserved by its ticket.
@@ -639,6 +652,51 @@ mod watch_tests {
             attributes: 0x10,
             reparse_tag: None,
         }
+    }
+    #[test]
+    fn refused_child_is_not_directory_presence() {
+        let root = RootId::new("rt_refused").unwrap();
+        let sink = MemorySink::default();
+        sink.begin_run(&root, 1, &RunScope::FullRoot).unwrap();
+        let r = sink
+            .prepare_listing(&root, 1, None, &[], identity(1))
+            .unwrap();
+        let child = sink
+            .prepare_listing(&root, 1, Some(r.dir), &[97], identity(2))
+            .unwrap();
+        sink.consume(
+            &root,
+            ScanMessage::DirListing {
+                run: 1,
+                ticket: r,
+                entries: vec![Entry {
+                    name: vec![97],
+                    file_id: Some(FileIdObs::Id64(2)),
+                    identity_eligible: true,
+                    attributes: 0x10,
+                    reparse_tag: None,
+                    logical: 0,
+                    allocated: Some(0),
+                    creation: None,
+                    last_write: None,
+                    change: None,
+                    last_access: None,
+                    excluded: false,
+                    traversal_error: Some(super::super::source::SourceError::Refused),
+                }],
+            },
+        )
+        .unwrap();
+        sink.consume(
+            &root,
+            ScanMessage::ListingDone {
+                run: 1,
+                ticket: r,
+                outcome: ListOutcome::Complete,
+            },
+        )
+        .unwrap();
+        assert!(sink.state.lock().unwrap().roots[&root].dirs[&child.dir].absent);
     }
     #[test]
     fn repair_rollup_preserves_tombstones_outside_targeted_scope() {
