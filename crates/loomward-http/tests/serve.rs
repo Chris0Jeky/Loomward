@@ -1134,7 +1134,7 @@ fn sse_connections_outlive_the_non_sse_lifetime_cap() {
 /// `loomward-serve`'s real configuration: the engine service behind the same boundary.
 #[test]
 fn the_engine_service_answers_through_the_adapter() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(".").unwrap();
     let service = loomward_service::Service::open(loomward_service::Config {
         state_dir: tmp.path().into(),
         dataset: DatasetClass::Synthetic,
@@ -1342,13 +1342,13 @@ fn followup_refused_start(
 fn followup_stored_grants_refuse_static_without_recording_new_grants() {
     if loomward_windows::enumerate::running_elevated() {
         // Native identity refuses elevation (invariant 2, #217), so no lab root can be registered.
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tempfile::tempdir_in(".").unwrap();
         let err = loomward_service::lab::register(
             &tmp.path().join("state"),
             &tmp.path().join("lab"),
             "s",
             "S",
-            "sha256:00",
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
         )
         .unwrap_err();
         assert!(err.contains("identity_unavailable"), "{err}");
@@ -1356,13 +1356,27 @@ fn followup_stored_grants_refuse_static_without_recording_new_grants() {
     }
     use loomward_protocol::{CallContext, RequestEnvelope, ViewService};
     use loomward_service::{lab, Config, Service};
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(".").unwrap();
     let state = tmp.path().join("state");
     let dist = tmp.path().join("dist");
     let old = dist.join("stored-lab");
     let new = tmp.path().join("new-lab");
-    lab::register(&state, &old, "s", "S", "sha256:00").unwrap();
-    lab::register(&state, &new, "s", "S", "sha256:00").unwrap();
+    lab::register(
+        &state,
+        &old,
+        "s",
+        "S",
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    )
+    .unwrap();
+    lab::register(
+        &state,
+        &new,
+        "s",
+        "S",
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    )
+    .unwrap();
     let cfg = |roots| Config {
         state_dir: state.clone(),
         dataset: DatasetClass::Synthetic,
@@ -1391,13 +1405,13 @@ fn followup_stored_grants_refuse_static_without_recording_new_grants() {
 fn followup_proposed_static_overlap_leaves_no_active_grant() {
     if loomward_windows::enumerate::running_elevated() {
         // Native identity refuses elevation (invariant 2, #217), so no lab root can be registered.
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tempfile::tempdir_in(".").unwrap();
         let err = loomward_service::lab::register(
             &tmp.path().join("state"),
             &tmp.path().join("lab"),
             "s",
             "S",
-            "sha256:00",
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
         )
         .unwrap_err();
         assert!(err.contains("identity_unavailable"), "{err}");
@@ -1405,10 +1419,17 @@ fn followup_proposed_static_overlap_leaves_no_active_grant() {
     }
     use loomward_protocol::{CallContext, RequestEnvelope, ViewService};
     use loomward_service::{lab, Config, Service};
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(".").unwrap();
     let state = tmp.path().join("state");
     let grant = tmp.path().join("dist/lab");
-    lab::register(&state, &grant, "s", "S", "sha256:00").unwrap();
+    lab::register(
+        &state,
+        &grant,
+        "s",
+        "S",
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    )
+    .unwrap();
     followup_refused_start(&state, &tmp.path().join("dist"), Some(&grant), false);
     let service = Service::open(Config {
         state_dir: state,
@@ -1437,7 +1458,7 @@ fn followup_stored_picker_grant_refuses_static() {
             false
         }
     }
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(".").unwrap();
     let state = tmp.path().join("state");
     let dist = tmp.path().join("dist");
     let root = dist.join("picked-fixture");

@@ -1,6 +1,32 @@
 use serde::Serialize;
 use std::io;
 
+/// Drive classification only; never enumerates volumes or reads capacity/device metadata.
+#[cfg(windows)]
+pub fn is_removable(path: &std::path::Path) -> io::Result<bool> {
+    use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetVolumePathNameW};
+    let path = crate::win::wide(path)?;
+    let mut mount = vec![0u16; 32768];
+    if unsafe { GetVolumePathNameW(path.as_ptr(), mount.as_mut_ptr(), mount.len() as u32) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    removable_drive_type(unsafe { GetDriveTypeW(mount.as_ptr()) })
+}
+
+#[cfg(not(windows))]
+pub fn is_removable(_: &std::path::Path) -> io::Result<bool> {
+    Ok(false)
+}
+
+#[cfg(any(windows, test))]
+fn removable_drive_type(kind: u32) -> io::Result<bool> {
+    match kind {
+        2 => Ok(true),
+        3 | 5 | 6 => Ok(false),
+        _ => Err(io::Error::other("local drive type unavailable")),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum Fact<T> {
@@ -364,5 +390,16 @@ mod native {
         };
         result.validate()?;
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod hardening_tests {
+    #[test]
+    fn hardening_removable_drive_classification() {
+        assert!(super::removable_drive_type(2).unwrap());
+        assert!(!super::removable_drive_type(3).unwrap());
+        assert!(super::removable_drive_type(0).is_err());
+        assert!(super::removable_drive_type(4).is_err());
     }
 }

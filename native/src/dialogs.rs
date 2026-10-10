@@ -110,52 +110,7 @@ pub fn validate_picked_folder(root: &Path, profile: &Path) -> Result<PathBuf, St
     let root = loomward_service::paths::check_root(root, None, &[], true)
         .map_err(|_| "the selected folder is not an eligible grant root".to_string())?;
     let profile = profile.canonicalize().map_err(|_| "profile unavailable")?;
-    let folded = |p: &Path| p.to_string_lossy().replace('/', "\\").to_lowercase();
-    let (r, p) = (folded(&root), folded(&profile));
-    // A volume root is the explicit native exception; other ancestors expose the whole profile.
-    if root.parent().is_some() && (r == p || p.starts_with(&(r.clone() + "\\"))) {
-        return Err("whole profiles are not eligible".into());
-    }
-    let profiles = profile.parent().ok_or("profile unavailable")?;
-    let profiles_directory = profiles.file_name().is_some_and(|name| {
-        matches!(
-            name.to_string_lossy().to_lowercase().as_str(),
-            "users" | "profiles" | "documents and settings"
-        )
-    });
-    if profiles_directory
-        && root
-            .parent()
-            .is_some_and(|parent| folded(parent) == folded(profiles))
-    {
-        return Err("whole profiles are not eligible".into());
-    }
-    for component in root.strip_prefix(profiles).unwrap_or(&root).components() {
-        if [
-            ".ssh",
-            ".aws",
-            ".azure",
-            ".gnupg",
-            ".kube",
-            ".codex",
-            ".claude",
-            "appdata",
-            ".docker",
-            ".cargo",
-            ".npm",
-            ".terraform.d",
-            ".gemini",
-        ]
-        .contains(
-            &component
-                .as_os_str()
-                .to_string_lossy()
-                .to_lowercase()
-                .as_str(),
-        ) {
-            return Err("credential and browser stores are not eligible".into());
-        }
-    }
+    loomward_service::paths::validate_profile_root(&root, &profile)?;
     Ok(root)
 }
 
