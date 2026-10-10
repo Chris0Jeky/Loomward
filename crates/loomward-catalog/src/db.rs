@@ -263,7 +263,20 @@ pub(crate) fn open_pair(dir: &Path, dataset: &str) -> Result<Connection> {
     conn.busy_timeout(Duration::from_secs(5))?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
-    conn.pragma_update(None, "cache_size", -65536)?;
+    conn.pragma_update(None, "cache_size", -262144)?;
+    conn.pragma_update(None, "temp_store", "MEMORY")?;
+    conn.wal_hook(Some(|wal, pages| {
+        let threshold = if wal.name().to_bytes() == b"main" {
+            16384
+        } else {
+            1000
+        };
+        if pages >= threshold {
+            // Match SQLite's passive autocheckpoint; precious state keeps its default threshold.
+            let _ = wal.checkpoint();
+        }
+        Ok(())
+    }));
     conn.set_prepared_statement_cache_capacity(128);
     conn.execute(
         "ATTACH DATABASE ?1 AS st",
@@ -373,6 +386,45 @@ mod tests {
             conn.query_row("PRAGMA foreign_keys", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
             1
+        );
+    }
+    #[test]
+    fn checkpoint_threshold_is_raised_only_for_catalogue() {
+        let temp = tempfile::tempdir().unwrap();
+        let conn = open_pair(temp.path(), "synthetic").unwrap();
+        conn.execute_batch("PRAGMA main.wal_checkpoint(TRUNCATE); PRAGMA st.wal_checkpoint(TRUNCATE);
+            CREATE TABLE main.checkpoint_probe(value BLOB); CREATE TABLE st.checkpoint_probe(value BLOB);
+            INSERT INTO main.checkpoint_probe VALUES(zeroblob(5000000));
+            INSERT INTO st.checkpoint_probe VALUES(zeroblob(5000000));").unwrap();
+        let main: (i64, i64) = conn
+            .query_row("PRAGMA main.wal_checkpoint(NOOP)", [], |r| {
+                Ok((r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        let state: (i64, i64) = conn
+            .query_row("PRAGMA st.wal_checkpoint(NOOP)", [], |r| {
+                Ok((r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        assert!(main.0 > 1000 && main.0 < 16384);
+        assert!(
+            main.1 < main.0,
+            "catalogue must not checkpoint at the state threshold"
+        );
+        assert!(state.0 > 1000);
+        assert_eq!(
+            state.0, state.1,
+            "precious state must keep the default checkpoint"
+        );
+        assert_eq!(
+            conn.query_row("PRAGMA st.synchronous", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            conn.query_row("PRAGMA st.cache_size", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            -2000
         );
     }
 }
