@@ -37,16 +37,17 @@ Research prototype, not a file manager or system optimiser.
 
 **In review or not built yet**
 
-- **The engine as the app's service.** The L8 view service that puts the engine and catalogue
-  behind the contract is in review (#179). Until it lands, `loomward-serve` and the desktop
-  shell answer from the contract fixtures.
-- **Scanning a real disk through the product.** `scan.start` stays unavailable until the
-  catalogue-backed scan writer and the change-tracking gates (#184) land. Native enumeration has
+- **Scanning through the product.** `loomward-serve` runs the L8 view service over the engine and
+  catalogue (#179), but there `scan.start` still answers unavailable until the catalogue-backed scan
+  writer and the change-tracking gates (#184) land. `loomward-serve --fixtures` and the desktop
+  shell answer every command, `scan.start` included, from the contract's example fixtures; those
+  are not scans. Native enumeration has
   been measured only on synthetic lab trees and on four owner-authorised real folders, read-only,
   metadata only and anonymised. A whole volume may become a scan root only when the owner picks it
   in the native grant dialog (ADR-V3-08); agents never pick one.
 - **The teacher on real data.** The optional LLM teacher is weak supervision and stays
-  synthetic-only. An unregistered Windows AppContainer refused to launch it (#174), so the
+  synthetic-only. A probe launched in an unregistered Windows AppContainer was refused before it
+  ran (#174; no teacher process started), so the
   confinement route is an open owner decision ([HUMAN_TODO.md](HUMAN_TODO.md), q-8), and
   whether real metadata may ever leave the machine is another (q-5).
 
