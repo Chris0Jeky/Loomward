@@ -612,10 +612,10 @@ impl Inner {
             NodeKey::Dir(_) | NodeKey::File(_) => reader
                 .check_incarnation(key, &self.instance, born)
                 .map_err(|_| fail(ErrorCode::NotFound, "unknown node"))?,
-            NodeKey::Atlas => {}
-            NodeKey::Volume(_) | NodeKey::Other(_) => {
-                return Err(fail(ErrorCode::NotFound, "unknown node"))
-            }
+            // Virtual slice nodes: the atlas and a volume can anchor a slice (the catalogue
+            // checks the volume exists); a folded "other" node names nothing.
+            NodeKey::Atlas | NodeKey::Volume(_) => {}
+            NodeKey::Other(_) => return Err(fail(ErrorCode::NotFound, "unknown node")),
         }
         Ok(key)
     }

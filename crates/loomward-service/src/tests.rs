@@ -256,6 +256,27 @@ fn every_command_answers_a_complete_envelope_and_core_reads_serve_the_catalogue(
         .values()
         .all(|v| v == false));
     assert_eq!(hello["capabilities"]["observation"]["metadata_scan"], false);
+    // Atlas and volume slice nodes are anchors too; their sealed IDs open again.
+    let slice = |anchor: Value| {
+        call(
+            &svc,
+            "tree.slice",
+            json!({"anchor": anchor, "depth": 2, "max_nodes": 64, "min_share": 0.0, "basis": "logical", "include_files": false}),
+        )
+    };
+    let (atlas, _) = ok("tree.slice", slice(json!({"kind": "atlas"})));
+    let atlas_id = atlas["anchor_node_id"].as_str().unwrap().to_owned();
+    let volume_id = atlas["nodes"][1]["node_id"].as_str().unwrap().to_owned();
+    assert_eq!(atlas["nodes"][1]["kind"], "volume");
+    ok(
+        "tree.slice",
+        slice(json!({"kind": "node", "node_id": atlas_id})),
+    );
+    let (by_volume, _) = ok(
+        "tree.slice",
+        slice(json!({"kind": "node", "node_id": volume_id})),
+    );
+    assert_eq!(by_volume["nodes"][1]["kind"], "root");
     let (health, _) = ok("health.get", call(&svc, "health.get", json!({})));
     assert_eq!(health["engine"]["working_set_bytes"], Value::Null);
     if cfg!(windows) {
