@@ -81,7 +81,7 @@ export function viewOf(job: Job, nowMs: number): ScanView {
     case 'cancel_requested':
       return { activity: 'cancelling', active: true, headline: 'Cancelling', detail: '', elapsedMs: live };
     case 'cancelled':
-      return { activity: 'cancelled', active: false, headline: 'Cancelled', detail: 'The scan stopped early, so this root is not fully covered.', elapsedMs: final };
+      return { activity: 'cancelled', active: false, headline: 'Cancelled', detail: 'It stopped before it finished, so it was not published as a complete scan.', elapsedMs: final };
     case 'failed':
       return { activity: 'failed', active: false, headline: 'Failed', detail: job.error?.message ?? 'The service gave no reason.', elapsedMs: final };
     case 'completed': {

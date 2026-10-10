@@ -21,7 +21,7 @@ const LABS: LabSeed[] = [
 export const LAB_ROOT_IDS = LABS.map((l) => l.id);
 
 const RUN_MS = 4000;
-const CANCEL_MS = 400;
+const CANCEL_MS = 600;
 const QUEUE_MS = 150;
 
 export interface ScanMockOptions {

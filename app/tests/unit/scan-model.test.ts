@@ -129,7 +129,7 @@ describe('what the view says', () => {
   });
 
   it('says a cancelled root is not fully covered', () => {
-    expect(viewOf(job('cancelled', { coverage: 'cancelled' }), T0).detail).toContain('not fully covered');
+    expect(viewOf(job('cancelled', { coverage: 'cancelled' }), T0).detail).toContain('not published as a complete scan');
   });
 
   it('announces the headline and the counts together', () => {

@@ -215,9 +215,6 @@
 
 <section class="panel" aria-labelledby="h-roots">
   <h2 id="h-roots">Roots</h2>
-  <p class="muted">Scan reads names, sizes and dates only. It never opens the contents of a file and changes no file. Refresh re-reads a root that was scanned before.</p>
-  {#if scanNote}<p class="muted">{scanNote}</p>{/if}
-  <p class="live scanlive" class:has={!!scanSay.text} role="status">{scanSay.text}</p>
   {#if roots}
     <div class="tbl-wrap">
       <table class="tbl">
@@ -229,40 +226,16 @@
         </thead>
         <tbody>
           {#each roots.roots as r (r.root_id)}
-            {@const v = scans.view(r.root_id, now)}
-            {@const problem = scans.problems[r.root_id]}
-            {@const label = escapedName(r.display_path.text)}
             <tr>
               <th scope="row"><VisibleName name={r.display_path.text} />{#if r.display_path.truncated} <span class="tag warn">truncated</span>{/if}<div class="muted small">{r.origin.replaceAll('_', ' ')} · {r.dataset_class}</div></th>
               <td class="num">{r.volume_id ?? 'unknown'}</td>
               <td>{r.granted_via.replaceAll('_', ' ')}</td>
               <td><span class="tag" class:warn={!rootActive(r)}>{r.grant_state.replaceAll('_', ' ')}</span></td>
-              <td>
-                {r.scan.state.replaceAll('_', ' ')} <span class="tag">{r.scan.coverage}</span>
-                {#if v}
-                  <div class="job" data-activity={v.activity}>
-                    {#if v.active}<span class="scanbar" aria-hidden="true"><i></i></span>{/if}
-                    <strong>{v.headline}</strong>{#if v.elapsedMs !== null}<span class="num"> · {v.active ? 'elapsed' : 'took'} {formatDuration(v.elapsedMs)}</span>{/if}
-                    {#if v.activity === 'running'}<div class="muted small">No progress is reported until the scan ends.</div>{/if}
-                    {#if v.detail}<div class="small">{v.detail}</div>{/if}
-                  </div>
-                {/if}
-                {#if problem}<div class="problem small">{problem}</div>{/if}
-              </td>
+              <td>{r.scan.state.replaceAll('_', ' ')} <span class="tag">{r.scan.coverage}</span></td>
               <td class="r num">{formatCount(r.totals?.files)}</td>
               <td class="r num">{formatBytes(r.totals?.logical_bytes)}</td>
               <td class="r num">{formatBytes(r.totals?.allocated_bytes)}</td>
-              <td class="acts">
-                {#if rootActive(r)}
-                  <button class="btn" type="button" data-scan-primary={r.root_id} aria-disabled={v?.activity === 'cancelling' ? 'true' : undefined}
-                    aria-label={v?.activity === 'cancelling' ? `Cancelling scan of ${label}` : v?.active ? `Cancel scan of ${label}` : `Scan ${label}`}
-                    onclick={() => void primary(r, v)}>{v?.activity === 'cancelling' ? 'Cancelling' : v?.active ? 'Cancel' : 'Scan'}</button>
-                  {#if !v?.active && r.scan.state !== 'never_scanned'}
-                    <button class="btn" type="button" aria-label={`Refresh scan of ${label}`} onclick={() => void refresh(r)}>Refresh</button>
-                  {/if}
-                {/if}
-                <button class="btn" type="button" disabled={!rootActive(r)} aria-label={`Revoke… ${label}`} onclick={() => void ask({ kind: 'root', id: r.root_id, label: r.display_path.text })}>Revoke…</button>
-              </td>
+              <td><button class="btn" type="button" disabled={!rootActive(r)} aria-label={`Revoke… ${escapedName(r.display_path.text)}`} onclick={() => void ask({ kind: 'root', id: r.root_id, label: r.display_path.text })}>Revoke…</button></td>
             </tr>
           {:else}
             <tr><td colspan="9" class="muted">No roots granted.</td></tr>
@@ -270,6 +243,38 @@
         </tbody>
       </table>
     </div>
+
+    <h3 id="h-scans">Scans</h3>
+    <p class="muted">Scan reads names, sizes and dates only. It never opens the contents of a file and changes no file. Refresh re-reads a root that was scanned before.</p>
+    {#if scanNote}<p class="muted">{scanNote}</p>{/if}
+    <p class="live scanlive" class:has={!!scanSay.text} role="status">{scanSay.text}</p>
+    <ul class="scans" aria-labelledby="h-scans">
+      {#each roots.roots.filter(rootActive) as r (r.root_id)}
+        {@const v = scans.view(r.root_id, now)}
+        {@const problem = scans.problems[r.root_id]}
+        {@const label = escapedName(r.display_path.text)}
+        <li class="scan">
+          <div class="who"><VisibleName name={r.display_path.text} /> <span class="muted small">{r.origin.replaceAll('_', ' ')}</span></div>
+          <div class="acts">
+            <button class="btn" type="button" data-scan-primary={r.root_id} aria-disabled={v?.activity === 'cancelling' ? 'true' : undefined}
+              aria-label={v?.activity === 'cancelling' ? `Cancelling scan of ${label}` : v?.active ? `Cancel scan of ${label}` : `Scan ${label}`}
+              onclick={() => void primary(r, v)}>{v?.activity === 'cancelling' ? 'Cancelling' : v?.active ? 'Cancel' : 'Scan'}</button>
+            {#if !v?.active && r.scan.state !== 'never_scanned'}
+              <button class="btn" type="button" aria-label={`Refresh scan of ${label}`} onclick={() => void refresh(r)}>Refresh</button>
+            {/if}
+          </div>
+          {#if v}
+            <div class="job" data-activity={v.activity}>
+              {#if v.active}<span class="scanbar" aria-hidden="true"><i></i></span>{/if}
+              <strong>{v.headline}</strong>{#if v.elapsedMs !== null}{' '}<span class="num">· {v.active ? 'elapsed' : v.activity === 'completed' || v.activity === 'partial' ? 'took' : 'after'} {formatDuration(v.elapsedMs)}</span>{/if}
+              {#if v.activity === 'running'}<div class="muted small">No progress is reported until the scan ends.</div>{/if}
+              {#if v.detail}<div class="small">{v.detail}</div>{/if}
+            </div>
+          {/if}
+          {#if problem}<div class="problem small">{problem}</div>{/if}
+        </li>
+      {/each}
+    </ul>
   {:else}<p class="muted">Loading</p>{/if}
 </section>
 
@@ -330,8 +335,11 @@
   .tag.ok-tag { color: var(--ok); border-color: var(--ok); }
   .meter { display: inline-block; width: 90px; height: 8px; margin-left: 10px; border: 1px solid var(--control-line); border-radius: 4px; vertical-align: middle; overflow: hidden; }
   .meter i { display: block; height: 100%; background: var(--residency); }
+  .scans { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr)); gap: 10px; }
+  .scan { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; display: grid; gap: 8px; align-content: start; }
+  .who { overflow-wrap: anywhere; }
   .acts { display: flex; flex-wrap: wrap; gap: 6px; }
-  .job { margin-top: 4px; }
+  .job { min-height: 1.5em; }
   .job[data-activity='partial'] strong, .job[data-activity='cancelled'] strong { color: var(--warn); }
   .job[data-activity='failed'] strong, .problem { color: var(--danger); }
   .problem { margin-top: 4px; }
