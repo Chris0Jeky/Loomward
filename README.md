@@ -72,7 +72,7 @@ never an approval ([app/prototype/README.md](app/prototype/README.md)).
 |---|---|
 | `python/loomward/`, `scripts/` | Python reference: scanner, student, tier simulator, loopback server, CLI, MCP reference |
 | `ui/` | Original browser workbench; to be retired once `app/` reaches parity |
-| `app/` | Svelte 5 + Vite + TypeScript shell (views today: Explorer, Grants & health; transports: mock, HTTP, Tauri); `app/prototype/` is the no-build woven-atlas and Observatory prototype |
+| `app/` | Svelte 5 + Vite + TypeScript shell (views today: Explorer, Tiers, Companion, Grants & health; transports: mock, HTTP, Tauri); `app/prototype/` is the no-build woven-atlas and Observatory prototype |
 | `crates/loomward-core` | Pure domain: capability policy, simulated transaction state machine, planner v1 and a v2 port |
 | `crates/loomward-windows` | Read-only Windows identity and volume observation; opt-in `fixtures` feature for a disposable lab |
 | `crates/loomward-telemetry` | Read-only memory, process and PDH disk sampling (GPU unsupported) |
