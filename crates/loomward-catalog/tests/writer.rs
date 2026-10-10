@@ -1015,7 +1015,7 @@ fn durable_revocation_fences_queued_observations_and_catalogue_rebuild() {
 }
 #[test]
 fn creation_time_edits_retire_directory_and_file_bindings_without_auto_reattachment() {
-    let (temp, c, _, root, run) = setup();
+    let (temp, c, grant, root, run) = setup();
     let w = c.writer();
     let mut dir = identified("dir", 2, 0);
     dir.created_ft = Some(42);
@@ -1030,6 +1030,18 @@ fn creation_time_edits_retire_directory_and_file_bindings_without_auto_reattachm
     let f: i64 = db
         .query_row("SELECT id FROM file", [], |r| r.get(0))
         .unwrap();
+    let mut old_child = identified("old-child", 4, 99);
+    old_child.created_ft = Some(42);
+    w.call(listing(run, child, vec![old_child], vec![]))
+        .unwrap();
+    let nested: i64 = db
+        .query_row("SELECT id FROM file WHERE name='old-child'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let mut reader = c.reader().unwrap();
+    let (instance, born) = reader.incarnation(NodeKey::Dir(child)).unwrap();
+    let (_, file_born) = reader.incarnation(NodeKey::File(f)).unwrap();
     let WriteReply::Reference(dr) = w
         .call(WriteCommand::ObjectReference {
             node: NodeKey::Dir(child),
@@ -1048,11 +1060,199 @@ fn creation_time_edits_retire_directory_and_file_bindings_without_auto_reattachm
     else {
         panic!()
     };
+    let WriteReply::Reference(nr) = w
+        .call(WriteCommand::ObjectReference {
+            node: NodeKey::File(nested),
+            observed_at_ns: 3,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    w.call(WriteCommand::EndRun {
+        run_id: run,
+        state: "completed".into(),
+        finished_at_ns: 4,
+    })
+    .unwrap();
+    let WriteReply::Run(run) = w
+        .call(WriteCommand::BeginRun {
+            grant_id: grant,
+            mode: "refresh".into(),
+            strategy: "fixture".into(),
+            started_at_ns: 5,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
     dir.created_ft = Some(100);
     file.created_ft = Some(100);
-    w.call(listing(run, root, vec![file], vec![dir])).unwrap();
+    let WriteCommand::DirListing(mut replacement_listing) =
+        listing(run, root, vec![file], vec![dir])
+    else {
+        panic!()
+    };
+    replacement_listing.state = "partial".into();
+    w.call(WriteCommand::DirListing(replacement_listing))
+        .unwrap();
     let st = Connection::open(temp.path().join("state.db")).unwrap();
-    for reference in [dr, fr] {
+    for reference in [dr, fr, nr] {
+        assert_eq!(
+            st.query_row(
+                "SELECT state,retired FROM object_ref WHERE id=?1",
+                [reference],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?))
+            )
+            .unwrap(),
+            ("unresolved".into(), true)
+        );
+    }
+    let replacement: (i64, i64, String) = db
+        .query_row(
+            "SELECT id,born_run,listing_state FROM dir WHERE name='dir' AND file_id IS NOT NULL",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert!(replacement.0 > child);
+    assert_eq!(replacement.1, run);
+    assert_ne!(replacement.1, born);
+    assert_eq!(replacement.2, "unlisted");
+    let new_file: (i64, i64) = db
+        .query_row("SELECT id,born_run FROM file WHERE name='file'", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert!(new_file.0 > f);
+    assert_eq!(new_file.1, run);
+    assert_ne!(new_file.1, file_born);
+    assert!(matches!(
+        reader.check_incarnation(NodeKey::Dir(child), &instance, born),
+        Err(Error::NotFound)
+    ));
+    assert!(matches!(
+        reader.incarnation(NodeKey::File(f)),
+        Err(Error::NotFound)
+    ));
+    assert!(matches!(
+        reader.incarnation(NodeKey::File(nested)),
+        Err(Error::NotFound)
+    ));
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM file WHERE dir_id=?1",
+            [replacement.0],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    w.call(listing(
+        run,
+        replacement.0,
+        vec![identified("new-child", 5, 7)],
+        vec![],
+    ))
+    .unwrap();
+    w.call(WriteCommand::EndRun {
+        run_id: run,
+        state: "completed".into(),
+        finished_at_ns: 4,
+    })
+    .unwrap();
+    assert_eq!(
+        reader
+            .inspect(NodeKey::Dir(root))
+            .unwrap()
+            .subtree
+            .unwrap()
+            .logical_bytes,
+        "17"
+    );
+}
+
+#[test]
+fn surviving_hardlink_keeps_the_durable_reference_and_membership() {
+    for staged in [false, true] {
+        let (temp, c, _, root, run) = setup();
+        let w = c.writer();
+        let mut first = identified("first", 2, 10);
+        first.created_ft = Some(42);
+        let mut second = first.clone();
+        second.name = "second".into();
+        w.call(listing(run, root, vec![first, second.clone()], vec![]))
+            .unwrap();
+        let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+        let old: i64 = db
+            .query_row("SELECT id FROM file WHERE name='first'", [], |r| r.get(0))
+            .unwrap();
+        let WriteReply::Reference(reference) = w
+            .call(WriteCommand::ObjectReference {
+                node: NodeKey::File(old),
+                observed_at_ns: 3,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        let st = Connection::open(temp.path().join("state.db")).unwrap();
+        st.execute(
+            "INSERT INTO collection(name,kind,created_at_ns) VALUES('kept','human',3)",
+            [],
+        )
+        .unwrap();
+        st.execute("INSERT INTO collection_member VALUES(1,?1,3)", [reference])
+            .unwrap();
+        if staged {
+            w.call(WriteCommand::StageChunk {
+                run_id: run,
+                dir_id: root,
+                seq: 0,
+                files: vec![second],
+                dirs: vec![],
+            })
+            .unwrap();
+            w.call(WriteCommand::ListingDone {
+                run_id: run,
+                dir_id: root,
+                outcome: ListingOutcome::Complete,
+                skipped: 0,
+                errors: 0,
+            })
+            .unwrap();
+        } else {
+            w.call(listing(run, root, vec![second], vec![])).unwrap();
+        }
+        let survivor: (i64, i64) = db
+            .query_row("SELECT id,born_run FROM file", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(
+            st.query_row(
+                "SELECT state,retired,row_id,born_run FROM object_ref WHERE id=?1",
+                [reference],
+                |r| Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, bool>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?
+                ))
+            )
+            .unwrap(),
+            ("resolved".into(), false, survivor.0, survivor.1)
+        );
+        assert_eq!(
+            c.reader()
+                .unwrap()
+                .inspect(NodeKey::File(survivor.0))
+                .unwrap()
+                .memberships
+                .len(),
+            1
+        );
+        w.call(listing(run, root, vec![], vec![])).unwrap();
         assert_eq!(
             st.query_row(
                 "SELECT state,retired FROM object_ref WHERE id=?1",

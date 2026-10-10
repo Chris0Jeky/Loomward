@@ -450,7 +450,7 @@ if c.catalog_rev!=catalog_rev||c.catalog_instance!=catalog_instance{return Err(E
                         let sql=format!("SELECT {columns} FROM {from} JOIN root_grant g ON g.id=d.root_id WHERE g.state='active' AND d.id IN (SELECT id FROM visible_dir) AND (?1 IS NULL OR d.root_id=?1) AND instr(lower({table}.name),lower(?2))>0 AND {table}.id>?3 AND {table}.id<=?7 AND {ext_filter} AND (?5 IS NULL OR {size}>=?5) ORDER BY {table}.id LIMIT ?6");
                         let mut stmt=conn.prepare_cached(&sql)?;
                         let mut iter=stmt.query(params![req.root_id,req.text,last_id,req.extension,req.min_bytes.map(|v|v as i64),(req.limit+1-rows.len()) as i64,end])?;
-                        while let Some(row)=iter.next()? {let row=raw(row)?;if !row.valid{return Err(Error::RepairRequired);}rows.push(row);}
+                        while let Some(row)=iter.next()? {let row=raw(row)?;if !row.valid{return Err(Error::RepairRequired);}last_id=row_key(&row).1;rows.push(row);}
                         if rows.len()>req.limit{more=true;break;}
                         last_id=end;
                     }

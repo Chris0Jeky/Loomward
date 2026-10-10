@@ -689,6 +689,43 @@ fn budgeted_absent_search_resumes_and_catalogue_instance_invalidates_cursors() {
 }
 
 #[test]
+fn budgeted_search_resumes_after_the_last_returned_match() {
+    let (_tmp, c, _, _, _) = setup();
+    let mut reader = c.reader().unwrap();
+    let mut req = SearchRequest {
+        root_id: None,
+        text: "synthetic".into(),
+        extension: None,
+        min_bytes: None,
+        kind: "file".into(),
+        limit: 100,
+        cursor: None,
+        work_budget: 1,
+    };
+    // Find a SQLite opcode budget that interrupts after matches inside the first batch.
+    let first = (1..=200)
+        .find_map(|budget| {
+            req.work_budget = budget * 100;
+            let page = reader.search(&req).unwrap();
+            (page.budget_hit && !page.items.is_empty()).then_some(page)
+        })
+        .expect("a budget must interrupt after returning matches");
+    let mut names: Vec<_> = first.items.into_iter().map(|r| r.name).collect();
+    req.cursor = first.next_cursor;
+    req.work_budget = 100_000;
+    let rest = reader.search(&req).unwrap();
+    assert!(!rest.budget_hit);
+    assert!(rest.next_cursor.is_none());
+    names.extend(rest.items.into_iter().map(|r| r.name));
+    assert_eq!(
+        names,
+        (0..60)
+            .map(|i| format!("synthetic-{i:03}.txt"))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn unique_objects_are_separate_from_entry_bytes_and_not_relief() {
     let (_tmp, c, grant, root, _) = setup();
     let w = c.writer();
