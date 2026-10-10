@@ -1925,3 +1925,244 @@ fn queued_staged_publications_isolate_failure_and_commit_other_directories() {
     );
     assert_eq!(w.queued_bytes(), 0);
 }
+
+fn begin(w: &Writer, grant: i64, at: i64) -> i64 {
+    let WriteReply::Run(run) = w
+        .call(WriteCommand::BeginRun {
+            grant_id: grant,
+            mode: "refresh".into(),
+            strategy: "fixture".into(),
+            started_at_ns: at,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    run
+}
+fn end(w: &Writer, run: i64, state: &str) {
+    w.call(WriteCommand::EndRun {
+        run_id: run,
+        state: state.into(),
+        finished_at_ns: run,
+    })
+    .unwrap();
+}
+fn directory(name: &str, id: u8) -> Observation {
+    let mut o = identified(name, id, 0);
+    o.attrs = 0x10;
+    o.created_ft = Some(1);
+    o
+}
+
+/// #206 MEDIUM-1: excluded entries (a junction, a symbolic link) stay visible, are never counted,
+/// and a visible excluded directory does not stop a full traversal from completing.
+#[test]
+fn excluded_entries_stay_visible_uncounted_and_complete_a_full_traversal() {
+    let (temp, c, grant, root, run) = setup();
+    let w = c.writer();
+    let mut junction = directory("junction", 5);
+    junction.attrs |= 0x400;
+    junction.flags = 1 << 4;
+    let mut link = identified("link", 4, 50);
+    link.attrs = 0x400;
+    link.flags = 1 << 4;
+    let WriteCommand::DirListing(mut l) = listing(
+        run,
+        root,
+        vec![identified("kept", 2, 10), link],
+        vec![junction.clone()],
+    ) else {
+        panic!()
+    };
+    l.skipped = 2;
+    w.call(WriteCommand::DirListing(l)).unwrap();
+    end(w, run, "completed");
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    let (id, state, seen): (i64, String, i64) = db
+        .query_row(
+            "SELECT id,listing_state,seen_run FROM dir WHERE name='junction'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!((state.as_str(), seen), ("excluded", run));
+    // Visible but never counted: the root counts `kept` only, and is not complete.
+    assert_eq!(
+        db.query_row(
+            "SELECT own_files,own_logical,sub_files,sub_dirs,sub_logical,sub_complete FROM dir WHERE id=?1",
+            [root],
+            |r| Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, bool>(5)?
+            ))
+        )
+        .unwrap(),
+        (1, 10, 1, 0, 10, false)
+    );
+    assert_eq!(
+        db.query_row("SELECT flags FROM file WHERE name='link'", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1 << 4
+    );
+    // The excluded directory needs no listing: the full traversal set the generation.
+    assert_eq!(
+        db.query_row("SELECT generation FROM root", [], |r| r
+            .get::<_, Option<i64>>(0))
+            .unwrap(),
+        Some(run)
+    );
+    // The next run keeps the same excluded row.
+    let run = begin(w, grant, 7);
+    w.call(listing(
+        run,
+        root,
+        vec![identified("kept", 2, 10)],
+        vec![junction],
+    ))
+    .unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT id FROM dir WHERE name='junction' AND listing_state='excluded'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        id
+    );
+}
+
+/// #206 H1: a directory that is excluded for one scan only (an attribute change: offline,
+/// recall or reparse, same identity) keeps its row; its descendants are absent like any unseen
+/// child and keep their identities. When it returns, its references and memberships are intact.
+#[test]
+fn a_directory_excluded_for_one_scan_keeps_its_references_and_memberships() {
+    let (temp, c, grant, root, run) = setup();
+    let w = c.writer();
+    let proj = directory("proj", 5);
+    let sub = directory("sub", 6);
+    w.call(listing(run, root, vec![], vec![proj.clone()]))
+        .unwrap();
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    let id = |name: &str| -> i64 {
+        db.query_row("SELECT id FROM dir WHERE name=?1", [name], |r| r.get(0))
+            .unwrap()
+    };
+    let proj_id = id("proj");
+    w.call(listing(
+        run,
+        proj_id,
+        vec![identified("top", 8, 30)],
+        vec![sub.clone()],
+    ))
+    .unwrap();
+    let mut doc = identified("doc", 7, 100);
+    doc.created_ft = Some(1);
+    w.call(listing(run, id("sub"), vec![doc.clone()], vec![]))
+        .unwrap();
+    let doc_row: (i64, i64) = db
+        .query_row("SELECT id,born_run FROM file WHERE name='doc'", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    let WriteReply::Reference(reference) = w
+        .call(WriteCommand::ObjectReference {
+            node: NodeKey::File(doc_row.0),
+            observed_at_ns: 3,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    let st = Connection::open(temp.path().join("state.db")).unwrap();
+    st.execute(
+        "INSERT INTO collection(name,kind,created_at_ns) VALUES('labelled','human',3)",
+        [],
+    )
+    .unwrap();
+    st.execute("INSERT INTO collection_member VALUES(1,?1,3)", [reference])
+        .unwrap();
+    end(w, run, "completed");
+    let binding = || -> (String, bool, i64, i64) {
+        st.query_row(
+            "SELECT state,retired,row_id,born_run FROM object_ref WHERE id=?1",
+            [reference],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap()
+    };
+    let bound = ("resolved".to_string(), false, doc_row.0, doc_row.1);
+    assert_eq!(binding(), bound);
+    // One scan sees `proj` as an online-only placeholder, in an incomplete listing.
+    let run = begin(w, grant, 5);
+    let mut placeholder = proj.clone();
+    placeholder.attrs |= 0x1000 | 0x400000;
+    placeholder.flags = 1 << 3;
+    let WriteCommand::DirListing(mut l) = listing(run, root, vec![], vec![placeholder]) else {
+        panic!()
+    };
+    l.state = "partial".into();
+    l.skipped = 1;
+    w.call(WriteCommand::DirListing(l)).unwrap();
+    let (state, sub_state): (String, String) = db
+        .query_row(
+            "SELECT p.listing_state,s.listing_state FROM dir p JOIN dir s ON s.parent_id=p.id WHERE p.id=?1",
+            [proj_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (state.as_str(), sub_state.as_str()),
+        ("excluded", "absent_pending"),
+        "the same row is excluded in place; its subtree is hidden, not replaced"
+    );
+    assert_eq!(binding(), bound, "nothing retires before a full traversal");
+    end(w, run, "cancelled");
+    let logical = || -> i64 {
+        db.query_row("SELECT sub_logical FROM dir WHERE id=?1", [root], |r| {
+            r.get(0)
+        })
+        .unwrap()
+    };
+    assert_eq!(
+        logical(),
+        0,
+        "an excluded directory's old totals are not counted"
+    );
+    // The next scan sees it as a normal directory again: everything re-attaches.
+    let run = begin(w, grant, 7);
+    w.call(listing(run, root, vec![], vec![proj])).unwrap();
+    assert_eq!(id("proj"), proj_id);
+    w.call(listing(
+        run,
+        proj_id,
+        vec![identified("top", 8, 30)],
+        vec![sub],
+    ))
+    .unwrap();
+    w.call(listing(run, id("sub"), vec![doc], vec![])).unwrap();
+    end(w, run, "completed");
+    assert_eq!(logical(), 130);
+    assert_eq!(binding(), bound);
+    assert_eq!(
+        db.query_row("SELECT id,born_run FROM file WHERE name='doc'", [], |r| Ok(
+            (r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)
+        ))
+        .unwrap(),
+        doc_row
+    );
+    assert_eq!(
+        st.query_row(
+            "SELECT count(*) FROM collection_member WHERE object_ref_id=?1",
+            [reference],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+}

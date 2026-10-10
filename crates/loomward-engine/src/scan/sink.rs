@@ -151,6 +151,9 @@ pub trait ScanSink: Send + Sync {
     fn watch_dirty(&self, _root: &RootId) -> EngineResult<()> {
         Err(EngineError::unavailable(crate::Component::Scan))
     }
+    /// The opened root no longer has the grant's identity; nothing was scanned. A durable writer
+    /// records the grant's `identity_changed` transition.
+    fn root_identity_changed(&self, _root: &RootId) {}
     /// Recover durable running jobs to failed/repairing before any root serves slices.
     fn recover_interrupted(&self) -> EngineResult<()>;
     /// Begin one active root run; record its reconciliation scope.
@@ -202,6 +205,7 @@ struct MemoryRoot {
     dirs: HashMap<u64, MemoryDir>,
     stages: HashMap<(u64, u64, u64), StagedListing>,
     invalidated: HashSet<u64>,
+    identity_changed: bool,
 }
 #[derive(Debug)]
 struct MemoryDir {
@@ -262,6 +266,15 @@ impl MemorySink {
             .map(|r| r.invalidated.iter().copied().collect())
             .unwrap_or_default()
     }
+    /// Whether a scan reported the root's identity changed.
+    pub fn identity_changed(&self, root: &RootId) -> bool {
+        self.state
+            .lock()
+            .unwrap()
+            .roots
+            .get(root)
+            .is_some_and(|r| r.identity_changed)
+    }
     /// Directory revision currently invalidated, for relist/watcher fixture tests.
     pub fn dirty_again(&self, root: &RootId, dir: u64) {
         let mut s = self.state.lock().unwrap();
@@ -315,6 +328,10 @@ fn invalidate(r: &mut MemoryRoot, mut dir: u64, revision: Option<u64>) {
     }
 }
 impl ScanSink for MemorySink {
+    fn root_identity_changed(&self, root: &RootId) {
+        let mut s = self.state.lock().unwrap();
+        s.roots.entry(root.clone()).or_default().identity_changed = true;
+    }
     fn resolve_watch_directory(&self, root: &RootId, path: &[Vec<u16>]) -> Option<u64> {
         let s = self.state.lock().unwrap();
         let r = s.roots.get(root)?;

@@ -155,6 +155,22 @@ impl Engine {
             .optional()
             .map_err(|_| denied("grant store unavailable"))?;
         let (path, volume_key, file_id, class) = row.ok_or_else(|| denied("grant_not_active"))?;
+        // The root ID must name this grant's catalogue root (`rt_<root row>_<instance tag>`).
+        let paired = rusqlite::Connection::open_with_flags(
+            self.config.state_dir.join("catalog.db"),
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .and_then(|c| {
+            c.query_row("SELECT id FROM root WHERE grant_id=?1", [grant_id], |r| {
+                r.get::<_, i64>(0)
+            })
+            .optional()
+        })
+        .map_err(|_| denied("grant store unavailable"))?
+        .is_some_and(|row| root_id.as_str().starts_with(&format!("rt_{row}_")));
+        if !paired {
+            return Err(denied("grant_root_mismatch"));
+        }
         let dataset_class = match class.as_str() {
             "synthetic" => DatasetClass::Synthetic,
             "personal" => DatasetClass::Personal,
