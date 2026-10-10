@@ -12,6 +12,33 @@ from playwright.sync_api import expect
 
 HOSTILE = '<img src=x onerror=alert(1)>.png'
 
+# Names with characters that change how text looks without showing (synth.ts corpus).
+RLO_FILE = 'invoice\u202etxt.exe'
+ZW_FILE = 'budget\u200b\u200dfinal.xlsx'
+RLO_DIR = 'reports\u202etxt.exe'
+ZW_DIR_FILE = 'scan\u200b\u200dresults.bin'
+HIDDEN = ('\u202e', '\u200b', '\u200d')
+
+# Records every string a canvas draws, so the test can read the "canvas label source".
+FILLTEXT_RECORDER = """(() => {
+  if (window.__fillTexts) return;
+  const orig = CanvasRenderingContext2D.prototype.fillText;
+  const seen = (window.__fillTexts = new Set());
+  CanvasRenderingContext2D.prototype.fillText = function (t, ...rest) { if (seen.size < 50000) seen.add(String(t)); return orig.call(this, t, ...rest); };
+})()"""
+
+
+def drawn_texts(page) -> list[str]:
+    return page.evaluate('[...(window.__fillTexts ?? [])]')
+
+
+def reset_drawn(page) -> None:
+    page.evaluate('window.__fillTexts && window.__fillTexts.clear()')
+
+
+def badges(locator) -> list[str]:
+    return locator.locator('.ctl').all_inner_texts()
+
 
 def crumbs(page):
     return page.locator('main nav[aria-label="Location"] button')
@@ -29,6 +56,8 @@ def ring_point(box: dict, ring: float, angle: float) -> tuple[float, float]:
 
 def run(ctx) -> dict:
     page, base, check = ctx.page, ctx.base, ctx.check
+    page.add_init_script(FILLTEXT_RECORDER)
+    page.evaluate(FILLTEXT_RECORDER)  # a hash-only goto does not rerun init scripts
     page.goto(f'{base}/?transport=mock#/observatory')
     expect(page.get_by_role('heading', name='Observatory', level=1)).to_be_visible()
     page.get_by_role('group', name='Theme').get_by_role('button', name='Observatory').click()  # its own identity
@@ -38,6 +67,10 @@ def run(ctx) -> dict:
     seq0 = page.locator('main .res-note').inner_text()
     page.wait_for_timeout(2200)
     check(page.locator('main .res-note').inner_text() != seq0, 'synthetic telemetry moves (new samples arrive)')
+    status = page.locator('main .res-note [role="status"]').inner_text()
+    check('sample' not in status, 'the live status announces state only, not every sample number')
+    labels = page.locator('main .disks .dl').all_inner_texts()
+    check(len(labels) >= 1 and all('Disk' in l for l in labels), f'disk rows are named by the sample itself: {labels}')
     mem = page.locator('main dl.mem').inner_text()
     check('unknown' not in mem.split('Commit')[0], 'memory read-out is filled from the sample')
     check('cleaner' in page.locator('main .resources').inner_text(), 'no cleaner theatre: the read-only note is present')
@@ -90,6 +123,20 @@ def run(ctx) -> dict:
         page.locator('main details.as-text summary').click()
     check(lst.get_by_text(HOSTILE, exact=True).count() == 1, 'observatory lists the hostile name as literal text')
     check(page.locator('main img, main script, main iframe, main svg').count() == 0, 'observatory: hostile names created no elements')
+    check('U+202E RLO' in badges(lst.locator('li', has_text='invoice')), 'observatory list: override badge')
+    check('U+200B ZWSP' in badges(lst.locator('li', has_text='budget')), 'observatory list: zero-width badge')
+    lst.locator('li', has_text='invoice').get_by_role('button', name='Inspect').click()
+    check('U+202E RLO' in badges(page.locator('main aside.inspector h2')), 'observatory inspector: override badge')
+    drawn = drawn_texts(page)
+    check(not any(h in t for t in drawn for h in HIDDEN), 'observatory canvas never draws a raw hidden character')
+    lst.locator('li', has_text='reports').get_by_role('button').first.click()
+    expect(crumbs(page)).to_have_count(3)
+    check('U+202E RLO' in badges(crumbs(page).last), 'observatory breadcrumb: override badge')
+    page.wait_for_timeout(1000)
+    drawn = drawn_texts(page)
+    check(any('reportsU' in t for t in drawn), 'observatory canvas label source: the folder is drawn escaped')
+    check(not any(h in t for t in drawn for h in HIDDEN), 'observatory canvas never draws a raw hidden character (inside)')
+    check('U+202E' in page.locator('#obs-live').inner_text(), 'observatory aria-live speaks the escaped name')
     crumbs(page).first.click()
     expect(crumbs(page)).to_have_count(1)
 

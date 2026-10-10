@@ -13,6 +13,33 @@ from playwright.sync_api import expect
 
 HOSTILE = '<img src=x onerror=alert(1)>.png'
 
+# Names with characters that change how text looks without showing (synth.ts corpus).
+RLO_FILE = 'invoice\u202etxt.exe'
+ZW_FILE = 'budget\u200b\u200dfinal.xlsx'
+RLO_DIR = 'reports\u202etxt.exe'
+ZW_DIR_FILE = 'scan\u200b\u200dresults.bin'
+HIDDEN = ('\u202e', '\u200b', '\u200d')
+
+# Records every string a canvas draws, so the test can read the "canvas label source".
+FILLTEXT_RECORDER = """(() => {
+  if (window.__fillTexts) return;
+  const orig = CanvasRenderingContext2D.prototype.fillText;
+  const seen = (window.__fillTexts = new Set());
+  CanvasRenderingContext2D.prototype.fillText = function (t, ...rest) { if (seen.size < 50000) seen.add(String(t)); return orig.call(this, t, ...rest); };
+})()"""
+
+
+def drawn_texts(page) -> list[str]:
+    return page.evaluate('[...(window.__fillTexts ?? [])]')
+
+
+def reset_drawn(page) -> None:
+    page.evaluate('window.__fillTexts && window.__fillTexts.clear()')
+
+
+def badges(locator) -> list[str]:
+    return locator.locator('.ctl').all_inner_texts()
+
 FRAME_PACING = """async ({ kind, frames }) => {
   const c = document.querySelector('main canvas');
   const r = c.getBoundingClientRect();
@@ -59,6 +86,8 @@ def run(ctx) -> dict:
         else:
             check(ok, label)
 
+    page.add_init_script(FILLTEXT_RECORDER)
+    page.evaluate(FILLTEXT_RECORDER)  # a hash-only goto does not rerun init scripts
     page.goto(f'{base}/?transport=mock#/atlas')
     expect(page.get_by_role('heading', name='Atlas', level=1)).to_be_visible()
     canvas = page.locator('main canvas').first
@@ -132,10 +161,50 @@ def run(ctx) -> dict:
     check(page.locator('main img, main script, main iframe, main svg').count() == 0, 'hostile names created no elements')
     check(not ctx.dialogs, 'no script from a file name ran')
 
-    # --- allocated basis: unknown allocation is hatched and named, never zero ---------------------
+    # --- hidden characters: badges in the DOM, escaped text on canvas and in aria-live -------------
+    row = lst.locator('li', has_text='invoice')
+    check('U+202E RLO' in badges(row), 'list: the right-to-left override shows as a U+202E badge')
+    check('U+200B ZWSP' in badges(lst.locator('li', has_text='budget')), 'list: the zero-width space shows as a U+200B badge')
+    row.get_by_role('button', name='Inspect').click()
+    insp = page.locator('main aside.inspector h2')
+    check('U+202E RLO' in badges(insp), 'inspector: the override shows as a badge in the name')
+    lst.locator('li', has_text='budget').get_by_role('button', name='Inspect').click()
+    check('U+200D ZWJ' in badges(insp), 'inspector: the zero-width joiner shows as a badge in the name')
+    drawn = drawn_texts(page)
+    check(any('reportsU' in t for t in drawn), 'canvas label source: the hostile folder is drawn escaped ("reportsU+202E...", fitted)')
+    check(not any(h in t for t in drawn for h in HIDDEN), 'canvas never draws a raw hidden character')
+    reset_drawn(page)
+    lst.locator('li', has_text='reports').get_by_role('button').first.click()
+    expect(crumbs(page)).to_have_count(3)
+    check('U+202E RLO' in badges(crumbs(page).last), 'breadcrumb: the folder name shows its badge')
+    page.wait_for_timeout(900)
+    live_text = page.locator('#atlas-live').inner_text()
+    check('U+202E' in live_text and not any(h in live_text for h in HIDDEN), 'aria-live speaks the escaped name')
+    drawn = drawn_texts(page)
+    check(any('scanU+200B' in t for t in drawn), 'canvas label source: the zero-width file is drawn escaped')
+    check(not any(h in t for t in drawn for h in HIDDEN), 'canvas never draws a raw hidden character (inside the folder)')
+    box = canvas.bounding_box()
+    page.mouse.move(box['x'] + box['width'] * 0.5, box['y'] + box['height'] * 0.5)
+    expect(page.locator('main .tip .ctl').first).to_be_visible()
+    check('U+200B ZWSP' in badges(page.locator('main .tip')), 'tooltip: the zero-width space shows as a badge')
+    page.mouse.move(0, 0)
     crumbs(page).first.click()
+    expect(crumbs(page)).to_have_count(1)
+    page.wait_for_timeout(700)
+
+    # --- allocated basis: unknown allocation is hatched and named, never zero ---------------------
+    reset_drawn(page)
     page.get_by_role('radio', name='Allocated').click()
     expect(page.get_by_role('radio', name='Allocated')).to_have_attribute('aria-checked', 'true')
+    page.wait_for_timeout(900)
+    drawn = drawn_texts(page)
+    check(any('alloc unknown' in t for t in drawn), 'allocated basis: label bands name unknown allocation on the cloth')
+    if not lst.evaluate('d => d.open'):
+        page.locator('main details.as-text summary').click()
+    alpha = lst.locator('li', has_text='Synthetic Alpha')
+    check('with unknown allocation' in alpha.inner_text() and 'at least' in alpha.inner_text(), 'allocated basis: the text list says "at least" and names the unknown files, never 0 B')
+    alpha.get_by_role('button', name='Inspect').click()
+    check('counted as 0 under this basis' in page.locator('main aside.inspector').inner_text(), 'allocated basis: the inspector explains the hatching')
     page.get_by_role('radio', name='Allocated').press('ArrowLeft')
     expect(page.get_by_role('radio', name='Logical size')).to_have_attribute('aria-checked', 'true')
     print('PASS atlas basis radiogroup with arrow keys')
