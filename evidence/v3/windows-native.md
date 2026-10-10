@@ -71,7 +71,7 @@ Selected actual output tail (fmt returned no output):
 ```text
 test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.45s
-    Checking loomward-windows v0.1.0 (crates/loomward-windows)
+    Checking loomward-windows v0.1.0 (<worktree>atesoomward-windows; local path redacted)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.05s
 ```
 
