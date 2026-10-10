@@ -13,6 +13,7 @@
 //!   only then emits its event (commit before event).
 //!
 //! No command has an effect on user files or processes (invariant 1), and no command accepts a path.
+#![forbid(unsafe_code)]
 
 mod cursors;
 mod db;
