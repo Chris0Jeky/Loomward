@@ -529,8 +529,12 @@ dependencies = [
 name = "loomward-engine"
 version = "0.1.0"
 dependencies = [
+ "loomward-core",
  "loomward-protocol",
+ "loomward-windows",
  "serde_json",
+ "sha2",
+ "tempfile",
 ]
 
 [[package]]

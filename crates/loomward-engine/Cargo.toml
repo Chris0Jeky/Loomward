@@ -8,6 +8,10 @@ description = "Loomward v0.3 engine: jobs, scan, events, telemetry, placement, l
 
 [dependencies]
 loomward-protocol = { path = "../loomward-protocol" }
+loomward-core = { path = "../loomward-core" }
+loomward-windows = { path = "../loomward-windows" }
+serde_json.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
+tempfile.workspace = true

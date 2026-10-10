@@ -1,4 +1,4 @@
-//! Skeleton smoke test: every public entry point answers `Unavailable` for its own component.
+//! Remaining skeleton entry points answer `Unavailable` for their own component.
 //! A lane that lands an entry point must change its line here; a lane that forgets one stays
 //! visible because the skeleton answer is still asserted.
 
@@ -36,7 +36,7 @@ fn open_touches_nothing_and_keeps_config() {
 }
 
 #[test]
-fn every_entry_point_is_unavailable() {
+fn remaining_skeleton_entry_points_are_unavailable() {
     let e = engine(DatasetClass::Synthetic);
     let job_id = JobId::new("jb_smoke").unwrap();
     let root = GrantedRoot::new(
@@ -99,35 +99,7 @@ fn every_entry_point_is_unavailable() {
         Component::Telemetry,
     );
 
-    // placement
-    assert_unavailable(e.placement_model(), Component::Placement);
-    assert_unavailable(
-        e.placement_candidates(
-            &from_value(json!({
-                "source_volume_id": "vo_smoke", "basis": "root_children",
-                "max_groups": 5, "min_bytes": "0"
-            }))
-            .unwrap(),
-        ),
-        Component::Placement,
-    );
-    assert_unavailable(
-        e.placement_simulate(
-            &from_value(json!({
-                "source_volume_id": "vo_smoke", "target_free_bytes": "0",
-                "max_transfer_bytes": "0", "heat_policy": "unknown_is_ineligible",
-                "relief_policy": "verified_only", "candidate_basis": "root_children",
-                "max_groups": 5, "overrides": [], "node_budget": 1000, "save": false
-            }))
-            .unwrap(),
-        ),
-        Component::Placement,
-    );
-    assert_unavailable(e.proposals_list(), Component::Placement);
-    assert_unavailable(
-        e.proposals_get(&from_value(json!({ "proposal_id": "pp_smoke" })).unwrap()),
-        Component::Placement,
-    );
+    // Placement is implemented: its snapshot/store entry points are exercised in placement::tests.
 
     // learning
     assert_unavailable(
