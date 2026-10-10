@@ -1,0 +1,19 @@
+[package]
+name = "loomward-http"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Loomward v0.3 loopback HTTP + SSE adapter (loomward-serve): the browser's security boundary to the ViewService (ADR-V3-12)."
+
+[dependencies]
+loomward-protocol = { path = "../loomward-protocol" }
+serde_json.workspace = true
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "http1", "service"] }
+futures-util = { version = "0.3", default-features = false }
+http-body-util = "0.1"
+getrandom = "0.3"
+subtle = "2.6"
