@@ -1,8 +1,9 @@
 # L7 native scan handoff - LW-006 / LW-101
 
-10 October 2026, Windows 11. Branch `feat/l7-scan`, base/head
-`e1037873dfebe11dc9fb8a209b72eda44693b92e`. Changes are **uncommitted and unpushed**, as requested;
-the driver owns review, integration and commits. No dependency on `feat/l2-catalog` was introduced.
+10 October 2026, Windows 11. Branch `feat/l7-scan`, written on base
+`e1037873dfebe11dc9fb8a209b72eda44693b92e` and committed by the driver, then merged with main (L12
+placement). No dependency on `feat/l2-catalog` was introduced. The workspace count below is from the
+pre-merge base; after the merge the workspace passes 226 tests.
 
 ## Changed
 
