@@ -1,0 +1,114 @@
+# loomward-desktop native test log
+# 2026-10-10T11:02Z, Windows 11 Pro 10.0.26300 x64, DESKTOP host; synthetic fixture service only
+# commit base: eb6afe2
+
+## tauri info (pinned CLI, app/node_modules/.bin/tauri.cmd info)
+[✔] Environment
+    - OS: Windows 10.0.26300 x86_64 (X64)
+    ✔ WebView2: 154.0.4258.62
+    ✔ MSVC: 
+        - Visual Studio Build Tools 2019
+        - Visual Studio Build Tools 2022
+        - Visual Studio Community 2019
+        - Visual Studio Community 2022
+    ✔ rustc: 1.97.1 (8bab26f4f 2026-07-14)
+    ✔ cargo: 1.97.1 (c980f4866 2026-06-30)
+    ✔ rustup: 1.29.0 (28d1352db 2026-03-05)
+    ✔ Rust toolchain: stable-x86_64-pc-windows-msvc (default)
+    - node: 24.13.1
+    - npm: 11.8.0
+    - bun: 1.3.11
+[-] Packages
+    - tauri 🦀: 2.12.2
+    - tauri-build 🦀: 2.7.1
+    - wry 🦀: 0.57.0
+    - tao 🦀: 0.37.1
+    - @tauri-apps/api  ⱼₛ: 2.12.2
+    - @tauri-apps/cli  ⱼₛ: 2.12.1
+[-] Plugins
+[-] App
+    - build-type: build
+    - CSP: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src ipc: http://ipc.localhost; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src 'none'
+    - frontendDist: ../app/dist
+    - framework: Svelte
+    - bundler: Vite
+
+## cargo build --manifest-path native/Cargo.toml
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 14.38s
+exit=0
+
+## cargo fmt --manifest-path native/Cargo.toml --check
+exit=0
+
+## cargo clippy --manifest-path native/Cargo.toml --all-targets -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.24s
+exit=0
+
+## cargo test --manifest-path native/Cargo.toml
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test native_disclosure_box_defaults_to_cancel_and_maps_both_buttons ... ignored, opens a real MessageBox; run with --ignored on an interactive desktop
+test the_picker_never_opens_in_a_synthetic_session ... ok
+test synthetic_request_grant_never_reaches_the_service ... ok
+test personal_disclosure_is_refused_with_confinement_not_enforced_before_any_dialog ... ok
+test disclosure_text_renders_every_item_with_hidden_characters_escaped ... ok
+test disclosure_dialog_accept_and_decline_paths ... ok
+test the_webview_may_invoke_exactly_lw_call_and_lw_events ... ok
+test self_test_passes ... ok
+test result: ok. 7 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.18s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+exit=0
+
+## cargo test --manifest-path native/Cargo.toml -- --ignored native_disclosure (real MessageBoxW, interactive session)
+test native_disclosure_box_defaults_to_cancel_and_maps_both_buttons ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.71s
+exit=0
+
+## native/target/debug/loomward-desktop.exe --self-test
+PASS lw_call session.hello answers over the tauri adapter
+PASS lw_call: every command returns a complete envelope
+PASS lw_call roots.request_grant is refused in a synthetic session (picker never opens)
+PASS lw_call refuses malformed envelopes through from_slice
+PASS lw_call rejects a request over 64 KiB as a transport fault
+PASS lw_events: stream.hello first, then live events, revocation included
+PASS lw_events: stream.hello repeats after the heartbeat interval of silence
+PASS lw_events resume: same epoch replays, other epoch or no epoch lags
+PASS lw_events: a fifth stream per window is refused; window close tears all down
+PASS lw_events: a channel that stops receiving ends its stream
+self-test passed
+exit=0
+
+## loomward-desktop.exe --dataset personal --allow-personal (refused at start, as #143)
+loomward-desktop: the fixture service serves synthetic contract examples only;                  personal mode needs the real engine service (lane L8)
+exit=1
+
+## loomward-desktop.exe --dataset personal (refused without --allow-personal)
+loomward-desktop: --dataset personal also requires --allow-personal
+usage: loomward-desktop [--self-test] [--dataset synthetic|personal] [--allow-personal]
+exit=2
+
+## py -3 native/tests/webview2_probe.py (real window, WebView2 over CDP)
+WebView2 154.0.4258.62
+PASS app served from the embedded dist
+PASS the app sees the Tauri IPC and selects the tauri transport
+PASS the CSP blocks an injected inline script
+PASS lw_call session.hello over real IPC
+PASS roots.request_grant refused in the synthetic session (no picker)
+PASS every non-lw command is refused by the ACL
+PASS lw_events: stream.hello first on the Channel
+PASS stream.hello heartbeat after 15 s of silence on the real Channel
+PASS a page reload tears down the old document's streams
+PASS P9 layout + first draw of 2,500 nodes within 50 ms in WebView2 (median)
+PASS WM_CLOSE posted to the shell window
+PASS the shell exits cleanly after the window closes
+PASS window close tears down the open streams
+P9 runs (layout+first paint ms): [24.7, 11.1, 17.5, 12, 19.4] median 17.5 viewport [1440, 1000, 1.25]
+
+## root: cargo test --workspace
+27 test binaries ok, 162 tests passed, 0 failed (exit=0)
+
+## npm.cmd --prefix app run check / test / build
+check exit=0
+ Test Files  15 passed (15)
+      Tests  105 passed (105)
+build exit=0
