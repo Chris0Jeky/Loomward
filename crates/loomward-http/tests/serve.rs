@@ -771,6 +771,10 @@ fn stream_opens_with_hello_and_heartbeats_after_silence() {
         beat.event, "stream.hello",
         "the heartbeat is a repeated stream.hello"
     );
+    assert_eq!(
+        beat.data["data"]["session_started_at"], hello.data["data"]["session_started_at"],
+        "session_started_at is fixed for the session, not regenerated per hello"
+    );
     assert!(
         t.elapsed() < Duration::from_secs(3),
         "heartbeat took {:?}",

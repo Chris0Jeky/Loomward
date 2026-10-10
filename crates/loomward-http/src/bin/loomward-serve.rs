@@ -81,7 +81,7 @@ fn main() -> ExitCode {
     let service = match FixtureService::new(args.dataset) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("loomward-serve: cannot load the contract examples: {e}");
+            eprintln!("loomward-serve: {e}");
             return ExitCode::FAILURE;
         }
     };

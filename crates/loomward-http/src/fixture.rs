@@ -37,6 +37,7 @@ pub struct FixtureService {
 
 struct Bus {
     epoch: String,
+    started_at: String,
     heartbeat: Duration,
     capacity: usize,
     state: Mutex<BusState>,
@@ -59,8 +60,15 @@ impl BusState {
 }
 
 impl FixtureService {
-    /// Loads every `<command>.result.json` from [`EXAMPLES_DIR`].
+    /// Loads every `<command>.result.json` from [`EXAMPLES_DIR`]. Synthetic only: the examples are
+    /// demo data, and labelling them personal would present them as the owner's (invariant 4).
     pub fn new(dataset: DatasetClass) -> io::Result<Self> {
+        if dataset != DatasetClass::Synthetic {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the fixture service serves synthetic contract examples only;                  personal mode needs the real engine service (lane L8)",
+            ));
+        }
         Self::load(dataset, Path::new(EXAMPLES_DIR))
     }
 
@@ -89,12 +97,14 @@ impl FixtureService {
             "e_{}",
             raw.iter().map(|b| format!("{b:02x}")).collect::<String>()
         );
+        let started_at = now();
         Ok(Self {
             dataset,
-            session_started_at: now(),
+            session_started_at: started_at.clone(),
             results,
             bus: Arc::new(Bus {
                 epoch,
+                started_at,
                 heartbeat: HEARTBEAT,
                 capacity: EVENT_QUEUE_CAPACITY,
                 state: Mutex::new(BusState::default()),
@@ -241,7 +251,7 @@ impl Bus {
     /// Not sequenced: its envelope `seq` is the current `last_seq`.
     fn hello(&self, st: &BusState, dataset: DatasetClass) -> EventEnvelope {
         let data = json!({
-            "session_started_at": now(),
+            "session_started_at": self.started_at,
             "epoch": self.epoch,
             "last_seq": st.last_seq,
             "oldest_replayable_seq": st.oldest(),
@@ -368,8 +378,13 @@ mod tests {
     }
 
     #[test]
+    fn personal_mode_is_refused() {
+        assert!(FixtureService::new(DatasetClass::Personal).is_err());
+    }
+
+    #[test]
     fn every_fixture_answer_is_a_complete_envelope() {
-        let service = FixtureService::new(DatasetClass::Personal).unwrap();
+        let service = FixtureService::new(DatasetClass::Synthetic).unwrap();
         for &command in Command::ALL {
             let request: RequestEnvelope = serde_json::from_value(json!({
                 "protocol": "loomward/3", "request_id": "r_1", "command": command.as_str(), "payload": {}
@@ -379,7 +394,7 @@ mod tests {
                 ResponseEnvelope::Ok(ok) => {
                     ok.validate_for(command)
                         .unwrap_or_else(|e| panic!("{}: {e:?}", command.as_str()));
-                    assert_eq!(ok.meta.dataset_class, DatasetClass::Personal);
+                    assert_eq!(ok.meta.dataset_class, DatasetClass::Synthetic);
                 }
                 ResponseEnvelope::Err(e) => panic!("{}: {e:?}", command.as_str()),
             }
