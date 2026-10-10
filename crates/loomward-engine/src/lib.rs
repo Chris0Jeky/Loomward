@@ -1,10 +1,9 @@
 //! Loomward v0.3 engine (docs/41 section 4): jobs, scan pipeline, event bus, telemetry
 //! scheduler, placement scenario builder, learning jobs, teacher runner and own-pool budgets.
 //!
-//! This is the C2 skeleton (docs/43). Every entry point exists with its final shape and answers
-//! [`EngineError::Unavailable`] until the lane that owns its module fills the body. The
-//! `smoke` test in `tests/smoke.rs` lists every entry point, so a lane that lands one must flip
-//! its assertion.
+//! The C2 skeleton (docs/43) now has the L11b read-only telemetry scheduler. Other components
+//! answer [`EngineError::Unavailable`] until their owning lane lands. The smoke test pins the
+//! remaining stubs; telemetry has lifecycle, mapping, schema and native structural tests.
 //!
 //! The engine exposes no generic command and accepts no path from a caller: the service resolves
 //! a granted root from `state.db` and passes a [`scan::GrantedRoot`]. Nothing here performs a
@@ -41,13 +40,17 @@ pub struct EngineConfig {
 #[derive(Debug)]
 pub struct Engine {
     config: EngineConfig,
+    telemetry: telemetry::Telemetry,
 }
 
 impl Engine {
     /// Opens the engine for `config`. The skeleton opens nothing and touches no file; the lanes
     /// that own the stores open them here (L7: catalogue and state files, restart recovery).
     pub fn open(config: EngineConfig) -> EngineResult<Engine> {
-        Ok(Engine { config })
+        Ok(Engine {
+            config,
+            telemetry: telemetry::Telemetry::default(),
+        })
     }
 
     /// The configuration the engine was opened with.
