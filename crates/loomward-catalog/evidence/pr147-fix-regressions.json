@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "platform": "Windows",
+  "dataset_class": "synthetic",
+  "base_head": "6bbeb81ecd4d7f60d27f39c506398b5b65a4dd56",
+  "method": "Run final regression tests against committed pre-fix production sources; restore exact working bytes in finally.",
+  "regressions": [
+    {
+      "finding": "F1",
+      "command": "cargo test -p loomward-catalog --test writer surviving_hardlink_keeps_the_durable_reference_and_membership -- --exact",
+      "exit_code": 101,
+      "regression_failed_without_fix": true,
+      "failure_excerpt": "failures:\n\n---- surviving_hardlink_keeps_the_durable_reference_and_membership stdout ----\n\nthread 'surviving_hardlink_keeps_the_durable_reference_and_membership' (34744) panicked at crates\\loomward-catalog\\tests\\writer.rs:1232:9:\nassertion `left == right` failed\n  left: (\"resolved\", false, 1, 1)\n right: (\"resolved\", false, 2, 1)"
+    },
+    {
+      "finding": "F2",
+      "command": "cargo test -p loomward-catalog --test writer creation_time_edits_retire_directory_and_file_bindings_without_auto_reattachment -- --exact",
+      "exit_code": 101,
+      "regression_failed_without_fix": true,
+      "failure_excerpt": "failures:\n\n---- creation_time_edits_retire_directory_and_file_bindings_without_auto_reattachment stdout ----\n\nthread 'creation_time_edits_retire_directory_and_file_bindings_without_auto_reattachment' (35920) panicked at crates\\loomward-catalog\\tests\\writer.rs:1101:9:\nassertion `left == right` failed\n  left: (\"resolved\", false)\n right: (\"unresolved\", true)"
+    },
+    {
+      "finding": "F3",
+      "command": "cargo test -p loomward-catalog --lib writer::tests::two_listings_in_one_writer_batch_reject_the_older_final -- --exact",
+      "exit_code": 101,
+      "regression_failed_without_fix": true,
+      "failure_excerpt": "failures:\n\n---- writer::tests::two_listings_in_one_writer_batch_reject_the_older_final stdout ----\n\nthread 'writer::tests::two_listings_in_one_writer_batch_reject_the_older_final' (29384) panicked at crates\\loomward-catalog\\src\\writer.rs:1316:9:\nassertion failed: matches!(stale, Err(Error::StaleGeneration))"
+    },
+    {
+      "finding": "F4",
+      "command": "cargo test -p loomward-catalog --test queries budgeted_search_resumes_after_the_last_returned_match -- --exact",
+      "exit_code": 101,
+      "regression_failed_without_fix": true,
+      "failure_excerpt": "After returning synthetic-000.txt through synthetic-022.txt on budget exhaustion, continuation restarted at synthetic-000.txt and returned those rows again."
+    }
+  ],
+  "final_proving": {
+    "cargo fmt --all --check": "passed",
+    "cargo test --workspace": {
+      "passed": 207,
+      "failed": 0,
+      "ignored": 0,
+      "catalogue_tests": 45,
+      "existing_errata_and_rollup_oracle": "passed"
+    },
+    "cargo clippy --workspace --all-targets -- -D warnings": "passed",
+    "git diff --check": "passed",
+    "cargo run -p loomward-catalog --release --example bench -- --rows 1000000": {
+      "passed": true,
+      "receipt": "evidence/v3/bench/catalog-1m.json",
+      "P4_rows_per_second": 18432.395458388986,
+      "P4_met": false,
+      "oracle_matched": true,
+      "temporary_directory_removed": true
+    }
+  },
+  "tested_source_sha256": {
+    "crates/loomward-catalog/src/writer.rs": "ff366d5fb661b0eef1098e9581d66d29b59bf32ffe9f5705aee9f6101a96d66b",
+    "crates/loomward-catalog/src/query.rs": "2bd1c958936d367d293bff52bb354b6685c3ba4a734246767ebe81485c329554",
+    "crates/loomward-catalog/tests/writer.rs": "f519eba853485d4810fc8d6dc4ee7085746e355344d23fb5248b075d3f1fe072",
+    "crates/loomward-catalog/tests/queries.rs": "a197b95aeb5902336fd088341283221a0501c1fe38d7c7e22c1b178a30c5f8d0"
+  }
+}

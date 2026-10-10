@@ -1,0 +1,47 @@
+{
+  "base_head": "4ca83e9a1c114578bdf9146c8dfc06fdc15bd7ae",
+  "mutation": "Restore committed eager retirement and eager hard-link rebinding; retain test-only crash points and all other fixed code.",
+  "regressions": [
+    {
+      "test": "catalogue_commit_failure_reverts_pending_references_and_preserves_listing",
+      "command": "cargo test -p loomward-catalog --lib writer::publication_tests::catalogue_commit_failure_reverts_pending_references_and_preserves_listing -- --exact",
+      "without_fix_exit_code": 101,
+      "expected_defect_detected": true,
+      "observed_assertion": [
+        "left: [(1, \"resolved\", false, 2, 1), (2, \"unresolved\", true, 3, 1), (3, \"unresolved\", true, 2, 1), (4, \"unresolved\", true, 4, 1)]",
+        "right: [(1, \"resolved\", false, 1, 1), (2, \"resolved\", false, 3, 1), (3, \"resolved\", false, 2, 1), (4, \"resolved\", false, 4, 1)]"
+      ]
+    },
+    {
+      "test": "crash_before_catalogue_commit_recovery_discards_pending_references",
+      "command": "cargo test -p loomward-catalog --lib writer::publication_tests::crash_before_catalogue_commit_recovery_discards_pending_references -- --exact",
+      "without_fix_exit_code": 101,
+      "expected_defect_detected": true,
+      "observed_assertion": [
+        "left: [(1, \"resolved\", false, 2, 1), (2, \"unresolved\", true, 3, 1), (3, \"unresolved\", true, 2, 1), (4, \"unresolved\", true, 4, 1)]",
+        "right: [(1, \"resolved\", false, 1, 1), (2, \"resolved\", false, 3, 1), (3, \"resolved\", false, 2, 1), (4, \"resolved\", false, 4, 1)]"
+      ]
+    },
+    {
+      "test": "crash_after_catalogue_commit_recovery_confirms_pending_references",
+      "command": "cargo test -p loomward-catalog --lib writer::publication_tests::crash_after_catalogue_commit_recovery_confirms_pending_references -- --exact",
+      "without_fix_exit_code": 101,
+      "expected_defect_detected": true,
+      "observed_assertion": [
+        "left: [(1, \"resolved\", false, 2, 1), (2, \"unresolved\", true, 3, 1), (3, \"unresolved\", true, 2, 1), (4, \"unresolved\", true, 4, 1)]",
+        "right: [(1, \"resolved\", false, 1, 1), (2, \"resolved\", false, 3, 1), (3, \"resolved\", false, 2, 1), (4, \"resolved\", false, 4, 1)]"
+      ]
+    },
+    {
+      "test": "pending_reference_recovery_twice_is_idempotent",
+      "command": "cargo test -p loomward-catalog --lib writer::publication_tests::pending_reference_recovery_twice_is_idempotent -- --exact",
+      "without_fix_exit_code": 101,
+      "expected_defect_detected": true,
+      "observed_assertion": [
+        "left: [(1, \"resolved\", false, 2, 1), (2, \"unresolved\", true, 3, 1), (3, \"unresolved\", true, 2, 1), (4, \"unresolved\", true, 4, 1)]",
+        "right: [(1, \"resolved\", false, 1, 1), (2, \"resolved\", false, 3, 1), (3, \"resolved\", false, 2, 1), (4, \"resolved\", false, 4, 1)]"
+      ]
+    }
+  ],
+  "writer_restored_sha256": "26145127a4dc54b521264e87fb87ef673d1742713b84bef2ae091fffb730e73d"
+}

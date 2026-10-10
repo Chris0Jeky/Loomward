@@ -176,7 +176,7 @@ fn calendar_and_filetime_are_exact_and_pid_reuse_does_not_reconnect() {
     a.start_time_windows_100ns = Some("116444736000000002".into());
     assert_ne!(original, mapping::process_ref(&a, 2));
     a.start_time_windows_100ns = None;
-    assert_ne!(mapping::process_ref(&a, 1), mapping::process_ref(&a, 2));
+    assert_eq!(mapping::process_ref(&a, 1), mapping::process_ref(&a, 2));
 }
 
 #[test]
@@ -193,6 +193,7 @@ fn sorting_puts_missing_values_last_and_explains_denial_without_actions() {
         image_name: Some("aaaa".into()),
         ..Process::default()
     });
+    raw.processes.reverse();
     for sort in [
         ProcessListRequestSort::PrivateDesc,
         ProcessListRequestSort::WorkingSetDesc,
@@ -208,14 +209,15 @@ fn sorting_puts_missing_values_last_and_explains_denial_without_actions() {
             .get(),
         8
     );
-    raw.processes[1].unknowns.push(Unknown {
+    let denied_index = raw.processes.iter().position(|p| p.pid == 8).unwrap();
+    raw.processes[denied_index].unknowns.push(Unknown {
         field: "process_handle_fields".into(),
         reason: "access_denied".into(),
         windows_error: Some(5),
     });
-    raw.processes[1].protected_or_unknown = true;
+    raw.processes[denied_index].protected_or_unknown = true;
     assert_eq!(
-        mapping::process_row(&raw.processes[1], 1).access,
+        mapping::process_row(&raw.processes[denied_index], 1).access,
         ProcessRowAccess::Denied
     );
     let e = Engine::open(crate::EngineConfig {
@@ -223,7 +225,7 @@ fn sorting_puts_missing_values_last_and_explains_denial_without_actions() {
         dataset_class: DatasetClass::Synthetic,
     })
     .unwrap();
-    let reference = mapping::process_ref(&raw.processes[1], 1);
+    let reference = mapping::process_ref(&raw.processes[denied_index], 1);
     lock(&e.telemetry.shared.state).unwrap().latest = Some(Latest {
         raw,
         own: None,
@@ -362,4 +364,269 @@ fn leases_reuse_one_thread_and_enforce_a_bounded_60_second_lifetime() {
         Err(EngineError::ResourceBudget { .. })
     ));
     // Drop joins the one worker regardless of the number of unexpired leases.
+}
+
+#[test]
+fn unknown_creation_ref_survives_list_to_explain_tick() {
+    let e = Engine::open(crate::EngineConfig {
+        state_dir: "unused".into(),
+        dataset_class: DatasetClass::Synthetic,
+    })
+    .unwrap();
+    let mut snapshot = raw();
+    snapshot.processes[0].start_time_windows_100ns = None;
+    let mut state = lock(&e.telemetry.shared.state).unwrap();
+    state.latest = Some(Latest {
+        raw: snapshot,
+        own: None,
+        sequence: 1,
+    });
+    drop(state);
+    let list = e
+        .processes_list(&serde_json::from_value(json!({"sort":"name_asc","limit":10})).unwrap())
+        .unwrap();
+    lock(&e.telemetry.shared.state)
+        .unwrap()
+        .latest
+        .as_mut()
+        .unwrap()
+        .sequence = 2;
+    let reference = list.rows[0].process_ref.clone();
+    assert!(e
+        .processes_explain(&ProcessRefRequest {
+            process_ref: reference.clone()
+        })
+        .is_ok());
+    let mut changed = raw().processes.remove(0);
+    changed.start_time_windows_100ns = None;
+    assert_eq!(reference, mapping::process_ref(&changed, 2));
+    changed.parent_pid += 1;
+    assert_ne!(reference, mapping::process_ref(&changed, 2));
+    changed.parent_pid -= 1;
+    changed.image_name = Some("Other.exe".into());
+    assert_ne!(reference, mapping::process_ref(&changed, 2));
+}
+
+#[cfg(windows)]
+#[test]
+fn health_reads_own_usage_without_a_lease_or_retained_values() {
+    let e = Engine::open(crate::EngineConfig {
+        state_dir: "unused".into(),
+        dataset_class: DatasetClass::Personal,
+    })
+    .unwrap();
+    assert!(
+        e.telemetry_health()
+            .unwrap()
+            .private_commit_bytes
+            .unwrap()
+            .get()
+            > 0
+    );
+    lock(&e.telemetry.shared.state).unwrap().latest = Some(Latest {
+        raw: raw(),
+        own: Some(Process {
+            private_commit_bytes: Some(1),
+            ..Process::default()
+        }),
+        sequence: 1,
+    });
+    assert!(
+        e.telemetry_health()
+            .unwrap()
+            .private_commit_bytes
+            .unwrap()
+            .get()
+            > 1
+    );
+}
+
+#[test]
+fn sampler_exit_discards_latest_before_restart() {
+    let telemetry = Telemetry::default();
+    lock(&telemetry.shared.state).unwrap().latest = Some(Latest {
+        raw: raw(),
+        own: None,
+        sequence: 1,
+    });
+    run(Arc::clone(&telemetry.shared));
+    assert!(lock(&telemetry.shared.state).unwrap().latest.is_none());
+}
+
+#[test]
+fn sampler_and_mapping_panics_reset_flags_and_allow_next_lease() {
+    for mapping in [true, false] {
+        let telemetry = Telemetry::default();
+        {
+            let mut state = lock(&telemetry.shared.state).unwrap();
+            state.panic_sample = !mapping;
+            state.panic_mapping = mapping;
+        }
+        let request = serde_json::from_value(
+            json!({"subscription_id":null,"channels":["engine"],"interval_ms":10000}),
+        )
+        .unwrap();
+        telemetry.lease(&request).unwrap();
+        let until = Instant::now() + Duration::from_secs(10);
+        while !lock(&telemetry.worker)
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .is_finished()
+        {
+            assert!(Instant::now() < until);
+            thread::sleep(Duration::from_millis(10));
+        }
+        let state = lock(&telemetry.shared.state).unwrap();
+        assert!(!state.running && !state.busy);
+        assert!(state.latest.is_none());
+        drop(state);
+        let restarted = telemetry.lease(&request).unwrap();
+        assert!(lock(&telemetry.shared.state).unwrap().running);
+        // Drop ends all surviving leases and joins the replacement.
+        assert!(lock(&telemetry.shared.state)
+            .unwrap()
+            .leases
+            .contains_key(&restarted.subscription_id));
+    }
+}
+
+#[test]
+fn first_summary_ranks_working_set_when_cpu_is_unknown() {
+    let mut snapshot = raw();
+    snapshot.processes.push(Process {
+        pid: 99,
+        working_set_bytes: Some(900),
+        ..Process::default()
+    });
+    let sample = mapping::sample(&snapshot, None, 1, CHANNELS, false).unwrap();
+    assert_eq!(sample.processes.unwrap().top[0].pid.get(), 99);
+}
+
+#[test]
+fn sorting_reorders_known_values_and_pid_ties() {
+    let mut snapshot = raw();
+    snapshot.processes = vec![
+        Process {
+            pid: 99,
+            image_name: Some("zeta".into()),
+            private_commit_bytes: Some(1),
+            working_set_bytes: Some(1),
+            rates: Rates {
+                cpu_fraction: Some(0.1),
+                io_read_bytes_per_s: Some(1.0),
+                io_write_bytes_per_s: Some(1.0),
+                ..Rates::default()
+            },
+            ..Process::default()
+        },
+        Process {
+            pid: 8,
+            image_name: Some("alpha".into()),
+            private_commit_bytes: Some(9),
+            working_set_bytes: Some(9),
+            rates: Rates {
+                cpu_fraction: Some(0.9),
+                io_read_bytes_per_s: Some(9.0),
+                io_write_bytes_per_s: Some(9.0),
+                ..Rates::default()
+            },
+            ..Process::default()
+        },
+    ];
+    for sort in [
+        ProcessListRequestSort::PrivateDesc,
+        ProcessListRequestSort::WorkingSetDesc,
+        ProcessListRequestSort::CpuDesc,
+        ProcessListRequestSort::IoDesc,
+        ProcessListRequestSort::NameAsc,
+        ProcessListRequestSort::GpuDesc,
+    ] {
+        assert_eq!(mapping::sorted_rows(&snapshot, 1, sort)[0].pid.get(), 8);
+    }
+    snapshot.processes[0] = Process {
+        pid: 99,
+        ..snapshot.processes[1].clone()
+    };
+    assert_eq!(
+        mapping::sorted_rows(&snapshot, 1, ProcessListRequestSort::CpuDesc)[0]
+            .pid
+            .get(),
+        8
+    );
+}
+
+#[test]
+fn event_mapping_errors_are_counted_and_state_remains_readable() {
+    let telemetry = Telemetry::default();
+    let mut invalid = raw();
+    invalid.gpu = Observation::Observed {
+        value: vec![GpuAdapter {
+            adapter_id: "x".repeat(16384),
+            ..GpuAdapter::default()
+        }],
+    };
+    lock(&telemetry.shared.state).unwrap().sample_override = Some(invalid);
+    let request = serde_json::from_value(
+        json!({"subscription_id":null,"channels":["gpu"],"interval_ms":10000}),
+    )
+    .unwrap();
+    let lease = telemetry.lease(&request).unwrap();
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        let state = lock(&telemetry.shared.state).unwrap();
+        if state.sequence > 0 {
+            assert_eq!(state.costs.mapping_errors, 1);
+            assert!(state.events.is_empty());
+            break;
+        }
+        drop(state);
+        assert!(Instant::now() < until);
+        thread::sleep(Duration::from_millis(10));
+    }
+    telemetry
+        .release(&SubscriptionRefRequest {
+            subscription_id: lease.subscription_id,
+        })
+        .unwrap();
+}
+
+#[test]
+fn expired_session_cannot_supply_the_next_lease() {
+    let telemetry = Telemetry::default();
+    let request = serde_json::from_value(
+        json!({"subscription_id":null,"channels":["engine"],"interval_ms":10000}),
+    )
+    .unwrap();
+    let first = telemetry.lease(&request).unwrap();
+    let until = Instant::now() + Duration::from_secs(10);
+    while lock(&telemetry.shared.state).unwrap().latest.is_none() {
+        assert!(Instant::now() < until);
+        thread::sleep(Duration::from_millis(10));
+    }
+    {
+        let mut state = lock(&telemetry.shared.state).unwrap();
+        state
+            .leases
+            .get_mut(&first.subscription_id)
+            .unwrap()
+            .expires = Instant::now();
+        state.latest = Some(Latest {
+            raw: raw(),
+            own: None,
+            sequence: 999,
+        });
+    }
+    let next = telemetry.lease(&request).unwrap();
+    let state = lock(&telemetry.shared.state).unwrap();
+    assert!(state
+        .latest
+        .as_ref()
+        .is_none_or(|latest| latest.sequence != 999));
+    drop(state);
+    telemetry
+        .release(&SubscriptionRefRequest {
+            subscription_id: next.subscription_id,
+        })
+        .unwrap();
 }

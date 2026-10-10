@@ -1,0 +1,82 @@
+{
+  "base_head": "4ca83e9a1c114578bdf9146c8dfc06fdc15bd7ae",
+  "branch": "feat/l2-catalog",
+  "state": "Uncommitted; driver commits and pushes",
+  "platform": "Windows 11; rustc 1.97.1",
+  "scope": "Disposable synthetic SQLite fixtures and in-process 1M benchmark; no external action",
+  "protocol": [
+    "Commit pending retirements and rebindings to state.db, tagged with catalogue instance and random publication token.",
+    "Keep object_ref state, retired flag, row binding and collection membership unchanged while pending.",
+    "Commit the publication and its token together in a catalog.db-only transaction.",
+    "Confirm matching pending intents and remove the journal in one state.db-only transaction before acknowledging.",
+    "After failure and before restart repairs, confirm matching witnesses or discard unmatched intents; repeat recovery is a no-op."
+  ],
+  "schema_version": 3,
+  "upgrade": "v2 bindings, collection memberships, catalogue instance and backup preserved; fresh creation and v1 migration also pass",
+  "faults": "cfg(test) writer stop points at the two commit boundaries; deferred SQLite FK commit failure and state-confirmation trigger failure are synthetic test fixtures only",
+  "regression_mutations": "evidence/pr147-final-regression-mutations.json",
+  "required_regressions": [
+    {
+      "test": "catalogue_commit_failure_reverts_pending_references_and_preserves_listing",
+      "command": "cargo test -p loomward-catalog --lib writer::publication_tests::catalogue_commit_failure_reverts_pending_references_and_preserves_listing -- --exact",
+      "without_fix_exit_code": 101,
+      "expected_defect_detected": true
+    },
+    {
+      "test": "crash_before_catalogue_commit_recovery_discards_pending_references",
+      "command": "cargo test -p loomward-catalog --lib writer::publication_tests::crash_before_catalogue_commit_recovery_discards_pending_references -- --exact",
+      "without_fix_exit_code": 101,
+      "expected_defect_detected": true
+    },
+    {
+      "test": "crash_after_catalogue_commit_recovery_confirms_pending_references",
+      "command": "cargo test -p loomward-catalog --lib writer::publication_tests::crash_after_catalogue_commit_recovery_confirms_pending_references -- --exact",
+      "without_fix_exit_code": 101,
+      "expected_defect_detected": true
+    },
+    {
+      "test": "pending_reference_recovery_twice_is_idempotent",
+      "command": "cargo test -p loomward-catalog --lib writer::publication_tests::pending_reference_recovery_twice_is_idempotent -- --exact",
+      "without_fix_exit_code": 101,
+      "expected_defect_detected": true
+    }
+  ],
+  "additional_tests": [
+    "v2_upgrade_preserves_bindings_membership_and_catalogue_instance",
+    "confirmation_failure_closes_writer_and_recovery_retries"
+  ],
+  "fixed_source_sha256": {
+    "crates/loomward-catalog/src/db.rs": "f9db42a92e02d8aa3d37e0612943ad4170684b4f81292b1063da74d18aeac07a",
+    "crates/loomward-catalog/src/lib.rs": "6f2390afe368b2425106042d0279fd08c5f8717141f0dd71ec06ef9f9668d8aa",
+    "crates/loomward-catalog/src/writer.rs": "89d5e1f962c40a72d3619e50aa60924e8613aa59ab25e9c0eca1621246453aeb",
+    "crates/loomward-catalog/src/reference-publication.sql": "c902b6f423949c509dc86c39c7b3cd966b9c9a3698228a612953696a2e030df1",
+    "crates/loomward-catalog/src/writer/publication_tests.rs": "9d918379097b35d27f6e2d72fe5cb8e2c5d4475213566f71a7d205397e1aac76",
+    "crates/loomward-catalog/examples/bench.rs": "4c9aa6ba3424ce8d293d91871ed5a22f8c7971bd02f36194db269bff9e5422fa"
+  },
+  "proving": {
+    "cargo fmt --all --check": "PASS",
+    "cargo test --workspace": "PASS: 239 passed; catalogue 55; zero failed or ignored",
+    "cargo clippy --workspace --all-targets -- -D warnings": "PASS",
+    "git diff --check": "PASS",
+    "cargo run -p loomward-catalog --release --example bench -- --rows 1000000": "PASS: oracle matched, all indexes present, temporary directory removed"
+  },
+  "benchmark": {
+    "receipt": "evidence/v3/bench/catalog-1m.json",
+    "P4": {
+      "insert_seconds": 60.9601267,
+      "met": false,
+      "rows_per_second": 16420.585949996064,
+      "target_rows_per_second": 250000
+    },
+    "comparison": "Previous warm receipt: 18432 rows/s. Single warm measurements, not a causal performance comparison. P4 remains unmet, tracked in #148."
+  },
+  "not_verified": [
+    "Hosted CI and remote review threads",
+    "Physical power-loss durability or actual OS process termination at the new fault points",
+    "10M, cold cache, HTTP/native scanner integration",
+    "Python and UI suites"
+  ],
+  "human_todo": "HUMAN_TODO.md read and preserved; q-5 remains open for real metadata disclosure after LW-111; q-6 not yet needed; no new owner action from this fix",
+  "driver_integration": "Driver owns root status/checkpoint updates, commit, push and review gate; retain this worktree until committed and pushed.",
+  "recommended_commit": "fix(catalog): reconcile pending reference retirements after publication"
+}

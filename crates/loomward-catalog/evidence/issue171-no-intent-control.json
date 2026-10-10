@@ -1,0 +1,83 @@
+{
+  "P14": {
+    "bytes_per_entry": 155.00541557900542,
+    "catalog_bytes": 155160576,
+    "dataset_scale_met": false,
+    "target_bytes_per_entry": 200,
+    "target_dataset_rows": 10000000
+  },
+  "P4": {
+    "insert_seconds": 56.7708906,
+    "met": false,
+    "rows_per_second": 17632.293406367662,
+    "target_rows_per_second": 250000
+  },
+  "P6": {
+    "dataset_scale_met": false,
+    "http_round_trip": "unverified",
+    "nodes": 2500,
+    "payload_bytes": 1383755,
+    "target_dataset_rows": 10000000,
+    "target_ms": 60,
+    "target_payload_bytes": 1500000,
+    "timing": {
+      "max_ms": 85.3715,
+      "min_ms": 55.352199999999996,
+      "p50_ms": 63.9536,
+      "p95_ms": 81.9186,
+      "runs": 21
+    }
+  },
+  "P7": {
+    "limit": 200,
+    "target_ms": 20,
+    "timing": {
+      "max_ms": 1.5428,
+      "min_ms": 1.0074999999999998,
+      "p50_ms": 1.1478,
+      "p95_ms": 1.4416,
+      "runs": 21
+    }
+  },
+  "P8": {
+    "budget_hits": 21,
+    "target_ms": 300,
+    "timing": {
+      "max_ms": 40.0872,
+      "min_ms": 17.1472,
+      "p50_ms": 22.3947,
+      "p95_ms": 27.915300000000002,
+      "runs": 21
+    },
+    "work_budget_sqlite_ops": 2000000
+  },
+  "all_schema_indexes_present": true,
+  "dataset_class": "synthetic",
+  "directories": 1001,
+  "files": 1000000,
+  "finalise_seconds": 3.2437315,
+  "insert_includes_generation_and_queue_backpressure": true,
+  "limitations": [
+    "single warm run on this Windows host; no cold-cache claim",
+    "P6 and P14 at 1M, not the 10M target; HTTP and process-memory measurement belong to integration"
+  ],
+  "oracle": {
+    "allocated_known_bytes": "496873078784",
+    "allocation_unknown_files": 10310,
+    "logical_bytes": "500000500000",
+    "matched": true
+  },
+  "platform": "windows",
+  "publication_path": "StageChunk + ListingDone; byte reservation before file generation",
+  "schema_version": 3,
+  "scope": "in-process generated metadata only; no enumeration, no HTTP, no personal data",
+  "temporary_directory_removed": true,
+  "writer_timings": {
+    "commit_seconds": 32.995789900000005,
+    "dirty_updates": 3001,
+    "file_insert_seconds": 20.092741900000043,
+    "file_seen_seconds": 0.0,
+    "listing_seconds": 22.71152809999998,
+    "name_validation_seconds": 0.5830621000000024
+  }
+}
