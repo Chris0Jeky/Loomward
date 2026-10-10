@@ -54,6 +54,80 @@ impl Drop for Handle {
     }
 }
 
+struct PendingRead<'a> {
+    dir: &'a File,
+    buffer: &'a mut [u32],
+    ov: &'a mut OVERLAPPED,
+    error: Option<u32>,
+}
+
+impl<'a> PendingRead<'a> {
+    fn start(dir: &'a File, buffer: &'a mut [u32], ov: &'a mut OVERLAPPED) -> io::Result<Self> {
+        let ok = unsafe {
+            ReadDirectoryChangesW(
+                dir.as_raw_handle(),
+                buffer.as_mut_ptr().cast(),
+                (buffer.len() * 4) as u32,
+                1,
+                FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME,
+                null_mut(),
+                ov,
+                None,
+            )
+        };
+        let error = (ok == 0).then(|| unsafe { GetLastError() });
+        if let Some(code) = error {
+            if code != ERROR_IO_PENDING && code != ERROR_NOTIFY_ENUM_DIR {
+                return Err(io::Error::from_raw_os_error(code as i32));
+            }
+        }
+        Ok(Self {
+            dir,
+            buffer,
+            ov,
+            error,
+        })
+    }
+}
+
+impl Drop for PendingRead<'_> {
+    fn drop(&mut self) {
+        if self.error != Some(ERROR_NOTIFY_ENUM_DIR) {
+            let mut returned = 0;
+            // Cancellation is only a request; storage must survive the completion too.
+            unsafe {
+                CancelIoEx(self.dir.as_raw_handle(), self.ov);
+                GetOverlappedResult(self.dir.as_raw_handle(), self.ov, &mut returned, 1);
+            }
+        }
+    }
+}
+
+struct Watcher {
+    done: Arc<AtomicBool>,
+    thread: Option<thread::JoinHandle<io::Result<Value>>>,
+}
+
+impl Watcher {
+    fn join(mut self) -> io::Result<Value> {
+        self.done.store(true, Ordering::Release);
+        self.thread
+            .take()
+            .unwrap()
+            .join()
+            .map_err(|_| invalid("watcher panicked"))?
+    }
+}
+
+impl Drop for Watcher {
+    fn drop(&mut self) {
+        self.done.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 fn non_elevated() -> io::Result<()> {
     let mut raw = null_mut();
     if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw) } == 0 {
@@ -233,7 +307,7 @@ fn usn() -> Vec<Value> {
             };
             let read_error = (read_ok == 0).then(|| unsafe { GetLastError() });
             rows.push(json!({"volume": drive.to_string(), "handle": kind, "open_error": null, "query_error": query_error, "query_bytes": query_bytes, "read_error": read_error, "read_bytes": returned, "read_ms": start.elapsed().as_secs_f64()*1000.0,
-                "journal": if query_error.is_none() { json!({"id": journal.UsnJournalID.to_string(), "first_usn": journal.FirstUsn, "next_usn": journal.NextUsn, "lowest_valid_usn": journal.LowestValidUsn, "max_size": journal.MaximumSize, "versions": [journal.MinSupportedMajorVersion,journal.MaxSupportedMajorVersion]}) } else { Value::Null }}));
+                "journal": if query_error.is_none() { json!({"id_present": journal.UsnJournalID != 0, "retained_span_usn": journal.NextUsn - journal.FirstUsn, "lowest_valid_usn_is_zero": journal.LowestValidUsn == 0, "max_size": journal.MaximumSize, "versions": [journal.MinSupportedMajorVersion,journal.MaxSupportedMajorVersion]}) } else { Value::Null }}));
         }
     }
     rows
@@ -333,7 +407,10 @@ fn usn_records(bytes: &[u8]) -> io::Result<Vec<UsnRecord>> {
         let name_start =
             u16::from_le_bytes(record[name_offset + 2..name_offset + 4].try_into().unwrap())
                 as usize;
-        if name_length % 2 != 0 || name_start + name_length as usize > length {
+        if name_length % 2 != 0
+            || name_start + name_length as usize > length
+            || (name_length != 0 && (name_start < minimum || name_start % 2 != 0))
+        {
             return Err(invalid("invalid USN name bounds"));
         }
         // NTFS lab identity is 64-bit; do not silently truncate a 128-bit identifier.
@@ -395,6 +472,51 @@ fn pinned(path: &Path, share: u32) -> io::Result<File> {
     Ok(file)
 }
 
+struct PinnedTree {
+    path: std::path::PathBuf,
+    pin: Option<File>,
+}
+
+impl PinnedTree {
+    fn new(tree: tempfile::TempDir) -> io::Result<Self> {
+        let pin = pinned(tree.path(), FILE_SHARE_READ | FILE_SHARE_WRITE)?;
+        Ok(Self {
+            path: tree.keep(),
+            pin: Some(pin),
+        })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn cleanup(&mut self) -> io::Result<()> {
+        for entry in fs::read_dir(&self.path)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                fs::remove_dir_all(entry.path())?;
+            } else {
+                fs::remove_file(entry.path())?;
+            }
+        }
+        // Denied delete sharing protects recursive cleanup; release only for empty-root removal.
+        self.pin.take();
+        fs::remove_dir(&self.path)
+    }
+
+    fn close(mut self) -> io::Result<()> {
+        self.cleanup()
+    }
+}
+
+impl Drop for PinnedTree {
+    fn drop(&mut self) {
+        if self.pin.is_some() {
+            let _ = self.cleanup();
+        }
+    }
+}
+
 fn catch_up(drive: char) -> io::Result<Value> {
     use windows_sys::Win32::Storage::FileSystem::{
         GetDiskFreeSpaceExW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
@@ -415,10 +537,12 @@ fn catch_up(drive: char) -> io::Result<Value> {
     if available < 20_000_000_000 {
         return Err(invalid("lab has less than 20 GB free"));
     }
-    let tree = tempfile::Builder::new()
-        .prefix("watch-usn-")
-        .tempdir_in(&base)
-        .map_err(|e| io::Error::new(e.kind(), format!("{drive} tempdir create: {e}")))?;
+    let tree = PinnedTree::new(
+        tempfile::Builder::new()
+            .prefix("watch-usn-")
+            .tempdir_in(&base)
+            .map_err(|e| io::Error::new(e.kind(), format!("{drive} tempdir create: {e}")))?,
+    )?;
     if tree.path().parent() != Some(base.as_path()) {
         return Err(invalid("tempdir escaped pinned lab parent"));
     }
@@ -426,9 +550,7 @@ fn catch_up(drive: char) -> io::Result<Value> {
         tree.path().join(".loomward-lab-marker"),
         loomward_lab::MARKER,
     )?;
-    // Renaming lab children needs write sharing on their parent; deletion sharing stays denied.
-    let root_pin = pinned(tree.path(), FILE_SHARE_READ | FILE_SHARE_WRITE)
-        .map_err(|e| io::Error::new(e.kind(), format!("{drive} root pin: {e}")))?;
+    let root_pin = tree.pin.as_ref().unwrap();
     let mut info = unsafe { zeroed::<BY_HANDLE_FILE_INFORMATION>() };
     if unsafe { GetFileInformationByHandle(root_pin.as_raw_handle(), &mut info) } == 0 {
         return Err(io::Error::last_os_error());
@@ -436,9 +558,11 @@ fn catch_up(drive: char) -> io::Result<Value> {
     let parent_id = ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64;
     let before = query(root_pin.as_raw_handle())
         .map_err(|e| io::Error::new(e.kind(), format!("{drive} initial query: {e}")))?;
-    let sibling = tempfile::Builder::new()
-        .prefix("watch-usn-control-")
-        .tempdir_in(&base)?;
+    let sibling = PinnedTree::new(
+        tempfile::Builder::new()
+            .prefix("watch-usn-control-")
+            .tempdir_in(&base)?,
+    )?;
     if sibling.path().parent() != Some(base.as_path()) {
         return Err(invalid("control escaped pinned lab parent"));
     }
@@ -550,12 +674,11 @@ fn catch_up(drive: char) -> io::Result<Value> {
         .err()
         .and_then(|e| e.raw_os_error());
     drop(reopened);
-    drop(root_pin);
     tree.close()?;
     sibling.close()?;
     drop(pins);
     Ok(
-        json!({"volume":drive.to_string(),"lab":"marked watch-usn-* owned tempdir below loomward-lab/scale","files":10000,"mutation_operations":30000,"generation_ms":generation_ms,"same_journal_after_changes":true,"handle_reopen_catchup":true,"first_usn":after.FirstUsn,"start_usn":before.NextUsn,"target_usn":after.NextUsn,"runs":runs,"errors":{"wrong_journal_id":wrong_id,"below_first_usn":stale_cursor,"unsupported_version":unsupported_version},"cleanup":"removed_owned_tempdir"}),
+        json!({"volume":drive.to_string(),"lab":"marked watch-usn-* owned tempdir below loomward-lab/scale","files":10000,"mutation_operations":30000,"generation_ms":generation_ms,"same_journal_after_changes":true,"handle_reopen_catchup":true,"catch_up_span_usn":after.NextUsn - before.NextUsn,"runs":runs,"errors":{"wrong_journal_id":wrong_id,"below_first_usn":stale_cursor,"unsupported_version":unsupported_version},"cleanup":"removed_owned_tempdir"}),
     )
 }
 
@@ -604,24 +727,8 @@ fn watch_case(kib: usize, operations: usize, stalled: bool, bulk: bool) -> io::R
         let mut duplicate_hints = 0;
         let mut first = true;
         loop {
-            let ok = unsafe {
-                ReadDirectoryChangesW(
-                    dir.as_raw_handle(),
-                    buffer.as_mut_ptr().cast(),
-                    (buffer.len() * 4) as u32,
-                    1,
-                    FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME,
-                    null_mut(),
-                    &mut ov,
-                    None,
-                )
-            };
-            let error = (ok == 0).then(|| unsafe { GetLastError() });
-            if let Some(code) = error {
-                if code != ERROR_IO_PENDING && code != ERROR_NOTIFY_ENUM_DIR {
-                    return Err(io::Error::from_raw_os_error(code as i32));
-                }
-            }
+            let pending = PendingRead::start(&dir, &mut buffer, &mut ov)?;
+            let error = pending.error;
             if first {
                 ready_tx.send(()).map_err(|_| invalid("generator gone"))?;
                 first = false;
@@ -639,10 +746,7 @@ fn watch_case(kib: usize, operations: usize, stalled: bool, bulk: bool) -> io::R
                     match unsafe { WaitForSingleObject(event.0, 300) } {
                         WAIT_OBJECT_0 => break,
                         WAIT_TIMEOUT if finished.load(Ordering::Acquire) => {
-                            unsafe {
-                                CancelIoEx(dir.as_raw_handle(), &ov);
-                                GetOverlappedResult(dir.as_raw_handle(), &ov, &mut returned, 1);
-                            }
+                            drop(pending);
                             return Ok(
                                 json!({"actions": counts, "completions": completions, "zero_byte_completions": zeros, "error_notify_enum_dir": enum_errors, "first_overflow_ms": first_overflow_ms, "bytes": bytes_total, "max_batch_records": max_batch, "duplicate_hints": duplicate_hints, "watcher_cpu_s": cpu(true)?-cpu_start, "observed": observed}),
                             );
@@ -651,7 +755,9 @@ fn watch_case(kib: usize, operations: usize, stalled: bool, bulk: bool) -> io::R
                         _ => return Err(io::Error::last_os_error()),
                     }
                 }
-                let ok = unsafe { GetOverlappedResult(dir.as_raw_handle(), &ov, &mut returned, 0) };
+                let ok = unsafe {
+                    GetOverlappedResult(dir.as_raw_handle(), pending.ov, &mut returned, 0)
+                };
                 (ok == 0).then(|| unsafe { GetLastError() })
             };
             completions += 1;
@@ -669,7 +775,10 @@ fn watch_case(kib: usize, operations: usize, stalled: bool, bulk: bool) -> io::R
                 bytes_total += returned as u64;
                 // DWORD storage keeps both the kernel buffer and decoded byte slice aligned.
                 let raw = unsafe {
-                    std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), returned as usize)
+                    std::slice::from_raw_parts(
+                        pending.buffer.as_ptr().cast::<u8>(),
+                        returned as usize,
+                    )
                 };
                 let events = decode(raw)?;
                 max_batch = max_batch.max(events.len());
@@ -680,10 +789,15 @@ fn watch_case(kib: usize, operations: usize, stalled: bool, bulk: bool) -> io::R
                     }
                 }
             }
+            drop(pending);
             ov = unsafe { zeroed() };
             ov.hEvent = event.0;
         }
     });
+    let watcher = Watcher {
+        done: done.clone(),
+        thread: Some(watcher),
+    };
     ready_rx
         .recv_timeout(Duration::from_secs(10))
         .map_err(|_| invalid("watcher did not arm"))?;
@@ -722,8 +836,7 @@ fn watch_case(kib: usize, operations: usize, stalled: bool, bulk: bool) -> io::R
         Ok(())
     })();
     let generate_ms = start.elapsed().as_secs_f64() * 1000.0;
-    done.store(true, Ordering::Release);
-    let mut result = watcher.join().map_err(|_| invalid("watcher panicked"))??;
+    let mut result = watcher.join()?;
     generation?;
     let wall_s = epoch.elapsed().as_secs_f64();
     let observed = result.as_object_mut().unwrap().remove("observed").unwrap();
@@ -786,7 +899,7 @@ pub fn run() -> io::Result<()> {
         fs::write(&args[1], serde_json::to_vec_pretty(&report)?)?;
         return Ok(());
     }
-    let mut report = json!({"schema_version": 1, "elevated": false, "lab": "owned OS tempdirs; no real paths or names retained", "usn": usn(), "watch": []});
+    let mut report = json!({"schema_version": 1, "elevated": false, "lab": "owned OS tempdirs; no real paths or names retained", "watch": []});
     for kib in [4, 64, 1024] {
         for operations in [1000, 10_000, 100_000] {
             for stalled in [false, true] {
@@ -808,6 +921,98 @@ pub fn run() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_arming_cancels_and_drains_the_pending_read() {
+        let tree = tempfile::tempdir().unwrap();
+        let dir = OpenOptions::new()
+            .access_mode(FILE_LIST_DIRECTORY)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED)
+            .open(tree.path())
+            .unwrap();
+        let event = Handle(unsafe { CreateEventW(null(), 0, 0, null()) });
+        assert!(!event.0.is_null());
+        let mut ov: OVERLAPPED = unsafe { zeroed() };
+        ov.hEvent = event.0;
+        let mut buffer = vec![0u32; 1024];
+        let (ready_tx, ready_rx) = mpsc::channel::<()>();
+        drop(ready_rx);
+        let result = (|| -> io::Result<()> {
+            let pending = PendingRead::start(&dir, &mut buffer, &mut ov)?;
+            assert!(pending.error.is_none() || pending.error == Some(ERROR_IO_PENDING));
+            ready_tx.send(()).map_err(|_| invalid("generator gone"))?;
+            Ok(())
+        })();
+        assert!(result.is_err());
+        let mut returned = 0;
+        assert_eq!(
+            unsafe { GetOverlappedResult(dir.as_raw_handle(), &ov, &mut returned, 0) },
+            0
+        );
+        assert_eq!(
+            unsafe { GetLastError() },
+            windows_sys::Win32::Foundation::ERROR_OPERATION_ABORTED
+        );
+    }
+
+    #[test]
+    fn arming_timeout_stops_and_joins_before_tree_cleanup() {
+        let tree = tempfile::tempdir().unwrap();
+        let path = tree.path().to_owned();
+        let done = Arc::new(AtomicBool::new(false));
+        let finished = done.clone();
+        let exited = Arc::new(AtomicBool::new(false));
+        let child_exited = exited.clone();
+        let (ready_tx, ready_rx) = mpsc::channel::<()>();
+        let (started_tx, started_rx) = mpsc::channel();
+        let watcher = Watcher {
+            done,
+            thread: Some(thread::spawn(move || {
+                started_tx.send(()).unwrap();
+                while !finished.load(Ordering::Acquire) {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                assert!(path.is_dir());
+                assert!(ready_tx.send(()).is_err());
+                child_exited.store(true, Ordering::Release);
+                Ok(json!({}))
+            })),
+        };
+        started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(
+            ready_rx.recv_timeout(Duration::ZERO),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
+        drop(ready_rx);
+        drop(watcher);
+        assert!(exited.load(Ordering::Acquire));
+        tree.close().unwrap();
+    }
+
+    #[test]
+    fn pinned_tree_cleanup_keeps_the_root_fixed_and_removes_contents() {
+        let parent = tempfile::tempdir().unwrap();
+        for explicit_close in [true, false] {
+            let tree = PinnedTree::new(tempfile::tempdir_in(parent.path()).unwrap()).unwrap();
+            let path = tree.path().to_owned();
+            fs::create_dir(path.join("child")).unwrap();
+            fs::write(path.join("child/file"), b"synthetic").unwrap();
+            fs::write(path.join("marker"), loomward_lab::MARKER).unwrap();
+            let error = fs::rename(&path, parent.path().join("replaced")).unwrap_err();
+            assert_eq!(
+                error.raw_os_error(),
+                Some(windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION as i32)
+            );
+            if explicit_close {
+                tree.close().unwrap();
+            } else {
+                drop(tree);
+            }
+            assert!(!path.exists());
+        }
+    }
+
     #[test]
     fn both_overflow_forms_dirty_scope() {
         assert!(overflow(None, 0));
@@ -850,5 +1055,27 @@ mod tests {
         output[64..66].copy_from_slice(&2u16.to_le_bytes());
         output[66..68].copy_from_slice(&72u16.to_le_bytes());
         assert!(usn_records(&output).is_err());
+    }
+
+    #[test]
+    fn usn_names_start_after_the_version_header_on_utf16_boundaries() {
+        for (version, header, name_offset) in [(2u16, 60u16, 56usize), (3, 76, 72)] {
+            let mut output = vec![0u8; 88];
+            output[8..12].copy_from_slice(&80u32.to_le_bytes());
+            output[12..14].copy_from_slice(&version.to_le_bytes());
+            output[8 + name_offset..10 + name_offset].copy_from_slice(&2u16.to_le_bytes());
+            for offset in [0, header - 2, header + 1] {
+                output[10 + name_offset..12 + name_offset].copy_from_slice(&offset.to_le_bytes());
+                assert!(
+                    usn_records(&output).is_err(),
+                    "version {version}, offset {offset}"
+                );
+            }
+            output[10 + name_offset..12 + name_offset].copy_from_slice(&header.to_le_bytes());
+            assert_eq!(usn_records(&output).unwrap()[0].3, 2);
+            output[8 + name_offset..10 + name_offset].fill(0);
+            output[10 + name_offset..12 + name_offset].fill(0);
+            assert_eq!(usn_records(&output).unwrap()[0].3, 0);
+        }
     }
 }

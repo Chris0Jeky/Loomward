@@ -216,8 +216,18 @@ Catch-up is change metadata, never read-usage evidence, undo content, or an oper
 
 ## Proof and outstanding boundaries
 
-The three spike tests cover both overflow forms and notification/USN decoder rejection. The
-required workspace format, test and clippy checks are recorded in the JSON validation receipt.
+The original three spike tests cover both overflow forms and notification/USN decoder rejection.
+Four fix-round regressions additionally cover pending-read cancellation and completion on failed
+arming, shutdown/join before cleanup after an arming timeout, pinned-tree cleanup, and V2/V3
+nonempty-name offsets outside the header on UTF-16 boundaries. Every submitted watcher request
+is guarded until completion, including early returns; catch-up and control roots remain pinned
+during content cleanup, then their empty roots are removed non-recursively after releasing the
+pins. This is a root-pinning mitigation, not full identity-bound cleanup. Measurements were not
+rerun for the fix round; the recorded evidence remains the original measurement.
+Fix-round checks on Windows (2026-10-10): `cargo fmt --all --check`, `cargo test --workspace`
+(107 passed), `cargo test -p loomward-lab --example change_tracking` (7 passed), and
+`cargo clippy --workspace --all-targets -- -D warnings` all passed.
+The original workspace format, test and clippy checks are recorded in the JSON validation receipt.
 All 21 watcher trials and both volume catch-up trials completed and cleaned their disposable trees.
 Production dirty epochs, database publication, restart state machine and engine integration are
 not implemented here; LW-007 and LW-008 remain open. No UI/Python behavior changed. No commit,
@@ -235,3 +245,13 @@ teacher scope) remains open and q-6 (firewall rule) is not yet needed, unrelated
 - [S7: USN_RECORD_V2](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ns-winioctl-usn_record_v2): record-version dispatch and rename parent semantics; V3 is linked there.
 - [S8: System error codes 1000–1299](https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--1000-1299-): 1022, 1178, 1179 and 1181.
 - Windows SDK `winioctl.h` 10.0.22000.0 declares `FSCTL_READ_UNPRIVILEGED_USN_JOURNAL` as `CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 234, METHOD_NEITHER, FILE_ANY_ACCESS)`; the spike uses the windows-sys 0.61 constant. A dedicated Microsoft Learn page for this IOCTL was unavailable, so unprivileged behavior above is measured evidence, not an invented documentation guarantee.
+
+## Evidence redaction and known measurement limits
+
+The committed JSON carries no journal identity and no absolute USN positions. Journal IDs became
+`id_present`. Cursor positions became spans: `retained_span_usn` and `catch_up_span_usn`. The
+`--run` mode no longer probes volume journals; that probe is only `--usn`, which you invoke
+explicitly. Catch-up reads stop at the end of the returned buffers, not at the captured target
+USN. Records appended by other processes after the target can therefore inflate
+`outside_lab_records_count_only` and the byte and call totals slightly. Lab-record counts are
+exact, because they are matched by file ID.
