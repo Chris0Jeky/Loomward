@@ -253,9 +253,9 @@ timed-out mutations may have committed, idempotency, revision scopes, commit-bef
 
 ```json
 {"protocol":"loomward/3","request_id":"r_000017","command":"tree.slice","payload":{...},"deadline_ms":2000}
-{"protocol":"loomward/3","request_id":"r_000017","ok":true,"result":{...},"meta":{"served_at":"2026-10-09T12:00:00.000Z","elapsed_ms":14,"dataset_class":"synthetic","budget_hit":false,"catalog_rev":"8812"}}
+{"protocol":"loomward/3","request_id":"r_000017","ok":true,"result":{...},"meta":{"served_at":"2026-10-09T12:00:00.000Z","elapsed_ms":14,"dataset_class":"synthetic","budget_hit":false,"catalog_rev":"8812","state_rev":"52"}}
 {"protocol":"loomward/3","request_id":"r_000017","ok":false,"error":{"code":"stale_generation","message":"...","retryable":true,"detail":null}}
-{"protocol":"loomward/3","epoch":"e_k3J9x2Qa","seq":4211,"event":"scan.progress","at":"2026-10-09T12:00:00.250Z","catalog_rev":"8813","data":{...}}
+{"protocol":"loomward/3","epoch":"e_k3J9x2Qa","seq":4211,"event":"scan.progress","at":"2026-10-09T12:00:00.250Z","catalog_rev":"8813","state_rev":null,"data":{...}}
 ```
 
 | | Desktop (Tauri 2) | Browser (`loomward-serve`) |
@@ -1028,7 +1028,7 @@ separately; state on G: unless stated.
 | 12 | HIGH | **Accepted.** `st.synchronous=FULL`, `main` NORMAL; no two-file atomicity; grant consumed before spawn; routine backups | §6.1, §9.2, ADR-V3-22 |
 | 13 | HIGH | **Accepted.** Staging, byte semaphore, cancellable sends, `CancelSynchronousIo`, ack separated from stop | §7 |
 | 14 | HIGH | **Accepted.** Allocated indexes with id tie-break; name/modified sorts kept but limited to 10,000 children (modified: not removed, bounded) | §8, schema comment |
-| 15 | HIGH | **Accepted.** `subtree_rev` and `catalog_rev` scopes; complete cursor binding; resumable budget pages | `semantics.md` §5, `ResponseMeta.catalog_rev` |
+| 15 | HIGH | **Accepted.** `subtree_rev` and `catalog_rev` scopes; complete cursor binding; resumable budget pages | `semantics.md` §5, `ResponseMeta.catalog_rev`; `state_rev` for state-backed cursors and recovery preconditions (errata #117, N4 and partial #15) |
 | 16 | HIGH | **Accepted** verbatim; lab-root registry with identity and manifest digest | §12, ADR-V3-15 |
 | 17 | HIGH | **Accepted.** `DisclosureSummary`; native dialog lists every item; complete immutable request preview; ancestor screening | §9.2, schema |
 | 18 | HIGH | **Accepted.** Unknown flags omitted (reference default), never `null`; ancestry antichain; honest bases; `pre_rejected`, `excluded_volumes` | §10, ADR-V3-13, schema |
