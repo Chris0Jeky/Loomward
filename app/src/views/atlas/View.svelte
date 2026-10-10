@@ -98,6 +98,12 @@
   $effect(() => { tm?.setThreads({ ...show }); });
   $effect(() => { tm?.setBasis(nav.basis); });
 
+  function dismissTip(e: KeyboardEvent) {
+    if (e.key !== 'Escape' || !tip) return;
+    tip = null;
+    e.stopImmediatePropagation();
+  }
+
   function inspectById(id: string) {
     const n = tm?.info(id) ?? null;
     if (!n) return;
@@ -152,7 +158,8 @@
   });
 </script>
 
-<!-- WCAG 1.4.13: the hover tooltip can be dismissed without moving the pointer -->
+<!-- WCAG 1.4.13: the hover tooltip can be dismissed without moving the pointer. On the canvas, Escape that dismisses a tooltip
+     is spent on that: it does not also go back up a level (the canvas's own handler never sees it). -->
 <svelte:window onkeydown={(e) => { if (e.key === 'Escape' && tip) tip = null; }} />
 
 <div class="top">
@@ -196,6 +203,7 @@
         tabindex="0"
         aria-label="Woven treemap of the slice. Arrow keys move between regions, Enter opens one, Escape goes back."
         onblur={() => say.clear()}
+        onkeydowncapture={dismissTip}
       ></canvas>
       {#if tip}
         <div class="tip" style:left={`${Math.min(tip.x + 16, (well?.clientWidth ?? 0) - 240)}px`} style:top={`${tip.y + 18}px`}>

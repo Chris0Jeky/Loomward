@@ -387,6 +387,31 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     check(page.locator('main .tip').count() == 1, 'hovering a region shows the tooltip')
     page.keyboard.press('Escape')
     check(page.locator('main .tip').count() == 0, '1.4.13 Escape dismisses the tooltip')
+
+    # ... and inside a region, the Escape that dismisses a tooltip does not also go back up a level (#169)
+    drilled = False
+    for k in range(1, 6):
+        page.keyboard.press('Home')
+        for _ in range(k):
+            page.keyboard.press('ArrowRight')
+        page.wait_for_timeout(200)
+        page.keyboard.press('Enter')
+        page.wait_for_timeout(300)
+        if crumbs.count() == 2:
+            drilled = True
+            break
+    check(drilled, 'a region could be opened with the keyboard for the tooltip check')
+    page.wait_for_timeout(1000)
+    box = page.locator('main canvas').first.bounding_box()
+    page.mouse.move(box['x'] + box['width'] * 0.3, box['y'] + box['height'] * 0.4)
+    page.wait_for_timeout(300)
+    check(page.locator('main .tip').count() == 1, 'hovering a region of the drilled view shows the tooltip')
+    page.keyboard.press('Escape')
+    check(page.locator('main .tip').count() == 0 and crumbs.count() == 2, f'1.4.13 Escape over a tooltip dismisses it and stays in the region ({crumbs.count()} crumbs)')
+    page.mouse.move(0, 0)
+    page.keyboard.press('Escape')
+    expect(crumbs).to_have_count(1)
+    check(True, '1.4.13 with no tooltip showing, Escape goes back as before')
     page.context.close()
 
     # --- Observatory: announcements, pause, gauge text -----------------------------------------------------------------------------
@@ -477,6 +502,9 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     check(css(".rail a[aria-current='page']", 'backgroundColor') != css('.rail a:not([aria-current])', 'backgroundColor'), '1.4.1 forced colours: the current rail link has its own background')
     check(css(".seg button[aria-checked='true']", 'backgroundColor') != css(".seg button[aria-checked='false']", 'backgroundColor'), '1.4.1 forced colours: the checked basis has its own background')
     check('underline' in css(".crumb[aria-current='location']", 'textDecorationLine'), '1.4.1 forced colours: the current crumb is underlined')
+    goto(page, base, 'observatory', 'Observatory')
+    check(css(".seg button[aria-checked='true']", 'backgroundColor') != css(".seg button[aria-checked='false']", 'backgroundColor'), '1.4.1 forced colours: the checked basis has its own background in the Observatory')
+    check('underline' in css(".crumb[aria-current='location']", 'textDecorationLine'), '1.4.1 forced colours: the current crumb is underlined in the Observatory')
     goto(page, base, 'explorer', 'Explorer')
     check('underline' in css('th.basis', 'textDecorationLine') and 'underline' not in css('thead th:first-child', 'textDecorationLine'), '1.4.1 forced colours: the sorted size column is underlined')
     goto(page, base, 'tiers', 'Tiers')
