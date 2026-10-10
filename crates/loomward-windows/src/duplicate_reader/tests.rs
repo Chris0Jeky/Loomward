@@ -1,6 +1,64 @@
 use super::*;
 
 #[test]
+fn shortcut_reader_is_capped_feature_gated_and_shell_only() {
+    let source = include_str!("../enumerate/native.rs").replace("\r\n", "\n");
+    assert!(!source.contains("pub fn open_readonly_child("));
+    assert!(
+        source.contains("#[cfg(feature = \"shortcut-read\")]\npub fn read_capped_regular_file(")
+    );
+    let exports = include_str!("../enumerate/mod.rs").replace("\r\n", "\n");
+    assert!(exports.contains("#[cfg(all(windows, feature = \"shortcut-read\"))]\npub use native::read_capped_regular_file;"));
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    fn check(path: &Path) {
+        for entry in std::fs::read_dir(path).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                if path.file_name().unwrap() != "target" {
+                    check(&path);
+                }
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                assert!(
+                    !text.contains("read_capped_regular_file")
+                        && !text.contains("loomward_windows::*"),
+                    "shortcut reader reference outside shell: {}",
+                    path.display()
+                );
+            } else if path.file_name().unwrap() == "Cargo.toml" {
+                assert!(
+                    !std::fs::read_to_string(&path)
+                        .unwrap()
+                        .contains("shortcut-read"),
+                    "shortcut-read enabled outside shell: {}",
+                    path.display()
+                );
+            }
+        }
+    }
+    for entry in std::fs::read_dir(workspace.join("crates")).unwrap() {
+        let path = entry.unwrap().path();
+        if !["loomward-shell", "loomward-windows"]
+            .iter()
+            .any(|name| path.ends_with(name))
+        {
+            check(&path);
+        }
+    }
+    check(&workspace.join("native"));
+    assert!(include_str!("../../Cargo.toml").contains("shortcut-read = []"));
+    assert!(
+        std::fs::read_to_string(workspace.join("crates/loomward-shell/Cargo.toml"))
+            .unwrap()
+            .contains("features = [\"shortcut-read\"]")
+    );
+}
+
+#[test]
 fn content_reader_is_feature_gated_and_engine_only() {
     let source = include_str!("../duplicate_reader.rs").replace("\r\n", "\n");
     assert!(source.contains(
