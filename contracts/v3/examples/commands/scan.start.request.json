@@ -1,0 +1,8 @@
+{
+  "root_id": "rt_synth1",
+  "mode": "refresh",
+  "budget": {
+    "max_entries": 1000000,
+    "threads": 4
+  }
+}

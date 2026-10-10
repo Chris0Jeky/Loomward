@@ -1,0 +1,42 @@
+{
+  "protocol": "loomward/3",
+  "engine_version": "0.3.0-dev",
+  "adapter": "http",
+  "dataset_class": "synthetic",
+  "session_started_at": "2026-10-09T11:58:30Z",
+  "enumeration_strategy": "file_id_extd_directory_info",
+  "capabilities": {
+    "observation": {
+      "metadata_scan": true,
+      "process_observation": true,
+      "gpu_observation": false,
+      "disk_io_observation": true,
+      "teacher_disclosure": true
+    },
+    "effects": {
+      "file_move": false,
+      "file_delete": false,
+      "file_rename": false,
+      "file_write": false,
+      "content_read": false,
+      "process_kill": false,
+      "process_suspend": false,
+      "process_priority": false,
+      "memory_trim": false,
+      "uninstall": false,
+      "elevation": false
+    }
+  },
+  "features": {
+    "grant_picker": false,
+    "disclosure_dialog": false,
+    "teacher_available": true,
+    "telemetry_available": true,
+    "gpu_available": false
+  },
+  "limits": {
+    "max_request_bytes": 65536,
+    "max_slice_nodes": 6000,
+    "max_page_items": 200
+  }
+}

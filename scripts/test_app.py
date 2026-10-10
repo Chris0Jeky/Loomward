@@ -10,7 +10,9 @@ Run `npm.cmd --prefix app run build` first.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
+from types import SimpleNamespace
 import sys
 import threading
 import time
@@ -19,6 +21,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from playwright.sync_api import Page, expect, sync_playwright
+
+from test_app_views import run_views
 
 ROOT = Path(__file__).resolve().parents[1]
 TOKEN = 'a1b2c3d4e5f60718293a4b5c6d7e8f90'
@@ -153,6 +157,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--browser', default=None, help='path to a Chromium executable')
     ap.add_argument('--screenshots', type=Path)
+    ap.add_argument('--view-shots', type=Path, help='directory for view screenshots and results from both view lanes (evidence/v3/app-views); omitted = none')
     a = ap.parse_args()
     if not (DIST / 'index.html').exists():
         sys.exit('app/dist is missing: run `npm.cmd --prefix app run build` first')
@@ -241,6 +246,30 @@ def main() -> None:
         expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
         print('PASS routes: view, unknown view, back')
 
+        # --- view modules (lane L10): app/tests/e2e/test_<view>.py, each owned by its view's lane ----
+        if a.view_shots:
+            a.view_shots.mkdir(parents=True, exist_ok=True)
+
+        def view_shot(name: str, full: bool = True) -> None:
+            if not a.view_shots:
+                return
+            page.wait_for_timeout(200)
+            page.screenshot(path=str(a.view_shots / name), full_page=full)
+
+        ctx = SimpleNamespace(page=page, base=base, check=check, dialogs=dialogs, view_shot=view_shot)
+        view_results = {}
+        for mod_path in sorted((ROOT / 'app' / 'tests' / 'e2e').glob('test_*.py')):
+            spec = importlib.util.spec_from_file_location(mod_path.stem, mod_path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            print(f'--- {mod_path.name}')
+            view_results[mod_path.stem] = mod.run(ctx)
+        if a.view_shots:
+            (a.view_shots / 'results.json').write_text(json.dumps(view_results, indent=2) + chr(10), encoding='utf-8')
+        page.set_viewport_size({'width': 1360, 'height': 900})
+        page.goto(f'{base}/?transport=mock#/explorer')
+        expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
+
         # --- themes ----------------------------------------------------------------------------
         atlas = theme_snapshot(page)
         page.get_by_role('button', name='Observatory').click()
@@ -306,6 +335,9 @@ def main() -> None:
         expect(page.get_by_role('status', name='Session status')).to_contain_text('Connected', timeout=20000)
         expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
         print('PASS drop to unavailable and recover')
+
+        # --- product views (lane L13): Explorer, Tiers, Companion, Grants & health ------------------
+        run_views(page, base, a.view_shots)
 
         # --- hygiene -------------------------------------------------------------------------------
         check(hosts <= {'127.0.0.1'}, f'every request stayed on loopback: {sorted(hosts)}')

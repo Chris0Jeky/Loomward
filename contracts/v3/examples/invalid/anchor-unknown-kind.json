@@ -1,0 +1,8 @@
+{
+  "def": "Anchor",
+  "reason": "unknown anchor kind",
+  "value": {
+    "kind": "path",
+    "text": "x"
+  }
+}

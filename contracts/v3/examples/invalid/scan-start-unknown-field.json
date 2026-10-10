@@ -1,0 +1,9 @@
+{
+  "def": "ScanStartRequest",
+  "reason": "unknown field: no command takes a path",
+  "value": {
+    "root_id": "rt_synth1",
+    "mode": "full",
+    "path": "x"
+  }
+}

@@ -1,0 +1,4 @@
+{
+  "pool": "scan_enumerate",
+  "max_workers": 4
+}

@@ -1,0 +1,15 @@
+{
+  "def": "TreeSliceRequest",
+  "reason": "max_nodes is at most 6000",
+  "value": {
+    "anchor": {
+      "kind": "root",
+      "root_id": "rt_synth1"
+    },
+    "depth": 3,
+    "max_nodes": 6001,
+    "min_share": 0.001,
+    "basis": "allocated",
+    "include_files": false
+  }
+}

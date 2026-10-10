@@ -1,0 +1,29 @@
+{
+  "grants": [
+    {
+      "grant_id": "gr_0001",
+      "kind": "metadata_root",
+      "root_id": "rt_synth1",
+      "granted_at": "2026-10-09T11:58:30Z",
+      "granted_via": "fixture",
+      "revoked_at": null
+    },
+    {
+      "grant_id": "gr_0002",
+      "kind": "teacher_disclosure",
+      "recipient": "codex_cli_gpt_6_1_sol",
+      "dataset_class": "synthetic",
+      "fields": [
+        "name",
+        "extension"
+      ],
+      "item_count": 1,
+      "payload_digest": "sha256:cde4f746885bc8492e81ebae9b60f354e735f3e1e4a27fadc0983480a720c883",
+      "created_at": "2026-10-09T12:00:00Z",
+      "expires_at": "2026-10-09T12:10:00Z",
+      "revoked_at": null,
+      "used": false,
+      "confirmed_via": "synthetic_policy"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "def": "DeclareTierRequest",
+  "reason": "tier is 0 to 9",
+  "value": {
+    "volume_id": "vo_lab1",
+    "tier": 10
+  }
+}

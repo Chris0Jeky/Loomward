@@ -1,0 +1,30 @@
+{
+  "anchor": "co_proj1",
+  "generation": "12",
+  "items": [
+    {
+      "node_id": "nd_0020",
+      "kind": "file",
+      "name": "report_final.docx",
+      "extension": "docx",
+      "ext_family": "document",
+      "logical_bytes": "48213",
+      "allocated_bytes": "49152",
+      "files": null,
+      "dirs": null,
+      "modified_at": "2026-10-09T11:58:30Z",
+      "attributes": [
+        "archive"
+      ],
+      "flags": [],
+      "coverage": "complete",
+      "location_hint": {
+        "text": "Lab\\S1\\Projects\\Alpha",
+        "truncated": false
+      }
+    }
+  ],
+  "next_cursor": null,
+  "total": 1,
+  "budget_hit": false
+}

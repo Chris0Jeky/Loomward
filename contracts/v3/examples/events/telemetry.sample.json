@@ -1,0 +1,77 @@
+{
+  "subscription_id": "sb_0001",
+  "sample": {
+    "sample_seq": 17,
+    "observed_at": "2026-10-09T12:00:00Z",
+    "elapsed_ms": 1000,
+    "system": {
+      "memory": {
+        "total_bytes": "34359738368",
+        "available_bytes": "17179869184",
+        "commit_bytes": "21474836480",
+        "commit_limit_bytes": "51539607552",
+        "load_fraction": 0.5
+      },
+      "cpu": {
+        "logical_cpus": 16,
+        "busy_fraction": 0.23
+      }
+    },
+    "gpu": {
+      "state": "unavailable",
+      "basis": "unavailable",
+      "adapters": []
+    },
+    "disks": {
+      "state": "observed",
+      "disks": [
+        {
+          "disk_label": "Disk 0",
+          "volume_ids": [
+            "vo_lab1"
+          ],
+          "read_bytes_per_s": 0.0,
+          "write_bytes_per_s": 4096.0,
+          "busy_fraction": 0.01,
+          "queue_length": 0.0
+        }
+      ]
+    },
+    "engine": {
+      "private_commit_bytes": "104857600",
+      "working_set_bytes": "125829120",
+      "cpu_fraction": 0.02,
+      "threads": 21,
+      "pools": [
+        {
+          "pool": "scan_enumerate",
+          "max_workers": 8,
+          "busy_workers": 0,
+          "queue_depth": 0,
+          "queue_capacity": 4096
+        }
+      ]
+    },
+    "processes": {
+      "observed_count": 212,
+      "denied_count": 9,
+      "top": [
+        {
+          "process_ref": "pc_1a2b-3c4d",
+          "pid": 4242,
+          "name": "synthetic-app.exe",
+          "started_at": "2026-10-09T11:58:30Z",
+          "private_commit_bytes": "734003200",
+          "private_working_set_bytes": "301989888",
+          "working_set_bytes": "412316860",
+          "cpu_fraction": 0.12,
+          "io_read_bytes_per_s": 1048576.0,
+          "io_write_bytes_per_s": 0.0,
+          "gpu_dedicated_bytes": null,
+          "access": "full",
+          "loomward_owned": false
+        }
+      ]
+    }
+  }
+}

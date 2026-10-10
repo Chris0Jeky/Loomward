@@ -26,11 +26,11 @@ pub struct Unknown {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Memory {
     /// Physical RAM installed and usable by Windows, in bytes.
-    pub physical_total_bytes: Option<u64>,
+    pub total_bytes: Option<u64>,
     /// RAM Windows can supply now, including reclaimable pages; not unused RAM.
-    pub physical_available_bytes: Option<u64>,
+    pub available_bytes: Option<u64>,
     /// Committed allocations Windows has promised to back with RAM or page files.
-    pub commit_charge_bytes: Option<u64>,
+    pub commit_bytes: Option<u64>,
     /// Current ceiling of that promise, backed by RAM and page files.
     pub commit_limit_bytes: Option<u64>,
     /// Highest system commit charge observed since boot.
@@ -43,16 +43,24 @@ pub struct Memory {
     pub kernel_nonpaged_bytes: Option<u64>,
     /// Size in bytes of one memory page used by performance counters.
     pub page_size_bytes: Option<u64>,
+    /// Standby lists (core + normal priority + reserve); reclaimable, not free.
+    pub standby_bytes: Option<u64>,
+    /// Dirty pages waiting for writeback.
+    pub modified_bytes: Option<u64>,
+    /// Free and zeroed pages, excluding standby.
+    pub free_bytes: Option<u64>,
+    /// GlobalMemoryStatusEx physical memory load, as a fraction.
+    pub load_fraction: Option<f64>,
     pub unknowns: Vec<Unknown>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Rates {
-    /// CPU time divided by elapsed time and all active logical processors.
-    pub cpu_percent_of_machine: Option<f64>,
-    pub io_read_bytes_per_second: Option<f64>,
-    pub io_write_bytes_per_second: Option<f64>,
-    pub io_other_bytes_per_second: Option<f64>,
+    /// (user + kernel) CPU seconds / (monotonic interval * all active logical CPUs).
+    pub cpu_fraction: Option<f64>,
+    pub io_read_bytes_per_s: Option<f64>,
+    pub io_write_bytes_per_s: Option<f64>,
+    pub io_other_bytes_per_s: Option<f64>,
     pub working_set_delta_bytes: Option<i64>,
     pub private_commit_delta_bytes: Option<i64>,
     pub unknowns: Vec<Unknown>,
@@ -103,14 +111,41 @@ pub struct ProcessTotals {
     pub enumeration_unknowns: Vec<Unknown>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct DiskIo {
     /// PDH physical-disk instance (may include multiple volume letters).
-    pub instance: String,
-    pub bytes_per_second: Option<f64>,
-    /// Actual elapsed time between PDH collections, independent of process sampling.
-    pub sample_interval_seconds: f64,
-    pub unknown_reason: Option<String>,
+    pub disk_label: String,
+    pub read_bytes_per_s: Option<f64>,
+    pub write_bytes_per_s: Option<f64>,
+    /// 1 - PhysicalDisk % Idle Time / 100, clamped to [0, 1].
+    pub busy_fraction: Option<f64>,
+    /// PhysicalDisk Avg. Disk Queue Length, not utilisation.
+    pub queue_length: Option<f64>,
+    /// PDH collection interval; null before two successful collections.
+    pub sample_interval_seconds: Option<f64>,
+    pub unknowns: Vec<Unknown>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct GpuEngine {
+    pub engine_type: Option<String>,
+    /// Sum over this adapter's instances of this type, clamped to [0, 1].
+    pub busy_fraction: Option<f64>,
+    pub unknowns: Vec<Unknown>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct GpuAdapter {
+    /// LUID from PDH; an observation key, not a grant or a device name.
+    pub adapter_id: String,
+    pub dedicated_total_bytes: Option<u64>,
+    /// Global GPU Adapter Memory counters, never sums of process memory.
+    pub dedicated_used_bytes: Option<u64>,
+    pub shared_used_bytes: Option<u64>,
+    /// Maximum over aggregated engine types, clamped to [0, 1].
+    pub engine_busy_fraction: Option<f64>,
+    pub engines: Vec<GpuEngine>,
+    pub unknowns: Vec<Unknown>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -126,9 +161,13 @@ pub struct Snapshot {
     pub processes: Vec<Process>,
     pub process_totals: ProcessTotals,
     pub display_truncated: bool,
-    pub gpu: Observation<()>,
+    pub system_cpu_busy_fraction: Option<f64>,
+    pub gpu: Observation<Vec<GpuAdapter>>,
     pub process_gpu: Observation<()>,
     pub disk_io: Observation<Vec<DiskIo>>,
+    /// Skipped malformed array names across all counters in this sample.
+    pub pdh_malformed_instances: usize,
+    pub pdh_unknowns: Vec<Unknown>,
 }
 
 pub fn snapshot(max_processes: usize) -> Snapshot {
@@ -139,14 +178,14 @@ pub fn snapshot(max_processes: usize) -> Snapshot {
 pub struct Sampler {
     previous: Option<(Instant, Snapshot)>,
     #[cfg(windows)]
-    disk: windows::DiskSampler,
+    pdh: windows::PdhSampler,
 }
 
 impl Sampler {
     pub fn sample(&mut self, max_processes: usize) -> Snapshot {
         let now = Instant::now();
         #[cfg(windows)]
-        let mut current = windows::collect(&mut self.disk);
+        let mut current = windows::collect(&mut self.pdh);
         #[cfg(not(windows))]
         let mut current = unsupported_snapshot();
         if let Some((previous_at, previous)) = &self.previous {
@@ -220,34 +259,34 @@ fn derive_rates(current: &Process, previous: &Process, seconds: f64, cores: u32)
                 .and_then(|(a, b)| a.checked_sub(b)),
         )
         .and_then(|(a, b)| a.checked_add(b));
-    rates.cpu_percent_of_machine = cpu_delta
+    rates.cpu_fraction = cpu_delta
         .filter(|_| cores > 0)
-        .map(|delta| delta as f64 / 10_000_000.0 / seconds / cores as f64 * 100.0)
-        .filter(|v| v.is_finite());
-    if rates.cpu_percent_of_machine.is_none() {
+        .map(|delta| delta as f64 / 10_000_000.0 / seconds / cores as f64)
+        .filter(|v| v.is_finite() && (0.0..=1.0).contains(v));
+    if rates.cpu_fraction.is_none() {
         rates.unknowns.push(unknown(
-            "cpu_percent_of_machine",
-            "missing_or_regressed_counter_or_unknown_cpu_capacity",
+            "cpu_fraction",
+            "missing_or_regressed_counter_unknown_cpu_capacity_or_fraction_out_of_range",
         ));
     }
     for (field, current, previous, output) in [
         (
-            "io_read_bytes_per_second",
+            "io_read_bytes_per_s",
             current.io_read_bytes,
             previous.io_read_bytes,
-            &mut rates.io_read_bytes_per_second,
+            &mut rates.io_read_bytes_per_s,
         ),
         (
-            "io_write_bytes_per_second",
+            "io_write_bytes_per_s",
             current.io_write_bytes,
             previous.io_write_bytes,
-            &mut rates.io_write_bytes_per_second,
+            &mut rates.io_write_bytes_per_s,
         ),
         (
-            "io_other_bytes_per_second",
+            "io_other_bytes_per_s",
             current.io_other_bytes,
             previous.io_other_bytes,
-            &mut rates.io_other_bytes_per_second,
+            &mut rates.io_other_bytes_per_s,
         ),
     ] {
         *output = current
@@ -290,7 +329,7 @@ fn derive_rates(current: &Process, previous: &Process, seconds: f64, cores: u32)
 fn unsupported_snapshot() -> Snapshot {
     let reason = "native telemetry is implemented only on Windows".to_owned();
     Snapshot {
-        schema_version: 1,
+        schema_version: 2,
         status: "unsupported".into(),
         platform: std::env::consts::OS.into(),
         captured_at_unix_ms: SystemTime::now()
@@ -306,6 +345,9 @@ fn unsupported_snapshot() -> Snapshot {
         processes: vec![],
         process_totals: ProcessTotals::default(),
         display_truncated: false,
+        system_cpu_busy_fraction: None,
+        pdh_malformed_instances: 0,
+        pdh_unknowns: vec![],
         gpu: Observation::Unsupported {
             reason: reason.clone(),
         },
@@ -346,8 +388,8 @@ mod tests {
             ..previous.clone()
         };
         let rates = derive_rates(&current, &previous, 2.0, 4);
-        assert_eq!(rates.cpu_percent_of_machine, Some(12.5));
-        assert_eq!(rates.io_read_bytes_per_second, Some(100.0));
+        assert_eq!(rates.cpu_fraction, Some(0.125));
+        assert_eq!(rates.io_read_bytes_per_s, Some(100.0));
         assert_eq!(rates.working_set_delta_bytes, Some(-100));
         assert_eq!(rates.private_commit_delta_bytes, Some(100));
         assert!(rates.unknowns.is_empty());
@@ -371,7 +413,7 @@ mod tests {
             },
         ] {
             let rates = derive_rates(&current, &previous, 1.0, 1);
-            assert!(rates.cpu_percent_of_machine.is_none());
+            assert!(rates.cpu_fraction.is_none());
             assert!(rates.working_set_delta_bytes.is_none());
             assert!(!rates.unknowns.is_empty());
         }
@@ -392,9 +434,31 @@ mod tests {
             ..previous.clone()
         };
         let rates = derive_rates(&current, &previous, 1.0, 1);
-        assert!(rates.io_read_bytes_per_second.is_none());
-        assert!(rates.cpu_percent_of_machine.is_none());
+        assert!(rates.io_read_bytes_per_s.is_none());
+        assert!(rates.cpu_fraction.is_none());
         assert!(rates.working_set_delta_bytes.is_none());
         assert_eq!(rates.unknowns.len(), 3);
+    }
+
+    #[test]
+    fn cpu_denominator_is_machine_capacity_and_impossible_rates_are_unknown() {
+        let previous = process();
+        let current = Process {
+            cpu_user_100ns: Some(20_000_000),
+            ..previous.clone()
+        };
+        assert_eq!(
+            derive_rates(&current, &previous, 1.0, 20).cpu_fraction,
+            Some(0.1)
+        );
+        assert_eq!(
+            derive_rates(&current, &previous, 1.0, 2).cpu_fraction,
+            Some(1.0)
+        );
+        for cores in [0, 1] {
+            let rates = derive_rates(&current, &previous, 1.0, cores);
+            assert!(rates.cpu_fraction.is_none());
+            assert!(rates.unknowns.iter().any(|u| u.field == "cpu_fraction"));
+        }
     }
 }

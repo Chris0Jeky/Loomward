@@ -1,0 +1,32 @@
+{
+  "source_volume_id": "vo_lab1",
+  "root_generations": [
+    {
+      "root_id": "rt_synth1",
+      "generation": "12"
+    }
+  ],
+  "groups": [
+    {
+      "group_id": "cg_0001",
+      "node_id": "nd_0002",
+      "root_id": "rt_synth1",
+      "name": "Projects",
+      "source_bytes": "500000000",
+      "destination_bytes": "470000000",
+      "transfer_bytes": "470000000",
+      "estimate_basis": "allocated_entries",
+      "estimated_relief_bytes": "500000000",
+      "relief_basis": "verified_unique_allocation",
+      "heat": null,
+      "heat_basis": "unknown",
+      "newest_modified_at": "2026-10-09T11:58:30Z",
+      "pinned": null,
+      "active": null,
+      "protected": null,
+      "days_since_move": null,
+      "coverage": "complete"
+    }
+  ],
+  "note": "Heat is unknown for every group; nothing here is a recommendation."
+}

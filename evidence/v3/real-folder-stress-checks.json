@@ -1,0 +1,37 @@
+{
+  "platform": "Windows 11, NTFS, non-elevated",
+  "cases": [
+    {
+      "case": "manifest-free-synthetic-all-strategies",
+      "passed": true
+    },
+    {
+      "case": "cyclic-junction-skipped-not-followed",
+      "passed": true
+    },
+    {
+      "case": "junction-root-refused",
+      "passed": true
+    },
+    {
+      "case": "denied-directory-counted-consistently",
+      "passed": true
+    },
+    {
+      "case": "each-strategy-records-root",
+      "passed": true
+    },
+    {
+      "case": "broad-and-protected-scopes-refused",
+      "passed": true
+    },
+    {
+      "case": "state-inside-root-refused-before-write",
+      "passed": true
+    },
+    {
+      "case": "marked-synthetic-control-cleaned",
+      "passed": true
+    }
+  ]
+}

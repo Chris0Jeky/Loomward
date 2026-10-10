@@ -62,6 +62,7 @@ export interface Root {
   display_path: DisplayPath;
   origin: 'fixture' | 'lab_generated' | 'owner_granted';
   dataset_class: DatasetClass;
+  volume_id: string | null;
   granted_at: Timestamp;
   granted_via: 'desktop_picker' | 'cli_flag' | 'fixture';
   grant_state: 'active' | 'revoked' | 'identity_changed';
@@ -77,7 +78,7 @@ export interface GrantList { grants: Grant[] }
 
 export interface Health {
   observed_at: Timestamp;
-  engine: { private_bytes: NullableBytes; working_set_bytes: NullableBytes; cpu_seconds: number | null; threads: number | null };
+  engine: { private_commit_bytes: NullableBytes; working_set_bytes: NullableBytes; cpu_seconds: number | null; threads: number | null };
   catalog: { schema_version: number; db_bytes: NullableBytes; wal_bytes: NullableBytes; files: number; dirs: number; writer_queue_depth: number; writer_queue_capacity: number };
   jobs_running: number;
   last_error: ErrorBody | null;
@@ -116,6 +117,8 @@ export interface TreeSlice {
   complete: boolean;
   live: boolean;
   ordering: 'exact' | 'approximate_live' | 'approximate_files';
+  /** PR #110 makes this required: 'provisional_live' sums come from a running scan and must look provisional. */
+  aggregate_state?: 'consistent' | 'provisional_live';
   truncated: boolean;
   nodes: SliceNode[];
 }
@@ -135,7 +138,7 @@ export interface EntryRow {
   coverage: CoverageState;
   location_hint: DisplayPath | null;
 }
-export interface EntryPage { anchor: string | null; generation: number | null; items: EntryRow[]; next_cursor: Cursor | null; total: number | null; budget_hit: boolean }
+export interface EntryPage { anchor: string | null; generation: string | null; items: EntryRow[]; next_cursor: Cursor | null; total: number | null; budget_hit: boolean }
 
 // Requests the shell and placeholder views send.
 export type Anchor = { kind: 'atlas' } | { kind: 'root'; root_id: RootId } | { kind: 'node'; node_id: NodeId };

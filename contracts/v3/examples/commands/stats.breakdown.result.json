@@ -1,0 +1,29 @@
+{
+  "node_id": "nd_0002",
+  "by": "ext_family",
+  "basis": "logical",
+  "generation": "12",
+  "complete": true,
+  "buckets": [
+    {
+      "key": "document",
+      "label": "Documents",
+      "bytes": "300000000",
+      "files": 400
+    },
+    {
+      "key": "image",
+      "label": "Images",
+      "bytes": "150000000",
+      "files": 300
+    }
+  ],
+  "other": {
+    "bytes": "10000000",
+    "files": 60
+  },
+  "unknown": {
+    "bytes": "0",
+    "files": 0
+  }
+}
