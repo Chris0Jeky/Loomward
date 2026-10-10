@@ -8,6 +8,7 @@
   import { hasHiddenCharacters } from '../../lib/format/names';
   import { formatCount, formatTime } from '../../lib/format/time';
   import { LoomwardError } from '../../lib/transport/client';
+  import { FALLBACK_NOTICE, onRefetchError } from './refetch';
   import { session } from '../../lib/stores/session.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import type { Basis, EntryPage, EntryRow, NodeId } from '../../lib/contracts.gen';
@@ -45,6 +46,9 @@
   let abort: AbortController | null = null;
   /** `EntryPage.generation` of the first page of the current view; a later page from another one means the folder changed. */
   let pageGen: string | null = null;
+
+  /** IDs that have listed successfully: the saved breadcrumbs a later `not_found` falls back from. */
+  let seenIds = new Set<NodeId>();
 
   const here = $derived(trail[trail.length - 1]);
 
@@ -84,6 +88,7 @@
       total = page.total;
       next = page.next_cursor;
       budgetHit = page.budget_hit;
+      if (!searching && here) seenIds.add(here.id);
       if (hadFocus) {
         await tick();
         // only if the reader is still there: on the button, or on the body because the button just went away
@@ -94,6 +99,25 @@
       if (mine !== gen) return;
       if (e instanceof LoomwardError && e.code === 'stale_generation' && !restarted) {
         return await restart('The listing changed under the cursor, so it starts again from the top.');
+      }
+      if (!searching && !append && here && onRefetchError(e, seenIds.has(here.id)) === 'fallback') {
+        // A saved breadcrumb went stale (restart, rebuild, resync): drop it and reload the
+        // starting points. A `not_found` for a node just clicked stays an error below.
+        // Forgetting the ID first keeps a reused ID from falling back twice in a row.
+        seenIds.delete(here.id);
+        trail = [];
+        rows = [];
+        total = null;
+        next = null;
+        budgetHit = false;
+        pageGen = null;
+        error = '';
+        busy = false;
+        await loadStarts();
+        // Set after the reload: the fresh `show()` inside `loadStarts()` clears the
+        // status region on entry, so setting it before would never be seen.
+        notice = FALLBACK_NOTICE;
+        return;
       }
       error = session.handle(e);
       if (!append) {
