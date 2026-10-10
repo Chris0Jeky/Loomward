@@ -912,6 +912,16 @@ fn placement_unknown_cluster_uses_4kib_lower_bound_with_disclosure() {
         "assumptions: {:?}",
         built.assumptions
     );
+    // placement.candidates rounds with the same assumption, so its note discloses it as well.
+    let candidates_request = from_value(json!({"source_volume_id":"vo_source","basis":"root_children","max_groups":4,"min_bytes":"0"})).unwrap();
+    let view = engine()
+        .placement_candidates(&all_unknown, &candidates_request, deadline())
+        .unwrap();
+    assert!(
+        view.note.as_str().contains("4 KiB"),
+        "note: {}",
+        view.note.as_str()
+    );
     let mut mixed = input();
     let mut extra = volume("vo_extra", 1000, 1000, 2);
     extra.cluster_bytes = None;

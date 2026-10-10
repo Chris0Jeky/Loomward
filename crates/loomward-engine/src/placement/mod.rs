@@ -232,8 +232,8 @@ impl Engine {
         let snapshot = input.snapshot(Some(&request.source_volume_id), deadline)?;
         let _ = planner_volumes(&snapshot)?;
         require_source(&snapshot, &request.source_volume_id)?;
-        let (cluster, _) = target_cluster(&snapshot, &request.source_volume_id);
-        Ok(candidates(
+        let (cluster, unknown_clusters) = target_cluster(&snapshot, &request.source_volume_id);
+        let mut view = candidates(
             input,
             &snapshot,
             &request.source_volume_id,
@@ -243,7 +243,16 @@ impl Engine {
             cluster,
             deadline,
         )?
-        .view)
+        .view;
+        // The rounded destination estimates rest on an assumed cluster size: say so here too.
+        if unknown_clusters > 0 {
+            view.note = Text::new(format!(
+                "{} Destination estimates assume 4 KiB clusters for {unknown_clusters} target(s) with unknown cluster size.",
+                view.note.as_str()
+            ))
+            .expect("bounded note");
+        }
+        Ok(view)
     }
     /// Synchronous node- and time-bounded simulation. Save requires an atomic proposal store.
     pub fn placement_simulate(
