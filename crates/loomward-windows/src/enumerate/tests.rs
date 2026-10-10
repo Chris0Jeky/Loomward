@@ -291,6 +291,7 @@ fn post_open_offline_race_is_refused_before_listing() {
         Flow::Continue
     });
     let path: Vec<u16> = child.as_os_str().encode_wide().chain(Some(0)).collect();
+    let (opened_child, _) = source.open_root(&child).unwrap();
     assert_ne!(
         unsafe { SetFileAttributesW(path.as_ptr(), FILE_ATTRIBUTE_OFFLINE) },
         0
@@ -308,11 +309,13 @@ fn post_open_offline_race_is_refused_before_listing() {
         last_access: None,
     };
     let result = source.open_child(&parent, &entry);
+    let listing = source.list(&opened_child, &mut |_| panic!("offline directory listed"));
     assert_ne!(
         unsafe { SetFileAttributesW(path.as_ptr(), FILE_ATTRIBUTE_NORMAL) },
         0
     );
     assert!(matches!(result, Err(SourceError::Refused)));
+    assert_eq!(listing, ListOutcome::Incomplete(IncompleteReason::Refused));
 }
 #[test]
 fn absent_zero_ids_do_not_become_unique_observations() {
@@ -332,7 +335,7 @@ fn absent_zero_ids_do_not_become_unique_observations() {
 /// Native roots are opened component by component and refuse reparse ancestors, so tests grant a
 /// canonical temp base (hosted runners may junction the temp folder), as a real grant would.
 #[cfg(windows)]
-fn canonical_tempdir() -> tempfile::TempDir {
+pub(super) fn canonical_tempdir() -> tempfile::TempDir {
     tempfile::tempdir_in(std::fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap()
 }
 

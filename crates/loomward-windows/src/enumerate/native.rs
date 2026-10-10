@@ -161,6 +161,7 @@ fn open_relative_mode(
     share: u32,
     asynchronous: bool,
 ) -> Result<File, SourceError> {
+    non_elevated()?;
     checked_child(name)?;
     let mut name = name.to_vec();
     let unicode = UNICODE_STRING {
@@ -209,6 +210,11 @@ fn open_relative_mode(
 fn directory_attributes(file: &File) -> Result<FILE_ATTRIBUTE_TAG_INFO, SourceError> {
     let attr: FILE_ATTRIBUTE_TAG_INFO =
         information(file.as_raw_handle(), FileAttributeTagInfo).ok_or_else(last_error)?;
+    validate_directory_attributes(attr)
+}
+fn validate_directory_attributes(
+    attr: FILE_ATTRIBUTE_TAG_INFO,
+) -> Result<FILE_ATTRIBUTE_TAG_INFO, SourceError> {
     if refused_attributes(attr.FileAttributes)
         || attr.FileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
     {
@@ -225,6 +231,7 @@ fn root_handles_mode(
     share: u32,
     asynchronous: bool,
 ) -> Result<Vec<File>, SourceError> {
+    non_elevated()?;
     if !path.is_absolute() || path.as_os_str().encode_wide().any(|c| c == 0) {
         return Err(SourceError::Refused);
     }
@@ -390,7 +397,15 @@ pub(crate) fn open_watch_root(
 pub fn running_elevated() -> bool {
     matches!(non_elevated(), Err(SourceError::Refused))
 }
-fn non_elevated() -> Result<(), SourceError> {
+#[cfg(test)]
+thread_local! {
+    static TEST_ELEVATED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+pub(crate) fn non_elevated() -> Result<(), SourceError> {
+    #[cfg(test)]
+    if TEST_ELEVATED.get() {
+        return Err(SourceError::Refused);
+    }
     let mut token = null_mut();
     if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
         return Err(last_error());
@@ -466,14 +481,29 @@ impl DirSource for NativeSource {
             Ok(h) => h,
             Err(_) => return ListOutcome::Incomplete(IncompleteReason::Io(-1)),
         };
+        self.list_validated(dir, sink, directory_attributes(&dir.file).map(|_| ()))
+    }
+}
+fn incomplete(error: SourceError) -> ListOutcome {
+    ListOutcome::Incomplete(match error {
+        SourceError::Refused => IncompleteReason::Refused,
+        SourceError::IdentityUnverified => IncompleteReason::IdentityUnverified,
+        SourceError::AccessDenied => IncompleteReason::AccessDenied,
+        SourceError::IdentityChanged => IncompleteReason::Io(ERROR_FILE_INVALID as i32),
+        SourceError::Io(code) => IncompleteReason::Io(code),
+        SourceError::Unsupported => IncompleteReason::Io(ERROR_NOT_SUPPORTED as i32),
+    })
+}
+impl NativeSource {
+    fn list_validated(
+        &self,
+        dir: &NativeDir,
+        sink: &mut dyn FnMut(RawEntry<'_>) -> Flow,
+        validation: Result<(), SourceError>,
+    ) -> ListOutcome {
         // Revalidate immediately before listing, including a directory that acquired recall flags.
-        let attr: Option<FILE_ATTRIBUTE_TAG_INFO> =
-            information(dir.file.as_raw_handle(), FileAttributeTagInfo);
-        match attr {
-            Some(a)
-                if !refused_attributes(a.FileAttributes)
-                    && a.FileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0 => {}
-            _ => return ListOutcome::Incomplete(IncompleteReason::AccessDenied),
+        if let Err(error) = validation {
+            return incomplete(error);
         }
         let mut strategy = *dir.strategy.lock().unwrap();
         let mut buffer = vec![0u64; 2048]; // 16 KiB, aligned for native structures.
@@ -564,6 +594,14 @@ impl Drop for FindHandle {
 }
 impl NativeSource {
     fn find(&self, dir: &NativeDir, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+        self.find_with_identity(dir, sink, |handle| information(handle, FileIdInfo))
+    }
+    fn find_with_identity(
+        &self,
+        dir: &NativeDir,
+        sink: &mut dyn FnMut(RawEntry<'_>) -> Flow,
+        mut identity: impl FnMut(HANDLE) -> Option<FILE_ID_INFO>,
+    ) -> ListOutcome {
         let mut path = vec![0u16; 32768];
         let n = unsafe {
             GetFinalPathNameByHandleW(
@@ -585,14 +623,14 @@ impl NativeSource {
             FILE_SHARE_READ | FILE_SHARE_WRITE,
         ) {
             Ok(pins) => pins,
-            Err(SourceError::Io(code)) => {
-                return ListOutcome::Incomplete(IncompleteReason::Io(code))
-            }
-            Err(_) => return ListOutcome::Incomplete(IncompleteReason::AccessDenied),
+            Err(error) => return incomplete(error),
         };
-        let original: Option<FILE_ID_INFO> = information(dir.file.as_raw_handle(), FileIdInfo);
-        let pinned: Option<FILE_ID_INFO> =
-            information(pins.last().unwrap().as_raw_handle(), FileIdInfo);
+        let original = identity(dir.file.as_raw_handle());
+        let pinned = identity(pins.last().unwrap().as_raw_handle());
+        // Path pins must be bound to the original handle before Find opens by name.
+        if original.is_none() || pinned.is_none() {
+            return incomplete(SourceError::IdentityUnverified);
+        }
         if original
             .as_ref()
             .map(|i| (i.VolumeSerialNumber, i.FileId.Identifier))
@@ -679,6 +717,145 @@ impl NativeSource {
 #[cfg(test)]
 mod cancellation_tests {
     use super::*;
+    fn fixture() -> Option<(tempfile::TempDir, NativeSource, NativeDir)> {
+        let temp = super::super::tests::canonical_tempdir();
+        let source = NativeSource::with_strategy(Strategy::Find);
+        if running_elevated() {
+            assert!(matches!(
+                source.open_root(temp.path()),
+                Err(SourceError::Refused)
+            ));
+            return None;
+        }
+        std::fs::write(temp.path().join("file"), b"synthetic").unwrap();
+        let (dir, _) = source.open_root(temp.path()).unwrap();
+        Some((temp, source, dir))
+    }
+    #[test]
+    fn find_refuses_two_missing_identity_queries_before_emitting() {
+        let Some((_temp, source, dir)) = fixture() else {
+            return;
+        };
+        let mut queries = 0;
+        let mut emitted = 0;
+        let outcome = source.find_with_identity(
+            &dir,
+            &mut |_| {
+                emitted += 1;
+                Flow::Continue
+            },
+            |_| {
+                queries += 1;
+                None
+            },
+        );
+        assert_eq!(queries, 2);
+        assert_eq!(emitted, 0);
+        assert_eq!(
+            outcome,
+            ListOutcome::Incomplete(IncompleteReason::IdentityUnverified)
+        );
+        assert_eq!(
+            source.list(&dir, &mut |_| Flow::Continue),
+            ListOutcome::Complete
+        );
+    }
+    #[test]
+    fn list_revalidation_preserves_each_attribute_refusal() {
+        let Some((_temp, source, dir)) = fixture() else {
+            return;
+        };
+        for flag in [
+            FILE_ATTRIBUTE_REPARSE_POINT,
+            FILE_ATTRIBUTE_OFFLINE,
+            FILE_ATTRIBUTE_RECALL_ON_OPEN,
+            FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS,
+        ] {
+            let validation = validate_directory_attributes(FILE_ATTRIBUTE_TAG_INFO {
+                FileAttributes: FILE_ATTRIBUTE_DIRECTORY | flag,
+                ReparseTag: 0,
+            })
+            .map(|_| ());
+            assert_eq!(validation, Err(SourceError::Refused));
+            assert_eq!(
+                source.list_validated(
+                    &dir,
+                    &mut |_| panic!("refused directory listed"),
+                    validation
+                ),
+                ListOutcome::Incomplete(IncompleteReason::Refused)
+            );
+        }
+        for (error, reason) in [
+            (SourceError::AccessDenied, IncompleteReason::AccessDenied),
+            (SourceError::Io(1234), IncompleteReason::Io(1234)),
+        ] {
+            assert_eq!(
+                source.list_validated(&dir, &mut |_| panic!("failed query listed"), Err(error)),
+                ListOutcome::Incomplete(reason)
+            );
+        }
+        assert_eq!(
+            source.list(&dir, &mut |_| Flow::Continue),
+            ListOutcome::Complete
+        );
+    }
+    #[test]
+    fn native_opens_refuse_elevation_consistently() {
+        let temp = super::super::tests::canonical_tempdir();
+        std::fs::create_dir(temp.path().join("child")).unwrap();
+        let parent = if running_elevated() {
+            None
+        } else {
+            Some(
+                root_handles(
+                    temp.path(),
+                    FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                )
+                .unwrap()
+                .pop()
+                .unwrap(),
+            )
+        };
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                TEST_ELEVATED.set(false);
+            }
+        }
+        TEST_ELEVATED.set(true);
+        let _reset = Reset;
+        assert!(matches!(crate::identity::observe(temp.path()),
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied));
+        assert!(matches!(
+            root_handles_mode(
+                temp.path().ancestors().last().unwrap(),
+                FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                false
+            ),
+            Err(SourceError::Refused)
+        ));
+        if let Some(parent) = parent {
+            assert!(matches!(
+                open_relative_mode(
+                    &parent,
+                    &[99, 104, 105, 108, 100],
+                    FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    false
+                ),
+                Err(SourceError::Refused)
+            ));
+        }
+        assert!(matches!(crate::volumes::enumerate(),
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied));
+        assert!(matches!(
+            open_watch_root(temp.path()),
+            Err(SourceError::Refused)
+        ));
+    }
     #[test]
     fn directory_opens_always_disable_recall() {
         assert_ne!(directory_create_options() & 0x00400000, 0);

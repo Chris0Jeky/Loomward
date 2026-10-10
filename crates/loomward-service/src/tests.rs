@@ -626,8 +626,8 @@ fn provenance_synthetic_accepts_only_identity_verified_lab_roots() {
         !refused.contains("owner-folder"),
         "refusals never name the path"
     );
-    if cfg!(not(windows)) {
-        // No native file identity off Windows: every grant root fails closed before provenance.
+    if !native_identity_available() {
+        // Unsupported platforms and elevated tokens fail closed before provenance.
         assert!(refused.contains("identity_unavailable"), "{refused}");
         return;
     }
@@ -1159,8 +1159,8 @@ fn grants_past_64_active_roots_are_refused_by_rule() {
             d.canonicalize().unwrap()
         })
         .collect();
-    if cfg!(not(windows)) {
-        // No native file identity off Windows: every grant fails closed before the cap.
+    if !native_identity_available() {
+        // Unsupported platforms and elevated tokens fail closed before the cap.
         assert!(svc.inner.grant(&dirs[0], "cli_flag").is_err());
         return;
     }
@@ -1179,6 +1179,18 @@ fn grants_past_64_active_roots_are_refused_by_rule() {
     let grant = crate::db::roots(&svc.inner.db(), Some(granted[0])).unwrap()[0].grant;
     svc.inner.revoke(grant).unwrap();
     assert!(svc.inner.grant(&dirs[64], "cli_flag").unwrap().1);
+}
+
+fn native_identity_available() -> bool {
+    #[cfg(windows)]
+    if loomward_windows::enumerate::running_elevated() {
+        assert!(
+            matches!(loomward_windows::identity::observe(Path::new("synthetic")),
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied)
+        );
+        return false;
+    }
+    cfg!(windows)
 }
 
 /// #185 item 5: node IDs are bound to the session (`semantics.md` section 5). The key is never
