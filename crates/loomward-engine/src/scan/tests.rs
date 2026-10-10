@@ -554,6 +554,10 @@ fn root_identity_mismatch_never_enters_writer() {
     .unwrap_err();
     assert_eq!(error.to_body().message.as_str(), "root_identity_changed");
     assert!(sink.totals(root.root_id()).is_none());
+    assert!(
+        sink.identity_changed(root.root_id()),
+        "the writer is told, so it can record the transition (#206)"
+    );
 }
 
 struct BlockingSource {

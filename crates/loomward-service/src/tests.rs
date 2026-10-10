@@ -1914,3 +1914,47 @@ fn no_tree_invalidated_after_the_writer_is_fenced() {
     svc.inner.scan.invalidated(&id, true);
     assert!(!next_tree(), "a fenced root never publishes");
 }
+
+/// #206: a root swapped after `granted_root` passed is caught by the scan itself; the writer
+/// records `identity_changed` and `roots.changed` follows, exactly as at scan start.
+#[test]
+fn a_scan_that_finds_the_root_swapped_records_identity_changed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (root, grant) = register(&svc, 12);
+    let dir = crate::db::active_root_dir(&svc.inner.db(), root)
+        .unwrap()
+        .unwrap();
+    let id = RootId::new(svc.inner.root_id(root)).unwrap();
+    svc.inner.scan.bind(&id, grant, dir);
+    let mut events = svc.subscribe(None);
+    svc.inner.scan.root_identity_changed(&id);
+    let state: String = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT state FROM st.root_grant WHERE id=?1",
+            [grant],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(state, "identity_changed");
+    let event = loop {
+        match events.recv_timeout(Duration::from_secs(2)) {
+            RecvOutcome::Event(e) if e.event == EventName::RootsChanged => break e,
+            RecvOutcome::Event(_) => continue,
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(event.data["roots"][0]["grant_state"], "identity_changed");
+    assert_eq!(
+        svc.inner
+            .scan
+            .begin_run(&id, 1, &RunScope::FullRoot)
+            .unwrap_err()
+            .to_body()
+            .code,
+        ErrorCode::PermissionDenied,
+        "the writer is fenced"
+    );
+}

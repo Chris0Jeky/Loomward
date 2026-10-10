@@ -358,6 +358,16 @@ impl CatalogScanSink {
 }
 
 impl ScanSink for CatalogScanSink {
+    /// The root was swapped after `granted_root` checked it: record the grant's transition.
+    fn root_identity_changed(&self, root: &RootId) {
+        let grant = {
+            let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            s.roots.get(root).map(|r| r.grant)
+        };
+        if let (Some(grant), Some(inner)) = (grant, self.inner.upgrade()) {
+            inner.identity_changed(grant, root, false);
+        }
+    }
     /// The catalogue already failed interrupted runs and marked their roots repairing when it
     /// opened, before the service could serve any slice.
     fn recover_interrupted(&self) -> EngineResult<()> {

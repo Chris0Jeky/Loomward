@@ -774,6 +774,7 @@ pub fn run_scan<S: DirSource>(
         .expected
         .is_some_and(|e| e.id != identity.id || e.volume_serial != identity.volume_serial)
     {
+        sink.root_identity_changed(root.root_id());
         return Err(EngineError::PermissionDenied {
             message: "root_identity_changed".into(),
         });

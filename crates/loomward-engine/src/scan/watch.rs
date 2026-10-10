@@ -284,6 +284,9 @@ struct RepairSink {
     outside_scope: AtomicU64,
 }
 impl ScanSink for RepairSink {
+    fn root_identity_changed(&self, root: &RootId) {
+        self.inner.root_identity_changed(root)
+    }
     fn recover_interrupted(&self) -> EngineResult<()> {
         self.inner.recover_interrupted()
     }

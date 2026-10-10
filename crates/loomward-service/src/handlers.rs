@@ -184,7 +184,7 @@ impl Inner {
         if matches!(&granted, Err(loomward_engine::EngineError::PermissionDenied { message })
             if message == "root_identity_changed")
         {
-            self.identity_changed(root.grant, &id);
+            self.identity_changed(root.grant, &id, true);
         }
         let granted = granted?;
         let job = match r.mode {
@@ -410,7 +410,8 @@ impl Inner {
     /// grant ends `identity_changed`, committed in `state.db` first as a revocation is; then the
     /// root's jobs are cancelled and its writer fenced, and `roots.changed` stops the UI from
     /// advertising the dead grant.
-    fn identity_changed(&self, grant: i64, id: &RootId) {
+    /// `cancel` is false when the failing scan job itself reports it (nothing else runs).
+    pub(crate) fn identity_changed(&self, grant: i64, id: &RootId, cancel: bool) {
         let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
         let changed = self
             .catalog
@@ -419,7 +420,9 @@ impl Inner {
         if changed.is_err() {
             return;
         }
-        let _ = self.engine.scan_cancel_root(id);
+        if cancel {
+            let _ = self.engine.scan_cancel_root(id);
+        }
         let _ = self.engine.scan_writer_fence(id);
         if let (Ok(revs), Ok(list)) = (self.revisions(), self.root_list()) {
             self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));
