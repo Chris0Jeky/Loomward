@@ -49,7 +49,7 @@
       "loomward-learn": "student model port with exact Python parity (#113)",
       "loomward-protocol": "v3 envelopes, complete per-command validation, duplicate-key refusal, ViewService trait (#133)",
       "loomward-engine": "C2 skeleton (#140) + L7 scan pipeline (#162), L12 placement (#158), L11b telemetry (#161)",
-      "loomward-http": "loomward-serve: loopback HTTP + SSE adapter, token/Host/Origin checks, FixtureService until L8 (#143)",
+      "loomward-http": "loomward-serve: loopback HTTP + SSE adapter over loomward-service; token/Host/Origin checks; explicit fixture mode retained; product scans limited to synthetic lab roots (#179, #195, #205)",
       "loomward-catalog": "durable SQLite catalogue: revision 2 + errata, pending-reference retirement, FULL sync for intents (#173); P4 ~53k rows/s (#187); auto-rollback guard (#208)",
       "loomward-service": "the ViewService over engine and catalogue (#179, #197); catalogue-backed scan writer and scan.start for synthetic lab roots (#205)"
     },
