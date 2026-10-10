@@ -232,6 +232,9 @@ impl CatalogScanSink {
         r.root_dir = root_dir;
     }
 
+    // ponytail: one command per receipt, so the writer never batches a scan's listings (the
+    // 159-directory lab test takes about 6 s here); pipeline chunk receipts and wait only at
+    // ListingDone when scan throughput matters (#148).
     fn call(&self, command: WriteCommand) -> loomward_catalog::Result<WriteReply> {
         let inner = self.inner.upgrade().ok_or(CatalogError::Closed)?;
         let reply = inner.catalog.writer().call(command);

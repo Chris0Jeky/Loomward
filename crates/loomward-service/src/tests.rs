@@ -1495,3 +1495,31 @@ fn obsolete_listing_revisions_are_refused_and_never_complete() {
         "an ended run accepts nothing"
     );
 }
+
+/// Parallel workers over a wider tree: every child ticket follows its parent's publication, so
+/// the published totals still equal an independent walk.
+#[cfg(windows)]
+#[test]
+fn a_wide_lab_tree_matches_the_walk_under_parallel_workers() {
+    let Some(lab) = lab() else { return };
+    for i in 0..12 {
+        for j in 0..12 {
+            let d = lab.path.join(format!("w{i}")).join(format!("v{j}"));
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("f.bin"), vec![0u8; i * 12 + j]).unwrap();
+        }
+    }
+    let svc = &lab.svc;
+    let (job, _) = ok(
+        "scan.start",
+        call(
+            svc,
+            "scan.start",
+            json!({"root_id": lab.root, "mode": "full", "budget": {"threads": 8}}),
+        ),
+    );
+    let done = settle(svc, job["job"]["job_id"].as_str().unwrap());
+    assert_eq!(done["state"], "completed", "{done:?}");
+    assert_eq!(done["coverage"], "complete");
+    assert_eq!(slice_totals(&lab_slice(svc, &lab.root)), walk(&lab.path));
+}
