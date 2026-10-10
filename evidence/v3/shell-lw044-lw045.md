@@ -28,8 +28,10 @@ the worktree root.
   relative and device paths never reach the target probe. Missing metadata rechecks
   the volume so a disconnect is not reported as a missing file.
 - The explicit-path Windows reader reuses the existing fail-closed non-elevated root
-  check, then retains ancestor/final metadata handles that deny writes and renames
-  for the read. Opens use no-recall and no-follow flags, refuse reparse/offline/recall
+  check, then retains ancestor/final metadata handles for the read. Those attribute-only handles do
+  not deny writes or renames, and each component is reopened by full path, so an ancestor swapped
+  between steps is not prevented (tracked in #248). Opens use no-recall flags and no-follow on the
+  final component, refuse reparse/offline/recall
   attributes and non-disk objects, and check the byte cap before reading. Metadata
   health never reads target contents. Sharing/access/provider failures remain unknown.
 - Bounds: 1 MiB file; 32,768 units per text field (ANSI bytes or UTF-16 code units);

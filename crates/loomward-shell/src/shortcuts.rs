@@ -596,7 +596,8 @@ mod native {
         }
     }
 
-    /// Retain every ancestor and final metadata handle with writes/renames refused for this read.
+    /// Retain every ancestor and final metadata handle for this read. Attribute-only handles do not
+    /// refuse writes or renames, and components reopen by full path (#248).
     fn pins(path: &str) -> io::Result<(NativeDir, Vec<File>)> {
         let drive = local_drive(path)
             .ok_or_else(|| invalid("only ordinary absolute local paths supported"))?;
