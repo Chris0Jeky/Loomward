@@ -1,9 +1,8 @@
 # LW-044 / LW-045: read-only desktop contexts and shortcut health
 
-Measured 2026-10-10 on Windows 11, Rust/Cargo 1.97.1. Base/head before the
-uncommitted slice: `2e35b0ced8916c815f3e573908075c2a6189a66b`, branch
-`feat/shell-known-folders-shortcuts`. Commands below run from the worktree root.
-The driver owns committing this slice. No commit, push or external publication occurred.
+Measured 2026-10-10 on Windows 11, Rust/Cargo 1.97.1, on the lane diff over base `2e35b0c`
+before it was committed (branch `feat/shell-known-folders-shortcuts`). Commands below run from
+the worktree root.
 
 ## Changed
 
