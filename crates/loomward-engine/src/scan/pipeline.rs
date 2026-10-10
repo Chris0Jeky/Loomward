@@ -519,8 +519,17 @@ impl<S: DirSource> Shared<'_, S> {
         let child_ticket = match self.prepare(Some(ticket.dir), name, identity) {
             Ok(t) => t,
             // The parent's publication was rejected as obsolete: the child is unknown to the
-            // writer this epoch, and the dirty parent is relisted.
-            Err(EngineError::StaleGeneration { .. }) => return Ok(false),
+            // writer this epoch, and the writer marked the parent dirty for a relist. Release
+            // the sighting so the relist adopts the child instead of seeing it as moved.
+            Err(e) if listing_revision_changed(&e) => {
+                if let Some(key) = key {
+                    let mut discovered = self.discovered.lock().unwrap();
+                    if discovered.get(&key) == Some(&PENDING) {
+                        discovered.remove(&key);
+                    }
+                }
+                return Ok(false);
+            }
             Err(e) => return Err(e),
         };
         if let Some(old_parent) = child_ticket.old_parent {
@@ -641,6 +650,10 @@ fn directory_key(identity: OpenedIdentity) -> Option<(Option<u64>, FileIdObs)> {
         None
     }
 }
+fn listing_revision_changed(e: &EngineError) -> bool {
+    matches!(e, EngineError::StaleGeneration { detail: Some(detail), .. }
+        if detail.get("reason") == Some(&serde_json::json!("listing_revision_changed")))
+}
 fn writer(
     root: &RootId,
     run: u64,
@@ -667,7 +680,15 @@ fn writer(
                 reply,
             } => {
                 let r = sink.prepare_listing(root, run, parent, &name, identity);
-                let failed = r.as_ref().err().cloned();
+                let failed = match (&r, parent) {
+                    // The parent's publication was obsolete, so the writer does not know this
+                    // child yet: relist the parent; the worker leaves the child unclaimed.
+                    (Err(e), Some(parent)) if listing_revision_changed(e) => {
+                        dirty.insert(parent);
+                        None
+                    }
+                    (r, _) => r.as_ref().err().cloned(),
+                };
                 let _ = reply.send(r);
                 failed.map_or(Ok(()), Err)
             }
@@ -683,13 +704,7 @@ fn writer(
                     continue;
                 }
                 match sink.consume(root, m) {
-                    Err(EngineError::StaleGeneration {
-                        detail: Some(detail),
-                        ..
-                    }) if ticket.is_some()
-                        && detail.get("reason")
-                            == Some(&serde_json::json!("listing_revision_changed")) =>
-                    {
+                    Err(e) if ticket.is_some() && listing_revision_changed(&e) => {
                         dirty.insert(ticket.unwrap().dir);
                         Ok(())
                     }

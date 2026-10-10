@@ -1532,3 +1532,93 @@ fn held_child_names_are_charged_to_the_scan_byte_budget() {
         report.totals.dirs
     );
 }
+/// A writer whose first child prepare is obsolete (the parent's publication was rejected).
+struct StalePrepare {
+    sink: MemorySink,
+    refused: AtomicBool,
+}
+impl ScanSink for StalePrepare {
+    fn refresh_listing(
+        &self,
+        root: &RootId,
+        run: u64,
+        ticket: ListingTicket,
+    ) -> crate::EngineResult<ListingTicket> {
+        self.sink.refresh_listing(root, run, ticket)
+    }
+    fn recover_interrupted(&self) -> crate::EngineResult<()> {
+        self.sink.recover_interrupted()
+    }
+    fn begin_run(&self, root: &RootId, run: u64, scope: &RunScope) -> crate::EngineResult<()> {
+        self.sink.begin_run(root, run, scope)
+    }
+    fn prepare_listing(
+        &self,
+        root: &RootId,
+        run: u64,
+        parent: Option<u64>,
+        name: &[u16],
+        identity: OpenedIdentity,
+    ) -> crate::EngineResult<ListingTicket> {
+        if parent.is_some() && !self.refused.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return Err(crate::EngineError::StaleGeneration {
+                message: "obsolete scan writer message".into(),
+                detail: loomward_protocol::Detail::new(std::collections::BTreeMap::from([(
+                    "reason".to_string(),
+                    serde_json::json!("listing_revision_changed"),
+                )]))
+                .ok(),
+            });
+        }
+        self.sink.prepare_listing(root, run, parent, name, identity)
+    }
+    fn consume(&self, root: &RootId, message: ScanMessage) -> crate::EngineResult<()> {
+        self.sink.consume(root, message)
+    }
+    fn finish_run(
+        &self,
+        root: &RootId,
+        run: u64,
+        scope: &RunScope,
+        complete: bool,
+    ) -> crate::EngineResult<()> {
+        self.sink.finish_run(root, run, scope, complete)
+    }
+    fn fence_root(&self, root: &RootId) -> crate::EngineResult<()> {
+        self.sink.fence_root(root)
+    }
+}
+/// #206 MEDIUM-2: an obsolete child prepare relists its parent instead of failing the run.
+#[test]
+fn stale_child_prepare_relists_the_parent() {
+    let sink = Arc::new(StalePrepare {
+        sink: MemorySink::default(),
+        refused: AtomicBool::new(false),
+    });
+    let root = root();
+    let report = run_scan(
+        &Tree,
+        &root,
+        1,
+        sink.clone(),
+        Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions {
+            workers: 1,
+            ..ScanOptions::default()
+        },
+    )
+    .expect("a stale prepare is not a run failure");
+    assert!(sink.refused.load(std::sync::atomic::Ordering::Acquire));
+    assert!(report.complete, "{report:?}");
+    assert_eq!(
+        report.totals,
+        Sums {
+            files: 1,
+            dirs: 1,
+            logical: 123,
+            allocated: Some(4096)
+        }
+    );
+    assert_eq!(sink.sink.totals(root.root_id()), Some(report.totals));
+}
