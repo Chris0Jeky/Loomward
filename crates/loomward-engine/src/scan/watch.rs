@@ -27,6 +27,10 @@ struct Dirty {
     stopped: bool,
     failed: bool,
     rename_pending: bool,
+    #[cfg(all(test, windows))]
+    root_dirty_signals: u64,
+    #[cfg(all(test, windows))]
+    full_relists: u64,
 }
 impl Dirty {
     fn record(&mut self, changes: Vec<Change>) {
@@ -37,6 +41,11 @@ impl Dirty {
             self.epoch += 1;
             match change {
                 Change::RootDirty => {
+                    // Any source (channel overflow, kernel buffer overflow, decode failure) counts.
+                    #[cfg(all(test, windows))]
+                    {
+                        self.root_dirty_signals += 1;
+                    }
                     self.root = Some(self.epoch);
                     self.dirs.clear();
                     self.rename_pending = false;
@@ -464,6 +473,10 @@ fn reconcile<S: DirSource>(
                 .collect();
             ids.map(RunScope::Targeted).unwrap_or(RunScope::FullRoot)
         };
+        #[cfg(all(test, windows))]
+        if options.scope == RunScope::FullRoot {
+            state.full_relists += 1;
+        }
         drop(state);
         let full = matches!(options.scope, RunScope::FullRoot);
         let mut pass_options = options.clone();
@@ -1024,18 +1037,193 @@ mod native_tests {
         );
         let sink = Arc::new(RecordingSink::default());
         let weak = Arc::downgrade(&engine);
+        let caller = std::thread::current().id();
         *sink.watch_probe.lock().unwrap() = Some(Box::new(move || {
-            let engine = weak.upgrade().unwrap();
-            assert!(
-                engine.scan_watches.try_lock().is_ok(),
-                "native/sink probes must run outside the watch map lock"
-            );
+            if std::thread::current().id() == caller {
+                let engine = weak.upgrade().unwrap();
+                assert!(
+                    engine.scan_watches.try_lock().is_ok(),
+                    "native/sink probes must run outside the watch map lock"
+                );
+            }
         }));
         engine.set_scan_sink(sink).unwrap();
         let job = engine.scan_start(&root, None).unwrap();
         engine.scan_cancel(&job.job_id).unwrap();
         engine.scan_cancel_root(root.root_id()).unwrap();
     }
+    #[test]
+    fn concurrent_scan_start_reserves_root_before_touching_watch() {
+        use std::sync::{mpsc, Barrier};
+        let tree = fixture();
+        let Some(root) = grant(tree.path()) else {
+            return;
+        };
+        std::fs::write(tree.path().join("file"), b"fixture").unwrap();
+        let engine = Engine::open(crate::EngineConfig::new(
+            tree.path().join("state"),
+            root.dataset_class(),
+        ))
+        .unwrap();
+        let sink = Arc::new(RecordingSink::default());
+        let (entered, entry) = mpsc::sync_channel(1);
+        let (release, released) = mpsc::sync_channel(1);
+        let first = AtomicBool::new(true);
+        *sink.watch_probe.lock().unwrap() = Some(Box::new(move || {
+            if first.swap(false, Ordering::AcqRel) {
+                entered.send(()).unwrap();
+                released.recv_timeout(Duration::from_secs(2)).unwrap();
+            }
+        }));
+        engine.set_scan_sink(sink.clone()).unwrap();
+        // Keep the winning runner alive until cancellation, without blocking watcher shutdown.
+        let _bytes = engine
+            .budgets
+            .bytes
+            .acquire(
+                crate::budgets::SCAN_BYTES,
+                &AtomicBool::new(false),
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        let barrier = Barrier::new(3);
+        let (results, result) = mpsc::channel();
+        std::thread::scope(|threads| {
+            for _ in 0..2 {
+                let results = results.clone();
+                let engine = &engine;
+                let root = &root;
+                let barrier = &barrier;
+                threads.spawn(move || {
+                    barrier.wait();
+                    let budget = serde_json::from_value(serde_json::json!({"threads":1})).unwrap();
+                    results.send(engine.scan_start(root, Some(budget))).unwrap();
+                });
+            }
+            barrier.wait();
+            entry.recv_timeout(Duration::from_secs(2)).unwrap();
+            let loser = result.recv_timeout(Duration::from_secs(1));
+            release.send(()).unwrap();
+            assert!(matches!(loser, Ok(Err(EngineError::Busy { .. }))),
+                "the losing start must return Busy before the winner's watch probe is released: {loser:?}");
+            let winner = result
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .unwrap();
+            let watch = engine.scan_watches.lock().unwrap()[root.root_id()].clone();
+            assert!(!watch.dirty.lock().unwrap().stopped);
+            assert_eq!(
+                engine.jobs.root_jobs(root.root_id()),
+                vec![winner.job_id.clone()]
+            );
+            let cancelled = engine.scan_cancel_root(root.root_id()).unwrap();
+            assert_eq!(cancelled.len(), 1);
+            assert_eq!(cancelled[0].job_id, winner.job_id);
+            assert!(engine.scan_watches.lock().unwrap().is_empty());
+            assert!(watch.dirty.lock().unwrap().stopped);
+            assert!(watch.native.checkpoint().is_err());
+        });
+    }
+
+    #[test]
+    fn revocation_during_start_cancels_the_reserved_watch() {
+        use std::sync::mpsc;
+        let tree = fixture();
+        let Some(root) = grant(tree.path()) else {
+            return;
+        };
+        std::fs::write(tree.path().join("file"), b"fixture").unwrap();
+        let engine = Engine::open(crate::EngineConfig::new(
+            tree.path().join("state"),
+            root.dataset_class(),
+        ))
+        .unwrap();
+        let sink = Arc::new(RecordingSink::default());
+        let (entered, entry) = mpsc::sync_channel(1);
+        let (release, released) = mpsc::sync_channel(1);
+        let first = AtomicBool::new(true);
+        *sink.watch_probe.lock().unwrap() = Some(Box::new(move || {
+            if first.swap(false, Ordering::AcqRel) {
+                entered.send(()).unwrap();
+                released.recv_timeout(Duration::from_secs(2)).unwrap();
+            }
+        }));
+        engine.set_scan_sink(sink).unwrap();
+        let _bytes = engine
+            .budgets
+            .bytes
+            .acquire(
+                crate::budgets::SCAN_BYTES,
+                &AtomicBool::new(false),
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        let (results, result) = mpsc::channel();
+        std::thread::scope(|threads| {
+            let start = threads.spawn(|| engine.scan_start(&root, None));
+            entry.recv_timeout(Duration::from_secs(2)).unwrap();
+            threads.spawn(|| {
+                results
+                    .send(engine.scan_cancel_root(root.root_id()))
+                    .unwrap()
+            });
+            // The old cancellation runs in this gap and misses the not-yet-installed watch.
+            let early = result.recv_timeout(Duration::from_millis(100));
+            release.send(()).unwrap();
+            let winner = start.join().unwrap().unwrap();
+            let cancelled = match early {
+                Ok(cancelled) => cancelled,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    result.recv_timeout(Duration::from_secs(2)).unwrap()
+                }
+                Err(error) => panic!("canceller disconnected: {error}"),
+            }
+            .unwrap();
+            assert_eq!(
+                cancelled.len(),
+                1,
+                "revocation must observe the reserved submission"
+            );
+            assert_eq!(cancelled[0].job_id, winner.job_id);
+            assert!(engine.scan_watches.lock().unwrap().is_empty());
+            assert!(matches!(
+                engine.scan_refresh(&root, None),
+                Err(EngineError::PermissionDenied { .. })
+            ));
+        });
+    }
+
+    #[test]
+    fn revoked_root_cannot_recreate_watch_from_stale_grant() {
+        let tree = fixture();
+        let Some(root) = grant(tree.path()) else {
+            return;
+        };
+        let engine = Engine::open(crate::EngineConfig::new(
+            tree.path().join("state"),
+            root.dataset_class(),
+        ))
+        .unwrap();
+        let sink = Arc::new(RecordingSink::default());
+        *sink.watch_probe.lock().unwrap() = Some(Box::new(|| {
+            panic!("a revoked start must not touch the sink or native watch");
+        }));
+        engine.set_scan_sink(sink).unwrap();
+        // Cancellation precedes the writer fence; even the stale resolved grant is refused.
+        assert!(engine.scan_cancel_root(root.root_id()).unwrap().is_empty());
+        for result in [
+            engine.scan_start(&root, None),
+            engine.scan_refresh(&root, None),
+        ] {
+            assert!(matches!(result, Err(EngineError::PermissionDenied { .. })));
+        }
+        assert!(engine.scan_watches.lock().unwrap().is_empty());
+        assert!(engine.jobs.root_jobs(root.root_id()).is_empty());
+        let moved = tree.path().with_extension("moved-fixture");
+        std::fs::rename(tree.path(), &moved).unwrap();
+        std::fs::rename(&moved, tree.path()).unwrap();
+    }
+
     struct MarkedDir {
         native: NativeDir,
         name: Vec<u16>,
@@ -1138,6 +1326,36 @@ mod native_tests {
         }
     }
 
+    fn rename_parents_relisted(
+        scopes: &[RunScope],
+        root_dirty_signals: u64,
+        full_relists: u64,
+    ) -> bool {
+        scopes
+            .iter()
+            .any(|scope| matches!(scope, RunScope::Targeted(ids) if ids.len() >= 2))
+            || (root_dirty_signals > 0 && full_relists > 0)
+    }
+
+    #[test]
+    fn overflow_fallback_requires_overflow_and_a_full_relist() {
+        // FullRoot also labels baseline/final publication; those do not prove a relist.
+        let publication = [RunScope::FullRoot, RunScope::FullRoot, RunScope::FullRoot];
+        assert!(!rename_parents_relisted(&publication, 1, 0));
+        assert!(!rename_parents_relisted(&publication, 0, 1));
+        assert!(rename_parents_relisted(&publication, 1, 1));
+        assert!(rename_parents_relisted(
+            &[RunScope::Targeted(vec![1, 2])],
+            0,
+            0
+        ));
+        assert!(!rename_parents_relisted(
+            &[RunScope::Targeted(vec![1])],
+            0,
+            0
+        ));
+    }
+
     #[test]
     fn armed_before_scan_burst_reconciles_names_moves_and_sums_like_a_fresh_scan() {
         for move_sub in [false, true] {
@@ -1178,16 +1396,6 @@ mod native_tests {
                 report.complete,
                 "must reconcile notifications that arrive during a listing"
             );
-            assert!(
-                move_sub
-                    || sink
-                        .scopes
-                        .lock()
-                        .unwrap()
-                        .iter()
-                        .any(|scope| matches!(scope, RunScope::Targeted(ids) if ids.len() >= 2)),
-                "old and new rename parents must both be relisted"
-            );
             let fresh = Arc::new(RecordingSink::default());
             let expected = run_scan(
                 &NativeSource::default(),
@@ -1206,6 +1414,23 @@ mod native_tests {
                 Some(expected.totals),
                 "ancestor rollup"
             );
+            let state = watch.dirty.lock().unwrap();
+            let scopes = sink.scopes.lock().unwrap();
+            eprintln!(
+                "burst move_sub={move_sub} root_dirty_signals={} full_relists={} scopes={scopes:?}; fresh rows and sums match",
+                state.root_dirty_signals, state.full_relists,
+            );
+            assert!(
+                move_sub
+                    || rename_parents_relisted(
+                        &scopes,
+                        state.root_dirty_signals,
+                        state.full_relists
+                    ),
+                "old and new rename parents must both be relisted, targeted or full after overflow"
+            );
+            drop(scopes);
+            drop(state);
             assert!(sink.memory.sweep_allowed(root.root_id()));
             assert!(!sink.memory.is_repairing(root.root_id()));
             // Completed coverage is historical; between-run changes are unknown.
@@ -1293,6 +1518,7 @@ mod native_tests {
         )
         .unwrap();
         assert!(report.complete);
+        assert!(dirty.lock().unwrap().full_relists >= 2);
         assert_eq!(report.totals.files, 2);
         assert!(sink
             .scopes
