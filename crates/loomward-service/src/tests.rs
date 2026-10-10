@@ -591,12 +591,17 @@ fn provenance_synthetic_accepts_only_identity_verified_lab_roots() {
     .err()
     .unwrap();
     assert!(
-        refused.contains("synthetic_session_requires_lab_root"),
-        "{refused}"
-    );
-    assert!(
         !refused.contains("owner-folder"),
         "refusals never name the path"
+    );
+    if cfg!(not(windows)) {
+        // No native file identity off Windows: every grant root fails closed before provenance.
+        assert!(refused.contains("identity_unavailable"), "{refused}");
+        return;
+    }
+    assert!(
+        refused.contains("synthetic_session_requires_lab_root"),
+        "{refused}"
     );
     // A registered lab root is accepted, and listed as lab_generated.
     let lab = tmp.path().join("lab-s1");
