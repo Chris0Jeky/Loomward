@@ -1,9 +1,14 @@
 //! Synthetic/lab default-stream equality evidence. Never effect authority or reclaimability.
 use crate::{enumerate::OpenedIdentity, identity::ObservedIdentity};
 #[cfg(any(windows, test))]
-use std::{collections::BTreeMap, time::Instant};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::atomic::Ordering,
+    time::Instant,
+};
 use std::{
     path::{Path, PathBuf},
+    sync::{atomic::AtomicBool, Arc},
     time::Duration,
 };
 
@@ -27,6 +32,8 @@ pub enum Reason {
     Elevated,
     Unsupported,
     InvalidPath,
+    DuplicateName,
+    Cancelled,
     ChangedDuringRead,
     ReparsePoint,
     Placeholder,
@@ -46,6 +53,8 @@ impl Reason {
             Self::Elevated => "elevated",
             Self::Unsupported => "unsupported",
             Self::InvalidPath => "invalid_path",
+            Self::DuplicateName => "duplicate_name",
+            Self::Cancelled => "cancelled",
             Self::ChangedDuringRead => "changed_during_read",
             Self::ReparsePoint => "reparse_point",
             Self::Placeholder => "placeholder",
@@ -71,6 +80,8 @@ pub struct Report {
     pub groups: Vec<Vec<usize>>,
     /// Known native objects with multiple names (including observed single names with nlink > 1).
     pub links: Vec<Vec<usize>>,
+    /// Listed names excluded from content comparison because their object is hard-linked.
+    pub links_not_compared: usize,
     pub skipped: Vec<Skip>,
     pub bytes_read: u64,
     /// A budget stop leaves the remaining input unexamined, never absent.
@@ -85,26 +96,30 @@ enum Event {
     Full,
     Read,
     Compare,
+    PendingRead,
 }
 
-/// Low-level reader for trusted synthetic/lab listings only. Product callers use GrantedRoot.
+/// Internal reader for trusted synthetic/lab listings; callers must use Engine::inspect_duplicates.
+#[cfg(any(feature = "content-read", test))]
+#[doc(hidden)]
 pub fn inspect(
     root: &Path,
     expected_root: &OpenedIdentity,
     entries: &[Entry],
     budget: Budget,
+    cancel: Arc<AtomicBool>,
 ) -> Result<Report, Reason> {
     #[cfg(windows)]
     {
-        inspect_with_hook(root, expected_root, entries, budget, |_, _| {})
+        inspect_with_cancel_hook(root, expected_root, entries, budget, cancel, |_, _| {})
     }
     #[cfg(not(windows))]
     {
-        let _ = (root, expected_root, entries, budget);
+        let _ = (root, expected_root, entries, budget, cancel);
         Err(Reason::Unsupported)
     }
 }
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 fn inspect_with_hook(
     root: &Path,
     expected: &OpenedIdentity,
@@ -112,7 +127,20 @@ fn inspect_with_hook(
     budget: Budget,
     hook: impl FnMut(Event, usize),
 ) -> Result<Report, Reason> {
+    inspect_with_cancel_hook(root, expected, entries, budget, Default::default(), hook)
+}
+#[cfg(windows)]
+fn inspect_with_cancel_hook(
+    root: &Path,
+    expected: &OpenedIdentity,
+    entries: &[Entry],
+    budget: Budget,
+    cancel: Arc<AtomicBool>,
+    hook: impl FnMut(Event, usize),
+) -> Result<Report, Reason> {
+    native::non_elevated()?;
     let mut meter = Meter::new(budget);
+    meter.cancel = Some(cancel);
     if let Err(reason) = meter.check() {
         return Ok(Report {
             partial: true,
@@ -130,6 +158,7 @@ struct Meter {
     remaining: u64,
     read: u64,
     deadline: Instant,
+    cancel: Option<Arc<AtomicBool>>,
 }
 #[cfg(any(windows, test))]
 impl Meter {
@@ -137,13 +166,20 @@ impl Meter {
         Self {
             remaining: budget.bytes,
             read: 0,
+            cancel: None,
             deadline: Instant::now()
                 .checked_add(budget.time)
                 .unwrap_or_else(Instant::now),
         }
     }
     fn check(&self) -> Result<(), Reason> {
-        if Instant::now() >= self.deadline {
+        if self
+            .cancel
+            .as_ref()
+            .is_some_and(|c| c.load(Ordering::Acquire))
+        {
+            Err(Reason::Cancelled)
+        } else if Instant::now() >= self.deadline {
             Err(Reason::TimeBudget)
         } else {
             Ok(())
@@ -209,17 +245,21 @@ fn skip(report: &mut Report, index: usize, reason: Reason) {
 fn budget_reason(reason: Reason) -> bool {
     matches!(
         reason,
-        Reason::ByteBudget | Reason::TimeBudget | Reason::EntryBudget
+        Reason::ByteBudget | Reason::TimeBudget | Reason::EntryBudget | Reason::Cancelled
     )
 }
 #[cfg(any(windows, test))]
 fn group(entries: &[Entry], reader: &mut impl ContentReader, meter: &mut Meter) -> Report {
     let mut report = Report::default();
     let mut objects: BTreeMap<_, Vec<usize>> = BTreeMap::new();
+    let mut names = BTreeSet::new();
     for (index, entry) in entries.iter().enumerate() {
         let checked = meter.check().and_then(|_| {
             if index >= 200_000 {
                 return Err(Reason::EntryBudget);
+            }
+            if !names.insert(&entry.relative) {
+                return Err(Reason::DuplicateName);
             }
             attributes(entry.expected.attributes)?;
             if !matches!(
@@ -248,6 +288,8 @@ fn group(entries: &[Entry], reader: &mut impl ContentReader, meter: &mut Meter) 
     let mut sizes: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
     for indices in objects.into_values() {
         if indices.len() > 1 || entries[indices[0]].expected.link_count > 1 {
+            report.links_not_compared += indices.len();
+            report.partial = true;
             report.links.push(indices);
         } else {
             let index = indices[0];

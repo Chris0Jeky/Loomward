@@ -6,8 +6,10 @@ use loomward_protocol::{DatasetClass, RootId};
 fn duplicate_content_is_gated_for_personal_grants() {
     let mut grant = root();
     grant.dataset_class = DatasetClass::Personal;
-    let err = grant
+    let engine = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Personal)).unwrap();
+    let err = engine
         .inspect_duplicates(
+            &grant,
             &[],
             loomward_windows::duplicate_reader::Budget {
                 bytes: 100,
@@ -15,7 +17,7 @@ fn duplicate_content_is_gated_for_personal_grants() {
             },
         )
         .unwrap_err();
-    assert_eq!(err.as_str(), "content_read_gated");
+    assert_eq!(err.to_body().message.as_str(), "content_read_gated");
 }
 
 #[cfg(windows)]
@@ -50,8 +52,16 @@ fn duplicate_synthetic_grant_returns_evidence() {
         relative: name.into(),
         expected: identity::observe(&temp.path().join(name)).unwrap(),
     });
-    let report = grant
+    let state = canonical_tempdir();
+    let conn = duplicate_grant_store(state.path(), &grant);
+    let engine = Engine::open(EngineConfig::new(
+        state.path().to_owned(),
+        DatasetClass::Synthetic,
+    ))
+    .unwrap();
+    let report = engine
         .inspect_duplicates(
+            &grant,
             &entries,
             Budget {
                 bytes: 100,
@@ -61,6 +71,161 @@ fn duplicate_synthetic_grant_returns_evidence() {
         .unwrap();
     assert_eq!(report.groups, vec![vec![0, 1]]);
     assert!(!report.partial);
+    conn.execute("UPDATE root_grant SET state='revoked'", [])
+        .unwrap();
+    let err = engine
+        .inspect_duplicates(&grant.clone(), &entries, duplicate_budget())
+        .unwrap_err();
+    assert_eq!(err.to_body().message.as_str(), "grant_not_active");
+}
+
+fn duplicate_budget() -> loomward_windows::duplicate_reader::Budget {
+    loomward_windows::duplicate_reader::Budget {
+        bytes: 100,
+        time: std::time::Duration::from_secs(10),
+    }
+}
+
+fn duplicate_grant_store(state: &std::path::Path, root: &GrantedRoot) -> rusqlite::Connection {
+    let conn = rusqlite::Connection::open(state.join("state.db")).unwrap();
+    conn.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);
+        INSERT INTO meta VALUES('dataset_class','synthetic');
+        CREATE TABLE root_grant(id INTEGER PRIMARY KEY,display_path TEXT,volume_key TEXT,root_file_id BLOB,state TEXT);").unwrap();
+    let expected = root.expected.unwrap();
+    let id = match expected.id.unwrap() {
+        FileIdObs::Id128(id) => id.to_vec(),
+        FileIdObs::Id64(id) => id.to_le_bytes().to_vec(),
+    };
+    conn.execute(
+        "INSERT INTO root_grant VALUES(1,?1,?2,?3,'active')",
+        rusqlite::params![
+            root.path.to_str().unwrap(),
+            format!("vsn_{}", expected.volume_serial.unwrap()),
+            id
+        ],
+    )
+    .unwrap();
+    conn
+}
+
+#[test]
+fn duplicate_inspection_checks_engine_dataset_class() {
+    let engine = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Personal)).unwrap();
+    let err = engine
+        .inspect_duplicates(&root(), &[], duplicate_budget())
+        .unwrap_err();
+    assert_eq!(err.to_body().message.as_str(), "dataset_class_mismatch");
+}
+
+#[test]
+fn duplicate_inspection_refuses_revoked_root_before_open() {
+    let engine = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Synthetic)).unwrap();
+    let grant = root();
+    engine.scan_cancel_root(grant.root_id()).unwrap();
+    let err = engine
+        .inspect_duplicates(&grant, &[], duplicate_budget())
+        .unwrap_err();
+    assert_eq!(err.to_body().message.as_str(), "root revoked");
+}
+
+#[test]
+fn duplicate_admission_uses_the_root_gate_and_cancellation() {
+    let state = tempfile::tempdir().unwrap();
+    let grant = root();
+    let _conn = duplicate_grant_store(state.path(), &grant);
+    let engine = Engine::open(EngineConfig::new(
+        state.path().to_owned(),
+        DatasetClass::Synthetic,
+    ))
+    .unwrap();
+    let gate = engine.scan_root_gate(grant.root_id());
+    let held = gate.lock().unwrap();
+    assert!(matches!(
+        engine.duplicate_read_admission(&grant),
+        Err(EngineError::Busy { .. })
+    ));
+    drop(held);
+    let cancel = engine.duplicate_read_admission(&grant).unwrap();
+    assert!(!cancel.load(Ordering::Acquire));
+    assert!(Arc::ptr_eq(
+        &cancel,
+        &engine.duplicate_read_admission(&grant.clone()).unwrap()
+    ));
+    engine.scan_cancel_root(grant.root_id()).unwrap();
+    assert!(cancel.load(Ordering::Acquire));
+    assert_eq!(
+        engine
+            .duplicate_read_admission(&grant)
+            .unwrap_err()
+            .to_body()
+            .message
+            .as_str(),
+        "root revoked"
+    );
+}
+
+#[test]
+fn duplicate_admission_rechecks_durable_class_identity_and_ambiguity() {
+    let state = tempfile::tempdir().unwrap();
+    let grant = root();
+    let conn = duplicate_grant_store(state.path(), &grant);
+    let engine = Engine::open(EngineConfig::new(
+        state.path().to_owned(),
+        DatasetClass::Synthetic,
+    ))
+    .unwrap();
+    engine.duplicate_read_admission(&grant).unwrap();
+    conn.execute("UPDATE meta SET value='personal'", [])
+        .unwrap();
+    assert_eq!(
+        engine
+            .duplicate_read_admission(&grant)
+            .unwrap_err()
+            .to_body()
+            .message
+            .as_str(),
+        "dataset_class_mismatch"
+    );
+    conn.execute("UPDATE meta SET value='synthetic'", [])
+        .unwrap();
+    for field in ["path", "volume", "identity"] {
+        let mut stale = grant.clone();
+        match field {
+            "path" => stale.path = "other-synthetic".into(),
+            "volume" => stale.expected.as_mut().unwrap().volume_serial = Some(43),
+            _ => stale.expected.as_mut().unwrap().id = Some(FileIdObs::Id64(2)),
+        }
+        assert_eq!(
+            engine
+                .duplicate_read_admission(&stale)
+                .unwrap_err()
+                .to_body()
+                .message
+                .as_str(),
+            "grant_not_active"
+        );
+    }
+    conn.execute("INSERT INTO root_grant SELECT 2,display_path,volume_key,root_file_id,'active' FROM root_grant WHERE id=1", []).unwrap();
+    assert_eq!(
+        engine
+            .duplicate_read_admission(&grant)
+            .unwrap_err()
+            .to_body()
+            .message
+            .as_str(),
+        "grant_not_active"
+    );
+    conn.execute("UPDATE root_grant SET state='revoked' WHERE id=1", [])
+        .unwrap();
+    assert_eq!(
+        engine
+            .duplicate_read_admission(&grant.clone())
+            .unwrap_err()
+            .to_body()
+            .message
+            .as_str(),
+        "grant_not_active"
+    );
 }
 use source::*;
 use std::{

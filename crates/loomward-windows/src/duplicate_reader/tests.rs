@@ -1,9 +1,93 @@
 use super::*;
 
+#[test]
+fn content_reader_is_feature_gated_and_engine_only() {
+    let source = include_str!("../duplicate_reader.rs").replace("\r\n", "\n");
+    assert!(source.contains(
+        "#[cfg(any(feature = \"content-read\", test))]\n#[doc(hidden)]\npub fn inspect("
+    ));
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    fn check(path: &Path) {
+        for entry in std::fs::read_dir(path).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                if path.file_name().unwrap() != "target" {
+                    check(&path);
+                }
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                assert!(
+                    !text.contains("duplicate_reader") && !text.contains("loomward_windows::*"),
+                    "content reader reference outside engine: {}",
+                    path.display()
+                );
+            } else if path.file_name().unwrap() == "Cargo.toml" {
+                assert!(
+                    !std::fs::read_to_string(&path)
+                        .unwrap()
+                        .contains("content-read"),
+                    "content-read enabled outside engine: {}",
+                    path.display()
+                );
+            }
+        }
+    }
+    for entry in std::fs::read_dir(workspace.join("crates")).unwrap() {
+        let path = entry.unwrap().path();
+        if !["loomward-engine", "loomward-windows"]
+            .iter()
+            .any(|name| path.ends_with(name))
+        {
+            check(&path);
+        }
+    }
+    check(&workspace.join("native/src"));
+    assert!(
+        !std::fs::read_to_string(workspace.join("native/Cargo.toml"))
+            .unwrap()
+            .contains("content-read")
+    );
+    assert!(include_str!("../../Cargo.toml").contains("content-read = []"));
+    assert!(
+        std::fs::read_to_string(workspace.join("crates/loomward-engine/Cargo.toml"))
+            .unwrap()
+            .contains("features = [\"content-read\"]")
+    );
+}
+
+#[test]
+fn core_hardlink_exclusions_make_coverage_partial() {
+    let mut e = synthetic_entry(1, "1", 4);
+    e.expected.link_count = 2;
+    let report = group(&[e], &mut Collision, &mut Meter::new(Budget::test()));
+    assert_eq!(report.links, vec![vec![0]]);
+    assert!(report.partial);
+    assert_eq!(report.links_not_compared, 1);
+    assert_eq!(report.bytes_read, 0);
+}
+
+#[test]
+fn core_repeated_names_are_refused_not_links() {
+    let e = synthetic_entry(1, "1", 4);
+    let report = group(
+        &[e.clone(), e],
+        &mut Collision,
+        &mut Meter::new(Budget::test()),
+    );
+    assert!(report.links.is_empty());
+    assert_eq!(report.skipped[0].entry, 1);
+    assert_eq!(report.skipped[0].reason.as_str(), "duplicate_name");
+    assert!(report.partial);
+}
+
 fn synthetic_entry(id: u8, volume: &str, size: u64) -> Entry {
     use crate::identity::{IdentityQuality, ObjectKey};
     Entry {
-        relative: format!("fixture-{id}").into(),
+        relative: format!("fixture-{volume}-{id}").into(),
         expected: ObservedIdentity {
             object: ObjectKey {
                 volume_serial: volume.into(),
@@ -116,7 +200,14 @@ mod native {
         let temp = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
         if crate::enumerate::running_elevated() {
             assert_eq!(
-                inspect(temp.path(), &dummy_root(), &[], Budget::test()).unwrap_err(),
+                inspect(
+                    temp.path(),
+                    &dummy_root(),
+                    &[],
+                    Budget::test(),
+                    Default::default()
+                )
+                .unwrap_err(),
                 Reason::Elevated
             );
             return None;
@@ -142,7 +233,14 @@ mod native {
         NativeSource::default().open_root(root).unwrap().1
     }
     fn run(root: &Path, entries: &[Entry]) -> Report {
-        inspect(root, &root_id(root), entries, Budget::test()).unwrap()
+        inspect(
+            root,
+            &root_id(root),
+            entries,
+            Budget::test(),
+            Default::default(),
+        )
+        .unwrap()
     }
     #[test]
     fn native_equal_and_same_size_different_bytes() {
@@ -187,7 +285,14 @@ mod native {
                 time: Duration::ZERO,
             }])
         {
-            let r = inspect(temp.path(), &root_id(temp.path()), &entries, budget).unwrap();
+            let r = inspect(
+                temp.path(),
+                &root_id(temp.path()),
+                &entries,
+                budget,
+                Default::default(),
+            )
+            .unwrap();
             assert!(r.partial);
             assert!(r.groups.is_empty());
             assert!(r.bytes_read <= budget.bytes);
@@ -258,6 +363,37 @@ mod native {
             .any(|s| s.entry == 1 && s.reason == Reason::SharingViolation));
     }
     #[test]
+    fn native_existing_writer_is_a_visible_sharing_violation() {
+        let Some(temp) = fixture() else { return };
+        for n in ["a", "b"] {
+            fs::write(temp.path().join(n), b"same").unwrap();
+        }
+        let entries = [entry(temp.path(), "a"), entry(temp.path(), "b")];
+        let _writer = fs::OpenOptions::new()
+            .write(true)
+            .open(temp.path().join("b"))
+            .unwrap();
+        let report = run(temp.path(), &entries);
+        assert!(report.groups.is_empty());
+        assert!(report.partial);
+        assert!(report
+            .skipped
+            .iter()
+            .any(|s| s.entry == 1 && s.reason == Reason::SharingViolation));
+    }
+    #[test]
+    fn native_stream_syntax_is_invalid_path() {
+        let Some(temp) = fixture() else { return };
+        fs::write(temp.path().join("file"), b"same").unwrap();
+        let mut e = entry(temp.path(), "file");
+        for name in ["file:stream", "directory:stream/file"] {
+            e.relative = name.into();
+            let report = run(temp.path(), &[e.clone()]);
+            assert_eq!(report.skipped[0].reason, Reason::InvalidPath);
+            assert_eq!(report.bytes_read, 0);
+        }
+    }
+    #[test]
     fn native_refuses_special_and_placeholder_classes() {
         let Some(temp) = fixture() else { return };
         fs::write(temp.path().join("a"), b"same").unwrap();
@@ -292,7 +428,18 @@ mod native {
             Budget::test(),
             |event, index| {
                 if event == Event::Read && index == 1 {
-                    fs::write(temp.path().join("b"), b"else").unwrap();
+                    use std::os::windows::fs::OpenOptionsExt;
+                    // Content writers are now excluded; metadata can still change under a read.
+                    let file = fs::OpenOptions::new()
+                        .access_mode(windows_sys::Win32::Storage::FileSystem::FILE_WRITE_ATTRIBUTES)
+                        .open(temp.path().join("b"))
+                        .unwrap();
+                    file.set_times(
+                        fs::FileTimes::new().set_modified(
+                            std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1),
+                        ),
+                    )
+                    .unwrap();
                 }
             },
         )

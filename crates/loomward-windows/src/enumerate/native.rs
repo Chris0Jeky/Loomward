@@ -826,25 +826,25 @@ mod cancellation_tests {
         }
         TEST_ELEVATED.set(true);
         let _reset = Reset;
-        assert_eq!(
-            crate::duplicate_reader::inspect(
-                temp.path(),
-                &OpenedIdentity {
-                    id: None,
-                    basis: IdBasis::None,
-                    volume_serial: None,
-                    attributes: 0x10,
-                    reparse_tag: None
-                },
-                &[],
-                crate::duplicate_reader::Budget {
-                    bytes: 100,
-                    time: Duration::from_secs(1)
-                },
-            )
-            .unwrap_err(),
-            crate::duplicate_reader::Reason::Elevated
-        );
+        for time in [Duration::from_secs(1), Duration::ZERO] {
+            assert_eq!(
+                crate::duplicate_reader::inspect(
+                    temp.path(),
+                    &OpenedIdentity {
+                        id: None,
+                        basis: IdBasis::None,
+                        volume_serial: None,
+                        attributes: 0x10,
+                        reparse_tag: None
+                    },
+                    &[],
+                    crate::duplicate_reader::Budget { bytes: 100, time },
+                    Default::default(),
+                )
+                .unwrap_err(),
+                crate::duplicate_reader::Reason::Elevated
+            );
+        }
         assert!(matches!(crate::identity::observe(temp.path()),
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied));
         assert!(matches!(
