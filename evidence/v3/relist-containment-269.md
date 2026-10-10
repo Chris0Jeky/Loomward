@@ -1,6 +1,6 @@
 # Relist containment - #269
 
-Windows native tests, 10 October 2026. Uncommitted source on `fix/relist-containment-269`,
+Windows native tests, 10 October 2026. Source on `fix/relist-containment-269`, measured before commit,
 based on `85621b7b2feb64c91439f8d2ccdb0dd389cff9a9`. Commands ran at the worktree repository root.
 Synthetic disposable directories only; no personal scan, commit, push or remote publication.
 
@@ -95,4 +95,3 @@ short-name generation is disabled, so this is not universal physical 8.3 qualifi
 Declined the parent-ID walk: filesystem-specific availability adds complexity to a boundary
 already expressible using native normalised handle paths. No requested check was declined.
 
-Recommended commit: `fix(scan): re-prove directory containment before relisting`.
