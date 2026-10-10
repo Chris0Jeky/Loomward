@@ -1,6 +1,7 @@
 //! Request and response envelopes (docs/41 section 5.1).
 
 use crate::command::Command;
+use crate::dto::{Anchor, TreeSliceRequest};
 use crate::error::{ErrorBody, ErrorCode};
 use crate::types::{
     optional_present, required_nullable, CommandName, ConstFalse, ConstTrue, Count, DatasetClass,
@@ -56,8 +57,9 @@ impl RequestEnvelope {
         }
     }
 
-    /// Complete-envelope check: a known command whose payload is exactly its request type, and
-    /// `expected_state_rev` only where a revision precondition exists.
+    /// Complete-envelope check (semantics.md sections 1 and 5): a known command whose payload is
+    /// exactly its request type, `expected_state_rev` only where a state precondition exists, and
+    /// `expected_generation` only on commands anchored in exactly one root.
     pub fn validate(&self) -> Result<Command, ErrorBody> {
         let command = Command::from_name(&self.command)
             .ok_or_else(|| ErrorBody::new(ErrorCode::UnknownCommand, "unknown command", false))?;
@@ -71,21 +73,47 @@ impl RequestEnvelope {
                 "expected_state_rev is not accepted by this command",
             ));
         }
+        if self.expected_generation.is_some() && !self.single_root_anchor(command)? {
+            return Err(ErrorBody::invalid_request(
+                "expected_generation is only accepted by commands anchored in exactly one root",
+            ));
+        }
         Ok(command)
     }
 
-    /// Decodes the payload into the command's DTO (strictly, see [`decode_exact`]). Unknown or
-    /// malformed fields become an `invalid_request` error body, ready to put in a response.
+    /// Whether `command` (whose payload already validated) is anchored in exactly one root:
+    /// `tree.*`, `node.inspect` and `stats.breakdown`, but not a `tree.slice` of the whole atlas.
+    fn single_root_anchor(&self, command: Command) -> Result<bool, ErrorBody> {
+        Ok(match command {
+            Command::TreeChildren
+            | Command::TreePath
+            | Command::NodeInspect
+            | Command::StatsBreakdown => true,
+            Command::TreeSlice => {
+                let slice: TreeSliceRequest = self.decode_payload()?;
+                !matches!(slice.anchor, Anchor::Atlas {})
+            }
+            _ => false,
+        })
+    }
+
+    /// Typed decode of the payload after [`RequestEnvelope::validate`] (strictly, see
+    /// [`decode_exact`]). `from_slice` has already validated, so `T` is the command's request type.
+    /// Unknown or malformed fields become an `invalid_request` error body.
     pub fn decode_payload<T: DeserializeOwned + Serialize>(&self) -> Result<T, ErrorBody> {
         decode_exact(Value::Object(self.payload.clone()))
     }
 
-    /// Parses the raw bytes of a call. Anything that is not exactly a request envelope is an
-    /// `invalid_request` error body.
+    /// The adapter entry point: parses the raw bytes of a call and runs the complete check of
+    /// [`RequestEnvelope::validate`], so an envelope that comes back is for a known command, carries
+    /// exactly that command's payload and uses only preconditions the command accepts. A bad body
+    /// is `invalid_request`, an unknown command `unknown_command`.
     pub fn from_slice(bytes: &[u8]) -> Result<Self, ErrorBody> {
         let value: Value = serde_json::from_slice(bytes)
             .map_err(|e| ErrorBody::invalid_request(&e.to_string()))?;
-        decode_exact(value)
+        let request: Self = decode_exact(value)?;
+        request.validate()?;
+        Ok(request)
     }
 }
 
@@ -108,9 +136,31 @@ pub fn decode_exact<T: DeserializeOwned + Serialize>(value: Value) -> Result<T, 
     }
 }
 
+fn as_i128(n: &serde_json::Number) -> Option<i128> {
+    n.as_i64()
+        .map(i128::from)
+        .or_else(|| n.as_u64().map(i128::from))
+}
+
+/// Equal by value without f64 collisions: two integers compare as integers, an integer and a
+/// float agree only when the float is exactly that integer, two floats compare as floats.
+fn same_number(x: &serde_json::Number, y: &serde_json::Number) -> bool {
+    let exactly = |float: &serde_json::Number, int: i128| {
+        float
+            .as_f64()
+            .is_some_and(|f| f.fract() == 0.0 && f.abs() < 1.0e18 && f as i128 == int)
+    };
+    match (as_i128(x), as_i128(y)) {
+        (Some(a), Some(b)) => a == b,
+        (Some(a), None) => exactly(y, a),
+        (None, Some(b)) => exactly(x, b),
+        (None, None) => x.as_f64() == y.as_f64(),
+    }
+}
+
 fn same_json(a: &Value, b: &Value) -> bool {
     match (a, b) {
-        (Value::Number(x), Value::Number(y)) => x == y || x.as_f64() == y.as_f64(),
+        (Value::Number(x), Value::Number(y)) => same_number(x, y),
         (Value::Array(x), Value::Array(y)) => {
             x.len() == y.len() && x.iter().zip(y).all(|(p, q)| same_json(p, q))
         }

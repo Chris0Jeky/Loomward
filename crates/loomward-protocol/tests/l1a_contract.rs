@@ -425,7 +425,10 @@ fn strict_decode_refuses_positional_arrays_and_accepts_integral_floats() {
             .code,
         ErrorCode::InvalidRequest
     );
-    let ok = RequestEnvelope::from_slice(br#"{"protocol":"loomward/3","request_id":"r_1","command":"tree.slice","payload":{"min_share":1}}"#).unwrap();
+    let ok = RequestEnvelope::from_slice(
+        br#"{"protocol":"loomward/3","request_id":"r_1","command":"tree.slice","payload":{"anchor":{"kind":"atlas"},"depth":2,"max_nodes":100,"min_share":0,"basis":"logical","include_files":false}}"#,
+    )
+    .unwrap();
     // `1` where the DTO holds an f64 re-serialises as 1.0: equal by value, so accepted.
     let frac: Fraction = serde_json::from_value(json!(1)).unwrap();
     assert_eq!(decode_exact::<Fraction>(json!(1)).unwrap(), frac);
@@ -434,4 +437,116 @@ fn strict_decode_refuses_positional_arrays_and_accepts_integral_floats() {
         RequestEnvelope::from_slice(b"{not json").unwrap_err().code,
         ErrorCode::InvalidRequest
     );
+}
+
+fn request_for(command: Command, payload: Value) -> RequestEnvelope {
+    RequestEnvelope::new(
+        RequestId::new("r_1").unwrap(),
+        command.name(),
+        payload.as_object().unwrap().clone(),
+    )
+}
+
+#[test]
+fn expected_generation_is_only_for_single_root_anchored_commands() {
+    let root_slice = json!({"anchor":{"kind":"root","root_id":"rt_a"},"depth":2,"max_nodes":100,"min_share":0.0,"basis":"logical","include_files":false});
+    let atlas_slice = json!({"anchor":{"kind":"atlas"},"depth":2,"max_nodes":100,"min_share":0.0,"basis":"logical","include_files":false});
+    let ok_cases = [
+        (Command::TreeSlice, root_slice.clone()),
+        (
+            Command::TreeChildren,
+            json!({"node_id":"nd_1","sort":"size_desc","basis":"logical","limit":10,"cursor":null}),
+        ),
+        (Command::TreePath, json!({"node_id":"nd_1"})),
+        (Command::NodeInspect, json!({"node_id":"nd_1"})),
+        (
+            Command::StatsBreakdown,
+            json!({"node_id":"nd_1","by":"extension","basis":"logical","limit":5}),
+        ),
+    ];
+    for (command, payload) in ok_cases {
+        let mut req = request_for(command, payload);
+        req.expected_generation = Some(Generation(12));
+        assert_eq!(req.validate().unwrap(), command, "{}", command.as_str());
+    }
+    // An atlas slice spans every root, so there is no single generation to expect.
+    let mut atlas = request_for(Command::TreeSlice, atlas_slice);
+    assert!(atlas.validate().is_ok());
+    atlas.expected_generation = Some(Generation(12));
+    assert_eq!(
+        atlas.validate().unwrap_err().code,
+        ErrorCode::InvalidRequest
+    );
+    // Every other command refuses it.
+    for command in Command::ALL {
+        if matches!(
+            command,
+            Command::TreeSlice
+                | Command::TreeChildren
+                | Command::TreePath
+                | Command::NodeInspect
+                | Command::StatsBreakdown
+        ) {
+            continue;
+        }
+        let mut req = request_for(*command, json!({}));
+        req.expected_generation = Some(Generation(12));
+        // Payload validity is checked first; use the command's own example payload.
+        let path = format!(
+            "{}/../../contracts/v3/examples/commands/{}.request.json",
+            env!("CARGO_MANIFEST_DIR"),
+            command.as_str()
+        );
+        req.payload = serde_json::from_str::<Value>(&std::fs::read_to_string(path).unwrap())
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .clone();
+        assert!(req.validate().is_err(), "{}", command.as_str());
+        req.expected_generation = None;
+        assert!(
+            req.validate().is_ok(),
+            "{} without the precondition",
+            command.as_str()
+        );
+    }
+}
+
+#[test]
+fn from_slice_is_the_complete_entry_point() {
+    // A scan.start payload sent as tree.slice: structurally an object, wrong for the command.
+    let wrong = br#"{"protocol":"loomward/3","request_id":"r_1","command":"tree.slice","payload":{"root_id":"rt_a","mode":"full"}}"#;
+    assert_eq!(
+        RequestEnvelope::from_slice(wrong).unwrap_err().code,
+        ErrorCode::InvalidRequest
+    );
+    let unknown =
+        br#"{"protocol":"loomward/3","request_id":"r_1","command":"files.erase","payload":{}}"#;
+    assert_eq!(
+        RequestEnvelope::from_slice(unknown).unwrap_err().code,
+        ErrorCode::UnknownCommand
+    );
+    let precondition = br#"{"protocol":"loomward/3","request_id":"r_1","command":"scan.start","payload":{"root_id":"rt_a","mode":"full"},"expected_state_rev":"3"}"#;
+    assert_eq!(
+        RequestEnvelope::from_slice(precondition).unwrap_err().code,
+        ErrorCode::InvalidRequest
+    );
+    let good = br#"{"protocol":"loomward/3","request_id":"r_1","command":"scan.start","payload":{"root_id":"rt_a","mode":"full"}}"#;
+    assert_eq!(
+        RequestEnvelope::from_slice(good).unwrap().command.as_str(),
+        "scan.start"
+    );
+}
+
+#[test]
+fn integers_above_two_to_the_53_are_not_conflated() {
+    #[derive(Debug, serde::Deserialize, serde::Serialize)]
+    struct Wide {
+        x: f64,
+    }
+    // 2^53 round-trips exactly through f64; 2^53 + 1 does not and must be refused.
+    assert!(decode_exact::<Wide>(json!({"x": 9007199254740992u64})).is_ok());
+    assert!(decode_exact::<Wide>(json!({"x": 9007199254740993u64})).is_err());
+    assert!(decode_exact::<Wide>(json!({"x": 1})).is_ok());
+    assert!(decode_exact::<Wide>(json!({"x": 0.5})).is_ok());
 }
