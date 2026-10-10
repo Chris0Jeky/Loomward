@@ -1,4 +1,4 @@
-//! Synthetic regression oracles for #180.
+//! Synthetic regression oracles for #180 and #269.
 use super::*;
 use std::sync::{atomic::AtomicUsize, Mutex};
 
@@ -107,6 +107,194 @@ fn obsolete() -> crate::EngineError {
             .unwrap(),
         ),
     }
+}
+
+#[cfg(windows)]
+fn native_relist_containment(mode: u8) {
+    use loomward_windows::enumerate::{NativeDir, NativeSource};
+    if skip_elevated() {
+        return;
+    }
+    // All effects are confined to this disposable fixture, including the outside sibling.
+    let temp = canonical_tempdir();
+    for retained in [false, true] {
+        for strategy in [Strategy::Extended, Strategy::Both, Strategy::Find] {
+            let base = temp.path().join(format!("case-{retained}-{strategy:?}"));
+            let path = base.join("root");
+            let child = path.join("child");
+            std::fs::create_dir_all(&child).unwrap();
+            std::fs::write(child.join("first"), b"synthetic").unwrap();
+            struct Source {
+                native: NativeSource,
+                retained: bool,
+                child_lists: AtomicUsize,
+                relisted_entries: AtomicUsize,
+            }
+            impl DirSource for Source {
+                type Dir = NativeDir;
+                fn strategy(&self) -> Strategy {
+                    self.native.strategy()
+                }
+                fn open_root(
+                    &self,
+                    p: &std::path::Path,
+                ) -> Result<(NativeDir, OpenedIdentity), SourceError> {
+                    self.native.open_root(p)
+                }
+                fn open_child(
+                    &self,
+                    p: &NativeDir,
+                    e: &RawEntry<'_>,
+                ) -> Result<(NativeDir, OpenedIdentity), SourceError> {
+                    self.native.open_child(p, e)
+                }
+                fn can_reopen(&self, d: &NativeDir, id: OpenedIdentity) -> bool {
+                    !self.retained && self.native.can_reopen(d, id)
+                }
+                fn reopen(
+                    &self,
+                    p: &NativeDir,
+                    root: OpenedIdentity,
+                    id: OpenedIdentity,
+                ) -> Result<(NativeDir, OpenedIdentity), SourceError> {
+                    self.native.reopen(p, root, id)
+                }
+                fn list(
+                    &self,
+                    d: &NativeDir,
+                    sink: &mut dyn FnMut(RawEntry<'_>) -> Flow,
+                ) -> ListOutcome {
+                    self.native.list(d, &mut |e| {
+                        // Only the child contains files; root contains one directory.
+                        if e.attributes & 0x10 == 0 && self.child_lists.load(Ordering::Relaxed) > 0
+                        {
+                            self.relisted_entries.fetch_add(1, Ordering::Relaxed);
+                        }
+                        sink(e)
+                    })
+                }
+            }
+            let source = Arc::new(Source {
+                native: NativeSource::with_strategy(strategy),
+                retained,
+                child_lists: AtomicUsize::new(0),
+                relisted_entries: AtomicUsize::new(0),
+            });
+            let expected = source.open_root(&path).unwrap().1;
+            let grant = GrantedRoot::new(
+                RootId::new("rt_containment_fixture").unwrap(),
+                path.clone(),
+                DatasetClass::Synthetic,
+                expected,
+            );
+            let outcomes = Arc::new(Mutex::new(Vec::new()));
+            let observed = outcomes.clone();
+            let probe = source.clone();
+            let moved = AtomicBool::new(false);
+            let sink = Arc::new(ProbeWriter {
+                sink: MemorySink::default(),
+                hook: Box::new(move |root, notice, sink| {
+                    match notice {
+                        Notice::Message(ScanMessage::ListingDone {
+                            ticket, outcome, ..
+                        }) if ticket.dir == 2 => {
+                            observed.lock().unwrap().push(outcome);
+                            if probe.child_lists.fetch_add(1, Ordering::Relaxed) == 0 {
+                                sink.dirty_again(root, ticket.dir);
+                                return Err(obsolete());
+                            }
+                        }
+                        // Refresh runs after workers join: the move is exactly between listings.
+                        Notice::Refresh if !moved.swap(true, Ordering::Relaxed) => {
+                            let destination = match mode {
+                                0 => base.join("root-sibling"),
+                                1 => path.join("moved"),
+                                2 if retained => child.clone(),
+                                2 => base.join("renamed-root").join("child"),
+                                _ => unreachable!(),
+                            };
+                            if mode == 2 && retained {
+                                // Windows refuses renaming a directory with an open descendant.
+                                assert_eq!(
+                                    std::fs::rename(&path, base.join("renamed-root"))
+                                        .unwrap_err()
+                                        .kind(),
+                                    std::io::ErrorKind::PermissionDenied
+                                );
+                            } else if mode == 2 {
+                                std::fs::rename(&path, base.join("renamed-root")).map_err(|e| {
+                                    EngineError::Internal {
+                                        message: format!("fixture root rename: {e}"),
+                                        detail: None,
+                                    }
+                                })?;
+                                std::fs::create_dir_all(&child).unwrap();
+                                std::fs::write(child.join("ungranted"), b"synthetic").unwrap();
+                            } else {
+                                std::fs::rename(&child, &destination).unwrap();
+                            }
+                            std::fs::write(destination.join("late"), b"synthetic").unwrap();
+                        }
+                        _ => {}
+                    }
+                    Ok(())
+                }),
+            });
+            let bytes = Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES));
+            let report = run_scan(
+                source.as_ref(),
+                &grant,
+                1,
+                sink.clone(),
+                bytes.clone(),
+                Arc::new(AtomicBool::new(false)),
+                ScanOptions {
+                    workers: 1,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let allowed = mode != 0;
+            assert_eq!(
+                report.complete, allowed,
+                "mode={mode}, retained={retained}, {report:?}"
+            );
+            assert_eq!(sink.sink.sweep_allowed(grant.root_id()), allowed);
+            assert_eq!(
+                source.relisted_entries.load(Ordering::Relaxed),
+                if allowed { 2 } else { 0 }
+            );
+            assert_eq!(
+                *outcomes.lock().unwrap(),
+                vec![
+                    ListOutcome::Complete,
+                    if allowed {
+                        ListOutcome::Complete
+                    } else {
+                        ListOutcome::Incomplete(IncompleteReason::OutsideScope)
+                    }
+                ]
+            );
+            assert_eq!(report.totals.files, if allowed { 2 } else { 0 });
+            assert_eq!(bytes.used(), 0);
+        }
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn native_relist_containment_refuses_moved_out_directory() {
+    native_relist_containment(0);
+}
+#[cfg(windows)]
+#[test]
+fn native_relist_containment_allows_move_within_root() {
+    native_relist_containment(1);
+}
+#[cfg(windows)]
+#[test]
+fn native_relist_containment_follows_renamed_root_handle() {
+    native_relist_containment(2);
 }
 
 #[test]
@@ -289,7 +477,7 @@ fn released_slot_losing_identity_stays_partial_without_panicking() {
         }
         fn reopen(
             &self,
-            _: &std::path::Path,
+            _: &u64,
             _: OpenedIdentity,
             id: OpenedIdentity,
         ) -> Result<(u64, OpenedIdentity), SourceError> {
@@ -647,7 +835,7 @@ fn reopen_failure_or_changed_identity_keeps_the_run_partial() {
         }
         fn reopen(
             &self,
-            _: &std::path::Path,
+            _: &u64,
             _: OpenedIdentity,
             expected: OpenedIdentity,
         ) -> Result<(u64, OpenedIdentity), SourceError> {
@@ -733,7 +921,7 @@ impl DirSource for ReopenTree {
     }
     fn reopen(
         &self,
-        _: &std::path::Path,
+        _: &LargeDir,
         _: OpenedIdentity,
         expected: OpenedIdentity,
     ) -> Result<(LargeDir, OpenedIdentity), SourceError> {
@@ -811,7 +999,7 @@ fn reopened_handles_remain_bounded_by_the_arena_reservation() {
 
 #[cfg(windows)]
 #[test]
-fn native_listed_handles_are_closed_before_finalization() {
+fn native_child_handles_close_but_root_stays_pinned_until_finalization() {
     use loomward_windows::enumerate::{NativeDir, NativeSource};
     if skip_elevated() {
         return;
@@ -867,7 +1055,7 @@ fn native_listed_handles_are_closed_before_finalization() {
         sink: MemorySink::default(),
         hook: Box::new(move |_, message, _| {
             if matches!(message, Notice::Message(ScanMessage::DirFinal { .. })) {
-                assert_eq!(live.load(Ordering::Relaxed), 0);
+                assert_eq!(live.load(Ordering::Relaxed), 1);
             }
             Ok(())
         }),

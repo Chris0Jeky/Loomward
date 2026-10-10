@@ -114,7 +114,8 @@ impl NativeSource {
 /// Validated directory. The file owns the native handle until every call has returned.
 #[derive(Debug)]
 pub struct NativeDir {
-    file: File,
+    file: Arc<File>,
+    root: Arc<File>,
     refs: bool,
     reopen_safe: bool,
     strategy: Mutex<Strategy>,
@@ -426,9 +427,10 @@ fn information<T>(handle: HANDLE, class: FILE_INFO_BY_HANDLE_CLASS) -> Option<T>
         .then_some(info)
 }
 fn opened(
-    file: File,
+    file: Arc<File>,
     listed: Option<FileIdObs>,
     preferred: Strategy,
+    root: Option<Arc<File>>,
 ) -> Result<(NativeDir, OpenedIdentity), SourceError> {
     let h = file.as_raw_handle();
     let attr = directory_attributes(&file)?;
@@ -474,9 +476,11 @@ fn opened(
         None => extended.or(legacy),
     };
     let (id, basis) = validate_identity(listed, id, refs)?;
+    let root = root.unwrap_or_else(|| file.clone());
     Ok((
         NativeDir {
             file,
+            root,
             refs,
             reopen_safe: reopen_safe_fs(&fs_name),
             strategy: Mutex::new(preferred),
@@ -508,8 +512,14 @@ pub(crate) fn open_watch_root(
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         true,
     )?;
-    let (dir, identity) = opened(pins.pop().unwrap(), None, Strategy::Extended)?;
-    Ok((pins, dir.file, identity))
+    let (dir, identity) = opened(
+        Arc::new(pins.pop().unwrap()),
+        None,
+        Strategy::Extended,
+        None,
+    )?;
+    drop(dir.root);
+    Ok((pins, Arc::try_unwrap(dir.file).unwrap(), identity))
 }
 /// True when this process holds an elevated token, which every native open refuses.
 pub fn running_elevated() -> bool {
@@ -571,7 +581,7 @@ impl DirSource for NativeSource {
             FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         )?;
-        opened(pins.pop().unwrap(), None, self.strategy())
+        opened(Arc::new(pins.pop().unwrap()), None, self.strategy(), None)
     }
     fn open_child(
         &self,
@@ -592,7 +602,12 @@ impl DirSource for NativeSource {
             FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         )?;
-        opened(file, entry.file_id, self.strategy())
+        opened(
+            Arc::new(file),
+            entry.file_id,
+            self.strategy(),
+            Some(parent.root.clone()),
+        )
     }
     fn can_reopen(&self, dir: &NativeDir, identity: OpenedIdentity) -> bool {
         dir.reopen_safe
@@ -602,14 +617,20 @@ impl DirSource for NativeSource {
     }
     fn reopen(
         &self,
-        root: &Path,
+        root: &NativeDir,
         root_identity: OpenedIdentity,
         identity: OpenedIdentity,
     ) -> Result<(NativeDir, OpenedIdentity), SourceError> {
-        let (anchor, observed) = self.open_root(root)?;
-        if !self.can_reopen(&anchor, identity) {
+        non_elevated()?;
+        if !self.can_reopen(root, identity) {
             return Err(SourceError::IdentityUnverified);
         }
+        let (_, observed) = opened(
+            root.file.clone(),
+            None,
+            self.strategy(),
+            Some(root.root.clone()),
+        )?;
         if observed.id != root_identity.id || observed.volume_serial != root_identity.volume_serial
         {
             return Err(SourceError::IdentityChanged);
@@ -632,7 +653,7 @@ impl DirSource for NativeSource {
         }
         let handle = unsafe {
             OpenFileById(
-                anchor.file.as_raw_handle(),
+                root.file.as_raw_handle(),
                 &descriptor,
                 FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -646,9 +667,10 @@ impl DirSource for NativeSource {
             return Err(last_error());
         }
         let result = opened(
-            unsafe { File::from_raw_handle(handle) },
+            Arc::new(unsafe { File::from_raw_handle(handle) }),
             identity.id,
             self.strategy(),
+            Some(root.root.clone()),
         )?;
         if result.1.volume_serial != identity.volume_serial {
             return Err(SourceError::IdentityChanged);
@@ -660,7 +682,166 @@ impl DirSource for NativeSource {
             Ok(h) => h,
             Err(_) => return ListOutcome::Incomplete(IncompleteReason::Io(-1)),
         };
+        // shortcut: this is a pre-list observation; atomic rename exclusion needs namespace pins.
+        if !contained(dir) {
+            return ListOutcome::Incomplete(IncompleteReason::OutsideScope);
+        }
         self.list_validated(dir, sink, directory_attributes(&dir.file).map(|_| ()))
+    }
+}
+
+fn normalized_path(file: &File) -> Option<Vec<u16>> {
+    let mut path = vec![0u16; 32768];
+    let n = unsafe {
+        GetFinalPathNameByHandleW(
+            file.as_raw_handle(),
+            path.as_mut_ptr(),
+            path.len() as u32,
+            FILE_NAME_NORMALIZED | VOLUME_NAME_DOS,
+        )
+    } as usize;
+    if n == 0 || n >= path.len() {
+        return None;
+    }
+    path.truncate(n);
+    Some(path)
+}
+
+fn path_beneath(root: &[u16], path: &[u16]) -> bool {
+    use windows_sys::Win32::Globalization::{CompareStringOrdinal, CSTR_EQUAL};
+    let mut path = path.split(|c| *c == 92).filter(|c| !c.is_empty());
+    root.split(|c| *c == 92)
+        .filter(|c| !c.is_empty())
+        .all(|component| {
+            path.next().is_some_and(|next| unsafe {
+                CompareStringOrdinal(
+                    component.as_ptr(),
+                    component.len() as i32,
+                    next.as_ptr(),
+                    next.len() as i32,
+                    1,
+                ) == CSTR_EQUAL
+            })
+        })
+}
+
+fn contained(dir: &NativeDir) -> bool {
+    normalized_path(&dir.root)
+        .zip(normalized_path(&dir.file))
+        .is_some_and(|(root, path)| path_beneath(&root, &path))
+}
+
+#[cfg(test)]
+mod containment_tests {
+    use super::*;
+
+    #[test]
+    fn normalized_containment_compares_components_and_windows_case() {
+        for (root, path, expected) in [
+            (
+                r"\\?\X:\Synthetic\Root",
+                r"\\?\x:\synthetic\ROOT\child",
+                true,
+            ),
+            (
+                r"\\?\X:\Synthetic\Root",
+                r"\\?\X:\Synthetic\Root-sibling",
+                false,
+            ),
+            (r"\\?\X:\Synthetic\Root", r"\\?\X:\Synthetic", false),
+            (r"\\?\X:\Synthetic\Root", r"\\?\X:\Synthetic\Root", true),
+            (r"\\?\X:\", r"\\?\X:\Synthetic", true),
+            (r"\\?\X:\Synthetic\Å", r"\\?\X:\Synthetic\å\child", true),
+            (r"\\?\X:\Synthetic", r"\\?\Y:\Synthetic\child", false),
+        ] {
+            assert_eq!(
+                path_beneath(
+                    &root.encode_utf16().collect::<Vec<_>>(),
+                    &path.encode_utf16().collect::<Vec<_>>()
+                ),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn native_containment_normalizes_verbatim_and_short_root_aliases() {
+        let temp = super::super::tests::canonical_tempdir();
+        let source = NativeSource::default();
+        if running_elevated() {
+            assert!(matches!(
+                source.open_root(temp.path()),
+                Err(SourceError::Refused)
+            ));
+            return;
+        }
+        let path = temp.path().join("synthetic-long-root-name");
+        std::fs::create_dir_all(path.join("child")).unwrap();
+        let canonical = std::fs::canonicalize(&path).unwrap();
+        let (root, _) = source.open_root(&canonical).unwrap();
+        let expected = normalized_path(&root.file).unwrap();
+        let wide = canonical
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        let mut short = vec![0u16; 32768];
+        let n = unsafe { GetShortPathNameW(wide.as_ptr(), short.as_mut_ptr(), short.len() as u32) }
+            as usize;
+        assert!(n > 0 && n < short.len());
+        short.truncate(n);
+        for alias in [
+            path,
+            canonical,
+            std::path::PathBuf::from(std::ffi::OsString::from_wide(&short)),
+        ] {
+            let (dir, _) = source.open_root(&alias).unwrap();
+            assert_eq!(normalized_path(&dir.root).unwrap(), expected);
+            let mut children = 0;
+            assert_eq!(
+                source.list(&dir, &mut |e| {
+                    let (child, _) = source.open_child(&dir, &e).unwrap();
+                    assert_eq!(
+                        source.list(&child, &mut |_| panic!("empty child")),
+                        ListOutcome::Complete
+                    );
+                    children += 1;
+                    Flow::Continue
+                }),
+                ListOutcome::Complete
+            );
+            assert_eq!(children, 1);
+        }
+    }
+
+    #[test]
+    fn native_containment_failed_path_query_refuses_listing() {
+        let temp = super::super::tests::canonical_tempdir();
+        let source = NativeSource::default();
+        if running_elevated() {
+            assert!(matches!(
+                source.open_root(temp.path()),
+                Err(SourceError::Refused)
+            ));
+            return;
+        }
+        std::fs::write(temp.path().join("sentinel"), b"synthetic").unwrap();
+        let (mut dir, _) = source.open_root(temp.path()).unwrap();
+        let mut read = null_mut();
+        let mut write = null_mut();
+        assert_ne!(
+            unsafe {
+                windows_sys::Win32::System::Pipes::CreatePipe(&mut read, &mut write, null(), 0)
+            },
+            0
+        );
+        let _writer = unsafe { File::from_raw_handle(write) };
+        dir.root = Arc::new(unsafe { File::from_raw_handle(read) });
+        assert!(normalized_path(&dir.root).is_none());
+        assert_eq!(
+            source.list(&dir, &mut |_| panic!("failed containment emitted metadata")),
+            ListOutcome::Incomplete(IncompleteReason::OutsideScope)
+        );
     }
 }
 fn incomplete(error: SourceError) -> ListOutcome {
@@ -909,8 +1090,10 @@ mod cancellation_tests {
         for name in [
             "NTFS", "ntfs", "ReFS", "refs", "FAT", "FAT32", "exFAT", "", "unknown",
         ] {
+            let file = Arc::new(tempfile::tempfile().unwrap());
             let dir = NativeDir {
-                file: tempfile::tempfile().unwrap(),
+                file: file.clone(),
+                root: file,
                 refs: name.eq_ignore_ascii_case("ReFS"),
                 reopen_safe: reopen_safe_fs(name),
                 strategy: Mutex::new(Strategy::Extended),

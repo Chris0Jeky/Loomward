@@ -129,7 +129,6 @@ struct Envelope {
 }
 struct Shared<'a, S: DirSource> {
     source: &'a S,
-    root_path: &'a std::path::Path,
     root_identity: OpenedIdentity,
     round: AtomicU32,
     run: u64,
@@ -259,6 +258,8 @@ impl<S: DirSource> Shared<'_, S> {
             .as_ref()
             .zip(arena[index].identity)
             .is_some_and(|(dir, key)| self.source.can_reopen(dir, reopen_identity(key)))
+            // The root is the grant anchor, not a pathname to reopen after a rename.
+            && index != 0
             && arena[index].dir.take().is_some()
         {
             self.handles.fetch_sub(1, Ordering::Relaxed);
@@ -907,7 +908,6 @@ pub fn run_scan<S: DirSource>(
         depth: 0,
     });
     let shared = Shared {
-        root_path: root.path(),
         root_identity: identity,
         round: AtomicU32::new(1),
         source,
@@ -1025,6 +1025,7 @@ pub fn run_scan<S: DirSource>(
             // workers take arena -> catalog_dirs -> discovered -> tasks and never reverse it.
             shared.round.fetch_add(1, Ordering::Relaxed);
             let mut arena = shared.arena.lock().unwrap();
+            let root_dir = arena[0].dir.as_ref().unwrap().clone();
             let mut tasks = shared.tasks.lock().unwrap();
             tasks.done = false;
             let slot_bytes = arena.len() * shared.node_bytes;
@@ -1065,7 +1066,7 @@ pub fn run_scan<S: DirSource>(
                             continue;
                         };
                         let expected = reopen_identity(identity);
-                        match source.reopen(shared.root_path, shared.root_identity, expected) {
+                        match source.reopen(&root_dir, shared.root_identity, expected) {
                             Ok((dir, identity))
                                 if identity.id == expected.id
                                     && identity.volume_serial == expected.volume_serial =>

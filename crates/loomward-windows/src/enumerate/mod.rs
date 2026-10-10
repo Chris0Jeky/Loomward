@@ -78,7 +78,7 @@ pub enum IncompleteReason {
     Io(i32),
     /// A record failed buffer validation, or a zero-byte success could not grow the buffer.
     Malformed,
-    /// Listing was observed outside a targeted run's reconciliation scope; upserts only.
+    /// Directory containment could not be proved, or listing is outside targeted reconciliation.
     OutsideScope,
     /// A scan budget was hit.
     Limit,
@@ -159,10 +159,10 @@ pub trait DirSource: Send + Sync {
     fn can_reopen(&self, _dir: &Self::Dir, _identity: OpenedIdentity) -> bool {
         false
     }
-    /// Reopen a previously observed identity on the still-verified root's volume.
+    /// Reopen a previously observed identity using the pinned root, even after a root rename.
     fn reopen(
         &self,
-        _root: &Path,
+        _root: &Self::Dir,
         _root_identity: OpenedIdentity,
         _identity: OpenedIdentity,
     ) -> Result<(Self::Dir, OpenedIdentity), SourceError> {
