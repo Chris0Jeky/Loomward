@@ -3,21 +3,21 @@
     "p9_first_slice": {
       "nodes": 2500,
       "cells_drawn": 346,
-      "layout_ms": 16.6,
-      "first_paint_ms": 4.4,
-      "layout_plus_paint_ms": 21.0,
-      "slice_to_paint_wall_ms": 23
+      "layout_ms": 20.5,
+      "first_paint_ms": 5.2,
+      "layout_plus_paint_ms": 25.7,
+      "slice_to_paint_wall_ms": 28.4
     },
     "p9_hover": {
       "frames": 89,
       "median_ms": 16.699999999999818,
-      "p95_ms": 16.800000000000182,
+      "p95_ms": 16.700000000000728,
       "fps_median": 59.88023952095874
     },
     "p9_zoom": {
-      "frames": 54,
+      "frames": 53,
       "median_ms": 16.699999999999818,
-      "p95_ms": 16.800000000000182,
+      "p95_ms": 16.699999999999818,
       "fps_median": 59.88023952095874
     }
   },
