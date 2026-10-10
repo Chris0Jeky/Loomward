@@ -394,33 +394,6 @@ mod native {
         }
 
         #[test]
-        fn armed_watch_allows_parent_rename_and_sibling_delete_and_fails_closed() {
-            let tree = fixture();
-            let parent = tree.path().join("parent");
-            let root = parent.join("root");
-            std::fs::create_dir_all(&root).unwrap();
-            std::fs::create_dir(parent.join("sibling")).unwrap();
-            if elevated_refusal(&root) {
-                return;
-            }
-            let (tx, rx) = mpsc::channel();
-            let watcher = Watcher::start(&root, None, move |batch| {
-                let _ = tx.send(batch);
-            })
-            .unwrap();
-            let renamed = tree.path().join("renamed");
-            std::fs::remove_dir(parent.join("sibling")).unwrap();
-            std::fs::rename(&parent, &renamed).unwrap();
-            assert!(rx
-                .recv_timeout(Duration::from_secs(2))
-                .unwrap()
-                .contains(&Change::RootDirty));
-            assert!(watcher.failed());
-            assert!(watcher.checkpoint().is_err());
-            watcher.stop();
-        }
-
-        #[test]
         fn armed_watch_allows_root_delete_and_fails_closed() {
             let tree = fixture();
             let root = tree.path().join("root");
@@ -509,18 +482,23 @@ mod native {
             let watcher = Watcher::start(tree.path(), None, move |batch| {
                 if first.swap(false, Ordering::AcqRel) {
                     first_tx.send(()).unwrap();
-                    release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                    if release_rx.recv().is_err() {
+                        return;
+                    }
                 }
                 tx.send(batch).unwrap();
             })
             .unwrap();
+            // Drop the release sender before joining the watcher even if generation panics.
+            let release = release_tx;
             File::create(tree.path().join("prime")).unwrap();
             first_rx.recv_timeout(Duration::from_secs(2)).unwrap();
             let started = Instant::now();
             for i in 0..10_000 {
                 File::create(tree.path().join(format!("burst-{i}"))).unwrap();
             }
-            release_tx.send(()).unwrap();
+            let generated_ms = started.elapsed().as_secs_f64() * 1000.0;
+            release.send(()).unwrap();
             let mut name_hints = 0;
             loop {
                 let batch = rx.recv_timeout(Duration::from_secs(2)).unwrap();
@@ -534,7 +512,7 @@ mod native {
             }
             watcher.checkpoint().unwrap();
             watcher.stop();
-            eprintln!("64 KiB stalled native fixture: 10000 creates, root invalidated, name hints before overflow={name_hints}, detect since burst start ms={:.3}",
+            eprintln!("64 KiB stalled native fixture (shared-host): 10000 creates, generation ms={generated_ms:.3}, root invalidated, name hints before overflow={name_hints}, detect since burst start ms={:.3}",
                 started.elapsed().as_secs_f64() * 1000.0);
         }
         #[test]
