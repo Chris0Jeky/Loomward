@@ -135,12 +135,12 @@ byte-for-byte. These tests live in `crates/loomward-windows/src/duplicate_reader
 
 | Test and line | Proof |
 | --- | --- |
-| `core_failed_representative_reverifies_different_survivors` (:235) | Four inputs model R witnessing A then B; X/Y are directly compared and no group is emitted |
-| `core_failed_representative_reverifies_equal_survivors` (:250) | Equal X/Y remain grouped only after direct comparison; all comparison calls and 48 total bytes are asserted |
-| `core_failed_representative_reverification_budget_is_partial` (:259) | Budget stops the X/Y re-comparison; no group, partial coverage, byte-budget stop, 32 consumed bytes |
-| `core_failed_representative_reverification_handles_another_failure` (:270) | Six inputs build a second suspect partition; its failed witness is skipped and its survivors are compared directly |
-| `core_final_failed_representative_reverifies_survivors` (:284) | A final representative validation failure cannot leave unequal survivors grouped |
-| `native_failed_representative_reverification_uses_shared_budget` (:558) | Real disposable files exercise a four-input partition and changed representative: 64 bytes with sufficient budget; 48 bytes and no group when re-verification exhausts the budget |
+| `core_failed_representative_reverifies_different_survivors` (:293) | Four inputs model R witnessing A then B; X/Y are directly compared and no group is emitted |
+| `core_failed_representative_reverifies_equal_survivors` (:308) | Equal X/Y remain grouped only after direct comparison; all comparison calls and 48 total bytes are asserted |
+| `core_failed_representative_reverification_budget_is_partial` (:317) | Budget stops the X/Y re-comparison; no group, partial coverage, byte-budget stop, 32 consumed bytes |
+| `core_failed_representative_reverification_handles_another_failure` (:328) | Six inputs build a second suspect partition; its failed witness is skipped and its survivors are compared directly |
+| `core_final_failed_representative_reverifies_survivors` (:342) | A final representative validation failure cannot leave unequal survivors grouped |
+| `native_failed_representative_reverification_uses_shared_budget` (:616) | Real disposable files exercise a four-input partition and changed representative: 64 bytes with sufficient budget; 48 bytes and no group when re-verification exhausts the budget |
 
 Three distinct mutations were killed by assertion failures:
 
