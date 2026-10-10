@@ -81,7 +81,9 @@ table.tbl { width: 100%; border-collapse: collapse; }
 .tbl th { color: var(--muted); font-weight: 600; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.06em; }
 .tbl td.r, .tbl th.r { text-align: right; }
 .tbl td.r, .tbl td.nowrap { white-space: nowrap; }
-.tbl td:first-child { min-width: 11rem; }
+.tbl td:first-child, .tbl th[scope='row'] { min-width: 11rem; }
+/* a row header names its row: it reads as the cell it replaced, not as a column heading */
+.tbl th[scope='row'] { color: var(--text); font-weight: 400; font-size: inherit; text-transform: none; letter-spacing: 0; }
 .tbl bdi { overflow-wrap: anywhere; }
 
 .tag {

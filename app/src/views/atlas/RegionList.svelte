@@ -4,6 +4,7 @@
   // not in this slice). Names go through VisibleName, so hidden characters show as badges.
   import { formatBytes, parseBytes } from '../../lib/format/bytes';
   import { formatCount } from '../../lib/format/time';
+  import { escapedName } from '../../lib/format/names';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import type { SliceNode, TreeSlice } from '../../lib/contracts.gen';
 
@@ -60,7 +61,7 @@
           <VisibleName name={r.n.name} />
         {/if}
         <span class="num size">{r.size}</span>
-        <button type="button" class="inspect" onclick={() => oninspect(r.n.node_id)}>Inspect</button>
+        <button type="button" class="inspect" aria-label={`Inspect ${escapedName(r.n.name)}`} onclick={() => oninspect(r.n.node_id)}>Inspect</button>
         {#if r.notes.length}<span class="notes">{r.notes.join(' · ')}</span>{/if}
       </li>
     {/each}

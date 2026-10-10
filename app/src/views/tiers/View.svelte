@@ -175,7 +175,7 @@
           <p class="num">{formatBytes(v.free_bytes)} free of {formatBytes(v.capacity_bytes)} · {percent(v.free_fraction)} <span class={`tag pr-${v.pressure}`}>{PRESSURE[v.pressure]}</span></p>
           <p class="muted small">{v.tier.note}</p>
           <button class="btn" type="button" aria-pressed={v.volume_id === source} disabled={v.tier.tier === null || !v.online} onclick={() => choose(v.volume_id)}>
-            {v.volume_id === source ? 'Source volume' : 'Use as source'}
+            {v.volume_id === source ? 'Source volume' : 'Use as source'}<span class="sr-only">: {escapedName(v.display_name)}</span>
           </button>
         </article>
       {/each}
@@ -202,7 +202,7 @@
           {#each cands.groups as g (g.group_id)}
             {@const a = assume[g.group_id] ?? { heat: '', free: false }}
             <tr>
-              <td><VisibleName name={g.name} />{#if g.coverage !== 'complete'} <span class="tag warn">{g.coverage}</span>{/if}</td>
+              <th scope="row"><VisibleName name={g.name} />{#if g.coverage !== 'complete'} <span class="tag warn">{g.coverage}</span>{/if}</th>
               <td class="r num">{formatBytes(g.source_bytes)}<div class="small"><span class="tag" class:warn={g.estimate_basis !== 'allocated_entries'}>{g.estimate_basis.replaceAll('_', ' ')}</span></div></td>
               <td class="r num">
                 {#if g.estimated_relief_bytes === null}<span class="unknown">unknown</span>{:else}{formatBytes(g.estimated_relief_bytes)}{/if}
@@ -220,7 +220,7 @@
                 <select aria-label={`Assumed heat for ${escapedName(g.name)}`} value={a.heat} onchange={(e) => (assume[g.group_id] = { ...a, heat: e.currentTarget.value as Assumption['heat'] })}>
                   <option value="">Heat: as observed</option><option value="0.1">Assume cold (0.1)</option><option value="0.5">Assume warm (0.5)</option><option value="0.9">Assume hot (0.9)</option>
                 </select>
-                <label class="chk"><input type="checkbox" checked={a.free} onchange={(e) => (assume[g.group_id] = { ...a, free: e.currentTarget.checked })} /> Assume not pinned, active or protected</label>
+                <label class="chk"><input type="checkbox" checked={a.free} onchange={(e) => (assume[g.group_id] = { ...a, free: e.currentTarget.checked })} /> Assume not pinned, active or protected<span class="sr-only"> for {escapedName(g.name)}</span></label>
               </td>
             </tr>
           {:else}
@@ -265,7 +265,7 @@
               <td class="r num">{formatBytes(none.toString())}</td>
               <td>{none === 0n ? 'Already met' : 'Not met'}</td>
             {/if}
-            <td><button class="btn" type="button" aria-pressed={shown === 'none'} onclick={() => (shown = 'none')}>Show</button></td>
+            <td><button class="btn" type="button" aria-pressed={shown === 'none'} onclick={() => (shown = 'none')}>Show<span class="sr-only"> Do nothing</span></button></td>
           </tr>
           {#each HEAT as h (h.id)}
             {@const o = outcomes[h.id]}
@@ -277,7 +277,7 @@
               {:else}
                 <td colspan="4" class="bad">{'plan' in o ? 'Not shown: the reply was not a no-change simulation.' : o.error}</td>
               {/if}
-              <td><button class="btn" type="button" aria-pressed={shown === h.id} onclick={() => (shown = h.id)}>Show</button></td>
+              <td><button class="btn" type="button" aria-pressed={shown === h.id} onclick={() => (shown = h.id)}>Show<span class="sr-only"> {h.label}</span></button></td>
             </tr>
           {/each}
         </tbody>

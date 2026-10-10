@@ -226,14 +226,14 @@
       <tbody>
         {#each rows as r (r.node_id)}
           <tr>
-            <td>
+            <th scope="row">
               {#if r.kind === 'dir' && !searching && r.coverage !== 'denied'}
                 <button class="crumb" type="button" onclick={() => go([...trail, { id: r.node_id, name: r.name }])}><VisibleName name={r.name} /></button>
               {:else}
                 <VisibleName name={r.name} />
               {/if}
               {#if r.location_hint}<div class="muted small">in <VisibleName name={r.location_hint.text} />{#if r.location_hint.truncated} <span class="tag warn">truncated</span>{/if}</div>{/if}
-            </td>
+            </th>
             <td>{r.kind}</td>
             <td class="r num">{formatBytes(r.logical_bytes)}</td>
             <td class="r num">{#if r.allocated_bytes === null}<span class="unknown">unknown</span>{:else}{formatBytes(r.allocated_bytes)}{/if}</td>

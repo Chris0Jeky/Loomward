@@ -189,14 +189,14 @@
             {#each list.rows as r (r.process_ref)}
               {@const denied = r.access === 'denied'}
               <tr class:sel={explain?.row.process_ref === r.process_ref}>
-                <td>
+                <th scope="row">
                   <button class="link" type="button" onclick={() => void explainRow(r)} aria-label={`Explain ${escapedName(r.name)}`}><VisibleName name={r.name} /></button>
                   <span class="muted small num">pid {r.pid}</span>
                   {#if r.loomward_owned}<span class="tag">Loomward</span>{/if}
                   {#if hasHiddenCharacters(r.name)}<span class="tag warn">hidden characters</span>{/if}
                   {#if r.access !== 'full'}<span class="tag warn">{r.access === 'denied' ? 'access denied' : 'limited access'}</span>{/if}
                   {#if denied}<div class="muted small">Windows would not describe this process: every figure is unknown.</div>{/if}
-                </td>
+                </th>
                 <td class="r num">{@render B(r.private_commit_bytes, denied ? 'access denied' : 'not reported')}</td>
                 <td class="r num">{@render B(r.private_working_set_bytes, denied ? 'access denied' : 'not reported for this process')}</td>
                 <td class="r num">{@render B(r.working_set_bytes, denied ? 'access denied' : 'not reported')}</td>

@@ -5,6 +5,7 @@
 <script lang="ts">
   import { tick, untrack } from 'svelte';
   import { formatBytes } from '../../lib/format/bytes';
+  import { escapedName } from '../../lib/format/names';
   import { formatCount, formatTime } from '../../lib/format/time';
   import { session } from '../../lib/stores/session.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
@@ -164,7 +165,7 @@
         <tbody>
           {#each roots.roots as r (r.root_id)}
             <tr>
-              <td><VisibleName name={r.display_path.text} />{#if r.display_path.truncated} <span class="tag warn">truncated</span>{/if}<div class="muted small">{r.origin.replaceAll('_', ' ')} · {r.dataset_class}</div></td>
+              <th scope="row"><VisibleName name={r.display_path.text} />{#if r.display_path.truncated} <span class="tag warn">truncated</span>{/if}<div class="muted small">{r.origin.replaceAll('_', ' ')} · {r.dataset_class}</div></th>
               <td class="num">{r.volume_id ?? 'unknown'}</td>
               <td>{r.granted_via.replaceAll('_', ' ')}</td>
               <td><span class="tag" class:warn={!rootActive(r)}>{r.grant_state.replaceAll('_', ' ')}</span></td>
@@ -172,7 +173,7 @@
               <td class="r num">{formatCount(r.totals?.files)}</td>
               <td class="r num">{formatBytes(r.totals?.logical_bytes)}</td>
               <td class="r num">{formatBytes(r.totals?.allocated_bytes)}</td>
-              <td><button class="btn" type="button" disabled={!rootActive(r)} onclick={() => void ask({ kind: 'root', id: r.root_id, label: r.display_path.text })}>Revoke…</button></td>
+              <td><button class="btn" type="button" disabled={!rootActive(r)} aria-label={`Revoke ${escapedName(r.display_path.text)}`} onclick={() => void ask({ kind: 'root', id: r.root_id, label: r.display_path.text })}>Revoke…</button></td>
             </tr>
           {:else}
             <tr><td colspan="9" class="muted">No roots granted.</td></tr>
@@ -197,7 +198,7 @@
           {/if}
           <span class="tag" class:warn={!grantActive(g)}>{g.revoked_at ? `revoked ${formatTime(g.revoked_at)}` : 'active'}</span>
           {#if g.kind === 'teacher_disclosure' && grantActive(g)}
-            <button class="btn small" type="button" onclick={() => void ask({ kind: 'grant', id: g.grant_id, label: `Teacher disclosure to ${g.recipient}` })}>Revoke…</button>
+            <button class="btn small" type="button" aria-label={`Revoke teacher disclosure to ${escapedName(g.recipient)}`} onclick={() => void ask({ kind: 'grant', id: g.grant_id, label: `Teacher disclosure to ${g.recipient}` })}>Revoke…</button>
           {/if}
         </li>
       {:else}
