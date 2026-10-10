@@ -113,10 +113,9 @@
         pageGen = null;
         error = '';
         busy = false;
-        await loadStarts();
-        // Set after the reload: the fresh `show()` inside `loadStarts()` clears the
-        // status region on entry, so setting it before would never be seen.
-        notice = FALLBACK_NOTICE;
+        // Set after the reload (the fresh `show()` inside clears the status region on entry),
+        // and only if no newer search, click or refresh superseded the reload meanwhile.
+        if (await loadStarts()) notice = FALLBACK_NOTICE;
         return;
       }
       error = session.handle(e);
@@ -154,7 +153,8 @@
     void show();
   }
 
-  async function loadStarts(): Promise<void> {
+  /** True when this request completed and its view is still the newest one. */
+  async function loadStarts(): Promise<boolean> {
     const c = session.client!;
     // Same guard as show(): a newer view or a newer starting-point request supersedes this one.
     abort?.abort();
@@ -162,18 +162,26 @@
     const ctl = (abort = new AbortController());
     try {
       const { result } = await c.call('tree.slice', { anchor: { kind: 'atlas' }, depth: 1, max_nodes: 16, min_share: 0, basis: 'logical', include_files: false }, { signal: ctl.signal });
-      if (mine !== gen) return;
+      if (mine !== gen) return false;
       starts = result.nodes.filter((n) => n.parent === 0).map((n) => ({ id: n.node_id, name: n.name }));
       trail = starts[0] ? [starts[0]] : [];
       error = '';
-      if (trail.length) await show();
-      else { rows = []; total = null; next = null; }
+      if (!trail.length) {
+        rows = [];
+        total = null;
+        next = null;
+        return true;
+      }
+      await show();
+      // show() advances `gen` exactly once for a fresh view; any newer action advances it further.
+      return gen === mine + 1;
     } catch (e) {
-      if (mine !== gen) return;
+      if (mine !== gen) return false;
       rows = [];
       total = null;
       next = null;
       error = session.handle(e);
+      return false;
     }
   }
 
