@@ -279,11 +279,14 @@ fn active(r: &MemoryRoot, run: u64) -> EngineResult<()> {
     }
     Ok(())
 }
-fn invalidate(r: &mut MemoryRoot, mut dir: u64) {
+fn invalidate(r: &mut MemoryRoot, mut dir: u64, revision: Option<u64>) {
     for _ in 0..129 {
         r.invalidated.insert(dir);
         let Some(d) = r.dirs.get_mut(&dir) else { break };
         d.valid = 0;
+        if let Some(revision) = revision {
+            d.dirty = revision;
+        }
         let Some(parent) = d.parent else { break };
         dir = parent;
     }
@@ -379,7 +382,10 @@ impl ScanSink for MemorySink {
     }
     fn consume(&self, root: &RootId, message: ScanMessage) -> EngineResult<()> {
         let mut s = self.state.lock().unwrap();
-        let r = s.roots.get_mut(root).ok_or_else(stale)?;
+        let MemoryState {
+            next_rev, roots, ..
+        } = &mut *s;
+        let r = roots.get_mut(root).ok_or_else(stale)?;
         match message {
             ScanMessage::DirListing {
                 run,
@@ -419,7 +425,8 @@ impl ScanSink for MemorySink {
                     .remove(&(run, ticket.dir, ticket.input_revision))
                     .unwrap_or(Sums::ZERO);
                 r.dirs.get_mut(&ticket.dir).unwrap().own = staged;
-                invalidate(r, ticket.dir);
+                // Publishing this listing does not change the inputs reserved by its ticket.
+                invalidate(r, ticket.dir, None);
             }
             ScanMessage::DirFinal {
                 run,
@@ -441,8 +448,11 @@ impl ScanSink for MemorySink {
                 new_parent,
             } => {
                 active(r, run)?;
-                invalidate(r, old_parent);
-                invalidate(r, new_parent);
+                *next_rev += 1;
+                invalidate(r, old_parent, Some(*next_rev));
+                invalidate(r, new_parent, Some(*next_rev));
+                r.repairing = true;
+                r.sweep = false;
             }
         }
         Ok(())

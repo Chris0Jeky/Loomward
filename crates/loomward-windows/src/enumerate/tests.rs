@@ -201,6 +201,30 @@ fn junction_never_opened_or_followed() {
 }
 #[cfg(windows)]
 #[test]
+fn root_with_intermediate_junction_is_refused() {
+    let temp = tempfile::tempdir().unwrap();
+    let target = temp.path().join("outside");
+    std::fs::create_dir_all(target.join("root")).unwrap();
+    let link = temp.path().join("parent");
+    crate::fixtures::junction(&link, &target).unwrap();
+    let source = NativeSource::default();
+    // The leaf is ordinary; only the intermediate junction redirects resolution.
+    let result = source.open_root(&link.join("root"));
+    std::fs::remove_dir(&link).unwrap();
+    assert!(matches!(result, Err(SourceError::Refused)));
+    let (_, ordinary) = source.open_root(&target.join("root")).unwrap();
+    assert!(ordinary.id.is_some());
+    let (_, verbatim) = source
+        .open_root(&std::fs::canonicalize(target.join("root")).unwrap())
+        .unwrap();
+    assert_eq!(ordinary.id, verbatim.id);
+    let (_, mixed_case) = source
+        .open_root(&temp.path().join("OUTSIDE").join("root"))
+        .unwrap();
+    assert_eq!(ordinary.id, mixed_case.id);
+}
+#[cfg(windows)]
+#[test]
 fn post_open_attributes_and_id_replacement_are_rejected() {
     let temp = tempfile::tempdir().unwrap();
     let child = temp.path().join("child");

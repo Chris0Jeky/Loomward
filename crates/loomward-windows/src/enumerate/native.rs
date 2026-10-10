@@ -6,6 +6,7 @@ use std::{
         ffi::{OsStrExt, OsStringExt},
         io::{AsRawHandle, FromRawHandle, OwnedHandle},
     },
+    path::{Component, Prefix},
     ptr::{null, null_mut},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -17,7 +18,7 @@ use windows_sys::{
     Wdk::{
         Foundation::OBJECT_ATTRIBUTES,
         Storage::FileSystem::{
-            NtCreateFile, FILE_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
+            NtCreateFile, FILE_OPEN, FILE_OPEN_NO_RECALL, FILE_OPEN_REPARSE_POINT,
             FILE_SYNCHRONOUS_IO_NONALERT,
         },
     },
@@ -141,6 +142,130 @@ fn checked_child(name: &[u16]) -> Result<(), SourceError> {
         Ok(())
     }
 }
+fn directory_create_options() -> u32 {
+    // FILE_DIRECTORY_FILE is incompatible with NO_RECALL; validate the opened directory instead.
+    FILE_OPEN_REPARSE_POINT | FILE_OPEN_NO_RECALL | FILE_SYNCHRONOUS_IO_NONALERT
+}
+fn open_relative(
+    parent: &File,
+    name: &[u16],
+    access: u32,
+    share: u32,
+) -> Result<File, SourceError> {
+    checked_child(name)?;
+    let mut name = name.to_vec();
+    let unicode = UNICODE_STRING {
+        Length: (name.len() * 2) as u16,
+        MaximumLength: (name.len() * 2) as u16,
+        Buffer: name.as_mut_ptr(),
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: parent.as_raw_handle(),
+        ObjectName: &unicode as *const _ as *mut _,
+        Attributes: 0,
+        SecurityDescriptor: null_mut(),
+        SecurityQualityOfService: null_mut(),
+    };
+    let mut status: IO_STATUS_BLOCK = unsafe { zeroed() };
+    let mut handle = null_mut();
+    let code = unsafe {
+        NtCreateFile(
+            &mut handle,
+            access,
+            &attributes,
+            &mut status,
+            null(),
+            0,
+            share,
+            FILE_OPEN,
+            directory_create_options(),
+            null(),
+            0,
+        )
+    };
+    if code < 0 {
+        return Err(if code == STATUS_ACCESS_DENIED {
+            SourceError::AccessDenied
+        } else {
+            SourceError::Io(code)
+        });
+    }
+    Ok(unsafe { File::from_raw_handle(handle) })
+}
+fn directory_attributes(file: &File) -> Result<FILE_ATTRIBUTE_TAG_INFO, SourceError> {
+    let attr: FILE_ATTRIBUTE_TAG_INFO =
+        information(file.as_raw_handle(), FileAttributeTagInfo).ok_or_else(last_error)?;
+    if refused_attributes(attr.FileAttributes)
+        || attr.FileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
+    {
+        return Err(SourceError::Refused);
+    }
+    Ok(attr)
+}
+fn root_handles(path: &Path, access: u32, share: u32) -> Result<Vec<File>, SourceError> {
+    if !path.is_absolute() || path.as_os_str().encode_wide().any(|c| c == 0) {
+        return Err(SourceError::Refused);
+    }
+    let mut components = path.components();
+    // Only local drive roots have an anchor with no filesystem ancestors to traverse.
+    let drive = match components.next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => drive,
+            _ => return Err(SourceError::Refused),
+        },
+        _ => return Err(SourceError::Refused),
+    };
+    if components.next() != Some(Component::RootDir) {
+        return Err(SourceError::Refused);
+    }
+    let mut components = components.peekable();
+    let metadata_access = FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+    let anchor: Vec<u16> = format!(r"\\?\{}:\", char::from(drive))
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let handle = unsafe {
+        CreateFileW(
+            anchor.as_ptr(),
+            if components.peek().is_none() {
+                access
+            } else {
+                metadata_access
+            },
+            share,
+            null(),
+            OPEN_EXISTING,
+            crate::win::metadata_open_flags(),
+            null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(last_error());
+    }
+    let file = unsafe { File::from_raw_handle(handle) };
+    directory_attributes(&file)?;
+    let mut pins = vec![file];
+    while let Some(component) = components.next() {
+        let Component::Normal(name) = component else {
+            return Err(SourceError::Refused);
+        };
+        let name: Vec<u16> = name.encode_wide().collect();
+        let file = open_relative(
+            pins.last().unwrap(),
+            &name,
+            if components.peek().is_none() {
+                access
+            } else {
+                metadata_access
+            },
+            share,
+        )?;
+        directory_attributes(&file)?;
+        pins.push(file);
+    }
+    Ok(pins)
+}
 fn information<T>(handle: HANDLE, class: FILE_INFO_BY_HANDLE_CLASS) -> Option<T> {
     let mut info: T = unsafe { zeroed() };
     (unsafe {
@@ -159,13 +284,7 @@ fn opened(
     preferred: Strategy,
 ) -> Result<(NativeDir, OpenedIdentity), SourceError> {
     let h = file.as_raw_handle();
-    let attr: FILE_ATTRIBUTE_TAG_INFO =
-        information(h, FileAttributeTagInfo).ok_or_else(last_error)?;
-    if refused_attributes(attr.FileAttributes)
-        || attr.FileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
-    {
-        return Err(SourceError::Refused);
-    }
+    let attr = directory_attributes(&file)?;
     let mut fs_name = [0u16; 64];
     if unsafe {
         GetVolumeInformationByHandleW(
@@ -269,32 +388,12 @@ impl DirSource for NativeSource {
         if self.cancel.is_cancelled() {
             return Err(SourceError::Io(ERROR_OPERATION_ABORTED as i32));
         }
-        let mut name: Vec<u16> = path.as_os_str().encode_wide().collect();
-        if !path.is_absolute() || name.contains(&0) {
-            return Err(SourceError::Refused);
-        }
-        name.push(0);
-        let handle = unsafe {
-            CreateFileW(
-                name.as_ptr(),
-                FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                null(),
-                OPEN_EXISTING,
-                FILE_FLAG_BACKUP_SEMANTICS
-                    | FILE_FLAG_OPEN_REPARSE_POINT
-                    | FILE_FLAG_OPEN_NO_RECALL,
-                null_mut(),
-            )
-        };
-        if handle == INVALID_HANDLE_VALUE {
-            return Err(last_error());
-        }
-        opened(
-            unsafe { File::from_raw_handle(handle) },
-            None,
-            self.strategy(),
-        )
+        let mut pins = root_handles(
+            path,
+            FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        )?;
+        opened(pins.pop().unwrap(), None, self.strategy())
     }
     fn open_child(
         &self,
@@ -309,49 +408,13 @@ impl DirSource for NativeSource {
         if self.cancel.is_cancelled() {
             return Err(SourceError::Io(ERROR_OPERATION_ABORTED as i32));
         }
-        let mut name = entry.name.to_vec();
-        let unicode = UNICODE_STRING {
-            Length: (name.len() * 2) as u16,
-            MaximumLength: (name.len() * 2) as u16,
-            Buffer: name.as_mut_ptr(),
-        };
-        let attributes = OBJECT_ATTRIBUTES {
-            Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
-            RootDirectory: parent.file.as_raw_handle(),
-            ObjectName: &unicode as *const _ as *mut _,
-            Attributes: 0,
-            SecurityDescriptor: null_mut(),
-            SecurityQualityOfService: null_mut(),
-        };
-        let mut status: IO_STATUS_BLOCK = unsafe { zeroed() };
-        let mut h = null_mut();
-        let code = unsafe {
-            NtCreateFile(
-                &mut h,
-                FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-                &attributes,
-                &mut status,
-                null(),
-                0,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                FILE_OPEN,
-                FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
-                null(),
-                0,
-            )
-        };
-        if code < 0 {
-            return Err(if code == STATUS_ACCESS_DENIED {
-                SourceError::AccessDenied
-            } else {
-                SourceError::Io(code)
-            });
-        }
-        opened(
-            unsafe { File::from_raw_handle(h) },
-            entry.file_id,
-            self.strategy(),
-        )
+        let file = open_relative(
+            &parent.file,
+            entry.name,
+            FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        )?;
+        opened(file, entry.file_id, self.strategy())
     }
     fn list(&self, dir: &NativeDir, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
         let _thread = match self.cancel.register() {
@@ -470,39 +533,18 @@ impl NativeSource {
         }
         path.truncate(n);
         let directory = std::path::PathBuf::from(std::ffi::OsString::from_wide(&path));
-        let mut pins = Vec::new();
         // Find is path-based: pin and validate every ancestor while its search handle lives.
-        for ancestor in directory.ancestors().collect::<Vec<_>>().into_iter().rev() {
-            let mut name: Vec<_> = ancestor.as_os_str().encode_wide().chain(Some(0)).collect();
-            let handle = unsafe {
-                CreateFileW(
-                    name.as_mut_ptr(),
-                    FILE_READ_ATTRIBUTES,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE,
-                    null(),
-                    OPEN_EXISTING,
-                    FILE_FLAG_BACKUP_SEMANTICS
-                        | FILE_FLAG_OPEN_REPARSE_POINT
-                        | FILE_FLAG_OPEN_NO_RECALL,
-                    null_mut(),
-                )
-            };
-            if handle == INVALID_HANDLE_VALUE {
-                return ListOutcome::Incomplete(IncompleteReason::Io(
-                    unsafe { GetLastError() } as i32
-                ));
+        let pins = match root_handles(
+            &directory,
+            FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+        ) {
+            Ok(pins) => pins,
+            Err(SourceError::Io(code)) => {
+                return ListOutcome::Incomplete(IncompleteReason::Io(code))
             }
-            let pin = unsafe { File::from_raw_handle(handle) };
-            let attr: Option<FILE_ATTRIBUTE_TAG_INFO> =
-                information(pin.as_raw_handle(), FileAttributeTagInfo);
-            if !attr.is_some_and(|a| {
-                !refused_attributes(a.FileAttributes)
-                    && a.FileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0
-            }) {
-                return ListOutcome::Incomplete(IncompleteReason::AccessDenied);
-            }
-            pins.push(pin);
-        }
+            Err(_) => return ListOutcome::Incomplete(IncompleteReason::AccessDenied),
+        };
         let original: Option<FILE_ID_INFO> = information(dir.file.as_raw_handle(), FileIdInfo);
         let pinned: Option<FILE_ID_INFO> =
             information(pins.last().unwrap().as_raw_handle(), FileIdInfo);
@@ -592,6 +634,17 @@ impl NativeSource {
 #[cfg(test)]
 mod cancellation_tests {
     use super::*;
+    #[test]
+    fn directory_opens_always_disable_recall() {
+        assert_ne!(directory_create_options() & 0x00400000, 0);
+    }
+    #[test]
+    fn metadata_opens_always_disable_recall() {
+        assert_ne!(
+            crate::win::metadata_open_flags() & FILE_FLAG_OPEN_NO_RECALL,
+            0
+        );
+    }
     #[test]
     fn cancels_blocked_native_io_without_closing_its_handle() {
         use windows_sys::Win32::System::Pipes::{ConnectNamedPipe, CreateNamedPipeW};

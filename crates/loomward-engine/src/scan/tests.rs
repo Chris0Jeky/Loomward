@@ -73,7 +73,7 @@ fn targeted_run_never_sweeps_unrelated_tombstones_n2() {
 }
 #[test]
 fn reparent_invalidates_both_chains_and_restart_repairs() {
-    let sink = MemorySink::default();
+    let sink = Arc::new(MemorySink::default());
     let root = root();
     sink.begin_run(root.root_id(), 7, &RunScope::FullRoot)
         .unwrap();
@@ -88,6 +88,21 @@ fn reparent_invalidates_both_chains_and_restart_repairs() {
         .unwrap();
     sink.prepare_listing(root.root_id(), 7, Some(a.dir), &[120], identity(4))
         .unwrap();
+    let old_totals = Sums {
+        files: 99,
+        ..Sums::ZERO
+    };
+    sink.consume(
+        root.root_id(),
+        ScanMessage::DirFinal {
+            run: 7,
+            ticket: r,
+            sums: old_totals,
+            complete: true,
+        },
+    )
+    .unwrap();
+    assert_eq!(sink.totals(root.root_id()), Some(old_totals));
     let x = sink
         .prepare_listing(root.root_id(), 7, Some(b.dir), &[120], identity(4))
         .unwrap();
@@ -101,12 +116,50 @@ fn reparent_invalidates_both_chains_and_restart_repairs() {
         },
     )
     .unwrap();
-    for id in [r.dir, a.dir, b.dir] {
-        assert!(sink.invalidated(root.root_id()).contains(&id));
+    for ticket in [a, b, r] {
+        assert!(sink.invalidated(root.root_id()).contains(&ticket.dir));
+        assert!(matches!(
+            sink.consume(
+                root.root_id(),
+                ScanMessage::DirFinal {
+                    run: 7,
+                    ticket,
+                    sums: Sums {
+                        files: 99,
+                        ..Sums::ZERO
+                    },
+                    complete: true,
+                },
+            ),
+            Err(crate::EngineError::StaleGeneration { .. })
+        ));
     }
+    assert!(sink.totals(root.root_id()).is_none());
     sink.recover_interrupted().unwrap();
     assert!(sink.is_repairing(root.root_id()));
     assert!(!sink.sweep_allowed(root.root_id()));
+    let report = run_scan(
+        &Tree,
+        &root,
+        8,
+        sink.clone(),
+        Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions::default(),
+    )
+    .unwrap();
+    assert!(report.complete);
+    assert_eq!(
+        report.totals,
+        Sums {
+            files: 1,
+            dirs: 1,
+            logical: 123,
+            allocated: Some(4096)
+        }
+    );
+    assert_eq!(sink.totals(root.root_id()), Some(report.totals));
+    assert!(!sink.is_repairing(root.root_id()));
 }
 struct Tree;
 impl DirSource for Tree {
@@ -294,19 +347,40 @@ fn obsolete_run_final_and_nonunique_refs_cannot_reparent() {
 }
 #[test]
 fn root_identity_mismatch_never_enters_writer() {
+    struct NeverList;
+    impl DirSource for NeverList {
+        type Dir = u64;
+        fn strategy(&self) -> Strategy {
+            Strategy::Portable
+        }
+        fn open_root(&self, path: &std::path::Path) -> Result<(u64, OpenedIdentity), SourceError> {
+            Tree.open_root(path)
+        }
+        fn open_child(
+            &self,
+            _: &u64,
+            _: &RawEntry<'_>,
+        ) -> Result<(u64, OpenedIdentity), SourceError> {
+            panic!("a mismatched grant must not open children")
+        }
+        fn list(&self, _: &u64, _: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+            panic!("a mismatched grant must not list the opened root")
+        }
+    }
     let mut root = root();
     root.expected = Some(identity(999));
     let sink = Arc::new(MemorySink::default());
-    assert!(run_scan(
-        &Tree,
+    let error = run_scan(
+        &NeverList,
         &root,
         1,
         sink.clone(),
         Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
         Arc::new(AtomicBool::new(false)),
-        ScanOptions::default()
+        ScanOptions::default(),
     )
-    .is_err());
+    .unwrap_err();
+    assert_eq!(error.to_body().message.as_str(), "root_identity_changed");
     assert!(sink.totals(root.root_id()).is_none());
 }
 
