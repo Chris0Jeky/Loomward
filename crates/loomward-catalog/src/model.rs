@@ -226,6 +226,11 @@ pub enum WriteCommand {
         grant_id: i64,
         revoked_at_ns: i64,
     },
+    /// The granted root no longer has the grant's native identity (docs/41 section 7 step 1):
+    /// the grant ends `identity_changed` and its root's run is cancelled, as a revocation does.
+    GrantIdentityChanged {
+        grant_id: i64,
+    },
     Repair {
         root_id: i64,
     },

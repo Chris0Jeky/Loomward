@@ -180,7 +180,13 @@ impl Inner {
             .ok_or_else(|| fail(ErrorCode::InternalError, "root has no directory row"))?;
         let id = RootId::new(self.root_id(row)).expect("rt_ id");
         self.scan.bind(&id, root.grant, dir);
-        let granted = self.engine.granted_root(id, root.grant)?;
+        let granted = self.engine.granted_root(id.clone(), root.grant);
+        if matches!(&granted, Err(loomward_engine::EngineError::PermissionDenied { message })
+            if message == "root_identity_changed")
+        {
+            self.identity_changed(root.grant, &id);
+        }
+        let granted = granted?;
         let job = match r.mode {
             ScanStartRequestMode::Full => self.engine.scan_start(&granted, r.budget),
             ScanStartRequestMode::Refresh => self.engine.scan_refresh(&granted, r.budget),
@@ -395,6 +401,26 @@ impl Inner {
             self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));
         }
         Ok((ts_ns(at), revs))
+    }
+
+    /// The granted folder no longer has the grant's identity (docs/41 section 7 step 1): the
+    /// grant ends `identity_changed`, committed in `state.db` first as a revocation is; then the
+    /// root's jobs are cancelled and its writer fenced, and `roots.changed` stops the UI from
+    /// advertising the dead grant.
+    fn identity_changed(&self, grant: i64, id: &RootId) {
+        let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
+        let changed = self
+            .catalog
+            .writer()
+            .call(WriteCommand::GrantIdentityChanged { grant_id: grant });
+        if changed.is_err() {
+            return;
+        }
+        let _ = self.engine.scan_cancel_root(id);
+        let _ = self.engine.scan_writer_fence(id);
+        if let (Ok(revs), Ok(list)) = (self.revisions(), self.root_list()) {
+            self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));
+        }
     }
 
     fn grants_list(&self) -> Handled {

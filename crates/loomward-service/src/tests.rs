@@ -1533,6 +1533,57 @@ fn a_junction_replacing_a_directory_stays_visible_as_excluded() {
     assert_eq!(slice_totals(&again), (5, 2, 165));
 }
 
+/// #206: a granted folder replaced at its path fails the identity check at scan start; the
+/// grant is recorded `identity_changed` in `state.db` and `roots.changed` says so, so the UI
+/// stops advertising a dead grant. Nothing is scanned and the grant is never active again.
+#[cfg(windows)]
+#[test]
+fn a_replaced_root_records_identity_changed_and_emits_roots_changed() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    std::fs::rename(&lab.path, lab.path.with_file_name("lab-moved")).unwrap();
+    std::fs::create_dir(&lab.path).unwrap();
+    let mut events = svc.subscribe(None);
+    let e = err(call(
+        svc,
+        "scan.start",
+        json!({"root_id": lab.root, "mode": "full"}),
+    ));
+    assert_eq!(
+        (e.code, e.message.as_str()),
+        (ErrorCode::PermissionDenied, "root_identity_changed")
+    );
+    let state: String = svc
+        .inner
+        .db()
+        .query_row("SELECT state FROM st.root_grant", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(state, "identity_changed");
+    let event = loop {
+        match events.recv_timeout(Duration::from_secs(2)) {
+            RecvOutcome::Event(e) if e.event == EventName::RootsChanged => break e,
+            RecvOutcome::Event(_) => continue,
+            other => panic!("{other:?}"),
+        }
+    };
+    event.validate().unwrap();
+    assert_eq!(event.data["roots"][0]["grant_state"], "identity_changed");
+    let (roots, _) = ok("roots.list", call(svc, "roots.list", json!({})));
+    assert_eq!(roots["roots"][0]["grant_state"], "identity_changed");
+    assert_eq!(roots["roots"][0]["scan"]["state"], "stale");
+    assert_eq!(
+        crate::db::counts(&svc.inner.db()).unwrap().0,
+        0,
+        "nothing scanned"
+    );
+    let again = err(call(
+        svc,
+        "scan.start",
+        json!({"root_id": lab.root, "mode": "full"}),
+    ));
+    assert_eq!(again.code, ErrorCode::PermissionDenied);
+}
+
 /// Revocation mid-scan: the grant commits revoked first, the run is cancelled and the writer
 /// fenced; nothing more is written for the root and its catalogue run ends cancelled.
 #[cfg(windows)]

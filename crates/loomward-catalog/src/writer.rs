@@ -650,6 +650,26 @@ fn prepare_state(
             tx.commit()?;
             Ok(None)
         }
+        WriteCommand::GrantIdentityChanged { grant_id } => {
+            let tx = conn.transaction()?;
+            if !tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM st.root_grant WHERE id=?1)",
+                [grant_id],
+                |r| r.get::<_, bool>(0),
+            )? {
+                return Err(Error::NotFound);
+            }
+            // Only an active grant changes; a revoked one keeps its revocation.
+            if tx.execute(
+                "UPDATE st.root_grant SET state='identity_changed' WHERE id=?1 AND state='active'",
+                [grant_id],
+            )? > 0
+            {
+                state_revision(&tx)?;
+            }
+            tx.commit()?;
+            Ok(None)
+        }
         WriteCommand::ObjectReference {
             node,
             observed_at_ns,
@@ -1011,7 +1031,8 @@ fn apply(
             ctx.fenced_listings.retain(|(run, _)| run != run_id);
             Ok(WriteReply::Done)
         }
-        WriteCommand::RevokeGrant { grant_id, .. } => {
+        WriteCommand::RevokeGrant { grant_id, .. }
+        | WriteCommand::GrantIdentityChanged { grant_id } => {
             conn.execute("UPDATE scan_run SET state='cancelled' WHERE root_id IN (SELECT id FROM root WHERE grant_id=?1) AND state='running'",[grant_id])?;
             conn.execute(
                 "UPDATE root SET active_run=NULL,state='stale' WHERE grant_id=?1",
