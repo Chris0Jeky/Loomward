@@ -98,4 +98,3 @@ sandbox against external callers deliberately enabling the low-level feature.
 
 All six requested fixes are included. Declined: service/app wiring is deferred because #238 is
 the pre-wiring hardening lane. Suggested commit: `Harden duplicate reads behind active engine grants`.
-The driver owns committing and publishing the restored, uncommitted diff.
