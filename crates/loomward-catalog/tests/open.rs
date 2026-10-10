@@ -126,6 +126,11 @@ fn corrupt_derived_catalog_is_preserved_and_precious_corruption_is_refused() {
         b"synthetic corrupt catalogue",
     )
     .unwrap();
+    Catalog::validate_stores(temp.path(), "synthetic").unwrap();
+    assert_eq!(
+        std::fs::read(temp.path().join("catalog.db")).unwrap(),
+        b"synthetic corrupt catalogue"
+    );
     let c = Catalog::open(temp.path(), "synthetic").unwrap();
     drop(c);
     let renamed = std::fs::read_dir(temp.path())
@@ -148,6 +153,10 @@ fn corrupt_derived_catalog_is_preserved_and_precious_corruption_is_refused() {
         b"synthetic precious corruption",
     )
     .unwrap();
+    assert!(matches!(
+        Catalog::validate_stores(another.path(), "synthetic"),
+        Err(Error::CorruptDatabase)
+    ));
     assert!(matches!(
         Catalog::open(another.path(), "synthetic"),
         Err(Error::CorruptDatabase)

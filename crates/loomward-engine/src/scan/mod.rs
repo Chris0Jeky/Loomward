@@ -24,6 +24,15 @@ pub(crate) struct RootGate {
     duplicate_cancel: Arc<AtomicBool>,
 }
 
+/// Catalogue identity resolved by the service after authenticating its wire root ID.
+#[derive(Debug)]
+pub struct CatalogRootIdentity {
+    /// Primary key of the catalogue root row.
+    pub row: i64,
+    /// Full catalogue instance ID, not a truncated wire tag.
+    pub instance: String,
+}
+
 /// Trusted root resolved from an active durable grant by the service, never from wire paths.
 ///
 /// Callers cannot change the granted path or mint a root from their own identity observation.
@@ -231,7 +240,12 @@ impl Engine {
     /// engine's own `state.db`, require it `active`, take the path and dataset class from that
     /// durable row (never from a caller), and require the opened native root to carry the
     /// grant's volume and file identity. The dataset class is reconciled at scan start.
-    pub fn granted_root(&self, root_id: RootId, grant_id: i64) -> EngineResult<GrantedRoot> {
+    pub fn granted_root(
+        &self,
+        root_id: RootId,
+        grant_id: i64,
+        catalog_root: &CatalogRootIdentity,
+    ) -> EngineResult<GrantedRoot> {
         use rusqlite::{OpenFlags, OptionalExtension};
         let denied = |message: &str| EngineError::PermissionDenied {
             message: message.into(),
@@ -252,29 +266,22 @@ impl Engine {
             .optional()
             .map_err(|_| denied("grant store unavailable"))?;
         let (path, volume_key, file_id, class) = row.ok_or_else(|| denied("grant_not_active"))?;
-        // The root ID must name this grant's catalogue root (`rt_<root row>_<instance tag>`).
+        // Wire IDs are opaque here; the authenticated identity must name this grant's root.
         let paired = rusqlite::Connection::open_with_flags(
             self.config.state_dir.join("catalog.db"),
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .and_then(|c| {
             c.query_row(
-                "SELECT id,(SELECT value FROM meta WHERE key='instance_id')
-                 FROM root WHERE grant_id=?1",
-                [grant_id],
-                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+                "SELECT (SELECT value FROM meta WHERE key='instance_id')
+                 FROM root WHERE id=?1 AND grant_id=?2",
+                rusqlite::params![catalog_root.row, grant_id],
+                |r| r.get::<_, String>(0),
             )
             .optional()
         })
         .map_err(|_| denied("grant store unavailable"))?
-        .is_some_and(|(row, instance)| {
-            use sha2::{Digest, Sha256};
-            let tag: String = Sha256::digest(instance.as_bytes())[..4]
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect();
-            root_id.as_str() == format!("rt_{row}_{tag}")
-        });
+        .is_some_and(|instance| instance == catalog_root.instance);
         if !paired {
             return Err(denied("grant_root_mismatch"));
         }

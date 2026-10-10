@@ -33,6 +33,7 @@ use loomward_protocol::{
     Generation, Payload, RequestEnvelope, RequestId, ResponseEnvelope, ResponseMeta,
     RootGrantResultRefusal as Refusal, Timestamp, ViewService,
 };
+use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -80,6 +81,8 @@ pub(crate) struct Inner {
     turn: (Mutex<Queue>, std::sync::Condvar),
     /// One native dialog at a time (#167): a second request is `busy`, never a stacked dialog.
     dialog: Mutex<()>,
+    picker_last: Mutex<Option<Instant>>,
+    reads: Mutex<usize>,
     #[cfg(test)]
     pub(crate) hooks: tests::Hooks,
 }
@@ -115,9 +118,64 @@ impl Service {
         if config.dataset == DatasetClass::Personal && !config.allow_personal {
             return Err("a personal session requires --allow-personal".into());
         }
-        if paths_network(&config.state_dir) {
-            return Err("the state directory must be on a local volume".into());
+        let destination = paths::prospective_dir(&config.state_dir)?;
+        paths::validate_roots(&config.grant_roots, Some(&destination))?;
+        Catalog::validate_stores(&destination, class_name(config.dataset))
+            .map_err(|e| format!("state store: {e}"))?;
+        let mut protected = config.grant_roots.clone();
+        for root in &config.grant_roots {
+            let (volume, file_id) = lab::identity(root).map_err(refusal_name)?;
+            if config.dataset == DatasetClass::Synthetic {
+                if file_id.len() != 16 {
+                    return Err(refusal_name(Refusal::IdentityUnavailable));
+                }
+                let existing = rusqlite::Connection::open_with_flags(
+                    destination.join("state.db"),
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                )
+                .map_err(|_| refusal_name(Refusal::SyntheticSessionRequiresLabRoot))?;
+                let digest: Option<String> = existing.query_row("SELECT manifest_digest FROM lab_root WHERE volume_key=?1 AND root_file_id=?2", rusqlite::params![volume, file_id], |r| r.get(0))
+                    .optional().map_err(|_| refusal_name(Refusal::IdentityUnavailable))?;
+                if !digest.as_deref().is_some_and(lab::valid_digest) {
+                    return Err(refusal_name(Refusal::SyntheticSessionRequiresLabRoot));
+                }
+            }
         }
+        for name in ["state.db", "catalog.db"] {
+            if !destination.join(name).exists() || (name == "catalog.db" && static_dir.is_none()) {
+                continue;
+            }
+            let existing = rusqlite::Connection::open_with_flags(
+                destination.join(name),
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .map_err(|_| "cannot inspect stored grants")?;
+            // V1 grants migrate from the catalogue; newer or corrupt derived stores add none.
+            if name == "catalog.db"
+                && !existing
+                    .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                    .is_ok_and(|version| version == 1)
+            {
+                continue;
+            }
+            // Empty and pre-v2 state stores have no grant table yet; keep preflight read-only.
+            if !existing
+                .query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='root_grant')", [], |r| r.get::<_, bool>(0))
+                .map_err(|_| "cannot inspect stored grants")?
+            {
+                continue;
+            }
+            let mut stmt = existing
+                .prepare("SELECT display_path FROM root_grant WHERE state='active'")
+                .map_err(|_| "cannot inspect stored grants")?;
+            protected.extend(
+                stmt.query_map([], |r| r.get::<_, String>(0).map(PathBuf::from))
+                    .map_err(|_| "cannot inspect stored grants")?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(|_| "cannot inspect stored grants")?,
+            );
+        }
+        paths::validate_static_dir(static_dir, &protected, Some(&destination))?;
         std::fs::create_dir_all(&config.state_dir)
             .map_err(|_| "cannot create the state directory".to_string())?;
         let state_dir = config
@@ -152,6 +210,8 @@ impl Service {
             mutation: Mutex::new(()),
             turn: (Mutex::new(Queue::default()), std::sync::Condvar::new()),
             dialog: Mutex::new(()),
+            picker_last: Mutex::new(None),
+            reads: Mutex::new(0),
             #[cfg(test)]
             hooks: Default::default(),
         });
@@ -177,10 +237,6 @@ impl Service {
     pub fn dataset(&self) -> DatasetClass {
         self.inner.dataset
     }
-}
-
-fn paths_network(p: &Path) -> bool {
-    paths::check_root(p, None, &[], true) == Err(Refusal::NetworkOrRemovableUnsupported)
 }
 
 pub(crate) fn class_name(class: DatasetClass) -> &'static str {
@@ -239,6 +295,46 @@ pub(crate) fn is_mutation(c: Command) -> bool {
 
 /// Ticketed mutations issued but not yet settled; one more is `busy` before any work runs.
 pub(crate) const MAX_PENDING: u64 = 64;
+
+const MAX_READS: usize = 8;
+
+struct ReadPermit(Arc<Inner>);
+impl ReadPermit {
+    fn acquire(inner: Arc<Inner>) -> Option<Self> {
+        let mut count = inner.reads.lock().unwrap_or_else(|e| e.into_inner());
+        if *count >= MAX_READS {
+            return None;
+        }
+        *count += 1;
+        drop(count);
+        Some(Self(inner))
+    }
+}
+impl Drop for ReadPermit {
+    fn drop(&mut self) {
+        *self.0.reads.lock().unwrap_or_else(|e| e.into_inner()) -= 1;
+    }
+}
+
+pub(crate) struct ReadWork {
+    deadline: Instant,
+    interrupt: Mutex<Option<rusqlite::InterruptHandle>>,
+}
+impl ReadWork {
+    fn reader(&self, catalog: &Catalog) -> Result<loomward_catalog::Reader, ErrorBody> {
+        let mut reader = catalog.reader().map_err(catalog_error)?;
+        let mut handle = self.interrupt.lock().unwrap_or_else(|e| e.into_inner());
+        if Instant::now() >= self.deadline {
+            return Err(fail(
+                ErrorCode::DeadlineExceeded,
+                "the read deadline expired",
+            ));
+        }
+        reader.set_deadline(self.deadline);
+        *handle = Some(reader.interrupt_handle());
+        Ok(reader)
+    }
+}
 
 /// The mutation FIFO: tickets `serving..issued` are outstanding. A ticket is issued only once its
 /// thread exists, so only a settled head ticket ever advances `serving`.
@@ -357,13 +453,38 @@ impl ViewService for Service {
         if is_mutation(command) {
             self.mutate(request, command, ctx.clone(), started, deadline)
         } else {
+            let permit = match ReadPermit::acquire(self.inner.clone()) {
+                Some(p) => p,
+                None => {
+                    return ResponseEnvelope::error(
+                        Some(id),
+                        retry_flag(
+                            command,
+                            fail(ErrorCode::Busy, "too many reads are running; retry shortly"),
+                        ),
+                        None,
+                    )
+                }
+            };
             let inner = self.inner.clone();
             let ctx = ctx.clone();
+            let work = Arc::new(ReadWork {
+                deadline,
+                interrupt: Mutex::new(None),
+            });
+            let worker_work = work.clone();
             let (tx, rx) = mpsc::channel();
             let spawned = std::thread::Builder::new()
                 .name("lw-read".into())
                 .spawn(move || {
-                    let _ = tx.send(inner.respond(&request, command, &ctx, started));
+                    let _permit = permit;
+                    let _ = tx.send(inner.respond(
+                        &request,
+                        command,
+                        &ctx,
+                        started,
+                        Some(&worker_work),
+                    ));
                 });
             if spawned.is_err() {
                 return ResponseEnvelope::error(
@@ -372,20 +493,29 @@ impl ViewService for Service {
                     None,
                 );
             }
-            // ponytail: a timed-out read finishes on its thread and is discarded; SQLite interrupt if load shows.
             match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
                 Ok(r) => r,
-                Err(mpsc::RecvTimeoutError::Timeout) => ResponseEnvelope::error(
-                    Some(id),
-                    retry_flag(
-                        command,
-                        fail(
-                            ErrorCode::DeadlineExceeded,
-                            "the read did not finish within its deadline",
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if let Some(handle) = work
+                        .interrupt
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .as_ref()
+                    {
+                        handle.interrupt();
+                    }
+                    ResponseEnvelope::error(
+                        Some(id),
+                        retry_flag(
+                            command,
+                            fail(
+                                ErrorCode::DeadlineExceeded,
+                                "the read did not finish within its deadline",
+                            ),
                         ),
-                    ),
-                    None,
-                ),
+                        None,
+                    )
+                }
                 Err(mpsc::RecvTimeoutError::Disconnected) => ResponseEnvelope::error(
                     Some(id),
                     retry_flag(command, fail(ErrorCode::InternalError, "the read failed")),
@@ -491,7 +621,8 @@ impl Service {
                                         inner.turn.1.wait(queue).unwrap_or_else(|e| e.into_inner());
                                 }
                             }
-                            settle.outcome = Some(inner.respond(&request, command, &ctx, started));
+                            settle.outcome =
+                                Some(inner.respond(&request, command, &ctx, started, None));
                         })
                 };
                 if spawned.is_err() {
@@ -565,10 +696,11 @@ impl Inner {
         command: Command,
         ctx: &CallContext,
         started: Instant,
+        work: Option<&ReadWork>,
     ) -> ResponseEnvelope {
         let id = request.request_id.clone();
         let out = self
-            .handle(request, command, ctx)
+            .handle(request, command, ctx, work)
             .and_then(|out| match out.result {
                 Value::Object(ref map) => command.validate_result(map).map(|_| out).map_err(|_| {
                     fail(
@@ -581,6 +713,14 @@ impl Inner {
                     "the service produced an invalid result",
                 )),
             });
+        let out = if work.is_some_and(|work| Instant::now() >= work.deadline) {
+            Err(fail(
+                ErrorCode::DeadlineExceeded,
+                "the read deadline expired",
+            ))
+        } else {
+            out
+        };
         match out {
             Ok(Out {
                 result: Value::Object(map),
@@ -651,9 +791,13 @@ impl Inner {
         let conn = self.db();
         let origin = match self.dataset {
             DatasetClass::Synthetic => {
-                db::lab_root(&conn, &volume_key, &file_id)
+                if file_id.len() != 16 {
+                    return Err(Refusal::IdentityUnavailable.into());
+                }
+                let digest = db::lab_root(&conn, &volume_key, &file_id)
                     .map_err(|_| Refusal::IdentityUnavailable)?
                     .ok_or(Refusal::SyntheticSessionRequiresLabRoot)?;
+                lab::log_digest(&digest)?;
                 "lab_generated"
             }
             DatasetClass::Personal => "owner_granted",
@@ -725,20 +869,24 @@ impl Inner {
 
     /// The wire ID of a catalogue root row, bound to this catalogue instance.
     pub(crate) fn root_id(&self, row: i64) -> String {
-        ids::row_id("rt_", row, &self.instance)
+        self.ids.row_id("rt_", row, &self.instance)
     }
 
     pub(crate) fn volume_id(&self, row: i64) -> String {
-        ids::row_id("vo_", row, &self.instance)
+        self.ids.row_id("vo_", row, &self.instance)
     }
 
     /// The root row a wire ID names; one minted for a rebuilt catalogue never names a row here.
     pub(crate) fn root_row(&self, id: &str) -> Result<i64, ErrorBody> {
-        ids::open_row_id("rt_", id, &self.instance).map_err(|r| id_refusal(r, "unknown root"))
+        self.ids
+            .open_row_id("rt_", id, &self.instance)
+            .map_err(|r| id_refusal(r, "unknown root"))
     }
 
     pub(crate) fn volume_row(&self, id: &str) -> Result<i64, ErrorBody> {
-        ids::open_row_id("vo_", id, &self.instance).map_err(|r| id_refusal(r, "unknown volume"))
+        self.ids
+            .open_row_id("vo_", id, &self.instance)
+            .map_err(|r| id_refusal(r, "unknown volume"))
     }
 
     /// Replaces the catalogue's internal references with sealed node IDs, and its collection

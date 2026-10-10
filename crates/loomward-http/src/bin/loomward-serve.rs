@@ -97,7 +97,7 @@ fn service(args: &Args) -> Result<Started, String> {
         ));
     }
     let state_dir = args.state_dir.clone().expect("checked by parse");
-    std::fs::create_dir_all(&state_dir).map_err(|_| "cannot create --state-dir".to_string())?;
+    paths::prospective_dir(&state_dir)?;
     // The canonical roots the rules approved are exactly the roots the service grants (#146).
     let roots = paths::validate_roots(&args.grant_roots, Some(&state_dir))?;
     let count = roots.len();
@@ -156,8 +156,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hardening_server_rejects_network_state_before_creating_it() {
+        let args = parse(
+            ["--state-dir", r"\\?\GLOBALROOT\Device\fixture\state"]
+                .map(String::from)
+                .into_iter(),
+        )
+        .unwrap();
+        let error = service(&args).err().unwrap();
+        assert_eq!(error, "network_or_removable_unsupported");
+        let tmp = tempfile::tempdir_in(".").unwrap();
+        let state = tmp.path().join("state");
+        let missing = tmp.path().join("missing");
+        let args = parse(
+            [
+                "--state-dir".into(),
+                state.to_str().unwrap().into(),
+                "--grant-root".into(),
+                missing.to_str().unwrap().into(),
+            ]
+            .into_iter(),
+        )
+        .unwrap();
+        assert!(service(&args).is_err());
+        assert!(!state.exists());
+    }
+
+    #[test]
     fn http_options_consume_exactly_the_validated_canonical_roots() {
-        let base = std::env::temp_dir().join(format!("lw-http-startup-{}", std::process::id()));
+        let base = std::env::current_dir()
+            .unwrap()
+            .join(format!("lw-http-startup-{}", std::process::id()));
         let grant = base.join("grant");
         let state = base.join("state");
         std::fs::create_dir_all(&grant).unwrap();

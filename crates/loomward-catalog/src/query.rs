@@ -17,6 +17,7 @@ pub struct Reader {
     pub(crate) writer: Option<Arc<Writer>>,
     pub live_clamp_count: u64,
     breakdowns: HashMap<(i64, String, Basis, usize, String), Breakdown>,
+    deadline: Option<std::time::Instant>,
 }
 pub(crate) const DIR_COLUMNS:&str="d.id,0 kind,d.name,d.sub_logical logical,d.sub_allocated allocated,d.sub_alloc_unknown unknown,d.sub_files files,d.sub_dirs dirs,d.modified_ft,d.attrs,d.flags,NULL extension,NULL family,coalesce(d.listing_outcome,CASE d.listing_state WHEN 'unlisted' THEN 'unscanned' WHEN 'incomplete' THEN 'partial' ELSE d.listing_state END),d.sub_complete complete,d.parent_id,d.root_id,d.file_id,d.created_ft,d.changed_ft,NULL accessed_ft,d.born_run,d.agg_valid_rev>=d.dirty_rev valid";
 pub(crate) const FILE_COLUMNS:&str="f.id,1 kind,f.name,f.logical,coalesce(f.allocated,0) allocated,(f.allocated IS NULL) unknown,1 files,0 dirs,f.modified_ft,f.attrs,f.flags,e.ext extension,e.family,CASE WHEN d.listing_state='incomplete' AND f.seen_run!=d.seen_run THEN 'stale' ELSE coalesce(d.listing_outcome,CASE d.listing_state WHEN 'unlisted' THEN 'unscanned' WHEN 'incomplete' THEN 'partial' ELSE d.listing_state END) END,1 complete,f.dir_id parent_id,d.root_id,f.file_id,f.created_ft,f.changed_ft,f.accessed_ft,f.born_run,1 valid";
@@ -289,7 +290,11 @@ struct WorkGuard<'a> {
     hit: Arc<std::sync::atomic::AtomicBool>,
 }
 impl<'a> WorkGuard<'a> {
-    fn new(conn: &'a Connection, budget: u64) -> Result<Self> {
+    fn new(
+        conn: &'a Connection,
+        budget: u64,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<Self> {
         let remaining = Arc::new(AtomicU64::new(budget));
         let hit = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let rem = remaining.clone();
@@ -298,6 +303,9 @@ impl<'a> WorkGuard<'a> {
         conn.progress_handler(
             granularity,
             Some(move || {
+                if deadline.is_some_and(|at| std::time::Instant::now() >= at) {
+                    return true;
+                }
                 // A CAS loop rather than fetch_update, which newer stable toolchains deprecate.
                 let mut n = rem.load(Ordering::Relaxed);
                 let exhausted = loop {
@@ -352,7 +360,16 @@ impl Reader {
             writer: None,
             live_clamp_count: 0,
             breakdowns: HashMap::new(),
+            deadline: None,
         })
+    }
+    /// Bind CPU work to the service request's wall-clock deadline.
+    pub fn set_deadline(&mut self, deadline: std::time::Instant) {
+        self.deadline = Some(deadline);
+    }
+
+    pub fn interrupt_handle(&self) -> rusqlite::InterruptHandle {
+        self.conn.get_interrupt_handle()
     }
     pub(crate) fn read<T>(&mut self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         self.repair_committed()?;
@@ -425,6 +442,10 @@ impl Reader {
         })
     }
     pub fn search(&mut self, req: &SearchRequest) -> Result<SearchPage> {
+        let deadline = self.deadline;
+        if deadline.is_some_and(|at| std::time::Instant::now() >= at) {
+            return Err(Error::Cancelled);
+        }
         if !(1..=100).contains(&req.limit)
             || req.text.chars().count() > 256
             || req
@@ -440,7 +461,7 @@ impl Reader {
             let revisions=revisions(conn,req.root_id)?;let catalog_rev=catalog_rev(conn)?;let catalog_instance=instance(conn)?;
             if let Some(c)=&req.cursor {if c.text!=req.text || c.extension!=req.extension || c.min_bytes!=req.min_bytes || c.kind!=req.kind || c.root_id!=req.root_id {return Err(Error::Invalid("search cursor binding"));}
 if c.catalog_rev!=catalog_rev||c.catalog_instance!=catalog_instance{return Err(Error::StaleGeneration);}}
-            let guard=WorkGuard::new(conn,req.work_budget)?;
+            let guard=WorkGuard::new(conn,req.work_budget,deadline)?;
             let mut rows=Vec::new();let mut hit=false;
             let mut last_kind=req.cursor.as_ref().map_or(0,|c|c.last_kind);
             let mut last_id=req.cursor.as_ref().map_or(0,|c|c.last_id);
@@ -490,6 +511,12 @@ if c.catalog_rev!=catalog_rev||c.catalog_instance!=catalog_instance{return Err(E
         limit: usize,
         work_budget: u64,
     ) -> Result<Breakdown> {
+        if self
+            .deadline
+            .is_some_and(|at| std::time::Instant::now() >= at)
+        {
+            return Err(Error::Cancelled);
+        }
         if !(1..=64).contains(&limit) || !matches!(by, "ext_family" | "extension" | "age_band") {
             return Err(Error::Invalid("breakdown bounds"));
         }
@@ -529,7 +556,7 @@ if c.catalog_rev!=catalog_rev||c.catalog_instance!=catalog_instance{return Err(E
             ""
         };
         let sql=format!("WITH RECURSIVE tree(id) AS (SELECT id FROM dir WHERE id=?1 AND listing_state!='excluded' UNION ALL SELECT d.id FROM dir d JOIN tree t ON d.parent_id=t.id WHERE d.listing_state NOT IN ('absent_pending','excluded')) SELECT {group} bucket,sum({bytes}),count(*),({unknown}({group})='unknown') unknown FROM file f JOIN tree t ON t.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id WHERE f.flags & {EXCLUDED_FLAGS} = 0 GROUP BY bucket,unknown ORDER BY sum({bytes}) DESC");
-        let guard = WorkGuard::new(conn, work_budget)?;
+        let guard = WorkGuard::new(conn, work_budget, self.deadline)?;
         let mut buckets = Vec::new();
         let mut unknown_bytes = 0_u64;
         let mut unknown_files = 0_u64;
@@ -731,7 +758,7 @@ fn unique_totals(conn: &Connection, r: &Raw) -> Result<(Option<u64>, Option<Stri
         NodeKey::Dir(id) if r.flags & EXCLUDED_FLAGS == 0 => id,
         _ => return Ok((None, None, 0)),
     };
-    let guard = WorkGuard::new(conn, 2_000_000)?;
+    let guard = WorkGuard::new(conn, 2_000_000, None)?;
     let result=conn.query_row("WITH RECURSIVE tree(id) AS (SELECT id FROM dir WHERE id=?1 AND listing_state!='excluded' UNION ALL SELECT d.id FROM dir d JOIN tree t ON d.parent_id=t.id WHERE d.listing_state NOT IN ('absent_pending','excluded')), objects AS (SELECT file_id,max(allocated) allocated,sum(allocated IS NULL) unknown,sum((flags & ?2)!=0 OR coalesce(link_count,0)>1) links,count(*) names FROM file WHERE dir_id IN (SELECT id FROM tree) AND flags & ?3 = 0 GROUP BY file_id) SELECT count(file_id),coalesce(sum(allocated),0),coalesce(sum(unknown),0),coalesce(sum(file_id IS NULL),0),coalesce(sum(links),0) FROM objects",params![id,HARDLINK_SUSPECTED,EXCLUDED_FLAGS],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?)));
     match result {
         Ok((count, bytes, unknown, noid, links)) => Ok((
@@ -778,5 +805,33 @@ impl Reader {
             return Err(Error::NotFound);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod hardening_tests {
+    use super::*;
+    #[test]
+    fn hardening_deadline_interrupts_running_sql_before_its_step_budget() {
+        let conn = Connection::open_in_memory().unwrap();
+        let guard = WorkGuard::new(
+            &conn,
+            50_000_000,
+            Some(std::time::Instant::now() + std::time::Duration::from_millis(1)),
+        )
+        .unwrap();
+        let result: rusqlite::Result<i64> = conn.query_row("WITH RECURSIVE n(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM n WHERE x<100000) SELECT sum(x) FROM n", [], |r| r.get(0));
+        let error = Error::from(result.unwrap_err());
+        assert!(is_budget_interrupt(&error));
+        assert!(
+            !guard.hit(),
+            "deadline cancellation is not budget truncation"
+        );
+        drop(guard);
+        assert_eq!(
+            conn.query_row("SELECT 7", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            7
+        );
     }
 }

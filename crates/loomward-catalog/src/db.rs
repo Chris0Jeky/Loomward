@@ -28,7 +28,7 @@ fn inspection_error(error: rusqlite::Error) -> Error {
     }
 }
 
-fn inspect(path: &Path, dataset: &str) -> Result<i64> {
+pub(crate) fn inspect(path: &Path, dataset: &str) -> Result<i64> {
     if !path.exists() {
         return Ok(0);
     }

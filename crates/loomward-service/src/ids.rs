@@ -103,31 +103,55 @@ fn tag_hex(instance: &str) -> String {
         .collect()
 }
 
-/// Root and volume IDs: `prefix` + catalogue row + `_` + the catalogue instance tag. A rebuilt
+/// Root and volume IDs: row, instance hint and a session HMAC over the full instance. A rebuilt
 /// catalogue reassigns row numbers, so an ID minted for another instance must never select the
 /// row that now has its number (a retried revocation, an old tier declaration).
-pub fn row_id(prefix: &str, row: i64, instance: &str) -> String {
-    format!("{prefix}{row}_{}", tag_hex(instance))
-}
+impl NodeIds {
+    pub fn row_id(&self, prefix: &str, row: i64, instance: &str) -> String {
+        let body = format!("{prefix}{row}_{}", tag_hex(instance));
+        format!(
+            "{body}_{}",
+            self.mac(body.as_bytes(), instance)[..TAG]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        )
+    }
 
-/// The row a [`row_id`] names in `instance`. Any other spelling is [`Refusal::Foreign`].
-pub fn open_row_id(prefix: &str, id: &str, instance: &str) -> Result<i64, Refusal> {
-    let (row, tag) = id
-        .strip_prefix(prefix)
-        .and_then(|r| r.split_once('_'))
-        .ok_or(Refusal::Foreign)?;
-    let n = row
-        .parse::<i64>()
-        .ok()
-        .filter(|n| *n > 0 && n.to_string() == row)
-        .ok_or(Refusal::Foreign)?;
-    if tag.len() != 8 || !tag.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
-        return Err(Refusal::Foreign);
+    /// The row a [`Self::row_id`] names in `instance`. Any other spelling is [`Refusal::Foreign`].
+    pub fn open_row_id(&self, prefix: &str, id: &str, instance: &str) -> Result<i64, Refusal> {
+        let (body, mac) = id.rsplit_once('_').ok_or(Refusal::Foreign)?;
+        if mac.len() != TAG * 2
+            || !mac
+                .bytes()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        {
+            return Err(Refusal::Foreign);
+        }
+        let (row, tag) = body
+            .strip_prefix(prefix)
+            .and_then(|r| r.split_once('_'))
+            .ok_or(Refusal::Foreign)?;
+        let n = row
+            .parse::<i64>()
+            .ok()
+            .filter(|n| *n > 0 && n.to_string() == row)
+            .ok_or(Refusal::Foreign)?;
+        if tag.len() != 8 || !tag.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            return Err(Refusal::Foreign);
+        }
+        if tag != tag_hex(instance) {
+            return Err(Refusal::InstanceChanged);
+        }
+        let expected: String = self.mac(body.as_bytes(), instance)[..TAG]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        if !bool::from(expected.as_bytes().ct_eq(mac.as_bytes())) {
+            return Err(Refusal::Foreign);
+        }
+        Ok(n)
     }
-    if tag != tag_hex(instance) {
-        return Err(Refusal::InstanceChanged);
-    }
-    Ok(n)
 }
 
 impl NodeIds {
@@ -244,13 +268,14 @@ mod tests {
 
     #[test]
     fn row_ids_are_bound_to_their_catalogue_instance() {
-        let id = row_id("rt_", 5, "inst-a");
+        let ids = NodeIds::new([7; 32]);
+        let id = ids.row_id("rt_", 5, "inst-a");
         assert!(loomward_protocol::RootId::new(&id).is_ok());
-        assert!(loomward_protocol::VolumeId::new(row_id("vo_", i64::MAX, "inst-a")).is_ok());
-        assert_eq!(open_row_id("rt_", &id, "inst-a"), Ok(5));
+        assert!(loomward_protocol::VolumeId::new(ids.row_id("vo_", i64::MAX, "inst-a")).is_ok());
+        assert_eq!(ids.open_row_id("rt_", &id, "inst-a"), Ok(5));
         // Minted for another instance: refused with the reason, never row 5 of this one.
         assert_eq!(
-            open_row_id("rt_", &id, "inst-b"),
+            ids.open_row_id("rt_", &id, "inst-b"),
             Err(Refusal::InstanceChanged)
         );
         let tag = &id[id.len() - 8..];
@@ -265,7 +290,7 @@ mod tests {
             format!("vo_5_{tag}"),
         ] {
             assert_eq!(
-                open_row_id("rt_", &bad, "inst-a"),
+                ids.open_row_id("rt_", &bad, "inst-a"),
                 Err(Refusal::Foreign),
                 "{bad}"
             );
