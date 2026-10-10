@@ -204,13 +204,13 @@ def check_explorer_mock(page: Page, base: str, shoot) -> None:
     shoot('explorer')
 
     # sort
-    first = lambda: rows(page).first.locator('td').first.inner_text()
+    first = lambda: rows(page).first.locator('th').first.inner_text()
     by_size = first()
     page.get_by_label('Sort').select_option('name_asc')
-    expect(rows(page).first.locator('td').first).not_to_have_text(by_size)
+    expect(rows(page).first.locator('th').first).not_to_have_text(by_size)
     ok(first().startswith('"><svg/onload=alert(1)>'), 'name sort puts the quote-leading name first')
     page.get_by_label('Sort').select_option('size_desc')
-    expect(rows(page).first.locator('td').first).to_have_text(by_size)
+    expect(rows(page).first.locator('th').first).to_have_text(by_size)
     print('PASS sort by name and back to size')
 
     # basis
@@ -232,7 +232,7 @@ def check_explorer_mock(page: Page, base: str, shoot) -> None:
     page.get_by_placeholder('Search names').fill('')
     page.get_by_label('Extension').fill('pdf')
     page.get_by_role('button', name='Search', exact=True).click()
-    names = rows(page).locator('td:first-child').all_inner_texts()
+    names = rows(page).locator('th:first-child').all_inner_texts()
     ok(len(names) > 0 and all(n.split('\n')[0].endswith('.pdf') for n in names), 'extension filter alone searches and matches only that extension')
     page.get_by_label('Extension').fill('')
     page.get_by_role('button', name='Clear search').click()

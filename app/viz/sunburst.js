@@ -65,6 +65,8 @@ export function createSunburst(canvas, options) {
   /** @type {VNode | null} */
   let hover = null;
   let cursor = 0, kbd = false;
+  /** @type {(string | undefined)[]} */
+  let cursorHints = [];
   /** @type {{ x: number, y: number, a: number, moved: boolean } | null} */
   let drag = null;
   /** @type {Map<VizEvent, Set<(e: any) => void>>} */
@@ -74,7 +76,16 @@ export function createSunburst(canvas, options) {
 
   /** @param {VNode} r @param {Map<string, VNode>} ids */
   function adopt(r, ids) {
+    const hints = cursorHints;
     root = r; byId = ids; part = partition(r);
+    // Keep the keyboard cursor where the reader was: back lands on the arc just left, a refresh stays put.
+    cursor = 0;
+    for (const id of hints) {
+      let t = id ? ids.get(id) : undefined;
+      while (t && t.parent && t.parent !== r) t = t.parent;
+      const i = t && t.parent === r ? r.children.indexOf(t) : -1;
+      if (i >= 0) { cursor = i; break; }
+    }
     depthOf = new Map();
     /** @param {VNode} n @param {number} d */
     const walk = (n, d) => { depthOf.set(n, d); n.children.forEach((c) => walk(c, d + 1)); };
@@ -458,8 +469,17 @@ export function createSunburst(canvas, options) {
     sendHover(kids[cursor] ?? null, null, true);
     schedule();
   };
-  const onFocus = () => { kbd = true; schedule(); };
-  const onBlur = () => { kbd = false; schedule(); };
+  // Keyboard focus announces the arc the cursor is on (a mouse click that focuses the canvas stays quiet).
+  const onFocus = () => {
+    kbd = true; schedule();
+    const kids = cursorKids();
+    if (kids.length && canvas.matches(':focus-visible')) sendHover(kids[Math.min(cursor, kids.length - 1)] ?? null, null, true);
+  };
+  const onBlur = () => {
+    const wasKeyboard = kbd && !hover;
+    kbd = false; schedule();
+    if (wasKeyboard) sendHover(null, null, false);
+  };
   canvas.addEventListener('pointerdown', onDown);
   canvas.addEventListener('pointermove', onMove);
   canvas.addEventListener('pointerup', onUp);
@@ -476,7 +496,8 @@ export function createSunburst(canvas, options) {
       const next = buildTree(s, options.label);
       const prevRoot = root, prevIds = byId;
       provisional = s.aggregate_state === 'provisional_live';
-      cursor = 0; hover = null; widths = new Map();
+      cursorHints = [prevRoot?.id, prevRoot?.children[cursor]?.id];
+      hover = null; widths = new Map();
       const animate = prevRoot && opts.animate !== false && !reduced();
       const inward = animate && next.root.id !== prevRoot.id ? prevIds.get(next.root.id) : undefined;
       if (inward && part.get(inward)) {

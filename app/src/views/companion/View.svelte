@@ -3,7 +3,7 @@
 </script>
 
 <script lang="ts">
-  import { untrack } from 'svelte';
+  import { tick as flush, untrack } from 'svelte';
   import { formatBytes, parseBytes } from '../../lib/format/bytes';
   import { escapedName, hasHiddenCharacters } from '../../lib/format/names';
   import { formatCount, formatTime } from '../../lib/format/time';
@@ -26,6 +26,10 @@
   let budgets = $state<OwnBudgets | null>(null);
   let explain = $state<{ row: ProcessRow; result: ProcessExplanation } | null>(null);
   let explainError = $state('');
+  let aboutEl = $state<HTMLElement>();
+  let paused = $state(false); // WCAG 2.2.2: the 3 s polling can be paused
+  let focusInTable = false; // a row the reader is working in does not move: a new sample waits for focus to leave
+  let waiting = $state<ProcessList | null>(null);
   let error = $state('');
 
   let ticket = 0;
@@ -52,7 +56,7 @@
       ]);
       if (mine !== ticket) return;
       sample = s.result;
-      list = p.result;
+      if (focusInTable) waiting = p.result; else { list = p.result; waiting = null; }
       if (b) budgets = b.result;
       error = '';
     } catch (e) {
@@ -64,7 +68,7 @@
 
   $effect(() => {
     void session.epoch;
-    if (!session.client || !available) return;
+    if (!session.client || !available || paused) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let alive = true;
     const loop = async () => {
@@ -90,6 +94,9 @@
     try {
       const { result } = await c.call('processes.explain', { process_ref: row.process_ref });
       explain = { row, result };
+      // the panel appears below the table: move focus to it so the reader lands on the answer
+      await flush();
+      aboutEl?.focus();
     } catch (e) {
       explainError = session.handle(e);
     }
@@ -119,7 +126,7 @@
     <p class="muted">This session does not report process observation, so nothing is shown here and nothing is guessed.</p>
   </section>
 {:else}
-  {#if error}<p class="bad" role="alert">{error}</p>{/if}
+  <p class="bad live" class:has={!!error} role="alert">{error}</p>
 
   <section class="panel" aria-labelledby="h-mem">
     <h2 id="h-mem">Memory</h2>
@@ -162,6 +169,8 @@
   <section class="panel" aria-labelledby="h-proc">
     <h2 id="h-proc">Processes</h2>
     <div class="ctl">
+      <button type="button" class="btn" onclick={() => (paused = !paused)}>{paused ? 'Resume updates' : 'Pause updates'}</button>
+      {#if paused}<span class="warn" role="status">Paused: the table shows the last sample</span>{/if}
       <label class="field">Largest by
         <select bind:value={sort} onchange={() => void tick()}>{#each SORTS as [id, label] (id)}<option value={id}>{label}</option>{/each}</select>
       </label>
@@ -176,7 +185,8 @@
       {/if}
     </div>
     {#if list}
-      <div class="tbl-wrap">
+      {#if waiting}<p class="muted small" role="status">A newer sample is waiting; it appears when focus leaves the table, so rows do not move under it.</p>{/if}
+      <div class="tbl-wrap" onfocusin={() => (focusInTable = true)} onfocusout={(e) => { if (e.currentTarget.contains(e.relatedTarget as Node | null)) return; focusInTable = false; if (waiting) { list = waiting; waiting = null; } }}>
         <table class="tbl procs">
           <caption class="sr-only">Top processes by {SORTS.find(([id]) => id === sort)?.[1]}</caption>
           <thead>
@@ -189,14 +199,14 @@
             {#each list.rows as r (r.process_ref)}
               {@const denied = r.access === 'denied'}
               <tr class:sel={explain?.row.process_ref === r.process_ref}>
-                <td>
-                  <button class="link" type="button" onclick={() => void explainRow(r)} aria-label={`Explain ${escapedName(r.name)}`}><VisibleName name={r.name} /></button>
+                <th scope="row">
+                  <button class="link" type="button" onclick={() => void explainRow(r)} aria-label={`Explain ${escapedName(r.name)}, process ${r.pid}`}><VisibleName name={r.name} /></button>
                   <span class="muted small num">pid {r.pid}</span>
                   {#if r.loomward_owned}<span class="tag">Loomward</span>{/if}
                   {#if hasHiddenCharacters(r.name)}<span class="tag warn">hidden characters</span>{/if}
                   {#if r.access !== 'full'}<span class="tag warn">{r.access === 'denied' ? 'access denied' : 'limited access'}</span>{/if}
                   {#if denied}<div class="muted small">Windows would not describe this process: every figure is unknown.</div>{/if}
-                </td>
+                </th>
                 <td class="r num">{@render B(r.private_commit_bytes, denied ? 'access denied' : 'not reported')}</td>
                 <td class="r num">{@render B(r.private_working_set_bytes, denied ? 'access denied' : 'not reported for this process')}</td>
                 <td class="r num">{@render B(r.working_set_bytes, denied ? 'access denied' : 'not reported')}</td>
@@ -214,10 +224,10 @@
       <p class="muted small">{list.note} CPU is a share of the whole machine. Working sets include shared pages, so do not add rows up. Private commit is what a process has promised, not what is resident. GPU memory is per process and is never summed into an adapter total.</p>
     {:else}<p class="muted">Waiting for the first sample.</p>{/if}
 
-    {#if explainError}<p class="bad" role="alert">{explainError}</p>{/if}
+    <p class="bad live" class:has={!!explainError} role="alert">{explainError}</p>
     {#if explain}
       <div class="explain" role="region" aria-label="Explanation">
-        <h3>About <VisibleName name={explain.row.name} /></h3>
+        <h3 tabindex="-1" bind:this={aboutEl}>About <VisibleName name={explain.row.name} /></h3>
         <p>{explain.result.summary}</p>
         <ul class="list">{#each explain.result.facts as f (f.code)}<li>{f.text}</li>{/each}</ul>
         {#each explain.result.caveats as cv (cv)}<p class="muted small">{cv}</p>{/each}
@@ -273,10 +283,11 @@
 <style>
   .simbanner { border: 1px dashed var(--permission); border-radius: var(--radius); padding: 8px 12px; background: var(--surface); }
   .bad { color: var(--danger); }
+  .warn { color: var(--warn); }
   .small { font-size: 0.8rem; }
   .memrow { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 20px; }
   .memrow > div { min-width: 0; }
-  .bar { height: 14px; border: 1px solid var(--line); border-radius: 7px; background: var(--raised); overflow: hidden; margin-bottom: 10px; }
+  .bar { height: 14px; border: 1px solid var(--control-line); border-radius: 7px; background: var(--raised); overflow: hidden; margin-bottom: 10px; }
   .fill { height: 100%; background: var(--residency); opacity: 0.8; }
   .commit .fill { background: repeating-linear-gradient(135deg, var(--permission) 0 4px, color-mix(in srgb, var(--permission) 45%, transparent) 4px 8px); }
   .ledger th[scope='row'] { text-align: left; font-weight: 600; text-transform: none; letter-spacing: 0; font-size: inherit; color: var(--text); }

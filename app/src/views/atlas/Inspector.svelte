@@ -56,7 +56,8 @@
   });
 </script>
 
-<aside class="inspector" aria-labelledby="insp-name">
+<!-- the heading names the panel once there is one; before that the panel has a plain name -->
+<aside class="inspector" aria-label={node ? undefined : 'Inspector'} aria-labelledby={node ? 'insp-name' : undefined}>
   <div class="state"><span>Inspector</span><span class="chip">{status}</span></div>
   {#if !node}
     <p class="muted">Hover or move the keyboard cursor over the cloth to inspect a region.</p>

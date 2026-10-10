@@ -21,10 +21,11 @@
   import { createGauge, type GaugeTheme } from '../../../viz/gauges.js';
   import Inspector from '../atlas/Inspector.svelte';
   import RegionList from '../atlas/RegionList.svelte';
-  import { SliceNav, canvasLabel, formatApprox, pathTo, readPalette } from '../atlas/shared.svelte';
+  import { SliceNav, announceSlice, canvasLabel, describeNode, formatApprox, pathTo, readPalette, type SliceKey } from '../atlas/shared.svelte';
+  import { Say } from '../../lib/ui/say.svelte';
   import LoadError from '../atlas/LoadError.svelte';
   import { Poller } from './poller';
-  import { byteCount, uniqueLabels, vramGiB } from './telemetry';
+  import { byteCount, uniqueLabels, vramGiB, vramLabel } from './telemetry';
 
   const nav = new SliceNav({ depth: 4, maxNodes: 2500, minShare: 0 });
   const reducedMQ = matchMedia('(prefers-reduced-motion: reduce)');
@@ -34,10 +35,11 @@
   let palette = $state(readPalette());
   let hovered = $state<NodeInfo | null>(null);
   let selected = $state<NodeInfo | null>(null);
-  let live = $state('');
+  const say = new Say();
+  let shownKey: SliceKey | null = null; // what the last "Showing ..." announced: a refetch of the same view stays silent
   const shown = $derived(hovered ?? selected);
   const provisional = $derived(nav.slice?.aggregate_state === 'provisional_live');
-  const pathNames = $derived(shown ? pathTo(shown, (id) => sb?.info(id) ?? null, nav.trail.map((c) => c.name)) : []);
+  const pathNames = $derived(shown ? pathTo(shown, nav.slice, nav.trail.map((c) => c.name)) : []);
 
   // --- telemetry ---------------------------------------------------------------------------
   type TelState = 'waiting' | 'live' | 'unavailable';
@@ -53,6 +55,7 @@
   let diskKeys = $state<string[]>([]); // unique per disk even when the engine repeats a label
   const lastRate = new Map<string, number | null>(); // a new disk's canvas mounts after its first sample: replay it
   let poller: Poller<{ result: TelemetrySample; meta: ResponseMeta }> | null = null;
+  let paused = $state(false); // WCAG 2.2.2: the 1 s polling can be paused
 
   function gaugeTheme(): GaugeTheme {
     const cs = getComputedStyle(document.documentElement);
@@ -124,10 +127,14 @@
     const s = createSunburst(canvas, { palette, reducedMotion: () => reducedMQ.matches, format: formatApprox, label: canvasLabel });
     sb = s;
     const off = [
-      s.on('hover', (e: { node: NodeInfo | null; viaKeyboard: boolean }) => { hovered = e.node; if (e.node && e.viaKeyboard) live = `${canvasLabel(e.node.name)}, ${formatApprox(e.node.size)}.${e.node.drillable ? ' Enter opens it.' : ''}`; }),
-      s.on('select', (n: NodeInfo) => { selected = n; }),
+      s.on('hover', (e: { node: NodeInfo | null; viaKeyboard: boolean }) => { hovered = e.node; if (e.node && e.viaKeyboard) say.say(describeNode(e.node)); }),
+      s.on('select', (n: NodeInfo) => { selected = n; say.say(describeNode(n)); }),
       s.on('drill', (n: NodeInfo) => { hovered = null; void nav.drill(n.id, n.name); }),
-      s.on('back', () => { hovered = null; void nav.back(); }),
+      s.on('back', () => {
+        hovered = null;
+        if (nav.trail.length < 2) say.say(`Already at the top: ${canvasLabel(nav.here?.name ?? '')}.`);
+        void nav.back();
+      }),
     ];
     const th = gaugeTheme();
     const fmtPct = (v: number) => v.toFixed(0);
@@ -159,11 +166,11 @@
     };
   });
 
-  // A new session (or stale data) restarts the slice. A stream event during an outage must not defeat the
-  // telemetry backoff (kick(true) holds it); only a fresh connection forgets it.
+  // A new session (or stale data) restarts the slice. Telemetry is not made stale by tree or root events,
+  // so the poller is left alone here: it re-polls on its own interval and a fresh connection kicks it below.
   $effect(() => {
     void session.epoch;
-    if (session.client) untrack(() => { void nav.start(); poller?.kick(true); });
+    if (session.client) untrack(() => void nav.start());
   });
   $effect(() => {
     if (session.state === 'connected') untrack(() => poller?.kick());
@@ -172,11 +179,13 @@
     const s = nav.slice;
     if (!sb) return;
     const b = sb;
-    if (!s) { untrack(() => { b.clear(); hovered = null; selected = null; }); return; }
+    if (!s) { untrack(() => { b.clear(); hovered = null; selected = null; shownKey = null; }); return; }
     untrack(() => {
       b.setSlice(s);
-      if (selected && !s.nodes.some((n) => n.node_id === selected!.id)) selected = null;
-      live = `Showing ${canvasLabel(nav.here?.name ?? '')}: ${formatCount(s.nodes.length)} nodes${s.aggregate_state === 'provisional_live' ? ', provisional sums from a running scan' : ''}.`;
+      selected = selected ? b.info(selected.id) : null; // the old info is from the previous slice
+      const a = announceSlice(shownKey, s, nav.here?.name ?? '');
+      shownKey = a.key;
+      if (a.text) say.say(a.text);
     });
   });
   $effect(() => {
@@ -193,7 +202,12 @@
 
   function inspectById(id: string) {
     const n = sb?.info(id) ?? null;
-    if (n) { selected = n; hovered = null; }
+    if (n) { selected = n; hovered = null; say.say(describeNode(n)); }
+  }
+
+  function togglePause() {
+    paused = !paused;
+    if (paused) poller?.stop(); else poller?.start();
   }
 
   function basisKey(e: KeyboardEvent) {
@@ -229,12 +243,13 @@
         bind:this={canvas}
         tabindex="0"
         aria-label="Sunburst of the slice. Drag to orbit. Arrow keys move between arcs, Enter opens one, Escape goes back, [ and ] rotate."
-        aria-describedby="obs-live"
+        onblur={() => say.clear()}
       ></canvas>
     </div>
-    <p id="obs-live" class="sr-only" aria-live="polite">{live}</p>
+    <p id="obs-live" class="sr-only" aria-live="polite">{say.text}</p>
     <p class="help">
       Drag to orbit · click an arc to open it · the centre goes back · <kbd>[ ]</kbd> rotate
+      <button type="button" class="btn rot" onclick={() => sb?.rotateBy(-0.25)}>Rotate left</button><button type="button" class="btn rot" onclick={() => sb?.rotateBy(0.25)}>Rotate right</button>
       {#if nav.slice} · <span class="num">{formatCount(nav.slice.nodes.length)}</span> nodes{#if provisional} · <span class="warn">provisional: running scan</span>{/if}{/if}
     </p>
     <RegionList slice={nav.slice} onopen={(id, name) => void nav.drill(id, name)} oninspect={inspectById} />
@@ -244,9 +259,11 @@
     <section class="resources" aria-labelledby="res-h">
       <div class="res-top">
         <h2 id="res-h">Resources</h2>
+        <button type="button" class="btn rot" onclick={togglePause}>{paused ? 'Resume updates' : 'Pause updates'}</button>
         <p class="res-note">
           <span role="status">
-            {#if telState === 'unavailable'}<span class="warn">Telemetry unavailable, retrying</span>
+            {#if paused}<span class="warn">Paused, showing the last sample</span>
+            {:else if telState === 'unavailable'}<span class="warn">Telemetry unavailable, retrying</span>
             {:else if telState === 'waiting'}Waiting for a sample
             {:else}<span class="dot" aria-hidden="true"></span>{telClass === 'synthetic' ? 'Synthetic telemetry' : 'Observed telemetry'}{/if}
           </span>
@@ -255,10 +272,10 @@
       </div>
       {#if telState === 'unavailable'}<p class="muted small">{telNote} Nothing is shown in its place: every reading is unknown until a sample arrives.</p>{/if}
       <div class="gauges" class:off={telState === 'unavailable'}>
-        <figure><figcaption>CPU</figcaption><canvas bind:this={gaugeEls.cpu} aria-label={`CPU busy ${frac(tel?.system?.cpu.busy_fraction)?.toFixed(0) ?? 'unknown'} percent`}></canvas></figure>
-        <figure><figcaption>GPU</figcaption><canvas bind:this={gaugeEls.gpu} aria-label={`GPU busy ${frac(tel?.gpu?.adapters[0]?.engine_busy_fraction)?.toFixed(0) ?? 'unknown'} percent`}></canvas></figure>
-        <figure><figcaption>VRAM</figcaption><canvas bind:this={gaugeEls.vram} aria-label={`GPU memory used ${formatBytes(tel?.gpu?.adapters[0]?.dedicated_used_bytes)} of ${formatBytes(tel?.gpu?.adapters[0]?.dedicated_total_bytes)}`}></canvas></figure>
-        <figure><figcaption>Disk I/O <span class="scale num">0–{ioScale >= 1000 ? `${ioScale / 1000}k` : ioScale}</span></figcaption><canvas bind:this={gaugeEls.io} aria-label={`Disk read plus write rate, scale 0 to ${ioScale} MB/s`}></canvas></figure>
+        <figure><figcaption>CPU</figcaption><!-- svelte-ignore a11y_no_interactive_element_to_noninteractive_role --><canvas bind:this={gaugeEls.cpu} role="img" aria-label={`CPU busy ${frac(tel?.system?.cpu.busy_fraction)?.toFixed(0) ?? 'unknown'} percent`}></canvas></figure>
+        <figure><figcaption>GPU</figcaption><!-- svelte-ignore a11y_no_interactive_element_to_noninteractive_role --><canvas bind:this={gaugeEls.gpu} role="img" aria-label={`GPU busy ${frac(tel?.gpu?.adapters[0]?.engine_busy_fraction)?.toFixed(0) ?? 'unknown'} percent`}></canvas></figure>
+        <figure><figcaption>VRAM</figcaption><!-- svelte-ignore a11y_no_interactive_element_to_noninteractive_role --><canvas bind:this={gaugeEls.vram} role="img" aria-label={vramLabel(tel?.gpu?.adapters[0]?.dedicated_used_bytes, tel?.gpu?.adapters[0]?.dedicated_total_bytes)}></canvas></figure>
+        <figure><figcaption>Disk I/O <span class="scale num">0–{ioScale >= 1000 ? `${ioScale / 1000}k` : ioScale}</span></figcaption><!-- svelte-ignore a11y_no_interactive_element_to_noninteractive_role --><canvas bind:this={gaugeEls.io} role="img" aria-label={`Disk read plus write rate, scale 0 to ${ioScale} MB/s`}></canvas></figure>
       </div>
       <div class="disks">
         {#each tel?.disks?.disks ?? [] as d, i (diskKeys[i] ?? i)}
@@ -298,7 +315,11 @@
   .crumb { font: 500 0.95rem/1.3 var(--num-font); color: var(--muted); background: none; border: 0; padding: 2px; cursor: pointer; overflow-wrap: anywhere; text-align: left; }
   .crumb:hover { color: var(--text); }
   .crumb[aria-current='location'] { color: var(--text); cursor: default; }
-  .seg { display: inline-flex; padding: 2px; border: 1px solid var(--line); border-radius: 999px; }
+  @media (forced-colors: active) {
+    .crumb[aria-current='location'] { text-decoration: underline; text-underline-offset: 3px; }
+    .seg button[aria-checked='true'] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
+  }
+  .seg { display: inline-flex; padding: 2px; border: 1px solid var(--control-line); border-radius: 999px; }
   .seg button { font: inherit; font-size: 0.85rem; border: 0; background: none; color: var(--muted); padding: 4px 12px; border-radius: 999px; cursor: pointer; }
   .seg button[aria-checked='true'] { background: var(--raised); color: var(--text); box-shadow: inset 0 0 0 1px var(--line-strong); }
   .warn { color: var(--warn); }
@@ -314,6 +335,7 @@
   .res-top h2 { margin: 0; }
   .res-note { margin: 0; font-size: 0.8rem; color: var(--muted); display: inline-flex; gap: 6px; align-items: center; }
   .seq { color: var(--faint); }
+  .rot { font-size: 0.8rem; padding: 1px 10px; margin-left: 8px; }
   .scale { color: var(--faint); font-size: 0.72rem; }
   .unknown-bar { align-items: center; justify-content: center; height: 16px; font-size: 0.72rem; color: var(--unknown); border: 1px dashed var(--unknown); background: none; }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--gauge-value); }

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import { session } from './lib/stores/session.svelte';
   import { route } from './lib/stores/route.svelte';
   import { theme, THEMES, type Theme } from './lib/stores/theme.svelte';
@@ -14,6 +15,21 @@
   $effect(() => {
     if (!route.name && views[0]) location.replace(`#/${views[0].name}`);
   });
+  // A route change moves focus to the new view's heading, so keyboard and screen-reader users land in
+  // the new content (the title change alone announces nothing). The first load and the default-route
+  // redirect do not steal focus.
+  let main = $state<HTMLElement>();
+  let lastRoute = route.name;
+  $effect(() => {
+    const name = route.name;
+    const was = lastRoute;
+    lastRoute = name;
+    if (!was || !name || was === name) return;
+    void tick().then(() => {
+      const h = main?.querySelector('h1');
+      if (h) { h.tabIndex = -1; h.focus(); }
+    });
+  });
   $effect(() => {
     document.title = `${current?.title ?? 'Loomward'} · Loomward`;
   });
@@ -27,16 +43,19 @@
     <span class="tagline">{themeLabel[theme.current]}</span>
   </div>
 
-  <ul class="status" role="status" aria-label="Session status">
-    <li class="chip dataset" data-class={session.datasetClass ?? 'unknown'}>
-      Dataset <strong>{session.datasetClass ?? 'unknown'}</strong>
-    </li>
-    <li class="chip sim" title="Loomward v0.3 observes and simulates. It never moves, deletes or changes anything.">
-      <strong>Simulation</strong> · no file or process effects
-    </li>
-    <li class="chip mode" data-mode={session.mode}>{modeLabel[session.mode]}</li>
-    <li class="chip conn" data-state={session.state}>{connLabel[session.state]}</li>
-  </ul>
+  <!-- role=status on the wrapper, not the list: it would replace the list semantics -->
+  <div role="status" aria-label="Session status">
+    <ul class="status">
+      <li class="chip dataset" data-class={session.datasetClass ?? 'unknown'}>
+        Dataset <strong>{session.datasetClass ?? 'unknown'}</strong>
+      </li>
+      <li class="chip sim" title="Loomward v0.3 observes and simulates. It never moves, deletes or changes anything.">
+        <strong>Simulation</strong> · no file or process effects
+      </li>
+      <li class="chip mode" data-mode={session.mode}>{modeLabel[session.mode]}</li>
+      <li class="chip conn" data-state={session.state}>{connLabel[session.state]}</li>
+    </ul>
+  </div>
 
   <div class="themes" role="group" aria-label="Theme">
     {#each THEMES as t (t)}
@@ -53,7 +72,7 @@
     {/each}
   </nav>
 
-  <main id="main" tabindex="-1">
+  <main id="main" tabindex="-1" bind:this={main}>
     {#if session.state === 'connected'}
       {#if Current}
         {#key session.info?.session_started_at}
@@ -90,6 +109,9 @@
   .skip { position: absolute; left: -999px; top: 0; background: var(--accent); color: var(--accent-ink); padding: 8px 12px; z-index: 10; }
   .skip:focus { left: 8px; top: 8px; }
 
+  /* Sticky chrome only where the viewport can spare it: at 200% to 400% zoom (a narrow or short CSS viewport)
+     it would cover most of the page and every focused control (WCAG 1.4.10, 2.4.11). */
+  :global(html) { scroll-padding-top: 112px; }
   .masthead {
     position: sticky; top: 0; z-index: 5;
     display: flex; flex-wrap: wrap; align-items: center; gap: 10px 20px;
@@ -145,9 +167,16 @@
   .thread.residency i { background: repeating-linear-gradient(0deg, var(--residency) 0 3px, transparent 3px 5px); }
   .thread.permission i { border: 2px dashed var(--permission); }
 
+  @media (forced-colors: active) {
+    .rail a[aria-current='page'] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
+  }
+  @media (max-width: 760px), (max-height: 500px) {
+    :global(html) { scroll-padding-top: 0; }
+    .masthead, .rail { position: static; }
+  }
   @media (max-width: 760px) {
     .frame { grid-template-columns: 1fr; gap: 12px; }
-    .rail { flex-direction: row; flex-wrap: wrap; position: static; }
+    .rail { flex-direction: row; flex-wrap: wrap; }
     .rail a { border-left: 0; border-bottom: 2px solid transparent; }
     .rail a[aria-current='page'] { border-bottom-color: var(--accent); }
     .brand { margin-right: 0; flex-basis: 100%; }
