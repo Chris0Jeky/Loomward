@@ -498,6 +498,9 @@ fn reconcile<S: DirSource>(
         settled = !full || next.complete;
         examined += next.examined;
         report.enumeration_worker_seconds += next.enumeration_worker_seconds;
+        report.enumeration_wall_seconds += next.enumeration_wall_seconds;
+        report.staging_seconds += next.staging_seconds;
+        report.aggregation_seconds += next.aggregation_seconds;
         report.persistence_seconds += next.persistence_seconds;
         report.totals = next.totals;
         report.skipped += next.skipped;
@@ -1053,6 +1056,76 @@ mod native_tests {
         engine.scan_cancel_root(root.root_id()).unwrap();
     }
     #[test]
+    fn root_cancellation_requests_job_before_stopping_watch() {
+        use loomward_protocol::{CoverageState, JobKind, JobState};
+        use std::sync::mpsc;
+
+        let tree = fixture();
+        let Some(root) = grant(tree.path()) else {
+            return;
+        };
+        let engine = Engine::open(crate::EngineConfig::new(
+            tree.path().join("state"),
+            root.dataset_class(),
+        ))
+        .unwrap();
+        let watch = RootWatch::start(&root, Arc::new(MemorySink::default())).unwrap();
+        engine
+            .scan_watches
+            .lock()
+            .unwrap()
+            .insert(root.root_id().clone(), watch.clone());
+        let (release, released) = mpsc::sync_channel(1);
+        let released = Mutex::new(released);
+        let cancelled_before_stop = Arc::new(AtomicBool::new(false));
+        let observed = cancelled_before_stop.clone();
+        let interrupt_watch = watch.clone();
+        // Hold even a queued runner independently of the scan's byte-budget path.
+        let job = engine
+            .jobs
+            .submit(
+                crate::jobs::JobSpec::new(JobKind::Scan, Some(root.root_id().clone())),
+                Arc::new(move |_, _| {
+                    released
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(2))
+                        .unwrap();
+                    Ok(CoverageState::Complete)
+                }),
+                engine.events.clone(),
+                Some(Arc::new(move || {
+                    observed.store(
+                        !interrupt_watch.dirty.lock().unwrap().stopped,
+                        Ordering::Release,
+                    );
+                })),
+            )
+            .unwrap();
+        let cancelled = engine.scan_cancel_root(root.root_id()).unwrap();
+        release.send(()).unwrap();
+        assert!(
+            cancelled_before_stop.load(Ordering::Acquire),
+            "request job cancellation before watch teardown can terminate its runner"
+        );
+        assert_eq!(cancelled.len(), 1);
+        assert_eq!(cancelled[0].job_id, job.job_id);
+        assert_eq!(cancelled[0].state, JobState::CancelRequested);
+        assert!(engine.scan_watches.lock().unwrap().is_empty());
+        assert!(watch.dirty.lock().unwrap().stopped);
+        assert!(watch.native.checkpoint().is_err());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let status = engine.job_status(&job.job_id).unwrap();
+            if status.state == JobState::Cancelled {
+                break;
+            }
+            assert!(Instant::now() < deadline, "{status:?}");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
     fn concurrent_scan_start_reserves_root_before_touching_watch() {
         use std::sync::{mpsc, Barrier};
         let tree = fixture();
@@ -1159,26 +1232,28 @@ mod native_tests {
             )
             .unwrap();
         let (results, result) = mpsc::channel();
+        let gate_released = AtomicBool::new(false);
+        let (cancelling, cancel_started) = mpsc::sync_channel(1);
         std::thread::scope(|threads| {
             let start = threads.spawn(|| engine.scan_start(&root, None));
             entry.recv_timeout(Duration::from_secs(2)).unwrap();
             threads.spawn(|| {
-                results
-                    .send(engine.scan_cancel_root(root.root_id()))
-                    .unwrap()
+                cancelling.send(()).unwrap();
+                let cancelled = engine.scan_cancel_root(root.root_id());
+                let returned_after_release = gate_released.load(Ordering::Acquire);
+                results.send((cancelled, returned_after_release)).unwrap()
             });
-            // The old cancellation runs in this gap and misses the not-yet-installed watch.
-            let early = result.recv_timeout(Duration::from_millis(100));
+            cancel_started.recv_timeout(Duration::from_secs(2)).unwrap();
+            gate_released.store(true, Ordering::Release);
             release.send(()).unwrap();
             let winner = start.join().unwrap().unwrap();
-            let cancelled = match early {
-                Ok(cancelled) => cancelled,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    result.recv_timeout(Duration::from_secs(2)).unwrap()
-                }
-                Err(error) => panic!("canceller disconnected: {error}"),
-            }
-            .unwrap();
+            let (cancelled, returned_after_release) =
+                result.recv_timeout(Duration::from_secs(2)).unwrap();
+            let cancelled = cancelled.unwrap();
+            assert!(
+                returned_after_release,
+                "revocation must block on the start gate and return only after release"
+            );
             assert_eq!(
                 cancelled.len(),
                 1,

@@ -3,7 +3,7 @@ import { asEvent, ResumeTracker, TransportError, type Transport } from './transp
 
 /** The two Tauri entry points this transport needs (`@tauri-apps/api/core`); injectable for tests. */
 export interface TauriApi {
-  invoke(cmd: string, args?: Record<string, unknown>): Promise<unknown>;
+  invoke(cmd: string, args?: Record<string, unknown> | Uint8Array): Promise<unknown>;
   Channel: new <T>() => { onmessage: (m: T) => void };
 }
 
@@ -31,7 +31,7 @@ export async function createTauriTransport(api?: TauriApi, opts: TauriOptions = 
     async call(request: RequestEnvelope): Promise<ResponseEnvelope> {
       try {
         // In-process IPC: the envelope comes back as-is; the client validates its shape.
-        return (await invoke('lw_call', { request })) as ResponseEnvelope;
+        return (await invoke('lw_call', new TextEncoder().encode(JSON.stringify(request)))) as ResponseEnvelope;
       } catch (e) {
         throw new TransportError(`desktop engine not reachable: ${typeof e === 'string' ? e : e instanceof Error ? e.message : 'invoke failed'}`);
       }
@@ -54,10 +54,23 @@ export async function createTauriTransport(api?: TauriApi, opts: TauriOptions = 
             cancelWait = () => { clearTimeout(timer); resolve(); };
           });
           const channel = new Channel<EventEnvelope>();
+          let lagged = false;
           channel.onmessage = (m) => {
             if (!attemptLive || stopped) return;
             beat(); // any message, even a malformed one, proves the channel is alive
             const ev = asEvent(m);
+            // Channel.send is fire-and-forget: discard queued stale data after a renderer stall.
+            if (ev && Date.now() - Date.parse(ev.at) > 5000) {
+              if (!lagged) {
+                const gap: EventEnvelope = { ...ev, event: 'stream.lagged', at: new Date().toISOString(),
+                  data: { reason: 'subscriber_overflow', dropped: null, resync: ['roots', 'volumes', 'jobs', 'tree', 'learning'] } };
+                if (tracker.accept(gap)) onEvent(gap);
+              }
+              tracker.accept(ev);
+              lagged = true;
+              return;
+            }
+            lagged = false;
             if (ev && tracker.accept(ev)) onEvent(ev);
           };
           try {

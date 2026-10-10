@@ -1,6 +1,7 @@
 """Browser checks for the Svelte app in app/ (lane L3). Requires Playwright and a Chromium installation.
 
-Serves the built app/dist from a tiny loopback static server and drives it with Chromium:
+Builds development fixtures under .loomward/app-e2e, serves them from a tiny loopback static
+server and drives them with Chromium (production app/dist never enables the mock override):
   - mock mode (?transport=mock): shell chrome, labels, both themes, hostile names as text, routes;
   - no engine: "unavailable", never demo data;
   - http mode against a small in-process fake engine: token header, fragment scrubbed, SSE held open,
@@ -20,6 +21,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import tempfile
@@ -244,8 +246,9 @@ def run_live_serve(browser_path: str | None) -> None:
             res = page.goto(f'{base}/?transport=mock')
             headers = res.headers if res else {}
             check("script-src 'self'" in headers.get('content-security-policy', '') and headers.get('x-content-type-options') == 'nosniff', 'static page carries the CSP and nosniff headers')
-            expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
-            print('PASS the built app runs under the server CSP (mock mode)')
+            expect(page.get_by_role('heading', name='Unavailable', level=1)).to_be_visible()
+            expect(page.get_by_role('status', name='Session status')).to_contain_text('No transport')
+            print('PASS the production app refuses mock mode under the server CSP')
 
             page.evaluate('sessionStorage.clear()')
             page.goto(url)
@@ -285,6 +288,7 @@ def run_live_serve(browser_path: str | None) -> None:
 
 
 def main() -> None:
+    global DIST
     ap = argparse.ArgumentParser()
     ap.add_argument('--browser', default=None, help='path to a Chromium executable')
     ap.add_argument('--screenshots', type=Path)
@@ -296,6 +300,14 @@ def main() -> None:
         sys.exit('app/dist is missing: run `npm.cmd --prefix app run build` first')
     if a.live_serve:
         return run_live_serve(a.browser)
+
+    DIST = ROOT / '.loomward/app-e2e'
+    subprocess.run(
+        ['npm.cmd' if os.name == 'nt' else 'npm', '--prefix', 'app', 'run', 'build', '--',
+         '--outDir', str(DIST)],
+        cwd=ROOT, env=dict(os.environ, NODE_ENV='development'), check=True,
+    )
+    assert (DIST / 'index.html').is_file(), 'development fixtures were not built'
 
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     server.daemon_threads = True
