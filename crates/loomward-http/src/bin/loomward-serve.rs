@@ -101,12 +101,15 @@ fn service(args: &Args) -> Result<Started, String> {
     // The canonical roots the rules approved are exactly the roots the service grants (#146).
     let roots = paths::validate_roots(&args.grant_roots, Some(&state_dir))?;
     let count = roots.len();
-    let s = Service::open(Config {
-        state_dir,
-        dataset: args.dataset,
-        allow_personal: args.allow_personal,
-        grant_roots: roots.clone(),
-    })?;
+    let s = Service::open_with_static(
+        Config {
+            state_dir,
+            dataset: args.dataset,
+            allow_personal: args.allow_personal,
+            grant_roots: roots.clone(),
+        },
+        args.static_dir.as_deref(),
+    )?;
     Ok((
         Arc::new(s),
         format!("engine service; {count} grant root(s) granted"),

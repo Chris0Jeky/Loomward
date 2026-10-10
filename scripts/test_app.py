@@ -1,6 +1,7 @@
 """Browser checks for the Svelte app in app/ (lane L3). Requires Playwright and a Chromium installation.
 
-Serves the built app/dist from a tiny loopback static server and drives it with Chromium:
+Builds development fixtures under .loomward/app-e2e, serves them from a tiny loopback static
+server and drives them with Chromium (production app/dist never enables the mock override):
   - mock mode (?transport=mock): shell chrome, labels, both themes, hostile names as text, routes;
   - no engine: "unavailable", never demo data;
   - http mode against a small in-process fake engine: token header, fragment scrubbed, SSE held open,
@@ -20,6 +21,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import tempfile
@@ -171,6 +173,55 @@ def theme_snapshot(page: Page) -> dict:
     }""")
 
 
+def live_call(page: Page, token: str, command: str, payload: dict) -> dict:
+    return page.evaluate("""async ([token, command, payload]) => (await (await fetch('/api/v3/call', {method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-Loomward-Token': token},
+        body: JSON.stringify({protocol: 'loomward/3', request_id: 'live_' + command.replace('.', '_'), command, payload})})).json())""", [token, command, payload])
+
+
+def live_scan_refusals(browser, exe: Path) -> None:
+    """Scanning registers nothing here, so the refusal paths of the real service are what the app must word.
+
+    A synthetic session with no root grants offers no Scan button and refuses scan.start for a root it does not
+    know; a personal session (launch flags only; no root is granted, nothing is read) refuses it with
+    `personal_scan_gated_184` and the app says why real-disk scans are not offered yet. Neither starts a job."""
+    for dataset in ('synthetic', 'personal'):
+        state = tempfile.TemporaryDirectory(prefix=f'lw-live-scan-{dataset}-')
+        flags = ['--dataset', 'personal', '--allow-personal'] if dataset == 'personal' else []
+        proc = subprocess.Popen([str(exe), '--state-dir', state.name, '--static', str(DIST), *flags], stdout=subprocess.PIPE, text=True)
+        try:
+            url = (proc.stdout.readline() if proc.stdout else '').strip()
+            check('/#token=' in url, f'a {dataset} loomward-serve is up for the scan refusal checks')
+            base, token = url.split('/#token=')
+            page = browser.new_context(viewport={'width': 1360, 'height': 900}).new_page()
+            page.set_default_timeout(8000)
+            page.goto(url)
+            expect(page.get_by_role('status', name='Session status')).to_contain_text('Connected')
+            page.evaluate("location.hash = '#/health'")
+            expect(page.get_by_role('heading', name='Grants & health', level=1)).to_be_visible()
+            expect(page.locator('main table.tbl tbody')).to_contain_text('No roots granted')
+            check(page.locator('ul.scans li').count() == 0 and page.locator('ul.scans button').count() == 0, f'{dataset}: no root, so no Scan control is offered')
+            check(page.locator('p.bad.live').inner_text() == '', f'{dataset}: Grants & health loaded against the real service (jobs.list answered), no error shown')
+            note = page.locator('#h-scans ~ p.muted').all_inner_texts()
+            if dataset == 'personal':
+                check(any('Real-disk scans arrive after the safety gates' in t for t in note), f'personal: the page says real-disk scans arrive after the safety gates ({note})')
+            jobs = live_call(page, token, 'jobs.list', {'kinds': ['scan'], 'limit': 50})
+            check(jobs['ok'] and jobs['result']['jobs'] == [], f'{dataset}: the real service lists no scan job')
+            r = live_call(page, token, 'scan.start', {'root_id': 'rt_nope', 'mode': 'full'})
+            if dataset == 'personal':
+                check(not r['ok'] and r['error']['code'] == 'capability_unavailable' and (r['error']['detail'] or {}).get('reason') == 'personal_scan_gated_184', f"personal: scan.start is refused with personal_scan_gated_184: {r.get('error')}")
+            else:
+                check(not r['ok'] and r['error']['code'] == 'not_found', f"synthetic: scan.start for an unknown root is not_found: {r.get('error')}")
+            jobs = live_call(page, token, 'jobs.list', {'kinds': ['scan'], 'limit': 50})
+            check(jobs['ok'] and jobs['result']['jobs'] == [], f'{dataset}: the refused scan.start created no job')
+            page.context.close()
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=10)
+            state.cleanup()
+
+
 def run_live_serve(browser_path: str | None) -> None:
     """The app's http transport against the real loomward-serve binary (lane L6) and engine service (L8)."""
     subprocess.run(['cargo', 'build', '-q', '-p', 'loomward-http', '--bin', 'loomward-serve'], cwd=ROOT, check=True)
@@ -195,8 +246,9 @@ def run_live_serve(browser_path: str | None) -> None:
             res = page.goto(f'{base}/?transport=mock')
             headers = res.headers if res else {}
             check("script-src 'self'" in headers.get('content-security-policy', '') and headers.get('x-content-type-options') == 'nosniff', 'static page carries the CSP and nosniff headers')
-            expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
-            print('PASS the built app runs under the server CSP (mock mode)')
+            expect(page.get_by_role('heading', name='Unavailable', level=1)).to_be_visible()
+            expect(page.get_by_role('status', name='Session status')).to_contain_text('No transport')
+            print('PASS the production app refuses mock mode under the server CSP')
 
             page.evaluate('sessionStorage.clear()')
             page.goto(url)
@@ -215,6 +267,7 @@ def run_live_serve(browser_path: str | None) -> None:
             page.wait_for_timeout(1500)  # the SSE stream stays open: still connected
             expect(status).to_contain_text('Connected')
             print('PASS http transport connected through loomward-serve')
+            live_scan_refusals(browser, exe)
 
             proc.terminate()
             proc.wait(timeout=10)
@@ -235,6 +288,7 @@ def run_live_serve(browser_path: str | None) -> None:
 
 
 def main() -> None:
+    global DIST
     ap = argparse.ArgumentParser()
     ap.add_argument('--browser', default=None, help='path to a Chromium executable')
     ap.add_argument('--screenshots', type=Path)
@@ -246,6 +300,14 @@ def main() -> None:
         sys.exit('app/dist is missing: run `npm.cmd --prefix app run build` first')
     if a.live_serve:
         return run_live_serve(a.browser)
+
+    DIST = ROOT / '.loomward/app-e2e'
+    subprocess.run(
+        ['npm.cmd' if os.name == 'nt' else 'npm', '--prefix', 'app', 'run', 'build', '--',
+         '--outDir', str(DIST)],
+        cwd=ROOT, env=dict(os.environ, NODE_ENV='development'), check=True,
+    )
+    assert (DIST / 'index.html').is_file(), 'development fixtures were not built'
 
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     server.daemon_threads = True
