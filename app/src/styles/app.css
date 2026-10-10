@@ -75,7 +75,7 @@ input[type='search'], input[type='text'], select {
   padding: 6px 10px;
 }
 
-.tbl-wrap { overflow-x: auto; }
+.tbl-wrap { overflow-x: auto; position: relative; } /* contains the absolutely positioned .sr-only text inside cells */
 table.tbl { width: 100%; border-collapse: collapse; }
 .tbl th, .tbl td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
 .tbl th { color: var(--muted); font-weight: 600; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.06em; }
