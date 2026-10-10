@@ -1,0 +1,22 @@
+{
+  "def": "RequestEnvelope",
+  "reason": "an atlas slice spans every root, so it has no single generation to expect",
+  "complete": true,
+  "rust_only": true,
+  "value": {
+    "protocol": "loomward/3",
+    "request_id": "r_12",
+    "command": "tree.slice",
+    "payload": {
+      "anchor": {
+        "kind": "atlas"
+      },
+      "depth": 3,
+      "max_nodes": 2500,
+      "min_share": 0.001,
+      "basis": "allocated",
+      "include_files": false
+    },
+    "expected_generation": "12"
+  }
+}

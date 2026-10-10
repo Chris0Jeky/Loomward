@@ -29,27 +29,53 @@ clients (`app/`). The shapes are in `view-service.schema.json`; the command and 
   result type allows it). Reads have no side effects and MAY be retried freely.
 - A mutation that has passed step 5 of section 1 runs to commit or to a clean failure even if its deadline
   passes. A `deadline_exceeded` response to a mutation means **outcome unknown**. Section 4 says how to recover.
-- Work that cannot finish within a deadline by design (scans, refits, teacher runs, placement simulations above
-  a size the service estimates as slow) MUST be a job: the call returns the `Job` and progress arrives as events.
+- Work that cannot finish within a deadline by design (scans, refits, teacher runs) MUST be a job: the call
+  returns the `Job` and progress arrives as events.
+- `placement.simulate` is **never a job** in v0.3 (its result is always a `PlacementPlan`). It is synchronous,
+  bounded by `node_budget`, and has a default deadline of 10,000 ms. A request the service estimates it cannot
+  finish, or that overruns, is `resource_budget` or `deadline_exceeded` (retryable with a smaller `max_groups` or
+  `node_budget`); a plan with `save: true` that overran is either committed and listed by `proposals.list` or
+  not saved at all, never half-saved.
 
-## 3. Which timed-out mutations may have committed
+## 3. Recovering from an unknown outcome
 
-| Command | May have committed after `deadline_exceeded`? | Recovery without side effects |
-|---|---|---|
-| `feedback.record` | Yes | Resend with the same `client_event_id`: an identical replay returns the original result with `idempotent_replay: true` |
-| `collections.create` | Yes | `collections.list`; a duplicate name is `invalid_request` with `detail.existing_id` |
-| `collections.update_members` | Yes | Resend with the same `request_id` within 10 minutes, or read `collections.members`; adds and removes are set operations, so replays are harmless |
-| `volumes.declare_tier` | Yes | Resend (last declaration wins) or read `volumes.list` |
-| `roots.revoke`, `grants.revoke` | Yes | Resend: revoking a revoked grant returns the original `revoked_at` |
-| `roots.request_grant` | Yes, if the owner already picked a folder | `roots.list`; never reopen the picker automatically |
-| `grants.create_disclosure` | Yes | Resend with the same `preview_id`: a preview yields at most one grant, returned again |
-| `teacher.run` | Yes, and disclosure may already have happened | Resend with the same `grant_id`: returns the existing job (`teacher.results`), never a second request. MUST NOT create a new preview or grant to "retry" |
-| `scan.start` | Yes | `jobs.list` for the root; a second start while one is active is `busy` with `detail.job_id` |
-| `scan.cancel` | Yes | Resend (idempotent) or `jobs.get` |
-| `learning.refit` | Yes | `jobs.list` (one refit runs at a time; `busy` with `detail.job_id`) |
-| `placement.simulate` with `save: true` | Yes | `proposals.list`; plans are deterministic for the same inputs digest |
-| `budgets.set` | Yes | Resend (absolute value) or `budgets.get` |
-| `telemetry.subscribe`, `telemetry.unsubscribe` | Yes | Resend with the same `subscription_id`; unknown or expired IDs are `not_found` |
+A `deadline_exceeded` response to a mutation, a transport failure after the request was sent, and a restart
+between request and response all leave the outcome **unknown**: the mutation may have committed. The owner may
+have acted again in the meantime, so **recovery never resends a mutation blindly**. There is no "last
+declaration wins" and no "resend the absolute value". Exactly three recoveries exist, tried in this order:
+
+1. **Retry through the action key** while its outcome is retained. The action key is the `request_id` of the
+   original call (retained 10 minutes in the session cache, section 4) or the durable key in the table. The
+   retry MUST be byte-identical (same `request_id`, same canonical payload); the service returns the original
+   outcome and never executes twice.
+2. **Read current state** with the command named in the table, once the action key is no longer retained
+   (cache expiry, restart, new epoch). The read shows whether the mutation landed and what the owner has chosen
+   since. Do not mint a fresh `request_id` to "retry".
+3. **Replay under a revision precondition**, only for commands that carry one. The client re-sends the old
+   intent with `expected_state_rev` set to the `meta.state_rev` of the read in step 2. If `state.db` has changed
+   since that read the call fails with `stale_generation` and `detail.reason = "state_rev_changed"`, nothing is
+   written, and the client shows the owner the current state instead of replaying. A client MUST NOT replay an
+   old owner choice after a read that shows a different value without asking the owner again.
+
+Commands whose repetition cannot undo a later choice (revocation, cancellation and durable keys) are safe to
+re-send as stated.
+
+| Command | May have committed? | Retained action key | Read (step 2) | Replay (step 3) |
+|---|---|---|---|---|
+| `feedback.record` | Yes | `client_event_id`, forever: an identical replay returns the original result with `idempotent_replay: true` | `learning.status`, `learning.queue` | Not needed: the durable key makes a resend with the same `client_event_id` safe. Reuse with different content is `invalid_request` |
+| `volumes.declare_tier` | Yes | `request_id`, 10 min | `volumes.list` | Re-declare only with `expected_state_rev` from that read |
+| `collections.create` | Yes | `request_id`, 10 min | `collections.list`; a duplicate name is `invalid_request` with `detail.existing_id` | Not needed: the name is the key |
+| `collections.update_members` | Yes | `request_id`, 10 min | `collections.members` | Re-send adds and removes only with `expected_state_rev` from that read; set operations are not idempotent against intervening changes |
+| `roots.revoke`, `grants.revoke` | Yes | Revocation is monotone: revoking a revoked grant returns the original `revoked_at` | `roots.list`, `grants.list` | Re-send is safe |
+| `roots.request_grant` | Yes, if the owner already picked a folder | `request_id`, 10 min | `roots.list` | Never reopen the picker automatically |
+| `grants.create_disclosure` | Yes | `preview_id`: a preview yields at most one grant, returned again | `grants.list` | Re-send with the same `preview_id` is safe |
+| `teacher.run` | Yes, and disclosure may already have happened | `grant_id`: returns the existing job, never a second request | `teacher.results`, `jobs.list` | MUST NOT create a new preview or grant to retry |
+| `scan.start` | Yes | One active scan per root: a second start is `busy` with `detail.job_id` | `jobs.list` for the root | Re-send is safe |
+| `scan.cancel` | Yes | Idempotent | `jobs.get` | Re-send is safe |
+| `learning.refit` | Yes | One refit at a time: `busy` with `detail.job_id` | `jobs.list` | Re-send is safe |
+| `placement.simulate` with `save: true` | Yes | `request_id`, 10 min | `proposals.list`; plans are deterministic for the same inputs digest | Re-send is safe (a duplicate digest returns the saved proposal) |
+| `budgets.set` | Yes | `request_id`, 10 min | `budgets.get` | Loomward's own pools reset at restart. After cache expiry set a value only if the owner confirms it against the value read |
+| `telemetry.subscribe`, `telemetry.unsubscribe` | Yes | `subscription_id` | Unknown or expired IDs are `not_found` | Re-subscribe with a fresh lease |
 
 ## 4. Idempotency
 
@@ -59,8 +85,8 @@ clients (`app/`). The shapes are in `view-service.schema.json`; the command and 
   `detail.reason = "idempotency_conflict"`. The cache does not survive a restart; durable keys below do.
 - **Durable keys.** `client_event_id` (feedback, forever), `preview_id` (one grant), `grant_id` (one teacher
   request), one active scan per root, one active refit. Durable keys win over the session cache.
-- Clients SHOULD generate `request_id` values that are unique per user action and reuse them only for retries
-  of that action.
+- Clients MUST generate `request_id` values that are unique per user action and reuse one only to retry that
+  same action while it is retained (section 3, step 1). Recovery after expiry reads state; it never resends.
 
 ## 5. Revision and generation scopes
 
@@ -71,17 +97,21 @@ clients (`app/`). The shapes are in `view-service.schema.json`; the command and 
 | root `generation` | One granted root | A scan run of that root reaches `completed` (the run's ID) | `RootScanState.generation`, `RootGeneration` |
 | `listing_rev` | One directory's direct membership and names | That directory's completed listing changed its members | Inside cursors |
 | `subtree_rev` | One directory's subtree | Any committed change at or below it, including sizes (set to `catalog_rev` along the ancestor chain in the same transaction) | Inside cursors |
-| state revision | `state.db` | Not exposed; state changes are signalled by events | |
+| `state_rev` | One `state.db` instance | Every committed `state.db` transaction that changes owner data: feedback, collections and members, tier declarations, grants (monotonic, never reused) | `ResponseMeta.state_rev`, `EventEnvelope.state_rev`, request precondition `expected_state_rev` |
 
 Rules:
 
 - `expected_generation` is accepted only for commands anchored in exactly one root (`tree.*`, `node.inspect`,
   `stats.breakdown` on a root or node anchor). Elsewhere it is `invalid_request`. If the root's current
   generation differs, the response is `stale_generation`.
+- `expected_state_rev` is accepted only by `volumes.declare_tier` and `collections.update_members`; elsewhere it
+  is `invalid_request`. A mismatch is `stale_generation` with `detail.reason = "state_rev_changed"` and nothing
+  is written (section 3, step 3).
 - A cursor binds the command, the complete filter set, the sort, the basis, the tie-breaker (row ID), the
-  catalogue instance, the session, and a revision: `subtree_rev` of the anchor for `tree.children`;
-  `catalog_rev` for `search.query`, `collections.members` and `learning.queue`. If that revision changed, the
-  next page is `stale_generation`; clients restart from the first page.
+  catalogue instance, the session, and revisions: `subtree_rev` of the anchor for `tree.children`; `catalog_rev`
+  for `search.query`; **`catalog_rev` and `state_rev` for `collections.members` and `learning.queue`**, because
+  their pages depend on `state.db` data (membership, feedback) that changes without a catalogue commit. If a
+  bound revision changed, the next page is `stale_generation`; clients restart from the first page.
 - While a root is being scanned its `subtree_rev` changes continuously, so paging inside it will go stale. The UI
   SHOULD page from slices (which are snapshots) during scans and use cursors once the scan finishes.
 - A page that stops on its work budget returns the items found so far, `budget_hit: true`, and a cursor that
@@ -131,10 +161,10 @@ Rules:
 |---|---|
 | `invalid_request`, `unsupported_protocol`, `unknown_command`, `capability_unavailable`, `permission_denied` | No; fix the request or the state |
 | `not_found` | No; refetch the parent resource (IDs may have expired) |
-| `stale_generation` | Yes, after refetching from the first page or re-reading the root |
+| `stale_generation` | Yes, after refetching from the first page or re-reading the root; with `detail.reason = "state_rev_changed"` only after re-reading the state and, for an old owner choice, asking the owner again (section 3) |
 | `busy` | Yes, after the job in `detail.job_id` finishes |
 | `resource_budget`, `deadline_exceeded` (read) | Yes, with a narrower request |
-| `deadline_exceeded` (mutation) | Section 3 only |
+| `deadline_exceeded` (mutation) | Section 3 only: action key, read, or revision precondition; never a blind resend |
 | `device_offline`, `partial_coverage` | When the condition changes (events) |
 | `cancelled` | No |
 | `internal_error` | At most once, after `health.get`; never for `teacher.run` |

@@ -1,0 +1,28 @@
+{
+  "model_id": "md_0001",
+  "items": [
+    {
+      "node_id": "nd_0002",
+      "meaning": {
+        "state": "labelled",
+        "label": "Project",
+        "share": 1.0,
+        "source": "human",
+        "collection_ids": [
+          "co_proj1"
+        ]
+      }
+    },
+    {
+      "node_id": "nd_0003",
+      "meaning": {
+        "state": "none",
+        "label": null,
+        "share": null,
+        "source": null,
+        "collection_ids": []
+      }
+    }
+  ],
+  "budget_hit": false
+}

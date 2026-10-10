@@ -1,0 +1,10 @@
+{
+  "def": "StreamLagged",
+  "reason": "reason is required",
+  "value": {
+    "dropped": 1,
+    "resync": [
+      "jobs"
+    ]
+  }
+}

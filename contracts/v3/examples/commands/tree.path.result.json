@@ -1,0 +1,21 @@
+{
+  "root_id": "rt_synth1",
+  "ancestors": [
+    {
+      "node_id": "nd_0001",
+      "kind": "root",
+      "name": "S1"
+    },
+    {
+      "node_id": "nd_0002",
+      "kind": "dir",
+      "name": "Projects"
+    },
+    {
+      "node_id": "nd_0020",
+      "kind": "file",
+      "name": "report_final.docx"
+    }
+  ],
+  "truncated": false
+}

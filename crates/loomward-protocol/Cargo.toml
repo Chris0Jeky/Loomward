@@ -1,0 +1,14 @@
+[package]
+name = "loomward-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Loomward v0.3 view-service wire contract: envelopes, commands, events, DTOs and the ViewService trait (docs/41 section 5)."
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+jsonschema = { version = "0.58.6", default-features = false }

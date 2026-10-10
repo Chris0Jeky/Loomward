@@ -1,0 +1,11 @@
+{
+  "def": "RequestEnvelope",
+  "reason": "unknown envelope field",
+  "value": {
+    "protocol": "loomward/3",
+    "request_id": "r_1",
+    "command": "session.hello",
+    "payload": {},
+    "token": "x"
+  }
+}

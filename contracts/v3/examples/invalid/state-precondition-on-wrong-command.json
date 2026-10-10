@@ -1,0 +1,20 @@
+{
+  "def": "RequestEnvelope",
+  "reason": "expected_state_rev is only accepted by volumes.declare_tier and collections.update_members",
+  "complete": true,
+  "rust_only": true,
+  "value": {
+    "protocol": "loomward/3",
+    "request_id": "r_10",
+    "command": "scan.start",
+    "payload": {
+      "root_id": "rt_synth1",
+      "mode": "refresh",
+      "budget": {
+        "max_entries": 1000000,
+        "threads": 4
+      }
+    },
+    "expected_state_rev": "311"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "def": "SubtreeTotals",
+  "reason": "logical_bytes is not nullable; null is only for unknown allocation",
+  "value": {
+    "files": 1200,
+    "dirs": 140,
+    "logical_bytes": null,
+    "allocated_bytes": "789000192",
+    "allocation_unknown_files": 0,
+    "skipped": 0,
+    "failed": 0,
+    "complete": true,
+    "stream_coverage": "default_stream_only",
+    "unique_objects": 1180,
+    "unique_allocated_bytes": "788000000",
+    "multi_link_entries": 20
+  }
+}

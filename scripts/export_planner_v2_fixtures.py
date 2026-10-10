@@ -172,13 +172,7 @@ def main():
         case = {'suite': suite, 'name': name, 'node_budget': budget, 'input': s}
         if note:
             case['note'] = note
-        if err == 'KeyError' and 'groups' not in s:
-            # plan_tiers_v2 reads scenario['groups'] directly while v1 uses .get('groups', []).
-            # Record v1 semantics (groups == []) and name the Python discrepancy.
-            output, err2 = run({**s, 'groups': []}, budget)
-            assert err2 is None
-            case['python_discrepancy'] = "plan_tiers_v2 raises KeyError('groups') on this input; output is Python's result for groups=[] (v1 behaviour)"
-        elif err and suite != 'reject':
+        if err and suite != 'reject':
             raise SystemExit(f'{name}: unexpected {err}')
         elif suite == 'reject':
             assert err == 'ValueError', (name, err)

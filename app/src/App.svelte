@@ -151,5 +151,6 @@
     .rail a { border-left: 0; border-bottom: 2px solid transparent; }
     .rail a[aria-current='page'] { border-bottom-color: var(--accent); }
     .brand { margin-right: 0; flex-basis: 100%; }
+    .chip { white-space: normal; }
   }
 </style>

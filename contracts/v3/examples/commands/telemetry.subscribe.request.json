@@ -1,0 +1,9 @@
+{
+  "subscription_id": null,
+  "channels": [
+    "system",
+    "disks",
+    "engine"
+  ],
+  "interval_ms": 2000
+}

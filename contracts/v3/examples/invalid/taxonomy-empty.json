@@ -1,0 +1,8 @@
+{
+  "def": "Taxonomy",
+  "reason": "labels needs at least one item",
+  "value": {
+    "version": 1,
+    "labels": []
+  }
+}
