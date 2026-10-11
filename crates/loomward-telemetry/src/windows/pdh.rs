@@ -462,6 +462,8 @@ impl PdhSampler {
             snapshot.disk_io = disks;
         }
         if channels.gpu {
+            let started = Instant::now();
+            let expansion_before = self.expansion_ms;
             let gpus = gpu_rows(
                 self.array(Counter::GpuEngine, DOUBLE_FORMAT, double),
                 self.array(
@@ -473,6 +475,9 @@ impl PdhSampler {
                 snapshot,
             );
             snapshot.gpu = gpus;
+            costs.gpu_instances_ms = (started.elapsed().as_secs_f64() * 1000.0
+                - (self.expansion_ms - expansion_before))
+                .max(0.0);
         }
         costs.wildcard_expansion_ms = self.expansion_ms;
         costs.wildcard_expansions = self.expansions;

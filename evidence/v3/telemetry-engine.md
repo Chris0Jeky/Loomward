@@ -386,3 +386,122 @@ machines or workloads. Rows may describe an exited process until the next enumer
 original time stays visible and is never proof of liveness. Process metadata can refresh later than
 fifteen seconds with coarser lease ticks or scheduling/collection delay. Unknown rates/access/GPU fields
 remain unknown. Existing wildcard-audit churn behavior and the sampler-panic notification/release LOW are unchanged by this lane.
+
+
+## P12 shared-host last mile and #160 follow-ups (11 October 2026)
+
+Windows, **shared host**; branch `perf/telemetry-p12-160`, base
+`0377b0f5bb9de3a515e6d2e712dc9e5104332411`. Changes remain uncommitted for the driver.
+Hardware is withheld. Read-only observations stayed in memory; receipts contain aggregates only.
+The earlier sections and JSON receipts remain historical evidence, unchanged.
+
+### Changed
+
+- Summary mapping ranks native process references first and converts only the selected twenty rows,
+  instead of converting the entire retained population on both event and snapshot reads. Full list
+  mapping is unchanged. The parity test covers unknown/invalid CPU values, unknown working sets and
+  PID ties, and a test-only thread-local hook pins exactly twenty conversions. No cadence, channel,
+  observation-time, counter-validation or unknown semantics were weakened.
+- Aggregate costs now separate GPU array decoding/aggregation, caller snapshot mapping and state
+  publication. GPU cost excludes wildcard expansion and is a subset of PDH decode, not an extra
+  additive cost. Existing system, PDH collection/expansion and process phases remain separate.
+- Channel-change generation checks and the mapping pause hook were already on main. Interval-only
+  renewal now also advances the generation, so an in-flight batch mapped at the old cadence is
+  discarded. Unchanged renewals still preserve pending samples; interval-only renewal preserves
+  samples already published before it. The deterministic pause test covers both changed shapes.
+- The README now accurately describes `processes_observed_at_unix_ms` as the start of the sample
+  that enumerated processes, before enumeration. A Windows test pins that conservative timestamp;
+  retained rows keep it. This is a documentation correction, not a newer timestamp claim.
+- Mock process rows already refreshed on list reads after fifteen seconds. They now refresh on
+  mock sample ticks too, while a process lease is live. Explanations therefore see the refreshed
+  observation without requiring a list read. Between enumerations, and after unsubscribe, the
+  previous observation time remains visible.
+- Both scratch examples and temporary cycle instrumentation/public module exposure are removed.
+
+### Interleaved A/B measurement
+
+The original main build and candidate release build were preserved separately and run in the order
+A1/B1/A2/B2/A3/B3. Each run used **180 seconds idle + 180 seconds leased**, all channels at 1 Hz,
+the unchanged benchmark, fifteen-second process enumeration, thirty-second lease renewal and
+bounded events/snapshots drained each second. Compilation/tests overlapped some early phases;
+other lanes ran throughout. This is shared-host evidence, not an isolated-host experiment.
+Source and binary hashes, all six raw aggregate receipts, mutations and phase totals are appended
+under `p12_shared_host_2026_10_11` in [bench/telemetry.json](bench/telemetry.json).
+
+| Run | Main CPU above idle, % of one core | Candidate CPU above idle, % of one core |
+|---|---:|---:|
+| 1 | 0.659719 | 0.677078 |
+| 2 | 0.581593 | 0.486108 |
+| 3 | 0.668367 | 0.529508 |
+| Median | 0.659719 | 0.529508 |
+| Range | 0.581593-0.668367 | 0.486108-0.677078 |
+
+The candidate median is 19.7% lower and two of three paired differences favor it; retain the
+bounded mapping change. **Median and full range support at or under 1% for these shortened
+shared-host runs.** Main also met that threshold in this campaign. The ranges overlap, the first
+pair favored main, and unchanged PDH collection cost varied: the whole CPU difference cannot be
+attributed solely to mapping. This does not replace the historical ten-minute measurements or
+claim a new full-duration, isolated-host or machine-independent result. All six idle phases had
+zero samples/events; their CPU was zero at Windows counter precision. All six P13 checks passed
+for this telemetry-only engine process.
+
+| Phase, mean elapsed wall ms per candidate tick | Measured |
+|---|---:|
+| System counters | 0.326 |
+| PDH collection | 2.708 |
+| Wildcard expansion | 0.410 |
+| GPU instance decoding/aggregation (within PDH decode) | 0.676 |
+| Other PDH decode (PDH decode minus GPU) | 0.042 |
+| Process enumeration/queries, amortized | 1.461 |
+| Other native residual | 0.022 |
+| Rates, retained copy and projection | 0.297 |
+| Event DTO mapping | 0.068 |
+| Caller snapshot DTO mapping | 0.073 |
+| State publication/retirement | 0.081 |
+
+Event mapping fell from 0.424 ms/tick on main to 0.068 ms/tick on the candidate (84.0%).
+PDH collection remains the largest measured wall phase; it was not removed. The change removes
+unnecessary full-population DTO conversion, without suppressing observations. A preceding
+thirty-tick cycle profile separated system/PDH/process/GPU/copy work; its aggregate diagnostic
+costs are retained in JSON, and its instrumentation is discarded. Phase timings are wall time,
+not CPU attribution, and parent/child timers must not be added together.
+
+### Tests, mutations and gates
+
+- `cargo fmt --all --check`: pass.
+- `cargo test --workspace`: 644 passed, 1 existing ignored test, no failures (Windows).
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`: pass. A redundant
+  test struct update was removed after clippy flagged it; the affected test and clippy passed.
+- `npm.cmd ci --prefix app` installed missing local dependencies; `npm.cmd --prefix app run check`
+  passed with zero errors/warnings; `npm.cmd --prefix app run test`: 294 passed.
+- `git diff --check`: pass. No existing test was disabled or weakened.
+
+| Test / mutation | Red result | Restored result |
+|---|---|---|
+| Renewal during mapping: restore interval-insensitive generation | Stale event entered queue; exit 101 | Pass |
+| Renewal during mapping: bypass existing generation guard | Stale old-channel event entered queue; exit 101 | Pass |
+| Bounded summary parity/cost: restore full-population mapping | 64 conversions instead of 20; exit 101 | Pass |
+| Enumeration timestamp: substitute zero for sample-start stamp | Timestamp equality failed; exit 101 | Pass |
+| Mock sample timestamp: remove refresh on sample ticks | Explanation kept 00:00:00 instead of 00:00:15; exit 1 | Pass |
+
+The timestamp test pins the documented existing behavior; its mutation changes that behavior,
+not README wording. Local mutation capture needed an explicit UTF-8 decoder for Vitest output;
+all mutations were restored and the final production source matches the measured candidate hashes.
+
+Recommended commits: `Bound telemetry summary mapping and measure shared-host P12`;
+`Invalidate mapped telemetry on interval renewals`;
+`Clarify process observation timestamps`;
+`Refresh mock process rows on sample ticks`.
+
+### Declined / NOT verified / residual risk
+
+No further sampling slowdown, weakened wildcard audit or process-handle cache was implemented:
+the measured target is supported without another freshness/identity tradeoff. The previous
+copy-avoidance rejection remains in the historical receipt. GPU churn soak, sampler-panic
+notification/release behavior and the stale-generation mapping-error accounting LOW remain
+unchanged follow-ups already tracked on #160; they are outside these three fixes.
+
+No new full-duration benchmark, isolated-host qualification, p95, hosted CI, non-Windows run,
+service/browser end-to-end run or native desktop acceptance. No OS effects, publication, commit
+or push. Shared-host load and counter churn can move overhead outside this observed range;
+retained process rows still describe an earlier enumeration, never current liveness or permission.

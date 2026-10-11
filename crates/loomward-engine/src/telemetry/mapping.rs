@@ -4,6 +4,11 @@ use loomward_protocol::*;
 use loomward_telemetry::{Observation, Process, Snapshot};
 use std::hash::{Hash, Hasher};
 
+#[cfg(test)]
+std::thread_local! {
+    pub(super) static MAPPED_PROCESS_ROWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(super) fn invalid(error: Invalid) -> EngineError {
     EngineError::Internal {
         message: format!("telemetry contract: {error}"),
@@ -70,6 +75,8 @@ pub(super) fn processes_observed_at(raw: &Snapshot) -> EngineResult<Timestamp> {
 }
 
 pub(super) fn process_row(process: &Process, sequence: u64, observed_at: &Timestamp) -> ProcessRow {
+    #[cfg(test)]
+    MAPPED_PROCESS_ROWS.with(|count| count.set(count.get() + 1));
     let started_at = process
         .start_time_windows_100ns
         .as_deref()
@@ -312,8 +319,24 @@ pub(super) fn sample(
         } else {
             ProcessListRequestSort::WorkingSetDesc
         };
-        let mut rows = sorted_rows(raw, sequence, sort)?;
-        rows.truncate(20);
+        let mut processes: Vec<_> = raw.processes.iter().collect();
+        processes.sort_by(|a, b| {
+            let ordering = if sort == ProcessListRequestSort::CpuDesc {
+                let cpu = |p: &Process| p.rates.cpu_fraction.and_then(|v| Fraction::new(v).ok());
+                cpu(b)
+                    .partial_cmp(&cpu(a))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            } else {
+                b.working_set_bytes.cmp(&a.working_set_bytes)
+            };
+            ordering.then_with(|| a.pid.cmp(&b.pid))
+        });
+        let at = processes_observed_at(raw)?;
+        let rows: Vec<_> = processes
+            .into_iter()
+            .take(20)
+            .map(|p| process_row(p, sequence, &at))
+            .collect();
         Some(ProcessSummary {
             observed_count: Count::saturating(raw.process_totals.enumerated as u64),
             denied_count: Count::saturating(raw.process_totals.access_denied as u64),
