@@ -76,7 +76,7 @@
 {/if}
 {#if apps}
   <section class="panel" aria-labelledby="inv-apps">
-    <h2 id="inv-apps">Installed applications</h2>
+    <h2 id="inv-apps">Reported applications</h2>
     <p class="note">Sizes are provider estimates. Unknown sizes stay unknown; application locations are evidence only.</p>
     <!-- svelte-ignore a11y_no_noninteractive_tabindex (keyboard access to horizontal scrolling) -->
     <div class="tbl-wrap" tabindex="0" role="region" aria-label="Installed applications">
