@@ -2,6 +2,10 @@ use loomward_catalog::*;
 use rusqlite::Connection;
 
 fn setup_with_files(files: Vec<Observation>) -> (tempfile::TempDir, Catalog, i64, i64) {
+    setup_on("NTFS", files)
+}
+
+fn setup_on(filesystem: &str, files: Vec<Observation>) -> (tempfile::TempDir, Catalog, i64, i64) {
     let tmp = tempfile::tempdir().unwrap();
     let c = Catalog::open(tmp.path(), "synthetic").unwrap();
     let WriteReply::Root {
@@ -13,7 +17,7 @@ fn setup_with_files(files: Vec<Observation>) -> (tempfile::TempDir, Catalog, i64
             display_name: "Root".into(),
             display_path: "Synthetic root".into(),
             root_file_id: Some(vec![0; 16]),
-            filesystem: Some("NTFS".into()),
+            filesystem: Some(filesystem.into()),
             origin: "fixture".into(),
             granted_via: "fixture".into(),
             observed_at_ns: 0,
@@ -242,6 +246,107 @@ fn inspect_identity_pins_available_and_unavailable_durable_quality() {
         .inspect(NodeKey::File(file_id_of(&db, "synthetic-durable")))
         .unwrap();
     assert_eq!(foreign.identity.durable_reference, "unavailable_filesystem");
+}
+
+/// #219: a root observed on exFAT is granted identity-unverified; its rows (flagged by the scan
+/// writer) report quality `unverified`, never back a durable reference, and are never duplicate
+/// candidates: they count as unknowns, so the candidate set is partial. NTFS stays verified.
+#[test]
+fn identity_unverified_rows_are_stored_exposed_and_never_duplicate_candidates() {
+    let unverified = IDENTITY_UNVERIFIED | IDENTITY_UNAVAILABLE;
+    for (filesystem, mode) in [("exFAT", "unverified"), ("NTFS", "verified")] {
+        let (tmp, c, grant, dir) = setup_on(
+            filesystem,
+            vec![
+                sized_flagged("synthetic-a", 64, unverified),
+                sized_flagged("synthetic-b", 64, unverified),
+            ],
+        );
+        let db = Connection::open(tmp.path().join("catalog.db")).unwrap();
+        db.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+        db.execute(
+            "ATTACH DATABASE ?1 AS st",
+            [tmp.path().join("state.db").to_str().unwrap()],
+        )
+        .unwrap();
+        let (stored, root): (String, i64) = db
+            .query_row(
+                "SELECT g.identity_mode,r.id FROM st.root_grant g JOIN root r ON r.grant_id=g.id WHERE g.id=?1",
+                [grant],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(stored, mode, "{filesystem}");
+        let (root_flags, root_id): (u32, Option<Vec<u8>>) = db
+            .query_row("SELECT flags,file_id FROM dir WHERE id=?1", [dir], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(root_flags & IDENTITY_UNVERIFIED != 0, mode == "unverified");
+        assert_eq!(root_id.is_none(), mode == "unverified");
+        let mut r = c.reader().unwrap();
+        if mode == "unverified" {
+            let node = r.inspect(NodeKey::Dir(dir)).unwrap();
+            assert_eq!(node.identity.quality, "unverified");
+            assert_eq!(node.identity.durable_reference, "unavailable_filesystem");
+        }
+        let file = r
+            .inspect(NodeKey::File(file_id_of(&db, "synthetic-a")))
+            .unwrap();
+        assert_eq!(file.identity.quality, "unverified");
+        assert!(file.identity.file_id_hex.is_none() && !file.identity.authorises_effects);
+        assert!(file
+            .exclusions
+            .iter()
+            .any(|e| e.code == "identity_unverified"));
+        let candidates = r.duplicate_candidates(root, 1, 10).unwrap();
+        assert!(candidates.entries.is_empty() && candidates.partial);
+    }
+    // The writer refuses an unverified row that carries a file ID.
+    let mut bad = sized_flagged("synthetic-id", 1, unverified);
+    bad.file_id = Some(vec![1; 16]);
+    let tmp = tempfile::tempdir().unwrap();
+    let c = Catalog::open(tmp.path(), "synthetic").unwrap();
+    let WriteReply::Root { dir_id, .. } = c
+        .writer()
+        .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_key: "fixture".into(),
+            display_name: "Root".into(),
+            display_path: "Synthetic root".into(),
+            root_file_id: Some(vec![0; 16]),
+            filesystem: Some("exFAT".into()),
+            origin: "fixture".into(),
+            granted_via: "fixture".into(),
+            observed_at_ns: 0,
+        }))
+        .unwrap()
+    else {
+        panic!()
+    };
+    let WriteReply::Run(run_id) = c
+        .writer()
+        .call(WriteCommand::BeginRun {
+            grant_id: 1,
+            mode: "full".into(),
+            strategy: "fixture".into(),
+            started_at_ns: 0,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert!(matches!(
+        c.writer().call(WriteCommand::DirListing(DirListing {
+            run_id,
+            dir_id,
+            files: vec![bad],
+            dirs: vec![],
+            state: "complete".into(),
+            skipped: 0,
+            errors: 0,
+        })),
+        Err(Error::Invalid("invalid observation"))
+    ));
 }
 
 #[test]

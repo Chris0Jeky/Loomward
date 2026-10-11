@@ -5,10 +5,38 @@ The desktop adapter of docs/41 section 5.1: a Tauri 2 window around the built Sv
 Cargo workspace and has its own `Cargo.lock`. First built and tested on Windows 11 on
 2026-10-10 (`evidence/v3/native/`).
 
-Until lane L8 lands the engine service, the shell answers from `loomward_http::fixture::FixtureService`
-(the contract examples, synthetic only). `--dataset personal --allow-personal` is refused at start,
-exactly as by `loomward-serve` (#143). The fixture reads `contracts/v3/examples` through a path
-compiled into the binary, so a build runs only from the checkout it was built in.
+The shell hosts the engine service (`loomward_service::Service`) in a **personal session by
+default**, with its state under `%LOCALAPPDATA%\Loomward\v3\personal` (docs/41 section 3). It scans
+only folders the owner grants through the native folder picker, metadata only. `src/launch.rs` holds
+the command line and the service it opens.
+
+| Start | Service | State |
+|---|---|---|
+| `loomward-desktop.exe` | engine, personal session | `%LOCALAPPDATA%\Loomward\v3\personal` |
+| `--dataset synthetic` | engine, synthetic session (registered lab roots only) | `%LOCALAPPDATA%\Loomward\v3\synthetic` |
+| `--fixtures` | the contract examples (`FixtureService`): no state, no scanning | none |
+| `--state-dir DIR` | overrides the state directory of either engine session | `DIR` |
+
+**Why there is no `--allow-personal` here.** `loomward-serve` refuses `--dataset personal` without
+`--allow-personal` (#143) because it is started from a command line, often by an agent or a script,
+and takes roots from `--grant-root` with no person in the loop. The desktop takes no root argument
+(`--grant-root` is an unknown argument): a personal session starts without any new root, and every
+root comes from the owner choosing a folder in the Rust-owned native picker, which the webview cannot
+open, drive or bypass. That choice, made per folder, is the deliberate opt-in. The service's own guard
+stays: `Config.allow_personal` is set only by `launch::open` for a personal launch, with an empty
+`grant_roots`. Stored grants from earlier sessions are rechecked against today's path rules before
+any scan (#312). **Agents and tests must not start the default**: it opens the owner's real state.
+They pass `--dataset synthetic` or `--fixtures` with a scratch `--state-dir`, as the self-test and the
+WebView2 probe do.
+
+The per-class state directories keep a synthetic session away from personal state, and the catalogue
+refuses to open a store of the other class (`a_synthetic_session_cannot_read_personal_state`). The
+grant rules refuse a folder that contains the state directory, so on the system drive the native
+picker cannot grant the volume root `C:\`. Run the app unelevated: native identity opens are refused
+when elevated, so every grant is refused with `identity_unavailable`. The per-user installer also
+installs into `%LOCALAPPDATA%\Loomward`; uninstalling removes the program files but leaves `v3\`
+(the state) in place. Two instances on one state directory are not prevented yet (docs/41's lock
+file is not implemented).
 
 ## Build and run
 
@@ -16,7 +44,8 @@ compiled into the binary, so a build runs only from the checkout it was built in
 npm.cmd --prefix app ci
 npm.cmd --prefix app run build                      # app/dist is embedded at compile time
 cargo build --manifest-path native/Cargo.toml
-native/target/debug/loomward-desktop.exe            # the window
+native/target/debug/loomward-desktop.exe --dataset synthetic --state-dir .loomward/desktop-state  # a demo window
+native/target/debug/loomward-desktop.exe              # the owner's personal session (real state)
 native/target/debug/loomward-desktop.exe --self-test  # headless; exit 1 on any failure
 ```
 
@@ -26,7 +55,10 @@ The Tauri CLI is pinned as an app devDependency (`@tauri-apps/cli` 2.12.1, no gl
 from the repository root, `app/node_modules/.bin/tauri.cmd info` reports the toolchain and config.
 `cargo build` and `cargo test` do not bundle. The unsigned NSIS preview installer is built only by
 `.github/workflows/release.yml` (`tauri build --bundles nsis`; see [RELEASING.md](../RELEASING.md)). It
-bundles `contracts/v3/examples` beside the exe, and an installed build loads them from there because it has no checkout.
+bundles `contracts/v3/examples` beside the exe; an installed build reads them from there (for
+`--fixtures` and the self-test) because it has no checkout. The self-test needs no checkout: it runs
+the protocol checks against those examples, then opens the engine service as `main` does, synthetic
+and personal, each in a scratch state directory that it removes.
 
 ## Checks
 
@@ -36,7 +68,7 @@ bundles `contracts/v3/examples` beside the exe, and an installed build loads the
 | Command layer, dialog guards, Tauri IPC + ACL (mock runtime) | `cargo test --manifest-path native/Cargo.toml` |
 | The real Win32 disclosure box (needs an interactive desktop) | `cargo test --manifest-path native/Cargo.toml -- --ignored native_disclosure` |
 | Self test | `native/target/debug/loomward-desktop.exe --self-test` |
-| Real WebView2: raw IPC, ACL, CSP, navigation, heartbeat, renderer lag, teardown | `py -3 native/tests/webview2_probe.py` (Playwright over CDP; writes `evidence/v3/native/`) |
+| Real WebView2 over the engine service (synthetic, scratch state): raw IPC, ACL, CSP, navigation, heartbeat, renderer lag, teardown; then the personal default (scratch state): the real native picker grants, scans and revokes a disposable `.loomward/` folder | `py -3 native/tests/webview2_probe.py` (Playwright over CDP; writes `evidence/v3/native/`, or `--out DIR`) |
 
 CI runs the build, format, test, clippy and headless self-test checks in one cached
 `windows-latest` desktop job, after building `app/dist`. The WebView2 probe is a local proving
@@ -91,11 +123,16 @@ More than four items, 2,048 characters or 20 conservative display lines (wrappin
 is not a guarantee for every display scale: personal disclosure is refused by both the adapter and the dialog
 implementation until LW-111 provides scrolling confirmation and the confinement gate passes.
 
-## For lane L8 (the real service)
+## The engine behind the shell
 
-Replace `FixtureService::new(dataset)` in `src/main.rs` with the engine service; nothing else in
-the shell changes. The service must yield `stream.hello` first and after 15 s of silence on every
-stream (the shell forwards, it does not beat), close its streams on `EventStream::close`, refuse
-`roots.request_grant` in synthetic sessions and personal disclosure itself (the shell's guards are
-a second wall), and call `ctx.dialogs` only from inside `call`. Personal mode then needs the
-`--dataset personal --allow-personal` start path to construct that service.
+The shell forwards calls and events exactly as `loomward-serve` does (`dispatch` there, `dispatch_bytes`
+here): one `RequestEnvelope::from_slice` ingress, the adapter's availability check, then
+`ViewService::call` with the native dialogs in the `CallContext`; `subscribe` for events, the first
+event within 5 s, then a pump that closes the stream on teardown. The engine yields `stream.hello`
+first and after 15 s of silence, refuses `roots.request_grant` in synthetic sessions and every
+teacher command itself (the shell's two refusals are a second wall), and retains each mutation's
+outcome by `request_id`, so a caller must use a fresh id per call. `roots.request_grant` waits on a
+person: the default mutation deadline is 5 s, so a caller sends `deadline_ms` (at most 60,000) and
+treats `deadline_exceeded` as "outcome unknown", re-reading `roots.list` or waiting for
+`roots.changed`. The app has no control that calls `roots.request_grant` yet, so a person cannot grant
+a folder from the interface; the WebView2 probe calls it over real IPC.

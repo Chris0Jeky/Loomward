@@ -76,6 +76,10 @@ fn signature(current: &ObservedIdentity, expected: &ObservedIdentity) -> bool {
 impl<F: FnMut(Event, usize)> Reader<F> {
     pub(super) fn new(root: &Path, expected: &OpenedIdentity, hook: F) -> Result<Self, Reason> {
         non_elevated()?;
+        // #219: an identity-unverified root never backs a content read.
+        if expected.basis == enumerate::IdBasis::Unverified {
+            return Err(Reason::IdentityUnverified);
+        }
         let pins = enumerate::root_handles(
             root,
             FILE_READ_ATTRIBUTES | SYNCHRONIZE,

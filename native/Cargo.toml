@@ -6,8 +6,8 @@ rust-version = "1.85"
 license = "MIT"
 description = "Loomward Tauri 2 desktop shell: the lw_call / lw_events adapter to the ViewService (docs/41 section 5.1)."
 
-# Excluded from the root workspace (its own Cargo.lock). The fixture service stands in for the real
-# engine service until lane L8 lands it.
+# Excluded from the root workspace (its own Cargo.lock). It hosts the engine service
+# (loomward-service) by default; loomward-http's fixture service backs --fixtures.
 
 [lib]
 name = "loomward_desktop"

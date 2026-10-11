@@ -381,7 +381,6 @@
     "tier": "T2 daily driver; privacy and security findings weigh lower; secrets and real paths in the public repo stay forbidden",
     "decided_not_yet_implemented": [
       "q-11 personal learning (local, owner labels)",
-      "q-12 FAT/exFAT identity-unverified listing",
       "q-13 P4 KPI retarget plus bulk-load lane",
       "q-14 backups (driver: evidence import, then guarded restic observer, then restore-drill executor)",
       "q-15 diagnostics bundle via native save dialog",
@@ -389,6 +388,9 @@
       "q-17 unsigned preview pre-release",
       "q-18 hardware scrub"
     ],
-    "owner_action": "q-19 dismiss Dependabot alert 1"
+    "owner_action": "q-19 dismiss Dependabot alert 1",
+    "implemented": [
+      "q-12 FAT/exFAT identity-unverified listing (#372; state v5; every grant records its filesystem; real FAT volume leg unverified)"
+    ]
   }
 }

@@ -58,6 +58,9 @@ pub struct Config {
     pub allow_personal: bool,
     /// Roots already checked by [`paths::validate_roots`]; consumed exactly (#146).
     pub grant_roots: Vec<PathBuf>,
+    /// #219: the owner's explicit `--allow-identity-unverified`: a personal `grant_roots` entry on
+    /// a FAT, exFAT or unknown filesystem is granted identity-unverified instead of refused.
+    pub allow_identity_unverified: bool,
 }
 
 /// The engine service. Cheap to share; `call` may run on any thread.
@@ -95,6 +98,19 @@ pub(crate) struct Inner {
     metadata_cursors: cursors::Cursors,
     #[cfg(test)]
     pub(crate) hooks: tests::Hooks,
+}
+
+/// Detached workers (reads, mutations, a telemetry sampling turn) hold the shared state, hence
+/// every catalogue connection, until their closure ends, which is after the caller has its reply.
+/// Dropping the service therefore waits for them: on return its files are closed and removable.
+/// Bounded, so a worker stuck in a blocking native call cannot hang the owner's shutdown.
+impl Drop for Service {
+    fn drop(&mut self) {
+        let give_up = Instant::now() + Duration::from_secs(10);
+        while Arc::strong_count(&self.inner) > 1 && Instant::now() < give_up {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
 }
 
 impl Service {
@@ -237,10 +253,16 @@ impl Service {
                 .map_err(|e| format!("engine refused the scan writer: {e}"))?;
         }
         for (i, root) in config.grant_roots.iter().enumerate() {
-            inner.grant(root, "cli_flag").map_err(|r| {
+            inner
+                .grant(root, "cli_flag", config.allow_identity_unverified)
+                .map_err(|r| {
                 let rule = match r {
                     Refused::Rule(r) => refusal_name(r),
                     Refused::RootLimit => "root_limit_reached".into(),
+                    Refused::IdentityUnverified => {
+                        "identity_unverified (pass --allow-identity-unverified to list it read-only)"
+                            .into()
+                    }
                 };
                 format!("grant root #{} refused: {rule}", i + 1)
             })?;
@@ -274,6 +296,8 @@ pub(crate) fn refusal_name(r: Refusal) -> String {
 pub(crate) enum Refused {
     Rule(Refusal),
     RootLimit,
+    /// #219: a personal root on a FAT, exFAT or unknown filesystem the owner has not confirmed.
+    IdentityUnverified,
 }
 
 impl From<Refusal> for Refused {
@@ -522,6 +546,9 @@ impl ViewService for Service {
                         Some(&worker_work),
                         Some(&worker_cursor),
                     ));
+                    // The reply is out but this worker still holds the service (see `Drop for Service`).
+                    #[cfg(test)]
+                    inner.hooks.gate(command, "worker_exit");
                 });
             if spawned.is_err() {
                 return ResponseEnvelope::error(
@@ -687,6 +714,10 @@ impl Service {
                                 (command == Command::PlacementSimulate).then_some(&work),
                                 None,
                             ));
+                            drop(settle);
+                            // The outcome is out but this worker still holds the service.
+                            #[cfg(test)]
+                            inner.hooks.gate(command, "worker_exit");
                         })
                 };
                 if spawned.is_err() {
@@ -860,11 +891,52 @@ impl Inner {
         }
     }
 
+    /// #219: the root volume's filesystem name (NTFS, ReFS, FAT32, exFAT, or whatever the volume
+    /// reports; `unknown` when it reports none), observed through the same guarded, non-elevated
+    /// open a scan uses. Fails closed.
+    pub(crate) fn root_filesystem(&self, root: &Path) -> Result<String, Refusal> {
+        #[cfg(windows)]
+        {
+            use loomward_engine::scan::source::DirSource;
+            let source = loomward_windows::enumerate::NativeSource::default();
+            #[cfg(test)]
+            let source = match *self.hooks.filesystem.lock().unwrap() {
+                Some(name) => source.with_filesystem(name),
+                None => source,
+            };
+            let (dir, _) = source
+                .with_identity_unverified()
+                .open_root(root)
+                .map_err(|_| Refusal::IdentityUnavailable)?;
+            Ok(match dir.filesystem() {
+                "" => "unknown".into(),
+                name => name.chars().take(32).collect(),
+            })
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = root;
+            Err(Refusal::IdentityUnavailable)
+        }
+    }
+
     /// Grants one already path-checked root under the session's provenance policy. A synthetic
     /// session accepts only a registered lab root whose native identity matches the registry; a
     /// personal session accepts an owner folder. Re-granting an active root returns it.
-    pub(crate) fn grant(&self, root: &Path, via: &str) -> Result<(i64, bool), Refused> {
+    pub(crate) fn grant(
+        &self,
+        root: &Path,
+        via: &str,
+        confirmed_unverified: bool,
+    ) -> Result<(i64, bool), Refused> {
         let (volume_key, file_id) = lab::identity(root)?;
+        // #219: a personal root on a volume that cannot verify identity needs the owner's
+        // explicit confirmation; a synthetic lab root may list unverified freely.
+        let filesystem = self.root_filesystem(root)?;
+        let unverified = !loomward_windows::enumerate::verifies_identity(&filesystem);
+        if unverified && self.dataset == DatasetClass::Personal && !confirmed_unverified {
+            return Err(Refused::IdentityUnverified);
+        }
         let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
         let conn = self.db();
         let origin = match self.dataset {
@@ -909,7 +981,9 @@ impl Inner {
                 display_name: display_name.chars().take(260).collect(),
                 display_path,
                 root_file_id: Some(file_id),
-                filesystem: None,
+                // The volume's real filesystem: NTFS/ReFS keep durable references; the writer marks
+                // any other filesystem's grant identity-unverified.
+                filesystem: Some(filesystem),
                 origin: origin.into(),
                 granted_via: via.into(),
                 observed_at_ns: now_ns(),

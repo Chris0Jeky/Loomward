@@ -65,6 +65,7 @@ fn duplicates_follow_a_fresh_grant_after_the_same_folder_was_revoked() {
             state_dir: tmp.path().join("state"),
             dataset: DatasetClass::Personal,
             allow_personal: true,
+            allow_identity_unverified: false,
             grant_roots: vec![root.clone()],
         })
     };
@@ -149,6 +150,7 @@ fn duplicates_personal_session_confirms_owner_duplicates_and_revocation_redacts(
         state_dir: tmp.path().join("state"),
         dataset: DatasetClass::Personal,
         allow_personal: true,
+        allow_identity_unverified: false,
         grant_roots: vec![root.clone()],
     });
     if loomward_windows::enumerate::running_elevated() {
@@ -249,6 +251,7 @@ fn duplicates_native_service_job_reads_synthetic_content_and_never_counts_links_
         state_dir: state,
         dataset: DatasetClass::Synthetic,
         allow_personal: false,
+        allow_identity_unverified: false,
         grant_roots: vec![root.clone()],
     })
     .unwrap();

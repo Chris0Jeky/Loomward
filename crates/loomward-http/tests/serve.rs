@@ -1139,6 +1139,7 @@ fn the_engine_service_answers_through_the_adapter() {
         state_dir: tmp.path().into(),
         dataset: DatasetClass::Synthetic,
         allow_personal: false,
+        allow_identity_unverified: false,
         grant_roots: vec![],
     })
     .unwrap();
@@ -1381,6 +1382,7 @@ fn followup_stored_grants_refuse_static_without_recording_new_grants() {
         state_dir: state.clone(),
         dataset: DatasetClass::Synthetic,
         allow_personal: false,
+        allow_identity_unverified: false,
         grant_roots: roots,
     };
     drop(Service::open(cfg(vec![old.canonicalize().unwrap()])).unwrap());
@@ -1435,6 +1437,7 @@ fn followup_proposed_static_overlap_leaves_no_active_grant() {
         state_dir: state,
         dataset: DatasetClass::Synthetic,
         allow_personal: false,
+        allow_identity_unverified: false,
         grant_roots: vec![],
     })
     .unwrap();
@@ -1471,6 +1474,7 @@ fn followup_stored_picker_grant_refuses_static() {
         state_dir: state.clone(),
         dataset: DatasetClass::Personal,
         allow_personal: true,
+        allow_identity_unverified: false,
         grant_roots: vec![],
     })
     .unwrap();
@@ -1515,13 +1519,11 @@ fn conflicting_content_length_is_refused_and_identical_duplicates_coalesce() {
     );
     assert_eq!(r.status, 200);
     // Conflicting values are the smuggling case: hyper refuses them with a bare 400 before the
-    // adapter runs, so no body is framed two ways.
+    // adapter runs, so no body is framed two ways. The head alone decides it, so no body is sent:
+    // hyper replies and closes without reading one, and a body still in flight meets that close
+    // as a connection reset that discards the unread 400 (a loaded host loses this race).
     let dup_diff = format!("\r\nContent-Length: {}", HELLO.len() + 1);
-    let r = exchange(
-        h.addr(),
-        &call_head(&h, HELLO.len(), &dup_diff),
-        HELLO.as_bytes(),
-    );
+    let r = exchange(h.addr(), &call_head(&h, HELLO.len(), &dup_diff), b"");
     assert_eq!(r.status, 400);
 }
 
@@ -2048,6 +2050,7 @@ fn revoked_duplicates_are_redacted_from_last_event_id_replay_and_cancel_receipts
         state_dir: state,
         dataset: DatasetClass::Synthetic,
         allow_personal: false,
+        allow_identity_unverified: false,
         grant_roots: vec![root.canonicalize().unwrap()],
     })
     .unwrap();

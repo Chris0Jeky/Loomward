@@ -160,7 +160,8 @@ fn example_directories_hold_exactly_the_expected_files() {
         have,
         BTreeSet::from([
             "disclosure-summary.json".to_string(),
-            "duplicates-result.json".to_string()
+            "duplicates-result.json".to_string(),
+            "identity-observation-unverified.json".to_string()
         ])
     );
     assert!(

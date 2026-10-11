@@ -15,6 +15,24 @@ pub const QUEUE_BYTES: usize = 64 * 1024 * 1024;
 const WRITER_BYTES: usize = 32 * 1024 * 1024;
 const TRANSACTION_BYTES: usize = 64 * 1024 * 1024;
 const TRANSACTION_TIME: Duration = Duration::from_millis(250);
+#[cfg(test)]
+thread_local! {
+    static TRANSACTION_WINDOW: std::cell::Cell<Duration> =
+        const { std::cell::Cell::new(TRANSACTION_TIME) };
+}
+/// Whether the batch window has closed. A test that pre-queues its commands and asserts how they
+/// batch holds the window open (`hold_batch_window_open`), so a loaded host cannot split the batch.
+fn batch_window_closed(start: Instant) -> bool {
+    #[cfg(test)]
+    let window = TRANSACTION_WINDOW.with(|w| w.get());
+    #[cfg(not(test))]
+    let window = TRANSACTION_TIME;
+    start.elapsed() >= window
+}
+#[cfg(test)]
+pub(crate) fn hold_batch_window_open() {
+    TRANSACTION_WINDOW.with(|w| w.set(Duration::from_secs(3600)));
+}
 type Quota = Arc<(Mutex<usize>, Condvar)>;
 
 /// Disconnect wakes every waiter; cancellation is not consumed by one producer.
@@ -688,7 +706,7 @@ fn serve(
                         if tx.is_autocommit()
                             || !batchable
                             || bytes >= TRANSACTION_BYTES
-                            || transaction_start.elapsed() >= TRANSACTION_TIME
+                            || batch_window_closed(transaction_start)
                         {
                             break;
                         }
@@ -929,7 +947,16 @@ fn prepare_state(
                 None
             };
             let tx = conn.transaction()?;
-            tx.execute("INSERT INTO st.root_grant(volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns,lab_root_id) VALUES (?1,?2,?3,?4,?5,'active',?6,?7)",params![o.volume_key,o.root_file_id,o.display_path,o.origin,o.granted_via,o.observed_at_ns,lab])?;
+            // #219: a root observed on a filesystem that cannot verify identity is granted
+            // identity-unverified; the service confirmed a personal one with the owner first.
+            let mode = if o.filesystem.as_deref().is_some_and(|fs| {
+                !fs.eq_ignore_ascii_case("NTFS") && !fs.eq_ignore_ascii_case("ReFS")
+            }) {
+                "unverified"
+            } else {
+                "verified"
+            };
+            tx.execute("INSERT INTO st.root_grant(volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns,lab_root_id,identity_mode) VALUES (?1,?2,?3,?4,?5,'active',?6,?7,?8)",params![o.volume_key,o.root_file_id,o.display_path,o.origin,o.granted_via,o.observed_at_ns,lab,mode])?;
             let grant = tx.last_insert_rowid();
             state_revision(&tx)?;
             tx.commit()?;
@@ -2092,6 +2119,7 @@ mod tests {
         drop(tx);
         let timings = Arc::new(Mutex::new(WriterTimings::default()));
         let (alive, _) = bounded(0);
+        hold_batch_window_open();
         work(conn, rx, timings.clone(), alive, None);
         for reply in replies {
             reply.recv().unwrap().unwrap();
@@ -2299,6 +2327,7 @@ mod tests {
         drop(tx);
         let timings = Arc::new(Mutex::new(WriterTimings::default()));
         let (alive, _) = bounded(0);
+        hold_batch_window_open();
         work(conn, rx, timings.clone(), alive, None);
         before.recv().unwrap().unwrap();
         shallow.recv().unwrap().unwrap();

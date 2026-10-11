@@ -296,6 +296,8 @@ pub struct SamplingCosts {
     pub engine_mapping_ms: f64,
     pub engine_snapshot_mapping_ms: f64,
     pub engine_publication_ms: f64,
+    pub engine_trends_ms: f64,
+    pub engine_snapshot_trends_ms: f64,
     pub mapping_errors: u64,
 }
 
@@ -318,6 +320,8 @@ impl SamplingCosts {
         self.engine_mapping_ms += other.engine_mapping_ms;
         self.engine_snapshot_mapping_ms += other.engine_snapshot_mapping_ms;
         self.engine_publication_ms += other.engine_publication_ms;
+        self.engine_trends_ms += other.engine_trends_ms;
+        self.engine_snapshot_trends_ms += other.engine_snapshot_trends_ms;
         self.mapping_errors += other.mapping_errors;
     }
 }

@@ -44,6 +44,8 @@ pub enum Reason {
     ByteBudget,
     TimeBudget,
     EntryBudget,
+    /// The root lists identity-unverified (#219): no content read, ever.
+    IdentityUnverified,
 }
 impl Reason {
     pub fn as_str(self) -> &'static str {
@@ -64,6 +66,7 @@ impl Reason {
             Self::ByteBudget => "byte_budget",
             Self::TimeBudget => "time_budget",
             Self::EntryBudget => "entry_budget",
+            Self::IdentityUnverified => "identity_unverified",
         }
     }
 }

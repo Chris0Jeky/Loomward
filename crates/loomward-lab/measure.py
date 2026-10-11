@@ -123,7 +123,7 @@ def main():
         parser.error("sizes must be 1..3000000")
     receipt = {"schema_version": 1, "measured_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                "platform": platform.platform(), "python": platform.python_version(),
-               "logical_processors": os.cpu_count(), "token_elevated": False, "volume": "G: NTFS, owner-described NVMe",
+               "logical_processors": os.cpu_count(), "token_elevated": False, "volume": "G: NTFS, fast local volume",
                "source_base": "1ee166d597b61cf935a84499351009f0e316857a",
                "build": "cargo build -p loomward-lab --release --offline",
                "executable_sha256": hashlib.sha256(EXE.read_bytes()).hexdigest(),
