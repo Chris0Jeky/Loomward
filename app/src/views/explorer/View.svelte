@@ -335,7 +335,7 @@
 {#if detail}
   <section class="panel" aria-label="Node inspector">
     <h2 tabindex="-1" bind:this={inspector}><VisibleName name={detail.row.name} /></h2>
-    <p class="muted">Logical size {formatBytes(detail.row.logical_bytes)} ? {detail.row.kind}</p>
+    <p class="muted">Logical size {formatBytes(detail.row.logical_bytes)} · {detail.row.kind}</p>
     {#if detail.identity.durable_reference === 'available'}
       {#key detail.row.node_id}<AddToCollection nodeId={detail.row.node_id} />{/key}
     {:else}<p class="muted">This node has no durable identity, so it cannot join a collection.</p>{/if}

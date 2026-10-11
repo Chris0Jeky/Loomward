@@ -18,6 +18,8 @@
   let total = $state<number | null>(null);
   let loading = $state(false);
   let creating = $state(false);
+  let removing = $state(false);
+  let stateRev = $state<string | null>(null);
   let notice = $state('');
   let error = $state('');
   let summary = $state<HTMLElement>();
@@ -43,10 +45,11 @@
         if (!collections.some((c) => c.collection_id === selected)) selected = collections[0]?.collection_id ?? '';
       }
       if (!selected) return;
-      const { result } = await session.client.call('collections.members', { collection_id: selected, limit: 50, cursor: append ? next : null }, { signal: ctl.signal });
+      const { result, meta } = await session.client.call('collections.members', { collection_id: selected, limit: 50, cursor: append ? next : null }, { signal: ctl.signal });
       if (mine !== generation) return;
       members = append ? [...members, ...result.items] : result.items;
       next = result.next_cursor; total = result.total;
+      stateRev = meta.state_rev;
       if (result.budget_hit) notice = 'The work budget was reached; more members may exist.';
       if (hadFocus) { await tick(); if (document.activeElement === more || document.activeElement === document.body) (next ? more : summary)?.focus(); }
     } catch (e) {
@@ -67,6 +70,18 @@
       await load(); notice = 'Collection created. No file was changed.';
     } catch (e) { error = session.handle(e); }
     finally { creating = false; }
+  }
+  async function remove(member: CollectionMember): Promise<void> {
+    if (!session.client || removing || loading || stateRev === null) return;
+    removing = true; error = ''; notice = '';
+    try {
+      await session.client.call('collections.update_members', { collection_id: selected, add: [], remove: [], remove_members: [member.member_id] }, { expectedStateRev: stateRev });
+      await load(); notice = 'Member removed. No file was changed.';
+      await tick(); summary?.focus();
+    } catch (e) {
+      if (e instanceof LoomwardError && e.code === 'stale_generation') await load();
+      error = session.handle(e);
+    } finally { removing = false; }
   }
   $effect(() => {
     session.epoch;
@@ -98,15 +113,16 @@
   <div class="tbl-wrap" aria-busy={loading}>
     <table class="tbl">
       <caption class="sr-only">Collection members</caption>
-      <thead><tr><th scope="col">Member</th><th scope="col">Status</th><th scope="col">Logical size</th><th scope="col">Location</th></tr></thead>
+      <thead><tr><th scope="col">Member</th><th scope="col">Status</th><th scope="col">Logical size</th><th scope="col">Location</th><th scope="col">Membership</th></tr></thead>
       <tbody>
         {#each members as member (member.member_id)}
           <tr><th scope="row">{#if member.entry}<VisibleName name={member.entry.name} />{:else}Unresolved member <span class="muted">{member.member_id}</span>{/if}</th>
-            <td>{member.status === 'resolved' ? 'Resolved' : member.status === 'root_revoked' ? 'Root revoked' : 'Object unavailable'}</td>
+            <td>{member.status === 'resolved' ? 'Resolved' : member.status === 'root_revoked' ? 'Root revoked' : member.status === 'root_unavailable' ? 'Root unavailable' : 'Object unavailable'}</td>
             <td class="num">{formatBytes(member.entry?.logical_bytes ?? null)}</td>
             <td>{#if member.entry?.location_hint}<VisibleName name={member.entry.location_hint.text} />{:else}<span class="unknown">unknown</span>{/if}</td>
+            <td>{#if current?.kind === 'human'}<button class="btn" type="button" aria-label={`Remove member ${member.member_id}`} aria-disabled={loading || removing || stateRev === null} onclick={() => void remove(member)}>Remove</button>{/if}</td>
           </tr>
-        {:else}<tr><td colspan="4" class="muted">{loading ? 'Loading members' : error ? 'Members unavailable.' : 'No members.'}</td></tr>{/each}
+        {:else}<tr><td colspan="5" class="muted">{loading ? 'Loading members' : error ? 'Members unavailable.' : 'No members.'}</td></tr>{/each}
       </tbody>
     </table>
   </div>

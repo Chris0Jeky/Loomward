@@ -28,6 +28,7 @@ def run_collections(page, base: str) -> None:
     page.get_by_role('button', name='Inspect ', exact=False).first.click()
     inspector = page.get_by_role('region', name='Node inspector')
     expect(inspector.get_by_role('heading', level=2)).to_be_focused()
+    expect(inspector.locator('p').filter(has_text='Logical size')).to_contain_text(' · ')
     membership = inspector.get_by_role('status', name='Membership result')
     expect(membership).to_have_count(1)
     membership_node = membership.element_handle()
@@ -47,7 +48,13 @@ def run_collections(page, base: str) -> None:
     page.get_by_role('link', name='Collections', exact=True).click()
     expect(page.locator('main table tbody')).to_contain_text('Root revoked')
     expect(page.locator('main table tbody')).to_contain_text('unknown')
-    print('PASS collections: create, duplicate refusal, inspector add, focus, row headers, persistent results and revoked member')
+    remove = page.get_by_role('button', name=re.compile('^Remove member '))
+    remove.focus()
+    remove.press('Enter')
+    expect(result).to_contain_text('Member removed')
+    expect(page.get_by_text('Showing 0 of 0 members', exact=True)).to_be_visible()
+    expect(page.get_by_text('Showing 0 of 0 members', exact=True)).to_be_focused()
+    print('PASS collections: create, duplicate refusal, inspector add, separator, revoked removal by keyboard and restored focus')
 
 
 def run_live_collections(page, token: str, state: Path, check) -> None:
@@ -86,4 +93,13 @@ def run_live_collections(page, token: str, state: Path, check) -> None:
     page.get_by_role('link', name='Collections', exact=True).click()
     expect(page.locator('main table tbody')).to_contain_text('report.txt')
     expect(page.locator('main table tbody')).to_contain_text('Resolved')
+    with closing(sqlite3.connect(state / 'catalog.db')) as db:
+        db.execute('DELETE FROM file WHERE id=1')
+        db.execute('UPDATE revision SET catalog_rev=catalog_rev+1')
+        db.commit()
+    page.get_by_role('button', name='Refresh collections', exact=True).click()
+    expect(page.locator('main table tbody')).to_contain_text('Object unavailable')
+    page.get_by_role('button', name=re.compile('^Remove member ')).click()
+    expect(page.get_by_role('status', name='Collection result')).to_contain_text('Member removed')
+    expect(page.get_by_text('Showing 0 of 0 members', exact=True)).to_be_visible()
     print('PASS live collections: production app renders the real collection')
