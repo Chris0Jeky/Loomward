@@ -171,7 +171,7 @@ per-file open. The 64 KiB comparison reached 4.71M files/s at 3M; paired tuning 
 (5.38M files/s at its median, maximum observed RSS 9.23 MiB). One worker did not exploit the fast local volume
 well, sixteen workers did not beat the eight-worker/16 KiB setting at 1M, and 256 KiB cost more
 on these mostly 256-file leaf directories. These are starting measurements, not universal thread
-or buffer optima. Benchmark wide directories and HDD latency before adapting concurrency or
+or buffer optima. Benchmark wide directories and slow local volume latency before adapting concurrency or
 increasing buffers. On unsupported filesystems/classes, a future FindExInfoBasic fallback should
 surface unknown IDs/allocation rather than fabricate zero; no fallback was silently timed here.
 
@@ -211,7 +211,7 @@ write rate or turn the existing reference catalogue into a persistent native ind
 
 This is a bounded contribution to LW-064, not completion of its broader fixture gate: ADS,
 compressed files, ACL variants, locks, removable/cloud simulations and hostile concurrent swaps
-remain unmeasured. Linux/Ubuntu execution, HDD/SMB/ReFS, real user data, true cold caches, wide
+remain unmeasured. Linux/Ubuntu execution, slow local volume/SMB/ReFS, real user data, true cold caches, wide
 single-directory extremes, fragmentation, catalogue writes and WinDirStat remain unverified.
 The generated sparse files are not representative of content hashing, preview or copy throughput.
 `HUMAN_TODO.md` remains driver-owned and unchanged; its q-1 through q-4 are still open. This
