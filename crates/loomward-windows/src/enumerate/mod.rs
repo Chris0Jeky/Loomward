@@ -131,7 +131,8 @@ pub enum SourceError {
     Refused,
     /// The listed and post-open IDs disagree; the directory is recorded `partial`.
     IdentityChanged,
-    /// The listing had an ID but the post-open query could not verify it.
+    /// Required identity is unverified: a listed ID cannot be bound, Find has no verified
+    /// directory identity, or an identity is unsuitable for reopening.
     IdentityUnverified,
     /// Access denied.
     AccessDenied,
@@ -162,6 +163,7 @@ pub trait DirSource: Send + Sync {
         false
     }
     /// Reopen a previously observed identity using the pinned root, even after a root rename.
+    /// Verifies the same object, same volume; listing separately proves containment.
     fn reopen(
         &self,
         _root: &Self::Dir,
@@ -289,6 +291,8 @@ pub fn query_stop(code: u32, cancelled: bool) -> ListOutcome {
 }
 #[cfg(windows)]
 mod native;
+#[cfg(all(test, windows))]
+pub(crate) use native::force_elevation_for_test;
 #[cfg(all(windows, feature = "shortcut-read"))]
 pub use native::read_capped_regular_file;
 #[cfg(windows)]
