@@ -441,3 +441,7 @@ toggle-off and destruction abort the projection and ignore late replies. Explore
 one inspected node. Meaning crosses as horizontal weft using the existing palette; intensity
 is relative score (quantised to the eight-thread tile), never a probability. The inspector
 and visible-node text list carry labels, scores, abstention and reasons independently of colour.
+`no_model`, `abstained` and `not_eligible` all stay undyed but weave differently (a slit across every
+fourth crossing, every second thread missing, no meaning thread), and the legend names each. A human
+`labelled` or `mixed` meaning (`source: "human"`) already in a slice is never replaced by the student
+projection; a system aggregate or a teacher label is.
