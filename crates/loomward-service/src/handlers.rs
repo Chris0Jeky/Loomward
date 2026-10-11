@@ -557,8 +557,10 @@ impl Inner {
 
     fn volumes(&self, only: Option<i64>) -> Result<Vec<Value>, ErrorBody> {
         let rows = db::volumes(&self.db(), only).map_err(sql_error)?;
+        // db::volumes reads one row past the bound so volumes.list can refuse; a change notice keeps 64.
         Ok(rows
             .iter()
+            .take(64)
             .map(|v| {
                 let declared = v.declared.flatten();
                 json!({

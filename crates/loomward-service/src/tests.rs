@@ -155,6 +155,23 @@ fn placement_request(volume: &str, save: bool) -> Value {
 }
 
 #[test]
+fn volume_inventory_past_its_bound_is_refused_not_truncated() {
+    // Codex P2 on #316: a 65th volume must surface as a resource bound, never vanish silently.
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    for i in 0..65 {
+        svc.inner.db().execute("INSERT INTO main.volume(volume_key,display_name,identity_json,capabilities_json,device_json,online,observed_at_ns) VALUES(?1,'Synthetic volume','{}','{}','{}',1,0)", [format!("vk{i}")]).unwrap();
+    }
+    for command in ["volumes.list", "tiers.model"] {
+        assert_eq!(
+            err(call(&svc, command, json!({}))).code,
+            ErrorCode::ResourceBudget,
+            "{command}"
+        );
+    }
+}
+
+#[test]
 fn placement_wire_preserves_unknowns_and_exclusions() {
     let tmp = temp_root();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
