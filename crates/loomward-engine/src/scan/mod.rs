@@ -158,8 +158,9 @@ impl GrantedRoot {
     }
 }
 impl Engine {
-    /// Content equality evidence under a freshly checked active synthetic grant.
-    /// Personal grants remain metadata-only; root revocation requests content-read cancellation.
+    /// Content equality evidence under a freshly checked active grant of this engine's dataset
+    /// class (personal reads opened by owner decision q-10); a session never reads the other
+    /// class's roots. Root revocation requests content-read cancellation.
     /// Revocation can return before I/O drains; the final gate refuses a revoked report.
     pub fn inspect_duplicates(
         &self,
@@ -225,10 +226,8 @@ impl Engine {
         let denied = |message: &str| EngineError::PermissionDenied {
             message: message.into(),
         };
+        // The grant, the engine and (below) the durable store must all name one dataset class.
         self.check_root(root)?;
-        if root.dataset_class != DatasetClass::Synthetic {
-            return Err(denied("content_read_gated"));
-        }
         let gate = self.scan_root_gate(root.key());
         let revoked = if wait {
             // Workers wait for the brief start/revocation fence; callers keep immediate busy.
@@ -280,7 +279,11 @@ impl Engine {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .map_err(|_| denied("grant store unavailable"))?;
-        if class != "synthetic" {
+        let expected_class = match root.dataset_class {
+            DatasetClass::Synthetic => "synthetic",
+            DatasetClass::Personal => "personal",
+        };
+        if class != expected_class {
             return Err(denied("dataset_class_mismatch"));
         }
         if count != 1 || active != 1 {
