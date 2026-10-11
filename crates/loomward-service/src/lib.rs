@@ -22,6 +22,7 @@ mod idem;
 mod ids;
 pub mod lab;
 pub mod paths;
+mod placement;
 mod sink;
 #[cfg(test)]
 mod tests;
@@ -367,7 +368,7 @@ pub(crate) fn retry_flag(command: Command, mut body: ErrorBody) -> ErrorBody {
     use ErrorCode::*;
     body.retryable = match body.code {
         StaleGeneration | DeviceOffline | PartialCoverage | ResourceBudget | Busy => true,
-        DeadlineExceeded => !is_mutation(command),
+        DeadlineExceeded => command == Command::PlacementSimulate || !is_mutation(command),
         InternalError => command != Command::TeacherRun,
         _ => false,
     };
@@ -446,7 +447,10 @@ impl ViewService for Service {
             .deadline_ms
             .map_or(default_deadline(command), |d| d.get() as u64);
         let deadline = started + Duration::from_millis(wait);
-        if is_mutation(command) {
+        if is_mutation(command)
+            && (command != Command::PlacementSimulate
+                || request.payload.get("save").and_then(Value::as_bool) == Some(true))
+        {
             self.mutate(request, command, ctx.clone(), started, deadline)
         } else {
             let permit = match ReadPermit::acquire(self.inner.clone()) {
@@ -617,8 +621,17 @@ impl Service {
                                         inner.turn.1.wait(queue).unwrap_or_else(|e| e.into_inner());
                                 }
                             }
-                            settle.outcome =
-                                Some(inner.respond(&request, command, &ctx, started, None));
+                            let work = ReadWork {
+                                deadline,
+                                interrupt: Mutex::new(None),
+                            };
+                            settle.outcome = Some(inner.respond(
+                                &request,
+                                command,
+                                &ctx,
+                                started,
+                                (command == Command::PlacementSimulate).then_some(&work),
+                            ));
                         })
                 };
                 if spawned.is_err() {
@@ -637,9 +650,9 @@ impl Service {
         self.inner.idem.wait(&id, deadline).unwrap_or_else(|| {
             ResponseEnvelope::error(
                 Some(id),
-                retry_flag(
-                    command,
-                    fail(ErrorCode::DeadlineExceeded, "outcome unknown: retry with the same request_id, or read the current state"),
+                fail(
+                    ErrorCode::DeadlineExceeded,
+                    "outcome unknown: retry with the same request_id, or read the current state",
                 ),
                 None,
             )
@@ -709,7 +722,10 @@ impl Inner {
                     "the service produced an invalid result",
                 )),
             });
-        let out = if work.is_some_and(|work| Instant::now() >= work.deadline) {
+        let out = if work.is_some_and(|work| Instant::now() >= work.deadline)
+            && !(command == Command::PlacementSimulate
+                && request.payload.get("save").and_then(Value::as_bool) == Some(true))
+        {
             Err(fail(
                 ErrorCode::DeadlineExceeded,
                 "the read deadline expired",
@@ -727,7 +743,16 @@ impl Inner {
                 ResponseEnvelope::ok_object(id, map, meta)
             }
             Ok(_) => unreachable!("validated above"),
-            Err(e) => ResponseEnvelope::error(Some(id), retry_flag(command, e), None),
+            Err(e) => {
+                let mut e = retry_flag(command, e);
+                if command == Command::PlacementSimulate
+                    && request.payload.get("save").and_then(Value::as_bool) == Some(true)
+                    && e.code == ErrorCode::DeadlineExceeded
+                {
+                    e.retryable = false;
+                }
+                ResponseEnvelope::error(Some(id), e, None)
+            }
         }
     }
 

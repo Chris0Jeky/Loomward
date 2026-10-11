@@ -138,6 +138,8 @@ class FakeEngine:
             g = {'group_id': 'cg_a', 'node_id': 'nd_a', 'root_id': 'rt_a', 'name': 'group-a', 'source_bytes': '5000', 'destination_bytes': '5000', 'transfer_bytes': '5000', 'estimate_basis': 'allocated_entries',
                  'estimated_relief_bytes': '5000', 'relief_basis': 'verified_unique_allocation', 'heat': None, 'heat_basis': 'unknown', 'newest_modified_at': None, 'pinned': False, 'active': False, 'protected': False, 'days_since_move': 30, 'coverage': 'complete'}
             return {'source_volume_id': 'vo_x', 'root_generations': [], 'groups': [g], 'note': 'n'}
+        if cmd == 'proposals.list':
+            return {'proposals': []}
         if cmd == 'placement.simulate':
             plan = {'mode': 'simulation', 'algorithm': 'bounded_portfolio_search_v2', 'optimality_claim': False, 'optimality_scope': 's', 'shortfall_optimal': True,
                     'search': {'complete': True, 'nodes_visited': 1, 'node_budget': 10, 'reason': 'exhausted', 'eligible_groups': 1, 'eligible_targets': 1, 'lower_bound_shortfall_bytes': '0'},

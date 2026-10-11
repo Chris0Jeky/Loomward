@@ -23,6 +23,7 @@ import importlib.util
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import tempfile
 from types import SimpleNamespace
@@ -181,7 +182,61 @@ def theme_snapshot(page: Page) -> dict:
 def live_call(page: Page, token: str, command: str, payload: dict) -> dict:
     return page.evaluate("""async ([token, command, payload]) => (await (await fetch('/api/v3/call', {method: 'POST',
         headers: {'Content-Type': 'application/json', 'X-Loomward-Token': token},
-        body: JSON.stringify({protocol: 'loomward/3', request_id: 'live_' + command.replace('.', '_'), command, payload})})).json())""", [token, command, payload])
+        body: JSON.stringify({protocol: 'loomward/3', request_id: 'live_' + crypto.randomUUID().replaceAll('-', ''), command, payload})})).json())""", [token, command, payload])
+
+
+def live_placement(browser, exe: Path) -> None:
+    """A tiny synthetic catalogue through the production service and app; no host inventory."""
+    with tempfile.TemporaryDirectory(prefix='lw-live-placement-') as state:
+        proc = subprocess.Popen([str(exe), '--state-dir', state, '--static', str(DIST)], stdout=subprocess.PIPE, text=True)
+        try:
+            url = (proc.stdout.readline() if proc.stdout else '').strip()
+            check('/#token=' in url, 'a synthetic placement service is running')
+            _, token = url.split('/#token=')
+            with sqlite3.connect(Path(state) / 'state.db') as db:
+                db.execute("INSERT INTO root_grant(id,volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns) VALUES(1,'synthetic-source',?,'Synthetic fixture','fixture','fixture','active',0)", [bytes([1] * 16)])
+                db.execute('UPDATE revision SET state_rev=state_rev+1')
+            db.close()
+            with sqlite3.connect(Path(state) / 'catalog.db') as db:
+                physics = json.dumps({'space': {'capacity_bytes': '1048576', 'free_bytes': '65536', 'read_only': False}})
+                db.execute("INSERT INTO volume(id,volume_key,display_name,bytes_per_cluster,identity_json,capabilities_json,device_json,online,observed_at_ns) VALUES(1,'synthetic-source','Synthetic source',4096,'{}',?,'{}',1,0)", [physics])
+                db.execute("INSERT INTO volume(id,volume_key,display_name,identity_json,capabilities_json,device_json,online,observed_at_ns) VALUES(2,'synthetic-unknown','Synthetic unknown','{}','{}','{}',1,0)")
+                db.execute("INSERT INTO root(id,grant_id,volume_id,root_file_id,generation,state) VALUES(1,1,1,?,1,'complete')", [bytes([1] * 16)])
+                db.execute("INSERT INTO dir(id,root_id,name,file_id,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run,sub_files,sub_logical,sub_allocated,sub_complete) VALUES(1,1,'Synthetic group',?,'native_file_id_128','listed',0,16,'complete',1,1,1,4096,4096,1)", [bytes([1] * 16)])
+                db.execute("INSERT INTO file(id,dir_id,name,file_id,logical,allocated,attrs,born_run,seen_run) VALUES(1,1,'synthetic.bin',?,4096,4096,0,1,1)", [bytes([2] * 16)])
+                db.execute('UPDATE revision SET catalog_rev=1')
+            db.close()
+            page = browser.new_context(viewport={'width': 1360, 'height': 900}).new_page()
+            errors: list[str] = []
+            page.on('pageerror', lambda e: errors.append(str(e)))
+            page.goto(url)
+            expect(page.get_by_role('status', name='Session status')).to_contain_text('Connected')
+            page.evaluate("location.hash = '#/tiers'")
+            expect(page.get_by_role('heading', name='Tiers', level=1)).to_be_visible()
+            page.get_by_label('Declared tier for Synthetic source').select_option('0')
+            expect(page.get_by_role('button', name=re.compile(r'Source volume\s*:\s*Synthetic source'))).to_be_visible()
+            expect(page.locator('#h-cand + p')).to_contain_text('Default-stream')
+            expect(page.locator('main table.tbl').first.locator('tbody')).to_contain_text('Synthetic group')
+            expect(page.locator('main table.tbl').first.locator('tbody')).to_contain_text('unknown')
+            page.get_by_label('Keep these scenarios').check()
+            page.get_by_role('button', name='Simulate', exact=True).click()
+            expect(page.get_by_role('heading', name='Placement plan', exact=True)).to_be_visible()
+            expect(page.get_by_text('Space relief cannot be verified, so it is unknown rather than zero')).to_be_visible()
+            expect(page.get_by_text('Synthetic unknown', exact=True).last).to_be_visible()
+            expect(page.get_by_role('button', name=re.compile('Show saved scenario'))).to_have_count(3)
+            page.get_by_role('button', name=re.compile('Show saved scenario')).first.click()
+            expect(page.locator('main table.alts')).to_have_count(0)
+            expect(page.get_by_role('heading', name='Placement plan', exact=True)).to_be_visible()
+            proposals = live_call(page, token, 'proposals.list', {})
+            check(proposals['ok'] and len(proposals['result']['proposals']) == 3, 'the real service saved all three simulation alternatives')
+            detail = live_call(page, token, 'proposals.get', {'proposal_id': proposals['result']['proposals'][0]['proposal_id']})
+            check(detail['ok'] and detail['result']['plan']['filesystem_changed'] is False and detail['result']['summary']['status'] == 'simulation_only', 'saved scenario retrieval remains simulation only')
+            check(not errors, 'the real Tiers interaction has no page errors')
+            page.context.close()
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+                proc.wait(timeout=10)
 
 
 def live_scan_refusals(browser, exe: Path) -> None:
@@ -273,6 +328,7 @@ def run_live_serve(browser_path: str | None) -> None:
             expect(status).to_contain_text('Connected')
             print('PASS http transport connected through loomward-serve')
             live_scan_refusals(browser, exe)
+            live_placement(browser, exe)
 
             proc.terminate()
             proc.wait(timeout=10)
