@@ -9,7 +9,7 @@ The receipt is [real-folder-stress.json](../../evidence/v3/real-folder-stress.js
 ## Method and privacy
 
 Four owner-authorised roots are identified publicly only as `real-A` through `real-D`. The first
-three are on the C: NVMe; the fourth is on the E: HDD. Actual root paths and the reproduction
+three are on the C: fast local volume; the fourth is on the E: slow local volume. Actual root paths and the reproduction
 plan stay in the primary checkout's gitignored state. Each native child appends a Unix timestamp,
 absolute root and reason to the private `scan-roots.log`, flushes it with `sync_all`, and only
 then inspects root ancestors or traverses. The Python child appends an ISO timestamp/root/reason
@@ -58,10 +58,10 @@ Counts below use the last final-build std-single observation. Entries include fi
 
 | Root | Storage | Entries | Files | Dirs | Logical GiB | Skip group | Denied dirs | Exact sweeps |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| real-A | NVMe | 323,788 | 291,935 | 31,837 | 68.23 | 16 | 2 | 5/6 |
-| real-B | NVMe | 311,449 | 260,395 | 51,036 | 79.66 | 18 | 2 | 6/6 |
-| real-C | NVMe | 200,575 | 138,616 | 61,959 | 16.60 | 0 | 0 | 6/6 |
-| real-D | HDD | 14,824 | 12,639 | 2,185 | 20.49 | 0 | 0 | 6/6 |
+| real-A | fast local volume | 323,788 | 291,935 | 31,837 | 68.23 | 16 | 2 | 5/6 |
+| real-B | fast local volume | 311,449 | 260,395 | 51,036 | 79.66 | 18 | 2 | 6/6 |
+| real-C | fast local volume | 200,575 | 138,616 | 61,959 | 16.60 | 0 | 0 | 6/6 |
+| real-D | slow local volume | 14,824 | 12,639 | 2,185 | 20.49 | 0 | 0 | 6/6 |
 
 Each warm median and range uses five runs; RSS is the maximum of their five process peaks. Initial times are the initial sweep, whose later strategies inherit preceding cache; real-A uses the separately hashed preliminary build described above.
 
@@ -113,18 +113,18 @@ A separate metadata-only temporal probe found one existing entry whose size and 
 
 The unchanged Python scanner on the smallest real root, **real-D**, matched files, directories, logical bytes and skips: **0.760 s**, **16,621 files/s**, **36.14 MiB** peak RSS. It examined 14,824 entries, hit no cap and reported zero errors/skips. Its public receipt omits all file records and diagnostic paths. The Python scanner builds, hashes path references for, sorts and retains inventory records; native walkers aggregate only. This is application context, not equal-work speedup proof.
 
-## Identical 1M tree: NVMe versus HDD
+## Identical 1M tree: fast local volume versus slow local volume
 
-Both trees use mixed profile, seed 42, 1,000,000 files, 6,325 descendant directories and 121,256,337,157,388 logical bytes. Names, layout and sizes match the same deterministic oracle; zero-filled sparse files do not model content throughput, fragmentation or physical reclaimability. All 40 included timed runs matched the manifest. Four additional original HDD trial-3 results also matched but are retained separately as excluded_overlap_runs: that sweep overlapped the temporal probe's second traversal and was replaced once after the probe and original batch finished. The included HDD trials are 1, 2, 4, 5 and replacement 6. Both devices use NTFS; G: is the Sabrent Rocket Q NVMe, E: the ST2000DM006 SATA HDD. Five warm-uncontrolled runs per strategy/device use fresh processes, eight parallel workers and 64 KiB buffers.
+Both trees use mixed profile, seed 42, 1,000,000 files, 6,325 descendant directories and 121,256,337,157,388 logical bytes. Names, layout and sizes match the same deterministic oracle; zero-filled sparse files do not model content throughput, fragmentation or physical reclaimability. All 40 included timed runs matched the manifest. Four additional original HDD trial-3 results also matched but are retained separately as excluded_overlap_runs: that sweep overlapped the temporal probe's second traversal and was replaced once after the probe and original batch finished. The included HDD trials are 1, 2, 4, 5 and replacement 6. Both volumes use NTFS; G: is the fast local volume, E: the slow local volume. Five warm-uncontrolled runs per strategy/device use fresh processes, eight parallel workers and 64 KiB buffers.
 
-| Strategy | NVMe median s | HDD median s | HDD/NVMe wall ratio | NVMe files/s | HDD files/s | NVMe / HDD max RSS MiB |
+| Strategy | fast local volume median s | slow local volume median s | slow/fast wall ratio | fast local volume files/s | slow local volume files/s | fast / slow max RSS MiB |
 |---|---:|---:|---:|---:|---:|---:|
 | std-single | 45.128 | 33.060 | 0.73x | 22,159 | 30,248 | 6.50 / 6.54 |
 | std-parallel | 10.335 | 8.192 | 0.79x | 96,758 | 122,073 | 7.62 / 7.82 |
 | find | 0.283 | 0.143 | 0.50x | 3,529,635 | 6,991,159 | 7.90 / 8.32 |
 | handle | 0.202 | 0.131 | 0.65x | 4,957,900 | 7,640,610 | 7.45 / 7.82 |
 
-These ratios describe warm metadata enumeration on this host, not raw device speed. OS caches can conceal HDD seek costs. The differing initial real-D std-single time and warm repeats are compatible with cache effects but do not isolate their cause. No cache eviction, uncached content read or true cold-HDD run was performed.
+These ratios describe warm metadata enumeration on this host, not raw device speed. OS caches can conceal slow-volume seek costs. The differing initial real-D std-single time and warm repeats are compatible with cache effects but do not isolate their cause. No cache eviction, uncached content read or true cold-HDD run was performed.
 
 ### Marked trees left in place
 

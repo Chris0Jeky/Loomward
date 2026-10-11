@@ -1,7 +1,7 @@
 # Windows NTFS enumeration spike
 
 9 October 2026. Sol lane L, base `1ee166d597b61cf935a84499351009f0e316857a`, Windows 11,
-non-elevated user token, 20 logical processors, owner-described G: NVMe, measured NTFS.
+non-elevated user token, host hardware withheld, G: fast local volume, measured NTFS.
 This is a synthetic metadata enumeration experiment, not a whole-disk scan, a WinDirStat
 comparison, an engine integration or an effects capability. All generated files stay beneath
 `G:\loomward-lab\scale`. No E: experiment, cache eviction, elevation, global setting,
@@ -168,7 +168,7 @@ Use **GetFileInformationByHandleEx(FileIdExtdDirectoryInfo), eight workers, 16 K
 query** as the starting candidate for this shape. It was fastest among the four tested approaches,
 returned nonzero 128-bit IDs for every generated payload file and observed allocation without a
 per-file open. The 64 KiB comparison reached 4.71M files/s at 3M; paired tuning preferred 16 KiB
-(5.38M files/s at its median, maximum observed RSS 9.23 MiB). One worker did not exploit the NVMe
+(5.38M files/s at its median, maximum observed RSS 9.23 MiB). One worker did not exploit the fast local volume
 well, sixteen workers did not beat the eight-worker/16 KiB setting at 1M, and 256 KiB cost more
 on these mostly 256-file leaf directories. These are starting measurements, not universal thread
 or buffer optima. Benchmark wide directories and HDD latency before adapting concurrency or
