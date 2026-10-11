@@ -165,12 +165,12 @@ fn windows_folder(folder: loomward_shell::known_folders::Folder) -> Option<PathB
     }
 }
 
-fn check_profile(root: &Path) -> Result<(), Refusal> {
+pub(crate) fn check_profile(root: &Path) -> Result<(), Refusal> {
     check_profile_with(root, os_profile(), os_profiles_dir())
 }
 
 /// Fails closed: an unresolvable profile or profiles directory refuses every root.
-fn check_profile_with(
+pub(crate) fn check_profile_with(
     root: &Path,
     profile: Option<PathBuf>,
     profiles: Option<PathBuf>,
@@ -257,6 +257,17 @@ pub fn check_root(
     state_dir: Option<&Path>,
     others: &[PathBuf],
     allow_volume_root: bool,
+) -> Result<PathBuf, Refusal> {
+    check_root_with(root, state_dir, others, allow_volume_root, check_profile)
+}
+
+/// [`check_root`] with the profile fence supplied (the OS folders outside tests).
+pub(crate) fn check_root_with(
+    root: &Path,
+    state_dir: Option<&Path>,
+    others: &[PathBuf],
+    allow_volume_root: bool,
+    check_profile: impl Fn(&Path) -> Result<(), Refusal>,
 ) -> Result<PathBuf, Refusal> {
     if network_path(root) {
         return Err(Refusal::NetworkOrRemovableUnsupported);

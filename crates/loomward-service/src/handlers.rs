@@ -195,6 +195,17 @@ impl Inner {
                 reason,
             ));
         }
+        if self.dataset == DatasetClass::Personal {
+            self.stored_grant_fence(&root).map_err(|r| {
+                with_reason(
+                    fail(
+                        ErrorCode::PermissionDenied,
+                        "the granted folder is not eligible under the current rules",
+                    ),
+                    &refusal_name(r),
+                )
+            })?;
+        }
         let dir = root
             .dir
             .ok_or_else(|| fail(ErrorCode::InternalError, "root has no directory row"))?;
@@ -219,6 +230,28 @@ impl Inner {
             ScanStartRequestMode::Refresh => self.engine.scan_refresh(&granted, r.budget),
         }?;
         Ok(out(encode(&JobResult { job })?, None))
+    }
+
+    /// #312: a stored grant may predate today's fences (#253, #284, #286), so the path rules run
+    /// again before any engine call: the profile, profiles-directory and store fence, the
+    /// state-directory overlap, and a volume root only from the native picker. Fails closed.
+    /// The engine's identity check still binds the scan to the grant's folder after this.
+    fn stored_grant_fence(&self, root: &db::RootRow) -> Result<(), RootGrantResultRefusal> {
+        let profile = |p: &std::path::Path| {
+            #[cfg(test)]
+            if let Some((profile, profiles)) = self.hooks.profile.lock().unwrap().clone() {
+                return paths::check_profile_with(p, Some(profile), Some(profiles));
+            }
+            paths::check_profile(p)
+        };
+        paths::check_root_with(
+            std::path::Path::new(&root.display_path),
+            Some(&self.state_dir),
+            &[],
+            root.granted_via == "desktop_picker",
+            profile,
+        )
+        .map(drop)
     }
 
     fn hello(&self, ctx: &CallContext) -> Handled {

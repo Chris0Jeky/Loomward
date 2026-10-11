@@ -13,7 +13,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Test seams inside the service: a delay before one command runs, a run counter, the order
-/// commands finished their delay in, a one-shot forced mutation-thread spawn failure, and named
+/// commands finished their delay in, a one-shot forced mutation-thread spawn failure, an injected
+/// profile resolver for the scan-time grant fence, and named
 /// gates a handler blocks at while the test holds them closed (`"locked"`: `volumes.declare_tier`
 /// holding `Inner::mutation`; `"after"`: any command after its handler returned, locks released).
 #[derive(Default)]
@@ -25,6 +26,8 @@ pub(crate) struct Hooks {
     pub closed: Mutex<Vec<(Command, &'static str)>>,
     pub arrived: Mutex<Vec<(Command, &'static str)>>,
     pub opened: std::sync::Condvar,
+    /// (profile, profiles directory) for the scan-time fence instead of the OS folders (#312).
+    pub profile: Mutex<Option<(std::path::PathBuf, std::path::PathBuf)>>,
 }
 
 impl Hooks {
@@ -2335,6 +2338,68 @@ fn personal_scan_start_refuses_unknown_lab_and_revoked_roots() {
     let e = scan(&personal.inner.root_id(owner));
     assert_eq!(e.code, ErrorCode::PermissionDenied);
     assert_eq!(e.message.as_str(), "the root's grant is not active");
+}
+
+/// An active owner grant for `path` made without today's fences: through the grant itself where
+/// native identity opens (as an older build recorded it), else as a fixture row naming the path.
+fn unfenced_owner_grant(svc: &Service, path: &Path) -> i64 {
+    if let Ok((root, _)) = svc.inner.grant(path, "cli_flag") {
+        return root;
+    }
+    let (root, grant) = register_as(svc, 7, "owner_granted");
+    svc.inner
+        .db()
+        .execute(
+            "UPDATE st.root_grant SET display_path=?1, granted_via='cli_flag' WHERE id=?2",
+            rusqlite::params![path.to_str().unwrap(), grant],
+        )
+        .unwrap();
+    root
+}
+
+/// #312: a stored grant that today's fences refuse is refused at scan start, whatever fences
+/// held when it was made: no job, no catalogue row. (a) a sibling profile under a profiles
+/// directory with an unrecognised name (#286); (b) a deny-listed store (`.ollama`).
+#[test]
+fn personal_scan_start_refuses_a_stored_grant_todays_fences_refuse() {
+    let tmp = temp_root();
+    let base = tmp.path().canonicalize().unwrap();
+    let home = base.join("Home");
+    let sibling = home.join("me.OLDPC");
+    let store = base.join("fixture-profile").join(".ollama").join("models");
+    for d in [home.join("me"), sibling.clone(), store.clone()] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    for (path, profile) in [
+        (sibling, Some((home.join("me"), home.clone()))),
+        (store, None),
+    ] {
+        let svc = open(
+            &tmp.path().join(format!("state-{}", profile.is_some())),
+            DatasetClass::Personal,
+        );
+        *svc.inner.hooks.profile.lock().unwrap() = profile;
+        let root = unfenced_owner_grant(&svc, &path);
+        let rows = crate::db::counts(&svc.inner.db()).unwrap();
+        let e = err(call(
+            &svc,
+            "scan.start",
+            json!({"root_id": svc.inner.root_id(root), "mode": "full"}),
+        ));
+        assert_eq!(e.code, ErrorCode::PermissionDenied, "{e:?}");
+        assert_eq!(reason(&e), Some("protected_profile_or_store"));
+        assert!(
+            !e.message.contains(&*base.to_string_lossy()),
+            "no path on the wire"
+        );
+        let (list, _) = ok("jobs.list", call(&svc, "jobs.list", json!({"limit": 50})));
+        assert_eq!(list["jobs"], json!([]), "no job started");
+        assert_eq!(
+            crate::db::counts(&svc.inner.db()).unwrap(),
+            rows,
+            "no catalogue row"
+        );
+    }
 }
 
 /// Personal scans are open (#184, #206, #240, #269 closed): an owner folder granted through the
