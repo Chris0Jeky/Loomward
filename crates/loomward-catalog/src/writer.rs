@@ -403,6 +403,23 @@ fn listing_command(command: &WriteCommand) -> bool {
             | WriteCommand::ListingDone { .. }
     )
 }
+fn staged_run(command: &WriteCommand) -> Option<i64> {
+    match command {
+        WriteCommand::StageChunk { run_id, .. } | WriteCommand::ListingDone { run_id, .. } => {
+            Some(*run_id)
+        }
+        _ => None,
+    }
+}
+fn transaction_bytes(p: &Pending, first_run: Option<i64>) -> usize {
+    if first_run.is_some() && staged_run(&p.command) == first_run {
+        p._permit
+            .bytes
+            .min(validate(&p.command).unwrap_or(p._permit.bytes))
+    } else {
+        p._permit.bytes
+    }
+}
 fn work(
     mut conn: Connection,
     rx: Receiver<Pending>,
@@ -434,6 +451,9 @@ fn work(
                     |r| r.get::<_, bool>(0),
                 )
                 .unwrap_or(true);
+        let first_run = staged_run(&batch[0].command).filter(|run| {
+            conn.query_row("SELECT s.mode='full' AND NOT EXISTS(SELECT 1 FROM scan_run prior WHERE prior.root_id=s.root_id AND prior.id<s.id) FROM scan_run s WHERE s.id=?1", [run], |r| r.get::<_, bool>(0)).unwrap_or(false)
+        });
         let mut results = Vec::with_capacity(batch.len());
         let mut failed = false;
         // Precious writes commit before the catalogue transaction, which writes main only.
@@ -470,6 +490,7 @@ fn work(
                 let mut bytes = 0;
                 loop {
                     let p = batch.last_mut().expect("transaction command");
+                    let command_bytes = transaction_bytes(p, first_run);
                     let ready = prepared.take().unwrap_or(Ok(None));
                     results.push(ready.and_then(|prepared| {
                         let save = tx.savepoint()?;
@@ -515,7 +536,7 @@ fn work(
                             context.fenced_listings.insert((*run_id, *dir_id));
                         }
                     }
-                    bytes += p._permit.bytes;
+                    bytes += command_bytes;
                     // Free the applied payload so producers can refill the bounded queue before COMMIT.
                     p.command = WriteCommand::Barrier;
                     release(&p._permit.quota, p._permit.bytes);
@@ -539,7 +560,8 @@ fn work(
                     match next {
                         Ok(next)
                             if listing_command(&next.command)
-                                && bytes + next._permit.bytes <= TRANSACTION_BYTES =>
+                                && bytes + transaction_bytes(&next, first_run)
+                                    <= TRANSACTION_BYTES =>
                         {
                             batch.push(next)
                         }
