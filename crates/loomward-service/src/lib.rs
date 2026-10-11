@@ -26,6 +26,7 @@ mod idem;
 mod ids;
 mod inventory;
 pub mod lab;
+mod learning;
 pub mod paths;
 mod placement;
 mod sink;
@@ -192,6 +193,10 @@ impl Service {
         let engine = Engine::open(EngineConfig::new(state_dir.clone(), config.dataset))
             .map_err(|e| format!("engine refused to open: {e}"))?;
         let conn = db::open(&state_dir).map_err(|e| format!("state store: {e}"))?;
+        engine.install_learning(
+            loomward_engine::learning::Store::open(&state_dir)
+                .map_err(|e| format!("learning store: {e}"))?,
+        );
         if static_dir.is_some() {
             let mut protected = config.grant_roots.clone();
             protected
@@ -287,6 +292,7 @@ pub(crate) fn is_mutation(c: Command) -> bool {
             | VolumesDeclareTier
             | ScanStart
             | ScanCancel
+            | JobsCancel
             | DuplicatesInspect
             | DuplicatesCancel
             | FeedbackRecord
@@ -453,7 +459,11 @@ impl ViewService for Service {
         if command.wave() >= 3
             && !matches!(
                 command,
-                Command::CollectionsList
+                Command::FeedbackRecord
+                    | Command::LearningStatus
+                    | Command::LearningQueue
+                    | Command::LearningRefit
+                    | Command::CollectionsList
                     | Command::CollectionsCreate
                     | Command::CollectionsUpdateMembers
                     | Command::CollectionsMembers

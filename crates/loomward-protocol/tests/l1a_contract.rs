@@ -17,7 +17,7 @@ fn commands_json() -> Value {
 fn command_table_equals_commands_json() {
     let doc = commands_json();
     let commands = doc["commands"].as_object().unwrap();
-    assert_eq!(commands.len(), 49);
+    assert_eq!(commands.len(), 50);
     assert_eq!(Command::ALL.len(), commands.len());
     for c in Command::ALL {
         let row = &commands[c.as_str()];

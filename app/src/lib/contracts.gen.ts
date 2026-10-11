@@ -742,6 +742,8 @@ export interface FeedbackRequest {
 }
 
 export interface LearningStatus {
+  gate: string | null;
+  unresolved_human_events: Count;
   model_id: ModelId | null;
   algorithm: "weighted_multinomial_nb_v1";
   taxonomy_version: number;
@@ -1101,7 +1103,7 @@ export interface PlacementPlan {
   })[];
   excluded_volumes: ({
     volume_id: VolumeId;
-    reason: "tier_unknown" | "capacity_unknown" | "offline";
+    reason: "tier_unknown" | "capacity_unknown" | "offline" | "no_active_grant";
   })[];
   relief_policy: "verified_only" | "entry_allocation_whatif";
   projected_free_bytes: { [key: string]: ByteCount };
@@ -1486,6 +1488,7 @@ export interface CommandMap {
   "learning.status": { request: EmptyRequest; result: LearningStatus };
   "learning.queue": { request: LearningQueueRequest; result: LearningQueue };
   "learning.refit": { request: EmptyRequest; result: JobResult };
+  "jobs.cancel": { request: JobRefRequest; result: JobResult };
   "collections.list": { request: EmptyRequest; result: CollectionList };
   "collections.create": { request: CollectionCreateRequest; result: Collection };
   "collections.update_members": { request: CollectionMembersUpdate; result: Collection };
@@ -1541,6 +1544,7 @@ export const COMMANDS = {
   "learning.status": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "learning.queue": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "learning.refit": { adapters: ["tauri", "http"], wave: 3, events: ["job.state", "learning.updated"] },
+  "jobs.cancel": { adapters: ["tauri", "http"], wave: 2, events: ["job.state"] },
   "collections.list": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "collections.create": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "collections.update_members": { adapters: ["tauri", "http"], wave: 3, events: [] },

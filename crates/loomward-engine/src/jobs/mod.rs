@@ -109,21 +109,27 @@ pub(crate) struct Registry {
     seq: AtomicU64,
 }
 impl Registry {
-    /// One live scan or duplicates job per root: `busy` with `detail.job_id`.
+    /// One live scan or duplicates job per root and one live refit overall: `busy` with
+    /// `detail.job_id`.
     fn conflict(records: &HashMap<JobId, Record>, spec: &JobSpec) -> EngineResult<()> {
-        if !matches!(spec.kind, JobKind::Scan | JobKind::Duplicates) {
+        if !matches!(
+            spec.kind,
+            JobKind::Scan | JobKind::Duplicates | JobKind::Refit
+        ) {
             return Ok(());
         }
         let Some(r) = records.values().find(|r| {
-            r.job.kind == spec.kind && r.job.root_id == spec.root_id && r.terminal.is_none()
+            r.job.kind == spec.kind
+                && (spec.kind == JobKind::Refit || r.job.root_id == spec.root_id)
+                && r.terminal.is_none()
         }) else {
             return Ok(());
         };
         Err(EngineError::Busy {
-            message: if spec.kind == JobKind::Duplicates {
-                "root already inspecting duplicates"
-            } else {
-                "root already scanning"
+            message: match spec.kind {
+                JobKind::Duplicates => "root already inspecting duplicates",
+                JobKind::Refit => "refit already running",
+                _ => "root already scanning",
             }
             .into(),
             detail: Some(
@@ -514,6 +520,7 @@ mod tests {
     #[test]
     fn concurrent_submissions_have_unique_monotonic_sequences() {
         let e = Arc::new(engine());
+        e.register_job_runner(JobKind::Scan, Arc::new(|_, _| Ok(CoverageState::Complete)));
         e.register_job_runner(JobKind::Refit, Arc::new(|_, _| Ok(CoverageState::Complete)));
         e.register_job_runner(
             JobKind::Teacher,
@@ -529,11 +536,11 @@ mod tests {
                     barrier.wait();
                     e.job_submit(JobSpec::new(
                         if i % 2 == 0 {
-                            JobKind::Refit
+                            JobKind::Scan
                         } else {
                             JobKind::Teacher
                         },
-                        None,
+                        Some(RootId::new(format!("rt_sequence_{i}")).unwrap()),
                     ))
                     .unwrap()
                 })

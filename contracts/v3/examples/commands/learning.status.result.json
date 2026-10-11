@@ -2,7 +2,7 @@
   "model_id": "md_0001",
   "algorithm": "weighted_multinomial_nb_v1",
   "taxonomy_version": 1,
-  "training_count": 42,
+  "training_count": 40,
   "human_events": 40,
   "teacher_labels": 2,
   "human_support": {
@@ -12,5 +12,7 @@
   "fitted_at": "2026-10-09T11:58:30Z",
   "dataset_class": "synthetic",
   "calibrated": false,
-  "autonomy_allowed": false
+  "autonomy_allowed": false,
+  "gate": null,
+  "unresolved_human_events": 0
 }

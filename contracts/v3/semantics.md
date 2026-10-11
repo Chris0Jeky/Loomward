@@ -73,9 +73,33 @@ re-send as stated.
 | `scan.start` | Yes | One active scan per root: a second start is `busy` with `detail.job_id` | `jobs.list` for the root | Re-send is safe |
 | `scan.cancel` | Yes | Idempotent | `jobs.get` | Re-send is safe |
 | `learning.refit` | Yes | One refit at a time: `busy` with `detail.job_id` | `jobs.list` | Re-send is safe |
+| `jobs.cancel` | Yes | Re-cancelling a terminal job returns its unchanged state | `jobs.get` | Re-send is safe |
+
 | `placement.simulate` with `save: true` | Yes | `request_id`, 10 min | `proposals.list`; plans are deterministic for the same inputs digest | Re-send is safe (a duplicate digest returns the saved proposal) |
 | `budgets.set` | Yes | `request_id`, 10 min | `budgets.get` | Loomward's own pools reset at restart. After cache expiry set a value only if the owner confirms it against the value read |
 | `telemetry.subscribe`, `telemetry.unsubscribe` | Yes | `subscription_id` | Unknown or expired IDs are `not_found` | Re-subscribe with a fresh lease |
+
+L14 learning is synthetic-only. Personal sessions refuse `feedback.record` and `learning.refit`
+with `capability_unavailable` and `detail.reason: learning_personal_gated`; `learning.status.gate`
+reports that same rule, and `learning.queue` is empty. Opening personal learning requires a separate
+owner decision. A label is not a preference or an operation grant.
+
+`feedback.record` binds only a resolved durable native reference. `label` is null exactly when
+`retract` is true; a retraction with no prior human label is `invalid_request`. It stores the
+withdrawn label at the next human revision. The durable receipt preserves the original complete
+result across restart, including its learning status; replay changes only `idempotent_replay`.
+Replay is checked before resolving the session-local node ID. Human events are stored only in
+`human_feedback`; teacher rows remain separate and never enter this lane's refit. Unresolved human
+events are excluded and counted in `learning.status.unresolved_human_events`.
+
+`learning.refit` produces a persisted **candidate**, without promotion (LW-027). Status and queue
+use the latest candidate for advice only; `calibrated` and `autonomy_allowed` remain false. Scores
+are **relative scores, not probabilities**. Queue order is descending review priority with a node
+ID tie-break. The synthetic smoke queue is bounded to 10,000 eligible files; refits accept at most
+10,000 raw human events. Exceeding either budget is `resource_budget`, never silent truncation.
+Feedback changed during a refit is `stale_generation`; retry explicitly. Cancellation is available
+through `jobs.cancel` for any retained job kind; `scan.cancel` remains scan-only. Cancellation
+acknowledges immediately and completion remains a separate job state.
 
 ### Placement reads and stored scenarios
 
@@ -99,9 +123,21 @@ synthetic registered lab root may supply scoped volume-space observations; no ot
 enumerated. Unprovable ancestry across overlapping grants is `partial_coverage` with the named
 reason `overlapping_grant_ancestry_unknown`.
 
+Volumes whose recorded roots have no active grant remain visible in `volumes.list` and
+`tiers.model`, with their observed `online` state and a "No active grant" tier note. They are
+excluded from simulations with `excluded_volumes.reason = "no_active_grant"`; choosing one as
+the source refuses with `invalid_request`, `detail.reason = "no_active_grant"`.
+
 Proposals are historical simulations. Changed catalogue revisions, declarations or root
 generations mark them `stale`; inactive grants hide them from list/get. Wire IDs are bound to the
 current session and catalogue instance: after restart, clients re-list rather than reuse old IDs.
+Free-space and capacity drift alone does not mark a scenario stale; physics is a point-in-time
+simulation input, not a permission or a current feasibility promise. The UI compares free space
+"now" with free space "in this simulation". A catalogue revision recording new physics still marks
+it stale. Fresh lab-space reads stamp `observed_at` when the read completes, rather than reusing
+the catalogue volume timestamp. Lab identity and space calls run under the call deadline; a timeout
+releases the service read permit while at most eight unfinished observation helpers retain their
+own permits until the OS calls return.
 Stored canonical row references and input digests survive restart and never confer effect authority.
 
 ## 4. Idempotency
