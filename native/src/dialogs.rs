@@ -63,27 +63,33 @@ impl DesktopDialogs {
             picker: Mutex::new(None),
         }
     }
-    fn pick_folder_with(
-        &self,
-        pick: impl FnOnce(rfd::FileDialog) -> Option<PathBuf>,
-    ) -> Option<PathBuf> {
+    /// Personal sessions only, one dialog at a time, from the profile start folder (#373).
+    fn pick_with(&self, pick: impl FnOnce(rfd::FileDialog) -> Option<PathBuf>) -> Option<PathBuf> {
         if self.dataset != DatasetClass::Personal {
             return None;
         }
         let _active = self.active.try_lock().ok()?;
         let picker = self.picker.lock().ok()?.clone()?;
+        pick(picker)
+    }
+
+    fn pick_folder_with(
+        &self,
+        pick: impl FnOnce(rfd::FileDialog) -> Option<PathBuf>,
+    ) -> Option<PathBuf> {
         // The service reports typed refusals; None means the owner cancelled either dialog.
-        let folder = pick(picker)?;
+        let folder = self.pick_with(pick)?;
         (self.ask)(GRANT_TITLE, &grant_text(&folder)).then_some(folder)
     }
 
-    /// The same parented dialog, retitled for one receipt file and filtered to JSON and text.
+    /// The same parented dialog, retitled for one receipt file and filtered to JSON and text. A
+    /// receipt is read once and grants nothing, so the folder confirmation does not apply.
     pub fn pick_file_with(
         &self,
         title: &str,
         pick: impl FnOnce(rfd::FileDialog) -> Option<PathBuf>,
     ) -> Option<PathBuf> {
-        self.pick_folder_with(|picker| {
+        self.pick_with(|picker| {
             pick(
                 picker
                     .set_title(title)
