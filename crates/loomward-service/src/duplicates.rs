@@ -67,7 +67,9 @@ impl Inner {
         if self.engine.job_status(&request.job_id)?.kind != JobKind::Duplicates {
             return Err(fail(ErrorCode::InvalidRequest, "not a duplicates job"));
         }
-        let job = self.engine.job_cancel(&request.job_id)?;
+        let mut job = self.engine.job_cancel(&request.job_id)?;
+        // Cancellation receipts outlive a root grant; reports belong only to live job reads.
+        job.duplicates = None;
         Ok(Out {
             result: serde_json::json!({"job":job}),
             catalog_rev: None,

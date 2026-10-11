@@ -73,6 +73,7 @@ impl Store {
         .map_err(internal)?;
         db.execute_batch("PRAGMA foreign_keys=ON;PRAGMA st.synchronous=FULL;
             CREATE TABLE IF NOT EXISTS st.learning_receipt(client_event_id TEXT PRIMARY KEY, result_json TEXT NOT NULL) STRICT;
+            CREATE TABLE IF NOT EXISTS st.learning_node(node_id TEXT PRIMARY KEY, object_ref_id INTEGER NOT NULL REFERENCES object_ref(id)) STRICT;
             CREATE TEMP VIEW learning_resolved AS SELECT o.id FROM st.object_ref o
             LEFT JOIN st.pending_reference p ON p.object_ref_id=o.id
               AND p.catalog_instance=(SELECT value FROM main.meta WHERE key='instance_id')
@@ -162,6 +163,22 @@ impl Engine {
         Store::replay(&self.learning_store()?.db.lock().unwrap(), r)
     }
 
+    /// Retrieve the prior human event without resolving or reading the current node.
+    pub fn learning_prior(&self, node: &NodeId) -> EngineResult<Option<(i64, Value)>> {
+        self.learning_gate()?;
+        let store = self.learning_store()?;
+        let db = store.db.lock().unwrap();
+        let prior: Option<(i64, String)> = db.query_row("SELECT h.object_ref_id,h.features_json FROM st.learning_node n JOIN st.human_feedback h ON h.object_ref_id=n.object_ref_id WHERE n.node_id=?1 ORDER BY h.revision DESC LIMIT 1", [node.as_str()], |r| Ok((r.get(0)?,r.get(1)?))).optional().map_err(internal)?;
+        prior
+            .map(|(reference, features)| {
+                Ok((
+                    reference,
+                    serde_json::from_str(&features).map_err(internal)?,
+                ))
+            })
+            .transpose()
+    }
+
     /// Appends one human event against a resolved durable object and a bounded feature snapshot.
     pub fn learning_feedback(
         &self,
@@ -190,7 +207,7 @@ impl Engine {
                 |row| row.get(0),
             )
             .map_err(internal)?;
-        if !resolved {
+        if !r.retract && !resolved {
             return Err(invalid("labels require a resolved durable reference"));
         }
         let prior: Option<(i64,String)> = tx.query_row("SELECT revision,label FROM st.human_feedback WHERE object_ref_id=?1 ORDER BY revision DESC LIMIT 1",[object_ref],|row|Ok((row.get(0)?,row.get(1)?))).optional().map_err(internal)?;
@@ -209,18 +226,9 @@ impl Engine {
         if revision > 1_000_000_000 {
             return Err(invalid("feedback revision exhausted"));
         }
-        // Refit reads at most 10,000 events: refuse the next one rather than make refit impossible
-        // (Codex P1 on #328; a bounded training window is tracked separately).
-        let events: i64 = tx
-            .query_row("SELECT count(*) FROM st.human_feedback", [], |r| r.get(0))
-            .map_err(internal)?;
-        if events >= 10_000 {
-            return Err(EngineError::ResourceBudget {
-                message: "human event budget is 10000; refit reads at most 10000 events".into(),
-            });
-        }
         let event = crate::events::random_id("fe_");
         tx.execute("INSERT INTO st.human_feedback(event_id,client_event_id,content_digest,object_ref_id,revision,label,retracted,taxonomy_version,features_json,recorded_at_ns) VALUES(?1,?2,?3,?4,?5,?6,?7,1,?8,?9)",params![event,r.client_event_id.as_str(),fingerprint(r),object_ref,revision,label,r.retract,features.to_string(),now_ns()]).map_err(internal)?;
+        tx.execute("INSERT INTO st.learning_node VALUES(?1,?2) ON CONFLICT(node_id) DO UPDATE SET object_ref_id=excluded.object_ref_id", params![r.node_id.as_str(), object_ref]).map_err(internal)?;
         tx.execute("UPDATE st.revision SET state_rev=state_rev+1", [])
             .map_err(internal)?;
         let result: FeedbackResult = decode(
@@ -340,10 +348,6 @@ impl Engine {
         let events = self.events.clone();
         let dataset = self.config.dataset_class;
         let runner = Arc::new(move |ctx: crate::jobs::JobContext, _: JobSpec| {
-            #[cfg(test)]
-            if let Some(hook) = REFIT_HOOK.lock().unwrap().clone() {
-                hook(&ctx);
-            }
             if ctx.is_cancelled() {
                 return Ok(CoverageState::Cancelled);
             }
@@ -353,7 +357,7 @@ impl Engine {
                 let rev: i64 = tx
                     .query_row("SELECT state_rev FROM st.revision", [], |r| r.get(0))
                     .map_err(internal)?;
-                let mut stmt=tx.prepare("SELECT h.event_id,h.object_ref_id,h.revision,h.label,h.retracted,h.features_json FROM st.human_feedback h WHERE h.object_ref_id IN (SELECT id FROM learning_resolved) ORDER BY h.id LIMIT 10001").map_err(internal)?;
+                let mut stmt=tx.prepare("SELECT h.event_id,h.object_ref_id,h.revision,h.label,h.retracted,h.features_json FROM st.human_feedback h WHERE h.object_ref_id IN (SELECT id FROM learning_resolved) AND h.retracted=0 AND NOT EXISTS(SELECT 1 FROM st.human_feedback newer WHERE newer.object_ref_id=h.object_ref_id AND newer.revision>h.revision) ORDER BY h.id DESC LIMIT 10000").map_err(internal)?;
                 let rows = stmt
                     .query_map([], |r| {
                         Ok((
@@ -368,11 +372,6 @@ impl Engine {
                     .map_err(internal)?
                     .collect::<rusqlite::Result<Vec<_>>>()
                     .map_err(internal)?;
-                if rows.len() > 10000 {
-                    return Err(EngineError::ResourceBudget {
-                        message: "human event budget is 10000".into(),
-                    });
-                }
                 let mut data = Vec::new();
                 for (event, item, revision, label, retracted, features) in rows {
                     if ctx.is_cancelled() {
@@ -403,7 +402,13 @@ impl Engine {
             tx.execute("INSERT INTO st.student_model VALUES(?1,'weighted_multinomial_nb_v1',1,?2,?3,?4,'candidate',?5) ON CONFLICT(id) DO UPDATE SET fitted_at_ns=excluded.fitted_at_ns",params![format!("md_{}",student.model_id()),student.model_id(),student.training_count() as i64,student.to_value().to_string(),now_ns()]).map_err(internal)?;
             tx.execute("UPDATE st.revision SET state_rev=state_rev+1", [])
                 .map_err(internal)?;
-            tx.commit().map_err(internal)?;
+            #[cfg(test)]
+            if let Some(hook) = REFIT_HOOK.lock().unwrap().clone() {
+                hook(&ctx);
+            }
+            if !ctx.commit_if_not_cancelled(|| tx.commit().map_err(internal))? {
+                return Ok(CoverageState::Cancelled);
+            }
             let status = Store::status(&db, dataset)?;
             let _ = events.publish(
                 EventName::LearningUpdated,
@@ -438,7 +443,7 @@ static REFIT_HOOK: Mutex<Option<RefitHook>> = Mutex::new(None);
 mod tests {
     use super::*;
     #[test]
-    fn learning_refits_are_exclusive_and_cancel_without_candidate() {
+    fn learning_refits_cancel_at_commit_without_candidate_or_update() {
         let dir = tempfile::tempdir().unwrap();
         let _catalog = loomward_catalog::Catalog::open(dir.path(), "synthetic").unwrap();
         let engine = Engine::open(crate::EngineConfig::new(
@@ -454,6 +459,7 @@ mod tests {
                 std::thread::yield_now();
             }
         }));
+        let mut stream = engine.subscribe_events(None).unwrap();
         let job = engine.learning_refit().unwrap();
         rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
         let error = engine.learning_refit().unwrap_err();
@@ -470,6 +476,19 @@ mod tests {
         }
         *REFIT_HOOK.lock().unwrap() = None;
         assert!(engine.learning_status().unwrap().model_id.is_none());
+        let db = engine.learning_store().unwrap();
+        assert_eq!(
+            db.db
+                .lock()
+                .unwrap()
+                .query_row("SELECT count(*) FROM st.student_model", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        while let RecvOutcome::Event(event) = stream.recv_timeout(std::time::Duration::ZERO) {
+            assert_ne!(event.event, EventName::LearningUpdated);
+        }
         assert!(engine.job_status(&job.job_id).unwrap().rev.get() >= 2);
     }
 }

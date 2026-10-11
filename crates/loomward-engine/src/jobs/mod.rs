@@ -91,6 +91,21 @@ impl JobContext {
     pub fn is_cancelled(&self) -> bool {
         self.cancel.load(Ordering::Acquire)
     }
+    /// Serialize a durable commit with cancellation; after commit the runner must complete.
+    pub(crate) fn commit_if_not_cancelled(
+        &self,
+        commit: impl FnOnce() -> EngineResult<()>,
+    ) -> EngineResult<bool> {
+        let registry = self.registry.upgrade().expect("live job registry");
+        let mut records = registry.records.lock().unwrap();
+        let record = records.get_mut(&self.job_id).expect("live job");
+        if self.is_cancelled() {
+            return Ok(false);
+        }
+        commit()?;
+        record.committed = true;
+        Ok(true)
+    }
 }
 /// Engine-owned runner registered by the lane responsible for this job kind.
 pub type JobRunner = Arc<dyn Fn(JobContext, JobSpec) -> EngineResult<CoverageState> + Send + Sync>;
@@ -101,6 +116,7 @@ struct Record {
     terminal: Option<Instant>,
     interrupt: Option<Arc<dyn Fn() + Send + Sync>>,
     revoked: bool,
+    committed: bool,
 }
 #[derive(Default)]
 pub(crate) struct Registry {
@@ -276,6 +292,7 @@ impl Registry {
                     terminal: None,
                     interrupt,
                     revoked: false,
+                    committed: false,
                 },
             );
             emit(&events, &job);
@@ -382,6 +399,7 @@ impl Registry {
                 message: "job not found".into(),
             })?;
             if revoked && r.job.kind == JobKind::Duplicates {
+                events.redact_job(id);
                 r.revoked = true;
                 r.duplicates = None;
                 if r.job.duplicates.is_some() {
@@ -390,7 +408,7 @@ impl Registry {
                     emit(events, &r.job);
                 }
             }
-            if r.terminal.is_some() || r.job.state == JobState::CancelRequested {
+            if r.terminal.is_some() || r.committed || r.job.state == JobState::CancelRequested {
                 return Ok(r.job.clone());
             }
             revise(&mut r.job)?;
@@ -723,6 +741,43 @@ mod tests {
             loomward_protocol::DatasetClass::Synthetic,
         ))
         .unwrap()
+    }
+    #[test]
+    fn a_committed_runner_cannot_be_cancelled_before_terminal_publication() {
+        let e = engine();
+        let (committed_tx, committed_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = Mutex::new(release_rx);
+        e.register_job_runner(
+            JobKind::Refit,
+            Arc::new(move |ctx, _| {
+                assert!(ctx.commit_if_not_cancelled(|| Ok(()))?);
+                committed_tx.send(()).unwrap();
+                release_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(2))
+                    .unwrap();
+                Ok(CoverageState::Complete)
+            }),
+        );
+        let job = e.job_submit(JobSpec::new(JobKind::Refit, None)).unwrap();
+        committed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_ne!(
+            e.job_cancel(&job.job_id).unwrap().state,
+            JobState::CancelRequested
+        );
+        release_tx.send(()).unwrap();
+        let until = Instant::now() + Duration::from_secs(2);
+        loop {
+            let current = e.job_status(&job.job_id).unwrap();
+            if current.state == JobState::Completed {
+                break;
+            }
+            assert_ne!(current.state, JobState::Cancelled);
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        }
     }
     #[test]
     fn kind_dispatch_terminal_retention_and_cancel_ack() {
