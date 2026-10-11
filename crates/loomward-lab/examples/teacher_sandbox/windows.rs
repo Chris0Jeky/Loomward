@@ -40,6 +40,8 @@ const PINNED_CODEX: &str = "9e7c59c05cc1ce5677b1f94e835b2ac038ca3be14504e78d558e
 const SYNTHETIC_PROMPT: &str = "Reply with the fixed synthetic string LOOMWARD_SYNTHETIC_ONLY.";
 /// The one profile the owner authorised (agent-hq decision loomward-teacher-sandbox-path, (c)).
 pub(super) const PROFILE: &str = "Loomward.L15b.Measure";
+/// HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS).
+const ALREADY_EXISTS: i32 = 0x800700B7_u32 as i32;
 const MAPPINGS: &str = r"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppContainer\Mappings";
 
 fn wide(value: impl AsRef<OsStr>) -> Vec<u16> {
@@ -917,8 +919,13 @@ fn measure_registered() -> io::Result<Value> {
     } else {
         std::panic::catch_unwind(|| measure_in_temp_root(Some(PROFILE)))
     };
-    // Deletion runs on every path out of creation, including a failed create.
-    let deletion = delete_profile();
+    // Deletion runs on every path out of creation, except when another invocation created the
+    // profile after our absence check (ERROR_ALREADY_EXISTS): that profile is not ours to delete.
+    let deletion = if create_hr == ALREADY_EXISTS {
+        Ok(json!({"skipped": "profile created by another invocation", "deleted": false}))
+    } else {
+        delete_profile()
+    };
     let mut receipt = match measured {
         Ok(Ok(value)) => value,
         Ok(Err(e)) => json!({"measurement_error": outcome::<()>(Err(e))}),
