@@ -297,7 +297,7 @@ schema, fixture, file/process effect or owner-decision change.
 
 ## Verified
 
-Windows 11, Intel i5-13600K, rustc 1.97.1. All required commands pass:
+Windows 11, host hardware withheld, rustc 1.97.1. All required commands pass:
 
 ```text
 cargo fmt --all --check
@@ -1090,7 +1090,7 @@ not a candidate merged into this extraction.
 
 ### Verified
 
-Windows 11, Intel i5-13600K, rustc 1.97.1. Final checks:
+Windows 11, host hardware withheld, rustc 1.97.1. Final checks:
 
 ```text
 cargo fmt --all --check
