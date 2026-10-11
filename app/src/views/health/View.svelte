@@ -56,7 +56,7 @@
   }
 
   onMount(() => picker.dismiss()); // the picker store outlives this view: an old "Added" or refusal is not repeated
-  $effect(() => { if (roots) picker.sync(roots.roots); });
+  $effect(() => { const r = roots?.roots; if (r) untrack(() => picker.sync(r)); }); // only a new roots read speaks, never a change of the picker's own state
 
   // `scans.settled` moves when a scan ends: the roots are read again for their totals and coverage.
   $effect(() => {
