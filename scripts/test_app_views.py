@@ -60,6 +60,8 @@ class FakeEngine:
     def __init__(self) -> None:
         self.fail_children = False
         self.stale_once = False
+        self.nested = False  # tree.children lists one sub-folder (nd_dir_N+1, down to nd_dir_3) beside a file
+        self.gone: set[str] = set()  # node ids the engine no longer knows: tree.children answers not_found
         self.plan_mode = 'executable'  # 'executable' or 'malformed': how placement.simulate misbehaves
         self.slice_queue: list[tuple[float, str]] = []  # (delay, root name) per tree.slice call, then the default
         self.events: queue.Queue[dict] = queue.Queue()
@@ -122,6 +124,12 @@ class FakeEngine:
             return {'anchor_node_id': 'nd_atlas', 'basis': 'logical', 'root_generations': [], 'complete': True, 'live': False, 'ordering': 'exact', 'truncated': False,
                     'nodes': [{'node_id': 'nd_atlas', 'parent': None, 'name': 'Atlas'}, {'node_id': 'nd_' + root.replace(' ', '_'), 'parent': 0, 'name': root}]}
         if cmd == 'tree.children':
+            if p['node_id'] in self.gone:
+                return ('not_found', 'fake engine: no such node')
+            if self.nested:
+                depth = int(p['node_id'].removeprefix('nd_dir_')) if p['node_id'].startswith('nd_dir_') else 0
+                sub = [{**row(f'dir-{depth + 1}', 0), 'node_id': f'nd_dir_{depth + 1}', 'kind': 'dir', 'extension': None, 'ext_family': None}] if depth < 3 else []
+                return {'anchor': p['node_id'], 'generation': '7', 'items': sub + [row('leaf.txt', 1)], 'next_cursor': None, 'total': len(sub) + 1, 'budget_hit': False}
             if self.fail_children:
                 return ('internal_error', 'fake engine: refresh failed')
             start = int(p['cursor'][2:]) if p.get('cursor') else 0
@@ -324,6 +332,43 @@ def check_explorer_engine(page: Page, engine: FakeEngine) -> None:
     expect(page.get_by_text('item-000.txt')).to_be_visible()
     expect(page.get_by_role('alert').filter(has_text='refresh failed')).to_have_count(0)
     print('PASS the next successful refresh brings the rows back and clears the error')
+
+
+def check_explorer_fallback(page: Page, engine: FakeEngine) -> None:
+    # #198: a saved breadcrumb whose node vanished keeps the reader at the deepest ancestor that still lists
+    crumbs = page.locator('main nav[aria-label="Location"]')
+    notice = page.locator('#explorer-notice')
+    engine.nested = True
+    page.goto(f'{engine.base}/#token={TOKEN}')
+    page.evaluate("location.hash = '#/explorer'")
+    expect(page.get_by_role('status', name='Session status')).to_contain_text('Connected')
+    for n in (1, 2, 3):
+        page.locator('main table.tbl').get_by_role('button', name=f'dir-{n}', exact=True).click()
+        expect(crumbs).to_contain_text(f'dir-{n}')
+        expect(page.locator('main .tbl-wrap')).to_have_attribute('aria-busy', 'false')  # listed, so it is a saved breadcrumb
+    engine.gone = {'nd_dir_2', 'nd_dir_3'}
+    engine.invalidate()
+    expect(notice).to_contain_text('dir-3 is no longer in the catalogue')
+    ok(crumbs.inner_text().split() == ['Fake', 'Root', '›', 'dir-1'], f'the view climbed to the deepest folder that still lists, not the top level: {crumbs.inner_text()!r}')
+    ok('moved up to dir-1' in notice.text_content() and notice.get_attribute('role') == 'status', 'the notice names the lost folder and the folder shown, in the existing status region')
+    expect(rows(page)).to_have_count(2)
+    # the next action the reader takes clears the notice
+    engine.gone = set()
+    page.locator('main table.tbl').get_by_role('button', name='dir-2', exact=True).click()
+    expect(notice).to_have_text('')
+    page.locator('main table.tbl').get_by_role('button', name='dir-3', exact=True).click()
+    expect(crumbs).to_contain_text('dir-3')
+    expect(page.locator('main .tbl-wrap')).to_have_attribute('aria-busy', 'false')
+    # no ancestor lists any more (an engine restart): the view returns to the starting points, and says so
+    engine.gone = {'nd_Fake_Root', 'nd_dir_1', 'nd_dir_2', 'nd_dir_3'}
+    engine.slice_queue = [(0.0, 'New Root')]
+    engine.invalidate()
+    expect(notice).to_contain_text('dir-3 is no longer in the catalogue')
+    expect(notice).to_contain_text('went back to the top level')
+    ok(crumbs.inner_text().split() == ['New', 'Root'], f'with the whole saved chain gone the view shows the new starting point: {crumbs.inner_text()!r}')
+    engine.gone = set()
+    engine.nested = False
+    print('PASS a vanished folder keeps the reader at the nearest folder that still exists, and says so')
 
 
 def check_explorer_starts(page: Page, engine: FakeEngine) -> None:
@@ -823,6 +868,7 @@ def run_views(page: Page, base: str, shots: Path | None) -> None:
     try:
         check_explorer_engine(page, engine)
         check_explorer_starts(page, engine)
+        check_explorer_fallback(page, engine)
         check_tiers_refused(page, engine)
     finally:
         engine.stop()
