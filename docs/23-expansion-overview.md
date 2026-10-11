@@ -34,4 +34,4 @@ The owner does not need every subsystem to obtain value. The first usable releas
 
 ## Decisions this pass deliberately does not make
 
-No real drive inventory or RAM/GPU measurement is assumed. No external service is connected. No hosted architecture, paid model, database server, kernel driver or replacement Windows shell is required. The working name and MIT source licence are retained; name/trademark clearance has not been performed. No repository, PR or issue was published remotely.
+No real drive inventory or RAM/GPU measurement is assumed. No external service is connected. No hosted architecture, paid model, database server, kernel driver or replacement Windows shell is required. The working name is retained (the source licence was MIT until #396 and is AGPL-3.0-only since 2026-10-12); name/trademark clearance has not been performed. No repository, PR or issue was published remotely.

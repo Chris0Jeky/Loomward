@@ -44,3 +44,7 @@ The hash must equal the line in `SHA256SUMS.txt`.
 - Evidence index for this version: [evidence/v3/README.md](https://github.com/Chris0Jeky/Loomward/blob/{{TAG}}/evidence/v3/README.md)
 - Report problems at <https://github.com/Chris0Jeky/Loomward/issues>. Do not attach real file names,
   paths or inventories from your machine; this is a public repository.
+
+## Licence
+
+AGPL-3.0-only ([LICENSE](https://github.com/Chris0Jeky/Loomward/blob/{{TAG}}/LICENSE)); earlier versions were MIT. Commercial licences are available from the maintainer through GitHub. The name is covered by [TRADEMARKS.md](https://github.com/Chris0Jeky/Loomward/blob/{{TAG}}/TRADEMARKS.md).
