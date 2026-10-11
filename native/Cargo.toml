@@ -3,7 +3,7 @@ name = "loomward-desktop"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.89"
-license = "MIT"
+license = "AGPL-3.0-only"
 description = "Loomward Tauri 2 desktop shell: the lw_call / lw_events adapter to the ViewService (docs/41 section 5.1)."
 
 # Excluded from the root workspace (its own Cargo.lock). It hosts the engine service

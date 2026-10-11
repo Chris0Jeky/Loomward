@@ -7,7 +7,7 @@ name = "loomward-reference"
 version = "0.2.0"
 description = "Observation-only reference implementation for a learned Windows workspace companion"
 requires-python = ">=3.11"
-license = "MIT"
+license = "AGPL-3.0-only"
 dependencies = []
 
 [project.optional-dependencies]
