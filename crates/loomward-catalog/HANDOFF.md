@@ -174,6 +174,8 @@ negative results are preserved below and in the JSON history.
   used to fail the whole batch in `flush_dirty`. A parent changed after a seed's check was
   itself seeded by a newer command, which the reverse-order flush marks first, so the flush
   bound (kept as a `directory identity cycle` backstop) is unreachable without corruption.
+  (Superseded in part by #309: the stored-depth guard is gone and a reparent itself checks the
+  destination chain plus the moved subtree's height.)
   Single publication, transaction-wide dirtying and `fail_batch` are unchanged. Pinned by
   `deep_reparented_chain_rejects_only_its_listing_in_a_shared_batch`.
 
