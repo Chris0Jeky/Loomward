@@ -27,6 +27,7 @@ const EPOCH = 'e_mock_epoch';
 const REVS: Partial<Record<string, 'c' | 's' | 'cs'>> = {
   'health.get': 'c', 'tree.children': 'c', 'search.query': 'c',
   'roots.list': 'cs', 'tree.slice': 'cs', 'placement.candidates': 'cs', 'placement.simulate': 'cs',
+  'proposals.list': 'cs', 'proposals.get': 'cs', 'volumes.declare_tier': 'cs',
   'roots.revoke': 'cs', 'grants.list': 's', 'grants.revoke': 's', 'volumes.list': 's', 'tiers.model': 's',
 };
 

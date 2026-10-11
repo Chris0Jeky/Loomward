@@ -210,7 +210,7 @@ pub fn volumes(conn: &Connection, only: Option<i64>) -> Sql<Vec<VolumeRow>> {
         "SELECT v.id,v.volume_key,v.display_name,v.filesystem,v.online,v.observed_at_ns,
                 (SELECT 1 FROM st.tier_declaration t WHERE t.volume_key=v.volume_key),
                 (SELECT t.tier FROM st.tier_declaration t WHERE t.volume_key=v.volume_key ORDER BY t.declared_at_ns DESC,t.id DESC LIMIT 1)
-         FROM main.volume v WHERE ?1 IS NULL OR v.id=?1 ORDER BY v.id LIMIT 64",
+         FROM main.volume v WHERE ?1 IS NULL OR v.id=?1 ORDER BY v.id LIMIT 65",
     )?;
     let rows = stmt
         .query_map([only], |r| {
