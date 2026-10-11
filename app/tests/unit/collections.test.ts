@@ -56,5 +56,19 @@ describe('collections', () => {
     expect(page.total).toBe(1);
     expect(page.items[0]).toMatchObject({ status: 'root_revoked', entry: null });
     expect((await c.call('collections.list', {})).result.collections[0]!.logical_bytes).toBeNull();
+    const revokedGrants = (await c.call('grants.list', {})).result;
+    const remove = { collection_id, add: [], remove: [], remove_members: [page.items[0]!.member_id] };
+    await expect(c.call('collections.update_members', remove)).rejects.toMatchObject({ code: 'invalid_request' });
+    const rev = (await c.call('collections.members', { collection_id, limit: 200, cursor: null })).meta.state_rev!;
+    await expect(c.call('collections.update_members', remove, { expectedStateRev: '0' })).rejects.toMatchObject({ code: 'stale_generation' });
+    const removed = await c.call('collections.update_members', remove, { expectedStateRev: rev });
+    expect(removed.result.member_count).toBe(0);
+    expect((await c.call('collections.members', { collection_id, limit: 200, cursor: null })).result.items).toEqual([]);
+    expect((await c.call('grants.list', {})).result).toEqual(revokedGrants);
+  });
+  it.each(['\u007f', '\u0085', '\u009f'])('rejects Unicode control %j in names', async (control) => {
+    const c = new Client(transport());
+    await expect(c.call('collections.create', { name: `Projects${control}` })).rejects.toMatchObject({ code: 'invalid_request' });
+    expect((await c.call('collections.create', { name: 'Projects 日本語' })).result.name).toBe('Projects 日本語');
   });
 });

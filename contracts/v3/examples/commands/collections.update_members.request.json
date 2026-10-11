@@ -3,5 +3,6 @@
   "add": [
     "nd_0020"
   ],
-  "remove": []
+  "remove": [],
+  "remove_members": ["om_7"]
 }

@@ -127,6 +127,13 @@ pub struct CollectionMembersUpdate {
     pub collection_id: CollectionId,
     pub add: UniqueVec<NodeId, 0, 500>,
     pub remove: UniqueVec<NodeId, 0, 500>,
+    /// Stable local references can be removed without a live node or an active root.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::types::optional_present"
+    )]
+    pub remove_members: Option<UniqueVec<BoundedStr<1, 64>, 0, 500>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -145,15 +152,38 @@ pub enum CollectionMemberStatus {
     Resolved,
     Unresolved,
     RootRevoked,
+    RootUnavailable,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CollectionMember {
     pub member_id: BoundedStr<1, 64>,
     pub status: CollectionMemberStatus,
-    #[serde(deserialize_with = "crate::types::required_nullable")]
     pub entry: Option<super::tree::EntryRow>,
+}
+
+impl<'de> Deserialize<'de> for CollectionMember {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            member_id: BoundedStr<1, 64>,
+            status: CollectionMemberStatus,
+            #[serde(deserialize_with = "crate::types::required_nullable")]
+            entry: Option<super::tree::EntryRow>,
+        }
+        let fields = Fields::deserialize(deserializer)?;
+        if (fields.status == CollectionMemberStatus::Resolved) != fields.entry.is_some() {
+            return Err(serde::de::Error::custom(
+                "entry must be present exactly when resolved",
+            ));
+        }
+        Ok(Self {
+            member_id: fields.member_id,
+            status: fields.status,
+            entry: fields.entry,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
