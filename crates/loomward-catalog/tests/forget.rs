@@ -75,8 +75,13 @@ fn root(c: &Catalog, volume: &str, name: &str, path: &str, id: u8, file: &str) -
 /// Two roots on one volume, each with one file, one durable reference, one human label (its features
 /// name the file), one collection membership and the learning tables the engine creates.
 fn fixture() -> Fixture {
+    fixture_with(false)
+}
+/// `bulk`: each root's first full scan builds in the bulk tables and EndRun swaps it live (#148).
+fn fixture_with(bulk: bool) -> Fixture {
     let temp = tempfile::tempdir().unwrap();
     let catalog = Catalog::open(temp.path(), "synthetic").unwrap();
+    catalog.writer().set_bulk_first_scan(bulk);
     let (grant_a, dir_a, _) = root(&catalog, "vol", NAME_A, PATH_A, 1, FILE_A);
     let (grant_b, dir_b, _) = root(&catalog, "vol", NAME_B, PATH_B, 2, FILE_B);
     let main = Connection::open(temp.path().join("catalog.db")).unwrap();
@@ -582,4 +587,72 @@ fn a_bound_object_another_root_still_observes_keeps_its_labels_and_membership() 
     assert_eq!(state_count(&f, "SELECT count(*) FROM object_ref"), 0);
     assert_eq!(state_count(&f, "SELECT count(*) FROM human_feedback"), 0);
     assert_eq!(state_count(&f, "SELECT count(*) FROM collection_member"), 0);
+}
+
+#[test]
+fn a_root_whose_first_scan_was_a_bulk_build_is_purged_like_any_other() {
+    let f = fixture_with(true);
+    fold_wal(&f);
+    for needle in [PATH_A, NAME_A, FILE_A] {
+        assert!(
+            on_disk(&f, needle),
+            "{needle} should be stored before the forget"
+        );
+    }
+    revoke(&f, f.grant_a);
+    forget(&f, f.grant_a, None).unwrap();
+    for needle in [PATH_A, NAME_A, FILE_A] {
+        assert!(!on_disk(&f, needle), "{needle} survived the forget");
+    }
+    assert_eq!(
+        catalog_count(&f, "SELECT count(*) FROM file WHERE name LIKE 'forget%'"),
+        0
+    );
+    assert_eq!(catalog_count(&f, "SELECT count(*) FROM bulk_dir"), 0);
+    assert_eq!(state_count(&f, "SELECT count(*) FROM human_feedback"), 1);
+    assert_eq!(
+        catalog_count(
+            &f,
+            &format!(
+                "SELECT count(*) FROM file f JOIN dir d ON d.id=f.dir_id WHERE d.root_id={}",
+                f.root_b
+            )
+        ),
+        1
+    );
+}
+
+#[test]
+fn leftover_bulk_rows_of_the_root_go_too_however_deep() {
+    const BUILT: &str = "bulkleftoverQ.zzqx";
+    let f = fixture_with(true);
+    revoke(&f, f.grant_a);
+    {
+        // As an interrupted build would leave them: a deep bulk tree with a named file under root A.
+        let db = Connection::open(f.temp.path().join("catalog.db")).unwrap();
+        db.execute(
+            "INSERT INTO bulk_dir(id,root_id,parent_id,name,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run)
+             WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<3000)
+             SELECT 900000+i, ?1, CASE WHEN i=1 THEN NULL ELSE 900000+i-1 END, 'bulkdeep', 'path_observation','none', i-1, 0, 'complete', 0, 0 FROM n",
+            [f.root_a],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO bulk_file(dir_id,name,logical,allocated,attrs,born_run,seen_run) VALUES(903000,?1,1,1,0,0,0)",
+            [BUILT],
+        )
+        .unwrap();
+    }
+    fold_wal(&f);
+    assert!(on_disk(&f, BUILT));
+    forget(&f, f.grant_a, None).unwrap();
+    assert_eq!(
+        catalog_count(
+            &f,
+            &format!("SELECT count(*) FROM bulk_dir WHERE root_id={}", f.root_a)
+        ),
+        0
+    );
+    assert_eq!(catalog_count(&f, "SELECT count(*) FROM bulk_file"), 0);
+    assert!(!on_disk(&f, BUILT), "a leftover bulk row kept its name");
 }

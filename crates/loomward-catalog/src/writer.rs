@@ -1256,22 +1256,27 @@ pub(crate) fn purge_root(conn: &Connection, root: i64) -> Result<()> {
         "DELETE FROM stage_entry WHERE run_id IN (SELECT id FROM scan_run WHERE root_id=?1)",
         [root],
     )?;
-    conn.execute(
-        "DELETE FROM file WHERE dir_id IN (SELECT id FROM dir WHERE root_id=?1)",
-        [root],
-    )?;
     // A cascade through a parent_id chain is a trigger recursion, capped at 1000 levels: delete
     // from the deepest level up so each statement cascades at most one level, then sweep the rest.
-    let deepest: i64 = conn.query_row(
-        "SELECT coalesce(max(depth),0) FROM dir WHERE root_id=?1",
-        [root],
-        |r| r.get(0),
-    )?;
-    let mut level = conn.prepare_cached("DELETE FROM dir WHERE root_id=?1 AND depth=?2")?;
-    for depth in (1..=deepest).rev() {
-        level.execute(params![root, depth])?;
+    // The same for a bulk build the root left behind (#148): its rows hold names too.
+    for (dirs, files) in [("dir", "file"), ("bulk_dir", "bulk_file")] {
+        conn.execute(
+            &format!(
+                "DELETE FROM {files} WHERE dir_id IN (SELECT id FROM {dirs} WHERE root_id=?1)"
+            ),
+            [root],
+        )?;
+        let deepest: i64 = conn.query_row(
+            &format!("SELECT coalesce(max(depth),0) FROM {dirs} WHERE root_id=?1"),
+            [root],
+            |r| r.get(0),
+        )?;
+        let mut level =
+            conn.prepare_cached(&format!("DELETE FROM {dirs} WHERE root_id=?1 AND depth=?2"))?;
+        for depth in (1..=deepest).rev() {
+            level.execute(params![root, depth])?;
+        }
     }
-    drop(level);
     conn.execute("DELETE FROM root WHERE id=?1", [root])?; // cascades to the remaining dir and scan_run rows
     conn.execute(
         "DELETE FROM ext WHERE NOT EXISTS(SELECT 1 FROM file WHERE ext_id=ext.id)",
