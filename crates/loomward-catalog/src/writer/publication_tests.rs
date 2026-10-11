@@ -945,6 +945,8 @@ fn resolved_references_keep_two_queued_publications_in_singleton_transactions() 
 
 #[test]
 fn auto_rollback_never_commits_a_failed_receipt_or_acknowledges_lost_rows() {
+    // The three listings must share one transaction even on a loaded host (`work` runs here).
+    super::hold_batch_window_open();
     for full in [true, false] {
         let (temp, conn, _) = fixture();
         conn.execute_batch(
