@@ -1,0 +1,5 @@
+{
+  "def": "CollectionCreateRequest",
+  "reason": "DEL is a Unicode control character",
+  "value": { "name": "Project\u007f" }
+}

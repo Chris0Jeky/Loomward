@@ -210,6 +210,18 @@ impl Inner {
             return Err(fail(ErrorCode::InvalidRequest, "adds and removes overlap"));
         }
         let id = collection_row(&r.collection_id)?;
+        let remove_members = r
+            .remove_members
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(|id| {
+                id.strip_prefix("om_")
+                    .and_then(|n| n.parse::<i64>().ok())
+                    .filter(|n| *n > 0 && format!("om_{n}") == id.as_ref())
+                    .ok_or_else(|| fail(ErrorCode::InvalidRequest, "invalid member ID"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let _permit = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
         let mut conn = self.db();
         let tx = conn
@@ -257,6 +269,9 @@ impl Inner {
                         tx.last_insert_rowid()
                     }
                 };
+                if remove_members.contains(&reference) {
+                    return Err(fail(ErrorCode::InvalidRequest, "adds and removes overlap"));
+                }
                 changed += tx
                     .execute(
                         "INSERT OR IGNORE INTO st.collection_member VALUES(?1,?2,?3)",
@@ -266,6 +281,14 @@ impl Inner {
             } else if let Some(reference) = existing {
                 changed+=tx.execute("DELETE FROM st.collection_member WHERE collection_id=?1 AND object_ref_id=?2",params![id,reference]).map_err(sql_error)?;
             }
+        }
+        for reference in remove_members {
+            changed += tx
+                .execute(
+                    "DELETE FROM st.collection_member WHERE collection_id=?1 AND object_ref_id=?2",
+                    params![id, reference],
+                )
+                .map_err(sql_error)?;
         }
         if changed > 0 {
             tx.execute(
@@ -344,16 +367,24 @@ impl Inner {
             .map_err(sql_error)?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(sql_error)?;
-        let mut reader = self.catalog.reader().map_err(catalog_error)?;
-        if let Some(work) = work {
-            reader.set_deadline(work.deadline);
-        }
+        let mut reader = match work {
+            Some(work) => work.reader(&self.catalog)?,
+            None => self.catalog.reader().map_err(catalog_error)?,
+        };
+        #[cfg(test)]
+        self.hooks.gate(Command::CollectionsMembers, "hydrate");
         let mut items = Vec::new();
         for (reference, kind, row, born, grant) in rows.iter().take(r.limit.get() as usize) {
-            let mut status = if grant.as_deref().is_some_and(|g| g != "active") {
-                "root_revoked"
-            } else {
-                "unresolved"
+            if work.is_some_and(|w| std::time::Instant::now() >= w.deadline) {
+                return Err(fail(
+                    ErrorCode::DeadlineExceeded,
+                    "the read deadline expired",
+                ));
+            }
+            let mut status = match grant.as_deref() {
+                Some("revoked") => "root_revoked",
+                Some(g) if g != "active" => "root_unavailable",
+                _ => "unresolved",
             };
             let mut entry = Value::Null;
             if grant.as_deref() == Some("active") {
@@ -380,6 +411,8 @@ impl Inner {
             items
                 .push(json!({"member_id":format!("om_{reference}"),"status":status,"entry":entry}));
         }
+        #[cfg(test)]
+        self.hooks.gate(Command::CollectionsMembers, "hydrated");
         // The row projection uses the catalogue reader: reject a concurrent publication rather than mix snapshots.
         if self.revisions()? != revs {
             return Err(with_reason(

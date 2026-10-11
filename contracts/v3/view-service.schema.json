@@ -1208,7 +1208,8 @@
           "enum": [
             "resolved",
             "unresolved",
-            "root_revoked"
+            "root_revoked",
+            "root_unavailable"
           ]
         },
         "entry": {
@@ -1221,7 +1222,12 @@
             }
           ]
         }
-      }
+      },
+      "allOf": [{
+        "if": { "additionalProperties": false, "properties": { "member_id": true, "status": { "const": "resolved" }, "entry": true } },
+        "then": { "additionalProperties": false, "properties": { "member_id": true, "status": true, "entry": { "$ref": "#/$defs/EntryRow" } } },
+        "else": { "additionalProperties": false, "properties": { "member_id": true, "status": true, "entry": { "type": "null" } } }
+      }]
     },
     "CollectionMemberPage": {
       "type": "object",
@@ -1272,7 +1278,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["name"],
-      "properties": { "name": { "type": "string", "pattern": "^[^\\u0000-\\u001f]{1,64}$" } }
+      "properties": { "name": { "type": "string", "minLength": 1, "maxLength": 64, "not": { "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]" } } }
     },
     "CollectionMembersUpdate": {
       "type": "object",
@@ -1281,7 +1287,8 @@
       "properties": {
         "collection_id": { "$ref": "#/$defs/CollectionId" },
         "add": { "type": "array", "maxItems": 500, "uniqueItems": true, "items": { "$ref": "#/$defs/NodeId" } },
-        "remove": { "type": "array", "maxItems": 500, "uniqueItems": true, "items": { "$ref": "#/$defs/NodeId" } }
+        "remove": { "type": "array", "maxItems": 500, "uniqueItems": true, "items": { "$ref": "#/$defs/NodeId" } },
+        "remove_members": { "type": "array", "maxItems": 500, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 64 }, "$comment": "Optional stable member IDs to remove from this collection, including unresolved members. Omission means an empty set." }
       }
     },
     "CollectionMembersRequest": {

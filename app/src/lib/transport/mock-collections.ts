@@ -16,12 +16,12 @@ export function createCollectionMock(
     logical_bytes: [...c.nodes].some((id) => revoked(nodeFor(id))) ? null : [...c.nodes].reduce((sum, id) => sum + nodeFor(id).logical, 0n).toString() });
   function handle(req: RequestEnvelope): unknown {
     const p = req.payload;
-    const keys: Record<string, string[]> = { 'collections.list': [], 'collections.create': ['name'], 'collections.members': ['collection_id', 'limit', 'cursor'], 'collections.update_members': ['collection_id', 'add', 'remove'] };
+    const keys: Record<string, string[]> = { 'collections.list': [], 'collections.create': ['name'], 'collections.members': ['collection_id', 'limit', 'cursor'], 'collections.update_members': ['collection_id', 'add', 'remove', 'remove_members'] };
     if (Object.keys(p).some((key) => !keys[req.command]?.includes(key))) fail('invalid_request', 'Unknown collection field.');
     if (req.command === 'collections.list') return { collections: [...collections.values()].map(summary) };
     if (req.command === 'collections.create') {
       const name = p.name;
-      if (typeof name !== 'string' || [...name].length < 1 || [...name].length > 64 || /[\u0000-\u001f]/u.test(name)) fail('invalid_request', 'Use a name of 1–64 characters without controls.');
+      if (typeof name !== 'string' || [...name].length < 1 || [...name].length > 64 || /\p{Cc}/u.test(name)) fail('invalid_request', 'Use a name of 1–64 characters without controls.');
       const duplicate = [...collections.values()].find((c) => c.collection.name === name);
       if (duplicate) fail('invalid_request', 'A collection with this name already exists.', { existing_id: duplicate.collection.collection_id });
       if (collections.size >= 256) fail('resource_budget', 'The 256 collection limit was reached.');
@@ -33,17 +33,21 @@ export function createCollectionMock(
     if (req.command === 'collections.update_members') {
       if (req.expected_state_rev === undefined) fail('invalid_request', 'expected_state_rev is required.');
       if (req.expected_state_rev !== stateRev()) fail('stale_generation', 'State changed; read members again.', { reason: 'state_rev_changed' });
-      const { add, remove } = p;
-      for (const ids of [add, remove]) if (!Array.isArray(ids) || ids.length > 500 || new Set(ids).size !== ids.length) fail('invalid_request', 'Members must be unique bounded arrays.');
+      const { add, remove, remove_members = [] } = p;
+      for (const ids of [add, remove, remove_members]) if (!Array.isArray(ids) || ids.length > 500 || new Set(ids).size !== ids.length) fail('invalid_request', 'Members must be unique bounded arrays.');
       const adds = add as string[], removes = remove as string[];
+      const removeMembers = remove_members as string[];
+      if (removeMembers.some((id) => typeof id !== 'string' || !/^om_[1-9][0-9]*$/.test(id) || id.length > 64)) fail('invalid_request', 'Invalid member ID.');
       if (adds.some((id) => removes.includes(id))) fail('invalid_request', 'Adds and removes overlap.');
       for (const id of [...adds, ...removes]) {
         const n = nodeFor(id);
         if (n.kind === 'atlas' || n.kind === 'root') fail('capability_unavailable', 'Durable identity unavailable.');
         if (revoked(n)) fail('not_found', 'The root is revoked.');
+        if (adds.includes(id) && removeMembers.includes(`om_${n.index}`)) fail('invalid_request', 'Adds and removes overlap.');
       }
       const before = [...c.nodes].sort().join(',');
       adds.forEach((id) => c.nodes.add(id)); removes.forEach((id) => c.nodes.delete(id));
+      for (const id of c.nodes) if (removeMembers.includes(`om_${nodeFor(id).index}`)) c.nodes.delete(id);
       if ([...c.nodes].sort().join(',') !== before) revision++;
       return summary(c);
     }

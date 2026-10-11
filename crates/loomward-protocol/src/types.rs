@@ -579,7 +579,7 @@ string_newtype!(
     /// A collection name: 1 to 64 characters, no control characters.
     CollectionName,
     "1-64 characters without control characters",
-    |s| (1..=64).contains(&s.chars().count()) && s.chars().all(|c| c >= '\u{20}')
+    |s| (1..=64).contains(&s.chars().count()) && s.chars().all(|c| !c.is_control())
 );
 
 fn two(b: &[u8]) -> Option<u32> {

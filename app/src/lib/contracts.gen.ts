@@ -795,7 +795,7 @@ export interface Collection {
 
 export interface CollectionMember {
   member_id: string;
-  status: "resolved" | "unresolved" | "root_revoked";
+  status: "resolved" | "unresolved" | "root_revoked" | "root_unavailable";
   entry: EntryRow | null;
 }
 
@@ -819,6 +819,8 @@ export interface CollectionMembersUpdate {
   collection_id: CollectionId;
   add: NodeId[];
   remove: NodeId[];
+  /** Optional stable member IDs to remove from this collection, including unresolved members. Omission means an empty set. */
+  remove_members?: string[];
 }
 
 export interface CollectionMembersRequest {

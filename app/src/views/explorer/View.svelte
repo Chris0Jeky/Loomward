@@ -342,7 +342,7 @@
 {#if detail}
   <section class="panel" aria-label="Node inspector">
     <h2 tabindex="-1" bind:this={inspector}><VisibleName name={detail.row.name} /></h2>
-    <p class="muted">Logical size {formatBytes(detail.row.logical_bytes)} ? {detail.row.kind}</p>
+    <p class="muted">Logical size {formatBytes(detail.row.logical_bytes)} · {detail.row.kind}</p>
     <h3>Meaning thread</h3>
     <NodeMeaning nodeId={detail.row.node_id} />
     {#if detail.identity.durable_reference === 'available'}

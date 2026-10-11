@@ -43,12 +43,12 @@ Python 3.14.3 (`py -3`), cargo/rustc 1.97.1, rustup 1.29.0, Node 24.13.1, npm 11
 a first measurement and must be reported as such. On Windows use `codex.cmd`, `npm.cmd` and
 `npx.cmd`; the unsigned `.ps1` shims are blocked by this machine's execution policy.
 
-## Proving checks by seam (measured on Windows 2026-10-09; counts refreshed 2026-10-10 late, `evidence/v3/`)
+## Proving checks by seam (measured on Windows 2026-10-09; counts refreshed 2026-10-11, `evidence/v3/`)
 
 | You changed | Run |
 |---|---|
-| Python reference, schemas, JS boundary, fixtures | `py -3 scripts/verify.py` (222 tests with 1 symlink-privilege skip, 2 JS syntax, 9 JS boundary, 80 cross-language fixtures; it also runs the Rust gates when cargo is present) |
-| Rust workspace (`crates/*`, glob) | `cargo fmt --all --check`, `cargo test --workspace` (631 on Windows at 6052bad: apps 18, catalog 115, core 30, engine 143, http 56, lab 26, learn 8, protocol 36, service 58, shell 23, telemetry 33, windows 82, doc 3; native scan tests assert the elevation refusal on an elevated host such as hosted CI and run fully otherwise), `cargo clippy --workspace --all-targets -- -D warnings`; add `--all-features` for the `loomward-windows` fixture lab |
+| Python reference, schemas, JS boundary, fixtures | `py -3 scripts/verify.py` (224 tests with 1 symlink-privilege skip, 2 JS syntax, 9 JS boundary, 80 cross-language fixtures; it also runs the Rust gates when cargo is present) |
+| Rust workspace (`crates/*`, glob) | `cargo fmt --all --check`, `cargo test --workspace` (763 on Windows at 0b27935: apps 23, catalog 130, core 30, engine 164, http 66, lab 27, learn 18, protocol 36, service 112, shell 27, telemetry 34, windows 93, doc 3; native scan tests assert the elevation refusal on an elevated host such as hosted CI and run fully otherwise), `cargo clippy --workspace --all-targets -- -D warnings`; add `--all-features` for the `loomward-windows` fixture lab |
 | Browser UI | `py -3 scripts/test_ui.py` (14 Chromium checks; Playwright installed here) |
 | Svelte app (`app/`) | `npm.cmd --prefix app run check`, `run test`, `run build`, then `py -3 scripts/test_app.py` (Playwright e2e incl. Atlas and Observatory), or all four via `py -3 scripts/verify.py --app`; add `--live-serve` when you touch `loomward-http` or an app transport |
 | Python, Rust, the legacy browser UI and the Svelte app in one go | `py -3 scripts/verify.py --ui --app` (`--app` reports UNVERIFIED, never PASS, when Node, npm or `app/node_modules` is missing) |
