@@ -11,6 +11,7 @@ loomward-protocol = { path = "../loomward-protocol" }
 loomward-engine = { path = "../loomward-engine" }
 loomward-catalog = { path = "../loomward-catalog" }
 loomward-telemetry = { path = "../loomward-telemetry" }
+loomward-shell = { path = "../loomward-shell" }
 loomward-windows = { path = "../loomward-windows" }
 rusqlite = { version = "0.38.0", features = ["bundled"] }
 serde.workspace = true

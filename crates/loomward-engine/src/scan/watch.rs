@@ -1281,7 +1281,7 @@ mod native_tests {
         engine.set_scan_sink(sink).unwrap();
         let job = engine.scan_start(&root, None).unwrap();
         engine.scan_cancel(&job.job_id).unwrap();
-        engine.scan_cancel_root(root.root_id()).unwrap();
+        engine.scan_cancel_root(root.key(), root.root_id()).unwrap();
     }
     #[test]
     fn root_cancellation_requests_job_before_stopping_watch() {
@@ -1330,7 +1330,7 @@ mod native_tests {
                 })),
             )
             .unwrap();
-        let cancelled = engine.scan_cancel_root(root.root_id()).unwrap();
+        let cancelled = engine.scan_cancel_root(root.key(), root.root_id()).unwrap();
         release.send(()).unwrap();
         assert!(
             cancelled_before_stop.load(Ordering::Acquire),
@@ -1417,7 +1417,7 @@ mod native_tests {
                 engine.jobs.root_jobs(root.root_id()),
                 vec![winner.job_id.clone()]
             );
-            let cancelled = engine.scan_cancel_root(root.root_id()).unwrap();
+            let cancelled = engine.scan_cancel_root(root.key(), root.root_id()).unwrap();
             assert_eq!(cancelled.len(), 1);
             assert_eq!(cancelled[0].job_id, winner.job_id);
             assert!(engine.scan_watches.lock().unwrap().is_empty());
@@ -1467,7 +1467,7 @@ mod native_tests {
             entry.recv_timeout(Duration::from_secs(2)).unwrap();
             threads.spawn(|| {
                 cancelling.send(()).unwrap();
-                let cancelled = engine.scan_cancel_root(root.root_id());
+                let cancelled = engine.scan_cancel_root(root.key(), root.root_id());
                 let returned_after_release = gate_released.load(Ordering::Acquire);
                 results.send((cancelled, returned_after_release)).unwrap()
             });
@@ -1513,7 +1513,10 @@ mod native_tests {
         }));
         engine.set_scan_sink(sink).unwrap();
         // Cancellation precedes the writer fence; even the stale resolved grant is refused.
-        assert!(engine.scan_cancel_root(root.root_id()).unwrap().is_empty());
+        assert!(engine
+            .scan_cancel_root(root.key(), root.root_id())
+            .unwrap()
+            .is_empty());
         for result in [
             engine.scan_start(&root, None),
             engine.scan_refresh(&root, None),
@@ -1770,8 +1773,10 @@ mod native_tests {
             .insert(root.root_id().clone(), watch.clone());
         assert!(watch.checkpoint());
         let start = Instant::now();
-        engine.scan_cancel_root(root.root_id()).unwrap();
-        engine.scan_writer_fence(root.root_id()).unwrap();
+        engine.scan_cancel_root(root.key(), root.root_id()).unwrap();
+        engine
+            .scan_writer_fence(root.key(), root.root_id())
+            .unwrap();
         let epoch = watch.dirty.lock().unwrap().epoch;
         std::fs::write(tree.path().join("after-revocation"), b"fixture").unwrap();
         std::thread::sleep(Duration::from_millis(30));

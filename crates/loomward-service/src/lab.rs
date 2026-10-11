@@ -61,11 +61,11 @@ pub fn register(
     tier: &str,
     manifest_digest: &str,
 ) -> Result<i64, String> {
-    let state_dir = paths::prospective_dir(state_dir)?;
-    let root = paths::check_new_root(root, &state_dir)?;
     if !valid_digest(manifest_digest) {
         return Err("invalid lab manifest digest".into());
     }
+    let state_dir = paths::prospective_dir(state_dir)?;
+    let root = paths::check_new_root(root, &state_dir)?;
     Catalog::validate_stores(&state_dir, "synthetic").map_err(|e| format!("state store: {e}"))?;
     let ancestor = root
         .ancestors()

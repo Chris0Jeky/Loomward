@@ -67,9 +67,8 @@ pub struct Engine {
     events: Arc<events::Bus>,
     jobs: Arc<jobs::Registry>,
     scan_sink: Mutex<Option<Arc<dyn scan::ScanSink>>>,
-    // Per-root start/revocation gate; true permanently fences a revoked root id.
-    scan_roots:
-        Mutex<std::collections::HashMap<loomward_protocol::RootId, Arc<Mutex<scan::RootGate>>>>,
+    // Per-root start/revocation gate; true permanently fences a revoked grant.
+    scan_roots: Mutex<std::collections::HashMap<scan::RootKey, Arc<Mutex<scan::RootGate>>>>,
     #[cfg(windows)]
     scan_watches:
         Mutex<std::collections::HashMap<loomward_protocol::RootId, Arc<scan::watch::RootWatch>>>,
