@@ -165,18 +165,26 @@ pub fn validate_static_dir(
     if !dir.is_dir() {
         return Err("--static must name a directory".into());
     }
-    for protected in roots.iter().map(PathBuf::as_path).chain(state) {
-        let overlaps = match protected.canonicalize() {
-            Ok(protected) => dir.starts_with(&protected) || protected.starts_with(&dir),
-            // An offline, renamed or deleted grant cannot be resolved. Compare its stored path as
-            // text so the server still starts, and still refuse any textual overlap.
-            Err(_) => lexical_overlap(&dir, protected),
-        };
-        if overlaps {
-            return Err("--static overlaps a grant root or the state directory".into());
+    for (i, root) in roots.iter().enumerate() {
+        if overlaps_stored(&dir, root) {
+            return Err(format!("--static overlaps grant root #{}", i + 1));
         }
     }
+    if state.is_some_and(|state| overlaps_stored(&dir, state)) {
+        return Err("--static overlaps the state directory".into());
+    }
     Ok(Some(dir))
+}
+
+/// Whether a canonical `candidate` overlaps a stored path (a grant or the state directory), either
+/// way round. The one rule for `--static` and the folder picker: a stored path that resolves
+/// compares canonically; one that does not (offline, renamed, deleted) compares as text, so it
+/// can still refuse and never skips silently (#224).
+pub(crate) fn overlaps_stored(candidate: &Path, stored: &Path) -> bool {
+    match stored.canonicalize() {
+        Ok(stored) => candidate.starts_with(&stored) || stored.starts_with(candidate),
+        Err(_) => lexical_overlap(candidate, stored),
+    }
 }
 
 /// Case-insensitive, separator-normalised prefix overlap of two absolute paths, either way round.
@@ -514,6 +522,49 @@ mod tests {
             &canonical,
             &canonical.with_file_name("dist-other")
         ));
+    }
+
+    /// #224: a refused `--static` names the stored grant's position, never its path.
+    #[test]
+    fn a_static_overlap_names_the_grant_position_not_the_path() {
+        let tmp = crate::tests::temp_root();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let canonical = dist.canonicalize().unwrap();
+        let gone = canonical.join("gone-grant");
+        let state = tmp.path().join("state-dir");
+        std::fs::create_dir_all(&state).unwrap();
+        let elsewhere = canonical.with_file_name("elsewhere-gone");
+        let named = |roots: &[PathBuf], state: Option<&Path>| {
+            validate_static_dir(Some(&dist), roots, state).unwrap_err()
+        };
+        let second = named(&[elsewhere.clone(), gone.clone()], None);
+        assert!(second.contains("#2"), "{second}");
+        assert!(!second.contains(&*tmp.path().to_string_lossy()), "{second}");
+        // A resolvable grant is numbered the same way.
+        let live = named(&[elsewhere, canonical.clone()], None);
+        assert!(live.contains("#2"), "{live}");
+        let state_error = named(&[], Some(&canonical.join("state-dir")));
+        assert!(state_error.contains("state directory"), "{state_error}");
+        assert!(!state_error.contains("grant"), "{state_error}");
+    }
+
+    /// #224: the picker and `--static` share one rule for a stored grant that cannot resolve.
+    #[test]
+    fn a_stored_grant_overlap_falls_back_to_text_when_unresolvable() {
+        let tmp = crate::tests::temp_root();
+        let base = tmp.path().canonicalize().unwrap();
+        let parent = base.join("ws");
+        std::fs::create_dir_all(&parent).unwrap();
+        let gone = parent.join("gone");
+        assert!(overlaps_stored(&parent, &gone));
+        assert!(overlaps_stored(
+            &parent,
+            &PathBuf::from(gone.to_string_lossy().to_uppercase())
+        ));
+        assert!(!overlaps_stored(&parent, &base.join("other-gone")));
+        // A resolvable stored grant still compares by canonical path.
+        assert!(overlaps_stored(&parent.join("."), &parent));
     }
 
     /// #185 item 4: only the verbatim drive form is local; every other verbatim or device
