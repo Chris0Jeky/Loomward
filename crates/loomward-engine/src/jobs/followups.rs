@@ -135,6 +135,69 @@ fn root_revocation_visits_jobs_after_missing_and_failed_ids() {
     }
 }
 
+#[test]
+fn revocation_redacts_a_report_published_while_cancel_waits_for_the_gate() {
+    // Codex P1 on #351: a worker that publishes its terminal report between the early
+    // redaction and `revoked = true` must not leave that report in the replay ring.
+    let e = engine();
+    let mut stream = e.subscribe_events(None).unwrap();
+    let (started, running) = std::sync::mpsc::channel();
+    let (release, wait) = std::sync::mpsc::channel::<()>();
+    let wait = Mutex::new(wait);
+    let job = e
+        .jobs
+        .submit(
+            JobSpec::new(
+                JobKind::Duplicates,
+                Some(RootId::new("rt_fixture").unwrap()),
+            ),
+            Arc::new(move |ctx, _| {
+                ctx.set_duplicates(report(None));
+                started.send(()).unwrap();
+                wait.lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap();
+                Ok(CoverageState::Complete)
+            }),
+            e.events.clone(),
+            None,
+        )
+        .unwrap();
+    running.recv_timeout(Duration::from_secs(5)).unwrap();
+    let gate = e.jobs.records.lock().unwrap()[&job.job_id]
+        .commit_gate
+        .clone();
+    let held = gate.lock().unwrap();
+    let registry = e.jobs.clone();
+    let events = e.events.clone();
+    let id = job.job_id.clone();
+    let cancel = std::thread::spawn(move || registry.cancel_revoked(&id, &events));
+    // Let the revocation pass its early redaction and park on the held gate.
+    std::thread::sleep(Duration::from_millis(100));
+    release.send(()).unwrap();
+    let done = terminal(&e, &job.job_id);
+    assert_eq!(done.state, JobState::Completed);
+    drop(held);
+    cancel.join().unwrap().unwrap();
+    let mut job_events = 0;
+    while let RecvOutcome::Event(event) = stream.recv_timeout(Duration::ZERO) {
+        if event.event == EventName::JobState {
+            job_events += 1;
+            assert!(
+                event
+                    .data
+                    .get("job")
+                    .and_then(|job| job.get("duplicates"))
+                    .is_none_or(serde_json::Value::is_null),
+                "a revoked root's report survived in the replay ring"
+            );
+        }
+    }
+    assert!(job_events >= 2);
+    assert!(e.job_status(&job.job_id).unwrap().duplicates.is_none());
+}
+
 fn engine() -> Engine {
     Engine::open(crate::EngineConfig::new(
         "unused".into(),

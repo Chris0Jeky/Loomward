@@ -446,6 +446,9 @@ impl Registry {
             })?;
             if revoked && r.job.kind == JobKind::Duplicates {
                 r.revoked = true;
+                // Again under the records lock: the worker may have published its report
+                // after the early redaction above; from here it sees `revoked` and cannot.
+                events.redact_job(id);
                 r.duplicates = None;
                 if r.job.duplicates.take().is_some() {
                     revise(&mut r.job)?;
