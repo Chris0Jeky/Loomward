@@ -1,0 +1,1190 @@
+{
+  "schema_version": 1,
+  "runs": [
+    {
+      "variant": "main",
+      "source": "23440d101043b910c8aea9b64de06881dca25405",
+      "binary_sha256": "0c2a6821dc79dc029d38e3b64097b63d9fd64739a7f6e2c5961f7d66e80ca546",
+      "platform": "Windows",
+      "host": "shared host",
+      "cache": "warm/uncontrolled",
+      "root": "synthetic service S tier",
+      "files": 100000,
+      "directories": 1000,
+      "wall_seconds": 2.098830100003397,
+      "progress": {
+        "allocated_bytes": "12800000",
+        "elapsed_ms": 1980,
+        "entries_per_second": 51001.32517601643,
+        "examined": 101000,
+        "failed": 0,
+        "indexed_dirs": 1000,
+        "indexed_files": 100000,
+        "limit_hit": false,
+        "logical_bytes": "12800000",
+        "pending_dirs": 0,
+        "phase": "done",
+        "skipped": 0,
+        "strategy": "file_id_extd_directory_info",
+        "writer_queue_depth": 0
+      },
+      "phases": {
+        "writer": {
+          "staging_seconds": 0.07255830000000003,
+          "staging_calls": 1004,
+          "listing_calls": 1001,
+          "rollup_calls": 1,
+          "batch_wait_calls": 2005,
+          "batch_wait_seconds": 0.00028210000000000534,
+          "validation_dry_run_seconds": 0.0,
+          "state_prepare_seconds": 0.029553899999999623,
+          "invalidation_seconds": 0.0057739999999999,
+          "rollup_seconds": 0.0028028,
+          "multilink_seconds": 0.0679933,
+          "transactions": 2008,
+          "commands": 2008,
+          "max_transaction_bytes": 584704,
+          "max_transaction_commands": 1,
+          "listing_seconds": 0.5225955999999998,
+          "file_insert_seconds": 0.22218050000000017,
+          "file_seen_seconds": 0.0,
+          "name_validation_seconds": 0.03313029999999997,
+          "commit_seconds": 0.9146858000000003,
+          "checkpoint_seconds": 0.0515855,
+          "dirty_updates": 3001
+        },
+        "pipeline": {
+          "aggregation_seconds": 0.1552239,
+          "enumeration_attempts": 101000,
+          "enumeration_wall_seconds": 1.8248737,
+          "enumeration_worker_seconds": 0.1775191,
+          "final_directory_calls": 1001,
+          "finish_run_calls": 1,
+          "listing_calls": 1001,
+          "persistence_seconds": 1.801545600000027,
+          "relist_calls": 0,
+          "staging_seconds": 1.8014186000000059
+        },
+        "native": {
+          "attribute_queries": {
+            "calls": 2028,
+            "seconds": 0.0040353
+          },
+          "containment": {
+            "calls": 1001,
+            "seconds": 0.0321725
+          },
+          "entry_callback": {
+            "calls": 101000,
+            "seconds": 0.0333909
+          },
+          "enumeration_queries": {
+            "calls": 2008,
+            "seconds": 0.0954156
+          },
+          "identity_observations": {
+            "calls": 1003,
+            "seconds": 0.0070023
+          },
+          "listing_inclusive": {
+            "calls": 1001,
+            "seconds": 0.1773912
+          },
+          "metadata_opens": {
+            "calls": 1024,
+            "seconds": 0.0143137
+          },
+          "normalized_path_queries": {
+            "calls": 2001,
+            "seconds": 0.0309137
+          }
+        }
+      },
+      "catalogue_totals": {
+        "files": 100000,
+        "dirs": 1000,
+        "logical_bytes": "12800000",
+        "allocated_bytes": "12800000",
+        "complete": true
+      },
+      "oracle": "independent disk walk + service progress + committed root totals; exact",
+      "at_utc": "2026-10-11T15:09:50Z"
+    },
+    {
+      "variant": "branch",
+      "source": "23440d1+async-staging-pilot",
+      "binary_sha256": "51ff4e137370b8b2ca77dca1e94c891af240776307e5a8f073df7dc3e4b1f5e6",
+      "platform": "Windows",
+      "host": "shared host",
+      "cache": "warm/uncontrolled",
+      "root": "synthetic service S tier",
+      "files": 100000,
+      "directories": 1000,
+      "wall_seconds": 2.440881599992281,
+      "progress": {
+        "allocated_bytes": "12800000",
+        "elapsed_ms": 2430,
+        "entries_per_second": 41563.4080035733,
+        "examined": 101000,
+        "failed": 0,
+        "indexed_dirs": 1000,
+        "indexed_files": 100000,
+        "limit_hit": false,
+        "logical_bytes": "12800000",
+        "pending_dirs": 0,
+        "phase": "done",
+        "skipped": 0,
+        "strategy": "file_id_extd_directory_info",
+        "writer_queue_depth": 0
+      },
+      "phases": {
+        "writer": {
+          "staging_seconds": 0.09575380000000001,
+          "staging_calls": 1004,
+          "listing_calls": 1001,
+          "rollup_calls": 1,
+          "batch_wait_calls": 2005,
+          "batch_wait_seconds": 0.0005130000000000076,
+          "validation_dry_run_seconds": 0.0,
+          "state_prepare_seconds": 0.0032609999999999666,
+          "invalidation_seconds": 0.006532000000000002,
+          "rollup_seconds": 0.0040584,
+          "multilink_seconds": 0.123342,
+          "transactions": 1007,
+          "commands": 2008,
+          "max_transaction_bytes": 584704,
+          "max_transaction_commands": 2,
+          "listing_seconds": 0.6471687999999998,
+          "file_insert_seconds": 0.28667280000000017,
+          "file_seen_seconds": 0.0,
+          "name_validation_seconds": 0.03934460000000004,
+          "commit_seconds": 1.0762465999999995,
+          "checkpoint_seconds": 0.0581944,
+          "dirty_updates": 3001
+        },
+        "pipeline": {
+          "aggregation_seconds": 0.2676712,
+          "enumeration_attempts": 101000,
+          "enumeration_wall_seconds": 2.1619118,
+          "enumeration_worker_seconds": 0.2075322,
+          "final_directory_calls": 1001,
+          "finish_run_calls": 1,
+          "listing_calls": 1001,
+          "persistence_seconds": 2.1318500999999825,
+          "relist_calls": 0,
+          "staging_seconds": 2.1313056000000006
+        },
+        "native": {
+          "attribute_queries": {
+            "calls": 2028,
+            "seconds": 0.0060028
+          },
+          "containment": {
+            "calls": 1001,
+            "seconds": 0.0507003
+          },
+          "entry_callback": {
+            "calls": 101000,
+            "seconds": 0.0418505
+          },
+          "enumeration_queries": {
+            "calls": 2008,
+            "seconds": 0.0880588
+          },
+          "identity_observations": {
+            "calls": 1003,
+            "seconds": 0.0082956
+          },
+          "listing_inclusive": {
+            "calls": 1001,
+            "seconds": 0.2072916
+          },
+          "metadata_opens": {
+            "calls": 1024,
+            "seconds": 0.0173038
+          },
+          "normalized_path_queries": {
+            "calls": 2001,
+            "seconds": 0.0492012
+          }
+        }
+      },
+      "catalogue_totals": {
+        "files": 100000,
+        "dirs": 1000,
+        "logical_bytes": "12800000",
+        "allocated_bytes": "12800000",
+        "complete": true
+      },
+      "oracle": "independent disk walk + service progress + committed root totals; exact",
+      "at_utc": "2026-10-11T15:15:56Z"
+    },
+    {
+      "variant": "main",
+      "source": "23440d101043b910c8aea9b64de06881dca25405",
+      "binary_sha256": "0c2a6821dc79dc029d38e3b64097b63d9fd64739a7f6e2c5961f7d66e80ca546",
+      "platform": "Windows",
+      "host": "shared host",
+      "cache": "warm/uncontrolled",
+      "root": "synthetic service S tier",
+      "files": 100000,
+      "directories": 1000,
+      "wall_seconds": 2.397431299992604,
+      "progress": {
+        "allocated_bytes": "12800000",
+        "elapsed_ms": 2368,
+        "entries_per_second": 42641.26767000303,
+        "examined": 101000,
+        "failed": 0,
+        "indexed_dirs": 1000,
+        "indexed_files": 100000,
+        "limit_hit": false,
+        "logical_bytes": "12800000",
+        "pending_dirs": 0,
+        "phase": "done",
+        "skipped": 0,
+        "strategy": "file_id_extd_directory_info",
+        "writer_queue_depth": 0
+      },
+      "phases": {
+        "writer": {
+          "staging_seconds": 0.07904059999999996,
+          "staging_calls": 1004,
+          "listing_calls": 1001,
+          "rollup_calls": 1,
+          "batch_wait_calls": 2005,
+          "batch_wait_seconds": 0.000309000000000005,
+          "validation_dry_run_seconds": 0.0,
+          "state_prepare_seconds": 0.028835299999999713,
+          "invalidation_seconds": 0.00615399999999989,
+          "rollup_seconds": 0.0028099,
+          "multilink_seconds": 0.0687119,
+          "transactions": 2008,
+          "commands": 2008,
+          "max_transaction_bytes": 584704,
+          "max_transaction_commands": 1,
+          "listing_seconds": 0.5670734999999999,
+          "file_insert_seconds": 0.2548287,
+          "file_seen_seconds": 0.0,
+          "name_validation_seconds": 0.03352519999999995,
+          "commit_seconds": 1.1930760999999985,
+          "checkpoint_seconds": 0.0779558,
+          "dirty_updates": 3001
+        },
+        "pipeline": {
+          "aggregation_seconds": 0.1921057,
+          "enumeration_attempts": 101000,
+          "enumeration_wall_seconds": 2.1762083,
+          "enumeration_worker_seconds": 0.1845645,
+          "final_directory_calls": 1001,
+          "finish_run_calls": 1,
+          "listing_calls": 1001,
+          "persistence_seconds": 2.1522981999999327,
+          "relist_calls": 0,
+          "staging_seconds": 2.1521387000000054
+        },
+        "native": {
+          "attribute_queries": {
+            "calls": 2028,
+            "seconds": 0.0042123
+          },
+          "containment": {
+            "calls": 1001,
+            "seconds": 0.0400002
+          },
+          "entry_callback": {
+            "calls": 101000,
+            "seconds": 0.0340879
+          },
+          "enumeration_queries": {
+            "calls": 2008,
+            "seconds": 0.0912333
+          },
+          "identity_observations": {
+            "calls": 1003,
+            "seconds": 0.0068854
+          },
+          "listing_inclusive": {
+            "calls": 1001,
+            "seconds": 0.1843827
+          },
+          "metadata_opens": {
+            "calls": 1024,
+            "seconds": 0.014118
+          },
+          "normalized_path_queries": {
+            "calls": 2001,
+            "seconds": 0.0387795
+          }
+        }
+      },
+      "catalogue_totals": {
+        "files": 100000,
+        "dirs": 1000,
+        "logical_bytes": "12800000",
+        "allocated_bytes": "12800000",
+        "complete": true
+      },
+      "oracle": "independent disk walk + service progress + committed root totals; exact",
+      "at_utc": "2026-10-11T15:17:17Z"
+    },
+    {
+      "variant": "branch",
+      "source": "23440d1+sink-sha256:2f9b5d6466a046deb6847ccd90b8027219185d754cdb35fff3b52db5e170c01b",
+      "binary_sha256": "51ff4e137370b8b2ca77dca1e94c891af240776307e5a8f073df7dc3e4b1f5e6",
+      "platform": "Windows",
+      "host": "shared host",
+      "cache": "warm/uncontrolled",
+      "root": "synthetic service S tier",
+      "files": 100000,
+      "directories": 1000,
+      "wall_seconds": 2.2466012999939267,
+      "progress": {
+        "allocated_bytes": "12800000",
+        "elapsed_ms": 2232,
+        "entries_per_second": 45240.22041931234,
+        "examined": 101000,
+        "failed": 0,
+        "indexed_dirs": 1000,
+        "indexed_files": 100000,
+        "limit_hit": false,
+        "logical_bytes": "12800000",
+        "pending_dirs": 0,
+        "phase": "done",
+        "skipped": 0,
+        "strategy": "file_id_extd_directory_info",
+        "writer_queue_depth": 0
+      },
+      "phases": {
+        "writer": {
+          "staging_seconds": 0.07171659999999998,
+          "staging_calls": 1004,
+          "listing_calls": 1001,
+          "rollup_calls": 1,
+          "batch_wait_calls": 2005,
+          "batch_wait_seconds": 0.00032780000000000607,
+          "validation_dry_run_seconds": 0.0,
+          "state_prepare_seconds": 0.07663620000000264,
+          "invalidation_seconds": 0.0054927999999999835,
+          "rollup_seconds": 0.0027462,
+          "multilink_seconds": 0.065871,
+          "transactions": 1007,
+          "commands": 2008,
+          "max_transaction_bytes": 1171328,
+          "max_transaction_commands": 5,
+          "listing_seconds": 0.5187283000000003,
+          "file_insert_seconds": 0.2253688000000001,
+          "file_seen_seconds": 0.0,
+          "name_validation_seconds": 0.03240130000000002,
+          "commit_seconds": 1.185301900000001,
+          "checkpoint_seconds": 0.0789048,
+          "dirty_updates": 3001
+        },
+        "pipeline": {
+          "aggregation_seconds": 0.22479700000000002,
+          "enumeration_attempts": 101000,
+          "enumeration_wall_seconds": 2.007503,
+          "enumeration_worker_seconds": 0.2023631,
+          "final_directory_calls": 1001,
+          "finish_run_calls": 1,
+          "listing_calls": 1001,
+          "persistence_seconds": 1.9837887999999932,
+          "relist_calls": 0,
+          "staging_seconds": 1.9832623999999983
+        },
+        "native": {
+          "attribute_queries": {
+            "calls": 2028,
+            "seconds": 0.0037641
+          },
+          "containment": {
+            "calls": 1001,
+            "seconds": 0.0341749
+          },
+          "entry_callback": {
+            "calls": 101000,
+            "seconds": 0.0307958
+          },
+          "enumeration_queries": {
+            "calls": 2008,
+            "seconds": 0.1211991
+          },
+          "identity_observations": {
+            "calls": 1003,
+            "seconds": 0.0065171
+          },
+          "listing_inclusive": {
+            "calls": 1001,
+            "seconds": 0.2022483
+          },
+          "metadata_opens": {
+            "calls": 1024,
+            "seconds": 0.0124623
+          },
+          "normalized_path_queries": {
+            "calls": 2001,
+            "seconds": 0.0330034
+          }
+        }
+      },
+      "catalogue_totals": {
+        "files": 100000,
+        "dirs": 1000,
+        "logical_bytes": "12800000",
+        "allocated_bytes": "12800000",
+        "complete": true
+      },
+      "oracle": "independent disk walk + service progress + committed root totals; exact",
+      "at_utc": "2026-10-11T15:17:24Z"
+    },
+    {
+      "variant": "main",
+      "source": "23440d101043b910c8aea9b64de06881dca25405",
+      "binary_sha256": "0c2a6821dc79dc029d38e3b64097b63d9fd64739a7f6e2c5961f7d66e80ca546",
+      "platform": "Windows",
+      "host": "shared host",
+      "cache": "warm/uncontrolled",
+      "root": "synthetic service S tier",
+      "files": 100000,
+      "directories": 1000,
+      "wall_seconds": 2.407451199978823,
+      "progress": {
+        "allocated_bytes": "12800000",
+        "elapsed_ms": 2344,
+        "entries_per_second": 43088.715142296,
+        "examined": 101000,
+        "failed": 0,
+        "indexed_dirs": 1000,
+        "indexed_files": 100000,
+        "limit_hit": false,
+        "logical_bytes": "12800000",
+        "pending_dirs": 0,
+        "phase": "done",
+        "skipped": 0,
+        "strategy": "file_id_extd_directory_info",
+        "writer_queue_depth": 0
+      },
+      "phases": {
+        "writer": {
+          "staging_seconds": 0.07595699999999991,
+          "staging_calls": 1004,
+          "listing_calls": 1001,
+          "rollup_calls": 1,
+          "batch_wait_calls": 2005,
+          "batch_wait_seconds": 0.00030250000000000524,
+          "validation_dry_run_seconds": 0.0,
+          "state_prepare_seconds": 0.048451200000001166,
+          "invalidation_seconds": 0.005851099999999895,
+          "rollup_seconds": 0.0027169,
+          "multilink_seconds": 0.0656929,
+          "transactions": 2008,
+          "commands": 2008,
+          "max_transaction_bytes": 584704,
+          "max_transaction_commands": 1,
+          "listing_seconds": 0.5248678,
+          "file_insert_seconds": 0.22617029999999985,
+          "file_seen_seconds": 0.0,
+          "name_validation_seconds": 0.03307249999999993,
+          "commit_seconds": 1.2237062999999986,
+          "checkpoint_seconds": 0.0729529,
+          "dirty_updates": 3001
+        },
+        "pipeline": {
+          "aggregation_seconds": 0.1761215,
+          "enumeration_attempts": 101000,
+          "enumeration_wall_seconds": 2.1676808,
+          "enumeration_worker_seconds": 0.1261785,
+          "final_directory_calls": 1001,
+          "finish_run_calls": 1,
+          "listing_calls": 1001,
+          "persistence_seconds": 2.1456868999999097,
+          "relist_calls": 0,
+          "staging_seconds": 2.1454918999999966
+        },
+        "native": {
+          "attribute_queries": {
+            "calls": 2028,
+            "seconds": 0.0038906
+          },
+          "containment": {
+            "calls": 1001,
+            "seconds": 0.0304203
+          },
+          "entry_callback": {
+            "calls": 101000,
+            "seconds": 0.0322168
+          },
+          "enumeration_queries": {
+            "calls": 2008,
+            "seconds": 0.0471435
+          },
+          "identity_observations": {
+            "calls": 1003,
+            "seconds": 0.0068298
+          },
+          "listing_inclusive": {
+            "calls": 1001,
+            "seconds": 0.1260354
+          },
+          "metadata_opens": {
+            "calls": 1024,
+            "seconds": 0.0134778
+          },
+          "normalized_path_queries": {
+            "calls": 2001,
+            "seconds": 0.0292787
+          }
+        }
+      },
+      "catalogue_totals": {
+        "files": 100000,
+        "dirs": 1000,
+        "logical_bytes": "12800000",
+        "allocated_bytes": "12800000",
+        "complete": true
+      },
+      "oracle": "independent disk walk + service progress + committed root totals; exact",
+      "at_utc": "2026-10-11T15:17:31Z"
+    },
+    {
+      "variant": "branch",
+      "source": "23440d1+sink-sha256:2f9b5d6466a046deb6847ccd90b8027219185d754cdb35fff3b52db5e170c01b",
+      "binary_sha256": "51ff4e137370b8b2ca77dca1e94c891af240776307e5a8f073df7dc3e4b1f5e6",
+      "platform": "Windows",
+      "host": "shared host",
+      "cache": "warm/uncontrolled",
+      "root": "synthetic service S tier",
+      "files": 100000,
+      "directories": 1000,
+      "wall_seconds": 2.1354575000004843,
+      "progress": {
+        "allocated_bytes": "12800000",
+        "elapsed_ms": 2087,
+        "entries_per_second": 48385.99877827748,
+        "examined": 101000,
+        "failed": 0,
+        "indexed_dirs": 1000,
+        "indexed_files": 100000,
+        "limit_hit": false,
+        "logical_bytes": "12800000",
+        "pending_dirs": 0,
+        "phase": "done",
+        "skipped": 0,
+        "strategy": "file_id_extd_directory_info",
+        "writer_queue_depth": 0
+      },
+      "phases": {
+        "writer": {
+          "staging_seconds": 0.07565469999999996,
+          "staging_calls": 1004,
+          "listing_calls": 1001,
+          "rollup_calls": 1,
+          "batch_wait_calls": 2005,
+          "batch_wait_seconds": 0.0003290000000000062,
+          "validation_dry_run_seconds": 0.0,
+          "state_prepare_seconds": 0.004483999999999868,
+          "invalidation_seconds": 0.0054679999999999755,
+          "rollup_seconds": 0.0027393,
+          "multilink_seconds": 0.0672254,
+          "transactions": 1007,
+          "commands": 2008,
+          "max_transaction_bytes": 584704,
+          "max_transaction_commands": 2,
+          "listing_seconds": 0.5203848999999997,
+          "file_insert_seconds": 0.22320070000000014,
+          "file_seen_seconds": 0.0,
+          "name_validation_seconds": 0.032584400000000006,
+          "commit_seconds": 1.110581900000001,
+          "checkpoint_seconds": 0.0315803,
+          "dirty_updates": 3001
+        },
+        "pipeline": {
+          "aggregation_seconds": 0.1356117,
+          "enumeration_attempts": 101000,
+          "enumeration_wall_seconds": 1.9515712,
+          "enumeration_worker_seconds": 0.1222218,
+          "final_directory_calls": 1001,
+          "finish_run_calls": 1,
+          "listing_calls": 1001,
+          "persistence_seconds": 1.9284256999999871,
+          "relist_calls": 0,
+          "staging_seconds": 1.9282150999999998
+        },
+        "native": {
+          "attribute_queries": {
+            "calls": 2028,
+            "seconds": 0.0037144
+          },
+          "containment": {
+            "calls": 1001,
+            "seconds": 0.0293625
+          },
+          "entry_callback": {
+            "calls": 101000,
+            "seconds": 0.0316713
+          },
+          "enumeration_queries": {
+            "calls": 2008,
+            "seconds": 0.0444084
+          },
+          "identity_observations": {
+            "calls": 1003,
+            "seconds": 0.0067796
+          },
+          "listing_inclusive": {
+            "calls": 1001,
+            "seconds": 0.1221021
+          },
+          "metadata_opens": {
+            "calls": 1024,
+            "seconds": 0.0129045
+          },
+          "normalized_path_queries": {
+            "calls": 2001,
+            "seconds": 0.0283255
+          }
+        }
+      },
+      "catalogue_totals": {
+        "files": 100000,
+        "dirs": 1000,
+        "logical_bytes": "12800000",
+        "allocated_bytes": "12800000",
+        "complete": true
+      },
+      "oracle": "independent disk walk + service progress + committed root totals; exact",
+      "at_utc": "2026-10-11T15:17:37Z"
+    },
+    {
+      "variant": "main",
+      "source": "23440d101043b910c8aea9b64de06881dca25405",
+      "binary_sha256": "0c2a6821dc79dc029d38e3b64097b63d9fd64739a7f6e2c5961f7d66e80ca546",
+      "platform": "Windows",
+      "host": "shared host",
+      "cache": "warm/uncontrolled",
+      "root": "synthetic service S tier",
+      "files": 100000,
+      "directories": 1000,
+      "wall_seconds": 2.295633000001544,
+      "progress": {
+        "allocated_bytes": "12800000",
+        "elapsed_ms": 2196,
+        "entries_per_second": 45976.19734877575,
+        "examined": 101000,
+        "failed": 0,
+        "indexed_dirs": 1000,
+        "indexed_files": 100000,
+        "limit_hit": false,
+        "logical_bytes": "12800000",
+        "pending_dirs": 0,
+        "phase": "done",
+        "skipped": 0,
+        "strategy": "file_id_extd_directory_info",
+        "writer_queue_depth": 0
+      },
+      "phases": {
+        "writer": {
+          "staging_seconds": 0.07278980000000002,
+          "staging_calls": 1004,
+          "listing_calls": 1001,
+          "rollup_calls": 1,
+          "batch_wait_calls": 2005,
+          "batch_wait_seconds": 0.00030470000000000583,
+          "validation_dry_run_seconds": 0.0,
+          "state_prepare_seconds": 0.030590099999999624,
+          "invalidation_seconds": 0.005835299999999942,
+          "rollup_seconds": 0.0028118,
+          "multilink_seconds": 0.0722052,
+          "transactions": 2008,
+          "commands": 2008,
+          "max_transaction_bytes": 584704,
+          "max_transaction_commands": 1,
+          "listing_seconds": 0.5414318000000006,
+          "file_insert_seconds": 0.23839080000000004,
+          "file_seen_seconds": 0.0,
+          "name_validation_seconds": 0.033160299999999976,
+          "commit_seconds": 0.9641400000000002,
+          "checkpoint_seconds": 0.0556844,
+          "dirty_updates": 3001
+        },
+        "pipeline": {
+          "aggregation_seconds": 0.2079522,
+          "enumeration_attempts": 101000,
+          "enumeration_wall_seconds": 1.9885773,
+          "enumeration_worker_seconds": 0.9290169,
+          "final_directory_calls": 1001,
+          "finish_run_calls": 1,
+          "listing_calls": 1001,
+          "persistence_seconds": 1.8723796999999915,
+          "relist_calls": 0,
+          "staging_seconds": 1.8720629000000006
+        },
+        "native": {
+          "attribute_queries": {
+            "calls": 2028,
+            "seconds": 0.0042314
+          },
+          "containment": {
+            "calls": 1001,
+            "seconds": 0.7951932
+          },
+          "entry_callback": {
+            "calls": 101000,
+            "seconds": 0.0338755
+          },
+          "enumeration_queries": {
+            "calls": 2008,
+            "seconds": 0.0828636
+          },
+          "identity_observations": {
+            "calls": 1003,
+            "seconds": 0.0070065
+          },
+          "listing_inclusive": {
+            "calls": 1001,
+            "seconds": 0.9288822
+          },
+          "metadata_opens": {
+            "calls": 1024,
+            "seconds": 0.0143805
+          },
+          "normalized_path_queries": {
+            "calls": 2001,
+            "seconds": 0.7938389
+          }
+        }
+      },
+      "catalogue_totals": {
+        "files": 100000,
+        "dirs": 1000,
+        "logical_bytes": "12800000",
+        "allocated_bytes": "12800000",
+        "complete": true
+      },
+      "oracle": "independent disk walk + service progress + committed root totals; exact",
+      "at_utc": "2026-10-11T15:17:44Z"
+    },
+    {
+      "variant": "branch",
+      "source": "23440d1+sink-sha256:2f9b5d6466a046deb6847ccd90b8027219185d754cdb35fff3b52db5e170c01b",
+      "binary_sha256": "51ff4e137370b8b2ca77dca1e94c891af240776307e5a8f073df7dc3e4b1f5e6",
+      "platform": "Windows",
+      "host": "shared host",
+      "cache": "warm/uncontrolled",
+      "root": "synthetic service S tier",
+      "files": 100000,
+      "directories": 1000,
+      "wall_seconds": 2.045163800008595,
+      "progress": {
+        "allocated_bytes": "12800000",
+        "elapsed_ms": 1967,
+        "entries_per_second": 51342.68753043706,
+        "examined": 101000,
+        "failed": 0,
+        "indexed_dirs": 1000,
+        "indexed_files": 100000,
+        "limit_hit": false,
+        "logical_bytes": "12800000",
+        "pending_dirs": 0,
+        "phase": "done",
+        "skipped": 0,
+        "strategy": "file_id_extd_directory_info",
+        "writer_queue_depth": 0
+      },
+      "phases": {
+        "writer": {
+          "staging_seconds": 0.07681879999999999,
+          "staging_calls": 1004,
+          "listing_calls": 1001,
+          "rollup_calls": 1,
+          "batch_wait_calls": 2005,
+          "batch_wait_seconds": 0.0003551000000000064,
+          "validation_dry_run_seconds": 0.0,
+          "state_prepare_seconds": 0.0034273999999999477,
+          "invalidation_seconds": 0.005787099999999963,
+          "rollup_seconds": 0.0028037,
+          "multilink_seconds": 0.0670986,
+          "transactions": 1007,
+          "commands": 2008,
+          "max_transaction_bytes": 878752,
+          "max_transaction_commands": 4,
+          "listing_seconds": 0.5353462999999998,
+          "file_insert_seconds": 0.23380039999999985,
+          "file_seen_seconds": 0.0,
+          "name_validation_seconds": 0.03260059999999999,
+          "commit_seconds": 0.9325891999999998,
+          "checkpoint_seconds": 0.0376123,
+          "dirty_updates": 3001
+        },
+        "pipeline": {
+          "aggregation_seconds": 0.1677978,
+          "enumeration_attempts": 101000,
+          "enumeration_wall_seconds": 1.7991318,
+          "enumeration_worker_seconds": 0.184186,
+          "final_directory_calls": 1001,
+          "finish_run_calls": 1,
+          "listing_calls": 1001,
+          "persistence_seconds": 1.7718875999999624,
+          "relist_calls": 0,
+          "staging_seconds": 1.771541900000002
+        },
+        "native": {
+          "attribute_queries": {
+            "calls": 2028,
+            "seconds": 0.0041896
+          },
+          "containment": {
+            "calls": 1001,
+            "seconds": 0.0427911
+          },
+          "entry_callback": {
+            "calls": 101000,
+            "seconds": 0.035195
+          },
+          "enumeration_queries": {
+            "calls": 2008,
+            "seconds": 0.0887091
+          },
+          "identity_observations": {
+            "calls": 1003,
+            "seconds": 0.0074705
+          },
+          "listing_inclusive": {
+            "calls": 1001,
+            "seconds": 0.1840594
+          },
+          "metadata_opens": {
+            "calls": 1024,
+            "seconds": 0.0153056
+          },
+          "normalized_path_queries": {
+            "calls": 2001,
+            "seconds": 0.0416439
+          }
+        }
+      },
+      "catalogue_totals": {
+        "files": 100000,
+        "dirs": 1000,
+        "logical_bytes": "12800000",
+        "allocated_bytes": "12800000",
+        "complete": true
+      },
+      "oracle": "independent disk walk + service progress + committed root totals; exact",
+      "at_utc": "2026-10-11T15:17:51Z"
+    },
+    {
+      "variant": "main",
+      "source": "async148/",
+      "binary_sha256": "0c2a6821dc79dc029d38e3b64097b63d9fd64739a7f6e2c5961f7d66e80ca546",
+      "platform": "Windows",
+      "host": "shared host",
+      "cache": "warm/uncontrolled",
+      "root": "real-C (owner-authorised, agent-picked)",
+      "files": 6356,
+      "directories": 730,
+      "wall_seconds": 0.6736420999804977,
+      "progress": {
+        "elapsed_ms": 574,
+        "entries_per_second": 12336.159833178071,
+        "examined": 7086,
+        "failed": 0,
+        "indexed_dirs": 730,
+        "indexed_files": 6356,
+        "limit_hit": false,
+        "pending_dirs": 0,
+        "phase": "done",
+        "skipped": 0,
+        "strategy": "file_id_extd_directory_info",
+        "writer_queue_depth": 0,
+        "logical_gib": 0.4,
+        "allocated_gib": 0.4
+      },
+      "phases": {
+        "writer": {
+          "staging_seconds": 0.0270107,
+          "staging_calls": 732,
+          "listing_calls": 731,
+          "rollup_calls": 1,
+          "batch_wait_calls": 1463,
+          "batch_wait_seconds": 0.00015200000000000242,
+          "validation_dry_run_seconds": 0.0,
+          "state_prepare_seconds": 0.020697499999999792,
+          "invalidation_seconds": 0.008186899999999938,
+          "rollup_seconds": 0.0018295,
+          "multilink_seconds": 0.0068114,
+          "transactions": 1466,
+          "commands": 1466,
+          "max_transaction_bytes": 706672,
+          "max_transaction_commands": 1,
+          "listing_seconds": 0.1438397000000001,
+          "file_insert_seconds": 0.026735099999999967,
+          "file_seen_seconds": 0.0,
+          "name_validation_seconds": 0.0029675000000000036,
+          "commit_seconds": 0.2051048000000001,
+          "checkpoint_seconds": 0.0087368,
+          "dirty_updates": 5443
+        },
+        "pipeline": {
+          "aggregation_seconds": 0.0532466,
+          "enumeration_attempts": 7086,
+          "enumeration_wall_seconds": 0.5209438,
+          "enumeration_worker_seconds": 0.2021839,
+          "final_directory_calls": 731,
+          "finish_run_calls": 1,
+          "listing_calls": 731,
+          "persistence_seconds": 0.5195810999999801,
+          "relist_calls": 0,
+          "staging_seconds": 0.5193986999999995
+        },
+        "native": {
+          "attribute_queries": {
+            "calls": 1478,
+            "seconds": 0.0031665
+          },
+          "containment": {
+            "calls": 731,
+            "seconds": 0.0161025
+          },
+          "entry_callback": {
+            "calls": 7086,
+            "seconds": 0.1183017
+          },
+          "enumeration_queries": {
+            "calls": 1475,
+            "seconds": 0.0625521
+          },
+          "identity_observations": {
+            "calls": 733,
+            "seconds": 0.007572
+          },
+          "listing_inclusive": {
+            "calls": 731,
+            "seconds": 0.2021157
+          },
+          "metadata_opens": {
+            "calls": 744,
+            "seconds": 0.1034254
+          },
+          "normalized_path_queries": {
+            "calls": 1461,
+            "seconds": 0.0155966
+          }
+        }
+      },
+      "catalogue_totals": {
+        "files": 6356,
+        "dirs": 730,
+        "complete": true,
+        "logical_gib": 0.4,
+        "allocated_gib": 0.4
+      },
+      "oracle": "service progress matches committed tree root totals; no extra real-root traversal",
+      "at_utc": "2026-10-11T15:18:35Z"
+    },
+    {
+      "variant": "branch",
+      "source": "async148/",
+      "binary_sha256": "51ff4e137370b8b2ca77dca1e94c891af240776307e5a8f073df7dc3e4b1f5e6",
+      "platform": "Windows",
+      "host": "shared host",
+      "cache": "warm/uncontrolled",
+      "root": "real-C (owner-authorised, agent-picked)",
+      "files": 6356,
+      "directories": 730,
+      "wall_seconds": 6.107095999992453,
+      "progress": {
+        "elapsed_ms": 6034,
+        "entries_per_second": 1174.2873624357405,
+        "examined": 7086,
+        "failed": 0,
+        "indexed_dirs": 730,
+        "indexed_files": 6356,
+        "limit_hit": false,
+        "pending_dirs": 0,
+        "phase": "done",
+        "skipped": 0,
+        "strategy": "file_id_extd_directory_info",
+        "writer_queue_depth": 0,
+        "logical_gib": 0.4,
+        "allocated_gib": 0.4
+      },
+      "phases": {
+        "writer": {
+          "staging_seconds": 0.026177300000000004,
+          "staging_calls": 732,
+          "listing_calls": 731,
+          "rollup_calls": 1,
+          "batch_wait_calls": 1463,
+          "batch_wait_seconds": 0.00019010000000000316,
+          "validation_dry_run_seconds": 0.0,
+          "state_prepare_seconds": 0.0035368000000000157,
+          "invalidation_seconds": 0.007762999999999996,
+          "rollup_seconds": 0.0018859,
+          "multilink_seconds": 0.0062053,
+          "transactions": 734,
+          "commands": 1466,
+          "max_transaction_bytes": 903664,
+          "max_transaction_commands": 3,
+          "listing_seconds": 0.14168119999999992,
+          "file_insert_seconds": 0.027107999999999997,
+          "file_seen_seconds": 0.0,
+          "name_validation_seconds": 0.002850799999999996,
+          "commit_seconds": 0.15767110000000015,
+          "checkpoint_seconds": 5.5555303,
+          "dirty_updates": 5443
+        },
+        "pipeline": {
+          "aggregation_seconds": 5.6144257,
+          "enumeration_attempts": 7086,
+          "enumeration_wall_seconds": 0.4195748,
+          "enumeration_worker_seconds": 0.0562699,
+          "final_directory_calls": 731,
+          "finish_run_calls": 1,
+          "listing_calls": 731,
+          "persistence_seconds": 0.4186185000000041,
+          "relist_calls": 0,
+          "staging_seconds": 0.41836469999999926
+        },
+        "native": {
+          "attribute_queries": {
+            "calls": 1478,
+            "seconds": 0.0026611
+          },
+          "containment": {
+            "calls": 731,
+            "seconds": 0.0152368
+          },
+          "entry_callback": {
+            "calls": 7086,
+            "seconds": 0.0230846
+          },
+          "enumeration_queries": {
+            "calls": 1475,
+            "seconds": 0.0135753
+          },
+          "identity_observations": {
+            "calls": 733,
+            "seconds": 0.0062869
+          },
+          "listing_inclusive": {
+            "calls": 731,
+            "seconds": 0.0562071
+          },
+          "metadata_opens": {
+            "calls": 744,
+            "seconds": 0.013138
+          },
+          "normalized_path_queries": {
+            "calls": 1461,
+            "seconds": 0.0148101
+          }
+        }
+      },
+      "catalogue_totals": {
+        "files": 6356,
+        "dirs": 730,
+        "complete": true,
+        "logical_gib": 0.4,
+        "allocated_gib": 0.4
+      },
+      "oracle": "service progress matches committed tree root totals; no extra real-root traversal",
+      "at_utc": "2026-10-11T15:18:42Z"
+    }
+  ],
+  "async148": {
+    "base_commit": "23440d101043b910c8aea9b64de06881dca25405",
+    "candidate_sink_sha256": "2f9b5d6466a046deb6847ccd90b8027219185d754cdb35fff3b52db5e170c01b",
+    "diagnostic_indices": [
+      0,
+      1
+    ],
+    "interleaved_ab_indices": [
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "real_pair_indices": [
+      8,
+      9
+    ],
+    "real_source_note": "The original source strings contain only async148/ because shell interpolation omitted the variant and base. Indices 8 and 9 use the same frozen main and candidate binary hashes as indices 2 through 7; identities are pinned here without changing prior receipts.",
+    "mutations": [
+      {
+        "mutation": "synchronous_staging",
+        "test": "sink::tests",
+        "exit_code": 101,
+        "result": "killed at runtime"
+      },
+      {
+        "mutation": "remove_receipt_bound",
+        "test": "committed_receipts_still_count",
+        "exit_code": 101,
+        "result": "killed at runtime"
+      },
+      {
+        "mutation": "increase_receipt_bound",
+        "test": "committed_receipts_still_count",
+        "exit_code": 101,
+        "result": "killed at runtime"
+      },
+      {
+        "mutation": "undersized_reservation",
+        "test": "converted_engine_chunk",
+        "exit_code": 101,
+        "result": "killed at runtime"
+      },
+      {
+        "mutation": "ignore_queued_failure",
+        "test": "queued_chunk_failure",
+        "exit_code": 101,
+        "result": "killed at runtime"
+      },
+      {
+        "mutation": "forget_queued_failure",
+        "test": "queued_chunk_failure",
+        "exit_code": 101,
+        "result": "killed at runtime"
+      },
+      {
+        "mutation": "skip_final_drain",
+        "test": "finals_and_end_run",
+        "exit_code": 101,
+        "result": "killed at runtime"
+      },
+      {
+        "mutation": "skip_end_drain",
+        "test": "finals_and_end_run",
+        "exit_code": 101,
+        "result": "killed at runtime"
+      },
+      {
+        "mutation": "acknowledge_before_commit",
+        "test": "listing_done_waits",
+        "exit_code": 101,
+        "result": "killed at runtime"
+      },
+      {
+        "mutation": "remove_revocation_cancel",
+        "test": "durable_revocation",
+        "exit_code": 101,
+        "result": "killed at runtime"
+      },
+      {
+        "mutation": "keep_revoked_receipts",
+        "test": "durable_revocation",
+        "exit_code": 101,
+        "result": "killed at runtime"
+      },
+      {
+        "mutation": "cancelled_listing_completes",
+        "test": "cancellation_with_chunks",
+        "exit_code": 101,
+        "result": "killed at runtime"
+      }
+    ]
+  }
+}
