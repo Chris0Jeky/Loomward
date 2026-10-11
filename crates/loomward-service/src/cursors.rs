@@ -15,6 +15,10 @@ use std::sync::Mutex;
 pub enum Position {
     Children(ChildrenCursor),
     Search(SearchCursor),
+    Metadata {
+        snapshot: std::sync::Arc<serde_json::Value>,
+        offset: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

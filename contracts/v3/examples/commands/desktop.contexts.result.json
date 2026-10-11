@@ -1,0 +1,186 @@
+{
+  "observed_at": "2026-10-01T00:00:00Z",
+  "contexts": [
+    {
+      "folder": "desktop",
+      "ownership": "per_user",
+      "location": "filesystem",
+      "current_path": {
+        "text": "C:\\Synthetic\\RedirectedDesktop",
+        "truncated": false
+      },
+      "default_path": {
+        "text": "C:\\Synthetic\\desktop",
+        "truncated": false
+      },
+      "redirected": true,
+      "reason": null
+    },
+    {
+      "folder": "public_desktop",
+      "ownership": "public",
+      "location": "filesystem",
+      "current_path": {
+        "text": "C:\\Synthetic\\public_desktop",
+        "truncated": false
+      },
+      "default_path": {
+        "text": "C:\\Synthetic\\public_desktop",
+        "truncated": false
+      },
+      "redirected": false,
+      "reason": null
+    },
+    {
+      "folder": "documents",
+      "ownership": "per_user",
+      "location": "filesystem",
+      "current_path": {
+        "text": "C:\\Synthetic\\documents",
+        "truncated": false
+      },
+      "default_path": {
+        "text": "C:\\Synthetic\\documents",
+        "truncated": false
+      },
+      "redirected": false,
+      "reason": null
+    },
+    {
+      "folder": "downloads",
+      "ownership": "per_user",
+      "location": "filesystem",
+      "current_path": {
+        "text": "C:\\Synthetic\\downloads",
+        "truncated": false
+      },
+      "default_path": {
+        "text": "C:\\Synthetic\\downloads",
+        "truncated": false
+      },
+      "redirected": false,
+      "reason": null
+    },
+    {
+      "folder": "onedrive",
+      "ownership": "per_user",
+      "location": "unavailable",
+      "current_path": null,
+      "default_path": null,
+      "redirected": null,
+      "reason": "synthetic provider unavailable"
+    }
+  ],
+  "providers": [
+    {
+      "provider": "desktop",
+      "state": "available",
+      "reason": null
+    },
+    {
+      "provider": "public_desktop",
+      "state": "partial",
+      "reason": "synthetic partial listing"
+    }
+  ],
+  "shortcuts": [
+    {
+      "desktop": "desktop",
+      "name": "Synthetic missing.lnk",
+      "health": "missing",
+      "reason": "recorded target metadata only; no shell resolution",
+      "target": {
+        "state": "missing",
+        "value": null,
+        "expandable": null,
+        "reason": "provider field absent"
+      },
+      "arguments": {
+        "state": "known",
+        "value": "--synthetic",
+        "expandable": false,
+        "reason": null
+      },
+      "working_directory": {
+        "state": "missing",
+        "value": null,
+        "expandable": null,
+        "reason": "provider field absent"
+      }
+    },
+    {
+      "desktop": "public_desktop",
+      "name": "Synthetic offline.lnk",
+      "health": "volume_unavailable",
+      "reason": "recorded target metadata only; no shell resolution",
+      "target": {
+        "state": "missing",
+        "value": null,
+        "expandable": null,
+        "reason": "provider field absent"
+      },
+      "arguments": {
+        "state": "known",
+        "value": "--synthetic",
+        "expandable": false,
+        "reason": null
+      },
+      "working_directory": {
+        "state": "missing",
+        "value": null,
+        "expandable": null,
+        "reason": "provider field absent"
+      }
+    },
+    {
+      "desktop": "desktop",
+      "name": "Synthetic network.lnk",
+      "health": "network_unreachable_unknown",
+      "reason": "recorded target metadata only; no shell resolution",
+      "target": {
+        "state": "missing",
+        "value": null,
+        "expandable": null,
+        "reason": "provider field absent"
+      },
+      "arguments": {
+        "state": "known",
+        "value": "--synthetic",
+        "expandable": false,
+        "reason": null
+      },
+      "working_directory": {
+        "state": "missing",
+        "value": null,
+        "expandable": null,
+        "reason": "provider field absent"
+      }
+    },
+    {
+      "desktop": "desktop",
+      "name": "<img src=x onerror=alert(1)>.lnk",
+      "health": "unknown",
+      "reason": "recorded target metadata only; no shell resolution",
+      "target": {
+        "state": "missing",
+        "value": null,
+        "expandable": null,
+        "reason": "provider field absent"
+      },
+      "arguments": {
+        "state": "known",
+        "value": "--synthetic",
+        "expandable": false,
+        "reason": null
+      },
+      "working_directory": {
+        "state": "missing",
+        "value": null,
+        "expandable": null,
+        "reason": "provider field absent"
+      }
+    }
+  ],
+  "next_cursor": null,
+  "budget_hit": false
+}

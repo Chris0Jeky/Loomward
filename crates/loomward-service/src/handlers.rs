@@ -93,6 +93,7 @@ impl Inner {
         let handled = match command {
             SessionHello => self.hello(ctx),
             HealthGet => self.health(),
+            AppsList | DesktopContexts => self.metadata_page(req, command, work),
             RootsList => self.roots_list(work),
             RootsRequestGrant => self.request_grant(ctx),
             RootsRevoke => {

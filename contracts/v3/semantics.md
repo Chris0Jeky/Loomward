@@ -118,6 +118,21 @@ Stored canonical row references and input digests survive restart and never conf
 
 ## 4. Idempotency
 
+| Read-only command | Idempotency | Deadline | Pagination and unknowns |
+|---|---|---|---|
+| `apps.list` | Safe to retry; no state or registry writes | 2,000 ms default; shares the eight-read admission pool | `limit` 1–200, required nullable `cursor`. First page observes at most 6,144 registry entries across three bounded views; provider coverage is explicit (packaged/portable remain unavailable). `estimated_size_bytes` is the registry's EstimatedSize in KiB converted to bytes, never a disk measurement; absent/malformed fields stay null with `size_reason`. Registry text stays literal, including expandable values. |
+| `desktop.contexts` | Safe to retry; no file, icon, shortcut or process effects | 2,000 ms default; shares the eight-read admission pool | Five configured known folders, personal/public ownership and nullable redirection; configured paths establish neither existence nor online state. At most 200 shortcut entries per page. Synthetic sessions use injected fixtures only. Personal shortcut enumeration currently reports `desktop_enumeration_unavailable`: the existing safe reader requires an explicit path and exposes no bounded pinned-directory listing; pathname enumeration would weaken no-follow containment. It performs no desktop content or target reads. |
+
+Both commands have `effects: none`, no events, and null catalogue/state revisions. Cursors retain
+one bounded observation (maximum 4 MiB encoded snapshot), bind the command and session, and never
+trigger a new provider read. Unknown/evicted/foreign cursors answer `stale_generation` with
+`cursor_expired`; a cursor for the other command answers `invalid_request`. `cursor: null` refreshes
+the observation. Paging itself is not `budget_hit`; incomplete provider coverage stays in its
+provider state and reason. Provider calls may block in the OS after a caller's deadline; their read
+permit remains held until they finish, preventing unbounded worker accumulation. An elevated
+personal session refuses both reads with `personal_metadata_elevated`; unsupported platforms
+report `personal_metadata_unsupported`. There is no synthetic fallback for personal sessions.
+
 - **Session cache.** For every mutating command the service keeps, for 10 minutes, the response keyed by
   `request_id` alone, scoped to the session. Replaying the same `request_id` with a byte-identical canonical payload returns
   the cached response. The same `request_id` with a different payload is `invalid_request` with
