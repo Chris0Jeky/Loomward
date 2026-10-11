@@ -223,7 +223,18 @@ fn is_reserved_device_component(component: &str) -> bool {
     }
     matches!(
         lower.as_str(),
-        "con" | "prn" | "aux" | "nul" | "com¹" | "com²" | "com³" | "lpt¹" | "lpt²" | "lpt³"
+        "con"
+            | "prn"
+            | "aux"
+            | "nul"
+            | "conin$"
+            | "conout$"
+            | "com¹"
+            | "com²"
+            | "com³"
+            | "lpt¹"
+            | "lpt²"
+            | "lpt³"
     )
 }
 
@@ -520,6 +531,10 @@ mod tests {
             r"G:\lab\lpt³.txt",
             r"G:\lab\COM1 ",
             r"G:\lab\aux.",
+            r"G:\lab\COM1 .txt",
+            r"G:\lab\con  .log",
+            r"G:\lab\CONIN$",
+            r"G:\lab\conout$.log",
         ] {
             assert!(real_root(path).is_err(), "{path}");
         }
@@ -533,6 +548,17 @@ mod tests {
             assert!(real_root(path).is_ok(), "{path}");
         }
     }
+    #[test]
+    fn is_keeper_matches_only_direct_marker_and_busy_names() {
+        let root = Path::new(r"G:\lab\root");
+        assert!(is_keeper(&root.join(".loomward-lab-marker"), root));
+        assert!(is_keeper(&root.join(".LOOMWARD-LAB-MARKER"), root));
+        assert!(is_keeper(&root.join(".busy"), root));
+        assert!(is_keeper(&root.join(".Busy"), root));
+        assert!(!is_keeper(&root.join("sub").join(".busy"), root));
+        assert!(!is_keeper(&root.join(".busy2"), root));
+    }
+
     #[test]
     fn deterministic_profiles_and_independent_small_oracle() {
         for profile in [Profile::Dev, Profile::Mixed, Profile::Media] {
@@ -667,14 +693,27 @@ mod tests {
         assert!(decode_records(&overrun, |_| Ok(())).is_err());
     }
 
+    /// Record 1 chains to `next`; record 2 is a valid terminal record at `next`.
+    /// Record 2 may overlap record 1's tail, so record 1's name is restored last.
+    fn chained_buffer(next: u32) -> Vec<u8> {
+        let first = dir_record(next, &[0x41], 1, 1, 0, 0, [0; 16]);
+        let second = dir_record(0, &[0x42], 1, 1, 0, 0, [0; 16]);
+        let at = next as usize;
+        let mut buffer = vec![0u8; at + second.len()];
+        buffer[..first.len()].copy_from_slice(&first);
+        buffer[at..].copy_from_slice(&second);
+        buffer[88..90].copy_from_slice(&0x0041u16.to_le_bytes());
+        buffer
+    }
+
     #[test]
     fn decode_records_rejects_bad_next_offsets() {
-        let mut unaligned = dir_record(92, &[0x41], 1, 1, 0, 0, [0; 16]);
-        unaligned.resize(104, 0);
-        assert!(decode_records(&unaligned, |_| Ok(())).is_err());
-        let mut overlap = dir_record(88, &[0x41], 1, 1, 0, 0, [0; 16]);
-        overlap.resize(184, 0);
-        assert!(decode_records(&overlap, |_| Ok(())).is_err());
+        // Control: an aligned, non-overlapping chain with the same follow-on is valid.
+        assert!(decode_records(&chained_buffer(96), |_| Ok(())).is_ok());
+        // Each buffer below has a valid follow-on record, so only its own bound fails.
+        assert!(decode_records(&chained_buffer(92), |_| Ok(())).is_err());
+        assert!(decode_records(&chained_buffer(80), |_| Ok(())).is_err());
+        // Past the end, no follow-on record can exist inside the buffer by definition.
         let past_end = dir_record(96, &[0x41], 1, 1, 0, 0, [0; 16]);
         assert!(decode_records(&past_end, |_| Ok(())).is_err());
     }
