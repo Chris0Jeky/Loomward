@@ -10,6 +10,7 @@ use std::time::Duration;
 pub type Sql<T> = rusqlite::Result<T>;
 
 pub fn open(dir: &Path) -> Sql<Connection> {
+    let dir = &loomward_catalog::sqlite_dir(dir);
     let conn = Connection::open(dir.join("catalog.db"))?;
     conn.busy_timeout(Duration::from_secs(5))?;
     conn.execute(
