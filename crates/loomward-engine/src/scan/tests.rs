@@ -228,6 +228,43 @@ fn scan_source_allows_identity_unverified_only_when_the_root_does() {
     }
 }
 
+/// #219: an identity-unverified root is scanned unwatched (the watch reopens by file ID); a
+/// verified root on the same watch-capable sink is watched.
+#[cfg(windows)]
+#[test]
+fn identity_unverified_roots_are_never_watched() {
+    use loomward_windows::enumerate::NativeSource;
+    let temp = canonical_tempdir();
+    if skip_elevated() {
+        return;
+    }
+    let (_, id) = NativeSource::default().open_root(temp.path()).unwrap();
+    for (name, basis, watched) in [
+        ("rt_watch_verified", IdBasis::PostOpen, true),
+        ("rt_watch_unverified", IdBasis::Unverified, false),
+    ] {
+        let root = GrantedRoot::new(
+            RootId::new(name).unwrap(),
+            temp.path().into(),
+            DatasetClass::Synthetic,
+            OpenedIdentity { basis, ..id },
+        );
+        let e = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Synthetic)).unwrap();
+        e.set_scan_sink(Arc::new(MemorySink::default())).unwrap();
+        let job = e.scan_start(&root, None).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while e.job_status(&job.job_id).unwrap().state != loomward_protocol::JobState::Completed {
+            assert!(std::time::Instant::now() < deadline, "{name}");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let watch = e.scan_watches.lock().unwrap().remove(root.root_id());
+        assert_eq!(watch.is_some(), watched, "{name}");
+        if let Some(watch) = watch {
+            watch.stop();
+        }
+    }
+}
+
 /// #219: an identity-unverified root is refused at content-read admission, before the grant
 /// store is even consulted.
 #[test]
