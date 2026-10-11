@@ -677,18 +677,20 @@ impl DirSource for NativeSource {
                 descriptor.Anonymous.ExtendedFileId.Identifier = id;
             }
         }
-        let _profile = profile::OPEN.start();
-        let handle = unsafe {
-            OpenFileById(
-                root.file.as_raw_handle(),
-                &descriptor,
-                FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                null(),
-                FILE_FLAG_BACKUP_SEMANTICS
-                    | FILE_FLAG_OPEN_REPARSE_POINT
-                    | FILE_FLAG_OPEN_NO_RECALL,
-            )
+        let handle = {
+            let _profile = profile::OPEN.start();
+            unsafe {
+                OpenFileById(
+                    root.file.as_raw_handle(),
+                    &descriptor,
+                    FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    null(),
+                    FILE_FLAG_BACKUP_SEMANTICS
+                        | FILE_FLAG_OPEN_REPARSE_POINT
+                        | FILE_FLAG_OPEN_NO_RECALL,
+                )
+            }
         };
         if handle == INVALID_HANDLE_VALUE {
             return Err(last_error());
