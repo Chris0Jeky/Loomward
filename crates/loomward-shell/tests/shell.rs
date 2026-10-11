@@ -365,6 +365,23 @@ fn unicode_link_info_paths_volume_and_network_offsets() {
     assert_eq!(n.share.as_str(), Some("\\\\server.invalid\\共享"));
     assert_eq!(n.device.unwrap().as_str(), Some("Z:"));
 }
+#[test]
+fn volume_drive_type_above_six_is_refused_at_parse() {
+    let mut info = local_info();
+    put32(&mut info, 32, 6);
+    let mut b = header(2);
+    b.extend(info);
+    let s = parse(&finish(b)).unwrap();
+    assert_eq!(s.link_info.unwrap().volume.unwrap().drive_type, 6);
+    let mut info = local_info();
+    put32(&mut info, 32, 7);
+    let mut b = header(2);
+    b.extend(info);
+    assert_eq!(
+        parse(&finish(b)).unwrap_err().0,
+        "invalid volume drive type"
+    );
+}
 
 #[test]
 fn hostile_extra_blocks_utf16_and_counts_are_bounded() {
@@ -496,6 +513,42 @@ fn health_rechecks_volume_and_refuses_resolver_flags() {
     assert_eq!(health(&s, &p), Health::NetworkUnreachableUnknown);
     assert_eq!(p.calls.get(), 0);
 }
+#[test]
+fn unknown_extra_block_alone_keeps_health_unknown() {
+    let mut b = header(2);
+    b.extend(local_info());
+    b.extend(8u32.to_le_bytes());
+    b.extend(0xa00000ffu32.to_le_bytes());
+    let s = parse(&finish(b)).unwrap();
+    assert_eq!(s.environment_target, None);
+    assert_eq!(s.unknown_extra_blocks, [0xa00000ff]);
+    let p = probe(VolumeState::Available, MetadataState::Present);
+    assert_eq!(health(&s, &p), Health::Unknown);
+    assert_eq!(p.calls.get(), 0);
+}
+#[test]
+fn remote_drive_type_on_local_link_is_network_without_probing() {
+    let mut info = local_info();
+    put32(&mut info, 32, 4);
+    let mut b = header(2);
+    b.extend(info);
+    let s = parse(&finish(b)).unwrap();
+    let v = s.link_info.as_ref().unwrap().volume.as_ref().unwrap();
+    assert_eq!(v.drive_type, 4);
+    let p = probe(VolumeState::Available, MetadataState::Present);
+    assert_eq!(health(&s, &p), Health::NetworkUnreachableUnknown);
+    assert_eq!(p.calls.get(), 0);
+}
+#[test]
+fn expstring_and_darwin_flags_are_ambiguous_on_their_own() {
+    for flag in [0x200, 0x2000000] {
+        let mut s = local();
+        s.flags |= flag;
+        let p = probe(VolumeState::Available, MetadataState::Present);
+        assert_eq!(health(&s, &p), Health::Ambiguous, "flag {flag:#x}");
+        assert_eq!(p.calls.get(), 0, "flag {flag:#x}");
+    }
+}
 struct FakeFolders;
 impl FolderProvider for FakeFolders {
     fn location(&self, f: Folder) -> Location {
@@ -529,6 +582,32 @@ fn known_folders_preserve_redirection_ownership_unicode_and_failures() {
             reason: "provider offline".into()
         }
     );
+}
+#[cfg(not(windows))]
+#[test]
+fn non_windows_known_folders_are_unavailable_and_unprobed() {
+    let c = contexts(&WindowsFolders);
+    assert_eq!(c.len(), 5);
+    for c in c {
+        assert_eq!(
+            c.location,
+            Location::Unavailable {
+                reason: "Windows known folders unsupported".into()
+            }
+        );
+    }
+}
+#[cfg(not(windows))]
+#[test]
+fn non_windows_probe_and_reader_stubs_stay_unknown_and_unsupported() {
+    assert_eq!(WindowsProbe.volume('Q', Some(123)), VolumeState::Unknown);
+    assert_eq!(WindowsProbe.volume('Q', None), VolumeState::Unknown);
+    assert_eq!(
+        WindowsProbe.metadata("Q:\\fixture\\doc.txt"),
+        MetadataState::Unknown
+    );
+    let err = read(std::path::Path::new("Q:\\fixture\\doc.txt")).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
 }
 #[test]
 fn source_has_no_execution_com_initialisation_or_library_loading() {
