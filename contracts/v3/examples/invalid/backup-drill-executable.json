@@ -1,0 +1,11 @@
+{
+  "def": "ProposedRestoreDrill",
+  "reason": "a proposed restore drill is data, never executable",
+  "value": {
+    "files": [{ "relative_name": "fixture/ledger.ods", "version": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }],
+    "target": "new_disposable_target",
+    "compare_metadata": [],
+    "proofs": [],
+    "executable": true
+  }
+}

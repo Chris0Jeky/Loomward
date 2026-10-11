@@ -120,6 +120,9 @@ commands! {
     ProcessesExplain = "processes.explain", ProcessRefRequest, ProcessExplanation, [Tauri, Http], 2, [];
     BudgetsGet = "budgets.get", EmptyRequest, OwnBudgets, [Tauri, Http], 2, [];
     BudgetsSet = "budgets.set", BudgetSetRequest, OwnBudgets, [Tauri, Http], 2, [];
+    BackupsList = "backups.list", EmptyRequest, BackupEvidenceList, [Tauri, Http], 3, [];
+    BackupsImport = "backups.import", BackupImportRequest, BackupImportResult, [Tauri], 3, [];
+    BackupsForget = "backups.forget", BackupForgetRequest, BackupForgetResult, [Tauri, Http], 3, [];
 }
 
 impl Command {

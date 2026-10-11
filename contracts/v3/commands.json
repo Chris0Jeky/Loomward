@@ -65,7 +65,10 @@
     "processes.list":             { "request": "ProcessListRequest",        "result": "ProcessList",           "adapters": ["tauri", "http"], "wave": 2, "effects": "none" },
     "processes.explain":          { "request": "ProcessRefRequest",         "result": "ProcessExplanation",    "adapters": ["tauri", "http"], "wave": 2, "effects": "none" },
     "budgets.get":                { "request": "EmptyRequest",              "result": "OwnBudgets",            "adapters": ["tauri", "http"], "wave": 2, "effects": "none" },
-    "budgets.set":                { "request": "BudgetSetRequest",          "result": "OwnBudgets",            "adapters": ["tauri", "http"], "wave": 2, "effects": "none" }
+    "budgets.set":                { "request": "BudgetSetRequest",          "result": "OwnBudgets",            "adapters": ["tauri", "http"], "wave": 2, "effects": "none" },
+    "backups.list":               { "request": "EmptyRequest",              "result": "BackupEvidenceList",    "adapters": ["tauri", "http"], "wave": 3, "effects": "none", "note": "Imported recovery evidence; ages and staleness are recomputed at read time." },
+    "backups.import":             { "request": "BackupImportRequest",       "result": "BackupImportResult",    "adapters": ["tauri"],         "wave": 3, "effects": "none", "note": "Rust opens the native open-file dialog (twice with integrity_check), reads at most 256 KiB read-only and stores only normalised evidence. Personal sessions only. HTTP: capability_unavailable. Never runs a backup tool." },
+    "backups.forget":             { "request": "BackupForgetRequest",       "result": "BackupForgetResult",    "adapters": ["tauri", "http"], "wave": 3, "effects": "none", "note": "Removes Loomward's own evidence record; never a backup or a file." }
   },
   "events": {
     "stream.hello":      { "data": "StreamHello",          "rate": "first item of every stream, then re-sent as a heartbeat after 15 s without other events on that stream (SSE and Tauri); not sequenced, never replayed (semantics.md section 7)" },
