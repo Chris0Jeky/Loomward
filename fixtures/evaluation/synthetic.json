@@ -1,0 +1,383 @@
+{
+  "synthetic": true,
+  "labels": [
+    "Documents",
+    "Finance"
+  ],
+  "items": [
+    {
+      "id": "train-finance-0",
+      "logical_id": "train-finance-0",
+      "revision": 1,
+      "time": 1,
+      "source": "human",
+      "label": "Finance",
+      "project": null,
+      "near_duplicate": null,
+      "teacher_label": null,
+      "features": {
+        "name": "invoice budget ledger",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      }
+    },
+    {
+      "id": "train-documents-0",
+      "logical_id": "train-documents-0",
+      "revision": 1,
+      "time": 1,
+      "source": "human",
+      "label": "Documents",
+      "project": "project-a",
+      "near_duplicate": "duplicate-a",
+      "teacher_label": null,
+      "features": {
+        "name": "meeting minutes notes",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      }
+    },
+    {
+      "id": "train-finance-1",
+      "logical_id": "train-finance-1",
+      "revision": 1,
+      "time": 2,
+      "source": "human",
+      "label": "Finance",
+      "project": null,
+      "near_duplicate": null,
+      "teacher_label": null,
+      "features": {
+        "name": "invoice budget ledger",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      }
+    },
+    {
+      "id": "train-documents-1",
+      "logical_id": "train-documents-1",
+      "revision": 1,
+      "time": 2,
+      "source": "human",
+      "label": "Documents",
+      "project": "project-b",
+      "near_duplicate": "duplicate-a",
+      "teacher_label": null,
+      "features": {
+        "name": "meeting minutes notes",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      }
+    },
+    {
+      "id": "train-finance-2",
+      "logical_id": "train-finance-2",
+      "revision": 1,
+      "time": 3,
+      "source": "human",
+      "label": "Finance",
+      "project": null,
+      "near_duplicate": null,
+      "teacher_label": null,
+      "features": {
+        "name": "invoice budget ledger",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      }
+    },
+    {
+      "id": "train-documents-2",
+      "logical_id": "train-documents-2",
+      "revision": 1,
+      "time": 3,
+      "source": "human",
+      "label": "Documents",
+      "project": "project-b",
+      "near_duplicate": null,
+      "teacher_label": null,
+      "features": {
+        "name": "meeting minutes notes",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      }
+    },
+    {
+      "id": "train-finance-3",
+      "logical_id": "train-finance-3",
+      "revision": 1,
+      "time": 4,
+      "source": "human",
+      "label": "Finance",
+      "project": null,
+      "near_duplicate": null,
+      "teacher_label": null,
+      "features": {
+        "name": "invoice budget ledger",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      }
+    },
+    {
+      "id": "train-documents-3",
+      "logical_id": "train-documents-3",
+      "revision": 1,
+      "time": 4,
+      "source": "human",
+      "label": "Documents",
+      "project": null,
+      "near_duplicate": null,
+      "teacher_label": null,
+      "features": {
+        "name": "meeting minutes notes",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      }
+    },
+    {
+      "id": "train-finance-revision",
+      "logical_id": "train-finance-0",
+      "revision": 2,
+      "time": 5,
+      "source": "human",
+      "label": "Finance",
+      "project": null,
+      "near_duplicate": null,
+      "teacher_label": null,
+      "features": {
+        "name": "invoice budget ledger",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      }
+    },
+    {
+      "id": "train-teacher",
+      "logical_id": "train-teacher",
+      "revision": 1,
+      "time": 6,
+      "source": "teacher",
+      "label": "Documents",
+      "project": null,
+      "near_duplicate": null,
+      "teacher_label": null,
+      "features": {
+        "name": "meeting minutes notes",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      }
+    },
+    {
+      "id": "cal-a",
+      "logical_id": "cal-a",
+      "revision": 1,
+      "time": 11,
+      "source": "human",
+      "label": "Finance",
+      "project": null,
+      "near_duplicate": null,
+      "teacher_label": "Finance",
+      "features": {
+        "name": "invoice budget ledger",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      }
+    },
+    {
+      "id": "cal-b",
+      "logical_id": "cal-b",
+      "revision": 1,
+      "time": 12,
+      "source": "human",
+      "label": "Documents",
+      "project": null,
+      "near_duplicate": null,
+      "teacher_label": "Documents",
+      "features": {
+        "name": "meeting minutes notes",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      }
+    },
+    {
+      "id": "cal-c",
+      "logical_id": "cal-c",
+      "revision": 1,
+      "time": 13,
+      "source": "human",
+      "label": "Documents",
+      "project": null,
+      "near_duplicate": null,
+      "teacher_label": "Finance",
+      "features": {
+        "name": "invoice budget ledger",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      }
+    },
+    {
+      "id": "cal-d",
+      "logical_id": "cal-d",
+      "revision": 1,
+      "time": 14,
+      "source": "human",
+      "label": "Finance",
+      "project": null,
+      "near_duplicate": null,
+      "teacher_label": "Documents",
+      "features": {
+        "name": "unseen vocabulary",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      }
+    },
+    {
+      "id": "eval-a",
+      "logical_id": "eval-a",
+      "revision": 1,
+      "time": 21,
+      "source": "human",
+      "label": "Finance",
+      "project": null,
+      "near_duplicate": null,
+      "teacher_label": "Documents",
+      "features": {
+        "name": "invoice budget ledger",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      }
+    },
+    {
+      "id": "eval-b",
+      "logical_id": "eval-b",
+      "revision": 1,
+      "time": 22,
+      "source": "human",
+      "label": "Documents",
+      "project": null,
+      "near_duplicate": null,
+      "teacher_label": "Documents",
+      "features": {
+        "name": "meeting minutes notes",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      }
+    },
+    {
+      "id": "eval-c",
+      "logical_id": "eval-c",
+      "revision": 1,
+      "time": 23,
+      "source": "human",
+      "label": "Documents",
+      "project": null,
+      "near_duplicate": null,
+      "teacher_label": "Finance",
+      "features": {
+        "name": "invoice budget ledger",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      }
+    },
+    {
+      "id": "eval-d",
+      "logical_id": "eval-d",
+      "revision": 1,
+      "time": 24,
+      "source": "human",
+      "label": "Finance",
+      "project": "eval-project",
+      "near_duplicate": null,
+      "teacher_label": "Finance",
+      "features": {
+        "name": "unseen vocabulary",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      }
+    },
+    {
+      "id": "eval-e",
+      "logical_id": "eval-e",
+      "revision": 1,
+      "time": 25,
+      "source": "human",
+      "label": "Documents",
+      "project": null,
+      "near_duplicate": null,
+      "teacher_label": "Finance",
+      "features": {
+        "name": "meeting minutes notes",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      }
+    },
+    {
+      "id": "eval-f",
+      "logical_id": "eval-f",
+      "revision": 1,
+      "time": 26,
+      "source": "human",
+      "label": "Finance",
+      "project": "eval-project",
+      "near_duplicate": null,
+      "teacher_label": "Finance",
+      "features": {
+        "name": "invoice budget ledger",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      }
+    },
+    {
+      "id": "cal-teacher",
+      "logical_id": "cal-teacher",
+      "revision": 1,
+      "time": 15,
+      "source": "teacher",
+      "label": "Documents",
+      "project": null,
+      "near_duplicate": null,
+      "teacher_label": null,
+      "features": {
+        "name": "unseen vocabulary",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      }
+    },
+    {
+      "id": "eval-teacher",
+      "logical_id": "eval-teacher",
+      "revision": 1,
+      "time": 27,
+      "source": "teacher",
+      "label": "Finance",
+      "project": null,
+      "near_duplicate": null,
+      "teacher_label": null,
+      "features": {
+        "name": "meeting minutes notes",
+        "extension": "",
+        "context": "",
+        "size_bytes": 0
+      }
+    }
+  ]
+}

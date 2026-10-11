@@ -1,0 +1,1136 @@
+{
+  "isotonic_candidate": {
+    "blocks": [
+      {
+        "count": 1,
+        "fitted_correctness": 0.0,
+        "high": 0.5098039215686275,
+        "low": 0.5098039215686275
+      },
+      {
+        "count": 3,
+        "fitted_correctness": 0.6666666666666666,
+        "high": 0.9925159017099084,
+        "low": 0.9925111806406395
+      }
+    ],
+    "calibrated": false,
+    "fit_split": "calibration",
+    "human_count": 4,
+    "model_id": "846d63690349cf1d",
+    "scope": "synthetic smoke, not real-user accuracy",
+    "score_note": "relative score, not a probability",
+    "status": "candidate, gate NOT verified",
+    "target": "top-label correctness, not action safety"
+  },
+  "report": {
+    "autonomy_allowed": false,
+    "calibrated": false,
+    "calibration": {
+      "evaluation_raw_score_diagnostics": {
+        "bootstrap": {
+          "empty_bins": "null; intervals use only defined replicates",
+          "method": "percentile, resample whole linked groups with replacement",
+          "replicates": 200,
+          "seed": 25,
+          "warning": "Small synthetic samples can give degenerate intervals; no real-user inference"
+        },
+        "brier": {
+          "bootstrap_95_percent_interval": [
+            0.00011210828024915947,
+            1.1821502441087568
+          ],
+          "defined_replicates": 200,
+          "estimate": 0.4150706806263366
+        },
+        "brier_definition": "mean sum over taxonomy of (relative score - one-hot human truth)^2",
+        "count": 6,
+        "ece": {
+          "bootstrap_95_percent_interval": [
+            0.0074869309316529355,
+            0.5925149574960547
+          ],
+          "defined_replicates": 200,
+          "estimate": 0.24539566466327195
+        },
+        "ece_definition": "top-label correctness, ten equal-width raw-score bins",
+        "independent_groups": 5,
+        "reliability_bins": [
+          {
+            "accuracy": {
+              "bootstrap_95_percent_interval": null,
+              "defined_replicates": 0,
+              "estimate": null
+            },
+            "count": {
+              "bootstrap_95_percent_interval": [
+                0.0,
+                0.0
+              ],
+              "defined_replicates": 200,
+              "estimate": 0.0
+            },
+            "lower": 0.0,
+            "mean_score": {
+              "bootstrap_95_percent_interval": null,
+              "defined_replicates": 0,
+              "estimate": null
+            },
+            "upper": 0.1,
+            "upper_inclusive": false
+          },
+          {
+            "accuracy": {
+              "bootstrap_95_percent_interval": null,
+              "defined_replicates": 0,
+              "estimate": null
+            },
+            "count": {
+              "bootstrap_95_percent_interval": [
+                0.0,
+                0.0
+              ],
+              "defined_replicates": 200,
+              "estimate": 0.0
+            },
+            "lower": 0.1,
+            "mean_score": {
+              "bootstrap_95_percent_interval": null,
+              "defined_replicates": 0,
+              "estimate": null
+            },
+            "upper": 0.2,
+            "upper_inclusive": false
+          },
+          {
+            "accuracy": {
+              "bootstrap_95_percent_interval": null,
+              "defined_replicates": 0,
+              "estimate": null
+            },
+            "count": {
+              "bootstrap_95_percent_interval": [
+                0.0,
+                0.0
+              ],
+              "defined_replicates": 200,
+              "estimate": 0.0
+            },
+            "lower": 0.2,
+            "mean_score": {
+              "bootstrap_95_percent_interval": null,
+              "defined_replicates": 0,
+              "estimate": null
+            },
+            "upper": 0.3,
+            "upper_inclusive": false
+          },
+          {
+            "accuracy": {
+              "bootstrap_95_percent_interval": null,
+              "defined_replicates": 0,
+              "estimate": null
+            },
+            "count": {
+              "bootstrap_95_percent_interval": [
+                0.0,
+                0.0
+              ],
+              "defined_replicates": 200,
+              "estimate": 0.0
+            },
+            "lower": 0.3,
+            "mean_score": {
+              "bootstrap_95_percent_interval": null,
+              "defined_replicates": 0,
+              "estimate": null
+            },
+            "upper": 0.4,
+            "upper_inclusive": false
+          },
+          {
+            "accuracy": {
+              "bootstrap_95_percent_interval": null,
+              "defined_replicates": 0,
+              "estimate": null
+            },
+            "count": {
+              "bootstrap_95_percent_interval": [
+                0.0,
+                0.0
+              ],
+              "defined_replicates": 200,
+              "estimate": 0.0
+            },
+            "lower": 0.4,
+            "mean_score": {
+              "bootstrap_95_percent_interval": null,
+              "defined_replicates": 0,
+              "estimate": null
+            },
+            "upper": 0.5,
+            "upper_inclusive": false
+          },
+          {
+            "accuracy": {
+              "bootstrap_95_percent_interval": [
+                0.0,
+                0.0
+              ],
+              "defined_replicates": 129,
+              "estimate": 0.0
+            },
+            "count": {
+              "bootstrap_95_percent_interval": [
+                0.0,
+                3.0
+              ],
+              "defined_replicates": 200,
+              "estimate": 1.0
+            },
+            "lower": 0.5,
+            "mean_score": {
+              "bootstrap_95_percent_interval": [
+                0.5098039215686275,
+                0.5098039215686275
+              ],
+              "defined_replicates": 129,
+              "estimate": 0.5098039215686275
+            },
+            "upper": 0.6,
+            "upper_inclusive": false
+          },
+          {
+            "accuracy": {
+              "bootstrap_95_percent_interval": null,
+              "defined_replicates": 0,
+              "estimate": null
+            },
+            "count": {
+              "bootstrap_95_percent_interval": [
+                0.0,
+                0.0
+              ],
+              "defined_replicates": 200,
+              "estimate": 0.0
+            },
+            "lower": 0.6,
+            "mean_score": {
+              "bootstrap_95_percent_interval": null,
+              "defined_replicates": 0,
+              "estimate": null
+            },
+            "upper": 0.7,
+            "upper_inclusive": false
+          },
+          {
+            "accuracy": {
+              "bootstrap_95_percent_interval": null,
+              "defined_replicates": 0,
+              "estimate": null
+            },
+            "count": {
+              "bootstrap_95_percent_interval": [
+                0.0,
+                0.0
+              ],
+              "defined_replicates": 200,
+              "estimate": 0.0
+            },
+            "lower": 0.7,
+            "mean_score": {
+              "bootstrap_95_percent_interval": null,
+              "defined_replicates": 0,
+              "estimate": null
+            },
+            "upper": 0.8,
+            "upper_inclusive": false
+          },
+          {
+            "accuracy": {
+              "bootstrap_95_percent_interval": null,
+              "defined_replicates": 0,
+              "estimate": null
+            },
+            "count": {
+              "bootstrap_95_percent_interval": [
+                0.0,
+                0.0
+              ],
+              "defined_replicates": 200,
+              "estimate": 0.0
+            },
+            "lower": 0.8,
+            "mean_score": {
+              "bootstrap_95_percent_interval": null,
+              "defined_replicates": 0,
+              "estimate": null
+            },
+            "upper": 0.9,
+            "upper_inclusive": false
+          },
+          {
+            "accuracy": {
+              "bootstrap_95_percent_interval": [
+                0.4,
+                1.0
+              ],
+              "defined_replicates": 200,
+              "estimate": 0.8
+            },
+            "count": {
+              "bootstrap_95_percent_interval": [
+                5.0,
+                5.0
+              ],
+              "defined_replicates": 200,
+              "estimate": 5.0
+            },
+            "lower": 0.9,
+            "mean_score": {
+              "bootstrap_95_percent_interval": [
+                0.9925121248544932,
+                0.9925159017099083
+              ],
+              "defined_replicates": 200,
+              "estimate": 0.9925140132822008
+            },
+            "upper": 1.0,
+            "upper_inclusive": true
+          }
+        ],
+        "scope": "synthetic smoke, not real-user accuracy",
+        "score_note": "relative score, not a probability"
+      },
+      "map_status": "No gated calibrated map; optional candidate fit uses separate calibration split"
+    },
+    "human_holdout_utility": {
+      "correction_rate": {
+        "status": "unobserved; needs human correction interactions",
+        "value": null
+      },
+      "interruption_cost": {
+        "status": "unobserved; needs human interaction timing",
+        "value": null
+      },
+      "metrics": {
+        "accuracy": 0.6666666666666666,
+        "count": 6,
+        "macro_f1": 0.6666666666666666,
+        "macro_labels": 2,
+        "macro_policy": "exclude labels with neither truth nor prediction; undefined rates are null",
+        "per_label": [
+          {
+            "f1": 0.6666666666666666,
+            "label": "Documents",
+            "precision": 0.6666666666666666,
+            "predicted": 3,
+            "recall": 0.6666666666666666,
+            "support": 3
+          },
+          {
+            "f1": 0.6666666666666666,
+            "label": "Finance",
+            "precision": 0.6666666666666666,
+            "predicted": 3,
+            "recall": 0.6666666666666666,
+            "support": 3
+          }
+        ]
+      },
+      "operating_point": {
+        "accepted": 5,
+        "coverage": 0.8333333333333334,
+        "error": 0.2
+      },
+      "scope": "synthetic smoke, not real-user accuracy",
+      "selective": [
+        {
+          "accepted": 5,
+          "coverage": 0.8333333333333334,
+          "error": 0.2,
+          "feature_coverage_floor": 0.35,
+          "margin_floor": 0.2,
+          "threshold": 0.5
+        },
+        {
+          "accepted": 5,
+          "coverage": 0.8333333333333334,
+          "error": 0.2,
+          "feature_coverage_floor": 0.35,
+          "margin_floor": 0.2,
+          "threshold": 0.8
+        },
+        {
+          "accepted": 5,
+          "coverage": 0.8333333333333334,
+          "error": 0.2,
+          "feature_coverage_floor": 0.35,
+          "margin_floor": 0.2,
+          "threshold": 0.9
+        },
+        {
+          "accepted": 5,
+          "coverage": 0.8333333333333334,
+          "error": 0.2,
+          "feature_coverage_floor": 0.35,
+          "margin_floor": 0.2,
+          "threshold": 0.98
+        }
+      ],
+      "truth": "human evaluation only"
+    },
+    "manifest": {
+      "calibration_end": 20,
+      "entries": [
+        {
+          "group_key": "cal-a",
+          "holdout_truth": true,
+          "id": "cal-a",
+          "label": "Finance",
+          "logical_id": "cal-a",
+          "near_duplicate": null,
+          "project": null,
+          "revision": 1,
+          "source": "human",
+          "split": "calibration",
+          "teacher_label": "Finance",
+          "time": 11
+        },
+        {
+          "group_key": "cal-b",
+          "holdout_truth": true,
+          "id": "cal-b",
+          "label": "Documents",
+          "logical_id": "cal-b",
+          "near_duplicate": null,
+          "project": null,
+          "revision": 1,
+          "source": "human",
+          "split": "calibration",
+          "teacher_label": "Documents",
+          "time": 12
+        },
+        {
+          "group_key": "cal-c",
+          "holdout_truth": true,
+          "id": "cal-c",
+          "label": "Documents",
+          "logical_id": "cal-c",
+          "near_duplicate": null,
+          "project": null,
+          "revision": 1,
+          "source": "human",
+          "split": "calibration",
+          "teacher_label": "Finance",
+          "time": 13
+        },
+        {
+          "group_key": "cal-d",
+          "holdout_truth": true,
+          "id": "cal-d",
+          "label": "Finance",
+          "logical_id": "cal-d",
+          "near_duplicate": null,
+          "project": null,
+          "revision": 1,
+          "source": "human",
+          "split": "calibration",
+          "teacher_label": "Documents",
+          "time": 14
+        },
+        {
+          "group_key": "cal-teacher",
+          "holdout_truth": false,
+          "id": "cal-teacher",
+          "label": "Documents",
+          "logical_id": "cal-teacher",
+          "near_duplicate": null,
+          "project": null,
+          "revision": 1,
+          "source": "teacher",
+          "split": "calibration",
+          "teacher_label": null,
+          "time": 15
+        },
+        {
+          "group_key": "eval-a",
+          "holdout_truth": true,
+          "id": "eval-a",
+          "label": "Finance",
+          "logical_id": "eval-a",
+          "near_duplicate": null,
+          "project": null,
+          "revision": 1,
+          "source": "human",
+          "split": "evaluation",
+          "teacher_label": "Documents",
+          "time": 21
+        },
+        {
+          "group_key": "eval-b",
+          "holdout_truth": true,
+          "id": "eval-b",
+          "label": "Documents",
+          "logical_id": "eval-b",
+          "near_duplicate": null,
+          "project": null,
+          "revision": 1,
+          "source": "human",
+          "split": "evaluation",
+          "teacher_label": "Documents",
+          "time": 22
+        },
+        {
+          "group_key": "eval-c",
+          "holdout_truth": true,
+          "id": "eval-c",
+          "label": "Documents",
+          "logical_id": "eval-c",
+          "near_duplicate": null,
+          "project": null,
+          "revision": 1,
+          "source": "human",
+          "split": "evaluation",
+          "teacher_label": "Finance",
+          "time": 23
+        },
+        {
+          "group_key": "eval-d",
+          "holdout_truth": true,
+          "id": "eval-d",
+          "label": "Finance",
+          "logical_id": "eval-d",
+          "near_duplicate": null,
+          "project": "eval-project",
+          "revision": 1,
+          "source": "human",
+          "split": "evaluation",
+          "teacher_label": "Finance",
+          "time": 24
+        },
+        {
+          "group_key": "eval-e",
+          "holdout_truth": true,
+          "id": "eval-e",
+          "label": "Documents",
+          "logical_id": "eval-e",
+          "near_duplicate": null,
+          "project": null,
+          "revision": 1,
+          "source": "human",
+          "split": "evaluation",
+          "teacher_label": "Finance",
+          "time": 25
+        },
+        {
+          "group_key": "eval-d",
+          "holdout_truth": true,
+          "id": "eval-f",
+          "label": "Finance",
+          "logical_id": "eval-f",
+          "near_duplicate": null,
+          "project": "eval-project",
+          "revision": 1,
+          "source": "human",
+          "split": "evaluation",
+          "teacher_label": "Finance",
+          "time": 26
+        },
+        {
+          "group_key": "eval-teacher",
+          "holdout_truth": false,
+          "id": "eval-teacher",
+          "label": "Finance",
+          "logical_id": "eval-teacher",
+          "near_duplicate": null,
+          "project": null,
+          "revision": 1,
+          "source": "teacher",
+          "split": "evaluation",
+          "teacher_label": null,
+          "time": 27
+        },
+        {
+          "group_key": "train-documents-0",
+          "holdout_truth": false,
+          "id": "train-documents-0",
+          "label": "Documents",
+          "logical_id": "train-documents-0",
+          "near_duplicate": "duplicate-a",
+          "project": "project-a",
+          "revision": 1,
+          "source": "human",
+          "split": "train",
+          "teacher_label": null,
+          "time": 1
+        },
+        {
+          "group_key": "train-documents-0",
+          "holdout_truth": false,
+          "id": "train-documents-1",
+          "label": "Documents",
+          "logical_id": "train-documents-1",
+          "near_duplicate": "duplicate-a",
+          "project": "project-b",
+          "revision": 1,
+          "source": "human",
+          "split": "train",
+          "teacher_label": null,
+          "time": 2
+        },
+        {
+          "group_key": "train-documents-0",
+          "holdout_truth": false,
+          "id": "train-documents-2",
+          "label": "Documents",
+          "logical_id": "train-documents-2",
+          "near_duplicate": null,
+          "project": "project-b",
+          "revision": 1,
+          "source": "human",
+          "split": "train",
+          "teacher_label": null,
+          "time": 3
+        },
+        {
+          "group_key": "train-documents-3",
+          "holdout_truth": false,
+          "id": "train-documents-3",
+          "label": "Documents",
+          "logical_id": "train-documents-3",
+          "near_duplicate": null,
+          "project": null,
+          "revision": 1,
+          "source": "human",
+          "split": "train",
+          "teacher_label": null,
+          "time": 4
+        },
+        {
+          "group_key": "train-finance-0",
+          "holdout_truth": false,
+          "id": "train-finance-0",
+          "label": "Finance",
+          "logical_id": "train-finance-0",
+          "near_duplicate": null,
+          "project": null,
+          "revision": 1,
+          "source": "human",
+          "split": "train",
+          "teacher_label": null,
+          "time": 1
+        },
+        {
+          "group_key": "train-finance-1",
+          "holdout_truth": false,
+          "id": "train-finance-1",
+          "label": "Finance",
+          "logical_id": "train-finance-1",
+          "near_duplicate": null,
+          "project": null,
+          "revision": 1,
+          "source": "human",
+          "split": "train",
+          "teacher_label": null,
+          "time": 2
+        },
+        {
+          "group_key": "train-finance-2",
+          "holdout_truth": false,
+          "id": "train-finance-2",
+          "label": "Finance",
+          "logical_id": "train-finance-2",
+          "near_duplicate": null,
+          "project": null,
+          "revision": 1,
+          "source": "human",
+          "split": "train",
+          "teacher_label": null,
+          "time": 3
+        },
+        {
+          "group_key": "train-finance-3",
+          "holdout_truth": false,
+          "id": "train-finance-3",
+          "label": "Finance",
+          "logical_id": "train-finance-3",
+          "near_duplicate": null,
+          "project": null,
+          "revision": 1,
+          "source": "human",
+          "split": "train",
+          "teacher_label": null,
+          "time": 4
+        },
+        {
+          "group_key": "train-finance-0",
+          "holdout_truth": false,
+          "id": "train-finance-revision",
+          "label": "Finance",
+          "logical_id": "train-finance-0",
+          "near_duplicate": null,
+          "project": null,
+          "revision": 2,
+          "source": "human",
+          "split": "train",
+          "teacher_label": null,
+          "time": 5
+        },
+        {
+          "group_key": "train-teacher",
+          "holdout_truth": false,
+          "id": "train-teacher",
+          "label": "Documents",
+          "logical_id": "train-teacher",
+          "near_duplicate": null,
+          "project": null,
+          "revision": 1,
+          "source": "teacher",
+          "split": "train",
+          "teacher_label": null,
+          "time": 6
+        }
+      ],
+      "schema": "loomward-evaluation-v1",
+      "scope": "synthetic smoke, not real-user accuracy",
+      "time_unit": "synthetic ordered tick",
+      "train_end": 10
+    },
+    "model_id": "846d63690349cf1d",
+    "predictions": [
+      {
+        "group_key": "cal-a",
+        "id": "cal-a",
+        "prediction": {
+          "abstain": false,
+          "autonomy_allowed": false,
+          "calibrated": false,
+          "feature_coverage": 1.0,
+          "known_features": [
+            "word:budget",
+            "word:invoice",
+            "word:ledger"
+          ],
+          "model_id": "846d63690349cf1d",
+          "reasons": [],
+          "review_priority": 0.031805,
+          "score_note": "Uncalibrated relative model scores, not a probability that a move is safe.",
+          "suggestions": [
+            {
+              "label": "Finance",
+              "score": 0.9925159017099084
+            },
+            {
+              "label": "Documents",
+              "score": 0.007484098290091442
+            }
+          ]
+        },
+        "source": "human",
+        "split": "calibration"
+      },
+      {
+        "group_key": "cal-b",
+        "id": "cal-b",
+        "prediction": {
+          "abstain": false,
+          "autonomy_allowed": false,
+          "calibrated": false,
+          "feature_coverage": 1.0,
+          "known_features": [
+            "word:meeting",
+            "word:minutes",
+            "word:notes"
+          ],
+          "model_id": "846d63690349cf1d",
+          "reasons": [],
+          "review_priority": 0.031821,
+          "score_note": "Uncalibrated relative model scores, not a probability that a move is safe.",
+          "suggestions": [
+            {
+              "label": "Documents",
+              "score": 0.9925111806406395
+            },
+            {
+              "label": "Finance",
+              "score": 0.007488819359360473
+            }
+          ]
+        },
+        "source": "human",
+        "split": "calibration"
+      },
+      {
+        "group_key": "cal-c",
+        "id": "cal-c",
+        "prediction": {
+          "abstain": false,
+          "autonomy_allowed": false,
+          "calibrated": false,
+          "feature_coverage": 1.0,
+          "known_features": [
+            "word:budget",
+            "word:invoice",
+            "word:ledger"
+          ],
+          "model_id": "846d63690349cf1d",
+          "reasons": [],
+          "review_priority": 0.031805,
+          "score_note": "Uncalibrated relative model scores, not a probability that a move is safe.",
+          "suggestions": [
+            {
+              "label": "Finance",
+              "score": 0.9925159017099084
+            },
+            {
+              "label": "Documents",
+              "score": 0.007484098290091442
+            }
+          ]
+        },
+        "source": "human",
+        "split": "calibration"
+      },
+      {
+        "group_key": "cal-d",
+        "id": "cal-d",
+        "prediction": {
+          "abstain": true,
+          "autonomy_allowed": false,
+          "calibrated": false,
+          "feature_coverage": 0.0,
+          "known_features": [],
+          "model_id": "846d63690349cf1d",
+          "reasons": [
+            "unfamiliar_features",
+            "ambiguous_model_scores"
+          ],
+          "review_priority": 0.999861,
+          "score_note": "Uncalibrated relative model scores, not a probability that a move is safe.",
+          "suggestions": [
+            {
+              "label": "Documents",
+              "score": 0.5098039215686275
+            },
+            {
+              "label": "Finance",
+              "score": 0.49019607843137253
+            }
+          ]
+        },
+        "source": "human",
+        "split": "calibration"
+      },
+      {
+        "group_key": "eval-a",
+        "id": "eval-a",
+        "prediction": {
+          "abstain": false,
+          "autonomy_allowed": false,
+          "calibrated": false,
+          "feature_coverage": 1.0,
+          "known_features": [
+            "word:budget",
+            "word:invoice",
+            "word:ledger"
+          ],
+          "model_id": "846d63690349cf1d",
+          "reasons": [],
+          "review_priority": 0.031805,
+          "score_note": "Uncalibrated relative model scores, not a probability that a move is safe.",
+          "suggestions": [
+            {
+              "label": "Finance",
+              "score": 0.9925159017099084
+            },
+            {
+              "label": "Documents",
+              "score": 0.007484098290091442
+            }
+          ]
+        },
+        "source": "human",
+        "split": "evaluation"
+      },
+      {
+        "group_key": "eval-b",
+        "id": "eval-b",
+        "prediction": {
+          "abstain": false,
+          "autonomy_allowed": false,
+          "calibrated": false,
+          "feature_coverage": 1.0,
+          "known_features": [
+            "word:meeting",
+            "word:minutes",
+            "word:notes"
+          ],
+          "model_id": "846d63690349cf1d",
+          "reasons": [],
+          "review_priority": 0.031821,
+          "score_note": "Uncalibrated relative model scores, not a probability that a move is safe.",
+          "suggestions": [
+            {
+              "label": "Documents",
+              "score": 0.9925111806406395
+            },
+            {
+              "label": "Finance",
+              "score": 0.007488819359360473
+            }
+          ]
+        },
+        "source": "human",
+        "split": "evaluation"
+      },
+      {
+        "group_key": "eval-c",
+        "id": "eval-c",
+        "prediction": {
+          "abstain": false,
+          "autonomy_allowed": false,
+          "calibrated": false,
+          "feature_coverage": 1.0,
+          "known_features": [
+            "word:budget",
+            "word:invoice",
+            "word:ledger"
+          ],
+          "model_id": "846d63690349cf1d",
+          "reasons": [],
+          "review_priority": 0.031805,
+          "score_note": "Uncalibrated relative model scores, not a probability that a move is safe.",
+          "suggestions": [
+            {
+              "label": "Finance",
+              "score": 0.9925159017099084
+            },
+            {
+              "label": "Documents",
+              "score": 0.007484098290091442
+            }
+          ]
+        },
+        "source": "human",
+        "split": "evaluation"
+      },
+      {
+        "group_key": "eval-d",
+        "id": "eval-d",
+        "prediction": {
+          "abstain": true,
+          "autonomy_allowed": false,
+          "calibrated": false,
+          "feature_coverage": 0.0,
+          "known_features": [],
+          "model_id": "846d63690349cf1d",
+          "reasons": [
+            "unfamiliar_features",
+            "ambiguous_model_scores"
+          ],
+          "review_priority": 0.999861,
+          "score_note": "Uncalibrated relative model scores, not a probability that a move is safe.",
+          "suggestions": [
+            {
+              "label": "Documents",
+              "score": 0.5098039215686275
+            },
+            {
+              "label": "Finance",
+              "score": 0.49019607843137253
+            }
+          ]
+        },
+        "source": "human",
+        "split": "evaluation"
+      },
+      {
+        "group_key": "eval-e",
+        "id": "eval-e",
+        "prediction": {
+          "abstain": false,
+          "autonomy_allowed": false,
+          "calibrated": false,
+          "feature_coverage": 1.0,
+          "known_features": [
+            "word:meeting",
+            "word:minutes",
+            "word:notes"
+          ],
+          "model_id": "846d63690349cf1d",
+          "reasons": [],
+          "review_priority": 0.031821,
+          "score_note": "Uncalibrated relative model scores, not a probability that a move is safe.",
+          "suggestions": [
+            {
+              "label": "Documents",
+              "score": 0.9925111806406395
+            },
+            {
+              "label": "Finance",
+              "score": 0.007488819359360473
+            }
+          ]
+        },
+        "source": "human",
+        "split": "evaluation"
+      },
+      {
+        "group_key": "eval-d",
+        "id": "eval-f",
+        "prediction": {
+          "abstain": false,
+          "autonomy_allowed": false,
+          "calibrated": false,
+          "feature_coverage": 1.0,
+          "known_features": [
+            "word:budget",
+            "word:invoice",
+            "word:ledger"
+          ],
+          "model_id": "846d63690349cf1d",
+          "reasons": [],
+          "review_priority": 0.031805,
+          "score_note": "Uncalibrated relative model scores, not a probability that a move is safe.",
+          "suggestions": [
+            {
+              "label": "Finance",
+              "score": 0.9925159017099084
+            },
+            {
+              "label": "Documents",
+              "score": 0.007484098290091442
+            }
+          ]
+        },
+        "source": "human",
+        "split": "evaluation"
+      },
+      {
+        "group_key": "cal-teacher",
+        "id": "cal-teacher",
+        "prediction": {
+          "abstain": true,
+          "autonomy_allowed": false,
+          "calibrated": false,
+          "feature_coverage": 0.0,
+          "known_features": [],
+          "model_id": "846d63690349cf1d",
+          "reasons": [
+            "unfamiliar_features",
+            "ambiguous_model_scores"
+          ],
+          "review_priority": 0.999861,
+          "score_note": "Uncalibrated relative model scores, not a probability that a move is safe.",
+          "suggestions": [
+            {
+              "label": "Documents",
+              "score": 0.5098039215686275
+            },
+            {
+              "label": "Finance",
+              "score": 0.49019607843137253
+            }
+          ]
+        },
+        "source": "teacher",
+        "split": "calibration"
+      },
+      {
+        "group_key": "eval-teacher",
+        "id": "eval-teacher",
+        "prediction": {
+          "abstain": false,
+          "autonomy_allowed": false,
+          "calibrated": false,
+          "feature_coverage": 1.0,
+          "known_features": [
+            "word:meeting",
+            "word:minutes",
+            "word:notes"
+          ],
+          "model_id": "846d63690349cf1d",
+          "reasons": [],
+          "review_priority": 0.031821,
+          "score_note": "Uncalibrated relative model scores, not a probability that a move is safe.",
+          "suggestions": [
+            {
+              "label": "Documents",
+              "score": 0.9925111806406395
+            },
+            {
+              "label": "Finance",
+              "score": 0.007488819359360473
+            }
+          ]
+        },
+        "source": "teacher",
+        "split": "evaluation"
+      }
+    ],
+    "schema": "loomward-evaluation-v1",
+    "scope": "synthetic smoke, not real-user accuracy",
+    "score_note": "relative score, not a probability",
+    "student_imitation": {
+      "metrics": {
+        "accuracy": 0.42857142857142855,
+        "count": 7,
+        "macro_f1": 0.41666666666666663,
+        "macro_labels": 2,
+        "macro_policy": "exclude labels with neither truth nor prediction; undefined rates are null",
+        "per_label": [
+          {
+            "f1": 0.3333333333333333,
+            "label": "Documents",
+            "precision": 0.25,
+            "predicted": 4,
+            "recall": 0.5,
+            "support": 2
+          },
+          {
+            "f1": 0.5,
+            "label": "Finance",
+            "precision": 0.6666666666666666,
+            "predicted": 3,
+            "recall": 0.4,
+            "support": 5
+          }
+        ]
+      },
+      "scope": "synthetic smoke, not real-user accuracy",
+      "truth": "teacher agreement, NOT human truth"
+    },
+    "teacher_accuracy": {
+      "metrics": {
+        "accuracy": 0.5,
+        "count": 6,
+        "macro_f1": 0.4857142857142857,
+        "macro_labels": 2,
+        "macro_policy": "exclude labels with neither truth nor prediction; undefined rates are null",
+        "per_label": [
+          {
+            "f1": 0.4,
+            "label": "Documents",
+            "precision": 0.5,
+            "predicted": 2,
+            "recall": 0.3333333333333333,
+            "support": 3
+          },
+          {
+            "f1": 0.5714285714285714,
+            "label": "Finance",
+            "precision": 0.5,
+            "predicted": 4,
+            "recall": 0.6666666666666666,
+            "support": 3
+          }
+        ]
+      },
+      "scope": "synthetic smoke, not real-user accuracy",
+      "truth": "human evaluation only"
+    },
+    "training_count": 9
+  },
+  "scope": "synthetic smoke, not real-user accuracy"
+}

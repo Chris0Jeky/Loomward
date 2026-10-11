@@ -306,6 +306,31 @@ impl Context {
     fn dirty(&mut self, start: i64, run: i64) {
         self.dirty.push((start, self.revision, run));
     }
+    fn parent(&mut self, conn: &Connection, id: i64) -> Result<Option<i64>> {
+        if let Some(parent) = self.parents.get(&id) {
+            return Ok(*parent);
+        }
+        let parent = conn.query_row("SELECT parent_id FROM dir WHERE id=?1", [id], |r| r.get(0))?;
+        self.parents.insert(id, parent);
+        Ok(parent)
+    }
+    /// Bounds each chain this command seeded, so a deep reparented subtree (whose stored depth
+    /// is stale until rollup) rejects only this command's savepoint, never the shared flush.
+    // ponytail: walks every new seed to the root; memoise chain lengths if deep trees cost throughput.
+    fn check_chains(&mut self, conn: &Connection, from: usize) -> Result<()> {
+        for i in from..self.dirty.len() {
+            let mut current = Some(self.dirty[i].0);
+            let mut count = 0;
+            while let Some(id) = current {
+                count += 1;
+                if count > 512 {
+                    return Err(Error::Invalid("tree depth limit"));
+                }
+                current = self.parent(conn, id)?;
+            }
+        }
+        Ok(())
+    }
     fn flush_dirty(&mut self, conn: &Connection) -> Result<()> {
         let started = Instant::now();
         let mut marked = HashSet::new();
@@ -313,7 +338,8 @@ impl Context {
             "UPDATE dir SET subtree_rev=?2,dirty_rev=?2,dirty_run=?3,sub_complete=0 WHERE id=?1",
         )?;
         // Newest seeds win: every ancestor retains its latest input revision, not the batch's first.
-        for &(start, revision, run) in self.dirty.iter().rev() {
+        // Taking the seeds empties them on error too; the failed commit clears them anyway.
+        for (start, revision, run) in std::mem::take(&mut self.dirty).into_iter().rev() {
             let mut current = Some(start);
             let mut count = 0;
             while let Some(id) = current {
@@ -322,23 +348,14 @@ impl Context {
                 }
                 update.execute(params![id, revision, run])?;
                 self.timings.lock().expect("timing lock").dirty_updates += 1;
-                current = if let Some(parent) = self.parents.get(&id) {
-                    *parent
-                } else {
-                    let parent =
-                        conn.query_row("SELECT parent_id FROM dir WHERE id=?1", [id], |r| {
-                            r.get(0)
-                        })?;
-                    self.parents.insert(id, parent);
-                    parent
-                };
+                current = self.parent(conn, id)?;
                 count += 1;
+                // Backstop only: check_chains already bounded every seed inside its savepoint.
                 if count > 512 {
                     return Err(Error::Invalid("directory identity cycle"));
                 }
             }
         }
-        self.dirty.clear();
         self.timings
             .lock()
             .expect("timing lock")
@@ -438,7 +455,11 @@ fn work(
                         context.revision =
                             save.query_row("SELECT catalog_rev FROM revision", [], |r| r.get(0))?;
                         let dirty_start = context.dirty.len();
-                        let result = apply(&save, &p.command, &mut context, prepared);
+                        let result = apply(&save, &p.command, &mut context, prepared)
+                            .and_then(|reply| {
+                                context.check_chains(&save, dirty_start)?;
+                                Ok(reply)
+                            });
                         // The witness commits atomically with the catalogue publication.
                         let result = result.and_then(|reply| {
                             save.execute("INSERT INTO meta(key,value) SELECT 'reference_publication',publication_token FROM st.pending_reference LIMIT 1 ON CONFLICT(key) DO UPDATE SET value=excluded.value", [])?;
@@ -522,8 +543,7 @@ fn work(
                 }
                 if let Err(e) = committed {
                     failed = true;
-                    results.clear();
-                    results.push(Err(e));
+                    fail_batch(&mut results, e);
                     context.parents.clear();
                     context.dirty.clear();
                     context.extensions.clear();
@@ -537,8 +557,7 @@ fn work(
         if full {
             if let Err(e) = conn.execute_batch("PRAGMA main.synchronous=NORMAL") {
                 failed = true;
-                results.clear();
-                results.push(Err(Error::Sql(e)));
+                fail_batch(&mut results, Error::Sql(e));
             }
         }
         #[cfg(test)]
@@ -552,8 +571,7 @@ fn work(
         }
         if let Err(e) = crate::db::reconcile_references(&mut conn) {
             failed = true;
-            results.clear();
-            results.push(Err(e));
+            fail_batch(&mut results, e);
         }
         while results.len() < batch.len() {
             results.push(Err(Error::Closed));
@@ -580,6 +598,19 @@ fn work(
         }
     }
     let _ = conn.execute_batch("PRAGMA main.wal_checkpoint(TRUNCATE)");
+}
+fn fail_batch(results: &mut Vec<Result<WriteReply>>, error: Error) {
+    if results.iter().any(Result::is_err) {
+        // An aborted batch loses successful rows, but keeps each caller's first failure.
+        for result in results {
+            if result.is_ok() {
+                *result = Err(Error::Closed);
+            }
+        }
+    } else {
+        results.clear();
+        results.push(Err(error));
+    }
 }
 fn active_run(conn: &Connection, run: i64, dir: Option<i64>) -> Result<i64> {
     let root:Option<i64>=conn.query_row("SELECT s.root_id FROM scan_run s JOIN root r ON r.id=s.root_id JOIN st.root_grant g ON g.id=r.grant_id WHERE s.id=?1 AND s.state='running' AND r.active_run=s.id AND g.state='active'",[run],|r|r.get(0)).optional()?;
@@ -1763,6 +1794,116 @@ mod tests {
             .unwrap(),
             (200, 200, true)
         );
+    }
+    #[test]
+    fn deep_reparented_chain_rejects_only_its_listing_in_a_shared_batch() {
+        let temp = tempfile::tempdir().unwrap();
+        let writer =
+            Writer::start(crate::db::open_pair(temp.path(), "synthetic").unwrap()).unwrap();
+        writer
+            .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_key: "fixture".into(),
+                display_name: "Fixture".into(),
+                display_path: "Fixture root".into(),
+                root_file_id: Some(vec![1; 16]),
+                filesystem: Some("NTFS".into()),
+                origin: "fixture".into(),
+                granted_via: "fixture".into(),
+                observed_at_ns: 0,
+            }))
+            .unwrap();
+        writer
+            .call(WriteCommand::BeginRun {
+                grant_id: 1,
+                mode: "full".into(),
+                strategy: "fixture".into(),
+                started_at_ns: 1,
+            })
+            .unwrap();
+        drop(writer);
+        // Reopen without open_pair, which would interrupt the running run.
+        let conn = Connection::open(temp.path().join("catalog.db")).unwrap();
+        conn.execute(
+            "ATTACH DATABASE ?1 AS st",
+            [temp.path().join("state.db").to_string_lossy().as_ref()],
+        )
+        .unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        // Two 300-deep chains under the root (ids 2..=301 and 302..=601) and two leaves.
+        // Stored depths are accurate until the batch moves chain B under the bottom of A.
+        conn.execute_batch(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<300)
+             INSERT INTO dir(id,root_id,parent_id,name,file_id,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run)
+             SELECT i+1,1,i,'a'||i,NULL,'path_observation','none',i,0,'complete',1,1 FROM n
+             UNION ALL
+             SELECT i+301,1,CASE i WHEN 1 THEN 1 ELSE i+300 END,'b'||i,
+                    CASE i WHEN 1 THEN x'00000000000000000000000000000002' END,
+                    CASE i WHEN 1 THEN 'native_file_id_128' ELSE 'path_observation' END,
+                    CASE i WHEN 1 THEN 'listed' ELSE 'none' END,i,0,'complete',1,1 FROM n;
+             INSERT INTO dir(id,root_id,parent_id,name,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run)
+             VALUES(602,1,1,'c','path_observation','none',1,0,'complete',1,1),
+                   (603,1,1,'d','path_observation','none',1,0,'complete',1,1);",
+        )
+        .unwrap();
+        let (tx, rx) = bounded(64);
+        let quota = Arc::new((Mutex::new(0), Condvar::new()));
+        let enqueue = |command| {
+            let (reply, result) = bounded(1);
+            tx.send(Pending {
+                command,
+                reply,
+                _permit: BytePermit {
+                    quota: quota.clone(),
+                    bytes: 0,
+                },
+            })
+            .unwrap();
+            result
+        };
+        let listing = |dir_id, files, dirs| {
+            WriteCommand::DirListing(DirListing {
+                run_id: 1,
+                dir_id,
+                files,
+                dirs,
+                state: "complete".into(),
+                skipped: 0,
+                errors: 0,
+            })
+        };
+        let mut b1 = Observation::file("b1", 0, None);
+        b1.file_id = Some([vec![0; 15], vec![2]].concat());
+        let item = || vec![Observation::file("item", 7, Some(7))];
+        // All four listings are queued before work starts, so they share one transaction.
+        let before = enqueue(listing(602, item(), vec![]));
+        let reparent = enqueue(listing(301, vec![], vec![b1]));
+        // b300 still stores depth 300, but its chain is now 601 directories long.
+        let deep = enqueue(listing(601, item(), vec![]));
+        let after = enqueue(listing(603, item(), vec![]));
+        let barrier = enqueue(WriteCommand::Barrier);
+        drop(tx);
+        let timings = Arc::new(Mutex::new(WriterTimings::default()));
+        let (alive, _) = bounded(0);
+        work(conn, rx, timings.clone(), alive, None);
+        before.recv().unwrap().unwrap();
+        reparent.recv().unwrap().unwrap();
+        assert!(matches!(
+            deep.recv().unwrap(),
+            Err(Error::Invalid("tree depth limit"))
+        ));
+        after.recv().unwrap().unwrap();
+        // The writer stayed open: the next command is applied, not dropped.
+        barrier.recv().unwrap().unwrap();
+        assert_eq!(timings.lock().unwrap().max_transaction_commands, 4);
+        let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+        let state = |sql: &str| db.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(state("SELECT parent_id FROM dir WHERE id=302"), 301);
+        assert_eq!(
+            state("SELECT count(*) FROM file WHERE dir_id IN (602,603)"),
+            2
+        );
+        assert_eq!(state("SELECT count(*) FROM file"), 2);
+        assert_eq!(state("SELECT own_files FROM dir WHERE id=601"), 0);
     }
     #[test]
     fn failed_commit_closes_the_writer_and_wakes_producers() {

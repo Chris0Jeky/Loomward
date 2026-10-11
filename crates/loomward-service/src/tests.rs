@@ -2742,3 +2742,6 @@ fn followup_inspect_uses_the_roots_actual_grant() {
     assert_eq!(result["root_id"], svc.inner.root_id(root));
     assert_eq!(result["display_path"]["text"], "Synthetic root");
 }
+
+#[path = "duplicates_tests.rs"]
+mod duplicates_tests;

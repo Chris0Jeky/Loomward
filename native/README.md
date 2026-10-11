@@ -36,6 +36,17 @@ Bundling is off (`bundle.active: false`); no installer is built.
 | Self test | `native/target/debug/loomward-desktop.exe --self-test` |
 | Real WebView2: raw IPC, ACL, CSP, navigation, heartbeat, renderer lag, teardown | `py -3 native/tests/webview2_probe.py` (Playwright over CDP; writes `evidence/v3/native/`) |
 
+CI runs the build, format, test, clippy and headless self-test checks in one cached
+`windows-latest` desktop job, after building `app/dist`. The WebView2 probe is a local proving
+check only. On the hosted runner (#282) the shell starts and six WebView2 processes run, but
+WebView2 never opens a DevTools endpoint: with a fixed port nothing listens, and with
+`--remote-debugging-port=0` no `DevToolsActivePort` file is written, so Playwright cannot attach.
+Three different attempts (a load wait, diagnostics, a self-chosen port) changed nothing; the
+runner's cause (policy, session or argument handling) could not be observed from the job. Run the
+probe locally after any change to the shell, IPC, CSP or transport. It launches a real Win32 window,
+closes it with `WM_CLOSE`, does not use Chromium's headless mode, and enforces the 50 ms P9 median
+budget. The interactive disclosure test remains excluded.
+
 ## IPC surface
 
 | Command | Arguments | Returns | Notes |

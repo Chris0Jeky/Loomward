@@ -1055,4 +1055,19 @@ mod tests {
             MAX_STATIC_BYTES
         );
     }
+
+    #[test]
+    fn a_duplicated_content_length_is_never_read_as_a_length() {
+        // The wire cannot reach this branch: hyper coalesces identical duplicates and refuses
+        // conflicting ones first. The adapter's own rule is pinned here, at its only seam.
+        let mut one = HeaderMap::new();
+        one.insert(header::CONTENT_LENGTH, HeaderValue::from_static("5"));
+        assert_eq!(content_length(&one), Some(5));
+        let mut same = one.clone();
+        same.append(header::CONTENT_LENGTH, HeaderValue::from_static("5"));
+        assert_eq!(content_length(&same), None);
+        let mut differ = one.clone();
+        differ.append(header::CONTENT_LENGTH, HeaderValue::from_static("6"));
+        assert_eq!(content_length(&differ), None);
+    }
 }
