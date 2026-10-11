@@ -1945,3 +1945,109 @@ fn api_errors_carry_json_content_type_and_connection_close() {
     );
     assert_eq!(ok.json()["ok"], true);
 }
+
+#[cfg(windows)]
+#[test]
+fn revoked_duplicates_are_redacted_from_last_event_id_replay_and_cancel_receipts() {
+    if loomward_windows::enumerate::running_elevated() {
+        return;
+    }
+    let tmp = tempfile::tempdir_in(".").unwrap();
+    let state = tmp.path().join("state");
+    let root = tmp.path().join("fixture");
+    loomward_service::lab::register(
+        &state,
+        &root,
+        "duplicates-replay",
+        "S",
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    )
+    .unwrap();
+    std::fs::write(root.join("equal-a.txt"), b"same").unwrap();
+    std::fs::write(root.join("equal-b.txt"), b"same").unwrap();
+    let svc = loomward_service::Service::open(loomward_service::Config {
+        state_dir: state,
+        dataset: DatasetClass::Synthetic,
+        allow_personal: false,
+        grant_roots: vec![root.canonicalize().unwrap()],
+    })
+    .unwrap();
+    let h = serve(Arc::new(svc), Options::default()).unwrap();
+    let mut n = 0;
+    let mut command = |command: &str, payload: Value| {
+        n += 1;
+        let reply = call(&h, &json!({"protocol":"loomward/3","request_id":format!("r_privacy_{n}"),"command":command,"payload":payload}).to_string()).json();
+        assert_eq!(reply["ok"], true, "{reply}");
+        reply["result"].clone()
+    };
+    let roots = command("roots.list", json!({}));
+    let root_id = roots["roots"][0]["root_id"].clone();
+    let wait = |command: &mut dyn FnMut(&str, Value) -> Value, job: Value| {
+        let until = Instant::now() + Duration::from_secs(10);
+        loop {
+            let current = command("jobs.get", json!({"job_id":job["job"]["job_id"]}));
+            if current["job"]["state"] == "completed" {
+                return current;
+            }
+            assert_ne!(current["job"]["state"], "failed", "{current}");
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    let scan = command("scan.start", json!({"root_id":root_id,"mode":"full"}));
+    wait(&mut command, scan);
+    let mut sse = open_events(&h, "").ok().unwrap();
+    let hello = sse.next();
+    let resume = format!(
+        "{}.{}",
+        hello.data["epoch"].as_str().unwrap(),
+        hello.data["seq"]
+    );
+    drop(sse);
+    let inspection = command(
+        "duplicates.inspect",
+        json!({"root_id":root_id,"budget":{"max_candidates":5,"max_bytes":"1024","max_ms":5000}}),
+    );
+    let completed = wait(&mut command, inspection);
+    assert_eq!(
+        completed["job"]["duplicates"]["entries"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let cancel_body = json!({"protocol":"loomward/3","request_id":"r_cancel_privacy","command":"duplicates.cancel","payload":{"job_id":completed["job"]["job_id"]}}).to_string();
+    let receipt = call(&h, &cancel_body).json();
+    assert_eq!(receipt["ok"], true);
+    assert!(receipt["result"]["job"].get("duplicates").is_none());
+    let generic = command("jobs.cancel", json!({"job_id":completed["job"]["job_id"]}));
+    assert!(generic["job"].get("duplicates").is_none());
+    command(
+        "roots.revoke",
+        json!({"root_id":root_id,"purge_catalog":false}),
+    );
+    assert_eq!(call(&h, &cancel_body).json(), receipt);
+    let mut sse = open_events(&h, &format!("\r\nLast-Event-ID: {resume}"))
+        .ok()
+        .unwrap();
+    let end = sse.next().data["seq"].as_u64().unwrap();
+    let mut states = 0;
+    loop {
+        let frame = sse.next();
+        if frame.event == "job.state" && frame.data["data"]["job"]["kind"] == "duplicates" {
+            states += 1;
+            assert!(
+                frame.data["data"]["job"].get("duplicates").is_none(),
+                "{}",
+                frame.data
+            );
+        }
+        if frame.data["seq"].as_u64().unwrap() == end {
+            break;
+        }
+    }
+    assert!(
+        states >= 3,
+        "queued, running and terminal snapshots must replay"
+    );
+}

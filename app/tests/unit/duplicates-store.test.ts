@@ -51,6 +51,28 @@ describe('duplicates jobs', () => {
     await vi.advanceTimersByTimeAsync(700);
     expect(store.book.rt_mock_10?.state).toBe('cancelled');
   });
+  it('revokes completed duplicate reports through roots and grants and emits a newer snapshot', async () => {
+    vi.useFakeTimers();
+    for (const viaGrant of [false, true]) {
+      const transport = createMockTransport({ count: 32 });
+      const client = new Client(transport);
+      const events: Job[] = [];
+      transport.subscribe((e) => { if (e.event === 'job.state') events.push((e.data as unknown as { job: Job }).job); }, () => {});
+      const started = await client.call('duplicates.inspect', { root_id: 'rt_mock_10', budget: { max_candidates: 5, max_bytes: '100', max_ms: 1000 } });
+      const job_id = started.result.job.job_id;
+      await vi.advanceTimersByTimeAsync(1500);
+      const completed = (await client.call('jobs.get', { job_id })).result.job;
+      expect(completed.duplicates?.entries.length).toBe(5);
+      expect((await client.call('duplicates.cancel', { job_id })).result.job.duplicates).toBeUndefined();
+      if (viaGrant) await client.call('grants.revoke', { grant_id: 'gr_mock_lab_0' });
+      else await client.call('roots.revoke', { root_id: 'rt_mock_10', purge_catalog: false });
+      const redacted = (await client.call('jobs.get', { job_id })).result.job;
+      expect(redacted.duplicates).toBeUndefined();
+      expect(redacted.rev).toBeGreaterThan(completed.rev);
+      expect(events.at(-1)).toEqual(redacted);
+      expect((await client.call('jobs.list', { kinds: ['duplicates'], limit: 50 })).result.jobs[0]?.duplicates).toBeUndefined();
+    }
+  });
   it('uses the content refusal as a gated state without inventing a result', async () => {
     session.client = new Client({ call: async (r: { request_id: string }) => ({ protocol: 'loomward/3', request_id: r.request_id, ok: false, error: { code: 'capability_unavailable', message: 'gated', retryable: false, detail: { reason: 'content_read_gated' } } }) } as unknown as Transport);
     const store = new Duplicates();

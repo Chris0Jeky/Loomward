@@ -137,7 +137,10 @@ impl Inner {
             JobsCancel => engine(
                 self.engine
                     .job_cancel(&req.decode_payload::<JobRefRequest>()?.job_id)
-                    .map(|job| JobResult { job }),
+                    .map(|mut job| {
+                        job.duplicates = None;
+                        JobResult { job }
+                    }),
             ),
             FeedbackRecord => self.feedback_record(req.decode_payload()?),
             LearningStatus => self.learning_status(),
