@@ -25,6 +25,7 @@ import json
 import os
 import re
 import sqlite3
+from contextlib import closing
 import subprocess
 import tempfile
 from types import SimpleNamespace
@@ -188,6 +189,94 @@ def live_call(page: Page, token: str, command: str, payload: dict) -> dict:
         body: JSON.stringify({protocol: 'loomward/3', request_id: 'live_' + crypto.randomUUID().replaceAll('-', ''), command, payload})})).json())""", [token, command, payload])
 
 
+def live_learning_isolated(browser, exe: Path) -> None:
+    """The learning leg plants SQL fixtures, as the collections leg does, so it runs on its own server and state."""
+    state = tempfile.TemporaryDirectory(prefix='lw-live-learning-')
+    proc = subprocess.Popen([str(exe), '--state-dir', state.name, '--static', str(DIST)], stdout=subprocess.PIPE, text=True)
+    try:
+        url = (proc.stdout.readline() if proc.stdout else '').strip()
+        check('/#token=' in url, 'a synthetic loomward-serve is up for the learning leg')
+        _, token = url.split('/#token=')
+        page = browser.new_context(viewport={'width': 1360, 'height': 900}).new_page()
+        page.set_default_timeout(8000)
+        page.goto(url)
+        expect(page.get_by_role('status', name='Session status')).to_contain_text('Connected')
+        live_learning(page, token, Path(state.name))
+        page.context.close()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=10)
+        state.cleanup()
+
+
+def live_learning(page: Page, token: str, state: Path) -> None:
+    """Synthetic SQL fixture, no disk scan or native identity open. Real HTTP/service/student/UI."""
+    with closing(sqlite3.connect(state / 'state.db')) as db, db:
+        db.execute("INSERT INTO root_grant(id,volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns) VALUES(1,'learning_fixture',zeroblob(16),'Synthetic learning root','fixture','fixture','active',0)")
+    with closing(sqlite3.connect(state / 'catalog.db')) as db, db:
+        db.executescript("""
+            INSERT INTO volume(id,volume_key,display_name,filesystem,identity_json,capabilities_json,device_json,online,observed_at_ns)
+                VALUES(1,'learning_fixture','Synthetic learning','NTFS','{}','{}','{}',1,0);
+            INSERT INTO root(id,grant_id,volume_id,generation,state) VALUES(1,1,1,1,'complete');
+            INSERT INTO scan_run(id,root_id,mode,strategy,state,started_at_ns,finished_at_ns,counters_json,budget_json)
+                VALUES(1,1,'full','fixture','completed',0,0,'{}','{}');
+            INSERT INTO dir(id,root_id,name,file_id,id_quality,id_basis,depth,attrs,created_ft,listing_state,born_run,seen_run,sub_complete)
+                VALUES(1,1,'Synthetic learning',zeroblob(16),'native_file_id_128','listed',0,0,1,'complete',1,1,1);
+            INSERT INTO file(id,dir_id,name,file_id,logical,allocated,created_ft,attrs,born_run,seen_run)
+                VALUES(1,1,'synthetic-report.txt',cast('1111111111111111' AS BLOB),128,128,1,0,1,1);
+            UPDATE revision SET catalog_rev=catalog_rev+1;
+        """)
+    queue = live_call(page, token, 'learning.queue', {'root_id': None, 'limit': 20, 'cursor': None})
+    check(queue['ok'] and len(queue['result']['items']) == 1, 'learning: real service returns the synthetic durable node')
+    node = queue['result']['items'][0]['row']['node_id']
+    payload = {'node_id': node, 'label': 'Documents', 'retract': False, 'client_event_id': 'ce_live_learning'}
+    first = live_call(page, token, 'feedback.record', payload)
+    check(first['ok'] and first['result']['data_class'] == 'human', 'learning: human feedback recorded through real HTTP')
+    replay = live_call(page, token, 'feedback.record', payload)
+    check(replay['ok'] and replay['result']['idempotent_replay'] and replay['result']['event_id'] == first['result']['event_id'], 'learning: durable client_event_id replay is idempotent')
+    conflict = live_call(page, token, 'feedback.record', {**payload, 'label': 'Archive'})
+    check(not conflict['ok'] and conflict['error']['code'] == 'invalid_request', 'learning: changed replay payload is refused')
+    status = live_call(page, token, 'learning.status', {})
+    check(status['ok'] and status['result']['human_events'] == 1 and status['result']['model_id'] is None, 'learning: one human event and honest unfitted status')
+    page.evaluate("location.hash = '#/review'")
+    expect(page.get_by_role('heading', name='Learning review', level=1)).to_be_visible()
+    expect(page.get_by_text('No fitted model yet.', exact=False)).to_be_visible()
+    expect(page.get_by_role('table')).to_contain_text('synthetic-report.txt')
+    page.get_by_role('button', name='Refit from human labels').click()
+    expect(page.get_by_role('status').filter(has_text='Refit completed.')).to_be_visible(timeout=10000)
+    expect(page.get_by_text('Synthetic candidate fitted;', exact=False)).to_be_visible()
+    status = live_call(page, token, 'learning.status', {})
+    check(status['ok'] and status['result']['training_count'] == 1 and not status['result']['calibrated'] and not status['result']['autonomy_allowed'], 'learning: refit completed; synthetic smoke, not real-user accuracy')
+    page.get_by_role('button', name='Review synthetic-report.txt').focus()
+    page.keyboard.press('Enter')
+    page.get_by_label('Human label').select_option('Archive')
+    page.get_by_role('button', name='Record human label').press('Space')
+    expect(page.get_by_role('status').filter(has_text='Human feedback recorded, revision 2.')).to_be_visible()
+    check(live_call(page, token, 'learning.status', {})['result']['human_events'] == 2, 'learning: review UI records real human feedback')
+    def unavailable_status(route):
+        request = route.request.post_data_json
+        if request['command'] == 'learning.status':
+            route.fulfill(json={'protocol': 'loomward/3', 'request_id': request['request_id'], 'ok': False,
+                                'error': {'code': 'capability_unavailable', 'message': 'Learning status unavailable.', 'retryable': False, 'detail': None}})
+        else:
+            route.continue_()
+    page.route('**/api/v3/call', unavailable_status)
+    page.get_by_role('button', name='Refresh review').click()
+    expect(page.get_by_text('Learning status unknown.', exact=True)).to_be_visible()
+    check(page.get_by_role('table').count() == 0, 'learning: a failed refresh clears stale learning data')
+    page.unroute('**/api/v3/call', unavailable_status)
+    page.get_by_role('button', name='Retry learning status').click()
+    expect(page.get_by_role('table')).to_contain_text('synthetic-report.txt')
+    shots = ROOT / '.loomward'
+    shots.mkdir(exist_ok=True)
+    page.screenshot(path=str(shots / 'learning-review-desktop.png'), full_page=True)
+    page.set_viewport_size({'width': 390, 'height': 844})
+    page.screenshot(path=str(shots / 'learning-review-mobile.png'), full_page=True)
+    check(page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'learning: mobile review has no page overflow')
+    page.set_viewport_size({'width': 1360, 'height': 900})
+
+
 def live_placement(browser, exe: Path) -> None:
     """A tiny synthetic catalogue through the production service and app; no host inventory."""
     with tempfile.TemporaryDirectory(prefix='lw-live-placement-') as state:
@@ -338,6 +427,13 @@ def live_personal_scan(browser, exe: Path) -> None:
         check(not inspected['ok'] and inspected['error']['detail']['reason'] == 'content_read_gated', 'personal: content inspection refused before any root access')
         jobs = live_call(page, token, 'jobs.list', {'kinds': ['scan'], 'limit': 50})
         check(jobs['ok'] and len(jobs['result']['jobs']) == 1, f"personal: only the pressed Scan created a job: {jobs.get('result')}")
+        # Learning stays synthetic-only (L14): the Review surface and the service both gate personal learning.
+        page.evaluate("location.hash = '#/review'")
+        expect(page.get_by_text('Personal learning is gated.', exact=False)).to_be_visible()
+        expect(page.get_by_role('button', name='Refit from human labels')).to_be_disabled()
+        for command, payload in [('learning.refit', {}), ('feedback.record', {'node_id':'nd_unknown', 'label':'Documents', 'retract':False, 'client_event_id':'ce_personal_live'})]:
+            refused = live_call(page, token, command, payload)
+            check(not refused['ok'] and (refused['error']['detail'] or {}).get('reason') == 'learning_personal_gated', f'learning: personal {command} is gated')
         page.context.close()
         print('PASS personal: a granted folder scans through the app to the fixture totals, metadata only')
     finally:
@@ -398,6 +494,7 @@ def run_live_serve(browser_path: str | None) -> None:
             live_scan_refusals(browser, exe)
             live_personal_scan(browser, exe)
             live_placement(browser, exe)
+            live_learning_isolated(browser, exe)
 
             proc.terminate()
             proc.wait(timeout=10)

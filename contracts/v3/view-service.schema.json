@@ -1117,8 +1117,10 @@
     "LearningStatus": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["model_id", "algorithm", "taxonomy_version", "training_count", "human_events", "teacher_labels", "human_support", "fitted_at", "dataset_class", "calibrated", "autonomy_allowed"],
+      "required": ["model_id", "algorithm", "taxonomy_version", "training_count", "human_events", "teacher_labels", "human_support", "fitted_at", "dataset_class", "calibrated", "autonomy_allowed", "gate", "unresolved_human_events"],
       "properties": {
+        "gate": { "type": ["string", "null"], "minLength": 1, "maxLength": 64, "description": "learning_personal_gated for personal sessions; null for synthetic sessions." },
+        "unresolved_human_events": { "$ref": "#/$defs/Count" },
         "model_id": { "anyOf": [{ "$ref": "#/$defs/ModelId" }, { "type": "null" }] },
         "algorithm": { "const": "weighted_multinomial_nb_v1" },
         "taxonomy_version": { "type": "integer", "minimum": 1 },

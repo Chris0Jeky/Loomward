@@ -1,0 +1,401 @@
+use crate::tests::*;
+
+fn learning_node(svc: &Service) -> String {
+    fixture(svc, 3);
+    let conn = svc.inner.db();
+    conn.execute_batch(
+        "UPDATE main.file SET file_id=cast(printf('%016d',id) AS BLOB),created_ft=1",
+    )
+    .unwrap();
+    let id: i64 = conn
+        .query_row("SELECT min(id) FROM main.file", [], |r| r.get(0))
+        .unwrap();
+    let born: i64 = conn
+        .query_row("SELECT born_run FROM main.file WHERE id=?1", [id], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    svc.inner.ids.seal(
+        loomward_catalog::NodeKey::File(id),
+        born,
+        &svc.inner.instance,
+    )
+}
+
+fn feedback(node: &str, key: &str, label: Option<&str>, retract: bool) -> Value {
+    json!({"node_id":node,"client_event_id":key,"label":label,"retract":retract})
+}
+
+fn finish_refit(svc: &Service) -> Payload {
+    let (job, _) = ok("learning.refit", call(svc, "learning.refit", json!({})));
+    let id: JobId = serde_json::from_value(job["job"]["job_id"].clone()).unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        let job = svc.inner.engine.job_status(&id).unwrap();
+        if matches!(
+            job.state,
+            JobState::Completed | JobState::Cancelled | JobState::Failed
+        ) {
+            assert_eq!(job.state, JobState::Completed);
+            break;
+        }
+        assert!(Instant::now() < until);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    ok("learning.status", call(svc, "learning.status", json!({}))).0
+}
+
+#[test]
+fn learning_refuses_nondurable_invalid_and_unresolved_labels() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let node = learning_node(&svc);
+    svc.inner
+        .db()
+        .execute("UPDATE main.file SET file_id=NULL WHERE id=1", [])
+        .unwrap();
+    assert_eq!(
+        reason(&err(call(
+            &svc,
+            "feedback.record",
+            feedback(&node, "ce_no_id", Some("Documents"), false)
+        ))),
+        Some("durable_reference_unavailable")
+    );
+    svc.inner
+        .db()
+        .execute(
+            "UPDATE main.file SET file_id=cast('1111111111111111' AS BLOB) WHERE id=1",
+            [],
+        )
+        .unwrap();
+    for p in [
+        feedback(&node, "ce_empty_label", None, false),
+        feedback(&node, "ce_bad_retract", Some("Documents"), true),
+        feedback(&node, "ce_no_prior", None, true),
+        feedback(&node, "ce_wrong_label", Some("UnknownLabel"), false),
+    ] {
+        assert_eq!(
+            err(call(&svc, "feedback.record", p)).code,
+            ErrorCode::InvalidRequest
+        );
+    }
+    ok(
+        "feedback.record",
+        call(
+            &svc,
+            "feedback.record",
+            feedback(&node, "ce_resolved", Some("Documents"), false),
+        ),
+    );
+    svc.inner.db().execute_batch("INSERT OR REPLACE INTO main.meta VALUES('reference_publication','learning_retirement');INSERT INTO st.pending_reference(object_ref_id,catalog_instance,publication_token) SELECT id,catalog_instance,'learning_retirement' FROM st.object_ref;UPDATE st.revision SET state_rev=state_rev+1").unwrap();
+    let status = finish_refit(&svc);
+    assert_eq!(status["training_count"], 0);
+    assert_eq!(status["unresolved_human_events"], 1);
+    svc.inner
+        .db()
+        .execute("DELETE FROM st.pending_reference", [])
+        .unwrap();
+    svc.inner.db().execute_batch("UPDATE st.object_ref SET state='unresolved',retired=1;UPDATE st.revision SET state_rev=state_rev+1").unwrap();
+    let status = finish_refit(&svc);
+    assert_eq!(status["training_count"], 0);
+    assert_eq!(status["unresolved_human_events"], 1);
+}
+
+#[test]
+fn learning_timed_out_feedback_precedes_refit_in_fifo() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let node = learning_node(&svc);
+    *svc.inner.hooks.delay.lock().unwrap() =
+        Some((Command::FeedbackRecord, Duration::from_millis(300)));
+    let mut req = request(
+        "feedback.record",
+        feedback(&node, "ce_deadline", Some("Documents"), false),
+    );
+    req.deadline_ms = Some(Int::new(5).unwrap());
+    let error = err(svc.call(req, &CallContext::http()));
+    assert_eq!(error.code, ErrorCode::DeadlineExceeded);
+    assert!(!error.retryable);
+    let status = finish_refit(&svc);
+    assert_eq!(status["training_count"], 1);
+    assert_eq!(status["human_events"], 1);
+}
+
+#[test]
+fn learning_service_can_cancel_refit_jobs() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    svc.inner.engine.register_job_runner(
+        JobKind::Refit,
+        Arc::new(|ctx, _| {
+            let until = Instant::now() + Duration::from_secs(2);
+            while !ctx.is_cancelled() {
+                assert!(Instant::now() < until);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Ok(CoverageState::Cancelled)
+        }),
+    );
+    let job = svc
+        .inner
+        .engine
+        .job_submit(loomward_engine::jobs::JobSpec::new(JobKind::Refit, None))
+        .unwrap();
+    assert_eq!(
+        err(call(&svc, "scan.cancel", json!({"job_id":job.job_id}))).code,
+        ErrorCode::InvalidRequest
+    );
+    let (cancel, _) = ok(
+        "jobs.cancel",
+        call(&svc, "jobs.cancel", json!({"job_id":job.job_id})),
+    );
+    assert_eq!(cancel["job"]["state"], "cancel_requested");
+    assert_eq!(cancel["job"]["kind"], "refit");
+}
+
+#[test]
+fn learning_durable_replay_conflict_and_retraction() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let node = learning_node(&svc);
+    let p = feedback(&node, "ce_label", Some("Documents"), false);
+    let (first, _) = ok("feedback.record", call(&svc, "feedback.record", p.clone()));
+    assert_eq!(first["data_class"], "human");
+    let (replay, _) = ok("feedback.record", call(&svc, "feedback.record", p.clone()));
+    assert_eq!(replay["event_id"], first["event_id"]);
+    assert_eq!(replay["idempotent_replay"], true);
+    assert_eq!(
+        err(call(
+            &svc,
+            "feedback.record",
+            feedback(&node, "ce_label", Some("Archive"), false)
+        ))
+        .code,
+        ErrorCode::InvalidRequest
+    );
+    let (withdrawn, _) = ok(
+        "feedback.record",
+        call(
+            &svc,
+            "feedback.record",
+            feedback(&node, "ce_retract", None, true),
+        ),
+    );
+    assert_eq!(withdrawn["revision"], 2);
+    let (again, _) = ok(
+        "feedback.record",
+        call(
+            &svc,
+            "feedback.record",
+            feedback(&node, "ce_retract_again", None, true),
+        ),
+    );
+    assert_eq!(again["revision"], 3);
+    assert_eq!(
+        svc.inner
+            .db()
+            .query_row(
+                "SELECT label FROM st.human_feedback WHERE retracted=1",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+        "Documents"
+    );
+    drop(svc);
+    let reopened = open(tmp.path(), DatasetClass::Synthetic);
+    let (replay, _) = ok("feedback.record", call(&reopened, "feedback.record", p));
+    assert_eq!(replay["event_id"], first["event_id"]);
+    assert_eq!(replay["learning"], first["learning"]);
+    assert_eq!(replay["idempotent_replay"], true);
+}
+
+#[test]
+fn learning_personal_gate_and_unknown_status() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Personal);
+    svc.inner.db().execute("INSERT INTO st.student_model VALUES('md_gated','weighted_multinomial_nb_v1',1,'fixture',1,'invalid stored candidate','candidate',0)",[]).unwrap();
+    let (status, _) = ok("learning.status", call(&svc, "learning.status", json!({})));
+    assert_eq!(status["gate"], "learning_personal_gated");
+    assert_eq!(status["model_id"], Value::Null);
+    let queue: LearningQueueRequest =
+        serde_json::from_value(json!({"root_id":null,"limit":1,"cursor":null})).unwrap();
+    assert!(svc
+        .inner
+        .engine
+        .learning_queue(&queue, vec![], (0, 0))
+        .unwrap()
+        .items
+        .is_empty());
+    for (command, p) in [
+        ("learning.refit", json!({})),
+        (
+            "feedback.record",
+            feedback("nd_unknown", "ce_personal", Some("Documents"), false),
+        ),
+    ] {
+        let e = err(call(&svc, command, p));
+        assert_eq!(e.code, ErrorCode::CapabilityUnavailable);
+        assert_eq!(reason(&e), Some("learning_personal_gated"));
+    }
+    assert_eq!(
+        svc.inner
+            .db()
+            .query_row("SELECT count(*) FROM st.human_feedback", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn learning_queue_binds_both_revisions_and_filters() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let node = learning_node(&svc);
+    let p = json!({"root_id":null,"limit":1,"cursor":null});
+    let (page, _) = ok("learning.queue", call(&svc, "learning.queue", p.clone()));
+    assert_eq!(page["model_id"], Value::Null);
+    assert_eq!(page["items"][0]["suggestion"]["calibrated"], false);
+    let cursor = page["next_cursor"].clone();
+    assert!(cursor.is_string());
+    assert_eq!(
+        err(call(
+            &svc,
+            "learning.queue",
+            json!({"root_id":svc.inner.root_id(1),"limit":1,"cursor":cursor})
+        ))
+        .code,
+        ErrorCode::InvalidRequest
+    );
+    let resume = json!({"root_id":null,"limit":1,"cursor":cursor});
+    ok(
+        "feedback.record",
+        call(
+            &svc,
+            "feedback.record",
+            feedback(&node, "ce_cursor", Some("Documents"), false),
+        ),
+    );
+    assert_eq!(
+        err(call(&svc, "learning.queue", resume)).code,
+        ErrorCode::StaleGeneration
+    );
+    let (page, _) = ok("learning.queue", call(&svc, "learning.queue", p));
+    svc.inner
+        .db()
+        .execute("UPDATE main.revision SET catalog_rev=catalog_rev+1", [])
+        .unwrap();
+    assert_eq!(
+        err(call(
+            &svc,
+            "learning.queue",
+            json!({"root_id":null,"limit":1,"cursor":page["next_cursor"]})
+        ))
+        .code,
+        ErrorCode::StaleGeneration
+    );
+}
+
+#[test]
+fn learning_refit_is_human_only_candidate_and_retraction_withdraws() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let node = learning_node(&svc);
+    ok(
+        "feedback.record",
+        call(
+            &svc,
+            "feedback.record",
+            feedback(&node, "ce_fit_1", Some("Documents"), false),
+        ),
+    );
+    // A separate weak label must never contribute to this lane's human-only refit.
+    let WriteReply::Reference(teacher_ref) = svc
+        .inner
+        .catalog
+        .writer()
+        .call(WriteCommand::ObjectReference {
+            node: loomward_catalog::NodeKey::File(2),
+            observed_at_ns: 0,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    svc.inner.db().execute_batch(&format!("PRAGMA foreign_keys=OFF;INSERT INTO st.teacher_label(event_id,request_id,object_ref_id,revision,label,abstain,reason,evidence_json,taxonomy_version,features_json,received_at_ns) SELECT 'tl_fixture',999,{teacher_ref},1,'Archive',0,'fixture','[]',1,features_json,0 FROM st.human_feedback LIMIT 1;PRAGMA foreign_keys=ON")).unwrap();
+    for (expected, retract) in [(1, false), (0, true)] {
+        if retract {
+            ok(
+                "feedback.record",
+                call(
+                    &svc,
+                    "feedback.record",
+                    feedback(&node, "ce_withdraw", None, true),
+                ),
+            );
+        }
+        let (job, _) = ok("learning.refit", call(&svc, "learning.refit", json!({})));
+        let id: JobId = serde_json::from_value(job["job"]["job_id"].clone()).unwrap();
+        let until = Instant::now() + Duration::from_secs(5);
+        loop {
+            let j = svc.inner.engine.job_status(&id).unwrap();
+            if matches!(
+                j.state,
+                JobState::Completed | JobState::Failed | JobState::Cancelled
+            ) {
+                assert_eq!(j.state, JobState::Completed);
+                assert!(j.seq.get() > 0 && j.rev.get() >= 2);
+                break;
+            }
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let (status, _) = ok("learning.status", call(&svc, "learning.status", json!({})));
+        assert_eq!(status["training_count"], expected);
+        assert_eq!(status["teacher_labels"], 1);
+        assert_eq!(status["autonomy_allowed"], false);
+        assert_eq!(
+            svc.inner
+                .db()
+                .query_row(
+                    "SELECT count(*) FROM st.student_model WHERE status='active'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+    }
+}
+
+#[test]
+fn learning_feedback_stops_at_the_refit_event_budget() {
+    // Codex P1 on #328: event 10,001 must be refused, so refit never becomes permanently impossible.
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let node = learning_node(&svc);
+    ok(
+        "feedback.record",
+        call(
+            &svc,
+            "feedback.record",
+            feedback(&node, "ce_first", Some("Documents"), false),
+        ),
+    );
+    svc.inner.db().execute_batch(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<9999)
+         INSERT INTO st.human_feedback(event_id,client_event_id,content_digest,object_ref_id,revision,label,retracted,taxonomy_version,features_json,recorded_at_ns)
+         SELECT 'fe_bulk'||i,'ce_bulk'||i,h.content_digest,h.object_ref_id,h.revision+i,h.label,0,h.taxonomy_version,h.features_json,h.recorded_at_ns FROM n, st.human_feedback h WHERE h.client_event_id='ce_first'",
+    ).unwrap();
+    let refused = err(call(
+        &svc,
+        "feedback.record",
+        feedback(&node, "ce_over_budget", Some("Finance"), false),
+    ));
+    assert_eq!(refused.code, ErrorCode::ResourceBudget, "{refused:?}");
+    let (status, _) = ok("learning.status", call(&svc, "learning.status", json!({})));
+    assert_eq!(status["human_events"], 10_000, "{status:?}");
+    finish_refit(&svc);
+}

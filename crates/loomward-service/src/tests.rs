@@ -1303,7 +1303,11 @@ fn every_command_answers_a_complete_envelope_and_core_reads_serve_the_catalogue(
         if (command.wave() >= 3
             && !matches!(
                 command,
-                Command::CollectionsList
+                Command::FeedbackRecord
+                    | Command::LearningStatus
+                    | Command::LearningQueue
+                    | Command::LearningRefit
+                    | Command::CollectionsList
                     | Command::CollectionsCreate
                     | Command::CollectionsUpdateMembers
                     | Command::CollectionsMembers
@@ -3424,6 +3428,8 @@ fn followup_inspect_uses_the_roots_actual_grant() {
 
 #[path = "duplicates_tests.rs"]
 mod duplicates_tests;
+#[path = "learning_tests.rs"]
+mod learning_tests;
 
 #[cfg(test)]
 #[path = "collections_tests.rs"]

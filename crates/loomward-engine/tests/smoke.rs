@@ -146,12 +146,16 @@ fn implemented_infrastructure_and_unavailable_future_lanes() {
                 "client_event_id": "evt_smoke_1"
             }))
             .unwrap(),
+            1,
+            &json!({}),
         ),
         Component::Learning,
     );
     assert_unavailable(
         e.learning_queue(
             &from_value(json!({ "root_id": null, "limit": 10, "cursor": null })).unwrap(),
+            vec![],
+            (0, 0),
         ),
         Component::Learning,
     );
