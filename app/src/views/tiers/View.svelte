@@ -82,8 +82,8 @@
     simTicket++;
     simulating = false;
     cands = null;
-    if (!c || !v) return;
     const mine = ++candTicket;
+    if (!c || !v?.source_eligible) return;
     try {
       const { result } = await c.call('placement.candidates', { source_volume_id: v.volume_id, basis: 'largest_dirs', max_groups: 50, min_bytes: '0' });
       if (mine === candTicket) cands = result;
@@ -103,8 +103,8 @@
       if (mine !== modelTicket) return;
       model = result;
       error = '';
-      const keep = result.volumes.find((v) => v.volume_id === source && v.tier.tier !== null);
-      source = (keep ?? result.volumes.find((v) => v.pressure === 'pressure' && v.tier.tier !== null) ?? result.volumes.find((v) => v.tier.tier !== null))?.volume_id ?? '';
+      const keep = result.volumes.find((v) => v.volume_id === source && v.source_eligible);
+      source = (keep ?? result.volumes.find((v) => v.pressure === 'pressure' && v.source_eligible) ?? result.volumes.find((v) => v.source_eligible))?.volume_id ?? '';
       await loadCandidates();
       await loadProposals();
     } catch (e) {
@@ -141,8 +141,10 @@
     try {
       const { result } = await c.call('proposals.get', { proposal_id: id });
       if (mine !== savedTicket) return;
-      source = result.summary.source_volume_id;
-      await loadCandidates();
+      if (volume(result.summary.source_volume_id)?.source_eligible) {
+        source = result.summary.source_volume_id;
+        await loadCandidates();
+      }
       if (mine !== savedTicket) return;
       savedDetail = result;
       savedError = '';
@@ -151,6 +153,7 @@
   }
 
   function choose(id: string) {
+    if (!volume(id)?.source_eligible) return;
     source = id;
     assume = {};
     void loadCandidates();
@@ -176,7 +179,7 @@
     const c = session.client;
     const cap = parseBytes(src?.capacity_bytes);
     formError = '';
-    if (!c || !src || cap === null) { formError = 'The source volume has no known capacity, so there is nothing to simulate.'; return; }
+    if (!c || !src?.source_eligible || cap === null) { formError = 'Choose an eligible source volume to simulate.'; return; }
     if (pct === null || !(pct >= 1 && pct <= 90)) { formError = 'Target free space must be between 1% and 90% of the volume.'; return; }
     if (transferGiB === null || !(transferGiB >= 0 && transferGiB <= 100000)) { formError = 'The transfer cap must be between 0 and 100,000 GiB.'; return; }
     const target = (cap * BigInt(Math.round(pct * 10))) / 1000n;
@@ -252,7 +255,7 @@
               {#each Array.from({ length: 10 }, (_, i) => i) as tier (tier)}<option value={tier}>Tier {tier}</option>{/each}
             </select>
           </label>
-          <button class="btn" type="button" aria-pressed={v.volume_id === source} disabled={v.tier.tier === null || !v.online} onclick={() => choose(v.volume_id)}>
+          <button class="btn" type="button" aria-pressed={v.volume_id === source} disabled={!v.source_eligible} onclick={() => choose(v.volume_id)}>
             {v.volume_id === source ? 'Source volume' : 'Use as source'}<span class="sr-only">: {escapedName(v.display_name)}</span>
           </button>
         </article>

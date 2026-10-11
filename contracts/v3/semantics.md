@@ -128,6 +128,14 @@ Volumes whose recorded roots have no active grant remain visible in `volumes.lis
 excluded from simulations with `excluded_volumes.reason = "no_active_grant"`; choosing one as
 the source refuses with `invalid_request`, `detail.reason = "no_active_grant"`.
 
+Each `tiers.model` volume has a required `source_eligible` boolean. It is false for offline,
+unknown-tier, missing or unusable capacity/free-space observations, out-of-range planner
+quantities, or recorded roots with no active grant. Clients use it to default, preserve and
+enable source choices; historical scenarios remain readable when their source is ineligible.
+It describes the current model snapshot, never a grant or a promise that a later call succeeds;
+the service rechecks scope and observations on every placement call. Read-only/unknown writability
+is not itself a source-selection refusal: the planner reports it through group rejection.
+
 Proposals are historical simulations. Changed catalogue revisions, declarations or root
 generations mark them `stale`; inactive grants hide them from list/get. Wire IDs are bound to the
 current session and catalogue instance: after restart, clients re-list rather than reuse old IDs.

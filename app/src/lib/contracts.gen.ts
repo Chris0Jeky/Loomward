@@ -982,6 +982,7 @@ export interface TierVolume {
   reserve_bytes: ByteCount;
   free_fraction: NullableFraction;
   pressure: "ok" | "watch" | "pressure" | "unknown";
+  source_eligible: boolean;
 }
 
 export interface TierModel {

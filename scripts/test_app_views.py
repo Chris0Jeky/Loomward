@@ -66,6 +66,8 @@ class FakeEngine:
         self.fail_proposals = False
         self.saved_scenarios = False
         self.candidate_gate = None  # one (arrived, release) event pair
+        self.tier_volumes: list[dict] | None = None
+        self.candidate_sources: list[str] = []
         self.plan_mode = 'executable'  # 'executable' or 'malformed': how placement.simulate misbehaves
         self.slice_queue: list[tuple[float, str]] = []  # (delay, root name) per tree.slice call, then the default
         self.events: queue.Queue[dict] = queue.Queue()
@@ -146,9 +148,10 @@ class FakeEngine:
             return {'anchor': p['node_id'], 'generation': '7', 'items': [row(f'item-{i:03d}.txt', i) for i in range(start, end)], 'next_cursor': f'c_{end}' if end < 120 else None, 'total': 120, 'budget_hit': False}
         if cmd == 'tiers.model':
             tier = {'tier': 1, 'basis': 'device_hint', 'declared_tier': None, 'hint_tier': 1, 'note': 'hint'}
-            return {'volumes': [{'volume_id': 'vo_x', 'display_name': 'X:', 'tier': tier, 'online': True, 'writable': True, 'capacity_bytes': '1000000000000', 'free_bytes': '90000000000', 'reserve_bytes': '1', 'free_fraction': 0.09, 'pressure': 'pressure'}],
+            return {'volumes': self.tier_volumes if self.tier_volumes is not None else [{'volume_id': 'vo_x', 'display_name': 'X:', 'tier': tier, 'online': True, 'writable': True, 'capacity_bytes': '1000000000000', 'free_bytes': '90000000000', 'reserve_bytes': '1', 'free_fraction': 0.09, 'pressure': 'pressure', 'source_eligible': True}],
                     'policy': {'watch_free_fraction': 0.2, 'pressure_free_fraction': 0.1, 'reserve_note': 'r', 'note': 'n'}}
         if cmd == 'placement.candidates':
+            self.candidate_sources.append(p['source_volume_id'])
             gate, self.candidate_gate = self.candidate_gate, None
             if gate:
                 gate[0].set()
@@ -472,6 +475,43 @@ def check_tiers_loading_followups(page: Page, engine: FakeEngine) -> None:
 
 
 # --- Tiers ------------------------------------------------------------------------------------------
+
+def check_tiers_source_eligibility(page: Page, engine: FakeEngine) -> None:
+    template = engine.result({'command': 'tiers.model'})['volumes'][0]
+    engine.tier_volumes = [
+        {**template, 'volume_id': 'vo_blocked', 'display_name': 'Blocked', 'source_eligible': False},
+        {**template, 'pressure': 'ok'},
+        {**template, 'volume_id': 'vo_other', 'display_name': 'Other', 'pressure': 'ok'},
+    ]
+    engine.candidate_sources.clear()
+    page.goto(f'{engine.base}/#token={TOKEN}')
+    page.evaluate("location.hash = '#/tiers'")
+    panel = page.locator('section[aria-labelledby="h-vol"]')
+    selected = panel.get_by_role('button', name=re.compile('^Source volume'))
+    expect(selected).to_contain_text('X:')
+    expect(panel.get_by_role('button', name=re.compile(r'^Use as source\s*:\s*Blocked$'))).to_be_disabled()
+    panel.get_by_role('button', name=re.compile(r'^Use as source\s*:\s*Other$')).click()
+    expect(selected).to_contain_text('Other')
+    panel.get_by_label('Declared tier for X:').select_option('2')
+    expect(panel).to_have_attribute('aria-busy', 'false')
+    expect(selected).to_contain_text('Other')
+    engine.tier_volumes[2]['source_eligible'] = False
+    panel.get_by_label('Declared tier for X:').select_option('3')
+    expect(selected).to_contain_text('X:')
+    expect(panel.get_by_role('button', name=re.compile(r'^Use as source\s*:\s*Other$'))).to_be_disabled()
+    engine.tier_volumes[1]['source_eligible'] = False
+    engine.saved_scenarios = True
+    panel.get_by_label('Declared tier for X:').select_option('4')
+    expect(panel).to_have_attribute('aria-busy', 'false')
+    expect(selected).to_have_count(0)
+    count = len(engine.candidate_sources)
+    page.get_by_role('button', name=re.compile('Show saved scenario')).click()
+    expect(page.get_by_text('Saved scenario shown. Simulation only.', exact=True)).to_be_attached()
+    expect(selected).to_have_count(0)
+    ok(len(engine.candidate_sources) == count and 'vo_blocked' not in engine.candidate_sources,
+       'Tiers defaults, preserves, enables and restores only eligible sources; ineligible saved sources stay historical')
+    engine.tier_volumes = None
+    engine.saved_scenarios = False
 
 def check_tiers(page: Page, base: str, shoot) -> None:
     page.goto(f'{base}/?transport=mock#/tiers')
@@ -938,6 +978,7 @@ def run_views(page: Page, base: str, shots: Path | None) -> None:
         check_explorer_starts(page, engine)
         check_explorer_fallback(page, engine)
         check_tiers_loading_followups(page, engine)
+        check_tiers_source_eligibility(page, engine)
         check_tiers_refused(page, engine)
     finally:
         engine.stop()

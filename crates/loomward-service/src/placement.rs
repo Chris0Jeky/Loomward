@@ -119,6 +119,7 @@ impl Inner {
                 let mut volumes = model.volumes.to_vec();
                 for v in &mut volumes {
                     if inactive.iter().any(|row| v.volume_id.as_str() == format!("vo_{row}")) {
+                        v.source_eligible = false;
                         v.tier.note = Text::new("No active grant; excluded from placement simulation. Device speed is unmeasured.").expect("bounded note");
                     }
                 }
@@ -295,19 +296,23 @@ fn bounded_space(
         .map_err(|_| EngineError::ResourceBudget {
             message: "no volume observation worker".into(),
         })?;
-    let observed = rx
-        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-        .map_err(|e| match e {
-            std::sync::mpsc::RecvTimeoutError::Timeout => EngineError::DeadlineExceeded {
-                message: "lab volume observation deadline expired".into(),
-            },
-            std::sync::mpsc::RecvTimeoutError::Disconnected => EngineError::Internal {
-                message: "lab volume observation worker failed".into(),
-                detail: None,
-            },
-        })?;
-    check(deadline)?;
-    Ok(observed)
+    receive_space(deadline, |timeout| rx.recv_timeout(timeout))
+}
+
+fn receive_space<T>(
+    deadline: Instant,
+    receive: impl FnOnce(Duration) -> Result<T, std::sync::mpsc::RecvTimeoutError>,
+) -> EngineResult<T> {
+    // recv_timeout owns the deadline decision; scheduling after receipt cannot revoke the answer.
+    receive(deadline.saturating_duration_since(Instant::now())).map_err(|e| match e {
+        std::sync::mpsc::RecvTimeoutError::Timeout => EngineError::DeadlineExceeded {
+            message: "lab volume observation deadline expired".into(),
+        },
+        std::sync::mpsc::RecvTimeoutError::Disconnected => EngineError::Internal {
+            message: "lab volume observation worker failed".into(),
+            detail: None,
+        },
+    })
 }
 
 /// One SQLite snapshot spans directory headers and every selected group's entries. Reads cannot
@@ -894,6 +899,45 @@ impl ProposalStore for Store<'_> {
 #[cfg(test)]
 mod followup_tests {
     use super::*;
+
+    #[test]
+    fn timely_space_receipt_survives_post_receive_deadline_crossing() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(Some((
+            loomward_windows::volumes::Space {
+                capacity_bytes: "1024".into(),
+                free_bytes: "512".into(),
+                cluster_bytes: Some(64),
+                read_only: Some(false),
+            },
+            0,
+        )))
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_millis(50);
+        let result = receive_space(deadline, |timeout| {
+            let received = rx.recv_timeout(timeout);
+            assert!(received.is_ok());
+            assert!(
+                Instant::now() < deadline,
+                "fixture must receive before deadline"
+            );
+            std::thread::sleep(
+                deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(1),
+            );
+            received
+        })
+        .unwrap()
+        .unwrap();
+        assert!(Instant::now() >= deadline);
+        assert_eq!(
+            (
+                result.0.capacity_bytes.as_str(),
+                result.0.free_bytes.as_str(),
+                result.1
+            ),
+            ("1024", "512", 0)
+        );
+    }
 
     #[test]
     fn placement_space_timeout_releases_read_permit_while_os_call_finishes() {

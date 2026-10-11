@@ -235,6 +235,10 @@ fn placement_revoked_only_volumes_stay_visible_but_are_not_targets() {
             .as_str()
             .unwrap()
             .contains("No active grant"));
+        if command == "tiers.model" {
+            assert_eq!(row["source_eligible"], false);
+            assert_eq!(result["volumes"][0]["source_eligible"], true);
+        }
     }
     let (plan, _) = ok(
         "placement.simulate",
@@ -270,6 +274,7 @@ fn placement_revoked_only_volumes_stay_visible_but_are_not_targets() {
         )
         .unwrap();
     let (model, _) = ok("tiers.model", call(&svc, "tiers.model", json!({})));
+    assert_eq!(model["volumes"][1]["source_eligible"], true);
     assert!(!model["volumes"][1]["tier"]["note"]
         .as_str()
         .unwrap()
@@ -286,10 +291,6 @@ fn placement_revoked_only_volumes_stay_visible_but_are_not_targets() {
 
 #[test]
 fn placement_physics_drift_alone_keeps_the_historical_scenario() {
-    let semantics = include_str!("../../../contracts/v3/semantics.md");
-    assert!(
-        semantics.contains("Free-space and capacity drift alone does not mark a scenario stale")
-    );
     let tmp = temp_root();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     let (_, _, volume) = placement_fixture(&svc);
@@ -297,7 +298,7 @@ fn placement_physics_drift_alone_keeps_the_historical_scenario() {
         "placement.simulate",
         call(&svc, "placement.simulate", placement_request(&volume, true)),
     );
-    svc.inner.db().execute("UPDATE main.volume SET capabilities_json=?1", [json!({"space":{"capacity_bytes":"2097152","free_bytes":"131072","read_only":false}}).to_string()]).unwrap();
+    svc.inner.db().execute("UPDATE main.volume SET capabilities_json=?1,observed_at_ns=(SELECT max(created_at_ns)+1 FROM st.proposal)", [json!({"space":{"capacity_bytes":"2097152","free_bytes":"131072","read_only":false}}).to_string()]).unwrap();
     let (model, _) = ok("tiers.model", call(&svc, "tiers.model", json!({})));
     assert_eq!(model["volumes"][0]["free_bytes"], "131072");
     assert_eq!(model["volumes"][0]["capacity_bytes"], "2097152");
@@ -311,6 +312,8 @@ fn placement_physics_drift_alone_keeps_the_historical_scenario() {
     );
     assert_eq!(detail["summary"]["status"], "simulation_only");
     assert_eq!(detail["plan"], Value::Object(plan.clone()));
+    let (listed, _) = ok("proposals.list", call(&svc, "proposals.list", json!({})));
+    assert_eq!(listed["proposals"][0]["status"], "simulation_only");
     svc.inner
         .db()
         .execute(

@@ -28,6 +28,7 @@ pub struct TierVolume {
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub free_fraction: Option<Fraction>,
     pub pressure: TierVolumePressure,
+    pub source_eligible: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
