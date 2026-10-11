@@ -77,6 +77,33 @@ re-send as stated.
 | `budgets.set` | Yes | `request_id`, 10 min | `budgets.get` | Loomward's own pools reset at restart. After cache expiry set a value only if the owner confirms it against the value read |
 | `telemetry.subscribe`, `telemetry.unsubscribe` | Yes | `subscription_id` | Unknown or expired IDs are `not_found` | Re-subscribe with a fresh lease |
 
+### Placement reads and stored scenarios
+
+`tiers.model`, `placement.candidates`, `placement.simulate` with `save: false`, `proposals.list`
+and `proposals.get` are reads: no mutation ticket, idempotency-cache claim or state revision change.
+Only `placement.simulate` with `save: true` writes a scenario to the existing `state.db` proposal
+table; it never writes a file-operation manifest. A duplicate canonical inputs digest returns the
+saved scenario. Saving checks the read's catalogue revision, declarations, active grants and root
+generations before committing, including catalogue changes within a generation.
+
+The catalogue adapter reads active granted roots only, in one bounded SQLite snapshot. Missing
+fresh identity-matched link observations leave relief Unknown; default `verified_only` simulation
+pre-rejects those groups. Entry-allocation what-ifs remain explicitly labelled assumptions. Missing
+reserve preferences are disclosed as an assumed zero reserve. Unknown target clusters and hidden
+descendants retain the engine's assumptions; `pre_rejected` and `excluded_volumes` are preserved.
+
+Personal placement reads catalogue metadata only. When source volume physics are not recorded,
+it refuses with `capability_unavailable`, `detail.reason = "personal_placement_physics_unobserved"`,
+explaining the missing observation. It performs no per-file native opens or content reads. A
+synthetic registered lab root may supply scoped volume-space observations; no other volumes are
+enumerated. Unprovable ancestry across overlapping grants is `partial_coverage` with the named
+reason `overlapping_grant_ancestry_unknown`.
+
+Proposals are historical simulations. Changed catalogue revisions, declarations or root
+generations mark them `stale`; inactive grants hide them from list/get. Wire IDs are bound to the
+current session and catalogue instance: after restart, clients re-list rather than reuse old IDs.
+Stored canonical row references and input digests survive restart and never confer effect authority.
+
 ## 4. Idempotency
 
 | Read-only command | Idempotency | Deadline | Pagination and unknowns |

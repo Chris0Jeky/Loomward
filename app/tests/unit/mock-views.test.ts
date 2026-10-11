@@ -13,6 +13,21 @@ const sim = (c: Client, o: Partial<PlacementSimulateRequest> = {}) =>
   });
 
 describe('mock tiers and placement', () => {
+  it('records declarations and retrieves saved scenarios without giving them effects', async () => {
+    const c = client();
+    const declared = await c.call('volumes.declare_tier', { volume_id: 'vo_f', tier: 3 });
+    expect(declared.result.volume.tier.declared_tier).toBe(3);
+    expect((await c.call('tiers.model', {})).result.volumes.find(v => v.volume_id === 'vo_f')!.tier.tier).toBe(3);
+    const { result: plan } = await sim(c, { save: true });
+    expect(plan.proposal_id).not.toBeNull();
+    const { result: list } = await c.call('proposals.list', {});
+    expect(list.proposals).toHaveLength(1);
+    const { result: detail } = await c.call('proposals.get', { proposal_id: plan.proposal_id! });
+    expect(detail.plan).toEqual(plan);
+    expect(detail.summary.status).toBe('simulation_only');
+    expect(detail.plan.filesystem_changed).toBe(false);
+    await expect(c.call('proposals.get', { proposal_id: 'pp_missing' })).rejects.toMatchObject({ code: 'not_found' });
+  });
   it('models three real-shaped volumes plus one with an unknown tier', async () => {
     const { result } = await client().call('tiers.model', {});
     const by = Object.fromEntries(result.volumes.map((v) => [v.display_name, v]));
@@ -158,5 +173,40 @@ describe('mock revocation', () => {
     await c.call('grants.revoke', { grant_id: 'gr_mock_teacher_0' });
     expect((await c.call('grants.list', {})).result.grants.find((x) => x.grant_id === 'gr_mock_teacher_0')!.revoked_at).not.toBeNull();
     await expect(c.call('roots.revoke', { root_id: 'rt_nope', purge_catalog: false })).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('moves catalog_rev on a first purge only, as a committed catalogue transaction (semantics 5)', async () => {
+    const c = client();
+    const revoke = (purge: boolean, root = 'rt_mock_1') => c.call('roots.revoke', { root_id: root, purge_catalog: purge });
+    expect((await revoke(false)).meta.catalog_rev).toBe('1'); // keeping the rows changes nothing in catalog.db
+    expect((await revoke(true)).meta.catalog_rev).toBe('2');
+    expect((await revoke(true)).meta.catalog_rev).toBe('2'); // nothing left to delete
+    expect((await revoke(true, 'rt_mock_9')).meta.catalog_rev).toBe('3');
+    expect((await c.call('tree.children', { node_id: 'nd_1', sort: 'size_desc', basis: 'logical', limit: 1, cursor: null })).meta.catalog_rev).toBe('3');
+  });
+
+  it('binds paging cursors to catalog_rev: a cursor from before a purge is stale_generation (semantics 5)', async () => {
+    const c = client();
+    const kids = (cursor: string | null) => c.call('tree.children', { node_id: 'nd_1', sort: 'size_desc', basis: 'logical', limit: 2, cursor });
+    const hits = (cursor: string | null) => c.call('search.query', { root_id: null, text: 'a', extension: null, min_bytes: null, kind: 'any', limit: 2, cursor });
+    const k = (await kids(null)).result.next_cursor!;
+    const s = (await hits(null)).result.next_cursor!;
+    expect((await kids(k)).result.items.length).toBeGreaterThan(0); // same revision: fine
+    await c.call('roots.revoke', { root_id: 'rt_mock_1', purge_catalog: true });
+    await expect(kids(k)).rejects.toMatchObject({ code: 'stale_generation' });
+    await expect(hits(s)).rejects.toMatchObject({ code: 'stale_generation' });
+    await expect(kids('forged!')).rejects.toMatchObject({ code: 'invalid_request' });
+    expect((await kids((await kids(null)).result.next_cursor)).result.items.length).toBeGreaterThan(0); // a fresh cursor works
+  });
+
+  it('shows a revoked root grant in grants.list and in roots.list, whichever call revoked it', async () => {
+    const c = client();
+    await c.call('grants.revoke', { grant_id: 'gr_mock_root_0' });
+    const grants = (await c.call('grants.list', {})).result.grants;
+    const g = grants.find((x) => x.grant_id === 'gr_mock_root_0')!;
+    expect(g.revoked_at).not.toBeNull();
+    const roots = (await c.call('roots.list', {})).result.roots;
+    expect(roots.find((r) => g.kind === 'metadata_root' && r.root_id === g.root_id)!.grant_state).toBe('revoked');
+    expect(grants.find((x) => x.grant_id === 'gr_mock_root_1')!.revoked_at).toBeNull();
   });
 });
