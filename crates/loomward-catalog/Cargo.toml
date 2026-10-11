@@ -5,6 +5,10 @@ edition = "2021"
 rust-version = "1.88"
 license = "MIT"
 
+[features]
+# Test seams for dependent crates' tests (#356); never enabled by a production build.
+test-hooks = []
+
 [dependencies]
 rusqlite = { version = "0.38.0", features = ["bundled", "hooks"] }
 crossbeam-channel = "0.5.17"

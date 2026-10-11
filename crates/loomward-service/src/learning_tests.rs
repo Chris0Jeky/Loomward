@@ -771,3 +771,47 @@ fn learning_training_window_uses_newest_distinct_objects() {
     assert_eq!(status["human_support"]["Finance"], 1);
     assert_eq!(status["human_support"]["Documents"], 9_999);
 }
+
+/// #356: feedback binds its reference through the catalogue writer, so a label cannot land inside
+/// the pending-publication window: it queues behind the publication and then meets the published
+/// catalogue, where the labelled row is gone.
+#[test]
+fn feedback_inside_the_publication_window_queues_behind_the_publication() {
+    let dir = temp_root();
+    let svc = Arc::new(open(dir.path(), DatasetClass::Synthetic));
+    let node = learning_node(&svc);
+    let scan = rescan_paused_in_publication_window(&svc);
+    let writer = svc.inner.catalog.writer();
+    let baseline = writer.queued_bytes();
+    let worker = svc.clone();
+    let label = std::thread::spawn(move || {
+        call(
+            &worker,
+            "feedback.record",
+            feedback(&node, "ce_window", Some("Documents"), false),
+        )
+    });
+    svc.inner
+        .hooks
+        .until("feedback queued behind the publication", |_| {
+            writer.queued_bytes() > baseline
+        });
+    let count = |table: &str| -> i64 {
+        svc.inner
+            .db()
+            .query_row(&format!("SELECT count(*) FROM st.{table}"), [], |r| {
+                r.get(0)
+            })
+            .unwrap()
+    };
+    assert_eq!(
+        count("object_ref"),
+        0,
+        "a reference was bound inside the window"
+    );
+    writer.publication_window().release();
+    scan.join().unwrap();
+    assert_eq!(err(label.join().unwrap()).code, ErrorCode::NotFound);
+    assert_eq!(count("object_ref"), 0);
+    assert_eq!(count("human_feedback"), 0);
+}

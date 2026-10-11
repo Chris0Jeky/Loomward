@@ -110,7 +110,7 @@ tier on E: (L17a).
 
 Not established: personal (real-disk) scans through the product, gated on #206 (excluded entries must stay
 visible, held names charged to the byte budget) and the rest of #184; P4 at 250k (#148); P12 at or under 1%
-(#160); cold-cache or HDD timings; the teacher on real data (q-8 answered broker-first on 10 October, design in `docs/superpowers/specs/2026-10-10-synthetic-inference-broker-design.md`; q-5 still open). An intermittent
+(#160); cold-cache or HDD timings; the teacher on real data (q-8 answered broker-first on 10 October, design in `docs/superpowers/specs/2026-10-10-synthetic-inference-broker-design.md`; q-5 answered on 11 October: names only, per-request preview, after the broker's canaries). An intermittent
 native watch test failure under heavy host load is tracked (#201). No file or process effect exists.
 
 ## v0.3 status, wave 5 (10 October 2026, night; counts measured at `ee39877`)
@@ -145,7 +145,7 @@ receipts withhold host hardware (processor, memory, device model, media) and pri
 
 Teacher: q-8 answered broker-first (inference broker, synthetic only, no credential reuse, no paid fallback,
 no Windows security change); the design spec is `docs/superpowers/specs/2026-10-10-synthetic-inference-broker-design.md`,
-and the owner is carrying that lane. q-5 (personal-data disclosure) stays open.
+and the owner is carrying that lane. q-5 was answered on 11 October (names only, per-request preview, after the broker's canaries).
 
 Not established: personal (real-disk) scans through the product (still gated: `personal_scan_gated_184`;
 #206 and #240 are done, #184's remainder is not); P4 at 250k (#148); P12 at or under 1% (#160); the 10M tier
@@ -228,3 +228,14 @@ Not established: P4 at 250k (#148; the bench path is at about 109k rows/s); a 10
 (#160); personal content reads (duplicates) and personal learning (q-5, #319, #329); personal shortcut
 enumeration; FAT, exFAT and RAM-disk scans (#285); a real picker grant exercised by a person. No file or process
 effect exists: duplicates, placement and collections observe, simulate or record preferences only.
+
+## Owner decisions (11 October 2026)
+
+Recorded in HUMAN_TODO q-5 and q-9 to q-19 (#360). The repository is **T2 (daily driver)**. Privacy and security
+findings now weigh lower and new evidence no longer withholds host hardware; secrets and real file names, paths or
+inventories in this public repository stay forbidden. Decided, not yet implemented (each lands in its own PR, which
+updates this file when it opens a gate): personal duplicate content reads (q-10), personal learning on the owner's labels
+(q-11), FAT/exFAT identity-unverified listing (q-12), the P4 KPI retarget and a bulk-load lane (q-13), backups as
+evidence import then a guarded restic observer then a restore-drill executor (q-14), a native-save diagnostics bundle
+(q-15), Forget a revoked root (q-9), an unsigned preview pre-release (q-17) and the hardware scrub (q-18). The teacher
+stays synthetic until the broker passes its canaries; then names only, previewed per request (q-5).
