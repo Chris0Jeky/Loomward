@@ -173,14 +173,10 @@ fn junction_inside_static_root_pointing_outside_is_refused() {
         .arg("/J")
         .arg(&junction)
         .arg(&outside)
-        .output();
-    match made {
-        Ok(out) if out.status.success() => {}
-        other => {
-            println!("SKIPPED junction_inside_static_root: mklink /J failed: {other:?}");
-            return;
-        }
-    }
+        .output()
+        .expect("cmd runs");
+    // A fixture that cannot be built fails the pin; it never passes unexercised.
+    assert!(made.status.success(), "mklink /J failed: {made:?}");
     let h = with_static(&dist);
     // Control: a real file under the root is served.
     let ok = get(&h, "/index.html");
