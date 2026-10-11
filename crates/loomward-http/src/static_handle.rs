@@ -55,3 +55,35 @@ pub(super) fn path(file: &File) -> Option<PathBuf> {
 pub(super) fn path(_: &File) -> Option<PathBuf> {
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::path;
+
+    /// #224: the handle's own path is what the static root check reads, on every platform.
+    #[test]
+    fn a_handle_reports_its_canonical_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("a.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let handle = std::fs::File::open(&file).unwrap();
+        assert_eq!(path(&handle), Some(file.canonicalize().unwrap()));
+    }
+
+    /// #224: a link opened from inside the root reports the target outside it, so the root check
+    /// fails closed. Not compiled or run on the Windows development host (Linux and macOS legs).
+    #[cfg(not(windows))]
+    #[test]
+    fn a_symlink_out_of_the_root_reports_the_target_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("root");
+        let outside = tmp.path().join("outside.txt");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(&outside, b"x").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link.txt")).unwrap();
+        let handle = std::fs::File::open(root.join("link.txt")).unwrap();
+        let reported = path(&handle).unwrap();
+        assert_eq!(reported, outside.canonicalize().unwrap());
+        assert!(!reported.starts_with(root.canonicalize().unwrap()));
+    }
+}
