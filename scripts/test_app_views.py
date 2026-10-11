@@ -68,6 +68,7 @@ class FakeEngine:
         self.candidate_gate = None  # one (arrived, release) event pair
         self.tier_volumes: list[dict] | None = None
         self.candidate_sources: list[str] = []
+        self.simulate_overrides: list = []
         self.plan_mode = 'executable'  # 'executable' or 'malformed': how placement.simulate misbehaves
         self.slice_queue: list[tuple[float, str]] = []  # (delay, root name) per tree.slice call, then the default
         self.events: queue.Queue[dict] = queue.Queue()
@@ -171,6 +172,7 @@ class FakeEngine:
                 return ('internal_error', 'synthetic saved scenarios failure')
             return {'proposals': [self.result({'command': 'proposals.get'})['summary']] if self.saved_scenarios else []}
         if cmd == 'placement.simulate':
+            self.simulate_overrides.append(p.get('overrides'))
             plan = {'mode': 'simulation', 'algorithm': 'bounded_portfolio_search_v2', 'optimality_claim': False, 'optimality_scope': 's', 'shortfall_optimal': True,
                     'search': {'complete': True, 'nodes_visited': 1, 'node_budget': 10, 'reason': 'exhausted', 'eligible_groups': 1, 'eligible_targets': 1, 'lower_bound_shortfall_bytes': '0'},
                     'proposals': [{'group_id': 'cg_a', 'source_id': 'vo_x', 'target_id': 'vo_y', 'source_bytes_relieved': '5000', 'destination_bytes_required': '5000', 'transfer_bytes': '5000', 'reason': 'bounded_capacity_budget_allocation', 'requires_consent': True, 'executable': True}],
@@ -510,8 +512,23 @@ def check_tiers_source_eligibility(page: Page, engine: FakeEngine) -> None:
     expect(selected).to_have_count(0)
     ok(len(engine.candidate_sources) == count and 'vo_blocked' not in engine.candidate_sources,
        'Tiers defaults, preserves, enables and restores only eligible sources; ineligible saved sources stay historical')
-    engine.tier_volumes = None
+    # Codex P2 on #340: a refresh that replaces an ineligible source clears that source's assumptions.
     engine.saved_scenarios = False
+    engine.tier_volumes = [{**template, 'pressure': 'ok'}, {**template, 'volume_id': 'vo_other', 'display_name': 'Other', 'pressure': 'ok'}]
+    page.goto(f'{engine.base}/#token={TOKEN}')
+    page.evaluate("location.hash = '#/tiers'")
+    expect(selected).to_contain_text('X:')
+    page.get_by_label('Assumed heat for group-a').select_option('0.9')
+    engine.tier_volumes[0]['source_eligible'] = False
+    panel.get_by_label('Declared tier for X:').select_option('5')
+    expect(selected).to_contain_text('Other')
+    expect(panel).to_have_attribute('aria-busy', 'false')
+    engine.simulate_overrides.clear()
+    page.get_by_role('button', name='Simulate', exact=True).click()
+    expect(page.get_by_role('heading', name='Alternatives')).to_be_visible()
+    ok(engine.simulate_overrides and engine.simulate_overrides[-1] == [],
+       f'a source replaced on refresh sends no stale group overrides ({engine.simulate_overrides[-1:] if engine.simulate_overrides else None})')
+    engine.tier_volumes = None
 
 def check_tiers(page: Page, base: str, shoot) -> None:
     page.goto(f'{base}/?transport=mock#/tiers')

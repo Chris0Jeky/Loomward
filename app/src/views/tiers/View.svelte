@@ -104,7 +104,10 @@
       model = result;
       error = '';
       const keep = result.volumes.find((v) => v.volume_id === source && v.source_eligible);
-      source = (keep ?? result.volumes.find((v) => v.pressure === 'pressure' && v.source_eligible) ?? result.volumes.find((v) => v.source_eligible))?.volume_id ?? '';
+      const next = (keep ?? result.volumes.find((v) => v.pressure === 'pressure' && v.source_eligible) ?? result.volumes.find((v) => v.source_eligible))?.volume_id ?? '';
+      // Assumptions name groups of the old source; a changed source starts clean, as choose() does.
+      if (next !== source) assume = {};
+      source = next;
       await loadCandidates();
       await loadProposals();
     } catch (e) {
