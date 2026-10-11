@@ -65,7 +65,7 @@ impl Hooks {
     }
 }
 
-fn open(dir: &Path, dataset: DatasetClass) -> Service {
+pub(crate) fn open(dir: &Path, dataset: DatasetClass) -> Service {
     Service::open(Config {
         state_dir: dir.to_path_buf(),
         dataset,
@@ -2128,7 +2128,7 @@ fn revocation_commits_first_then_fences_then_emits_and_is_monotone() {
 }
 
 /// A fixture root with its own identity, no listing.
-fn register(svc: &Service, file_id: u8) -> (i64, i64) {
+pub(crate) fn register(svc: &Service, file_id: u8) -> (i64, i64) {
     register_as(svc, file_id, "fixture")
 }
 
@@ -3249,7 +3249,7 @@ fn personal_session_scans_a_granted_folder_metadata_only() {
     );
 }
 
-fn entry(name: &str, bytes: u64, dir: bool) -> loomward_engine::scan::Entry {
+pub(crate) fn entry(name: &str, bytes: u64, dir: bool) -> loomward_engine::scan::Entry {
     loomward_engine::scan::Entry {
         name: name.encode_utf16().collect(),
         file_id: None,

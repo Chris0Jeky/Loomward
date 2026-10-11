@@ -1,8 +1,8 @@
 //! The catalogue-backed scan writer: the engine's [`ScanSink`] over `loomward-catalog`'s single
 //! writer (docs/41 section 7, errata #117).
 //!
-//! Every engine call becomes catalogue writer commands, and each one waits for its receipt, which
-//! the writer sends only after COMMIT: the engine never sees a publication confirmed early.
+//! Chunks queue bounded, byte-reserved writer commands. Publication/final/run barriers wait for
+//! their receipts, which the writer sends only after COMMIT: no publication is confirmed early.
 //! Listings always take the chunked form (`StageChunk` then `ListingDone`), never the one-shot
 //! `DirListing`, so a rejected chunk is fenced by the writer and its listing publishes partial.
 //!
@@ -30,7 +30,8 @@
 
 use crate::{db, now_ns, Inner};
 use loomward_catalog::{
-    Error as CatalogError, ListingOutcome, Observation, WriteCommand, WriteReply,
+    Cancellation, Error as CatalogError, ListingOutcome, Observation, Receipt, WriteCommand,
+    WriteReply,
 };
 use loomward_engine::scan::source::{
     FileIdObs, IdBasis, IncompleteReason, ListOutcome, OpenedIdentity,
@@ -40,7 +41,7 @@ use loomward_engine::{EngineError, EngineResult};
 use loomward_protocol::{EventName, RootId};
 use rusqlite::{params, OptionalExtension};
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, Weak};
 use std::time::{Duration, Instant};
 
@@ -53,6 +54,12 @@ const ENUMERATION_ERROR: u32 = 1 << 7;
 const ACCESS_DENIED: u32 = 1 << 6;
 /// `tree.invalidated` is at most 2/s per root (docs/41 section 5.2).
 const EVENT_INTERVAL: Duration = Duration::from_millis(500);
+// Covers the engine's 256-entry / 128 KiB chunks, including conversion and writer scratch.
+const CHUNK_RESERVATION: usize = 4 * 1024 * 1024;
+const IN_FLIGHT_CHUNKS: usize = 8;
+
+#[cfg(test)]
+mod tests;
 
 /// One granted root's writer state.
 struct Root {
@@ -64,6 +71,9 @@ struct Root {
     run: Option<(u64, i64)>,
     dirs: HashMap<u64, Listing>,
     last_event: Option<Instant>,
+    pending: VecDeque<Receipt>,
+    cancel: Cancellation,
+    failure: Option<EngineError>,
 }
 
 /// The listing a directory's current ticket reserves.
@@ -265,18 +275,51 @@ impl CatalogScanSink {
             run: None,
             dirs: HashMap::new(),
             last_event: None,
+            pending: VecDeque::new(),
+            cancel: Cancellation::default(),
+            failure: None,
         });
         r.grant = grant;
         r.root_dir = root_dir;
     }
 
-    // ponytail: one command per receipt, so the writer never batches a scan's listings (the
-    // 159-directory lab test takes about 6 s here); pipeline chunk receipts and wait only at
-    // ListingDone when scan throughput matters (#148).
     fn call(&self, command: WriteCommand) -> loomward_catalog::Result<WriteReply> {
         let inner = self.inner.upgrade().ok_or(CatalogError::Closed)?;
         let reply = inner.catalog.writer().call(command);
         reply
+    }
+
+    /// The engine has one writer per root. Never hold its state lock while waiting for SQLite.
+    fn drain(&self, root: &RootId, run: u64, all: bool) -> EngineResult<()> {
+        let (pending, mut failure) = {
+            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let r = Self::active(&mut s, root, run)?;
+            let count = if all {
+                r.pending.len()
+            } else {
+                1.min(r.pending.len())
+            };
+            (
+                r.pending.drain(..count).collect::<Vec<_>>(),
+                r.failure.clone(),
+            )
+        };
+        for receipt in pending {
+            if let Err(e) = receipt.wait() {
+                // A queued error can belong to a different ticket: never relist the caller's
+                // directory for it, or let that relist hide a failed chunk and complete the run.
+                failure.get_or_insert_with(|| match listing_error(e) {
+                    EngineError::StaleGeneration { .. } => {
+                        internal("queued catalogue chunk failed")
+                    }
+                    e => e,
+                });
+            }
+        }
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let r = Self::active(&mut s, root, run)?;
+        r.failure = failure.clone();
+        failure.map_or(Ok(()), Err)
     }
 
     /// The root's state for an active run `run`, refused once fenced.
@@ -440,6 +483,9 @@ impl ScanSink for CatalogScanSink {
         }
         r.run = Some((run, catalog_run));
         r.dirs.clear();
+        r.pending.clear();
+        r.cancel = Cancellation::default();
+        r.failure = None;
         Ok(())
     }
 
@@ -493,6 +539,7 @@ impl ScanSink for CatalogScanSink {
         run: u64,
         ticket: ListingTicket,
     ) -> EngineResult<ListingTicket> {
+        self.drain(root, run, true)?;
         let (catalog_run, staged) = {
             let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
             let r = Self::active(&mut s, root, run)?;
@@ -538,7 +585,19 @@ impl ScanSink for CatalogScanSink {
                 ticket,
                 entries,
             } => {
-                let (catalog_run, seq) = {
+                let full = {
+                    let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                    let r = Self::active(&mut s, root, run)?;
+                    Self::current(r, ticket)?;
+                    if let Some(e) = &r.failure {
+                        return Err(e.clone());
+                    }
+                    r.pending.len() >= IN_FLIGHT_CHUNKS
+                };
+                if full {
+                    self.drain(root, run, false)?;
+                }
+                let (catalog_run, seq, cancel) = {
                     let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
                     let r = Self::active(&mut s, root, run)?;
                     let catalog_run = r.run.unwrap().1;
@@ -547,8 +606,16 @@ impl ScanSink for CatalogScanSink {
                         listing.skipped += u64::from(e.excluded);
                         listing.errors += u64::from(e.traversal_error.is_some());
                     }
-                    (catalog_run, listing.seq)
+                    (catalog_run, listing.seq, r.cancel.clone())
                 };
+                let inner = self
+                    .inner
+                    .upgrade()
+                    .ok_or_else(|| internal("catalogue closed"))?;
+                let writer = inner.catalog.writer();
+                let permit = writer
+                    .reserve_bytes(CHUNK_RESERVATION, &cancel)
+                    .map_err(listing_error)?;
                 let (mut files, mut dirs) = (Vec::new(), Vec::new());
                 for o in entries.iter().map(observation) {
                     if o.attrs & 0x10 != 0 {
@@ -560,19 +627,25 @@ impl ScanSink for CatalogScanSink {
                 if files.is_empty() && dirs.is_empty() {
                     return Ok(());
                 }
-                self.call(WriteCommand::StageChunk {
-                    run_id: catalog_run,
-                    dir_id: ticket.dir as i64,
-                    seq,
-                    files,
-                    dirs,
-                })
-                .map_err(listing_error)?;
+                let receipt = writer
+                    .send_reserved(
+                        WriteCommand::StageChunk {
+                            run_id: catalog_run,
+                            dir_id: ticket.dir as i64,
+                            seq,
+                            files,
+                            dirs,
+                        },
+                        permit,
+                        &cancel,
+                    )
+                    .map_err(listing_error)?;
                 let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
                 let r = Self::active(&mut s, root, run)?;
                 let listing = Self::current(r, ticket)?;
                 listing.seq += 1;
                 listing.staged = true;
+                r.pending.push_back(receipt);
                 Ok(())
             }
             ScanMessage::ListingDone {
@@ -587,14 +660,28 @@ impl ScanSink for CatalogScanSink {
                     let listing = Self::current(r, ticket)?;
                     (catalog_run, listing.skipped, listing.errors)
                 };
-                self.call(WriteCommand::ListingDone {
-                    run_id: catalog_run,
-                    dir_id: ticket.dir as i64,
-                    outcome: outcome(done),
-                    skipped,
-                    errors,
-                })
-                .map_err(listing_error)?;
+                let inner = self
+                    .inner
+                    .upgrade()
+                    .ok_or_else(|| internal("catalogue closed"))?;
+                // FIFO puts publication after its chunks; the writer fences a failed chunk's
+                // listing to partial. Queue it first so chunk + publication can share COMMIT,
+                // then acknowledge neither until every chunk and publication receipt succeeds.
+                let receipt = inner
+                    .catalog
+                    .writer()
+                    .send(WriteCommand::ListingDone {
+                        run_id: catalog_run,
+                        dir_id: ticket.dir as i64,
+                        outcome: outcome(done),
+                        skipped,
+                        errors,
+                    })
+                    .map_err(listing_error)?;
+                let staged = self.drain(root, run, true);
+                let published = receipt.wait().map_err(listing_error);
+                staged?;
+                published?;
                 {
                     let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
                     let r = Self::active(&mut s, root, run)?;
@@ -610,6 +697,7 @@ impl ScanSink for CatalogScanSink {
                 Ok(())
             }
             ScanMessage::DirFinal { run, ticket, .. } => {
+                self.drain(root, run, true)?;
                 let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
                 let r = Self::active(&mut s, root, run)?;
                 Self::current(r, ticket).map(|_| ())
@@ -638,6 +726,7 @@ impl ScanSink for CatalogScanSink {
         _scope: &RunScope,
         complete: bool,
     ) -> EngineResult<()> {
+        let staged = self.drain(root, run, true);
         let catalog_run = {
             let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
             let r = Self::active(&mut s, root, run)?;
@@ -654,7 +743,13 @@ impl ScanSink for CatalogScanSink {
                 finished_at_ns: now_ns(),
             })
         };
-        if let Err(e) = end(if complete { "completed" } else { "cancelled" }) {
+        if let Err(e) = end(if staged.is_err() {
+            "failed"
+        } else if complete {
+            "completed"
+        } else {
+            "cancelled"
+        }) {
             // Release the catalogue run, or every later begin_run answers busy until restart.
             let _ = end("failed");
             // Throttling may have held back the last publication's event: announce it now.
@@ -662,6 +757,7 @@ impl ScanSink for CatalogScanSink {
             return Err(listing_error(e));
         }
         self.invalidated(root, true);
+        staged?;
         if std::env::var_os("LOOMWARD_SCAN_PROFILE").is_some() {
             if let Some(inner) = self.inner.upgrade() {
                 eprintln!(
@@ -677,9 +773,11 @@ impl ScanSink for CatalogScanSink {
     fn fence_root(&self, root: &RootId) -> EngineResult<()> {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(r) = s.roots.get_mut(root) {
+            r.cancel.cancel();
             r.fenced = Some(r.grant);
             r.run = None;
             r.dirs.clear();
+            r.pending.clear();
         }
         Ok(())
     }

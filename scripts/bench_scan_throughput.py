@@ -36,7 +36,7 @@ def main():
         if a.roots_log.parent.name != '.loomward':
             p.error('--roots-log must be a file in a gitignored .loomward/ directory')
         with a.roots_log.open('a', encoding='utf-8') as roots_log:
-            roots_log.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')}\tbench_scan_throughput\t{a.root.resolve()}\n")
+            roots_log.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')}\tbench_scan_throughput\t{a.source}\t{a.root.resolve()}\n")
             roots_log.flush()
             os.fsync(roots_log.fileno())
     # Only synthetic roots get an independent walk; a real root gets one product scan per variant.
