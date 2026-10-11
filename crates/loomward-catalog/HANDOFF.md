@@ -1963,3 +1963,36 @@ Pending reference intents cannot target unpublished rows, so reference retiremen
 bulk listings. Watch repairs (`Repair`) touch only live rows and cannot expose the build; refresh
 and targeted runs are never bulk. Unbounded `temp_store=MEMORY` and full-volume multilink remain
 as before.
+
+# First-scan bulk load (#148): receipt - 2026-10-11
+
+## Changed
+
+Branch `perf/first-scan-bulk-load-148` from main `6e6682d`. Built as designed above; the
+evidence is [first-scan-bulk-load-148](../../evidence/v3/first-scan-bulk-load-148.md).
+
+- `src/db.rs`: `bulk_tables` derives `bulk_dir`/`bulk_file` from the live DDL at every open (also
+  the crash cleanup) and recreates `bulk_file` after a lone swap.
+- `src/writer.rs`: `Writer::set_bulk_first_scan`; a `Tables` pair threaded through `publish`,
+  `stage`, `old_files`, `insert_files`, `active_run`, `DirFinal` and dirty marking; eligibility at
+  `BeginRun`; `share_sequences`; `swap_bulk` at EndRun completed or cancelled; discard on EndRun
+  failed and on revocation; reference retirement skipped for bulk listings.
+- `src/writer/bulk_tests.rs`: six tests (equivalence, atomicity, crash, commit failure,
+  revocation, failed run and incremental second scan).
+- `examples/bench.rs`: the P4 bench drives the bulk path and adds
+  `P4.through_end_run_rows_per_second`; insert-only P4 now excludes the swap, so compare the
+  through-EndRun figure across variants.
+- Service: the flag is on; the sink's child lookup reads `bulk_dir`.
+
+No public reply, command, protocol, dependency or schema-version change. Readers no longer see a
+root's first full scan grow listing by listing: the root stays empty until EndRun (owner q-13).
+
+## Verified, NOT verified, residual risk
+
+See the evidence file for tests, the fourteen killed mutations and the gates. NOT verified:
+power loss or IOERR during the swap (only a COMMIT fault and a kill after the last build commit),
+10M rows, peak memory of a large swap, cold cache, Linux, hosted CI, real-folder KPI.
+Residual risk: a swap rewrites the whole build in one EndRun transaction, so the final COMMIT and
+checkpoint carry it at once; the root shows no rows during a long first scan; ctx bookkeeping for
+a build is not rolled back if a revocation's catalogue savepoint itself fails (orphaned bulk rows
+then wait for the next open).
