@@ -332,12 +332,20 @@ return `resource_budget`, never a truncated list. There is no rename command.
 `collections.update_members` requires `expected_state_rev`; omission is `invalid_request`, a
 mismatch is `stale_generation` / `state_rev_changed` before any state write. Adds/removes are atomic
 sets of current node IDs, require durable native identity and an active root, and may not overlap.
+Optional `remove_members` is a unique set of at most 500 stable `member_id` values from a members
+page (omission means empty). It removes only membership in the named collection, even when the
+object vanished, was replaced or its root is unavailable; it never resolves or authorises an
+object. IDs use canonical `om_<positive decimal>` spelling; malformed IDs are `invalid_request`.
+An ID absent from this collection is a no-op. Adding and removing the same reference is refused.
 An unchanged set is a no-op. Removed or replaced objects are never rebound by path. Members bind
 `object_ref`, including pending reference publication during rescans; unresolved references remain
-members until explicitly removed through a resolvable node ID. `member_id` is a stable local
-reference identifier, not an operation grant. `status` is `resolved`, `root_revoked` or `unresolved`;
-`entry` is null for the latter two, so no names, paths or zero sizes are fabricated. Collection
+members until explicitly removed by node ID or `remove_members`. `member_id` is a stable local
+reference identifier, not an operation grant. `status` is `resolved`, `root_revoked`,
+`root_unavailable` (another non-active grant state) or `unresolved`;
+`entry` is present exactly when resolved, so no names, paths or zero sizes are fabricated. Collection
 `member_count` includes unresolved members; `logical_bytes` is null if any member's size is unknown
 or directory coverage is incomplete. The sum is virtual entry size, not reclaimable disk space.
 Pages order by durable member ID and cursors bind the collection, session, catalogue instance,
 `catalog_rev` and `state_rev`. Changed limits may reuse a cursor; changed bindings may not.
+Member hydration shares the page deadline and its interrupt handle; expiry stops further rows
+and interrupts an ongoing catalogue inspection rather than retaining a read slot for the page.

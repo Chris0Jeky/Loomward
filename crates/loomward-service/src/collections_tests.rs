@@ -386,3 +386,391 @@ fn collections_reference_survives_rescan_but_not_replacement() {
         }
     }
 }
+
+#[test]
+fn collections_protection_refuses_revoked_root() {
+    collection_refusal(
+        "UPDATE st.root_grant SET state='revoked',revoked_at_ns=1",
+        ErrorCode::NotFound,
+    );
+}
+#[test]
+fn collections_protection_refuses_identity_changed() {
+    collection_refusal(
+        "UPDATE st.root_grant SET state='identity_changed'",
+        ErrorCode::NotFound,
+    );
+}
+#[test]
+fn collections_protection_refuses_absent_subtree() {
+    collection_refusal(
+        "UPDATE main.dir SET listing_state='absent_pending'",
+        ErrorCode::NotFound,
+    );
+}
+#[test]
+fn collections_protection_refuses_unsupported_volume() {
+    collection_refusal(
+        "UPDATE main.volume SET filesystem='exFAT'",
+        ErrorCode::CapabilityUnavailable,
+    );
+}
+#[test]
+fn collections_protection_refuses_label_view() {
+    collection_refusal(
+        "UPDATE st.collection SET kind='label_view'",
+        ErrorCode::CapabilityUnavailable,
+    );
+}
+fn collection_refusal(sql: &str, code: ErrorCode) {
+    let (_dir, svc, ids) = setup(DatasetClass::Synthetic);
+    let id = create(&svc, "Projects");
+    svc.inner.db().execute_batch(sql).unwrap();
+    let before = svc.inner.revisions().unwrap();
+    assert_eq!(err(update(&svc, &id, &ids, &[], before.1)).code, code);
+    assert_eq!(svc.inner.revisions().unwrap(), before);
+    for table in ["object_ref", "collection_member"] {
+        assert_eq!(
+            svc.inner
+                .db()
+                .query_row(&format!("SELECT count(*) FROM st.{table}"), [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+    // A successful control pins the refusal to this guard, rather than a broken mutation.
+    svc.inner.db().execute_batch("UPDATE st.root_grant SET state='active',revoked_at_ns=NULL; UPDATE main.dir SET listing_state='complete'; UPDATE main.volume SET filesystem='NTFS'; UPDATE st.collection SET kind='human'").unwrap();
+    assert_eq!(
+        ok(
+            "collections.update_members",
+            update(&svc, &id, &ids, &[], before.1)
+        )
+        .0["member_count"],
+        3
+    );
+}
+
+#[test]
+fn collections_protection_caps_creates_at_256() {
+    let (_dir, svc, _) = setup(DatasetClass::Synthetic);
+    svc.inner.db().execute_batch("WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<255) INSERT INTO st.collection(name,kind,created_at_ns) SELECT 'Collection '||i,'human',0 FROM n").unwrap();
+    create(&svc, "Last");
+    let before = svc.inner.revisions().unwrap();
+    assert_eq!(
+        err(call(&svc, "collections.create", json!({"name":"Too many"}))).code,
+        ErrorCode::ResourceBudget
+    );
+    assert_eq!(svc.inner.revisions().unwrap(), before);
+    assert_eq!(
+        ok(
+            "collections.list",
+            call(&svc, "collections.list", json!({}))
+        )
+        .0["collections"]
+            .as_array()
+            .unwrap()
+            .len(),
+        256
+    );
+}
+
+#[test]
+fn collections_remove_unresolved_by_member_id() {
+    for damage in [
+        "DELETE FROM main.file WHERE id=1",
+        "UPDATE main.file SET created_ft=124 WHERE id=1",
+        "UPDATE st.root_grant SET state='revoked',revoked_at_ns=1",
+    ] {
+        let (_dir, svc, ids) = setup(DatasetClass::Synthetic);
+        let id = create(&svc, "Projects");
+        ok(
+            "collections.update_members",
+            update(&svc, &id, &ids[..1], &[], 2),
+        );
+        let other = create(&svc, "Other");
+        ok(
+            "collections.update_members",
+            update(&svc, &other, &ids[..1], &[], 4),
+        );
+        svc.inner.db().execute_batch(damage).unwrap();
+        let (page, meta) = ok("collections.members", members(&svc, &id, 200, Value::Null));
+        assert!(page["items"][0]["entry"].is_null());
+        let mut req = request(
+            "collections.update_members",
+            json!({"collection_id":id,"add":[],"remove":[],"remove_members":[page["items"][0]["member_id"]]}),
+        );
+        assert_eq!(
+            err(svc.call(req.clone(), &CallContext::http())).code,
+            ErrorCode::InvalidRequest
+        );
+        req.request_id = RequestId::new("remove_stale").unwrap();
+        req.expected_state_rev = Some(Generation(0));
+        assert_eq!(
+            err(svc.call(req.clone(), &CallContext::http())).code,
+            ErrorCode::StaleGeneration
+        );
+        req.request_id = RequestId::new("remove_current").unwrap();
+        req.expected_state_rev = meta.state_rev;
+        let (_, result_meta) = ok(
+            "collections.update_members",
+            svc.call(req, &CallContext::http()),
+        );
+        assert_eq!(
+            result_meta.state_rev.unwrap().get(),
+            meta.state_rev.unwrap().get() + 1
+        );
+        assert_eq!(
+            ok("collections.members", members(&svc, &id, 200, Value::Null)).0["total"],
+            0
+        );
+        assert_eq!(
+            ok(
+                "collections.members",
+                members(&svc, &other, 200, Value::Null)
+            )
+            .0["total"],
+            1
+        );
+    }
+}
+
+#[test]
+fn collections_non_revoked_inactive_grant_is_unavailable() {
+    let (_dir, svc, ids) = setup(DatasetClass::Synthetic);
+    let id = create(&svc, "Projects");
+    ok(
+        "collections.update_members",
+        update(&svc, &id, &ids[..1], &[], 2),
+    );
+    svc.inner
+        .db()
+        .execute("UPDATE st.root_grant SET state='identity_changed'", [])
+        .unwrap();
+    let (page, _) = ok("collections.members", members(&svc, &id, 200, Value::Null));
+    assert_eq!(page["items"][0]["status"], "root_unavailable");
+    assert!(page["items"][0]["entry"].is_null());
+}
+
+#[test]
+fn collections_names_reject_del_and_c1_controls() {
+    let (_dir, svc, _) = setup(DatasetClass::Synthetic);
+    for control in ['\u{7f}', '\u{85}', '\u{9f}'] {
+        assert_eq!(
+            err(call(
+                &svc,
+                "collections.create",
+                json!({"name":format!("Project{control}")})
+            ))
+            .code,
+            ErrorCode::InvalidRequest
+        );
+    }
+    create(&svc, "Projects 日本語");
+}
+
+#[test]
+fn collections_protection_rejects_publication_race() {
+    for sql in [
+        "UPDATE main.revision SET catalog_rev=catalog_rev+1",
+        "UPDATE st.revision SET state_rev=state_rev+1",
+    ] {
+        let (_dir, svc, ids) = setup(DatasetClass::Synthetic);
+        let id = create(&svc, "Projects");
+        ok(
+            "collections.update_members",
+            update(&svc, &id, &ids, &[], 2),
+        );
+        let svc = Arc::new(svc);
+        svc.inner
+            .hooks
+            .closed
+            .lock()
+            .unwrap()
+            .push((Command::CollectionsMembers, "hydrated"));
+        let worker = svc.clone();
+        let collection_id = id.clone();
+        let read = std::thread::spawn(move || members(&worker, &collection_id, 200, Value::Null));
+        svc.inner.hooks.until("hydrated", |h| {
+            h.arrived
+                .lock()
+                .unwrap()
+                .contains(&(Command::CollectionsMembers, "hydrated"))
+        });
+        svc.inner.db().execute(sql, []).unwrap();
+        svc.inner
+            .hooks
+            .open(Command::CollectionsMembers, "hydrated");
+        let e = err(read.join().unwrap());
+        assert_eq!(e.code, ErrorCode::StaleGeneration);
+        assert_eq!(reason(&e), Some("revision_changed"));
+        assert_eq!(
+            ok("collections.members", members(&svc, &id, 200, Value::Null)).0["total"],
+            3
+        );
+    }
+}
+
+#[test]
+fn collections_hydration_stops_at_page_deadline_and_releases_slot() {
+    let (_dir, svc, ids) = setup(DatasetClass::Synthetic);
+    let id = create(&svc, "Projects");
+    ok(
+        "collections.update_members",
+        update(&svc, &id, &ids, &[], 2),
+    );
+    let svc = Arc::new(svc);
+    svc.inner
+        .hooks
+        .closed
+        .lock()
+        .unwrap()
+        .push((Command::CollectionsMembers, "hydrate"));
+    let worker = svc.clone();
+    let read = std::thread::spawn(move || {
+        let mut req = request(
+            "collections.members",
+            json!({"collection_id":id,"limit":200,"cursor":null}),
+        );
+        req.deadline_ms = Some(Int::new(200).unwrap());
+        worker.call(req, &CallContext::http())
+    });
+    svc.inner.hooks.until("hydrate", |h| {
+        h.arrived
+            .lock()
+            .unwrap()
+            .contains(&(Command::CollectionsMembers, "hydrate"))
+    });
+    assert_eq!(err(read.join().unwrap()).code, ErrorCode::DeadlineExceeded);
+    svc.inner.hooks.open(Command::CollectionsMembers, "hydrate");
+    svc.inner.hooks.until("read slot released", |_| {
+        *svc.inner.reads.lock().unwrap() == 0
+    });
+    assert!(
+        !svc.inner
+            .hooks
+            .arrived
+            .lock()
+            .unwrap()
+            .contains(&(Command::CollectionsMembers, "hydrated")),
+        "an expired page must not finish hydrating"
+    );
+    assert_eq!(
+        ok(
+            "collections.list",
+            call(&svc, "collections.list", json!({}))
+        )
+        .0["collections"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn collections_hydration_interrupt_reaches_running_inspection() {
+    let (_dir, svc, _) = setup(DatasetClass::Synthetic);
+    svc.inner.db().execute_batch("UPDATE main.dir SET file_id=CAST(printf('%016d',id) AS BLOB),created_ft=123 WHERE id=1; WITH RECURSIVE n(i) AS (VALUES(10) UNION ALL SELECT i+1 FROM n WHERE i<20009) INSERT INTO main.file(id,dir_id,name,file_id,logical,allocated,created_ft,attrs,born_run,seen_run) SELECT i,1,'entry'||i,CAST(printf('%016d',i) AS BLOB),1,1,123,0,1,1 FROM n").unwrap();
+    let born = svc
+        .inner
+        .db()
+        .query_row("SELECT born_run FROM main.dir WHERE id=1", [], |r| r.get(0))
+        .unwrap();
+    let node = svc
+        .inner
+        .ids
+        .seal(NodeKey::Dir(1), born, &svc.inner.instance);
+    let id = create(&svc, "Projects");
+    ok(
+        "collections.update_members",
+        update(&svc, &id, &[node], &[], 2),
+    );
+    // This control proves the bounded synthetic directory is inspectable without cancellation.
+    assert_eq!(
+        ok("collections.members", members(&svc, &id, 200, Value::Null)).0["items"][0]["status"],
+        "resolved"
+    );
+    let svc = Arc::new(svc);
+    let work = Arc::new(crate::ReadWork {
+        deadline: Instant::now() + Duration::from_secs(5),
+        interrupt: Mutex::new(None),
+    });
+    svc.inner.hooks.arrived.lock().unwrap().clear();
+    svc.inner
+        .hooks
+        .closed
+        .lock()
+        .unwrap()
+        .push((Command::CollectionsMembers, "hydrate"));
+    let worker = svc.clone();
+    let cancellation = work.clone();
+    let read = std::thread::spawn(move || {
+        worker.inner.collections_members(
+            &request(
+                "collections.members",
+                json!({"collection_id":id,"limit":200,"cursor":null}),
+            ),
+            Some(&cancellation),
+        )
+    });
+    svc.inner.hooks.until("hydrate", |h| {
+        h.arrived
+            .lock()
+            .unwrap()
+            .contains(&(Command::CollectionsMembers, "hydrate"))
+    });
+    svc.inner.hooks.open(Command::CollectionsMembers, "hydrate");
+    let stop = Instant::now() + Duration::from_secs(1);
+    while !read.is_finished() && Instant::now() < stop {
+        work.interrupt.lock().unwrap().as_ref().unwrap().interrupt();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+        read.join().unwrap().is_err(),
+        "cancellation must reach catalogue inspection, not its idle state connection"
+    );
+}
+
+#[test]
+fn collections_remove_members_validation_and_noop() {
+    let (_dir, svc, ids) = setup(DatasetClass::Synthetic);
+    let id = create(&svc, "Projects");
+    ok(
+        "collections.update_members",
+        update(&svc, &id, &ids[..1], &[], 2),
+    );
+    for (add, remove_members, expected) in [
+        (json!([]), json!([]), None),
+        (json!([]), json!(["om_99"]), None),
+        (json!([]), json!(["om_01"]), Some(ErrorCode::InvalidRequest)),
+        (
+            json!([]),
+            json!(["om_1", "om_1"]),
+            Some(ErrorCode::InvalidRequest),
+        ),
+        (json!([]), Value::Null, Some(ErrorCode::InvalidRequest)),
+        (
+            json!(ids[..1]),
+            json!(["om_1"]),
+            Some(ErrorCode::InvalidRequest),
+        ),
+    ] {
+        let before = svc.inner.revisions().unwrap();
+        let mut req = request(
+            "collections.update_members",
+            json!({"collection_id":id,"add":add,"remove":[],"remove_members":remove_members}),
+        );
+        req.expected_state_rev = Some(Generation(before.1 as u64));
+        let response = svc.call(req, &CallContext::http());
+        if let Some(code) = expected {
+            assert_eq!(err(response).code, code);
+        } else {
+            assert_eq!(
+                ok("collections.update_members", response).0["member_count"],
+                1
+            );
+        }
+        assert_eq!(svc.inner.revisions().unwrap(), before);
+    }
+}

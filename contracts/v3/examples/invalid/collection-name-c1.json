@@ -1,0 +1,5 @@
+{
+  "def": "CollectionCreateRequest",
+  "reason": "C1 NEXT LINE is a Unicode control character",
+  "value": { "name": "Project\u0085" }
+}
