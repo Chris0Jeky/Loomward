@@ -80,8 +80,8 @@ fn zero_registry_size_is_unknown_not_a_known_zero_byte_size() {
             reason: "provider reported zero (often unset)".into()
         }
     );
-    // Same coverage rule as any other unknown evidence field: the provider is Partial.
-    assert_eq!(zero[0].state, ProviderState::Partial);
+    // Unset is not unreadable: an unknown zero size keeps the provider's coverage.
+    assert_eq!(zero[0].state, ProviderState::Available);
     let one_kib = rows(&[(
         "EstimatedSize",
         RegistryValue::Bytes {
