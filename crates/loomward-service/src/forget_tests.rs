@@ -325,17 +325,26 @@ fn forgetting_scrubs_the_migration_copies_so_no_file_keeps_the_name() {
             json!({"node_id": node_a, "client_event_id": "ce_copy_forget", "label": "Documents", "retract": false}),
         ),
     );
-    // The copy a v5 install's upgrade leaves (an older schema: no root_forgotten table), and a copy
-    // in a shape the scrub does not know that still names the root.
-    let before_v5 = dir.path().join("state.before-v5.db");
-    svc.inner
-        .db()
-        .execute("VACUUM st INTO ?1", [before_v5.to_string_lossy().as_ref()])
-        .unwrap();
-    rusqlite::Connection::open(&before_v5)
-        .unwrap()
-        .execute_batch("DROP TABLE root_forgotten")
-        .unwrap();
+    // The copies a v5 and a v6 install's upgrades leave (older schemas: no root_forgotten, and at v5
+    // no backup_evidence either), and a copy in a shape the scrub does not know that names the root.
+    let copies = [
+        (
+            "state.before-v5.db",
+            "DROP TABLE root_forgotten; DROP TABLE backup_evidence",
+        ),
+        ("state.before-v6.db", "DROP TABLE root_forgotten"),
+    ];
+    for (name, downgrade) in copies {
+        let copy = dir.path().join(name);
+        svc.inner
+            .db()
+            .execute("VACUUM st INTO ?1", [copy.to_string_lossy().as_ref()])
+            .unwrap();
+        rusqlite::Connection::open(&copy)
+            .unwrap()
+            .execute_batch(downgrade)
+            .unwrap();
+    }
     let unknown = dir.path().join("state.before-v1.db");
     let legacy = rusqlite::Connection::open(&unknown).unwrap();
     legacy
@@ -345,8 +354,16 @@ fn forgetting_scrubs_the_migration_copies_so_no_file_keeps_the_name() {
         .execute("INSERT INTO legacy_root VALUES(?1)", [PATH_A])
         .unwrap();
     drop(legacy);
-    assert!(holders(dir.path(), PATH_A).contains(&"state.before-v5.db".to_owned()));
-    assert!(holders(dir.path(), PATH_A).contains(&"state.before-v1.db".to_owned()));
+    for name in [
+        "state.before-v5.db",
+        "state.before-v6.db",
+        "state.before-v1.db",
+    ] {
+        assert!(
+            holders(dir.path(), PATH_A).contains(&name.to_owned()),
+            "{name}"
+        );
+    }
 
     ok(
         "roots.revoke",
@@ -360,17 +377,22 @@ fn forgetting_scrubs_the_migration_copies_so_no_file_keeps_the_name() {
     drop(svc);
     let left = holders(dir.path(), PATH_A);
     assert!(left.is_empty(), "the root's path survived in {left:?}");
-    // The known copy is scrubbed, not discarded: the other root and the owner's rows stay in it.
-    assert!(holders(dir.path(), PATH_B).contains(&"state.before-v5.db".to_owned()));
-    let copy = rusqlite::Connection::open(&before_v5).unwrap();
-    let kept: (i64, i64) = copy
-        .query_row(
-            "SELECT (SELECT count(*) FROM root_grant),(SELECT count(*) FROM human_feedback)",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(kept, (2, 0));
+    // The known copies are scrubbed, not discarded: the other root and the owner's rows stay in them.
+    for (name, _) in copies {
+        assert!(
+            holders(dir.path(), PATH_B).contains(&name.to_owned()),
+            "{name}"
+        );
+        let copy = rusqlite::Connection::open(dir.path().join(name)).unwrap();
+        let kept: (i64, i64) = copy
+            .query_row(
+                "SELECT (SELECT count(*) FROM root_grant),(SELECT count(*) FROM human_feedback)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(kept, (2, 0), "{name}");
+    }
     assert!(
         !unknown.exists(),
         "a copy the scrub cannot clear is removed"
