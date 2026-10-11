@@ -11,6 +11,17 @@ const job = (patch: Partial<Job> = {}): Job => ({ job_id: 'jb_fixture', kind: 'd
 afterEach(() => { session.client = null; vi.useRealTimers(); });
 
 describe('duplicates jobs', () => {
+  it('validates optional min_bytes as an exact unsigned byte count', async () => {
+    for (const min_bytes of [null, -1, 4, '-1', '01', '', '18446744073709551616', '9'.repeat(21)]) {
+      const transport = createMockTransport({ count: 32 });
+      await expect(transport.call({ protocol: 'loomward/3', request_id: 'rq_fixture', command: 'duplicates.inspect', payload: { root_id: 'rt_mock_10', budget: { max_candidates: 5, max_bytes: '100', max_ms: 1000, min_bytes } } })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_request' } });
+    }
+    vi.useFakeTimers();
+    for (const min_bytes of [undefined, '0', '4', '18446744073709551615']) {
+      const client = new Client(createMockTransport({ count: 32 }));
+      await expect(client.call('duplicates.inspect', { root_id: 'rt_mock_10', budget: { max_candidates: 5, max_bytes: '100', max_ms: 1000, ...(min_bytes === undefined ? {} : { min_bytes }) } })).resolves.toBeDefined();
+    }
+  });
   it('retains terminal evidence and ignores stale snapshots and other kinds', () => {
     const store = new Duplicates();
     const terminal = job({ rev: 3, state: 'completed', duplicates: DUPLICATES_FIXTURE });
