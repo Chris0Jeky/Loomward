@@ -457,6 +457,25 @@ impl ViewService for Service {
             );
             return ResponseEnvelope::error(Some(id), e, None);
         }
+        // q-11 opens local learning only: no teacher path ever sees personal data (q-5 unmet).
+        if self.inner.dataset == DatasetClass::Personal
+            && matches!(
+                command,
+                Command::TeacherPreview
+                    | Command::TeacherRun
+                    | Command::TeacherResults
+                    | Command::GrantsCreateDisclosure
+            )
+        {
+            let e = with_reason(
+                fail(
+                    ErrorCode::CapabilityUnavailable,
+                    "The teacher never receives personal data.",
+                ),
+                "teacher_personal_gated",
+            );
+            return ResponseEnvelope::error(Some(id), e, None);
+        }
         if command.wave() >= 3
             && !matches!(
                 command,
