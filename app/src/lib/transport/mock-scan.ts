@@ -1,5 +1,5 @@
 import type {
-  CoverageState, ErrorBody, ErrorCode, EventKey, EventMap, Job, JobList, JobResult, Root, RootScanState, ScanProgress, SubtreeTotals,
+  DuplicateReport, CoverageState, ErrorBody, ErrorCode, EventKey, EventMap, Job, JobList, JobResult, Root, RootScanState, ScanProgress, SubtreeTotals,
 } from '../contracts.gen';
 
 // Invented, contract-shaped scan jobs for the mock transport: two synthetic lab roots the mock "service"
@@ -18,6 +18,11 @@ const LABS: LabSeed[] = [
   { id: 'rt_mock_10', name: '[mock] lab-complete', files: 1284, dirs: 212, bytes: 3_412_001_792n, unreadable: 0, coverage: 'complete' },
   { id: 'rt_mock_11', name: '[mock] lab-unreadable-folders', files: 947, dirs: 160, bytes: 1_907_388_416n, unreadable: 4, coverage: 'partial' },
 ];
+export const DUPLICATES_FIXTURE: DuplicateReport = {
+  entries: ['equal-a.txt', 'equal-b.txt', 'linked.txt', 'alias.txt', 'changed.txt'].map((relative_path) => ({ relative_path, logical_bytes: '16' })),
+  groups: [[0, 1]], links: [[2, 3]], links_not_compared: 2,
+  skipped: [{ entry: 4, reason: 'changed_during_read' }], bytes_read: '96', partial: true, truncated: false, stop: null,
+};
 export const LAB_ROOT_IDS = LABS.map((l) => l.id);
 
 const RUN_MS = 4000;
@@ -78,7 +83,7 @@ export function createScanMock(o: ScanMockOptions): ScanMock {
     if (o.isRevoked(id)) o.fail('permission_denied', "the root's grant is not active");
     const seed = LABS.find((l) => l.id === id);
     if (!seed) o.fail('permission_denied', 'a synthetic session scans registered lab roots only', { reason: 'synthetic_session_requires_lab_root' });
-    const running = jobs.find((j) => j.root_id === id && active(j));
+    const running = jobs.find((j) => j.kind === 'scan' && j.root_id === id && active(j));
     if (running) o.fail('busy', 'a scan of this root is already running', { job_id: running.job_id });
     const job: Job = { job_id: `jb_mock_${++n}`, seq: n, rev: 0, kind: 'scan', state: 'queued', root_id: id, created_at: iso(), started_at: null, finished_at: null, progress: null, coverage: null, error: null };
     jobs.unshift(job);
@@ -101,15 +106,45 @@ export function createScanMock(o: ScanMockOptions): ScanMock {
     return { job: { ...job } };
   }
 
+  function inspect(p: Record<string, unknown>): JobResult {
+    const id = String(p.root_id);
+    if (o.isRevoked(id)) o.fail('permission_denied', 'grant_not_active');
+    if (!LAB_ROOT_IDS.includes(id)) o.fail('permission_denied', 'Synthetic inspection requires a registered lab root.');
+    if (jobs.some((j) => j.kind === 'duplicates' && j.root_id === id && active(j))) o.fail('busy', 'inspection active');
+    const budget = p.budget as { max_bytes?: string; max_candidates?: number; max_ms?: number } | undefined;
+    if (!budget || !Number.isInteger(budget.max_candidates) || budget.max_candidates! < 2 || budget.max_candidates! > 200 ||
+      !Number.isInteger(budget.max_ms) || budget.max_ms! < 1 || budget.max_ms! > 60000 || typeof budget.max_bytes !== 'string' || !/^(0|[1-9][0-9]*)$/.test(budget.max_bytes)) o.fail('invalid_request', 'duplicate budget');
+    const job: Job = { job_id: `jb_mock_${++n}`, seq: n, rev: 0, kind: 'duplicates', state: 'queued', root_id: id, created_at: iso(), started_at: null, finished_at: null, progress: null, coverage: null, error: null };
+    jobs.unshift(job);
+    o.emit('job.state', { job: { ...job } });
+    later(QUEUE_MS, () => {
+      if (job.state !== 'queued') return;
+      set(job, { state: 'running', started_at: iso() });
+      later(1000, () => {
+        if (job.state !== 'running') return;
+        if (o.isRevoked(id)) { set(job, { state: 'failed', finished_at: iso(), error: { code: 'permission_denied', message: 'cancelled', retryable: false, detail: null } }); return; }
+        const byteStop = BigInt(budget!.max_bytes!) < 96n;
+        const truncated = budget!.max_candidates! < 5;
+        const entries = DUPLICATES_FIXTURE.entries.slice(0, budget!.max_candidates);
+        const report: DuplicateReport = { ...DUPLICATES_FIXTURE, entries, groups: byteStop ? [] : [[0, 1]],
+          links: entries.length >= 4 ? [[2, 3]] : [], links_not_compared: entries.length >= 4 ? 2 : 0,
+          skipped: entries.length === 5 ? DUPLICATES_FIXTURE.skipped : [], bytes_read: byteStop ? '0' : '96',
+          truncated, stop: byteStop ? 'byte_budget' : truncated ? 'entry_budget' : null };
+        set(job, { state: 'completed', finished_at: iso(), coverage: 'partial', duplicates: report });
+      });
+    });
+    return { job: { ...job } };
+  }
+
   const scanState = (s: LabSeed): { scan: RootScanState; totals: SubtreeTotals | null } => {
     const last = done.get(s.id);
-    const running = jobs.some((j) => j.root_id === s.id && active(j));
+    const running = jobs.some((j) => j.kind === 'scan' && j.root_id === s.id && active(j));
     if (o.isRevoked(s.id)) return { scan: { state: 'stale', last_job_id: null, generation: null, finished_at: null, coverage: 'stale' }, totals: null };
     const cov: CoverageState = last ? last.seed.coverage : 'partial';
     const totals: SubtreeTotals | null = !last ? null : {
       files: s.files, dirs: s.dirs, logical_bytes: s.bytes.toString(), allocated_bytes: ((s.bytes * 21n) / 20n).toString(), allocation_unknown_files: 0,
       skipped: 0, failed: s.unreadable, complete: s.coverage === 'complete', stream_coverage: 'default_stream_only',
-      unique_objects: null, unique_allocated_bytes: null, multi_link_entries: 0, // the mock has no native file IDs: unknown, not zero
+      unique_objects: null, unique_allocated_bytes: null, multi_link_entries: 0, // the schema's Count has no null: this 0 is a placeholder, the mock has no native file IDs to count
     };
     if (running) return { scan: { state: 'scanning', last_job_id: null, generation: last ? String(generation) : null, finished_at: last?.job.finished_at ?? null, coverage: 'partial' }, totals };
     if (!last) {
@@ -121,6 +156,8 @@ export function createScanMock(o: ScanMockOptions): ScanMock {
 
   return {
     handlers: {
+      'duplicates.inspect': inspect,
+      'duplicates.cancel': (p) => { if (find(p.job_id).kind !== 'duplicates') o.fail('invalid_request', 'not a duplicates job'); return cancel(p); },
       'scan.start': start,
       'scan.cancel': cancel,
       'jobs.get': (p) => ({ job: { ...find(p.job_id) } }),

@@ -414,7 +414,7 @@
           <tbody>
             {#each p.proposals as x (x.group_id)}
               <tr>
-                <td><VisibleName name={group(x.group_id)?.name ?? x.group_id} /></td>
+                <th scope="row"><VisibleName name={group(x.group_id)?.name ?? x.group_id} /></th>
                 <td><VisibleName name={vname(x.source_id)} /></td><td><VisibleName name={vname(x.target_id)} /></td>
                 <td class="r num">{formatBytes(x.source_bytes_relieved)}</td><td class="r num">{formatBytes(x.destination_bytes_required)}</td><td class="r num">{formatBytes(x.transfer_bytes)}</td>
                 <td><span class="tag">consent required</span> <span class="tag">not executable</span></td>

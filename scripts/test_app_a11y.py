@@ -104,6 +104,44 @@ def tab_to(page: Page, selector: str, limit: int = 60) -> bool:
     return False
 
 
+def covered_controls(page: Page) -> list[str]:
+    """Focus each control after scrolling near the top; compare its box with the current masthead box."""
+    return page.evaluate("""() => {
+      const masthead = document.querySelector('.masthead'), out = [];
+      for (const el of document.querySelectorAll('main button:not(:disabled), main input:not(:disabled), main select:not(:disabled), main a[href], main summary, main canvas[tabindex], .rail a')) {
+        const before = el.getBoundingClientRect(); if (!before.width || !before.height) continue;
+        window.scrollTo(0, window.scrollY + before.top - 20);
+        el.focus();
+        const r = el.getBoundingClientRect(), m = masthead.getBoundingClientRect();
+        if (r.left < m.right && r.right > m.left && r.top < m.bottom - 0.5 && r.bottom > Math.max(0, m.top))
+          out.push(`${el.tagName} ${(el.textContent || el.getAttribute('aria-label') || '').trim().slice(0, 30)}`);
+      }
+      return out;
+    }""")
+
+
+def check_control_states(page: Page, base: str, check) -> None:
+    """1.4.11 applies to hover and selected controls as well as their resting borders."""
+    for label in ('Woven atlas', 'Observatory'):
+        for view, heading in (('atlas', 'Atlas'), ('observatory', 'Observatory')):
+            goto(page, base, view, heading)
+            page.get_by_role('group', name='Theme').get_by_role('button', name=label, exact=True).click()
+            selected = page.locator('.seg button[aria-checked="true"]')
+            shadow = selected.evaluate('e => getComputedStyle(e).boxShadow')
+            edge = css_rgb(shadow)
+            bg = selected.evaluate('e => getComputedStyle(e).backgroundColor')
+            outer = page.evaluate('getComputedStyle(document.documentElement).backgroundColor')
+            contrast = min(ratio(edge, css_rgb(bg)), ratio(edge, css_rgb(outer)))
+            check(contrast >= 3, f'1.4.11 {label} {view}: selected basis indicator is {contrast:.2f}:1 (needs 3:1)')
+            page.locator('details.as-text summary').click()
+            inspect = page.locator('button.inspect').first
+            expect(inspect).to_be_visible()
+            inspect.hover()
+            edge = css_rgb(inspect.evaluate('e => getComputedStyle(e).borderTopColor'))
+            contrast = ratio(edge, css_rgb(outer))
+            check(contrast >= 3, f'1.4.11 {label} {view}: hovered Inspect edge is {contrast:.2f}:1 (needs 3:1)')
+
+
 def cursor_roundtrip(page: Page, live, crumbs, check) -> None:
     """Open a region that is not the first with the keyboard, go back, and the cursor is still on it (announced on refocus)."""
     drilled = ''
@@ -140,14 +178,25 @@ def run_a11y(browser: Browser, base: str, check) -> None:
         return p
 
     # --- 1.4.10 / 1.4.4 / 2.4.11: the chrome does not eat a zoomed viewport ------------------------------------
-    for w, h, label in ((320, 256, '400% zoom'), (640, 360, '200% zoom'), (1280, 400, 'a short window')):
+    for w, h, label in ((320, 256, '400% zoom'), (640, 360, '200% zoom'), (640, 800, 'a narrow window'), (1280, 400, 'a short window')):
         page = new_page(w, h)
         goto(page, base, 'tiers', 'Tiers')
+        expect(page.get_by_role('button', name='Simulate', exact=True)).to_be_enabled()
+        covered = covered_controls(page)
+        check(not covered, f'2.4.11 no focused control overlaps the masthead at {w}x{h}: {covered[:3]}')
         m = page.evaluate("""() => { const el = document.querySelector('.masthead'), r = el.getBoundingClientRect(), p = getComputedStyle(el).position;
             const rail = getComputedStyle(document.querySelector('.rail')).position; return { h: r.height, vh: innerHeight, p, rail }; }""")
         pinned = m['h'] / m['vh'] if m['p'] in ('sticky', 'fixed') else 0.0
         check(pinned < 0.30, f"1.4.10 masthead pins {pinned:.0%} of the viewport at {w}x{h} ({label}); position {m['p']}, height {m['h']:.0f}px")
         check(m['rail'] not in ('sticky', 'fixed'), f"1.4.10 the rail does not pin at {w}x{h}")
+        for view, heading in (('explorer', 'Explorer'), ('atlas', 'Atlas'), ('observatory', 'Observatory'), ('companion', 'Companion'), ('health', 'Grants & health')):
+            goto(page, base, view, heading)
+            expect(page.locator('main canvas, main table').first).to_be_visible()
+            if view in ('atlas', 'observatory'):
+                page.locator('details.as-text summary').click()
+                expect(page.locator('details.as-text button.inspect').first).to_be_visible()
+            covered = covered_controls(page)
+            check(not covered, f'2.4.11 {view}: no focused control overlaps the masthead at {w}x{h}: {covered[:3]}')
         page.context.close()
 
     # 2.4.11: a focused control is never under the sticky masthead (scroll-padding and the rail offset follow its measured
@@ -188,14 +237,16 @@ def run_a11y(browser: Browser, base: str, check) -> None:
             expect(page.get_by_role('button', name=re.compile('^Revoke…')).first).to_be_visible()
             n = page.get_by_role('button', name=re.compile('^Revoke…')).count()
             check(n >= 2, f'health: {n} Revoke… triggers to tell apart')
+            labels = page.get_by_role('button', name=re.compile('^Revoke…')).evaluate_all('(bs) => bs.map(b => b.getAttribute("aria-label"))')
+            check(all(name and name.startswith('Revoke… ') for name in labels), '2.4.6 every root and grant Revoke trigger names its target')
         if view == 'companion':
             expect(page.locator('main table.procs tbody tr').first).to_be_visible()
         dups = duplicate_names(page)
         check(not dups, f'{view}: no two controls share a role and an accessible name {dups[:4]}')
         check(not dangling_refs(page), f'{view}: no aria-labelledby, describedby or controls points at a missing id: {dangling_refs(page)}')
         if view in ('explorer', 'tiers', 'companion', 'health'):
-            heads = page.evaluate("[...document.querySelectorAll('main table tbody tr')].filter((tr) => tr.children.length > 2 && tr.firstElementChild.tagName === 'TD').length")
-            check(heads == 0, f'{view}: the first cell of every data row is a row header (th scope=row); {heads} rows still start with td')
+            heads = page.evaluate("[...document.querySelectorAll('main table tbody tr')].filter((tr) => tr.children.length > 2 && !tr.firstElementChild.matches('th[scope=row]')).length")
+            check(heads == 0, f'{view}: the first cell of every data row is a row header (th scope=row); {heads} rows lack th[scope=row]')
     # role=status must not replace the list semantics of the session chips
     check(page.evaluate("document.querySelector('ul.status').getAttribute('role')") is None, '1.3.1 the session chip list keeps its list role')
     check(page.get_by_role('status', name='Session status').locator('ul.status li').count() == 4, '4.1.3 the session status is a status region around the list')
@@ -228,20 +279,33 @@ def run_a11y(browser: Browser, base: str, check) -> None:
         check(ratio(col, page_bg) >= 3.0, f'1.4.11 {theme}: the basis switch edge is {ratio(col, page_bg):.2f}:1')
     page.context.close()
 
+    page = new_page()
+    check_control_states(page, base, check)
+    page.context.close()
+
     # --- 2.4.3 / 4.1.3: focus and announcements ------------------------------------------------------------------------
     page = new_page()
     goto(page, base, 'tiers', 'Tiers')
     sim = page.get_by_role('button', name='Simulate', exact=True)
     expect(sim).to_be_enabled()
+    check(page.get_by_role('checkbox', name=re.compile('^Assume not pinned')).count() == 9, '2.4.6 all nine candidate checkboxes have a group-specific name')
+    sim_live = page.locator('main p.sr-only[role=status]').element_handle()
+    check(sim_live is not None and sim_live.text_content() == '', '4.1.3 the simulation result region exists empty before Simulate')
     sim.click()
     expect(page.get_by_role('heading', name='Alternatives')).to_be_visible()
     expect(page.get_by_role('status').filter(has_text='Simulation finished')).to_be_attached()
+    check(sim_live.evaluate('e => e.isConnected && e.textContent.includes("Simulation finished")'), '4.1.3 Simulate fills the same persistent result region')
     check(active(page).startswith('BUTTON|Simulate'), f'2.4.3 focus stays on Simulate after the result arrives ({active(page)})')
     page.get_by_role('button', name=re.compile('^Show')).nth(2).click()
     expect(page.get_by_role('status').filter(has_text='proposed moves')).to_be_attached()
     check(active(page).startswith('BUTTON|Show'), f'2.4.3 focus stays on the Show button that was pressed ({active(page)})')
+    expect(page.get_by_role('table', name='Proposed placements').locator('tbody tr').first).to_be_visible()
+    heads = page.evaluate("[...document.querySelectorAll('main table tbody tr')].filter((tr) => tr.children.length > 2 && !tr.firstElementChild.matches('th[scope=row]')).length")
+    check(heads == 0, f'tiers with proposals shown: every data row starts with th[scope=row]; {heads} rows lack it')
 
     goto(page, base, 'health', 'Grants & health')
+    revoke_live = page.locator('p.ok.live').element_handle()
+    check(revoke_live is not None and revoke_live.text_content() == '', '4.1.3 the revocation result region exists empty before Revoke')
     trigger = page.get_by_role('button', name=re.compile('^Revoke…')).first
     trigger.click()
     group = page.get_by_role('group', name=re.compile('Revoke root access'))
@@ -251,6 +315,7 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     page.get_by_role('button', name=re.compile('^Revoke…')).first.click()
     page.get_by_role('group', name=re.compile('Revoke root access')).get_by_role('button', name='Revoke', exact=True).click()
     expect(page.get_by_role('status').filter(has_text='Revoked')).to_be_visible()
+    check(revoke_live.evaluate('e => e.isConnected && e.textContent.includes("Revoked")'), '4.1.3 Revoke fills the same persistent result region')
     expect(page.locator('p.ok.live')).to_be_focused()
     check(not active(page).startswith('BODY'), f'2.4.3 focus is not dropped to the body after Revoke ({active(page)})')
 

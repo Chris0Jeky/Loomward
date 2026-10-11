@@ -17,6 +17,7 @@
 
 mod cursors;
 mod db;
+mod duplicates;
 mod handlers;
 mod idem;
 mod ids;
@@ -62,7 +63,7 @@ pub(crate) struct Inner {
     dataset: DatasetClass,
     state_dir: PathBuf,
     started_at: Timestamp,
-    engine: Engine,
+    engine: Arc<Engine>,
     catalog: Catalog,
     /// The catalogue-backed scan writer installed into the engine.
     scan: Arc<sink::CatalogScanSink>,
@@ -197,7 +198,7 @@ impl Service {
             dataset: config.dataset,
             state_dir,
             started_at: now(),
-            engine,
+            engine: Arc::new(engine),
             catalog,
             db: Mutex::new(conn),
             instance,
@@ -275,6 +276,8 @@ pub(crate) fn is_mutation(c: Command) -> bool {
             | VolumesDeclareTier
             | ScanStart
             | ScanCancel
+            | DuplicatesInspect
+            | DuplicatesCancel
             | FeedbackRecord
             | LearningRefit
             | CollectionsCreate

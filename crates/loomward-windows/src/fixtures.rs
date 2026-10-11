@@ -1,4 +1,28 @@
 //! Opt-in disposable laboratory only. Not a production filesystem executor.
+
+#[cfg(all(test, windows))]
+mod elevation_tests {
+    use super::*;
+
+    #[test]
+    fn check_streams_refuses_forced_elevation() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("synthetic-file");
+        std::fs::write(&path, b"synthetic").unwrap();
+        let _reset = crate::enumerate::force_elevation_for_test();
+        assert!(
+            matches!(check_streams(&path, &HashSet::new()), Err(error) if error.kind() == io::ErrorKind::PermissionDenied && error.to_string() == "non-elevated access required")
+        );
+    }
+
+    #[test]
+    fn scoped_refuses_forced_elevation_before_path_validation() {
+        let _reset = crate::enumerate::force_elevation_for_test();
+        assert!(
+            matches!(scoped(Path::new("relative-synthetic-root"), Path::new("relative-synthetic-base")), Err(error) if error.kind() == io::ErrorKind::PermissionDenied && error.to_string() == "non-elevated access required")
+        );
+    }
+}
 #[cfg(windows)]
 use crate::identity::observe;
 use crate::identity::ObjectKey;

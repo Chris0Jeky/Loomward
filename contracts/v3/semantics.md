@@ -251,3 +251,40 @@ process enumeration time, including in newer `TelemetrySample`s; process list an
 timestamps refer to that enumeration too. Rates use the interval between process observations.
 An engine thread count not observed on the current tick is null. Requests for channels outside
 the sampled lease union return `partial_coverage` (not sampled), distinct from hardware unavailable.
+
+## Duplicate inspection (LW-012 / LW-013)
+
+`duplicates.inspect` starts a retained `duplicates` job for one active registered synthetic lab root.
+It is a mutation of the job registry: request_id is idempotent per session for ten minutes, like
+scan.start; a timed-out submission has an unknown outcome and is recovered with the same request_id
+or jobs.list (kinds=["duplicates"]). One active inspection per root returns busy with detail.job_id.
+Submission uses the mutation permit/FIFO and call deadline. Catalogue selection has a bounded SQL
+work budget and deadline; a query refusal produces no content read or job. Content work runs on one
+reserved scan worker, never the request thread.
+
+The required budget names max_candidates (2..200), max_bytes (default-stream bytes across all
+passes, both comparison inputs), max_ms (1..60000, including metadata hydration), and optional
+min_bytes (default 1). Empty files are never selected. Visible, non-shielded, non-excluded files are
+grouped by exact logical size; only sizes with at least two names are candidates. Selection above
+the cap sets truncated=true, partial=true and stop=entry_budget unless a later stop takes precedence.
+A cap can omit an entire trailing size group; truncated never means those names were absent.
+Catalogue selection also caps aggregate JSON-encoded relative names at 64 KiB, with the same
+truncated flag and stop, so retained reports remain bounded in jobs.list as well as jobs.get.
+
+jobs.get/jobs.list and terminal job.state carry optional job.duplicates. Its entries are root-relative
+names and logical byte sizes; groups/links/skipped.entry refer to indices in entries. Groups are
+verified equal default streams at observation time. Link sets are one native object (including a
+single visible name when native nlink>1), with no space to reclaim, and are not compared as duplicates.
+links_not_compared is the number of listed names in those link sets. skipped gives refusal reasons;
+bytes_read, partial, truncated and nullable stop preserve negative and incomplete evidence.
+No result authorises deleting, moving, renaming or creating links. No reclaim estimate is supplied.
+
+Personal sessions are refused before resolving or opening a root, with capability_unavailable and
+detail.reason=content_read_gated. The engine repeats the synthetic-grant admission before metadata
+and content I/O. Scan file identity, size, attributes and creation/write/change ticks must match
+fresh root-relative metadata before the existing handle reader compares content. Root revocation
+uses the existing root cancellation fence and refuses the report; no report survives that refusal.
+`duplicates.cancel` uses the existing non-joining job cancellation seam and is idempotent; jobs.get
+shows cancel_requested until the worker drains. Cancelled jobs may retain verified partial evidence
+with stop=cancelled; a permission refusal instead carries error and no duplicates report. seq and rev
+have the same ordering semantics as scan jobs. Personal scan gating is unchanged.

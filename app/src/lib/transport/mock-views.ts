@@ -52,6 +52,8 @@ export interface ViewMock {
   revokedGrants: Map<string, Timestamp>;
   /** state.db revision: starts at 1 and moves only when a revocation actually changes owner data. */
   stateRev(): string;
+  /** catalog.db revision: starts at 1 and moves only when a first purge deletes catalogue rows (semantics.md section 5). */
+  catalogRev(): string;
 }
 
 export function createViewMock(now: () => Date, fail: Fail): ViewMock {
@@ -60,6 +62,8 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
   const iso = () => now().toISOString();
   const revokedRoots = new Map<string, Timestamp>();
   const revokedGrants = new Map<string, Timestamp>();
+  const purgedRoots = new Set<string>();
+  let catalogRev = 1;
   const subscriptions = new Map<string, { channels: TelemetryChannel[]; expiresAt: number }>();
   let subscriptionSeq = 0;
   let stateRev = 1;
@@ -259,12 +263,15 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
     private_desc: (r) => num(r.private_commit_bytes), working_set_desc: (r) => num(r.working_set_bytes), cpu_desc: (r) => r.cpu_fraction ?? -1,
     io_desc: (r) => (r.io_read_bytes_per_s ?? -1) + (r.io_write_bytes_per_s ?? -1), gpu_desc: (r) => num(r.gpu_dedicated_bytes),
   };
+  const refreshProcesses = () => {
+    const leased = [...subscriptions.values()].some((s) => s.expiresAt > now().getTime() && s.channels.includes('processes'));
+    if (leased && now().getTime() - processObservedAt >= 15000) { ROWS = processRows(true); processObservedAt = now().getTime(); }
+  };
   const processes = (p: Record<string, unknown>): ProcessList => {
     const limit = Number.isInteger(p.limit) && (p.limit as number) >= 1 && (p.limit as number) <= 200 ? (p.limit as number) : fail('invalid_request', 'limit must be 1..200');
     const sort = typeof p.sort === 'string' && (p.sort === 'name_asc' || p.sort in SORT) ? p.sort : fail('invalid_request', 'unknown sort');
     // Synthetic enumeration is retained for 15 s too; re-reading never makes old rows fresh.
-    const leased = [...subscriptions.values()].some((s) => s.expiresAt > now().getTime() && s.channels.includes('processes'));
-    if (leased && now().getTime() - processObservedAt >= 15000) { ROWS = processRows(true); processObservedAt = now().getTime(); }
+    refreshProcesses();
     const sorted = [...ROWS].sort(sort === 'name_asc' ? (a, b) => a.name.localeCompare(b.name) : (a, b) => SORT[sort]!(b) - SORT[sort]!(a) || a.pid - b.pid);
     return {
       sample_seq: sampleSeq, observed_at: ROWS[0]!.observed_at, rows: sorted.slice(0, limit), observed_count: ROWS.length, denied_count: ROWS.filter((r) => r.access === 'denied').length,
@@ -293,6 +300,7 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
 
   const telemetry = (): TelemetrySample => {
     sampleSeq++;
+    refreshProcesses();
     const wobble = Math.sin(sampleSeq / 3);
     const pools: PoolUse[] = [
       { pool: 'scan_enumerate', max_workers: 4, busy_workers: 0, queue_depth: 0, queue_capacity: 1024 },
@@ -357,6 +365,10 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
       if (!revokedRoots.has(id)) stateRev++; // revoking a revoked grant returns the original revoked_at, no commit
       const at = revokedRoots.get(id) ?? iso();
       revokedRoots.set(id, at);
+      if (p.purge_catalog && !purgedRoots.has(id)) {
+        purgedRoots.add(id);
+        catalogRev++; // a purge is a committed catalogue transaction; purging again deletes nothing more
+      }
       return { root_id: id, revoked_at: at, purged: p.purge_catalog };
     },
     'grants.revoke': (p): GrantRevokeResult => {
@@ -368,5 +380,5 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
       return { grant_id: id, revoked_at: at };
     },
   };
-  return { handlers, revokedRoots, revokedGrants, stateRev: () => String(stateRev) };
+  return { handlers, revokedRoots, revokedGrants, stateRev: () => String(stateRev), catalogRev: () => String(catalogRev) };
 }

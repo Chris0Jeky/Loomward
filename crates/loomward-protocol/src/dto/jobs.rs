@@ -9,6 +9,7 @@ pub enum JobKind {
     Scan,
     Refit,
     Teacher,
+    Duplicates,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -118,6 +119,12 @@ pub struct Job {
     pub coverage: Option<CoverageState>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub error: Option<ErrorBody>,
+    #[serde(
+        default,
+        deserialize_with = "crate::types::optional_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub duplicates: Option<DuplicateReport>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -140,7 +147,7 @@ pub struct JobListRequest {
         deserialize_with = "crate::types::optional_present",
         skip_serializing_if = "Option::is_none"
     )]
-    pub kinds: Option<UniqueVec<JobKind, 0, 3>>,
+    pub kinds: Option<UniqueVec<JobKind, 0, 4>>,
     pub limit: Int<1, 50>,
 }
 

@@ -1,0 +1,8 @@
+{
+  "root_id": "rt_synth1",
+  "budget": {
+    "max_candidates": 200,
+    "max_bytes": "1048576",
+    "max_ms": 5000
+  }
+}

@@ -10,6 +10,8 @@
 #![forbid(unsafe_code)]
 use std::path::Path;
 mod db;
+mod duplicates;
+pub use duplicates::{DuplicateCandidate, DuplicateCandidates};
 mod model;
 mod query;
 mod slice;

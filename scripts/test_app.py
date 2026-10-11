@@ -14,7 +14,8 @@ zoom reflow, control-edge contrast, canvas keyboard and forced-colours states, o
 `--live-serve` replaces the Python servers with the real `loomward-serve --static app/dist` binary
 (lane L6) over the engine service (lane L8) on a fresh synthetic state directory: the static files
 under the server's own CSP header, the fragment-token handshake, calls and the SSE stream through
-the real security boundary, and "unavailable" once the process is gone.
+the real security boundary, and "unavailable" once the process is gone. A personal session granted one
+small folder on the command line scans it when Scan is pressed, and its totals match the fixture.
 """
 from __future__ import annotations
 
@@ -240,46 +241,109 @@ def live_placement(browser, exe: Path) -> None:
 
 
 def live_scan_refusals(browser, exe: Path) -> None:
-    """Scanning registers nothing here, so the refusal paths of the real service are what the app must word.
+    """A synthetic session with no root grants offers no Scan button and refuses scan.start for a root it does not
+    know, without starting a job."""
+    state = tempfile.TemporaryDirectory(prefix='lw-live-scan-synthetic-')
+    proc = subprocess.Popen([str(exe), '--state-dir', state.name, '--static', str(DIST)], stdout=subprocess.PIPE, text=True)
+    try:
+        url = (proc.stdout.readline() if proc.stdout else '').strip()
+        check('/#token=' in url, 'a synthetic loomward-serve is up for the scan refusal checks')
+        _, token = url.split('/#token=')
+        page = browser.new_context(viewport={'width': 1360, 'height': 900}).new_page()
+        page.set_default_timeout(8000)
+        page.goto(url)
+        expect(page.get_by_role('status', name='Session status')).to_contain_text('Connected')
+        page.evaluate("location.hash = '#/duplicates'")
+        expect(page.get_by_role('heading', name='Duplicates', level=1)).to_be_visible()
+        expect(page.get_by_role('button', name='Start inspection')).to_be_disabled()
+        inspected = live_call(page, token, 'duplicates.inspect', {'root_id': 'rt_nope', 'budget': {'max_candidates': 200, 'max_bytes': '1024', 'max_ms': 1000}})
+        check(not inspected['ok'] and inspected['error']['code'] == 'not_found', 'synthetic: inspection requires a real registered root')
+        page.evaluate("location.hash = '#/health'")
+        expect(page.get_by_role('heading', name='Grants & health', level=1)).to_be_visible()
+        expect(page.locator('main table.tbl tbody')).to_contain_text('No roots granted')
+        check(page.locator('ul.scans li').count() == 0 and page.locator('ul.scans button').count() == 0, 'synthetic: no root, so no Scan control is offered')
+        check(page.locator('p.bad.live').inner_text() == '', 'synthetic: Grants & health loaded against the real service (jobs.list answered), no error shown')
+        r = live_call(page, token, 'scan.start', {'root_id': 'rt_nope', 'mode': 'full'})
+        check(not r['ok'] and r['error']['code'] == 'not_found', f"synthetic: scan.start for an unknown root is not_found: {r.get('error')}")
+        jobs = live_call(page, token, 'jobs.list', {'kinds': ['scan'], 'limit': 50})
+        check(jobs['ok'] and jobs['result']['jobs'] == [], 'synthetic: the refused scan.start created no job')
+        page.context.close()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=10)
+        state.cleanup()
 
-    A synthetic session with no root grants offers no Scan button and refuses scan.start for a root it does not
-    know; a personal session (launch flags only; no root is granted, nothing is read) refuses it with
-    `personal_scan_gated_184` and the app says why real-disk scans are not offered yet. Neither starts a job."""
-    for dataset in ('synthetic', 'personal'):
-        state = tempfile.TemporaryDirectory(prefix=f'lw-live-scan-{dataset}-')
-        flags = ['--dataset', 'personal', '--allow-personal'] if dataset == 'personal' else []
-        proc = subprocess.Popen([str(exe), '--state-dir', state.name, '--static', str(DIST), *flags], stdout=subprocess.PIPE, text=True)
-        try:
-            url = (proc.stdout.readline() if proc.stdout else '').strip()
-            check('/#token=' in url, f'a {dataset} loomward-serve is up for the scan refusal checks')
-            base, token = url.split('/#token=')
-            page = browser.new_context(viewport={'width': 1360, 'height': 900}).new_page()
-            page.set_default_timeout(8000)
-            page.goto(url)
-            expect(page.get_by_role('status', name='Session status')).to_contain_text('Connected')
-            page.evaluate("location.hash = '#/health'")
-            expect(page.get_by_role('heading', name='Grants & health', level=1)).to_be_visible()
-            expect(page.locator('main table.tbl tbody')).to_contain_text('No roots granted')
-            check(page.locator('ul.scans li').count() == 0 and page.locator('ul.scans button').count() == 0, f'{dataset}: no root, so no Scan control is offered')
-            check(page.locator('p.bad.live').inner_text() == '', f'{dataset}: Grants & health loaded against the real service (jobs.list answered), no error shown')
-            note = page.locator('#h-scans ~ p.muted').all_inner_texts()
-            if dataset == 'personal':
-                check(any('Real-disk scans arrive after the safety gates' in t for t in note), f'personal: the page says real-disk scans arrive after the safety gates ({note})')
-            jobs = live_call(page, token, 'jobs.list', {'kinds': ['scan'], 'limit': 50})
-            check(jobs['ok'] and jobs['result']['jobs'] == [], f'{dataset}: the real service lists no scan job')
-            r = live_call(page, token, 'scan.start', {'root_id': 'rt_nope', 'mode': 'full'})
-            if dataset == 'personal':
-                check(not r['ok'] and r['error']['code'] == 'capability_unavailable' and (r['error']['detail'] or {}).get('reason') == 'personal_scan_gated_184', f"personal: scan.start is refused with personal_scan_gated_184: {r.get('error')}")
-            else:
-                check(not r['ok'] and r['error']['code'] == 'not_found', f"synthetic: scan.start for an unknown root is not_found: {r.get('error')}")
-            jobs = live_call(page, token, 'jobs.list', {'kinds': ['scan'], 'limit': 50})
-            check(jobs['ok'] and jobs['result']['jobs'] == [], f'{dataset}: the refused scan.start created no job')
-            page.context.close()
-        finally:
-            if proc.poll() is None:
-                proc.kill()
-                proc.wait(timeout=10)
-            state.cleanup()
+
+# A small owner folder: (relative path, bytes). Four files and three folders below the root, 135 bytes.
+PERSONAL_FIXTURE = [('top.bin', 100), ('a/1.bin', 10), ('a/2.bin', 20), ('a/deep/x.bin', 5)]
+
+
+def live_personal_scan(browser, exe: Path) -> None:
+    """Personal scans are open: a folder granted through the server's command line (the service's real grant path)
+    is scanned by pressing Scan in the app, completes, and its totals match the fixture. An unknown root is refused.
+
+    The folder lives under target/test-roots, not the system temp folder: a profile's AppData is never eligible.
+    On an elevated host the grant is refused (identity_unavailable) and the server does not start; that is checked."""
+    roots = ROOT / 'target' / 'test-roots'
+    roots.mkdir(parents=True, exist_ok=True)
+    fixture = tempfile.TemporaryDirectory(prefix='lw-live-personal-', dir=roots)
+    folder = Path(fixture.name) / 'owner-folder'
+    (folder / 'b').mkdir(parents=True)
+    for rel, size in PERSONAL_FIXTURE:
+        (folder / rel).parent.mkdir(parents=True, exist_ok=True)
+        (folder / rel).write_bytes(b'\x01' * size)
+    snapshot = lambda: {rel: ((folder / rel).read_bytes(), (folder / rel).stat().st_mtime_ns) for rel, _ in PERSONAL_FIXTURE}
+    before = snapshot()
+    state = tempfile.TemporaryDirectory(prefix='lw-live-scan-personal-')
+    proc = subprocess.Popen([str(exe), '--state-dir', state.name, '--static', str(DIST), '--dataset', 'personal', '--allow-personal', '--grant-root', str(folder)],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        url = (proc.stdout.readline() if proc.stdout else '').strip()
+        if not url:
+            err = proc.communicate(timeout=10)[1]
+            check('identity_unavailable' in err, f'personal: the server refused the grant only because this host is elevated: {err.strip()}')
+            print('PASS personal: an elevated host refuses the grant (identity_unavailable); the scan leg needs a non-elevated host')
+            return
+        check('/#token=' in url, 'a personal loomward-serve is up with one granted folder')
+        _, token = url.split('/#token=')
+        page = browser.new_context(viewport={'width': 1360, 'height': 900}).new_page()
+        page.set_default_timeout(8000)
+        page.goto(url)
+        expect(page.get_by_role('status', name='Session status')).to_contain_text('Dataset personal')
+        page.evaluate("location.hash = '#/health'")
+        expect(page.get_by_role('heading', name='Grants & health', level=1)).to_be_visible()
+        item = page.locator('ul.scans li')
+        expect(item).to_have_count(1)
+        expect(item).to_contain_text('owner granted')
+        check(page.locator('p.bad.live').inner_text() == '', 'personal: Grants & health loaded with no error shown')
+        item.get_by_role('button', name=re.compile(r'^Scan .*owner-folder$')).click()
+        expect(item.locator('.job')).to_contain_text('Finished, complete coverage', timeout=30000)
+        listed = live_call(page, token, 'roots.list', {})
+        root = listed['result']['roots'][0]
+        totals = root.get('totals') or {}
+        check(root['origin'] == 'owner_granted' and root['scan']['coverage'] == 'complete', f"personal: the granted folder is scanned with complete coverage: {root['scan']}")
+        check(totals.get('files') == 4 and str(totals.get('logical_bytes')) == '135', f'personal: totals match the fixture (4 files, 135 bytes): {totals}')
+        check(snapshot() == before, 'personal: the scan changed no file (contents and modification times are identical)')
+        r = live_call(page, token, 'scan.start', {'root_id': 'rt_nope', 'mode': 'full'})
+        check(not r['ok'] and r['error']['code'] == 'not_found', f"personal: scan.start for an unknown root is not_found: {r.get('error')}")
+        # Content reads stay gated for personal data (q-5): the Duplicates surface says so and the service refuses.
+        page.evaluate("location.hash = '#/duplicates'")
+        expect(page.get_by_role('heading', name='Duplicates', level=1)).to_be_visible()
+        expect(page.get_by_role('status').filter(has_text='Personal content inspection is gated')).to_be_visible()
+        check(page.get_by_role('button', name='Start inspection').count() == 0, 'personal: content inspection has a gated surface')
+        inspected = live_call(page, token, 'duplicates.inspect', {'root_id': 'rt_nope', 'budget': {'max_candidates': 200, 'max_bytes': '1024', 'max_ms': 1000}})
+        check(not inspected['ok'] and inspected['error']['detail']['reason'] == 'content_read_gated', 'personal: content inspection refused before any root access')
+        jobs = live_call(page, token, 'jobs.list', {'kinds': ['scan'], 'limit': 50})
+        check(jobs['ok'] and len(jobs['result']['jobs']) == 1, f"personal: only the pressed Scan created a job: {jobs.get('result')}")
+        page.context.close()
+        print('PASS personal: a granted folder scans through the app to the fixture totals, metadata only')
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=10)
+        state.cleanup()
+        fixture.cleanup()
 
 
 def run_live_serve(browser_path: str | None) -> None:
@@ -328,6 +392,7 @@ def run_live_serve(browser_path: str | None) -> None:
             expect(status).to_contain_text('Connected')
             print('PASS http transport connected through loomward-serve')
             live_scan_refusals(browser, exe)
+            live_personal_scan(browser, exe)
             live_placement(browser, exe)
 
             proc.terminate()
@@ -428,6 +493,32 @@ def main() -> None:
         check(not dialogs, 'no script from a file name ran')
         check('unknown' in page.locator('main table').inner_text(), 'unknown allocation stays "unknown" in the table')
         shot('woven-atlas-explorer.png')
+
+        # Duplicate evidence is synthetic and observed, never advice to delete.
+        nav.get_by_role('link', name='Duplicates', exact=True).click()
+        expect(page.get_by_role('heading', name='Duplicates', level=1)).to_be_visible()
+        expect(page.get_by_text('Equal content is an observation, not a recommendation to delete.', exact=True)).to_be_visible()
+        page.get_by_role('button', name='Start inspection').click()
+        expect(page.get_by_role('button', name='Cancel inspection')).to_be_enabled()
+        expect(page.get_by_role('rowheader', name='equal-a.txt equal-b.txt')).to_be_visible()
+        expect(page.get_by_role('rowheader', name='linked.txt alias.txt')).to_be_visible()
+        expect(page.get_by_text('One object · no space to reclaim', exact=True)).to_be_visible()
+        expect(page.get_by_text('changed_during_read', exact=True)).to_be_visible()
+        expect(page.get_by_role('row').filter(has=page.get_by_role('rowheader', name='equal-a.txt equal-b.txt'))).to_contain_text('16 B')
+        expect(page.locator('.evidence')).to_contain_text('Bytes read 96 B')
+        expect(page.locator('.evidence')).to_contain_text('Partial yes')
+        expect(page.locator('.evidence')).to_contain_text('Stop none')
+        expect(page.locator('#duplicate-results')).to_be_focused()
+        shot('duplicates-desktop.png')
+        page.set_viewport_size({'width': 375, 'height': 800})
+        check(page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), 'duplicates reflows at 375 px')
+        shot('duplicates-mobile.png')
+        page.set_viewport_size({'width': 1360, 'height': 900})
+        page.get_by_role('button', name='Start inspection').click()
+        page.get_by_role('button', name='Cancel inspection').click()
+        expect(page.get_by_role('status').filter(has_text='Inspection cancelled')).to_be_visible()
+        print('PASS duplicates: verified sizes, link sets, skip reasons, evidence, focus and cancellation')
+        nav.get_by_role('link', name='Explorer', exact=True).click()
 
         # search pages with a keyset cursor: 'a' matches far more than one page
         page.get_by_placeholder('Search names').fill('a')

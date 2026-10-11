@@ -830,4 +830,842 @@
     "app_playwright": "pass, including full-precision row timestamp and narrow layouts; live-serve fixture HTTP pass",
     "generated_contracts": "up to date"
   }
+,
+  "p12_shared_host_2026_10_11": {
+  "measured_on": "2026-10-11",
+  "host": "shared host",
+  "design": "Interleaved A1/B1/A2/B2/A3/B3; 180 seconds idle plus 180 seconds leased per run; same benchmark, release profile, all channels at 1 Hz; original main and candidate binaries held fixed.",
+  "runs": [
+    {
+      "P12": {
+        "no_lease_sampling": {
+          "events": 0,
+          "pass": true,
+          "samples": 0
+        },
+        "overhead_percent_one_core": 0.6597192626483078,
+        "pass": true,
+        "target_percent_one_core_above_idle": 1.0
+      },
+      "P13": {
+        "idle_peak_private_commit_bytes": "1024000",
+        "idle_percent_one_core": 0.0,
+        "pass": true,
+        "target_percent_one_core": 0.5,
+        "target_private_commit_bytes": "83886080"
+      },
+      "full_duration": false,
+      "idle": {
+        "duration_s": 180.0010124,
+        "engine_cpu_s": 0.0,
+        "engine_percent_one_core": 0.0,
+        "events_drained": 0,
+        "last_sample_seq": 0,
+        "main_thread_cpu_s": 0.0,
+        "non_main_thread_cpu_s": 0.0,
+        "non_main_thread_percent_one_core": 0.0,
+        "own_commit_samples": 0,
+        "phase_wall_costs": {
+          "engine_mapping_ms": 0.0,
+          "mapping_errors": 0,
+          "native_other_ms": 0.0,
+          "pdh_collection_ms": 0.0,
+          "pdh_decode_ms": 0.0,
+          "process_enumeration_ms": 0.0,
+          "process_queries_ms": 0.0,
+          "process_snapshot_ms": 0.0,
+          "process_snapshots": 0,
+          "process_walk_ms": 0.0,
+          "rates_and_projection_ms": 0.0,
+          "samples": 0,
+          "system_counters_ms": 0.0,
+          "wildcard_expansion_ms": 0.0,
+          "wildcard_expansions": 0
+        },
+        "private_commit_end_bytes": "905216",
+        "private_commit_observed_max_bytes": "1011712",
+        "private_commit_start_bytes": "1011712",
+        "private_commit_true_high_water_bytes": "1024000",
+        "sampling_count": 0
+      },
+      "leased": {
+        "duration_s": 180.0008075,
+        "engine_cpu_s": 1.1875,
+        "engine_percent_one_core": 0.6597192626483078,
+        "events_drained": 179,
+        "last_sample_seq": 179,
+        "main_thread_cpu_s": 0.03125,
+        "non_main_thread_cpu_s": 1.15625,
+        "non_main_thread_percent_one_core": 0.6423582294207207,
+        "own_commit_samples": 179,
+        "phase_wall_costs": {
+          "engine_mapping_ms": 79.07940000000002,
+          "mapping_errors": 0,
+          "native_other_ms": 2.9203000000000463,
+          "pdh_collection_ms": 569.7702000000004,
+          "pdh_decode_ms": 145.71690000000015,
+          "process_enumeration_ms": 295.3825,
+          "process_queries_ms": 153.6694000000001,
+          "process_snapshot_ms": 89.48379999999997,
+          "process_snapshots": 12,
+          "process_walk_ms": 52.22929999999998,
+          "rates_and_projection_ms": 57.65780000000001,
+          "samples": 179,
+          "system_counters_ms": 56.07529999999998,
+          "wildcard_expansion_ms": 93.70400000000001,
+          "wildcard_expansions": 126
+        },
+        "private_commit_end_bytes": "7307264",
+        "private_commit_observed_max_bytes": "9097216",
+        "private_commit_start_bytes": "905216",
+        "private_commit_true_high_water_bytes": "9150464",
+        "sampling_count": 179
+      },
+      "limitations": [
+        "Uncontrolled concurrent host workloads and cache conditions.",
+        "Benchmark activates telemetry only; catalogue, scan, learning and teacher workloads are not exercised.",
+        "A single phase per condition, no p95 or repeatability claim. Phase costs are elapsed wall time, not CPU attribution.",
+        "Per-process GPU memory is unsupported; adapter capacity remains unknown when no native observation exists."
+      ],
+      "method": "GetProcessTimes sums all engine-process threads; GetThreadTimes measures the harness main thread. Non-main CPU is reported separately without attributing possible Windows library helper threads to the sampler. Same engine: phase_seconds idle then phase_seconds leased, all channels leased at 1000 ms, process enumeration at most every 15 s with retained row timestamps, current system and own counters every tick, renewal every 30 s, bounded events drained every second.",
+      "phase_seconds": 180,
+      "platform": "Windows 11",
+      "profile": "release",
+      "schema_version": 3,
+      "scope": "read-only personal observations; persisted evidence is aggregates only",
+      "source_base": "0377b0f5bb9de3a515e6d2e712dc9e5104332411",
+      "arm": "main",
+      "run": 1,
+      "host": "shared host",
+      "binary_sha256": "e9b91c6bbf0088c8962e18d895b9e99319fa7d033f3aae2b1f0215f4e0a34fa4",
+      "source_sha256": {
+        "crates/loomward-engine/src/telemetry/mapping.rs": "b647482804e0c57747acee985cd8126cf07344baf20767f4c2e6844c607fd714",
+        "crates/loomward-engine/src/telemetry/mod.rs": "a1e7bf666c6c06ff0f3560132f894a223401febe7935dc3419d7887712ce4768",
+        "crates/loomward-telemetry/src/lib.rs": "528f9276a492527fa480db64a2be23267f404afd5e01058d0ff61403662bfee5",
+        "crates/loomward-telemetry/src/windows.rs": "7d26bc6baccdd4d59491936c67c9944e6ee6f0361c3a211d86e328b55e22a835",
+        "crates/loomward-telemetry/src/windows/pdh.rs": "962c1bfc7f79ae2aa96d2e7f283af8c40a40ea21c9589033d3c9d0650b4e2b66",
+        "crates/loomward-engine/examples/telemetry_bench.rs": "b12d48926cad627f2ba16a9bbb5903c68a62349f49e1b24bdf504592520b5e79",
+        "Cargo.lock": "faf5b1fbc669aef136c67706753d1df10ea7523bcdf5b0263708edc520089b80"
+      }
+    },
+    {
+      "P12": {
+        "no_lease_sampling": {
+          "events": 0,
+          "pass": true,
+          "samples": 0
+        },
+        "overhead_percent_one_core": 0.6770779253614817,
+        "pass": true,
+        "target_percent_one_core_above_idle": 1.0
+      },
+      "P13": {
+        "idle_peak_private_commit_bytes": "1015808",
+        "idle_percent_one_core": 0.0,
+        "pass": true,
+        "target_percent_one_core": 0.5,
+        "target_private_commit_bytes": "83886080"
+      },
+      "full_duration": false,
+      "idle": {
+        "duration_s": 180.0004688,
+        "engine_cpu_s": 0.0,
+        "engine_percent_one_core": 0.0,
+        "events_drained": 0,
+        "last_sample_seq": 0,
+        "main_thread_cpu_s": 0.0,
+        "non_main_thread_cpu_s": 0.0,
+        "non_main_thread_percent_one_core": 0.0,
+        "own_commit_samples": 0,
+        "phase_wall_costs": {
+          "engine_mapping_ms": 0.0,
+          "engine_publication_ms": 0.0,
+          "engine_snapshot_mapping_ms": 0.0,
+          "gpu_instances_ms": 0.0,
+          "mapping_errors": 0,
+          "native_other_ms": 0.0,
+          "pdh_collection_ms": 0.0,
+          "pdh_decode_ms": 0.0,
+          "process_enumeration_ms": 0.0,
+          "process_queries_ms": 0.0,
+          "process_snapshot_ms": 0.0,
+          "process_snapshots": 0,
+          "process_walk_ms": 0.0,
+          "rates_and_projection_ms": 0.0,
+          "samples": 0,
+          "system_counters_ms": 0.0,
+          "wildcard_expansion_ms": 0.0,
+          "wildcard_expansions": 0
+        },
+        "private_commit_end_bytes": "905216",
+        "private_commit_observed_max_bytes": "1003520",
+        "private_commit_start_bytes": "1003520",
+        "private_commit_true_high_water_bytes": "1015808",
+        "sampling_count": 0
+      },
+      "leased": {
+        "duration_s": 180.0014377,
+        "engine_cpu_s": 1.21875,
+        "engine_percent_one_core": 0.6770779253614817,
+        "events_drained": 179,
+        "last_sample_seq": 179,
+        "main_thread_cpu_s": 0.0,
+        "non_main_thread_cpu_s": 1.21875,
+        "non_main_thread_percent_one_core": 0.6770779253614817,
+        "own_commit_samples": 179,
+        "phase_wall_costs": {
+          "engine_mapping_ms": 12.114999999999997,
+          "engine_publication_ms": 16.6554,
+          "engine_snapshot_mapping_ms": 15.116900000000005,
+          "gpu_instances_ms": 132.31839999999994,
+          "mapping_errors": 0,
+          "native_other_ms": 3.1842000000000033,
+          "pdh_collection_ms": 612.1432999999996,
+          "pdh_decode_ms": 141.96660000000003,
+          "process_enumeration_ms": 291.04139999999984,
+          "process_queries_ms": 159.1683999999999,
+          "process_snapshot_ms": 92.2255,
+          "process_snapshots": 12,
+          "process_walk_ms": 39.64750000000003,
+          "rates_and_projection_ms": 61.5816,
+          "samples": 179,
+          "system_counters_ms": 62.69810000000002,
+          "wildcard_expansion_ms": 84.45620000000001,
+          "wildcard_expansions": 126
+        },
+        "private_commit_end_bytes": "6909952",
+        "private_commit_observed_max_bytes": "9342976",
+        "private_commit_start_bytes": "905216",
+        "private_commit_true_high_water_bytes": "9371648",
+        "sampling_count": 179
+      },
+      "limitations": [
+        "Uncontrolled concurrent host workloads and cache conditions.",
+        "Benchmark activates telemetry only; catalogue, scan, learning and teacher workloads are not exercised.",
+        "A single phase per condition, no p95 or repeatability claim. Phase costs are elapsed wall time, not CPU attribution.",
+        "Per-process GPU memory is unsupported; adapter capacity remains unknown when no native observation exists."
+      ],
+      "method": "GetProcessTimes sums all engine-process threads; GetThreadTimes measures the harness main thread. Non-main CPU is reported separately without attributing possible Windows library helper threads to the sampler. Same engine: phase_seconds idle then phase_seconds leased, all channels leased at 1000 ms, process enumeration at most every 15 s with retained row timestamps, current system and own counters every tick, renewal every 30 s, bounded events drained every second.",
+      "phase_seconds": 180,
+      "platform": "Windows 11",
+      "profile": "release",
+      "schema_version": 3,
+      "scope": "read-only personal observations; persisted evidence is aggregates only",
+      "source_base": "0377b0f5bb9de3a515e6d2e712dc9e5104332411",
+      "arm": "candidate",
+      "run": 1,
+      "host": "shared host",
+      "binary_sha256": "8fd2af8c8b6535c4491fefcf8e60d19ff3bd4761eba49375e244bdd971156f21",
+      "source_sha256": {
+        "crates/loomward-engine/src/telemetry/mapping.rs": "e4256df7ca820bcb4b2c2d1f43ca83a6b7f124db6a5305edaa1e2a8dfd6cc1e7",
+        "crates/loomward-engine/src/telemetry/mod.rs": "0d3d0423194ff9083ca85f91e996aeee0da5c323be0e744ea9f48e138928744f",
+        "crates/loomward-telemetry/src/lib.rs": "0e25a9911941003b6bcbb293e337c7c3b4878de69f0d1bb39264506fb67d5e4e",
+        "crates/loomward-telemetry/src/windows.rs": "7d26bc6baccdd4d59491936c67c9944e6ee6f0361c3a211d86e328b55e22a835",
+        "crates/loomward-telemetry/src/windows/pdh.rs": "0f5104933b824904219d2542218f95adbd8ed96986ff6f4dae75067924b5b383",
+        "crates/loomward-engine/examples/telemetry_bench.rs": "b12d48926cad627f2ba16a9bbb5903c68a62349f49e1b24bdf504592520b5e79",
+        "Cargo.lock": "faf5b1fbc669aef136c67706753d1df10ea7523bcdf5b0263708edc520089b80"
+      }
+    },
+    {
+      "P12": {
+        "no_lease_sampling": {
+          "events": 0,
+          "pass": true,
+          "samples": 0
+        },
+        "overhead_percent_one_core": 0.581592816656636,
+        "pass": true,
+        "target_percent_one_core_above_idle": 1.0
+      },
+      "P13": {
+        "idle_peak_private_commit_bytes": "913408",
+        "idle_percent_one_core": 0.0,
+        "pass": true,
+        "target_percent_one_core": 0.5,
+        "target_private_commit_bytes": "83886080"
+      },
+      "full_duration": false,
+      "idle": {
+        "duration_s": 180.0003105,
+        "engine_cpu_s": 0.0,
+        "engine_percent_one_core": 0.0,
+        "events_drained": 0,
+        "last_sample_seq": 0,
+        "main_thread_cpu_s": 0.0,
+        "non_main_thread_cpu_s": 0.0,
+        "non_main_thread_percent_one_core": 0.0,
+        "own_commit_samples": 0,
+        "phase_wall_costs": {
+          "engine_mapping_ms": 0.0,
+          "mapping_errors": 0,
+          "native_other_ms": 0.0,
+          "pdh_collection_ms": 0.0,
+          "pdh_decode_ms": 0.0,
+          "process_enumeration_ms": 0.0,
+          "process_queries_ms": 0.0,
+          "process_snapshot_ms": 0.0,
+          "process_snapshots": 0,
+          "process_walk_ms": 0.0,
+          "rates_and_projection_ms": 0.0,
+          "samples": 0,
+          "system_counters_ms": 0.0,
+          "wildcard_expansion_ms": 0.0,
+          "wildcard_expansions": 0
+        },
+        "private_commit_end_bytes": "860160",
+        "private_commit_observed_max_bytes": "913408",
+        "private_commit_start_bytes": "913408",
+        "private_commit_true_high_water_bytes": "913408",
+        "sampling_count": 0
+      },
+      "leased": {
+        "duration_s": 180.0013635,
+        "engine_cpu_s": 1.046875,
+        "engine_percent_one_core": 0.581592816656636,
+        "events_drained": 179,
+        "last_sample_seq": 179,
+        "main_thread_cpu_s": 0.015625,
+        "non_main_thread_cpu_s": 1.03125,
+        "non_main_thread_percent_one_core": 0.5729123268557907,
+        "own_commit_samples": 179,
+        "phase_wall_costs": {
+          "engine_mapping_ms": 62.92969999999995,
+          "mapping_errors": 0,
+          "native_other_ms": 2.5777999999999825,
+          "pdh_collection_ms": 486.9288000000002,
+          "pdh_decode_ms": 130.01039999999995,
+          "process_enumeration_ms": 217.93990000000005,
+          "process_queries_ms": 116.46909999999998,
+          "process_snapshot_ms": 70.9774,
+          "process_snapshots": 12,
+          "process_walk_ms": 30.49340000000001,
+          "rates_and_projection_ms": 48.03550000000001,
+          "samples": 179,
+          "system_counters_ms": 54.67620000000001,
+          "wildcard_expansion_ms": 75.51660000000001,
+          "wildcard_expansions": 126
+        },
+        "private_commit_end_bytes": "6889472",
+        "private_commit_observed_max_bytes": "9113600",
+        "private_commit_start_bytes": "860160",
+        "private_commit_true_high_water_bytes": "9158656",
+        "sampling_count": 179
+      },
+      "limitations": [
+        "Uncontrolled concurrent host workloads and cache conditions.",
+        "Benchmark activates telemetry only; catalogue, scan, learning and teacher workloads are not exercised.",
+        "A single phase per condition, no p95 or repeatability claim. Phase costs are elapsed wall time, not CPU attribution.",
+        "Per-process GPU memory is unsupported; adapter capacity remains unknown when no native observation exists."
+      ],
+      "method": "GetProcessTimes sums all engine-process threads; GetThreadTimes measures the harness main thread. Non-main CPU is reported separately without attributing possible Windows library helper threads to the sampler. Same engine: phase_seconds idle then phase_seconds leased, all channels leased at 1000 ms, process enumeration at most every 15 s with retained row timestamps, current system and own counters every tick, renewal every 30 s, bounded events drained every second.",
+      "phase_seconds": 180,
+      "platform": "Windows 11",
+      "profile": "release",
+      "schema_version": 3,
+      "scope": "read-only personal observations; persisted evidence is aggregates only",
+      "source_base": "0377b0f5bb9de3a515e6d2e712dc9e5104332411",
+      "arm": "main",
+      "run": 2,
+      "host": "shared host",
+      "binary_sha256": "e9b91c6bbf0088c8962e18d895b9e99319fa7d033f3aae2b1f0215f4e0a34fa4",
+      "source_sha256": {
+        "crates/loomward-engine/src/telemetry/mapping.rs": "b647482804e0c57747acee985cd8126cf07344baf20767f4c2e6844c607fd714",
+        "crates/loomward-engine/src/telemetry/mod.rs": "a1e7bf666c6c06ff0f3560132f894a223401febe7935dc3419d7887712ce4768",
+        "crates/loomward-telemetry/src/lib.rs": "528f9276a492527fa480db64a2be23267f404afd5e01058d0ff61403662bfee5",
+        "crates/loomward-telemetry/src/windows.rs": "7d26bc6baccdd4d59491936c67c9944e6ee6f0361c3a211d86e328b55e22a835",
+        "crates/loomward-telemetry/src/windows/pdh.rs": "962c1bfc7f79ae2aa96d2e7f283af8c40a40ea21c9589033d3c9d0650b4e2b66",
+        "crates/loomward-engine/examples/telemetry_bench.rs": "b12d48926cad627f2ba16a9bbb5903c68a62349f49e1b24bdf504592520b5e79",
+        "Cargo.lock": "faf5b1fbc669aef136c67706753d1df10ea7523bcdf5b0263708edc520089b80"
+      }
+    },
+    {
+      "P12": {
+        "no_lease_sampling": {
+          "events": 0,
+          "pass": true,
+          "samples": 0
+        },
+        "overhead_percent_one_core": 0.48610781016902016,
+        "pass": true,
+        "target_percent_one_core_above_idle": 1.0
+      },
+      "P13": {
+        "idle_peak_private_commit_bytes": "954368",
+        "idle_percent_one_core": 0.0,
+        "pass": true,
+        "target_percent_one_core": 0.5,
+        "target_private_commit_bytes": "83886080"
+      },
+      "full_duration": false,
+      "idle": {
+        "duration_s": 180.0004871,
+        "engine_cpu_s": 0.0,
+        "engine_percent_one_core": 0.0,
+        "events_drained": 0,
+        "last_sample_seq": 0,
+        "main_thread_cpu_s": 0.0,
+        "non_main_thread_cpu_s": 0.0,
+        "non_main_thread_percent_one_core": 0.0,
+        "own_commit_samples": 0,
+        "phase_wall_costs": {
+          "engine_mapping_ms": 0.0,
+          "engine_publication_ms": 0.0,
+          "engine_snapshot_mapping_ms": 0.0,
+          "gpu_instances_ms": 0.0,
+          "mapping_errors": 0,
+          "native_other_ms": 0.0,
+          "pdh_collection_ms": 0.0,
+          "pdh_decode_ms": 0.0,
+          "process_enumeration_ms": 0.0,
+          "process_queries_ms": 0.0,
+          "process_snapshot_ms": 0.0,
+          "process_snapshots": 0,
+          "process_walk_ms": 0.0,
+          "rates_and_projection_ms": 0.0,
+          "samples": 0,
+          "system_counters_ms": 0.0,
+          "wildcard_expansion_ms": 0.0,
+          "wildcard_expansions": 0
+        },
+        "private_commit_end_bytes": "839680",
+        "private_commit_observed_max_bytes": "942080",
+        "private_commit_start_bytes": "942080",
+        "private_commit_true_high_water_bytes": "954368",
+        "sampling_count": 0
+      },
+      "leased": {
+        "duration_s": 180.0012223,
+        "engine_cpu_s": 0.875,
+        "engine_percent_one_core": 0.48610781016902016,
+        "events_drained": 179,
+        "last_sample_seq": 179,
+        "main_thread_cpu_s": 0.0,
+        "non_main_thread_cpu_s": 0.875,
+        "non_main_thread_percent_one_core": 0.48610781016902016,
+        "own_commit_samples": 179,
+        "phase_wall_costs": {
+          "engine_mapping_ms": 13.524700000000005,
+          "engine_publication_ms": 13.8749,
+          "engine_snapshot_mapping_ms": 12.224599999999995,
+          "gpu_instances_ms": 107.72940000000003,
+          "mapping_errors": 0,
+          "native_other_ms": 6.110999999999923,
+          "pdh_collection_ms": 441.4995999999998,
+          "pdh_decode_ms": 116.3949,
+          "process_enumeration_ms": 231.85240000000002,
+          "process_queries_ms": 120.17620000000007,
+          "process_snapshot_ms": 70.7706,
+          "process_snapshots": 12,
+          "process_walk_ms": 40.90559999999999,
+          "rates_and_projection_ms": 47.432800000000015,
+          "samples": 179,
+          "system_counters_ms": 60.68569999999997,
+          "wildcard_expansion_ms": 63.0458,
+          "wildcard_expansions": 126
+        },
+        "private_commit_end_bytes": "6963200",
+        "private_commit_observed_max_bytes": "8884224",
+        "private_commit_start_bytes": "839680",
+        "private_commit_true_high_water_bytes": "9293824",
+        "sampling_count": 179
+      },
+      "limitations": [
+        "Uncontrolled concurrent host workloads and cache conditions.",
+        "Benchmark activates telemetry only; catalogue, scan, learning and teacher workloads are not exercised.",
+        "A single phase per condition, no p95 or repeatability claim. Phase costs are elapsed wall time, not CPU attribution.",
+        "Per-process GPU memory is unsupported; adapter capacity remains unknown when no native observation exists."
+      ],
+      "method": "GetProcessTimes sums all engine-process threads; GetThreadTimes measures the harness main thread. Non-main CPU is reported separately without attributing possible Windows library helper threads to the sampler. Same engine: phase_seconds idle then phase_seconds leased, all channels leased at 1000 ms, process enumeration at most every 15 s with retained row timestamps, current system and own counters every tick, renewal every 30 s, bounded events drained every second.",
+      "phase_seconds": 180,
+      "platform": "Windows 11",
+      "profile": "release",
+      "schema_version": 3,
+      "scope": "read-only personal observations; persisted evidence is aggregates only",
+      "source_base": "0377b0f5bb9de3a515e6d2e712dc9e5104332411",
+      "arm": "candidate",
+      "run": 2,
+      "host": "shared host",
+      "binary_sha256": "8fd2af8c8b6535c4491fefcf8e60d19ff3bd4761eba49375e244bdd971156f21",
+      "source_sha256": {
+        "crates/loomward-engine/src/telemetry/mapping.rs": "e4256df7ca820bcb4b2c2d1f43ca83a6b7f124db6a5305edaa1e2a8dfd6cc1e7",
+        "crates/loomward-engine/src/telemetry/mod.rs": "0d3d0423194ff9083ca85f91e996aeee0da5c323be0e744ea9f48e138928744f",
+        "crates/loomward-telemetry/src/lib.rs": "0e25a9911941003b6bcbb293e337c7c3b4878de69f0d1bb39264506fb67d5e4e",
+        "crates/loomward-telemetry/src/windows.rs": "7d26bc6baccdd4d59491936c67c9944e6ee6f0361c3a211d86e328b55e22a835",
+        "crates/loomward-telemetry/src/windows/pdh.rs": "0f5104933b824904219d2542218f95adbd8ed96986ff6f4dae75067924b5b383",
+        "crates/loomward-engine/examples/telemetry_bench.rs": "b12d48926cad627f2ba16a9bbb5903c68a62349f49e1b24bdf504592520b5e79",
+        "Cargo.lock": "faf5b1fbc669aef136c67706753d1df10ea7523bcdf5b0263708edc520089b80"
+      }
+    },
+    {
+      "P12": {
+        "no_lease_sampling": {
+          "events": 0,
+          "pass": true,
+          "samples": 0
+        },
+        "overhead_percent_one_core": 0.6683671430409165,
+        "pass": true,
+        "target_percent_one_core_above_idle": 1.0
+      },
+      "P13": {
+        "idle_peak_private_commit_bytes": "974848",
+        "idle_percent_one_core": 0.0,
+        "pass": true,
+        "target_percent_one_core": 0.5,
+        "target_private_commit_bytes": "83886080"
+      },
+      "full_duration": false,
+      "idle": {
+        "duration_s": 180.0012364,
+        "engine_cpu_s": 0.0,
+        "engine_percent_one_core": 0.0,
+        "events_drained": 0,
+        "last_sample_seq": 0,
+        "main_thread_cpu_s": 0.0,
+        "non_main_thread_cpu_s": 0.0,
+        "non_main_thread_percent_one_core": 0.0,
+        "own_commit_samples": 0,
+        "phase_wall_costs": {
+          "engine_mapping_ms": 0.0,
+          "mapping_errors": 0,
+          "native_other_ms": 0.0,
+          "pdh_collection_ms": 0.0,
+          "pdh_decode_ms": 0.0,
+          "process_enumeration_ms": 0.0,
+          "process_queries_ms": 0.0,
+          "process_snapshot_ms": 0.0,
+          "process_snapshots": 0,
+          "process_walk_ms": 0.0,
+          "rates_and_projection_ms": 0.0,
+          "samples": 0,
+          "system_counters_ms": 0.0,
+          "wildcard_expansion_ms": 0.0,
+          "wildcard_expansions": 0
+        },
+        "private_commit_end_bytes": "860160",
+        "private_commit_observed_max_bytes": "962560",
+        "private_commit_start_bytes": "962560",
+        "private_commit_true_high_water_bytes": "974848",
+        "sampling_count": 0
+      },
+      "leased": {
+        "duration_s": 180.0095969,
+        "engine_cpu_s": 1.203125,
+        "engine_percent_one_core": 0.6683671430409165,
+        "events_drained": 179,
+        "last_sample_seq": 179,
+        "main_thread_cpu_s": 0.015625,
+        "non_main_thread_cpu_s": 1.1875,
+        "non_main_thread_percent_one_core": 0.6596870502741513,
+        "own_commit_samples": 179,
+        "phase_wall_costs": {
+          "engine_mapping_ms": 85.87309999999998,
+          "mapping_errors": 0,
+          "native_other_ms": 6.2226999999999535,
+          "pdh_collection_ms": 753.4883000000007,
+          "pdh_decode_ms": 168.67480000000006,
+          "process_enumeration_ms": 305.2656999999999,
+          "process_queries_ms": 171.60440000000003,
+          "process_snapshot_ms": 79.5855,
+          "process_snapshots": 12,
+          "process_walk_ms": 54.07579999999996,
+          "rates_and_projection_ms": 67.94159999999998,
+          "samples": 179,
+          "system_counters_ms": 72.18989999999998,
+          "wildcard_expansion_ms": 97.88150000000002,
+          "wildcard_expansions": 126
+        },
+        "private_commit_end_bytes": "6823936",
+        "private_commit_observed_max_bytes": "9342976",
+        "private_commit_start_bytes": "860160",
+        "private_commit_true_high_water_bytes": "9342976",
+        "sampling_count": 179
+      },
+      "limitations": [
+        "Uncontrolled concurrent host workloads and cache conditions.",
+        "Benchmark activates telemetry only; catalogue, scan, learning and teacher workloads are not exercised.",
+        "A single phase per condition, no p95 or repeatability claim. Phase costs are elapsed wall time, not CPU attribution.",
+        "Per-process GPU memory is unsupported; adapter capacity remains unknown when no native observation exists."
+      ],
+      "method": "GetProcessTimes sums all engine-process threads; GetThreadTimes measures the harness main thread. Non-main CPU is reported separately without attributing possible Windows library helper threads to the sampler. Same engine: phase_seconds idle then phase_seconds leased, all channels leased at 1000 ms, process enumeration at most every 15 s with retained row timestamps, current system and own counters every tick, renewal every 30 s, bounded events drained every second.",
+      "phase_seconds": 180,
+      "platform": "Windows 11",
+      "profile": "release",
+      "schema_version": 3,
+      "scope": "read-only personal observations; persisted evidence is aggregates only",
+      "source_base": "0377b0f5bb9de3a515e6d2e712dc9e5104332411",
+      "arm": "main",
+      "run": 3,
+      "host": "shared host",
+      "binary_sha256": "e9b91c6bbf0088c8962e18d895b9e99319fa7d033f3aae2b1f0215f4e0a34fa4",
+      "source_sha256": {
+        "crates/loomward-engine/src/telemetry/mapping.rs": "b647482804e0c57747acee985cd8126cf07344baf20767f4c2e6844c607fd714",
+        "crates/loomward-engine/src/telemetry/mod.rs": "a1e7bf666c6c06ff0f3560132f894a223401febe7935dc3419d7887712ce4768",
+        "crates/loomward-telemetry/src/lib.rs": "528f9276a492527fa480db64a2be23267f404afd5e01058d0ff61403662bfee5",
+        "crates/loomward-telemetry/src/windows.rs": "7d26bc6baccdd4d59491936c67c9944e6ee6f0361c3a211d86e328b55e22a835",
+        "crates/loomward-telemetry/src/windows/pdh.rs": "962c1bfc7f79ae2aa96d2e7f283af8c40a40ea21c9589033d3c9d0650b4e2b66",
+        "crates/loomward-engine/examples/telemetry_bench.rs": "b12d48926cad627f2ba16a9bbb5903c68a62349f49e1b24bdf504592520b5e79",
+        "Cargo.lock": "faf5b1fbc669aef136c67706753d1df10ea7523bcdf5b0263708edc520089b80"
+      }
+    },
+    {
+      "P12": {
+        "no_lease_sampling": {
+          "events": 0,
+          "pass": true,
+          "samples": 0
+        },
+        "overhead_percent_one_core": 0.5295082831611978,
+        "pass": true,
+        "target_percent_one_core_above_idle": 1.0
+      },
+      "P13": {
+        "idle_peak_private_commit_bytes": "958464",
+        "idle_percent_one_core": 0.0,
+        "pass": true,
+        "target_percent_one_core": 0.5,
+        "target_private_commit_bytes": "83886080"
+      },
+      "full_duration": false,
+      "idle": {
+        "duration_s": 180.0003513,
+        "engine_cpu_s": 0.0,
+        "engine_percent_one_core": 0.0,
+        "events_drained": 0,
+        "last_sample_seq": 0,
+        "main_thread_cpu_s": 0.0,
+        "non_main_thread_cpu_s": 0.0,
+        "non_main_thread_percent_one_core": 0.0,
+        "own_commit_samples": 0,
+        "phase_wall_costs": {
+          "engine_mapping_ms": 0.0,
+          "engine_publication_ms": 0.0,
+          "engine_snapshot_mapping_ms": 0.0,
+          "gpu_instances_ms": 0.0,
+          "mapping_errors": 0,
+          "native_other_ms": 0.0,
+          "pdh_collection_ms": 0.0,
+          "pdh_decode_ms": 0.0,
+          "process_enumeration_ms": 0.0,
+          "process_queries_ms": 0.0,
+          "process_snapshot_ms": 0.0,
+          "process_snapshots": 0,
+          "process_walk_ms": 0.0,
+          "rates_and_projection_ms": 0.0,
+          "samples": 0,
+          "system_counters_ms": 0.0,
+          "wildcard_expansion_ms": 0.0,
+          "wildcard_expansions": 0
+        },
+        "private_commit_end_bytes": "847872",
+        "private_commit_observed_max_bytes": "946176",
+        "private_commit_start_bytes": "946176",
+        "private_commit_true_high_water_bytes": "958464",
+        "sampling_count": 0
+      },
+      "leased": {
+        "duration_s": 180.0019056,
+        "engine_cpu_s": 0.953125,
+        "engine_percent_one_core": 0.5295082831611978,
+        "events_drained": 179,
+        "last_sample_seq": 179,
+        "main_thread_cpu_s": 0.0,
+        "non_main_thread_cpu_s": 0.953125,
+        "non_main_thread_percent_one_core": 0.5295082831611978,
+        "own_commit_samples": 179,
+        "phase_wall_costs": {
+          "engine_mapping_ms": 10.873600000000007,
+          "engine_publication_ms": 13.033900000000001,
+          "engine_snapshot_mapping_ms": 11.7847,
+          "gpu_instances_ms": 122.91319999999996,
+          "mapping_errors": 0,
+          "native_other_ms": 2.425499999999996,
+          "pdh_collection_ms": 400.772,
+          "pdh_decode_ms": 127.14900000000004,
+          "process_enumeration_ms": 261.5752999999998,
+          "process_queries_ms": 138.41719999999998,
+          "process_snapshot_ms": 87.0929,
+          "process_snapshots": 12,
+          "process_walk_ms": 36.0652,
+          "rates_and_projection_ms": 50.36440000000001,
+          "samples": 179,
+          "system_counters_ms": 51.8639,
+          "wildcard_expansion_ms": 72.7458,
+          "wildcard_expansions": 126
+        },
+        "private_commit_end_bytes": "6901760",
+        "private_commit_observed_max_bytes": "9404416",
+        "private_commit_start_bytes": "847872",
+        "private_commit_true_high_water_bytes": "9465856",
+        "sampling_count": 179
+      },
+      "limitations": [
+        "Uncontrolled concurrent host workloads and cache conditions.",
+        "Benchmark activates telemetry only; catalogue, scan, learning and teacher workloads are not exercised.",
+        "A single phase per condition, no p95 or repeatability claim. Phase costs are elapsed wall time, not CPU attribution.",
+        "Per-process GPU memory is unsupported; adapter capacity remains unknown when no native observation exists."
+      ],
+      "method": "GetProcessTimes sums all engine-process threads; GetThreadTimes measures the harness main thread. Non-main CPU is reported separately without attributing possible Windows library helper threads to the sampler. Same engine: phase_seconds idle then phase_seconds leased, all channels leased at 1000 ms, process enumeration at most every 15 s with retained row timestamps, current system and own counters every tick, renewal every 30 s, bounded events drained every second.",
+      "phase_seconds": 180,
+      "platform": "Windows 11",
+      "profile": "release",
+      "schema_version": 3,
+      "scope": "read-only personal observations; persisted evidence is aggregates only",
+      "source_base": "0377b0f5bb9de3a515e6d2e712dc9e5104332411",
+      "arm": "candidate",
+      "run": 3,
+      "host": "shared host",
+      "binary_sha256": "8fd2af8c8b6535c4491fefcf8e60d19ff3bd4761eba49375e244bdd971156f21",
+      "source_sha256": {
+        "crates/loomward-engine/src/telemetry/mapping.rs": "e4256df7ca820bcb4b2c2d1f43ca83a6b7f124db6a5305edaa1e2a8dfd6cc1e7",
+        "crates/loomward-engine/src/telemetry/mod.rs": "0d3d0423194ff9083ca85f91e996aeee0da5c323be0e744ea9f48e138928744f",
+        "crates/loomward-telemetry/src/lib.rs": "0e25a9911941003b6bcbb293e337c7c3b4878de69f0d1bb39264506fb67d5e4e",
+        "crates/loomward-telemetry/src/windows.rs": "7d26bc6baccdd4d59491936c67c9944e6ee6f0361c3a211d86e328b55e22a835",
+        "crates/loomward-telemetry/src/windows/pdh.rs": "0f5104933b824904219d2542218f95adbd8ed96986ff6f4dae75067924b5b383",
+        "crates/loomward-engine/examples/telemetry_bench.rs": "b12d48926cad627f2ba16a9bbb5903c68a62349f49e1b24bdf504592520b5e79",
+        "Cargo.lock": "faf5b1fbc669aef136c67706753d1df10ea7523bcdf5b0263708edc520089b80"
+      }
+    }
+  ],
+  "summary": {
+    "main": {
+      "median_percent_one_core_above_idle": 0.6597192626483078,
+      "range_percent_one_core_above_idle": [
+        0.581592816656636,
+        0.6683671430409165
+      ],
+      "all_runs_at_or_under_one_percent": true,
+      "phase_mean_wall_ms_per_tick": {
+        "engine_mapping_ms": 0.4243616387337057,
+        "native_other_ms": 0.021826443202979485,
+        "pdh_collection_ms": 3.370926070763503,
+        "pdh_decode_ms": 0.8275644320297953,
+        "process_enumeration_ms": 1.5243726256983239,
+        "process_queries_ms": 0.8226124767225328,
+        "process_snapshot_ms": 0.4470143389199255,
+        "process_walk_ms": 0.2547458100558658,
+        "rates_and_projection_ms": 0.32334245810055867,
+        "system_counters_ms": 0.34067299813780255,
+        "wildcard_expansion_ms": 0.49739683426443215
+      }
+    },
+    "candidate": {
+      "median_percent_one_core_above_idle": 0.5295082831611978,
+      "range_percent_one_core_above_idle": [
+        0.48610781016902016,
+        0.6770779253614817
+      ],
+      "all_runs_at_or_under_one_percent": true,
+      "phase_mean_wall_ms_per_tick": {
+        "engine_mapping_ms": 0.06799497206703912,
+        "engine_publication_ms": 0.08112513966480447,
+        "engine_snapshot_mapping_ms": 0.0728607076350093,
+        "gpu_instances_ms": 0.6759050279329607,
+        "native_other_ms": 0.02182625698324008,
+        "pdh_collection_ms": 2.70840763500931,
+        "pdh_decode_ms": 0.7178966480446929,
+        "process_enumeration_ms": 1.4608363128491615,
+        "process_queries_ms": 0.7779549348230911,
+        "process_snapshot_ms": 0.46571508379888266,
+        "process_walk_ms": 0.2171662942271881,
+        "rates_and_projection_ms": 0.29679478584729985,
+        "system_counters_ms": 0.3263458100558659,
+        "wildcard_expansion_ms": 0.4101448789571695
+      }
+    },
+    "paired_candidate_minus_main_percentage_points": [
+      0.017358662713173878,
+      -0.09548500648761582,
+      -0.1388588598797187
+    ],
+    "candidate_median_lower_than_main": true,
+    "target_supported_by_candidate_median_and_range": true
+  },
+  "phase_cost_method": "Elapsed wall time, not CPU attribution. gpu_instances_ms is part of pdh_decode_ms, excludes wildcard expansion, and must not be added to it. engine_mapping_ms is sampler event mapping; engine_snapshot_mapping_ms is caller snapshot mapping. engine_publication_ms is state publication and previous snapshot retirement under the mutex. Main lacks the three newly separated subphase fields.",
+  "short_profile": {
+    "method": "Temporary per-thread cycle instrumentation, 30 one-second all-channel ticks, excluding first three warmup ticks; removed before A/B. Cycles are diagnostic only, not an overhead percentage or a hardware-frequency claim.",
+    "mean_million_thread_cycles_per_tick": {
+      "collect_total": 11.468,
+      "rates": 0.591,
+      "retained_copy": 0.646,
+      "sort_and_truncate": 0.278,
+      "sample_total": 12.988,
+      "system_counters": 1.324,
+      "pdh_total": 7.199,
+      "own_only": 0.29,
+      "process_enumeration_amortized": 2.614,
+      "pdh_collection": 2.525,
+      "wildcard_expansion": 1.612,
+      "array_size": 0.613,
+      "array_data": 0.567,
+      "array_parse": 0.68,
+      "gpu_rows_including_arrays_and_expansion": 4.376,
+      "disk_rows_including_arrays_and_expansion": 0.271
+    }
+  },
+  "attempts": [
+    {
+      "change": "Rank native process references before converting the top twenty summary rows.",
+      "status": "retained",
+      "reason": "Preserves full-mapping ordering, unknown handling and PID ties; deterministic conversion-count test distinguishes old and new paths."
+    },
+    {
+      "change": "Previous scratch cycle instrumentation and process-query examples.",
+      "status": "discarded",
+      "reason": "Useful for phase diagnosis; exports, Windows-only linker references and examples are removed from final source."
+    },
+    {
+      "change": "Further slowing process or GPU sampling, weakening wildcard churn audits, or retaining process handles.",
+      "status": "declined_without_implementation",
+      "reason": "No additional cadence/unknown or process-identity tradeoff needed for the measured bounded mapping change; existing fifteen-second process cadence, ten-sample/status wildcard audits and lease-union sampling remain."
+    }
+  ],
+  "mutations": [
+    {
+      "test": "interval-renewal",
+      "mutation_exit": 101,
+      "failed_as_expected": true,
+      "restored_exit": 0
+    },
+    {
+      "test": "generation-guard",
+      "mutation_exit": 101,
+      "failed_as_expected": true,
+      "restored_exit": 0
+    },
+    {
+      "test": "bounded-mapping",
+      "mutation_exit": 101,
+      "failed_as_expected": true,
+      "restored_exit": 0
+    },
+    {
+      "test": "process-time",
+      "mutation_exit": 101,
+      "failed_as_expected": true,
+      "restored_exit": 0
+    },
+    {
+      "test": "mock-sample-time",
+      "mutation_exit": 1,
+      "failed_as_expected": true,
+      "restored_exit": 0
+    }
+  ],
+  "checks": {
+    "platform": "Windows / shared host",
+    "cargo_fmt_all_check": "pass",
+    "cargo_test_workspace": "pass: 644 passed, 1 ignored",
+    "cargo_clippy_workspace_all_targets_all_features_D_warnings": "pass",
+    "app_check": "pass: 0 errors, 0 warnings",
+    "app_test": "pass: 294 tests",
+    "git_diff_check": "pass"
+  },
+  "limitations": [
+    "Shared host with uncontrolled concurrent lanes, process churn and cache conditions; three pairs do not establish causal attribution or an isolated-host confidence interval.",
+    "Shortened windows: no new ten-minute/full-duration or p95 claim.",
+    "No GPU churn soak, hosted CI, non-Windows run, native UI, service/browser end-to-end run or OS effects.",
+    "Per-phase values are wall time; only GetProcessTimes supplies whole-process CPU attribution."
+  ]
+}
 }
