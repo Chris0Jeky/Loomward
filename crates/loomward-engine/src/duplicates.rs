@@ -23,8 +23,10 @@ impl Engine {
         budget: DuplicateBudget,
     ) -> EngineResult<Job> {
         self.duplicate_read_admission(&root)?;
-        let workers = self.budgets.reserve_scan_workers(Some(1))?;
         let spec = JobSpec::new(JobKind::Duplicates, Some(root.root_id().clone()));
+        // A live inspection of this root is `busy` with its job ID, even when workers are short.
+        self.jobs.check_conflict(&spec)?;
+        let workers = self.budgets.reserve_scan_workers(Some(1))?;
         let runner = self.duplicate_runner(root, candidates, budget);
         let runner: JobRunner = Arc::new(move |ctx, spec| {
             let _workers = &workers;
@@ -236,6 +238,20 @@ mod tests {
                 )
                 .unwrap();
             started.recv_timeout(Duration::from_secs(2)).unwrap();
+            if !revoke && !after_read {
+                // A live inspection is `busy` with its job ID even when the worker pool is full.
+                let _full = engine.budgets.reserve_scan_workers(None).unwrap();
+                let again = serde_json::from_value(
+                    serde_json::json!({"max_candidates":200,"max_bytes":"100","max_ms":1000}),
+                )
+                .unwrap();
+                let busy = engine
+                    .duplicates_start(root.clone(), Default::default(), again)
+                    .unwrap_err();
+                assert!(matches!(busy, EngineError::Busy { .. }), "{busy:?}");
+                let id = serde_json::json!(job.job_id);
+                assert!(format!("{busy:?}").contains(id.as_str().unwrap()));
+            }
             assert!(
                 engine.job_status(&job.job_id).unwrap().duplicates.is_none(),
                 "reports publish atomically with the terminal revision"

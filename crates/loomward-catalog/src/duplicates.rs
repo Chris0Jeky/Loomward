@@ -54,6 +54,16 @@ impl Reader {
                 r.get::<_, i64>(0)?, DuplicateCandidate { relative: String::new(), logical: r.get::<_, i64>(1)? as u64,
                 file_id: r.get(2)?, created: r.get(3)?, modified: r.get(4)?, changed: r.get(5)?, attributes: r.get(6)?, volume_key: r.get(7)? }
             )))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            // Unreadable (access denied) or unrepresentable (lossy) names are unknowns, not policy
+            // exclusions: filtering one leaves the report partial (invariant 4).
+            let unknown: bool = conn.query_row("WITH RECURSIVE shielded(id) AS (
+                SELECT id FROM dir WHERE root_id=?1 AND (listing_state='excluded' OR flags & ?3 != 0)
+                UNION SELECT d.id FROM dir d JOIN shielded s ON d.parent_id=s.id)
+                SELECT EXISTS(SELECT 1 FROM file f JOIN dir d ON d.id=f.dir_id JOIN visible_dir v ON v.id=d.id
+                WHERE d.root_id=?1 AND d.id NOT IN (SELECT id FROM shielded)
+                AND f.flags & ?4 != 0 AND f.logical>=?2 AND f.logical>0)",
+                params![root, floor.max(1) as i64, EXCLUDED_FLAGS | 1 | (1 << 1) | (1 << 6) | (1 << 9), (1 << 6) | (1 << 9)],
+                |r| r.get(0))?;
             let mut truncated = rows.len() > cap;
             let mut entries = Vec::new();
             let mut path_bytes = 0;
@@ -71,7 +81,7 @@ impl Reader {
             let mut sizes = std::collections::HashMap::new();
             for e in &entries { *sizes.entry(e.logical).or_insert(0) += 1; }
             entries.retain(|e| sizes[&e.logical] >= 2);
-            Ok(DuplicateCandidates { entries, truncated, partial: !complete })
+            Ok(DuplicateCandidates { entries, truncated, partial: !complete || unknown })
         });
         match result {
             Err(Error::Sql(rusqlite::Error::SqliteFailure(e, _)))

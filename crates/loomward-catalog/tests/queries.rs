@@ -28,6 +28,10 @@ fn duplicates_select_exact_sizes_visible_names_and_scan_identity_with_a_cap() {
     let mut reader = catalog.reader().unwrap();
     let all = reader.duplicate_candidates(root, 1, 200).unwrap();
     assert!(!all.truncated);
+    assert!(
+        !all.partial,
+        "policy exclusions alone leave the report complete"
+    );
     assert_eq!(
         all.entries
             .iter()
@@ -54,6 +58,19 @@ fn duplicates_select_exact_sizes_visible_names_and_scan_identity_with_a_cap() {
     let capped = reader.duplicate_candidates(root, 0, 4).unwrap();
     assert!(capped.truncated);
     assert_eq!(capped.entries.len(), 3); // cap split the trailing size group: singleton dropped
+                                         // A same-sized name the scan could not represent (lossy) or read (denied) is an unknown.
+    for (name, flags) in [("lossy", 1 << 9), ("denied", 1 << 6)] {
+        db.execute("INSERT INTO file(dir_id,name,file_id,logical,attrs,flags,born_run,seen_run) VALUES(?1,?2,?3,16,32,?4,1,1)", rusqlite::params![dir, name, vec![9u8; 16], flags]).unwrap();
+        let mut reader = catalog.reader().unwrap();
+        let unknown = reader.duplicate_candidates(root, 1, 200).unwrap();
+        assert!(
+            unknown.partial,
+            "{name} names are filtered but must leave the report partial"
+        );
+        db.execute("DELETE FROM file WHERE name=?1", [name])
+            .unwrap();
+    }
+    let mut reader = catalog.reader().unwrap();
     let floor = reader.duplicate_candidates(root, 8, 200).unwrap();
     assert_eq!(
         floor.entries.iter().map(|e| e.logical).collect::<Vec<_>>(),

@@ -104,6 +104,31 @@ pub(crate) struct Registry {
     seq: AtomicU64,
 }
 impl Registry {
+    /// One live scan or duplicates job per root: `busy` with `detail.job_id`.
+    fn conflict(records: &HashMap<JobId, Record>, spec: &JobSpec) -> EngineResult<()> {
+        if !matches!(spec.kind, JobKind::Scan | JobKind::Duplicates) {
+            return Ok(());
+        }
+        let Some(r) = records.values().find(|r| {
+            r.job.kind == spec.kind && r.job.root_id == spec.root_id && r.terminal.is_none()
+        }) else {
+            return Ok(());
+        };
+        Err(EngineError::Busy {
+            message: "root already scanning".into(),
+            detail: Some(
+                loomward_protocol::Detail::new(std::collections::BTreeMap::from([(
+                    "job_id".into(),
+                    serde_json::json!(r.job.job_id),
+                )]))
+                .unwrap(),
+            ),
+        })
+    }
+    /// The submit-time conflict check, for callers that must report it before reserving budgets.
+    pub(crate) fn check_conflict(&self, spec: &JobSpec) -> EngineResult<()> {
+        Self::conflict(&self.records.lock().unwrap(), spec)
+    }
     fn prune(records: &mut HashMap<JobId, Record>) {
         records.retain(|_, r| r.terminal.is_none_or(|t| t.elapsed() < TERMINAL_RETENTION));
     }
@@ -156,22 +181,7 @@ impl Registry {
         {
             let mut records = self.records.lock().unwrap();
             Self::prune(&mut records);
-            if matches!(spec.kind, JobKind::Scan | JobKind::Duplicates) {
-                if let Some(r) = records.values().find(|r| {
-                    r.job.kind == spec.kind && r.job.root_id == spec.root_id && r.terminal.is_none()
-                }) {
-                    return Err(EngineError::Busy {
-                        message: "root already scanning".into(),
-                        detail: Some(
-                            loomward_protocol::Detail::new(std::collections::BTreeMap::from([(
-                                "job_id".into(),
-                                serde_json::json!(r.job.job_id),
-                            )]))
-                            .unwrap(),
-                        ),
-                    });
-                }
-            }
+            Self::conflict(&records, &spec)?;
             // Allocate under the records lock so submission events and listing order agree.
             // The records lock serialises allocation, so a load and store is enough (and avoids
             // `fetch_update`, deprecated on newer toolchains).
