@@ -393,7 +393,26 @@ mod tests {
         let other = profile.parent().unwrap().join("other");
         std::fs::create_dir_all(&other).unwrap();
         assert!(validate_profile_root(&other, &profile).is_err());
-        assert!(check_root(&allowed, None, &[], false).is_ok());
+        if elevated() {
+            assert_eq!(
+                check_root(&allowed, None, &[], false),
+                Err(Refusal::IdentityUnavailable)
+            );
+        } else {
+            assert!(check_root(&allowed, None, &[], false).is_ok());
+        }
+    }
+
+    /// Hosted CI runs elevated, and an elevated host refuses every root (the volume open).
+    fn elevated() -> bool {
+        #[cfg(windows)]
+        {
+            loomward_windows::enumerate::running_elevated()
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
     }
 
     #[test]
@@ -429,6 +448,11 @@ mod tests {
         let (a, b, state) = (base.join("a"), base.join("a").join("b"), base.join("state"));
         for d in [&a, &b, &state] {
             std::fs::create_dir_all(d).unwrap();
+        }
+        if elevated() {
+            let refused = validate_roots(std::slice::from_ref(&a), Some(&state)).unwrap_err();
+            assert!(refused.ends_with("identity_unavailable"), "{refused}");
+            return;
         }
         assert_eq!(
             validate_roots(std::slice::from_ref(&a), Some(&state))
