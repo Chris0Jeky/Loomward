@@ -187,11 +187,13 @@ pub(crate) fn overlaps_stored(candidate: &Path, stored: &Path) -> bool {
     }
 }
 
-/// Case-insensitive, separator-normalised prefix overlap of two absolute paths, either way round.
+/// Separator-normalised prefix overlap of two absolute paths, either way round, case-insensitive
+/// only on Windows (the host filesystem's semantics).
 /// The verbatim drive prefix (`\\?\`) is ignored, so a canonical path matches its stored form.
 fn lexical_overlap(a: &Path, b: &Path) -> bool {
     fn norm(p: &Path) -> String {
-        let s = p.to_string_lossy().replace('/', "\\").to_lowercase();
+        let s = p.to_string_lossy().replace('/', "\\");
+        let s = if cfg!(windows) { s.to_lowercase() } else { s };
         let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
         s.trim_end_matches('\\').to_string() + "\\"
     }
@@ -565,6 +567,20 @@ mod tests {
         assert!(!overlaps_stored(&parent, &base.join("other-gone")));
         // A resolvable stored grant still compares by canonical path.
         assert!(overlaps_stored(&parent.join("."), &parent));
+    }
+
+    /// Case-sensitive hosts keep case in the lexical fallback (Codex P2 on #304).
+    #[cfg(not(windows))]
+    #[test]
+    fn lexical_overlap_keeps_case_on_case_sensitive_hosts() {
+        assert!(!lexical_overlap(
+            Path::new("/data/foo"),
+            Path::new("/data/Foo/gone")
+        ));
+        assert!(lexical_overlap(
+            Path::new("/data/Foo"),
+            Path::new("/data/Foo/gone")
+        ));
     }
 
     /// #185 item 4: only the verbatim drive form is local; every other verbatim or device
