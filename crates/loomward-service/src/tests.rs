@@ -1361,6 +1361,10 @@ fn revocation_commits_first_then_fences_then_emits_and_is_monotone() {
 
 /// A fixture root with its own identity, no listing.
 fn register(svc: &Service, file_id: u8) -> (i64, i64) {
+    register_as(svc, file_id, "fixture")
+}
+
+fn register_as(svc: &Service, file_id: u8, origin: &str) -> (i64, i64) {
     let WriteReply::Root {
         grant_id, root_id, ..
     } = svc
@@ -1373,7 +1377,7 @@ fn register(svc: &Service, file_id: u8) -> (i64, i64) {
             display_path: format!("Synthetic root {file_id}"),
             root_file_id: Some(vec![file_id; 16]),
             filesystem: Some("NTFS".into()),
-            origin: "fixture".into(),
+            origin: origin.into(),
             granted_via: "fixture".into(),
             observed_at_ns: 0,
         }))
@@ -2265,19 +2269,6 @@ fn scan_cancel_is_acknowledged_and_never_publishes_a_complete_generation() {
 #[test]
 fn scan_start_is_refused_outside_registered_lab_roots() {
     let tmp = temp_root();
-    let personal = open(&tmp.path().join("personal"), DatasetClass::Personal);
-    let e = err(call(
-        &personal,
-        "scan.start",
-        json!({"root_id": "rt_x", "mode": "full"}),
-    ));
-    assert_eq!(e.code, ErrorCode::CapabilityUnavailable);
-    assert_eq!(reason(&e), Some("personal_scan_gated_184"));
-    assert!(
-        !e.message.contains("  ") && !e.message.contains("MEDIUM"),
-        "plain words on the wire: {}",
-        e.message.as_str()
-    );
     let synthetic = open(&tmp.path().join("synthetic"), DatasetClass::Synthetic);
     let (root, _) = fixture(&synthetic, 1);
     let e = err(call(
@@ -2287,6 +2278,124 @@ fn scan_start_is_refused_outside_registered_lab_roots() {
     ));
     assert_eq!(e.code, ErrorCode::PermissionDenied);
     assert_eq!(reason(&e), Some("synthetic_session_requires_lab_root"));
+}
+
+/// A personal session scans only its own active owner grants: an unknown root, a lab root and
+/// a revoked grant are refused before the engine sees them.
+#[test]
+fn personal_scan_start_refuses_unknown_lab_and_revoked_roots() {
+    let tmp = temp_root();
+    let personal = open(&tmp.path().join("personal"), DatasetClass::Personal);
+    let scan = |root: &str| {
+        err(call(
+            &personal,
+            "scan.start",
+            json!({"root_id": root, "mode": "full"}),
+        ))
+    };
+    let e = scan("rt_x");
+    assert_eq!(e.code, ErrorCode::NotFound, "{e:?}");
+    // The catalogue never registers a lab root in a personal store; a row that says so anyway
+    // (a planted or corrupted catalogue) is still refused by the scan gate.
+    let lab_root = RootObservation {
+        volume_key: "fixture".into(),
+        display_name: "Lab".into(),
+        display_path: "Lab root".into(),
+        root_file_id: Some(vec![1; 16]),
+        filesystem: Some("NTFS".into()),
+        origin: "lab_generated".into(),
+        granted_via: "cli_flag".into(),
+        observed_at_ns: 0,
+    };
+    assert!(personal
+        .inner
+        .catalog
+        .writer()
+        .call(WriteCommand::RegisterRoot(lab_root))
+        .is_err());
+    let (lab, lab_grant) = register_as(&personal, 1, "owner_granted");
+    personal
+        .inner
+        .db()
+        .execute(
+            "UPDATE st.root_grant SET origin='lab_generated' WHERE id=?1",
+            [lab_grant],
+        )
+        .unwrap();
+    let e = scan(&personal.inner.root_id(lab));
+    assert_eq!(e.code, ErrorCode::PermissionDenied);
+    assert_eq!(reason(&e), Some("personal_session_requires_owner_grant"));
+    assert!(
+        !e.message.contains("  ") && !e.message.contains("#"),
+        "plain words on the wire: {}",
+        e.message.as_str()
+    );
+    let (owner, grant) = register_as(&personal, 2, "owner_granted");
+    personal.inner.revoke(grant).unwrap();
+    let e = scan(&personal.inner.root_id(owner));
+    assert_eq!(e.code, ErrorCode::PermissionDenied);
+    assert_eq!(e.message.as_str(), "the root's grant is not active");
+}
+
+/// Personal scans are open (#184, #206, #240, #269 closed): an owner folder granted through the
+/// CLI path scans to completion, metadata only. No file in the root is modified or rewritten.
+#[cfg(windows)]
+#[test]
+fn personal_session_scans_a_granted_folder_metadata_only() {
+    let tmp = temp_root();
+    let path = tmp.path().join("owner-folder");
+    std::fs::create_dir_all(path.join("a").join("deep")).unwrap();
+    std::fs::create_dir(path.join("b")).unwrap();
+    let files = [
+        ("top.bin", 100usize),
+        ("a/1.bin", 10),
+        ("a/2.bin", 20),
+        ("a/deep/x.bin", 5),
+    ];
+    for (i, (name, size)) in files.iter().enumerate() {
+        std::fs::write(path.join(name), vec![i as u8 + 1; *size]).unwrap();
+    }
+    let path = path.canonicalize().unwrap();
+    let snapshot = || -> Vec<(Vec<u8>, std::time::SystemTime)> {
+        files
+            .iter()
+            .map(|(name, _)| {
+                let f = path.join(name);
+                (
+                    std::fs::read(&f).unwrap(),
+                    f.metadata().unwrap().modified().unwrap(),
+                )
+            })
+            .collect()
+    };
+    let before = snapshot();
+    let opened = Service::open(Config {
+        state_dir: tmp.path().join("state"),
+        dataset: DatasetClass::Personal,
+        allow_personal: true,
+        grant_roots: vec![path.clone()],
+    });
+    if loomward_windows::enumerate::running_elevated() {
+        // Hosted CI: an elevated token cannot open native identity, so the grant is refused.
+        let e = opened.err().expect("an elevated grant is refused");
+        assert!(e.contains("identity_unavailable"), "{e}");
+        return;
+    }
+    let svc = opened.unwrap();
+    let (roots, _) = ok("roots.list", call(&svc, "roots.list", json!({})));
+    assert_eq!(roots["roots"][0]["origin"], "owner_granted");
+    let root = roots["roots"][0]["root_id"].as_str().unwrap().to_owned();
+    let done = settle(&svc, &start(&svc, &root, "full"));
+    assert_eq!(done["state"], "completed", "{done:?}");
+    assert_eq!(done["coverage"], "complete");
+    let slice = lab_slice(&svc, &root);
+    assert_eq!(slice_totals(&slice), walk(&path));
+    assert_eq!(slice_totals(&slice), (4, 3, 135));
+    assert_eq!(
+        snapshot(),
+        before,
+        "a metadata scan never writes the files it lists"
+    );
 }
 
 fn entry(name: &str, bytes: u64, dir: bool) -> loomward_engine::scan::Entry {

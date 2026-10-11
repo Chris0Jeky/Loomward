@@ -158,18 +158,11 @@ impl Inner {
     }
 
     /// `scan.start` (docs/41 section 7): a synthetic session scans its registered lab roots
-    /// only. The engine mints the root from the active grant row and checks its identity; the
+    /// only; a personal session scans only the folders its owner granted (picker or CLI), never
+    /// a lab root. Metadata only: personal scans opened once gates #184, #206, #240 and #269
+    /// closed. The engine mints the root from the active grant row and checks its identity; the
     /// job's events (`job.state`, final `scan.progress`, `tree.invalidated`) follow the commits.
     fn scan_start(&self, r: ScanStartRequest) -> Handled {
-        if self.dataset == DatasetClass::Personal {
-            return Err(with_reason(
-                fail(
-                    ErrorCode::CapabilityUnavailable,
-                    "personal scanning is not available yet: folder watching must first never block renames and must notice attribute changes",
-                ),
-                "personal_scan_gated_184",
-            ));
-        }
         let row = self.root_row(&r.root_id)?;
         let root = db::roots(&self.db(), Some(row))
             .map_err(sql_error)?
@@ -182,13 +175,22 @@ impl Inner {
                 "the root's grant is not active",
             ));
         }
-        if root.origin != "lab_generated" {
-            return Err(with_reason(
-                fail(
-                    ErrorCode::PermissionDenied,
-                    "a synthetic session scans registered lab roots only",
-                ),
+        let (origin, message, reason) = match self.dataset {
+            DatasetClass::Synthetic => (
+                "lab_generated",
+                "a synthetic session scans registered lab roots only",
                 "synthetic_session_requires_lab_root",
+            ),
+            DatasetClass::Personal => (
+                "owner_granted",
+                "a personal session scans the folders you granted only",
+                "personal_session_requires_owner_grant",
+            ),
+        };
+        if root.origin != origin {
+            return Err(with_reason(
+                fail(ErrorCode::PermissionDenied, message),
+                reason,
             ));
         }
         let dir = root
@@ -230,10 +232,10 @@ impl Inner {
                 "enumeration_strategy": "file_id_extd_directory_info",
                 "capabilities": {
                     "observation": {
-                        // Honest: scans run for synthetic lab roots on Windows only (personal
-                        // scans wait for #184); telemetry observes personal hosts only; the
-                        // teacher stays disabled (confinement_not_enforced).
-                        "metadata_scan": !personal && cfg!(windows),
+                        // Honest: metadata scans run on Windows only (lab roots in a synthetic
+                        // session, granted folders in a personal one); telemetry observes
+                        // personal hosts only; the teacher stays disabled (confinement_not_enforced).
+                        "metadata_scan": cfg!(windows),
                         "process_observation": personal,
                         "gpu_observation": f,
                         "disk_io_observation": personal,
