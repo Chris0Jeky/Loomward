@@ -142,9 +142,7 @@
   const scanNote = $derived.by(() => {
     const info = session.info;
     if (!info || info.capabilities.observation.metadata_scan) return '';
-    return info.dataset_class === 'personal'
-      ? 'Real-disk scans arrive after the safety gates (issue 184). In this personal session the service declines a scan and says so.'
-      : 'This build reports that it cannot scan here. The service declines a scan and says why.';
+    return 'This build reports that it cannot scan here. The service declines a scan and says why.';
   });
   const grantActive = (g: Grant) => g.revoked_at === null;
   const effects = $derived(Object.entries(session.info?.capabilities.effects ?? {}));

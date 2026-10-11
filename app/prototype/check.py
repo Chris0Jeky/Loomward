@@ -28,6 +28,13 @@ class Quiet(http.server.SimpleHTTPRequestHandler):
         pass
 
 
+
+def withhold_renderer(renderer: str) -> str:
+    """Public receipts never name host hardware: keep the ANGLE backend, drop vendor and model."""
+    if renderer == 'unknown' or not renderer.startswith('ANGLE ('):
+        return renderer if renderer == 'unknown' else 'host hardware withheld'
+    return f"ANGLE (host hardware withheld, {renderer.rstrip(')').rsplit(',', 1)[-1].strip()})"
+
 def crumbs(page) -> list[str]:
     return page.locator("#crumbs li").all_inner_texts()
 
@@ -111,8 +118,8 @@ def run() -> int:
                       return { frames: d.length, median: d[d.length >> 1], p95: d[Math.floor(d.length * .95)], max: d[d.length - 1] };
                     }"""
                 )
-                results["renderer"] = page.evaluate("""() => { const g = document.createElement('canvas').getContext('webgl');
-                    const d = g && g.getExtension('WEBGL_debug_renderer_info'); return d ? g.getParameter(d.UNMASKED_RENDERER_WEBGL) : 'unknown'; }""")
+                results["renderer"] = withhold_renderer(page.evaluate("""() => { const g = document.createElement('canvas').getContext('webgl');
+                    const d = g && g.getExtension('WEBGL_debug_renderer_info'); return d ? g.getParameter(d.UNMASKED_RENDERER_WEBGL) : 'unknown'; }"""))
                 # Frame time on the full synthetic tree (every node reachable from the focus).
                 bench = page.evaluate("window.loomward.atlas.benchmark(120)")
                 bench["nodes"] = page.evaluate("window.loomward.ws.nodeCount")

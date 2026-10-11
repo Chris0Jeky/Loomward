@@ -4275,7 +4275,7 @@
                 }
               },
               "verification": {
-                "platform": "Windows 11; Intel i5-13600K; rustc 1.97.1",
+                "platform": "Windows 11; host hardware withheld; rustc 1.97.1",
                 "commands": {
                   "cargo fmt --all --check": "pass",
                   "cargo test --workspace": "pass: 316 tests, zero failed/ignored",
@@ -13984,5 +13984,348 @@
   "remaining_work": "No qualified removal of the remaining double decode, identity SELECTs, per-directory rollup UPDATEs, volume-wide multilink pass or MEMORY spill risk. P4b remains parked and P4c bulk/spill remains rejected. Bulk generation is design only.",
   "gate_notes": "One pre-existing ignored open-guard defect (#246); no test changed to skipped/ignored or weakened.",
   "earlier_receipt_sha256": "5b309795a420feba236536cc5dddc4199e6553b573b3928f3f1f0ba8d8f6a2d3"
-}
+},
+  "catalog_reparent_depth_309": {
+    "date": "2026-10-11",
+    "issue": 309,
+    "host": "shared host",
+    "platform": "Windows",
+    "dataset_class": "synthetic",
+    "base_commit": "0b488d875afd6ba8ae098f9875bbdd4aed1b4d1f",
+    "branch": "fix/catalog-reparent-depth-309",
+    "uncommitted": true,
+    "P4_command": "cargo run -p loomward-catalog --release --example bench -- --rows 1000000",
+    "measurement_order": [
+      "main P4",
+      "main repeated-chain probe",
+      "Python query comparison",
+      "branch repeated-chain and native query probes",
+      "branch P4"
+    ],
+    "main": {
+      "P4": {
+        "insert_seconds": 17.4906352,
+        "met": false,
+        "rows_per_second": 57230.68308005189,
+        "target_rows_per_second": 250000
+      },
+      "files": 1000000,
+      "directories": 1001,
+      "oracle": {
+        "allocated_known_bytes": "496873078784",
+        "allocation_unknown_files": 10310,
+        "logical_bytes": "500000500000",
+        "matched": true
+      },
+      "all_schema_indexes_present": true,
+      "writer_timings": {
+        "checkpoint_seconds": 0.0,
+        "commands": 2004,
+        "commit_seconds": 9.9073685,
+        "dirty_updates": 2068,
+        "file_insert_seconds": 4.764189100000006,
+        "file_seen_seconds": 0.0,
+        "invalidation_seconds": 0.002752199999999999,
+        "listing_seconds": 6.4154504,
+        "max_transaction_bytes": 62929920,
+        "max_transaction_commands": 30,
+        "multilink_seconds": 0.0,
+        "name_validation_seconds": 0.36392920000000367,
+        "rollup_seconds": 0.0,
+        "staging_seconds": 0.42841319999999994,
+        "state_prepare_seconds": 0.03665889999999998,
+        "transactions": 71,
+        "validation_dry_run_seconds": 0.0
+      },
+      "final_writer_timings": {
+        "checkpoint_seconds": 0.0456728,
+        "commands": 2005,
+        "commit_seconds": 9.9138909,
+        "dirty_updates": 2068,
+        "file_insert_seconds": 4.764189100000006,
+        "file_seen_seconds": 0.0,
+        "invalidation_seconds": 0.002753599999999999,
+        "listing_seconds": 6.4154504,
+        "max_transaction_bytes": 62929920,
+        "max_transaction_commands": 30,
+        "multilink_seconds": 1.2025492,
+        "name_validation_seconds": 0.36392920000000367,
+        "rollup_seconds": 0.0034488,
+        "staging_seconds": 0.42841319999999994,
+        "state_prepare_seconds": 0.04152029999999998,
+        "transactions": 72,
+        "validation_dry_run_seconds": 0.0
+      },
+      "finalise_seconds": 1.2644763,
+      "temporary_directory_removed": true
+    },
+    "branch_result": {
+      "P4": {
+        "insert_seconds": 15.1680069,
+        "met": false,
+        "rows_per_second": 65994.23421939503,
+        "target_rows_per_second": 250000
+      },
+      "files": 1000000,
+      "directories": 1001,
+      "oracle": {
+        "allocated_known_bytes": "496873078784",
+        "allocation_unknown_files": 10310,
+        "logical_bytes": "500000500000",
+        "matched": true
+      },
+      "all_schema_indexes_present": true,
+      "writer_timings": {
+        "checkpoint_seconds": 0.0,
+        "commands": 2004,
+        "commit_seconds": 6.476509200000001,
+        "dirty_updates": 2068,
+        "file_insert_seconds": 5.527611399999999,
+        "file_seen_seconds": 0.0,
+        "invalidation_seconds": 0.0031024999999999994,
+        "listing_seconds": 7.35961530000001,
+        "max_transaction_bytes": 62929920,
+        "max_transaction_commands": 30,
+        "multilink_seconds": 0.0,
+        "name_validation_seconds": 0.4263382000000042,
+        "rollup_seconds": 0.0,
+        "staging_seconds": 0.46063970000000015,
+        "state_prepare_seconds": 0.01768339999999999,
+        "transactions": 71,
+        "validation_dry_run_seconds": 0.0
+      },
+      "final_writer_timings": {
+        "checkpoint_seconds": 0.0110323,
+        "commands": 2005,
+        "commit_seconds": 6.4800329,
+        "dirty_updates": 2068,
+        "file_insert_seconds": 5.527611399999999,
+        "file_seen_seconds": 0.0,
+        "invalidation_seconds": 0.0031029999999999994,
+        "listing_seconds": 7.35961530000001,
+        "max_transaction_bytes": 62929920,
+        "max_transaction_commands": 30,
+        "multilink_seconds": 0.9935652,
+        "name_validation_seconds": 0.4263382000000042,
+        "rollup_seconds": 0.0027243,
+        "staging_seconds": 0.46063970000000015,
+        "state_prepare_seconds": 0.018510399999999993,
+        "transactions": 72,
+        "validation_dry_run_seconds": 0.0
+      },
+      "finalise_seconds": 1.0125238,
+      "temporary_directory_removed": true
+    },
+    "query_selection": {
+      "host": "shared host",
+      "scope": "synthetic SQLite 300-node spine and 100000 leaves, no files",
+      "subtree_nodes": 100301,
+      "sqlite": "3.50.4",
+      "queries": {
+        "full_height": {
+          "200": {
+            "answer": 301,
+            "median_ms": 46.407399990130216,
+            "samples_ms": [
+              54.00930001633242,
+              46.407399990130216,
+              45.90409999946132,
+              48.601599992252886,
+              42.295999999623746
+            ]
+          },
+          "301": {
+            "answer": 301,
+            "median_ms": 43.22280001360923,
+            "samples_ms": [
+              45.27370000141673,
+              41.2097999942489,
+              43.142200011061504,
+              43.22280001360923,
+              54.52999999397434
+            ]
+          },
+          "512": {
+            "answer": 301,
+            "median_ms": 48.80680001224391,
+            "samples_ms": [
+              62.543599982745945,
+              48.80680001224391,
+              44.73839999991469,
+              45.89670000132173,
+              56.273399997735396
+            ]
+          }
+        },
+        "bounded_breadth_first": {
+          "200": {
+            "answer": 1,
+            "median_ms": 0.09310001041740179,
+            "samples_ms": [
+              0.21769999875687063,
+              0.09210000280290842,
+              0.09019998833537102,
+              0.09320001117885113,
+              0.09310001041740179
+            ]
+          },
+          "301": {
+            "answer": 1,
+            "median_ms": 14.47540000663139,
+            "samples_ms": [
+              13.993500004289672,
+              13.796999992337078,
+              14.47540000663139,
+              15.425599995069206,
+              15.340999991167337
+            ]
+          },
+          "512": {
+            "answer": 0,
+            "median_ms": 48.043399991001934,
+            "samples_ms": [
+              48.505499988095835,
+              48.043399991001934,
+              53.485300013562664,
+              39.87140001845546,
+              46.48210000596009
+            ]
+          }
+        },
+        "bounded_depth_first": {
+          "200": {
+            "answer": 1,
+            "median_ms": 0.1112000027205795,
+            "samples_ms": [
+              0.1540999801363796,
+              0.10910001583397388,
+              0.12430001515895128,
+              0.1112000027205795,
+              0.10939998901449144
+            ]
+          },
+          "301": {
+            "answer": 1,
+            "median_ms": 22.239899990381673,
+            "samples_ms": [
+              22.537700016982853,
+              26.834099990082905,
+              22.239899990381673,
+              19.074499985435978,
+              19.337400008225814
+            ]
+          },
+          "512": {
+            "answer": 0,
+            "median_ms": 67.18120002187788,
+            "samples_ms": [
+              50.79370000748895,
+              75.08549999329261,
+              74.91850000224076,
+              67.18120002187788,
+              54.43399999057874
+            ]
+          }
+        }
+      }
+    },
+    "native_query_probe": {
+      "subtree_nodes": 100301,
+      "mean_of_runs": 5,
+      "bound_200_ms": 0.08582,
+      "bound_301_ms": 12.03196,
+      "bound_512_ms": 39.70782,
+      "answers": [
+        true,
+        true,
+        false
+      ],
+      "source": "#[test]\nfn cat309_chain_cost_probe() {\n    let conn = Connection::open_in_memory().unwrap();\n    let mut ctx = Context {\n        timings: Arc::new(Mutex::new(WriterTimings::default())),\n        parents: (1..=512)\n            .map(|id| (id, (id > 1).then_some(id - 1)))\n            .collect(),\n        dirty: vec![(512, 1, 1); 5000],\n        extensions: HashMap::new(),\n        revision: 1,\n        fenced_listings: HashSet::new(),\n    };\n    let start = Instant::now();\n    for _ in 0..5 {\n        ctx.check_chains(&conn, 0).unwrap();\n    }\n    println!(\n        \"cat309_chain_cost_seconds={}\",\n        start.elapsed().as_secs_f64() / 5.0\n    );\n    conn.execute_batch(\"CREATE TABLE dir(id INTEGER PRIMARY KEY,parent_id INTEGER,sub_logical INTEGER,sub_allocated INTEGER);\n        CREATE INDEX dir_by_logical ON dir(parent_id,sub_logical DESC,id);\n        CREATE INDEX dir_by_allocated ON dir(parent_id,sub_allocated DESC,id);\n        INSERT INTO dir VALUES(1,NULL,0,0);\n        WITH RECURSIVE n(i) AS (SELECT 2 UNION ALL SELECT i+1 FROM n WHERE i<301)\n        INSERT INTO dir SELECT i,i-1,0,0 FROM n;\n        WITH RECURSIVE n(i) AS (SELECT 302 UNION ALL SELECT i+1 FROM n WHERE i<100301)\n        INSERT INTO dir SELECT i,301,0,0 FROM n;\").unwrap();\n    for bound in [200, 301, 512] {\n        let start = Instant::now();\n        for _ in 0..5 {\n            let too_deep: bool = conn.query_row(\"WITH RECURSIVE subtree(id,height) AS (SELECT ?1,0 UNION ALL SELECT d.id,s.height+1 FROM dir d JOIN subtree s ON d.parent_id=s.id WHERE s.height<?2) SELECT EXISTS(SELECT 1 FROM subtree WHERE height=?2)\", params![1,bound], |r| r.get(0)).unwrap();\n            assert_eq!(too_deep, bound <= 301);\n        }\n        println!(\n            \"cat309_subtree_bound={bound} mean_ms={}\",\n            start.elapsed().as_secs_f64() * 1000.0 / 5.0\n        );\n    }\n}\n\n"
+    },
+    "chain_cost_probe": {
+      "seeds": 5000,
+      "chain_directories": 512,
+      "mean_of_runs": 5,
+      "main_ms": 38.1665,
+      "branch_ms": 0.06972,
+      "parent_cache": "already populated; measures repeated chain walks, not SQL"
+    },
+    "query_selection_source": "import json\nimport sqlite3\nimport statistics\nimport time\n\ndb = sqlite3.connect(':memory:')\ndb.executescript('CREATE TABLE dir(id INTEGER PRIMARY KEY,parent_id INTEGER,depth INTEGER); CREATE INDEX children ON dir(parent_id,depth,id);')\n# A 300-node spine plus 100k leaves; the stored depths deliberately cannot be trusted.\ndb.executemany('INSERT INTO dir VALUES(?,?,0)', [(1, None)] + [(i, i-1) for i in range(2, 302)] + [(i, 301) for i in range(302, 100302)])\nqueries = {\n    'full_height': 'WITH RECURSIVE s(id,h) AS (SELECT ?1,0 UNION ALL SELECT d.id,s.h+1 FROM dir d JOIN s ON d.parent_id=s.id) SELECT max(h) FROM s',\n    'bounded_breadth_first': 'WITH RECURSIVE s(id,h) AS (SELECT ?1,0 UNION ALL SELECT d.id,s.h+1 FROM dir d JOIN s ON d.parent_id=s.id WHERE s.h<?2) SELECT EXISTS(SELECT 1 FROM s WHERE h=?2)',\n    'bounded_depth_first': 'WITH RECURSIVE s(id,h) AS (SELECT ?1,0 UNION ALL SELECT d.id,s.h+1 FROM dir d JOIN s ON d.parent_id=s.id WHERE s.h<?2 ORDER BY 2 DESC) SELECT EXISTS(SELECT 1 FROM s WHERE h=?2)',\n}\nresult = {'host': 'shared host', 'scope': 'synthetic SQLite 300-node spine and 100000 leaves, no files', 'subtree_nodes': 100301, 'sqlite': sqlite3.sqlite_version, 'queries': {}}\nfor name, sql in queries.items():\n    result['queries'][name] = {}\n    for bound in [200, 301, 512]:\n        times = []\n        for _ in range(5):\n            start = time.perf_counter()\n            answer = db.execute(sql, (1, bound) if name != 'full_height' else (1,)).fetchone()[0]\n            times.append((time.perf_counter()-start)*1000)\n        result['queries'][name][str(bound)] = {'answer': answer, 'median_ms': statistics.median(times), 'samples_ms': times}\nprint(json.dumps(result, indent=2))\n",
+    "mutations": [
+      {
+        "mutation": "subtree guard removed",
+        "command": "cargo test -p loomward-catalog --lib reparent_bounds_the_whole_subtree -- --nocapture",
+        "exit_code": 101,
+        "test_failed": true
+      },
+      {
+        "mutation": "stored-depth precheck restored",
+        "command": "cargo test -p loomward-catalog --lib a_shallower_intra_batch -- --nocapture",
+        "exit_code": 101,
+        "test_failed": true
+      },
+      {
+        "mutation": "proven-length reuse removed",
+        "command": "cargo test -p loomward-catalog --lib chain_lengths_reuse_proven_seeds -- --nocapture",
+        "exit_code": 101,
+        "test_failed": true
+      },
+      {
+        "mutation": "cached suffix bound removed",
+        "command": "cargo test -p loomward-catalog --lib chain_lengths_reuse_proven_seeds -- --nocapture",
+        "exit_code": 101,
+        "test_failed": true
+      },
+      {
+        "mutation": "rejected-command parent-cache clear removed",
+        "command": "cargo test -p loomward-catalog --lib rejected_reparent_clears_parent_cache -- --nocapture",
+        "exit_code": 101,
+        "test_failed": true
+      }
+    ],
+    "verification": [
+      {
+        "command": "cargo fmt --all --check",
+        "exit_code": 0
+      },
+      {
+        "command": "cargo test -p loomward-catalog --all-features",
+        "exit_code": 0,
+        "passed": 125,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "command": "cargo test --workspace",
+        "exit_code": 0,
+        "passed": 709,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "command": "cargo clippy --workspace --all-targets --all-features -- -D warnings",
+        "exit_code": 0
+      },
+      {
+        "command": "git diff --check",
+        "exit_code": 0
+      }
+    ],
+    "final_source_sha256": {
+      "crates/loomward-catalog/src/writer.rs": "bf09aeaf2e943903a0d99b3928cb94f1a2cc06fedd4c462ad0a9099d6bd14b50",
+      "crates/loomward-catalog/src/writer/publication_tests.rs": "3d1e7bc21f85fe0c591b861aaa9ef18b2acd820d828b07399383da96318b09d0",
+      "crates/loomward-catalog/examples/bench.rs": "ea2f90953bdec433706400baef14b8b2386be8493d840181cf20a76cf24ebf81",
+      "crates/loomward-catalog/HANDOFF.md": "14ea21f7ce1d232b5d597c69bb0a8c4bc840682b739315ea57e892a3e7b77cc9"
+    },
+    "main_writer_sha256": "182944779493e487d918f2450d4479cb56c5425d11bf8f7c4d397212b9ce7bbd",
+    "earlier_receipt_sha256": "9c4bd53dfaacf029c112b4276360ecb9249b60a34e8159956a75f8dfb195f6b8",
+    "limitations": [
+      "One main and one branch P4 run; shared host and uncontrolled warm caches; no causal speedup claim",
+      "250k P4 target remains unmet",
+      "Accepted reparent checks visit the entire moved directory subtree; recursion stops at the rejecting height, at most 512",
+      "Query selection used Python SQLite; the chosen query was also measured through native bundled rusqlite in release mode",
+      "Repeated-chain probe is synthetic; real scan integration, cold-cache runs and a controlled-load comparison were not run",
+      "Host hardware is withheld; no hardware metadata is included"
+    ]
+  }
 }
