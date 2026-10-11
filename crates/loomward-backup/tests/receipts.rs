@@ -334,7 +334,7 @@ fn traversal_and_windows_ambiguous_names_are_refused() {
 
 #[test]
 fn source_limits_empty_scope_and_duplicate_paths_are_refused() {
-    for which in 0..6 {
+    for which in 0..7 {
         let mut s = source();
         match which {
             0 => s.required.clear(),
@@ -345,6 +345,7 @@ fn source_limits_empty_scope_and_duplicate_paths_are_refused() {
                 r.files.push(r.files[0].clone());
             }
             4 => s.required = vec![file("fixture/file"); MAX_RECORDS + 1],
+            5 => s.required.push(file("Fixture/Document.TXT")),
             _ => s.now = u64::MAX,
         }
         assert_eq!(
@@ -360,6 +361,15 @@ fn integrity_summary_errors_and_structure_only_check_do_not_verify_recovery() {
     s.integrity.as_mut().unwrap().read_all_data = false;
     let e = evidence(&s);
     assert!(e.integrity_checked && !e.integrity_read_all_data && !e.verified_recovery);
+    // restic prints `"broken_packs":null` on a clean check (no omitempty), or may omit it.
+    for raw in [
+        br#"{"message_type":"summary","num_errors":0,"broken_packs":null,"suggest_repair_index":false,"suggest_prune":false}"#.as_slice(),
+        br#"{"message_type":"summary","num_errors":0,"suggest_repair_index":false,"suggest_prune":false}"#.as_slice(),
+    ] {
+        let mut s = source();
+        s.integrity.as_mut().unwrap().raw = raw.to_vec();
+        assert!(evidence(&s).verified_recovery, "a clean summary verifies integrity");
+    }
     for (field, value) in [
         ("num_errors", json!(1)),
         ("broken_packs", json!(["synthetic-pack"])),

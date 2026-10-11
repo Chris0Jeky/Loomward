@@ -185,7 +185,7 @@ pub fn normalise_backup_receipt(
             snapshot_taken
                 && bound(&check.observation, source)
                 && summary.num_errors == 0
-                && summary.broken_packs.is_empty()
+                && summary.broken_packs.as_ref().is_none_or(Vec::is_empty)
                 && !summary.suggest_repair_index
                 && !summary.suggest_prune
         }
@@ -346,8 +346,9 @@ struct Snapshot {
 struct CheckSummary {
     message_type: String,
     num_errors: i64,
+    // restic's checkSummary.BrokenPacks has no omitempty: a clean check prints `null`.
     #[serde(default)]
-    broken_packs: Vec<String>,
+    broken_packs: Option<Vec<String>>,
     #[serde(default)]
     suggest_repair_index: bool,
     #[serde(default)]
