@@ -56,6 +56,11 @@ class V3ContractTests(unittest.TestCase):
                         self.assertIn(spec[key], self.defs, f'{kind} {name}.{key}')
 
     def test_duplicate_examples_validate_requests_and_terminal_evidence(self):
+        queued = load('examples/commands/duplicates.inspect.result.json')['job']
+        self.assertIsNone(queued['started_at'])
+        terminal = load('examples/dtos/duplicates-result.json')['value']['job']
+        self.assertLessEqual(terminal['created_at'], terminal['started_at'])
+        self.assertLessEqual(terminal['started_at'], terminal['finished_at'])
         try:
             import jsonschema
         except ImportError:

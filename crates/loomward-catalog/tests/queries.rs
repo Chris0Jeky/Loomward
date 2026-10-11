@@ -124,6 +124,40 @@ fn duplicates_select_exact_sizes_visible_names_and_scan_identity_with_a_cap() {
     ));
 }
 
+#[test]
+fn duplicate_candidates_skip_one_over_depth_path_without_losing_valid_pairs() {
+    let (tmp, catalog, _, dir, _) = setup();
+    let db = Connection::open(tmp.path().join("catalog.db")).unwrap();
+    let root: i64 = db
+        .query_row("SELECT root_id FROM dir WHERE id=?1", [dir], |r| r.get(0))
+        .unwrap();
+    db.execute_batch("UPDATE file SET logical=0;").unwrap();
+    let mut parent = dir;
+    for depth in 1..=511 {
+        db.execute("INSERT INTO dir(root_id,parent_id,name,id_quality,id_basis,depth,attrs,flags,listing_state,born_run,seen_run) VALUES(?1,?2,'nested','path_observation','none',?3,16,0,'complete',1,1)", rusqlite::params![root,parent,depth]).unwrap();
+        parent = db.last_insert_rowid();
+    }
+    // Put the unrepresentable entry first so returning early loses the valid pair.
+    for (parent, name) in [(parent, "deep"), (dir, "a"), (dir, "b")] {
+        db.execute("INSERT INTO file(dir_id,name,logical,attrs,flags,born_run,seen_run) VALUES(?1,?2,4,32,0,1,1)", rusqlite::params![parent,name]).unwrap();
+    }
+    let result = catalog
+        .reader()
+        .unwrap()
+        .duplicate_candidates(root, 1, 200)
+        .unwrap();
+    assert_eq!(
+        result
+            .entries
+            .iter()
+            .map(|e| e.relative.as_str())
+            .collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+    assert!(result.partial);
+    assert_eq!(result.skipped, ["path_depth"]);
+}
+
 fn setup() -> (tempfile::TempDir, Catalog, i64, i64, i64) {
     let tmp = tempfile::tempdir().unwrap();
     let c = Catalog::open(tmp.path(), "synthetic").unwrap();

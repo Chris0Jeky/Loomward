@@ -17,6 +17,9 @@ use std::{
 
 /// Minimum terminal retention, matching the service idempotency window (#117 N4).
 pub const TERMINAL_RETENTION: Duration = Duration::from_secs(600);
+/// Reports may expire before job status: bound names retained across rapid inspections.
+const MAX_DUPLICATE_REPORTS: usize = 50;
+const MAX_DUPLICATE_REPORT_BYTES: usize = 4 * 1024 * 1024;
 /// Runner selection; never contains a shell command or arbitrary caller path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -44,7 +47,7 @@ pub struct JobContext {
 }
 impl JobContext {
     /// Store and publish exact final scan counters. A missing wire strategy stays unknown.
-    pub fn set_scan_report(&self, report: &crate::scan::ScanReport) {
+    pub fn set_scan_report(&self, report: &crate::scan::ScanReport) -> EngineResult<()> {
         let strategy = match report.strategy {
             crate::scan::source::Strategy::Extended => {
                 loomward_protocol::EnumerationStrategy::FileIdExtdDirectoryInfo
@@ -56,28 +59,29 @@ impl JobContext {
                 loomward_protocol::EnumerationStrategy::StdReadDir
             }
             // FileIdBothDirectoryInfo has no wire value yet (#190 item 3): stay unknown.
-            crate::scan::source::Strategy::Both => return,
+            crate::scan::source::Strategy::Both => return Ok(()),
         };
         let progress=serde_json::from_value(serde_json::json!({"phase":"done","strategy":strategy,"examined":report.examined,"indexed_files":report.totals.files,"indexed_dirs":report.totals.dirs,"skipped":report.skipped,"failed":report.failed,"logical_bytes":report.totals.logical.to_string(),"allocated_bytes":report.totals.allocated.map(|n|n.to_string()),"pending_dirs":0,"writer_queue_depth":0,"entries_per_second":report.examined as f64/report.elapsed_seconds.max(0.000001),"elapsed_ms":(report.elapsed_seconds*1000.) as u64,"limit_hit":report.limit_hit})).expect("bounded scan progress");
         if let Some(registry) = self.registry.upgrade() {
             if let Some(r) = registry.records.lock().unwrap().get_mut(&self.job_id) {
                 if r.job.progress.as_ref() == Some(&progress) {
-                    return;
+                    return Ok(());
                 }
+                revise(&mut r.job)?;
                 r.job.progress = Some(progress);
-                revise(&mut r.job);
                 if let Some(root_id) = &r.job.root_id {
                     let _=self.events.publish(EventName::ScanProgress,serde_json::json!({"job_id":self.job_id,"root_id":root_id,"progress":r.job.progress}).as_object().unwrap().clone(),None,None);
                 }
                 emit(&self.events, &r.job);
             }
         }
+        Ok(())
     }
     /// Retain bounded evidence; the terminal transition publishes it with the job revision.
     pub(crate) fn set_duplicates(&self, report: loomward_protocol::DuplicateReport) {
         if let Some(registry) = self.registry.upgrade() {
             if let Some(r) = registry.records.lock().unwrap().get_mut(&self.job_id) {
-                if r.job.error.is_none() {
+                if !r.revoked {
                     r.duplicates = Some(report);
                 }
             }
@@ -96,6 +100,7 @@ struct Record {
     cancel: Arc<AtomicBool>,
     terminal: Option<Instant>,
     interrupt: Option<Arc<dyn Fn() + Send + Sync>>,
+    revoked: bool,
 }
 #[derive(Default)]
 pub(crate) struct Registry {
@@ -115,7 +120,12 @@ impl Registry {
             return Ok(());
         };
         Err(EngineError::Busy {
-            message: "root already scanning".into(),
+            message: if spec.kind == JobKind::Duplicates {
+                "root already inspecting duplicates"
+            } else {
+                "root already scanning"
+            }
+            .into(),
             detail: Some(
                 loomward_protocol::Detail::new(std::collections::BTreeMap::from([(
                     "job_id".into(),
@@ -129,8 +139,32 @@ impl Registry {
     pub(crate) fn check_conflict(&self, spec: &JobSpec) -> EngineResult<()> {
         Self::conflict(&self.records.lock().unwrap(), spec)
     }
-    fn prune(records: &mut HashMap<JobId, Record>) {
+    fn expire(records: &mut HashMap<JobId, Record>) {
         records.retain(|_, r| r.terminal.is_none_or(|t| t.elapsed() < TERMINAL_RETENTION));
+    }
+    fn prune(records: &mut HashMap<JobId, Record>, events: &Bus) -> EngineResult<()> {
+        Self::expire(records);
+        let mut reports: Vec<_> = records
+            .values_mut()
+            .filter(|r| r.terminal.is_some() && r.job.duplicates.is_some())
+            .collect();
+        reports.sort_by_key(|r| std::cmp::Reverse(r.job.seq));
+        let mut count = 0;
+        let mut bytes = 0;
+        for r in reports {
+            let size = serde_json::to_vec(r.job.duplicates.as_ref().unwrap())
+                .expect("report JSON")
+                .len();
+            if count < MAX_DUPLICATE_REPORTS && bytes + size <= MAX_DUPLICATE_REPORT_BYTES {
+                count += 1;
+                bytes += size;
+            } else {
+                revise(&mut r.job)?;
+                r.job.duplicates = None;
+                emit(events, &r.job);
+            }
+        }
+        Ok(())
     }
     /// Mark a submitted job failed because its worker thread could not start, and
     /// publish the terminal state so subscribers never wait forever. This is the
@@ -138,17 +172,33 @@ impl Registry {
     pub(crate) fn mark_spawn_failed(&self, job_id: &JobId, events: &Bus) -> EngineError {
         let mut records = self.records.lock().unwrap();
         let r = records.get_mut(job_id).unwrap();
-        r.job.state = JobState::Failed;
+        if let Err(e) = revise(&mut r.job) {
+            return e;
+        }
+        let cancelled = r.cancel.load(Ordering::Acquire);
+        r.job.state = if cancelled {
+            JobState::Cancelled
+        } else {
+            JobState::Failed
+        };
+        if cancelled {
+            r.job.coverage = Some(CoverageState::Cancelled);
+        }
         r.job.finished_at = Some(timestamp());
         r.terminal = Some(Instant::now());
-        r.job.error = Some(
-            EngineError::Internal {
-                message: "job thread unavailable".into(),
-                detail: None,
-            }
-            .to_body(),
-        );
-        revise(&mut r.job);
+        r.job.error = if r.revoked {
+            Some(revocation_error().to_body())
+        } else if cancelled {
+            None
+        } else {
+            Some(
+                EngineError::Internal {
+                    message: "job thread unavailable".into(),
+                    detail: None,
+                }
+                .to_body(),
+            )
+        };
         emit(events, &r.job);
         EngineError::Internal {
             message: "job thread unavailable".into(),
@@ -161,6 +211,21 @@ impl Registry {
         runner: JobRunner,
         events: Arc<Bus>,
         interrupt: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> EngineResult<Job> {
+        self.submit_with_spawn(spec, runner, events, interrupt, |name, worker| {
+            std::thread::Builder::new()
+                .name(name)
+                .spawn(worker)
+                .map(|_| ())
+        })
+    }
+    fn submit_with_spawn(
+        self: &Arc<Self>,
+        spec: JobSpec,
+        runner: JobRunner,
+        events: Arc<Bus>,
+        interrupt: Option<Arc<dyn Fn() + Send + Sync>>,
+        spawn: impl FnOnce(String, Box<dyn FnOnce() + Send>) -> std::io::Result<()>,
     ) -> EngineResult<Job> {
         let mut job = Job {
             job_id: JobId::new(random_id("jb_")).unwrap(),
@@ -180,7 +245,7 @@ impl Registry {
         let cancel = Arc::new(AtomicBool::new(false));
         {
             let mut records = self.records.lock().unwrap();
-            Self::prune(&mut records);
+            Self::prune(&mut records, &events)?;
             Self::conflict(&records, &spec)?;
             // Allocate under the records lock so submission events and listing order agree.
             // The records lock serialises allocation, so a load and store is enough (and avoids
@@ -204,6 +269,7 @@ impl Registry {
                     cancel: cancel.clone(),
                     terminal: None,
                     interrupt,
+                    revoked: false,
                 },
             );
             emit(&events, &job);
@@ -211,22 +277,18 @@ impl Registry {
         let registry = self.clone();
         let id = job.job_id.clone();
         let thread_events = events.clone();
-        let spawn = std::thread::Builder::new()
-            .name(format!("loomward-{}", id.as_str()))
-            .spawn(move || {
+        let spawn = spawn(
+            format!("loomward-{}", id.as_str()),
+            Box::new(move || {
                 {
                     let mut records = registry.records.lock().unwrap();
                     let r = records.get_mut(&id).unwrap();
-                    if r.cancel.load(Ordering::Acquire) {
-                        // Cancelled before the worker started: CancelRequested was
-                        // already published by `cancel`, so only record the start
-                        // attempt without re-emitting the same state.
-                        r.job.started_at = Some(timestamp());
-                        revise(&mut r.job);
-                    } else {
+                    if !r.cancel.load(Ordering::Acquire) {
+                        if revise(&mut r.job).is_err() {
+                            return;
+                        }
                         r.job.state = JobState::Running;
                         r.job.started_at = Some(timestamp());
-                        revise(&mut r.job);
                         emit(&thread_events, &r.job);
                     }
                 }
@@ -247,7 +309,10 @@ impl Registry {
                 });
                 let mut records = registry.records.lock().unwrap();
                 let r = records.get_mut(&id).unwrap();
-                if r.job.kind == JobKind::Duplicates && r.job.error.is_none() {
+                if revise(&mut r.job).is_err() {
+                    return;
+                }
+                if r.job.kind == JobKind::Duplicates && !r.revoked {
                     r.job.duplicates = r.duplicates.take();
                 } else {
                     r.duplicates = None;
@@ -256,16 +321,21 @@ impl Registry {
                     r.job.state = JobState::Cancelled;
                     r.job.coverage = Some(CoverageState::Cancelled);
                     if r.job.kind == JobKind::Duplicates {
-                        if r.job.error.is_some() {
+                        if r.revoked {
                             r.job.duplicates = None;
+                            r.job.error = Some(revocation_error().to_body());
                         } else if let Some(report) = &mut r.job.duplicates {
                             report.partial = true;
-                            report.stop =
-                                Some(loomward_protocol::BoundedStr::new("cancelled").unwrap());
+                            if report.stop.is_none() {
+                                report.stop =
+                                    Some(loomward_protocol::BoundedStr::new("cancelled").unwrap());
+                            }
                         }
                         if let Err(e) = result {
-                            r.job.duplicates = None;
-                            r.job.error = Some(e.to_body());
+                            if !r.revoked {
+                                r.job.duplicates = None;
+                                r.job.error = Some(e.to_body());
+                            }
                         }
                     }
                 } else {
@@ -284,9 +354,10 @@ impl Registry {
                 }
                 r.job.finished_at = Some(timestamp());
                 r.terminal = Some(Instant::now());
-                revise(&mut r.job);
                 emit(&thread_events, &r.job);
-            });
+                let _ = Registry::prune(&mut records, &thread_events);
+            }),
+        );
         if spawn.is_err() {
             return Err(self.mark_spawn_failed(&job.job_id, &events));
         }
@@ -304,28 +375,21 @@ impl Registry {
             let r = records.get_mut(id).ok_or_else(|| EngineError::NotFound {
                 message: "job not found".into(),
             })?;
-            if revoked && r.terminal.is_none() && r.job.kind == JobKind::Duplicates {
-                r.job.duplicates = None;
+            if revoked && r.job.kind == JobKind::Duplicates {
+                r.revoked = true;
                 r.duplicates = None;
-                r.job.error = Some(
-                    EngineError::PermissionDenied {
-                        message: "cancelled".into(),
-                    }
-                    .to_body(),
-                );
-            }
-            if r.terminal.is_some() || r.job.state == JobState::CancelRequested {
-                if revoked && r.terminal.is_none() && r.job.kind == JobKind::Duplicates {
-                    revise(&mut r.job);
+                if r.job.duplicates.is_some() {
+                    revise(&mut r.job)?;
+                    r.job.duplicates = None;
                     emit(events, &r.job);
                 }
-                // Idempotent: an already-terminal job or an already-requested
-                // cancel publishes no duplicate event.
+            }
+            if r.terminal.is_some() || r.job.state == JobState::CancelRequested {
                 return Ok(r.job.clone());
             }
+            revise(&mut r.job)?;
             r.cancel.store(true, Ordering::Release);
             r.job.state = JobState::CancelRequested;
-            revise(&mut r.job);
             emit(events, &r.job);
             (r.job.clone(), r.interrupt.clone())
         };
@@ -347,9 +411,37 @@ impl Registry {
             .map(|r| r.job.job_id.clone())
             .collect()
     }
+    pub(crate) fn root_jobs_for_revocation(&self, root: &RootId) -> Vec<JobId> {
+        self.records
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|r| {
+                r.job.root_id.as_ref() == Some(root)
+                    && ((matches!(r.job.kind, JobKind::Scan | JobKind::Duplicates)
+                        && r.terminal.is_none())
+                        || (r.job.kind == JobKind::Duplicates && r.job.duplicates.is_some()))
+            })
+            .map(|r| r.job.job_id.clone())
+            .collect()
+    }
 }
-fn revise(job: &mut Job) {
-    job.rev = Count::new(job.rev.get() + 1).expect("job revision exhausted");
+fn revise(job: &mut Job) -> EngineResult<()> {
+    job.rev = job
+        .rev
+        .get()
+        .checked_add(1)
+        .and_then(|n| Count::new(n).ok())
+        .ok_or_else(|| EngineError::Internal {
+            message: "job revision exhausted".into(),
+            detail: None,
+        })?;
+    Ok(())
+}
+fn revocation_error() -> EngineError {
+    EngineError::PermissionDenied {
+        message: "cancelled".into(),
+    }
 }
 fn emit(events: &Bus, job: &Job) {
     let data = serde_json::json!({"job":job}).as_object().unwrap().clone();
@@ -378,10 +470,11 @@ impl Engine {
     }
     /// Retained state of a job, including terminal outcomes inside the idempotency window.
     pub fn job_status(&self, id: &JobId) -> EngineResult<Job> {
-        self.jobs
-            .records
-            .lock()
-            .unwrap()
+        // Retention holds for jobs.get too: an expired record is never served (Codex P2 on #318).
+        // Only the cheap time expiry runs here; the size caps run on writes and listings.
+        let mut records = self.jobs.records.lock().unwrap();
+        Registry::expire(&mut records);
+        records
             .get(id)
             .map(|r| r.job.clone())
             .ok_or_else(|| EngineError::NotFound {
@@ -391,7 +484,7 @@ impl Engine {
     /// Recent retained jobs, newest first, optionally filtered by kind.
     pub fn job_list(&self, request: &JobListRequest) -> EngineResult<JobList> {
         let mut records = self.jobs.records.lock().unwrap();
-        Registry::prune(&mut records);
+        Registry::prune(&mut records, &self.events)?;
         let mut recent: Vec<_> = records
             .values()
             .filter(|r| {
@@ -412,6 +505,9 @@ impl Engine {
         })
     }
 }
+#[cfg(test)]
+#[path = "followups.rs"]
+mod followups;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,12 +626,12 @@ mod tests {
             aggregation_seconds: 0.,
             persistence_seconds: 0.,
         };
-        ctx.set_scan_report(&report);
+        ctx.set_scan_report(&report).unwrap();
         assert_eq!(e.job_status(&job.job_id).unwrap().rev.get(), 2);
-        ctx.set_scan_report(&report);
+        ctx.set_scan_report(&report).unwrap();
         assert_eq!(e.job_status(&job.job_id).unwrap().rev.get(), 2);
         report.examined = 2;
-        ctx.set_scan_report(&report);
+        ctx.set_scan_report(&report).unwrap();
         assert_eq!(e.job_status(&job.job_id).unwrap().rev.get(), 3);
         finish.send(()).unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -647,37 +743,16 @@ mod tests {
         }
         assert!(e.job_submit(JobSpec::new(JobKind::Teacher, None)).is_err());
         let mut records = e.jobs.records.lock().unwrap();
-        Registry::prune(&mut records);
+        Registry::prune(&mut records, &e.events).unwrap();
         assert!(records.contains_key(&job.job_id));
         records.get_mut(&job.job_id).unwrap().terminal = Some(Instant::now() - TERMINAL_RETENTION);
-        Registry::prune(&mut records);
-        assert!(!records.contains_key(&job.job_id));
+        drop(records);
+        // jobs.get alone expires the record; no later submission or listing is needed.
+        assert!(e.job_status(&job.job_id).is_err());
+        assert!(!e.jobs.records.lock().unwrap().contains_key(&job.job_id));
     }
     fn drain(stream: &mut Box<dyn loomward_protocol::EventStream>) {
         while let loomward_protocol::RecvOutcome::Event(_) = stream.recv_timeout(Duration::ZERO) {}
-    }
-    fn job_states(
-        stream: &mut Box<dyn loomward_protocol::EventStream>,
-        deadline: Instant,
-    ) -> Vec<String> {
-        let mut states = Vec::new();
-        while Instant::now() < deadline {
-            while let loomward_protocol::RecvOutcome::Event(event) =
-                stream.recv_timeout(Duration::ZERO)
-            {
-                if event.event != EventName::JobState {
-                    continue;
-                }
-                states.push(
-                    event.data["job"]["state"]
-                        .as_str()
-                        .unwrap_or("?")
-                        .to_string(),
-                );
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        states
     }
     #[test]
     fn submit_publishes_queued_before_running() {
@@ -735,72 +810,17 @@ mod tests {
         let _ = e.job_cancel(&job.job_id);
     }
     #[test]
-    fn spawn_failure_marks_failed_and_publishes_terminal_event() {
-        let e = engine();
-        let mut stream = e.subscribe_events(None).unwrap();
-        drain(&mut stream);
-        let runner: JobRunner = Arc::new(|_, _| {
-            std::thread::sleep(Duration::from_millis(500));
-            Ok(CoverageState::Complete)
-        });
-        let job = e
-            .jobs
-            .submit(
-                JobSpec::new(JobKind::Refit, None),
-                runner,
-                e.events.clone(),
-                None,
-            )
-            .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while e.job_status(&job.job_id).unwrap().state != JobState::Running {
-            assert!(Instant::now() < deadline, "job never reached Running");
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        drain(&mut stream);
-        let _ = e.jobs.mark_spawn_failed(&job.job_id, &e.events);
-        assert_eq!(
-            e.job_status(&job.job_id).unwrap().state,
-            JobState::Failed,
-            "spawn failure did not mark the job Failed"
-        );
-        let deadline = Instant::now() + Duration::from_secs(2);
-        let mut saw_failed = false;
-        while Instant::now() < deadline {
-            while let loomward_protocol::RecvOutcome::Event(event) =
-                stream.recv_timeout(Duration::ZERO)
-            {
-                if event.event != EventName::JobState {
-                    continue;
-                }
-                if &event.data["job"]["state"] == "failed" {
-                    saw_failed = true;
-                }
-            }
-            if saw_failed {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        assert!(
-            saw_failed,
-            "spawn failure published no Failed terminal event"
-        );
-    }
-    #[test]
     fn cancel_is_idempotent_with_no_duplicate_event() {
         let e = engine();
-        // The runner lingers after a cancel request so a second cancel lands
-        // while the job is still non-terminal.
-        let runner: JobRunner = Arc::new(|ctx, _| {
-            while !ctx.is_cancelled() {
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            std::thread::sleep(Duration::from_millis(300));
+        let (entered, started) = std::sync::mpsc::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let wait = Mutex::new(wait);
+        let runner: JobRunner = Arc::new(move |_, _| {
+            entered.send(()).unwrap();
+            wait.lock().unwrap().recv().unwrap();
             Ok(CoverageState::Cancelled)
         });
         let mut stream = e.subscribe_events(None).unwrap();
-        drain(&mut stream);
         let job = e
             .jobs
             .submit(
@@ -810,69 +830,30 @@ mod tests {
                 None,
             )
             .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while e.job_status(&job.job_id).unwrap().state != JobState::Running {
-            assert!(Instant::now() < deadline, "job never reached Running");
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        started.recv_timeout(Duration::from_secs(5)).unwrap();
         drain(&mut stream);
-        assert_eq!(
-            e.job_cancel(&job.job_id).unwrap().state,
-            JobState::CancelRequested
-        );
-        let deadline = Instant::now() + Duration::from_secs(2);
-        let mut saw_requested = false;
-        while Instant::now() < deadline {
-            while let loomward_protocol::RecvOutcome::Event(event) =
-                stream.recv_timeout(Duration::ZERO)
-            {
-                if event.event != EventName::JobState {
-                    continue;
-                }
-                if &event.data["job"]["state"] == "cancel_requested" {
-                    saw_requested = true;
-                }
-            }
-            if saw_requested {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        assert!(saw_requested, "first cancel published no request");
+        let first = e.job_cancel(&job.job_id).unwrap();
+        assert_eq!(first.state, JobState::CancelRequested);
         drain(&mut stream);
-        // Still non-terminal: the runner lingers 300ms after the request.
-        assert_eq!(
-            e.job_status(&job.job_id).unwrap().state,
-            JobState::CancelRequested
+        let second = e.job_cancel(&job.job_id).unwrap();
+        let silent = matches!(
+            stream.recv_timeout(Duration::ZERO),
+            loomward_protocol::RecvOutcome::Timeout
         );
-        assert_eq!(
-            e.job_cancel(&job.job_id).unwrap().state,
-            JobState::CancelRequested
-        );
-        std::thread::sleep(Duration::from_millis(100));
-        let states = job_states(&mut stream, Instant::now() + Duration::from_millis(50));
-        assert!(
-            states.is_empty(),
-            "second cancel re-emitted state: {:?}",
-            states
-        );
-        // After terminal completion a further cancel stays silent.
-        let deadline = Instant::now() + Duration::from_secs(2);
+        release.send(()).unwrap();
+        assert_eq!(second, first);
+        assert!(silent, "second cancel re-emitted state");
+        let until = Instant::now() + Duration::from_secs(5);
         while e.job_status(&job.job_id).unwrap().state != JobState::Cancelled {
-            assert!(Instant::now() < deadline, "job never reached Cancelled");
-            std::thread::sleep(Duration::from_millis(2));
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
         }
         drain(&mut stream);
-        assert_eq!(
-            e.job_cancel(&job.job_id).unwrap().state,
-            JobState::Cancelled
-        );
-        std::thread::sleep(Duration::from_millis(100));
-        let states = job_states(&mut stream, Instant::now() + Duration::from_millis(50));
-        assert!(
-            states.is_empty(),
-            "terminal cancel re-emitted state: {:?}",
-            states
-        );
+        let done = e.job_status(&job.job_id).unwrap();
+        assert_eq!(e.job_cancel(&job.job_id).unwrap(), done);
+        assert!(matches!(
+            stream.recv_timeout(Duration::ZERO),
+            loomward_protocol::RecvOutcome::Timeout
+        ));
     }
 }
