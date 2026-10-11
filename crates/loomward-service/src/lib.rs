@@ -15,6 +15,7 @@
 //! No command has an effect on user files or processes (invariant 1), and no command accepts a path.
 #![forbid(unsafe_code)]
 
+mod collections;
 mod cursors;
 mod db;
 mod duplicates;
@@ -438,7 +439,15 @@ impl ViewService for Service {
             );
             return ResponseEnvelope::error(Some(id), e, None);
         }
-        if command.wave() >= 3 {
+        if command.wave() >= 3
+            && !matches!(
+                command,
+                Command::CollectionsList
+                    | Command::CollectionsCreate
+                    | Command::CollectionsUpdateMembers
+                    | Command::CollectionsMembers
+            )
+        {
             let e = fail(
                 ErrorCode::CapabilityUnavailable,
                 "this command arrives with wave 3 (lane L20)",

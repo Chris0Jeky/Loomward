@@ -261,3 +261,25 @@ uses the existing root cancellation fence and refuses the report; no report surv
 shows cancel_requested until the worker drains. Cancelled jobs may retain verified partial evidence
 with stop=cancelled; a permission refusal instead carries error and no duplicates report. seq and rev
 have the same ordering semantics as scan jobs. Personal scan gating is unchanged.
+
+## Collections (local preferences)
+
+The four `collections.*` commands work in synthetic and personal sessions. They read catalogue
+metadata and write only Loomward's FULL-synchronous state store. Membership is meaning, never a
+root grant, disclosure approval or file effect; no content is read, moved, copied or linked.
+Names are exact, case-sensitive keys (1-64 characters, no controls); a duplicate returns
+`invalid_request` with `detail.existing_id`. At most 256 collections are stored; further creates
+return `resource_budget`, never a truncated list. There is no rename command.
+
+`collections.update_members` requires `expected_state_rev`; omission is `invalid_request`, a
+mismatch is `stale_generation` / `state_rev_changed` before any state write. Adds/removes are atomic
+sets of current node IDs, require durable native identity and an active root, and may not overlap.
+An unchanged set is a no-op. Removed or replaced objects are never rebound by path. Members bind
+`object_ref`, including pending reference publication during rescans; unresolved references remain
+members until explicitly removed through a resolvable node ID. `member_id` is a stable local
+reference identifier, not an operation grant. `status` is `resolved`, `root_revoked` or `unresolved`;
+`entry` is null for the latter two, so no names, paths or zero sizes are fabricated. Collection
+`member_count` includes unresolved members; `logical_bytes` is null if any member's size is unknown
+or directory coverage is incomplete. The sum is virtual entry size, not reclaimable disk space.
+Pages order by durable member ID and cursors bind the collection, session, catalogue instance,
+`catalog_rev` and `state_rev`. Changed limits may reuse a cursor; changed bindings may not.

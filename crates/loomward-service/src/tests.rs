@@ -754,7 +754,16 @@ fn every_command_answers_a_complete_envelope_and_core_reads_serve_the_catalogue(
                 .unwrap();
         let r = call(&svc, command.as_str(), serde_json::from_str(&text).unwrap());
         checked(command.as_str(), &r);
-        if command.wave() >= 3 || command == Command::RootsRequestGrant {
+        if (command.wave() >= 3
+            && !matches!(
+                command,
+                Command::CollectionsList
+                    | Command::CollectionsCreate
+                    | Command::CollectionsUpdateMembers
+                    | Command::CollectionsMembers
+            ))
+            || command == Command::RootsRequestGrant
+        {
             assert_eq!(
                 err(r).code,
                 ErrorCode::CapabilityUnavailable,
@@ -2869,3 +2878,7 @@ fn followup_inspect_uses_the_roots_actual_grant() {
 
 #[path = "duplicates_tests.rs"]
 mod duplicates_tests;
+
+#[cfg(test)]
+#[path = "collections_tests.rs"]
+mod collections_tests;

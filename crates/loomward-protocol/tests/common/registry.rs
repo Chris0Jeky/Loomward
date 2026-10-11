@@ -129,6 +129,8 @@ pub fn roundtrip(def: &str, v: &Value) -> Option<Result<Value, String>> {
         "LearningQueueRequest" => rt::<LearningQueueRequest>(v),
         "LearningQueue" => rt::<LearningQueue>(v),
         "Collection" => rt::<Collection>(v),
+        "CollectionMember" => rt::<CollectionMember>(v),
+        "CollectionMemberPage" => rt::<CollectionMemberPage>(v),
         "CollectionList" => rt::<CollectionList>(v),
         "CollectionCreateRequest" => rt::<CollectionCreateRequest>(v),
         "CollectionMembersUpdate" => rt::<CollectionMembersUpdate>(v),
