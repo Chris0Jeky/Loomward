@@ -37,14 +37,15 @@ Bundling is off (`bundle.active: false`); no installer is built.
 | Real WebView2: raw IPC, ACL, CSP, navigation, heartbeat, renderer lag, teardown | `py -3 native/tests/webview2_probe.py` (Playwright over CDP; writes `evidence/v3/native/`) |
 
 CI runs the build, format, test, clippy and headless self-test checks in one cached
-`windows-latest` desktop job, after building `app/dist`. It also runs the WebView2 probe over
-CDP with its default five P9 samples and writes its outputs under ignored `.loomward/ci-webview2/`.
-[Tauri documents Windows GUI automation on GitHub Actions](https://v2.tauri.app/develop/tests/webdriver/ci/):
-the probe launches a real Win32 window and closes it with `WM_CLOSE`, without human input.
-It does not use Chromium's headless mode or establish headless WebView2 support on a
-service-only runner without a desktop. The interactive disclosure test remains excluded.
-The probe also enforces the existing 50 ms P9 median budget; hosted timings do not establish
-performance on the user's machine.
+`windows-latest` desktop job, after building `app/dist`. The WebView2 probe is a local proving
+check only. On the hosted runner (#282) the shell starts and six WebView2 processes run, but
+WebView2 never opens a DevTools endpoint: with a fixed port nothing listens, and with
+`--remote-debugging-port=0` no `DevToolsActivePort` file is written, so Playwright cannot attach.
+Three different attempts (a load wait, diagnostics, a self-chosen port) changed nothing; the
+runner's cause (policy, session or argument handling) could not be observed from the job. Run the
+probe locally after any change to the shell, IPC, CSP or transport. It launches a real Win32 window,
+closes it with `WM_CLOSE`, does not use Chromium's headless mode, and enforces the 50 ms P9 median
+budget. The interactive disclosure test remains excluded.
 
 ## IPC surface
 

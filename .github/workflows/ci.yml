@@ -70,21 +70,10 @@ jobs:
       - run: cargo +stable test --manifest-path native/Cargo.toml
       - run: cargo +stable clippy --manifest-path native/Cargo.toml --all-targets -- -D warnings
       - run: ./native/target/debug/loomward-desktop.exe --self-test
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: '3.13'
-      - run: python -m pip install playwright
-      # Hosted Windows supports real Tauri windows; CDP drives WebView2 without human input.
-      # This is windowed automation (including WM_CLOSE), not Chromium's headless mode.
-      # https://v2.tauri.app/develop/tests/webdriver/ci/
-      - name: WebView2 runtime present
-        run: |
-          $keys = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}', 'HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
-          $keys | ForEach-Object { Get-ItemProperty $_ -ErrorAction SilentlyContinue } | Select-Object -First 1 pv | Format-List
-      - run: python native/tests/webview2_probe.py --out .loomward/ci-webview2
-      - name: Desktop shell log on failure
-        if: failure()
-        run: Get-ChildItem .loomward/ci-webview2 -Filter *.log | ForEach-Object { "== $($_.Name)"; Get-Content -Raw $_.FullName }
+      # The WebView2 probe (native/tests/webview2_probe.py) is a local proving check, not a hosted one:
+      # on windows-latest the shell starts and its WebView2 processes run, but WebView2 never opens a
+      # DevTools endpoint (no DevToolsActivePort with a fixed or a self-chosen port), so nothing can
+      # attach. Three different attempts on #282; see native/README.md.
   app:
     strategy:
       fail-fast: false
