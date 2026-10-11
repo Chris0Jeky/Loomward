@@ -28,7 +28,7 @@ const EPOCH = 'e_mock_epoch';
 /** Which revision scopes (semantics.md section 5) a command's response is read at: catalogue, state.db, both, or neither. */
 const REVS: Partial<Record<string, 'c' | 's' | 'cs'>> = {
   'collections.list': 'cs', 'collections.create': 'cs', 'collections.members': 'cs', 'collections.update_members': 'cs',
-  'node.inspect': 'cs',
+  'node.inspect': 'cs', 'threads.meaning': 'cs',
   'health.get': 'c', 'tree.children': 'c', 'search.query': 'c',
   'roots.list': 'cs', 'tree.slice': 'cs', 'placement.candidates': 'cs', 'placement.simulate': 'cs',
   'proposals.list': 'cs', 'proposals.get': 'cs', 'volumes.declare_tier': 'cs',
@@ -278,7 +278,17 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
         timestamps: { created_at: null, modified_at: n.modified, accessed_at: null, changed_at: null }, subtree: null,
         threads: threadsOf(n), exclusions: [], denied_capabilities: [], memberships: [], suggestion: null };
     },
-    'tree.slice': (p) => slice(p as unknown as TreeSliceRequest),
+ 'threads.meaning': (p) => {
+      if (!Array.isArray(p.node_ids) || p.node_ids.length < 1 || p.node_ids.length > 6000 || new Set(p.node_ids).size !== p.node_ids.length) return fail('invalid_request', 'meaning requires 1..6000 unique node IDs');
+      return { model_id: 'md_mock_meaning', budget_hit: p.node_ids.length > 1000, items: p.node_ids.slice(0, 1000).map(id => {
+        const n = nodeFor(id);
+        const eligible = n.kind === 'file' && n.coverage !== 'denied';
+        const label = LABEL[n.family ?? ''] ?? 'Documents';
+        const abstain = !LABEL[n.family ?? ''] || n.index % 7 === 0;
+        return { node_id: n.id, meaning: { state: !eligible ? 'not_eligible' : abstain ? 'abstained' : 'suggested', label: eligible && !abstain ? label : null, share: eligible && !abstain ? 0.87 : null, source: eligible ? 'student' : null, collection_ids: [], ...(eligible ? { suggestion: { node_id: n.id, model_id: 'md_mock_meaning', ranked: [{ label, score: abstain ? 0.3 : 0.87 }], abstain, reasons: abstain ? ['unfamiliar_features'] : [], feature_coverage: abstain ? 0.1 : 0.9, review_priority: abstain ? 0.8 : 0.1, calibrated: false, autonomy_allowed: false, teacher: null } } : {}) } };
+      }) };
+    },
+        'tree.slice': (p) => slice(p as unknown as TreeSliceRequest),
     'tree.children': (p) => children(p as unknown as TreeChildrenRequest),
     'search.query': (p) => search(p as unknown as SearchRequest),
     ...views.handlers,

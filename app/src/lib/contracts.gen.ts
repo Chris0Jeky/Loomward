@@ -479,11 +479,13 @@ export interface JobList {
 
 /** What the owner or a model thinks this is. A suggestion is not an approval (invariant 3). */
 export interface MeaningThread {
-  state: "labelled" | "suggested" | "mixed" | "none" | "pending" | "unknown";
+  state: "labelled" | "suggested" | "mixed" | "none" | "pending" | "unknown" | "no_model" | "abstained" | "not_eligible";
   label: Label | null;
   share: NullableFraction;
   source: null | "human" | "student" | "teacher";
   collection_ids: CollectionId[];
+  /** Optional on tree projections; lazy student threads carry ranked relative scores, abstention and reasons. Never a probability or action approval. */
+  suggestion?: Suggestion;
 }
 
 /** Where the bytes physically are. */

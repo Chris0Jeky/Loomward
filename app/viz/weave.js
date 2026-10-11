@@ -32,7 +32,7 @@ export function ctx2d(c) {
 /**
  * One repeat of cloth, `THREADS` threads square, rasterised at the device pixel ratio.
  * @param {number} dpr @param {Warp} warp @param {Weft} weft
- * @param {{ ink: string, unknown: string, loose?: boolean, only?: 'warp' | 'weft' }} o
+ * @param {{ ink: string, unknown: string, loose?: boolean, only?: 'warp' | 'weft', meaningWeft?: boolean }} o
  *   loose: a provisional (live-scan) sum: every other weft is left out, so the cloth reads unfinished
  */
 export function weaveTile(dpr, warp, weft, o) {
@@ -49,7 +49,7 @@ export function weaveTile(dpr, warp, weft, o) {
   const showWarp = o.only !== 'weft';
   /** @param {number} i */
   const warpColour = (i) => {
-    if (warp.pattern === 'suggested' && i % 2 === 1) return /** @type {string} */ (warp.alt);
+    if (warp.pattern === 'suggested' && i / n >= (warp.intensity ?? 0.5)) return /** @type {string} */ (warp.alt);
     if (warp.pattern === 'mixed' && i % 2 === 1) return /** @type {string} */ (warp.alt);
     return warp.colour;
   };
@@ -99,6 +99,11 @@ export function weaveTile(dpr, warp, weft, o) {
         g.fillRect(x + p * 0.35, y + p * 0.42, p * 0.3, p * 0.16);
       }
     }
+  }
+  if (o.meaningWeft) {
+    const rotated = makeCanvas(size, size), rg = ctx2d(rotated);
+    rg.translate(size, 0); rg.rotate(Math.PI / 2); rg.drawImage(c, 0, 0);
+    return rotated;
   }
   return c;
 }

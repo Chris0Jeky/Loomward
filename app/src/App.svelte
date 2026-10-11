@@ -106,8 +106,8 @@
 
 <footer class="legend" aria-label="Thread legend">
   <span class="legend-title">Threads never blend</span>
-  <span class="thread meaning"><i></i><em>Warp</em> · meaning, vertical dyed threads</span>
-  <span class="thread residency"><i></i><em>Weft</em> · residency, crossing metal threads</span>
+  <span class="thread meaning"><i></i><em>Meaning</em> · labels and suggestions</span>
+  <span class="thread residency"><i></i><em>Residency</em> · observed volume and tier</span>
   <span class="thread permission"><i></i><em>Selvedge</em> · permission, a stitched edge</span>
 </footer>
 
