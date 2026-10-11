@@ -53,7 +53,8 @@ fn granted_root_rejects_foreign_catalogue_identities_before_opening_a_path() {
 fn duplicate_content_is_gated_for_personal_grants() {
     let mut grant = root();
     grant.dataset_class = DatasetClass::Personal;
-    let engine = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Personal)).unwrap();
+    let engine =
+        Arc::new(Engine::open(EngineConfig::new("unused".into(), DatasetClass::Personal)).unwrap());
     let err = engine
         .inspect_duplicates(
             &grant,
@@ -65,6 +66,19 @@ fn duplicate_content_is_gated_for_personal_grants() {
         )
         .unwrap_err();
     assert_eq!(err.to_body().message.as_str(), "content_read_gated");
+    let budget = serde_json::from_value(
+        serde_json::json!({"max_candidates":200,"max_bytes":"100","max_ms":1000}),
+    )
+    .unwrap();
+    assert_eq!(
+        engine
+            .duplicates_start(grant, Default::default(), budget)
+            .unwrap_err()
+            .to_body()
+            .message
+            .as_str(),
+        "content_read_gated"
+    );
 }
 
 #[cfg(windows)]

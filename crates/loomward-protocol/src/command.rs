@@ -78,6 +78,8 @@ commands! {
     VolumesList = "volumes.list", EmptyRequest, VolumeList, [Tauri, Http], 2, [];
     VolumesDeclareTier = "volumes.declare_tier", DeclareTierRequest, DeclareTierResult, [Tauri, Http], 2, [];
     ScanStart = "scan.start", ScanStartRequest, JobResult, [Tauri, Http], 2, [JobState, ScanProgress, TreeInvalidated];
+    DuplicatesInspect = "duplicates.inspect", DuplicatesInspectRequest, JobResult, [Tauri, Http], 2, [JobState];
+    DuplicatesCancel = "duplicates.cancel", JobRefRequest, JobResult, [Tauri, Http], 2, [JobState];
     ScanCancel = "scan.cancel", JobRefRequest, JobResult, [Tauri, Http], 2, [JobState];
     JobsGet = "jobs.get", JobRefRequest, JobResult, [Tauri, Http], 2, [];
     JobsList = "jobs.list", JobListRequest, JobList, [Tauri, Http], 2, [];

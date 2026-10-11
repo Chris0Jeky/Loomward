@@ -73,6 +73,16 @@ impl JobContext {
             }
         }
     }
+    /// Retain bounded evidence; the terminal transition publishes it with the job revision.
+    pub(crate) fn set_duplicates(&self, report: loomward_protocol::DuplicateReport) {
+        if let Some(registry) = self.registry.upgrade() {
+            if let Some(r) = registry.records.lock().unwrap().get_mut(&self.job_id) {
+                if r.job.error.is_none() {
+                    r.duplicates = Some(report);
+                }
+            }
+        }
+    }
     /// Whether the caller requested cancellation.
     pub fn is_cancelled(&self) -> bool {
         self.cancel.load(Ordering::Acquire)
@@ -82,6 +92,7 @@ impl JobContext {
 pub type JobRunner = Arc<dyn Fn(JobContext, JobSpec) -> EngineResult<CoverageState> + Send + Sync>;
 struct Record {
     job: Job,
+    duplicates: Option<loomward_protocol::DuplicateReport>,
     cancel: Arc<AtomicBool>,
     terminal: Option<Instant>,
     interrupt: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -93,6 +104,31 @@ pub(crate) struct Registry {
     seq: AtomicU64,
 }
 impl Registry {
+    /// One live scan or duplicates job per root: `busy` with `detail.job_id`.
+    fn conflict(records: &HashMap<JobId, Record>, spec: &JobSpec) -> EngineResult<()> {
+        if !matches!(spec.kind, JobKind::Scan | JobKind::Duplicates) {
+            return Ok(());
+        }
+        let Some(r) = records.values().find(|r| {
+            r.job.kind == spec.kind && r.job.root_id == spec.root_id && r.terminal.is_none()
+        }) else {
+            return Ok(());
+        };
+        Err(EngineError::Busy {
+            message: "root already scanning".into(),
+            detail: Some(
+                loomward_protocol::Detail::new(std::collections::BTreeMap::from([(
+                    "job_id".into(),
+                    serde_json::json!(r.job.job_id),
+                )]))
+                .unwrap(),
+            ),
+        })
+    }
+    /// The submit-time conflict check, for callers that must report it before reserving budgets.
+    pub(crate) fn check_conflict(&self, spec: &JobSpec) -> EngineResult<()> {
+        Self::conflict(&self.records.lock().unwrap(), spec)
+    }
     fn prune(records: &mut HashMap<JobId, Record>) {
         records.retain(|_, r| r.terminal.is_none_or(|t| t.elapsed() < TERMINAL_RETENTION));
     }
@@ -139,29 +175,13 @@ impl Registry {
             progress: None,
             coverage: None,
             error: None,
+            duplicates: None,
         };
         let cancel = Arc::new(AtomicBool::new(false));
         {
             let mut records = self.records.lock().unwrap();
             Self::prune(&mut records);
-            if spec.kind == JobKind::Scan {
-                if let Some(r) = records.values().find(|r| {
-                    r.job.kind == JobKind::Scan
-                        && r.job.root_id == spec.root_id
-                        && r.terminal.is_none()
-                }) {
-                    return Err(EngineError::Busy {
-                        message: "root already scanning".into(),
-                        detail: Some(
-                            loomward_protocol::Detail::new(std::collections::BTreeMap::from([(
-                                "job_id".into(),
-                                serde_json::json!(r.job.job_id),
-                            )]))
-                            .unwrap(),
-                        ),
-                    });
-                }
-            }
+            Self::conflict(&records, &spec)?;
             // Allocate under the records lock so submission events and listing order agree.
             // The records lock serialises allocation, so a load and store is enough (and avoids
             // `fetch_update`, deprecated on newer toolchains).
@@ -180,6 +200,7 @@ impl Registry {
                 job.job_id.clone(),
                 Record {
                     job: job.clone(),
+                    duplicates: None,
                     cancel: cancel.clone(),
                     terminal: None,
                     interrupt,
@@ -226,9 +247,27 @@ impl Registry {
                 });
                 let mut records = registry.records.lock().unwrap();
                 let r = records.get_mut(&id).unwrap();
+                if r.job.kind == JobKind::Duplicates && r.job.error.is_none() {
+                    r.job.duplicates = r.duplicates.take();
+                } else {
+                    r.duplicates = None;
+                }
                 if cancel.load(Ordering::Acquire) {
                     r.job.state = JobState::Cancelled;
                     r.job.coverage = Some(CoverageState::Cancelled);
+                    if r.job.kind == JobKind::Duplicates {
+                        if r.job.error.is_some() {
+                            r.job.duplicates = None;
+                        } else if let Some(report) = &mut r.job.duplicates {
+                            report.partial = true;
+                            report.stop =
+                                Some(loomward_protocol::BoundedStr::new("cancelled").unwrap());
+                        }
+                        if let Err(e) = result {
+                            r.job.duplicates = None;
+                            r.job.error = Some(e.to_body());
+                        }
+                    }
                 } else {
                     match result {
                         Ok(coverage) => {
@@ -236,6 +275,7 @@ impl Registry {
                             r.job.coverage = Some(coverage)
                         }
                         Err(e) => {
+                            r.job.duplicates = None;
                             r.job.state = JobState::Failed;
                             r.job.coverage = Some(CoverageState::Partial);
                             r.job.error = Some(e.to_body());
@@ -253,12 +293,32 @@ impl Registry {
         Ok(job)
     }
     pub fn cancel(&self, id: &JobId, events: &Bus) -> EngineResult<Job> {
+        self.cancel_inner(id, events, false)
+    }
+    pub(crate) fn cancel_revoked(&self, id: &JobId, events: &Bus) -> EngineResult<Job> {
+        self.cancel_inner(id, events, true)
+    }
+    fn cancel_inner(&self, id: &JobId, events: &Bus, revoked: bool) -> EngineResult<Job> {
         let (job, interrupt) = {
             let mut records = self.records.lock().unwrap();
             let r = records.get_mut(id).ok_or_else(|| EngineError::NotFound {
                 message: "job not found".into(),
             })?;
+            if revoked && r.terminal.is_none() && r.job.kind == JobKind::Duplicates {
+                r.job.duplicates = None;
+                r.duplicates = None;
+                r.job.error = Some(
+                    EngineError::PermissionDenied {
+                        message: "cancelled".into(),
+                    }
+                    .to_body(),
+                );
+            }
             if r.terminal.is_some() || r.job.state == JobState::CancelRequested {
+                if revoked && r.terminal.is_none() && r.job.kind == JobKind::Duplicates {
+                    revise(&mut r.job);
+                    emit(events, &r.job);
+                }
                 // Idempotent: an already-terminal job or an already-requested
                 // cancel publishes no duplicate event.
                 return Ok(r.job.clone());
@@ -280,7 +340,7 @@ impl Registry {
             .unwrap()
             .values()
             .filter(|r| {
-                r.job.kind == JobKind::Scan
+                matches!(r.job.kind, JobKind::Scan | JobKind::Duplicates)
                     && r.job.root_id.as_ref() == Some(root)
                     && r.terminal.is_none()
             })

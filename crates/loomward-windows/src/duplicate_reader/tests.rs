@@ -502,6 +502,47 @@ mod native {
     fn root_id(root: &Path) -> crate::enumerate::OpenedIdentity {
         NativeSource::default().open_root(root).unwrap().1
     }
+    #[cfg(feature = "content-read")]
+    #[test]
+    fn native_candidate_hydration_is_root_relative_and_never_follows_a_junction() {
+        let Some(temp) = fixture() else { return };
+        fs::create_dir(temp.path().join("nested")).unwrap();
+        fs::write(temp.path().join("nested/a"), b"same").unwrap();
+        let expected = root_id(temp.path());
+        let observed = observe_candidate(
+            temp.path(),
+            &expected,
+            Path::new("nested/a"),
+            Budget::test(),
+            Default::default(),
+        )
+        .unwrap();
+        assert_eq!(observed, entry(temp.path(), "nested/a").expected);
+        assert_eq!(
+            observe_candidate(
+                temp.path(),
+                &expected,
+                Path::new("../outside"),
+                Budget::test(),
+                Default::default()
+            )
+            .unwrap_err(),
+            Reason::InvalidPath
+        );
+        crate::fixtures::junction(&temp.path().join("redirect"), &temp.path().join("nested"))
+            .unwrap();
+        assert_eq!(
+            observe_candidate(
+                temp.path(),
+                &expected,
+                Path::new("redirect/a"),
+                Budget::test(),
+                Default::default()
+            )
+            .unwrap_err(),
+            Reason::ChangedDuringRead
+        );
+    }
     fn run(root: &Path, entries: &[Entry]) -> Report {
         inspect(
             root,

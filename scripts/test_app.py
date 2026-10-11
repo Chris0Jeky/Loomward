@@ -202,6 +202,19 @@ def live_scan_refusals(browser, exe: Path) -> None:
             page.set_default_timeout(8000)
             page.goto(url)
             expect(page.get_by_role('status', name='Session status')).to_contain_text('Connected')
+            page.evaluate("location.hash = '#/duplicates'")
+            expect(page.get_by_role('heading', name='Duplicates', level=1)).to_be_visible()
+            if dataset == 'personal':
+                expect(page.get_by_role('status').filter(has_text='Personal content inspection is gated')).to_be_visible()
+                check(page.get_by_role('button', name='Start inspection').count() == 0, 'personal: content inspection has a gated surface')
+            else:
+                expect(page.get_by_role('button', name='Start inspection')).to_be_disabled()
+            inspected = live_call(page, token, 'duplicates.inspect', {'root_id': 'rt_nope', 'budget': {'max_candidates': 200, 'max_bytes': '1024', 'max_ms': 1000}})
+            check(not inspected['ok'], f'{dataset}: no inspection starts without a synthetic grant')
+            if dataset == 'personal':
+                check(inspected['error']['detail']['reason'] == 'content_read_gated', 'personal content refused before any root access')
+            else:
+                check(inspected['error']['code'] == 'not_found', 'synthetic inspection requires a real registered root')
             page.evaluate("location.hash = '#/health'")
             expect(page.get_by_role('heading', name='Grants & health', level=1)).to_be_visible()
             expect(page.locator('main table.tbl tbody')).to_contain_text('No roots granted')
@@ -372,6 +385,32 @@ def main() -> None:
         check(not dialogs, 'no script from a file name ran')
         check('unknown' in page.locator('main table').inner_text(), 'unknown allocation stays "unknown" in the table')
         shot('woven-atlas-explorer.png')
+
+        # Duplicate evidence is synthetic and observed, never advice to delete.
+        nav.get_by_role('link', name='Duplicates', exact=True).click()
+        expect(page.get_by_role('heading', name='Duplicates', level=1)).to_be_visible()
+        expect(page.get_by_text('Equal content is an observation, not a recommendation to delete.', exact=True)).to_be_visible()
+        page.get_by_role('button', name='Start inspection').click()
+        expect(page.get_by_role('button', name='Cancel inspection')).to_be_enabled()
+        expect(page.get_by_role('rowheader', name='equal-a.txt equal-b.txt')).to_be_visible()
+        expect(page.get_by_role('rowheader', name='linked.txt alias.txt')).to_be_visible()
+        expect(page.get_by_text('One object · no space to reclaim', exact=True)).to_be_visible()
+        expect(page.get_by_text('changed_during_read', exact=True)).to_be_visible()
+        expect(page.get_by_role('row').filter(has=page.get_by_role('rowheader', name='equal-a.txt equal-b.txt'))).to_contain_text('16 B')
+        expect(page.locator('.evidence')).to_contain_text('Bytes read 96 B')
+        expect(page.locator('.evidence')).to_contain_text('Partial yes')
+        expect(page.locator('.evidence')).to_contain_text('Stop none')
+        expect(page.locator('#duplicate-results')).to_be_focused()
+        shot('duplicates-desktop.png')
+        page.set_viewport_size({'width': 375, 'height': 800})
+        check(page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), 'duplicates reflows at 375 px')
+        shot('duplicates-mobile.png')
+        page.set_viewport_size({'width': 1360, 'height': 900})
+        page.get_by_role('button', name='Start inspection').click()
+        page.get_by_role('button', name='Cancel inspection').click()
+        expect(page.get_by_role('status').filter(has_text='Inspection cancelled')).to_be_visible()
+        print('PASS duplicates: verified sizes, link sets, skip reasons, evidence, focus and cancellation')
+        nav.get_by_role('link', name='Explorer', exact=True).click()
 
         # search pages with a keyset cursor: 'a' matches far more than one page
         page.get_by_placeholder('Search names').fill('a')
