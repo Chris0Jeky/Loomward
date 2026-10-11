@@ -1,11 +1,20 @@
 //! L14 handlers; the engine owns human events and refit, the service resolves session identities.
 use crate::{catalog_error, fail, sql_error, with_reason, Inner, Out};
-use loomward_catalog::{NodeKey, Reader, WriteCommand, WriteReply};
+use loomward_catalog::{NodeDetail, NodeKey, Reader, WriteCommand, WriteReply};
 use loomward_protocol::*;
 use serde_json::{json, Value};
 
 pub(super) fn features(reader: &mut Reader, key: NodeKey) -> Result<(EntryRow, Value), ErrorBody> {
     let detail = reader.inspect(key).map_err(catalog_error)?;
+    features_of(reader, key, detail)
+}
+
+/// `features` for a caller that already inspected the node.
+pub(super) fn features_of(
+    reader: &mut Reader,
+    key: NodeKey,
+    detail: NodeDetail,
+) -> Result<(EntryRow, Value), ErrorBody> {
     let path = reader.path(key).map_err(catalog_error)?;
     let context = path
         .ancestors
