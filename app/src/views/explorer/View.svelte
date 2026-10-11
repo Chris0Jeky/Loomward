@@ -8,7 +8,7 @@
   import { hasHiddenCharacters } from '../../lib/format/names';
   import { formatCount, formatTime } from '../../lib/format/time';
   import { LoomwardError } from '../../lib/transport/client';
-  import { FALLBACK_NOTICE, onRefetchError } from './refetch';
+  import { fallbackStep, onRefetchError } from './refetch';
   import { session } from '../../lib/stores/session.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import type { Basis, EntryPage, EntryRow, NodeId } from '../../lib/contracts.gen';
@@ -34,6 +34,8 @@
   let searching = $state(false);
   let error = $state('');
   let notice = $state('');
+  /** A saved folder vanished from the catalogue (#198): its name, and where the view moved to (null: the top level). */
+  let gone = $state<{ lost: string; now: string | null } | null>(null);
   let busy = $state(false);
   let searchEl = $state<HTMLInputElement>();
   let moreEl = $state<HTMLButtonElement>();
@@ -61,7 +63,7 @@
     return c.call('tree.children', { node_id: here!.id, sort, basis, limit: PAGE, cursor }, { signal });
   }
 
-  async function show(append = false, restarted = false): Promise<void> {
+  async function show(append = false, restarted = false, lost?: string): Promise<void> {
     if (!session.client || (!searching && !here)) return;
     if (!append) {
       abort?.abort();
@@ -72,10 +74,14 @@
     const hadFocus = append && document.activeElement === moreEl; // Load more goes away after the last page
     busy = true;
     error = '';
-    if (!restarted) notice = '';
+    if (!restarted) {
+      notice = '';
+      gone = null;
+    }
     const restart = (why: string) => {
       notice = why;
-      return show(false, true);
+      gone = null;
+      return show(false, true, lost);
     };
     try {
       const { result: page } = await fetchPage(append ? next : null, ctl.signal);
@@ -84,6 +90,8 @@
         return await restart('The listing changed while you were paging, so it starts again from the top.');
       }
       if (!append) pageGen = page.generation;
+      // The fallback's notice is true only once the ancestor has listed: a failed one shows just its error.
+      if (lost && here) gone = { lost, now: here.name };
       rows = append ? [...rows, ...page.items] : page.items;
       total = page.total;
       next = page.next_cursor;
@@ -101,11 +109,12 @@
         return await restart('The listing changed under the cursor, so it starts again from the top.');
       }
       if (!searching && !append && here && onRefetchError(e, seenIds.has(here.id)) === 'fallback') {
-        // A saved breadcrumb went stale (restart, rebuild, resync): drop it and reload the
-        // starting points. A `not_found` for a node just clicked stays an error below.
+        // A saved breadcrumb went stale (restart, rebuild, resync): climb to the deepest ancestor that
+        // still lists, or reload the starting points when none does, and say which folder is gone.
+        // A `not_found` for a node just clicked stays an error below.
         // Forgetting the ID first keeps a reused ID from falling back twice in a row.
+        const step = fallbackStep(trail, lost);
         seenIds.delete(here.id);
-        trail = [];
         rows = [];
         total = null;
         next = null;
@@ -113,9 +122,14 @@
         pageGen = null;
         error = '';
         busy = false;
+        if (step.keep.length) {
+          trail = step.keep;
+          return await show(false, true, step.lost);
+        }
+        trail = [];
         // Set after the reload (the fresh `show()` inside clears the status region on entry),
         // and only if no newer search, click or refresh superseded the reload meanwhile.
-        if (await loadStarts()) notice = FALLBACK_NOTICE;
+        if (await loadStarts()) gone = { lost: step.lost, now: null };
         return;
       }
       error = session.handle(e);
@@ -253,7 +267,7 @@
   {#if error}
     <p class="bad" role="alert">{error} <button class="btn" type="button" onclick={() => void (trail.length ? show() : loadStarts())}>Try again</button></p>
   {/if}
-  <p id="explorer-notice" class="muted live" class:has={!!notice} role="status">{notice}</p>
+  <p id="explorer-notice" class="muted live" class:has={!!notice || !!gone} role="status">{#if gone}<q><VisibleName name={gone.lost} /></q> is no longer in the catalogue, so the view {#if gone.now}moved up to <q><VisibleName name={gone.now} /></q>, the nearest folder still there.{:else}went back to the top level.{/if}{:else}{notice}{/if}</p>
 
   <div class="tbl-wrap" aria-busy={busy}>
     <table class="tbl">
