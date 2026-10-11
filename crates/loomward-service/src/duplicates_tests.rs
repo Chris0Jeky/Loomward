@@ -49,12 +49,9 @@ fn duplicates_personal_unknown_root_is_refused_before_any_job_and_replays() {
         .is_empty());
 }
 
-/// q-10 end to end: a personal session confirms duplicates in its own owner-granted folder
-/// (synthetic files in a disposable root), reads no byte it does not need, changes nothing, and a
-/// revoked root's report is redacted.
-#[cfg(windows)]
 /// Review on #376: a folder revoked and then granted again leaves a revoked row beside the new
 /// active one; inspection must follow the active grant instead of refusing forever.
+#[cfg(windows)]
 #[test]
 fn duplicates_follow_a_fresh_grant_after_the_same_folder_was_revoked() {
     let tmp = crate::tests::temp_root();
@@ -116,6 +113,10 @@ fn duplicates_follow_a_fresh_grant_after_the_same_folder_was_revoked() {
     assert_eq!(job.duplicates.unwrap().groups.len(), 1);
 }
 
+/// q-10 end to end: a personal session confirms duplicates in its own owner-granted folder
+/// (synthetic files in a disposable root), reads no byte it does not need, changes nothing, and a
+/// revoked root's report is redacted.
+#[cfg(windows)]
 #[test]
 fn duplicates_personal_session_confirms_owner_duplicates_and_revocation_redacts() {
     let tmp = crate::tests::temp_root();
