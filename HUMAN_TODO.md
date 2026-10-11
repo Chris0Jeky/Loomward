@@ -147,27 +147,27 @@ until their PR lands; an agent checks one off only when the change is merged and
 Selected: "Open: local, read-only hashing". Staged size, partial hash, full hash and byte comparison through pinned,
 revalidated, non-elevated handles with no-recall opens; cloud placeholders skipped; nothing leaves the machine; nothing is
 deleted; bounded by the job's byte and time budgets. Retires `content_read_gated` for owner-granted personal roots.
-- [ ] Implemented and merged (gate-opening PR updates AGENTS.md invariants, docs/16 and CHECKPOINT).
+- [x] Implemented and merged: #376 (docs/16 and CHECKPOINT updated there; AGENTS.md invariants carry no q-10 gate wording, so none changed).
 
 ### q-11 — Learning on personal roots — ANSWERED: open locally, the owner's labels only
 
 Selected: "Open locally, your labels only". The local student trains on the owner's labels plus metadata features of
 granted roots, on this machine; suggestions stay advice with relative scores; the teacher stays synthetic until q-5's
 conditions hold. Retires `learning_personal_gated`.
-- [ ] Implemented and merged (gate-opening PR).
+- [x] Implemented and merged: #368.
 
 ### q-12 — FAT and exFAT volumes (#219) — ANSWERED: list them, marked identity-unverified
 
 Selected: "List them, marked unverified". Metadata only, identity quality `unverified`; such rows never back a proposal or
 effect; relists recheck containment by path; a personal root on such a volume is confirmed explicitly at grant time.
-- [ ] Implemented and merged.
+- [x] Implemented and merged: #372 (real FAT volume leg unverified).
 
 ### q-13 — Catalogue write speed (#148) — ANSWERED: both retarget and push
 
 Owner, verbatim: "a mix of the first two options": the KPI becomes end-to-end files/s on lab and real trees (250k rows/s
 stays a stretch note), and an Opus high lane designs a first-scan bulk-load path (fresh table, deferred indexes, atomic swap
 under the publication fence), A/B measured on a quiet host.
-- [ ] KPI retargeted in evidence; bulk-load path landed or parked with evidence.
+- [x] KPI retargeted in evidence; bulk-load path landed with evidence: #387 (quiet-host A/B still unverified, #148).
 
 ### q-14 — Backups next step (LW-084) — ANSWERED: the driver chooses the best-engineered path
 
@@ -198,7 +198,7 @@ Selected: "Unsigned preview pre-release": a GitHub pre-release of the Tauri desk
 
 Selected: "Scrub to generic labels". Media and core counts become generic labels; the mock volume capacities become
 generic round numbers. Git history keeps the old text.
-- [ ] Scrub merged.
+- [x] Scrub merged: #365.
 
 ### q-19 — Dependabot alert #182 (glib, Linux-only) — OWNER ACTION: dismiss as not reachable
 

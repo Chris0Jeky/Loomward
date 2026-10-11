@@ -234,15 +234,47 @@ effect exists: duplicates, placement and collections observe, simulate or record
 Recorded in HUMAN_TODO q-5 and q-9 to q-19 (#360). The repository is **T2 (daily driver)**. Privacy and security
 findings now weigh lower and new evidence no longer withholds host hardware; secrets and real file names, paths or
 inventories in this public repository stay forbidden. Decided, not yet implemented (each lands in its own PR, which
-updates this file when it opens a gate): personal learning on the owner's labels
-(q-11), the P4 KPI retarget and a bulk-load lane (q-13), backups as
-evidence import then a guarded restic observer then a restore-drill executor (q-14), a native-save diagnostics bundle
-(q-15), Forget a revoked root (q-9), an unsigned preview pre-release (q-17) and the hardware scrub (q-18). The teacher
-stays synthetic until the broker passes its canaries; then names only, previewed per request (q-5). Implemented since:
-personal duplicate content reads (q-10; see the wave-7 Duplicates row).
+updates this file when it opens a gate): backups stages 2 and 3, a guarded restic observer then a restore-drill executor (q-14), a native-save diagnostics bundle (q-15), Forget a revoked root (q-9, #382 in review) and the first published preview pre-release (q-17; its workflow and prerequisites are merged). The teacher
+stays synthetic until the broker passes its canaries; then names only, previewed per request (q-5). Implemented since: personal duplicate content reads (q-10), personal learning on the owner's labels (q-11),
+the FAT/exFAT listing (q-12), the KPI retarget and first-scan bulk load (q-13), backups stage 1 (q-14) and the hardware scrub
+(q-18); see the wave-8 table.
 
 **FAT/exFAT listing (q-12, #372).** Fixed-disk FAT, exFAT and unknown filesystems list as identity-unverified:
 metadata only, every row flagged `identity_unverified`, never watched, never a placement, duplicate or durable-reference
 input; a personal root needs an explicit native confirmation (desktop) or `--allow-identity-unverified` (CLI). Every
 grant now records its volume's real filesystem, so durable references (collections, learning) work on real NTFS folders.
 State schema v5. No real FAT volume was available: that leg is unverified.
+
+## v0.3 status, wave 8 (11 October 2026, night; counts measured at `b00c564`)
+
+The sections above are kept as history. This wave merged 31 PRs, counting the wave-7 checkpoint #334. Each PR carries its review record: a fresh-context reviewer, a Muse lens for the bug-hunt sweeps, or a clean Codex pass for very-low-risk changes. The night's merge resolutions that touched logic also got a scoped pass. Each merged with green hosted CI. Base refreshes were re-proved on the merged tree before merging. One such refresh caught a real merge interaction: #383's receipt picker inherited #379's folder-grant confirmation, fixed in #379.
+
+An unexpected host shutdown mid-wave zeroed the primary checkout's `.git/config` and six manifests in one worktree. The config was rebuilt and the manifests restored from Git. Every checkout was scanned and no other file was damaged.
+
+| Area | State on `main` | Evidence |
+|---|---|---|
+| Personal duplicates (q-10) | **open**: local, read-only content reads on owner grants through the session root gate (#376). Revocation redacts reports (#335). The budget is applied before I/O, and disclosure is paged (#358). An inspection that finds the root replaced records `identity_changed` (#388) | `evidence/v3/personal-duplicates-q10.md` |
+| Personal learning (q-11) | **open** locally on the owner's labels (#368). Withdrawals are always possible and refits are serialised (#335, #351). The teacher refuses personal data | `evidence/v3/personal-learning-q11.md` |
+| FAT/exFAT (q-12) | listed as identity-unverified, never acted on. Every grant records its real filesystem; state v5 (#372) | see "FAT/exFAT listing" below |
+| Meaning and organisation | meaning threads, the Woven Atlas weft, from the student to the Atlas and Explorer (#338, #357). Collections pin every member guard and list in one query (#336, #357) | `evidence/v3/meaning-threads.md` |
+| First-scan bulk load (q-13) | a root's first full scan builds off to the side in unindexed `bulk_*` tables and publishes atomically in `EndRun` (#387). The KPI is end-to-end files/s (`scripts/bench_scan_throughput.py`). **P14 regressed** from 155 to 230 bytes/entry at 1M (#386). The quiet-host A/B is **unverified** | `evidence/v3/first-scan-bulk-load-148.md` |
+| Catalogue | the `EndRun` checkpoint never holds a committed receipt behind a reader. Async staging is parked as negative evidence (#343). References bound inside the pending-publication window are re-staged (#364). 19 query tests added (#354) | `crates/loomward-catalog/HANDOFF.md` |
+| Backups (q-14, stage 1) | receipt normaliser (#347). Restic receipts are imported through a Rust-side open dialog into a Backups view (#383): `backups.list`, `backups.import` and `backups.forget`, state v6 `backup_evidence`. A green job is never shown as verified recovery | `evidence/v3/backups-import.md`, ADR-V3-23 |
+| Resource trends | lease-scoped growth and contention candidates in the Observatory, each citing facts, never a verdict (#374). Process trends are fetched at the 15 s cadence and machine candidates come first (#381) | `evidence/v3/resource-trends-lw051.md` |
+| Desktop app | hosts the real engine service by default (#371). A safe picker with a named, Cancel-default confirmation; single-instance lock; visible launch errors; state outside the install folder (#379). "Add a folder" from Grants and health (#380). Request ids carry a per-client tag, so a reloaded page cannot replay an old outcome (#380) | `evidence/v3/desktop-preview-prereqs-373.md` |
+| Release (q-17) | unsigned preview pre-release workflow (#362) and its prerequisites (#379). **No release is published yet** | `RELEASING.md` |
+| Review sweeps and tests | review follow-ups (#340); placement and inventory resilience (#350); app honesty, where unknown is never 0 B (#355); live-serve rebuilds `app/dist` (#346); deterministic deadlines and a real `Service` drop race (#367); signature pass across the newer views (#345) | test suites |
+| Hardware scrub (q-18) | host media and core counts are generic labels (#365) | test suites |
+
+Counts (Windows, at `b00c564`): Rust 917 (apps 24, backup 19, catalog 164, core 30, engine 206, http 72, lab 27, learn 18, protocol 36, service 163, shell 27, telemetry 34, windows 97; doc tests counted in their crates); app 383 vitest plus Playwright e2e, `--a11y` and `--live-serve`; Python 227 (1 symlink-privilege skip).
+
+**Not established:**
+- P4 at 250k rows/s (#148);
+- the bulk-load A/B on a quiet host (#148);
+- P14 under the bulk path (#386);
+- a 10-minute quiet-host P12 run (#160);
+- a real FAT volume;
+- a published preview release (q-17);
+- a real picker grant exercised by a person.
+
+**No file or process effect exists:** duplicates, placement, collections and backups observe, simulate or record only. Forget (q-9, #382) is in review. It deletes Loomward's own records of a revoked root, never the owner's files.
