@@ -373,17 +373,11 @@ fn duplicate_admission_rechecks_durable_class_identity_and_ambiguity() {
             .as_str(),
         "grant_not_active"
     );
+    // A revoked row beside one active grant for the same folder is history, not ambiguity: the
+    // folder was revoked and granted again, and reads follow the one active grant (review on #376).
     conn.execute("UPDATE root_grant SET state='revoked' WHERE id=1", [])
         .unwrap();
-    assert_eq!(
-        engine
-            .duplicate_read_admission(&grant.clone())
-            .unwrap_err()
-            .to_body()
-            .message
-            .as_str(),
-        "grant_not_active"
-    );
+    assert!(engine.duplicate_read_admission(&grant.clone()).is_ok());
 }
 
 #[test]
