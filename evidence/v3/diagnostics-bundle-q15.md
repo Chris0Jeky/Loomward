@@ -46,6 +46,7 @@ folders under `target/test-roots`. Nothing was uploaded, and no file outside tes
 | `native/target/debug/loomward-desktop.exe --self-test` | PASS: 13 checks, including both engine sessions' bundle preview and stale-save refusal |
 | `py -3 crates/loomward-service/tests/diagnostics_mutations.py` | PASS: 14 of 14 mutants killed, sources restored, targeted tests green again |
 | `git diff --check` | PASS |
+| After merging `origin/main` at `a872035` (#394, #397): `cargo test --workspace --no-fail-fast`, `cargo fmt --all --check`, workspace clippy with `--all-features`, native build and `--self-test`, `tests.test_v3_contracts` | PASS: Rust 950 tests, 0 failed |
 
 The service tests (`crates/loomward-service/src/diagnostics_tests.rs`) cover:
 
