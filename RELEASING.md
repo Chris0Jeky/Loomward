@@ -20,8 +20,11 @@ or a pull request.
    the dispatched commit.
 
 The job runs on `windows-latest` (60-minute limit; the first run has not been timed). It checks the version, builds `app/dist`
-and the NSIS installer, self-tests the release binary, silently installs the installer and starts the
-installed app, then creates the pre-release. A failure before the last step leaves no release and no
+and the NSIS installer, self-tests the release binary, silently installs the installer, self-tests the
+installed app with the checkout's contract examples removed (it reads its bundled copy and opens the
+engine service in a scratch state directory), starts the installed app with its default personal
+engine session, then creates the pre-release. The runner is elevated, so this start grants nothing:
+native identity opens are refused there. A failure before the last step leaves no release and no
 tag, so fix and re-dispatch.
 
 ## What the pre-release holds
@@ -31,8 +34,12 @@ tag, so fix and re-dispatch.
 | `Loomward_<version>_x64-setup.exe` | NSIS installer: per-user (`%LOCALAPPDATA%`), no administrator rights, **unsigned** (SmartScreen warns) |
 | `SHA256SUMS.txt` | SHA-256 of the installer, one `sha256sum` line |
 
-The release body (`.github/release/preview-notes.md`) says the build is unsigned, shows synthetic
-fixture data only, has no file or process effect, and links the evidence index and the issue tracker.
+The release body (`.github/release/preview-notes.md`) says the build is unsigned; that it runs the
+engine on the tester's machine and reads only folders granted through the Windows folder picker,
+metadata only; that the interface cannot open that picker yet; that it has no file or process
+effect; and where its state lives. It links the evidence index and the issue tracker. The app's
+state is under `%LOCALAPPDATA%\Loomward\v3\` (the per-user install directory is
+`%LOCALAPPDATA%\Loomward`); uninstalling removes the program files, not that state.
 There is no MSI: WiX rejects a text pre-release such as `-preview.1` in an MSI version.
 
 ## Verify a download
