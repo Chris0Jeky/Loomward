@@ -65,6 +65,7 @@ class FakeEngine:
         self.broken: dict[str, str] = {}  # node id -> error code tree.children answers instead of rows (e.g. an ancestor that fails)
         self.fail_proposals = False
         self.saved_scenarios = False
+        self.served: dict[str, int] = {}  # command -> times answered, so a test can wait for a reload to be served
         self.candidate_gate = None  # one (arrived, release) event pair
         self.tier_volumes: list[dict] | None = None
         self.candidate_sources: list[str] = []
@@ -91,6 +92,7 @@ class FakeEngine:
 
     def result(self, req: dict):
         cmd, p = req['command'], req.get('payload') or {}
+        self.served[cmd] = self.served.get(cmd, 0) + 1
         row = lambda name, i: {'node_id': f'nd_{name}', 'kind': 'file', 'name': name, 'extension': 'txt', 'ext_family': 'document', 'logical_bytes': str(1000 + i), 'allocated_bytes': '4096', 'files': None, 'dirs': None, 'modified_at': '2026-01-01T00:00:00Z', 'attributes': [], 'flags': [], 'coverage': 'complete', 'location_hint': None}
         if cmd == 'session.hello':
             effects = {k: False for k in 'file_move file_delete file_rename file_write content_read process_kill process_suspend process_priority memory_trim uninstall elevation'.split()}
@@ -478,6 +480,19 @@ def check_tiers_loading_followups(page: Page, engine: FakeEngine) -> None:
 
 # --- Tiers ------------------------------------------------------------------------------------------
 
+def declare_tier(page: Page, engine: FakeEngine, panel, tier: str) -> None:
+    """Declares a tier and returns only once the reload it triggers has been served and applied.
+
+    `aria-busy` covers the reload but not the declare round trip before it, so on its own it reads
+    'false' straight after the change and a later step can race the reload (which discards a
+    scenario that is loading, `loadModel` bumps its ticket)."""
+    expect(panel).to_have_attribute('aria-busy', 'false')
+    before = {c: engine.served.get(c, 0) for c in ('volumes.declare_tier', 'proposals.list')}
+    panel.get_by_label('Declared tier for X:').select_option(tier)
+    wait_until(page, lambda: all(engine.served.get(c, 0) > n for c, n in before.items()))
+    expect(panel).to_have_attribute('aria-busy', 'false')
+
+
 def check_tiers_source_eligibility(page: Page, engine: FakeEngine) -> None:
     template = engine.result({'command': 'tiers.model'})['volumes'][0]
     engine.tier_volumes = [
@@ -494,17 +509,15 @@ def check_tiers_source_eligibility(page: Page, engine: FakeEngine) -> None:
     expect(panel.get_by_role('button', name=re.compile(r'^Use as source\s*:\s*Blocked$'))).to_be_disabled()
     panel.get_by_role('button', name=re.compile(r'^Use as source\s*:\s*Other$')).click()
     expect(selected).to_contain_text('Other')
-    panel.get_by_label('Declared tier for X:').select_option('2')
-    expect(panel).to_have_attribute('aria-busy', 'false')
+    declare_tier(page, engine, panel, '2')
     expect(selected).to_contain_text('Other')
     engine.tier_volumes[2]['source_eligible'] = False
-    panel.get_by_label('Declared tier for X:').select_option('3')
+    declare_tier(page, engine, panel, '3')
     expect(selected).to_contain_text('X:')
     expect(panel.get_by_role('button', name=re.compile(r'^Use as source\s*:\s*Other$'))).to_be_disabled()
     engine.tier_volumes[1]['source_eligible'] = False
     engine.saved_scenarios = True
-    panel.get_by_label('Declared tier for X:').select_option('4')
-    expect(panel).to_have_attribute('aria-busy', 'false')
+    declare_tier(page, engine, panel, '4')
     expect(selected).to_have_count(0)
     count = len(engine.candidate_sources)
     page.get_by_role('button', name=re.compile('Show saved scenario')).click()
@@ -520,7 +533,7 @@ def check_tiers_source_eligibility(page: Page, engine: FakeEngine) -> None:
     expect(selected).to_contain_text('X:')
     page.get_by_label('Assumed heat for group-a').select_option('0.9')
     engine.tier_volumes[0]['source_eligible'] = False
-    panel.get_by_label('Declared tier for X:').select_option('5')
+    declare_tier(page, engine, panel, '5')
     expect(selected).to_contain_text('Other')
     expect(panel).to_have_attribute('aria-busy', 'false')
     engine.simulate_overrides.clear()
