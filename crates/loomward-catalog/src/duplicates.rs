@@ -52,19 +52,19 @@ impl Reader {
                 FROM eligible f JOIN sizes s ON s.logical=f.logical JOIN root_grant g ON g.id=f.root_id
                 ORDER BY f.logical,f.id LIMIT ?3")?;
             let rows = stmt.query_map(params![root, floor.max(1) as i64, cap as i64 + 1,
-                EXCLUDED_FLAGS | 1 | (1 << 1) | (1 << 6) | (1 << 9)], |r| Ok((
+                EXCLUDED_FLAGS | 1 | (1 << 1) | (1 << 6) | (1 << 9) | crate::IDENTITY_UNVERIFIED], |r| Ok((
                 r.get::<_, i64>(0)?, DuplicateCandidate { relative: String::new(), logical: r.get::<_, i64>(1)? as u64,
                 file_id: r.get(2)?, created: r.get(3)?, modified: r.get(4)?, changed: r.get(5)?, attributes: r.get(6)?, volume_key: r.get(7)? }
             )))?.collect::<rusqlite::Result<Vec<_>>>()?;
-            // Unreadable (access denied) or unrepresentable (lossy) names are unknowns, not policy
-            // exclusions: filtering one leaves the report partial (invariant 4).
+            // Unreadable (access denied), unrepresentable (lossy) or identity-unverified (#219) names
+            // are unknowns, not policy exclusions: filtering one leaves the report partial (invariant 4).
             let unknown: bool = conn.query_row("WITH RECURSIVE shielded(id) AS (
                 SELECT id FROM dir WHERE root_id=?1 AND (listing_state='excluded' OR flags & ?3 != 0)
                 UNION SELECT d.id FROM dir d JOIN shielded s ON d.parent_id=s.id)
                 SELECT EXISTS(SELECT 1 FROM file f JOIN dir d ON d.id=f.dir_id JOIN visible_dir v ON v.id=d.id
                 WHERE d.root_id=?1 AND d.id NOT IN (SELECT id FROM shielded)
                 AND f.flags & ?4 != 0 AND f.logical>=?2 AND f.logical>0)",
-                params![root, floor.max(1) as i64, EXCLUDED_FLAGS | 1 | (1 << 1) | (1 << 6) | (1 << 9), (1 << 6) | (1 << 9)],
+                params![root, floor.max(1) as i64, EXCLUDED_FLAGS | 1 | (1 << 1) | (1 << 6) | (1 << 9), (1 << 6) | (1 << 9) | crate::IDENTITY_UNVERIFIED],
                 |r| r.get(0))?;
             let mut truncated = rows.len() > cap;
             let mut entries = Vec::new();

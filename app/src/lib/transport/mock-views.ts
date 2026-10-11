@@ -319,6 +319,7 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
         cpu: { logical_cpus: 16, busy_fraction: sampleSeq > 1 ? Math.round((0.16 + wobble * 0.05) * 1000) / 1000 : null },
       },
       gpu: null, disks: null, processes: null,
+      trends: { series: [], candidates: [], candidates_truncated: false, unknowns: ['Synthetic transport has no retained native trend history.'] },
       engine: { private_commit_bytes: str(gib(0.09)), working_set_bytes: str(gib(0.07)), cpu_fraction: sampleSeq > 1 ? 0.004 : null, threads: 18, pools },
     };
   };

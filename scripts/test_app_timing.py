@@ -19,9 +19,9 @@ class AppE2ETimingTests(unittest.TestCase):
     def test_resume_waits_for_expected_id_and_rejects_bare_ids(self):
         page = Mock()
         with patch.object(test_app, 'engine', test_app.Engine()), contextlib.redirect_stdout(io.StringIO()):
-            with patch.object(test_app_views.time, 'sleep', side_effect=lambda _: test_app.engine.resume_ids.append(f'{test_app.EPOCH}.0')) as sleep:
-                test_app.check_resume(page)
-            sleep.assert_called_once()
+            page.wait_for_timeout.side_effect = lambda _: test_app.engine.resume_ids.append(f'{test_app.EPOCH}.0')
+            test_app.check_resume(page)
+            page.wait_for_timeout.assert_called_once_with(50)
             page.evaluate.assert_not_called()
             test_app.engine.resume_ids.append('0')
             with self.assertRaises(AssertionError):
@@ -37,8 +37,8 @@ class AppE2ETimingTests(unittest.TestCase):
                 test_app_views.wait_until(None, lambda: False)
         page = Mock()
         page.evaluate.side_effect = [False, True]
-        with patch.object(test_app_views.time, 'sleep'):
-            test_app_views.wait_until(page, 'predicate', 7)
+        test_app_views.wait_until(page, 'predicate', 7)
+        page.wait_for_timeout.assert_called_once_with(50)
         self.assertEqual(page.evaluate.call_args_list, [unittest.mock.call('predicate', 7)] * 2)
 
     def test_p9_uses_five_fresh_samples_after_warmup(self):
