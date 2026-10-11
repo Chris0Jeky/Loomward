@@ -3923,3 +3923,89 @@ fn an_unverified_run_flags_every_published_row() {
         assert_eq!(file_id.is_none(), unverified, "{name}");
     }
 }
+
+/// #219 (coordinator follow-up): grants record their volume's real filesystem, so a file in a
+/// live-scanned NTFS root keeps a durable reference. Before, every grant recorded none and labels
+/// and collection adds were refused as `durable_reference_unavailable`.
+#[cfg(windows)]
+fn label_and_collect_live(svc: &Service, root: &str, file: &str, personal: bool) {
+    let (filesystem, mode): (Option<String>, String) = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT v.filesystem,g.identity_mode FROM main.root r JOIN main.volume v ON v.id=r.volume_id
+             JOIN st.root_grant g ON g.id=r.grant_id",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (filesystem.as_deref(), mode.as_str()),
+        (Some("NTFS"), "verified")
+    );
+    let job = settle(svc, &start(svc, root, "full"));
+    assert_eq!(job["state"], "completed", "{job:?}");
+    let node = child_named(&lab_slice(svc, root), file).unwrap();
+    let (inspected, _) = ok(
+        "node.inspect",
+        call(svc, "node.inspect", json!({"node_id": node})),
+    );
+    assert_eq!(inspected["identity"]["durable_reference"], "available");
+    let label = call(
+        svc,
+        "feedback.record",
+        json!({"node_id": node, "client_event_id": "ce_live_ntfs", "label": "Documents", "retract": false}),
+    );
+    if personal {
+        // Personal learning stays behind its own owner gate, never the filesystem.
+        assert_eq!(reason(&err(label)), Some("learning_personal_gated"));
+    } else {
+        ok("feedback.record", label);
+    }
+    let (created, _) = ok(
+        "collections.create",
+        call(svc, "collections.create", json!({"name": "Live NTFS"})),
+    );
+    let mut add = request(
+        "collections.update_members",
+        json!({"collection_id": created["collection_id"], "add": [node], "remove": []}),
+    );
+    add.expected_state_rev = Some(Generation(svc.inner.revisions().unwrap().1 as u64));
+    ok(
+        "collections.update_members",
+        svc.call(add, &CallContext::http()),
+    );
+    let (members, _) = ok(
+        "collections.members",
+        call(
+            svc,
+            "collections.members",
+            json!({"collection_id": created["collection_id"], "limit": 10, "cursor": null}),
+        ),
+    );
+    let items = members["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{members:?}");
+    assert_eq!(items[0]["status"], "resolved");
+}
+
+#[cfg(windows)]
+#[test]
+fn a_live_scanned_ntfs_grant_can_be_labelled_and_collected() {
+    let Some(lab) = lab() else { return };
+    label_and_collect_live(&lab.svc, &lab.root, "top.bin", false);
+    let tmp = temp_root();
+    let folder = tmp.path().join("owner-folder");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("synthetic-note.txt"), b"synthetic").unwrap();
+    let svc = Service::open(Config {
+        state_dir: tmp.path().join("state"),
+        dataset: DatasetClass::Personal,
+        allow_personal: true,
+        allow_identity_unverified: false,
+        grant_roots: vec![folder.canonicalize().unwrap()],
+    })
+    .unwrap();
+    let (roots, _) = ok("roots.list", call(&svc, "roots.list", json!({})));
+    let root = roots["roots"][0]["root_id"].as_str().unwrap().to_owned();
+    label_and_collect_live(&svc, &root, "synthetic-note.txt", true);
+}

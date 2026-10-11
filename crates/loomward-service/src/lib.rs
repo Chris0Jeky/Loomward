@@ -871,13 +871,10 @@ impl Inner {
         }
     }
 
-    /// Grants one already path-checked root under the session's provenance policy. A synthetic
-    /// session accepts only a registered lab root whose native identity matches the registry; a
-    /// personal session accepts an owner folder. Re-granting an active root returns it.
-    /// #219: the root volume's filesystem when it cannot verify file identity (FAT, exFAT or
-    /// unknown), observed through the same guarded, non-elevated open a scan uses; `None` on NTFS
-    /// and ReFS. Fails closed.
-    pub(crate) fn root_filesystem(&self, root: &Path) -> Result<Option<String>, Refusal> {
+    /// #219: the root volume's filesystem name (NTFS, ReFS, FAT32, exFAT, or whatever the volume
+    /// reports; `unknown` when it reports none), observed through the same guarded, non-elevated
+    /// open a scan uses. Fails closed.
+    pub(crate) fn root_filesystem(&self, root: &Path) -> Result<String, Refusal> {
         #[cfg(windows)]
         {
             use loomward_engine::scan::source::DirSource;
@@ -891,11 +888,10 @@ impl Inner {
                 .with_identity_unverified()
                 .open_root(root)
                 .map_err(|_| Refusal::IdentityUnavailable)?;
-            let filesystem = dir.filesystem();
-            Ok(
-                (!loomward_windows::enumerate::verifies_identity(filesystem))
-                    .then(|| filesystem.chars().take(32).collect()),
-            )
+            Ok(match dir.filesystem() {
+                "" => "unknown".into(),
+                name => name.chars().take(32).collect(),
+            })
         }
         #[cfg(not(windows))]
         {
@@ -904,6 +900,9 @@ impl Inner {
         }
     }
 
+    /// Grants one already path-checked root under the session's provenance policy. A synthetic
+    /// session accepts only a registered lab root whose native identity matches the registry; a
+    /// personal session accepts an owner folder. Re-granting an active root returns it.
     pub(crate) fn grant(
         &self,
         root: &Path,
@@ -914,7 +913,7 @@ impl Inner {
         // #219: a personal root on a volume that cannot verify identity needs the owner's
         // explicit confirmation; a synthetic lab root may list unverified freely.
         let filesystem = self.root_filesystem(root)?;
-        let unverified = filesystem.is_some();
+        let unverified = !loomward_windows::enumerate::verifies_identity(&filesystem);
         if unverified && self.dataset == DatasetClass::Personal && !confirmed_unverified {
             return Err(Refused::IdentityUnverified);
         }
@@ -962,8 +961,9 @@ impl Inner {
                 display_name: display_name.chars().take(260).collect(),
                 display_path,
                 root_file_id: Some(file_id),
-                // Only an unverified filesystem is recorded; the writer marks the grant from it.
-                filesystem,
+                // The volume's real filesystem: NTFS/ReFS keep durable references; the writer marks
+                // any other filesystem's grant identity-unverified.
+                filesystem: Some(filesystem),
                 origin: origin.into(),
                 granted_via: via.into(),
                 observed_at_ns: now_ns(),

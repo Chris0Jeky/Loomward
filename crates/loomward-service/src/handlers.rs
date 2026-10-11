@@ -585,7 +585,7 @@ impl Inner {
         // #219: a volume that cannot verify file identity is granted only after the owner's
         // explicit native confirmation; declining is a cancellation, not a refusal.
         let unverified = match self.root_filesystem(&path) {
-            Ok(fs) => fs.is_some(),
+            Ok(fs) => !loomward_windows::enumerate::verifies_identity(&fs),
             Err(r) => return refused(r),
         };
         if unverified && !dialogs.confirm_identity_unverified() {
