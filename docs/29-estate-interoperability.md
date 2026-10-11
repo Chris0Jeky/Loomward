@@ -16,7 +16,7 @@ The inspected README describes read/propose/manage capabilities and an MCP surfa
 
 A task's status is context. Completing a Taskdeck card must not approve a file move in Loomward. The operation broker must still require the exact current manifest and native preconditions. Avoid bidirectional state synchronisation until the mapping of capture, proposal, approval and execution is explicit.
 
-Licensing boundary: the inspected Taskdeck README identifies its current source as private proprietary beta, not an open-source dependency. Loomward remains MIT and integrates through a documented protocol boundary. No private Taskdeck implementation is included. Provider names in a design do not imply endorsement or a redistribution right.
+Licensing boundary: the inspected Taskdeck README identifies its current source as private proprietary beta, not an open-source dependency. Loomward (MIT before 2026-10-11, AGPL-3.0-only since) integrates through a documented protocol boundary. No private Taskdeck implementation is included. Provider names in a design do not imply endorsement or a redistribution right.
 
 ## Agent Harness: honour activity and ownership evidence
 

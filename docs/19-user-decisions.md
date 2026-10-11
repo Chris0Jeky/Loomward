@@ -4,7 +4,7 @@ Nothing here should delay launching the synthetic demo. It specifies the unknown
 
 | Decision | Safe initial assumption | Information needed before widening scope |
 |---|---|---|
-| Name/licence/public release | Loomward working name; original code MIT; private repository helper | Confirm name and final release policy |
+| Name/licence/public release | Loomward working name; original code MIT; private repository helper | Confirm name and final release policy. Decided 2026-10-11: AGPL-3.0-only with dual licensing (paid proprietary licences on request) and a CLA; earlier versions stay MIT. The name is an unregistered project name with a usage policy (`TRADEMARKS.md`). |
 | OS and privilege | Standard-user Windows 11 target | Actual build, edition, policies and native toolchain |
 | Filesystems/devices | Unknown; no live inventory performed here | Volume identity, filesystem, capacity, removable status and backup role |
 | Main disk reserve | No universal threshold silently installed | Desired free GiB, growth rate and actual constraints |
