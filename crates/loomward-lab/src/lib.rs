@@ -223,7 +223,18 @@ fn is_reserved_device_component(component: &str) -> bool {
     }
     matches!(
         lower.as_str(),
-        "con" | "prn" | "aux" | "nul" | "com¹" | "com²" | "com³" | "lpt¹" | "lpt²" | "lpt³"
+        "con"
+            | "prn"
+            | "aux"
+            | "nul"
+            | "conin$"
+            | "conout$"
+            | "com¹"
+            | "com²"
+            | "com³"
+            | "lpt¹"
+            | "lpt²"
+            | "lpt³"
     )
 }
 
@@ -522,6 +533,8 @@ mod tests {
             r"G:\lab\aux.",
             r"G:\lab\COM1 .txt",
             r"G:\lab\con  .log",
+            r"G:\lab\CONIN$",
+            r"G:\lab\conout$.log",
         ] {
             assert!(real_root(path).is_err(), "{path}");
         }
