@@ -2,7 +2,7 @@
  * Woven treemap: a squarified treemap on Canvas 2D where every leaf is woven cloth.
  * Contract: docs/41 section 13. Consumes a bounded TreeSlice; layout is client-side.
  *
- * Warp = meaning, weft = residency, selvedge = permission (see colour.js). The canvas is one
+ * Meaning crosses horizontally as weft; residency runs vertically; permission stays on the edge. The canvas is one
  * continuous cloth: tiles are anchored to canvas space and every cell sharing a (warp, weft) pair
  * is filled with one batched Path2D, which keeps a full slice smooth.
  * Honest unknowns: zero-area children (access denied, unmeasured) are named in their parent's label
@@ -252,9 +252,9 @@ export function createWovenTreemap(canvas, options) {
     ctx.fillStyle = palette.head; ctx.fill(v.heads);
     const warpPhase = Math.min(1, reveal / 0.55), weftPhase = Math.max(0, (reveal - 0.42) / 0.58);
     for (const e of v.woven.values()) {
-      const full = () => tile(`w|${weaveKey(e.warp, e.weft, e.loose)}`, () => weaveTile(dpr, e.warp, e.weft, { ink: palette.ink, unknown: palette.unknown, loose: e.loose }));
+      const full = () => tile(`w|${weaveKey(e.warp, e.weft, e.loose)}`, () => weaveTile(dpr, e.warp, e.weft, { ink: palette.ink, unknown: palette.unknown, meaningWeft: true, loose: e.loose }));
       if (reveal < 1) {
-        const warpOnly = tile(`wo|${e.warp.pattern}|${e.warp.colour}|${e.warp.alt}`, () => weaveTile(dpr, e.warp, e.weft, { ink: palette.ink, unknown: palette.unknown, only: 'warp' }));
+        const warpOnly = tile(`wo|${e.warp.pattern}|${e.warp.intensity ?? 1}|${e.warp.colour}|${e.warp.alt}`, () => weaveTile(dpr, e.warp, e.weft, { ink: palette.ink, unknown: palette.unknown, meaningWeft: true, only: 'warp' }));
         ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, H * ease(warpPhase)); ctx.clip(); ctx.fillStyle = warpOnly; ctx.fill(e.path); ctx.restore();
         if (weftPhase > 0) { ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W * weftPhase, H); ctx.clip(); ctx.fillStyle = full(); ctx.fill(e.path); ctx.restore(); }
       } else { ctx.fillStyle = full(); ctx.fill(e.path); }
@@ -385,7 +385,7 @@ export function createWovenTreemap(canvas, options) {
       for (const colour of dyes) for (const tier of [0, 1, 2, null]) {
         const warp = { colour, alt: null, pattern: /** @type {const} */ ('solid') };
         const weft = tier === null ? { colour: null, pattern: /** @type {const} */ ('missing'), tier: null } : { colour: palette.metals[tier] ?? palette.unknown, pattern: /** @type {const} */ ('metal'), tier };
-        tile(`w|${weaveKey(warp, weft, false)}`, () => weaveTile(dpr, warp, weft, { ink: palette.ink, unknown: palette.unknown }));
+        tile(`w|${weaveKey(warp, weft, false)}`, () => weaveTile(dpr, warp, weft, { ink: palette.ink, unknown: palette.unknown, meaningWeft: true }));
       }
     };
     const ric = /** @type {any} */ (window).requestIdleCallback;
@@ -401,7 +401,7 @@ export function createWovenTreemap(canvas, options) {
     dpr = ndpr; W = nw; H = nh;
     canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
     if (dprChanged) { tiles = new Map(); prewarm(); }
-    if (view) { view = build(view.focus); anim = null; schedule(); }
+    if (view) { view = build(view.focus); anim = null; schedule(); emit('resize', null); }
   }
   const ro = new ResizeObserver(() => resize());
   ro.observe(canvas);
@@ -522,6 +522,7 @@ export function createWovenTreemap(canvas, options) {
     setSlice(s, opts = {}) {
       const start = performance.now();
       const prev = view;
+      const previousAnimation = anim;
       slice = s;
       const { root, byId: ids } = buildTree(s, options.label);
       treeById = ids;
@@ -538,6 +539,11 @@ export function createWovenTreemap(canvas, options) {
         if (cell) anim = { outer, inner, rect: { x: cell.x, y: cell.y, w: cell.w, h: cell.h }, dir: inward ? 1 : -1, start: performance.now(), dur: 620 };
       }
       view = next;
+      // Lazy meaning arriving for the same slice must not interrupt a drill already in flight.
+      if (previousAnimation && prev?.focus.id === next.focus.id) {
+        anim = previousAnimation;
+        if (anim.dir > 0) anim.inner = next; else anim.outer = next;
+      }
       // Keep the keyboard cursor where the reader was: back lands on the region just left, a refresh stays put.
       cursor = 0;
       for (const id of [prevFocus, prevCursor]) {
@@ -582,6 +588,8 @@ export function createWovenTreemap(canvas, options) {
     renderFrame() { revealT = 1; anim = null; frame(performance.now()); },
     /** Layout time for the current slice, ms. */
     timeLayout() { if (!view) return 0; const v = build(view.focus); view = v; return v.layoutMs; },
+    /** Only nodes with drawn cells; folded and off-screen descendants are not inference candidates. */
+    get visibleNodeIds() { return view ? view.cells.flatMap(c => c.node.src ? [c.node.src.node_id] : []) : []; },
     get cellCount() { return view ? view.cells.length : 0; },
     destroy() { ro.disconnect(); cancelAnimationFrame(raf); canvas.removeEventListener('pointermove', onMove); canvas.removeEventListener('pointerleave', onLeave); canvas.removeEventListener('click', onClick); canvas.removeEventListener('keydown', onKey); canvas.removeEventListener('focus', onFocus); canvas.removeEventListener('blur', onBlur); handlers.clear(); },
   };
@@ -603,7 +611,7 @@ export function drawSwatch(canvas, palette, o) {
   g.fillStyle = palette.ink; g.fillRect(0, 0, w, h);
   if (o.only !== 'selvedge' && o.threads) {
     const warp = warpOf(o.threads.meaning, palette), weft = weftOf(o.threads, palette);
-    const pat = g.createPattern(weaveTile(dpr, warp, weft, { ink: palette.ink, unknown: palette.unknown, only: o.only === 'warp' ? 'warp' : o.only === 'weft' ? 'weft' : undefined }), 'repeat');
+    const pat = g.createPattern(weaveTile(dpr, warp, weft, { ink: palette.ink, unknown: palette.unknown, meaningWeft: true, only: o.only === 'warp' ? 'warp' : o.only === 'weft' ? 'weft' : undefined }), 'repeat');
     if (pat) { pat.setTransform(new DOMMatrix().scale(1 / dpr)); g.fillStyle = pat; g.fillRect(0, 0, w, h); }
   }
   const stitch = o.stitch ?? (o.threads ? selvedgeOf(o.threads.permission, null, palette)?.stitch : undefined);

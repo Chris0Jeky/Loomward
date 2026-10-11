@@ -27,6 +27,7 @@ mod ids;
 mod inventory;
 pub mod lab;
 mod learning;
+mod meaning;
 pub mod paths;
 mod placement;
 mod sink;
@@ -463,6 +464,7 @@ impl ViewService for Service {
                     | Command::LearningStatus
                     | Command::LearningQueue
                     | Command::LearningRefit
+                    | Command::ThreadsMeaning
                     | Command::CollectionsList
                     | Command::CollectionsCreate
                     | Command::CollectionsUpdateMembers

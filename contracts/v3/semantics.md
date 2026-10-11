@@ -383,3 +383,41 @@ Pages order by durable member ID and cursors bind the collection, session, catal
 `catalog_rev` and `state_rev`. Changed limits may reuse a cursor; changed bindings may not.
 Member hydration shares the page deadline and its interrupt handle; expiry stops further rows
 and interrupts an ongoing catalogue inspection rather than retaining a read slot for the page.
+
+## Lazy meaning threads
+
+| Command | Revisions | Retry | Effects |
+|---|---|---|---|
+| `threads.meaning` | `catalog_rev` and `state_rev` | Read-only; retry stale/deadline with a smaller visible set | none |
+
+Accepts 1-6,000 unique current session node IDs. It resolves at most the first 1,000
+IDs in request order, including eligibility checks and bounded feature extraction;
+`budget_hit` is true exactly when this work cap omits a suffix. Missing items remain
+unknown, never neutral predictions. The read deadline (default 2 seconds) interrupts
+catalogue work and is checked between feature reads and predictions; expiration returns
+`deadline_exceeded`, not a completed projection. A concurrent catalogue/state revision
+change returns `stale_generation`. Unknown or stale IDs in the processed prefix refuse
+the request. A suffix beyond the work cap is not resolved or authorised.
+
+Personal sessions refuse with `capability_unavailable`, `detail.reason=learning_personal_gated`,
+before resolving IDs or features. This is the same gate named in `learning.status.gate`;
+status remains readable, and no personal candidate is used.
+
+Only non-excluded files with an available durable native identity are eligible. Folders,
+virtual/folded nodes and files lacking identity are `not_eligible`, with null label/share/source.
+Eligible files without a stored candidate return `no_model` and null `model_id`. A stored
+candidate is read once per request; this does not refit, promote, create references, record
+feedback or contact a teacher. Student `suggestion` uses the existing ranked relative scores,
+heuristic abstention and reasons, with `calibrated=false`, `autonomy_allowed=false`, `teacher=null`.
+`abstained` keeps null label/share and a neutral cloth; ranked alternatives remain inspectable.
+`suggested` summarises the top ranked label and relative score in label/share. This student
+projection does not overwrite human labels, preferences or collection membership.
+The optional suggestion field leaves existing tree summary projections compatible.
+
+Atlas requests at most 1,000 nodes with visible rendered cells per projection while Meaning is enabled,
+keeping current sealed IDs below the HTTP ingress limit. A larger visible set gets an explicit
+unknown-suffix budget notice; its inspector can still request a selected node. Navigation,
+toggle-off and destruction abort the projection and ignore late replies. Explorer requests
+one inspected node. Meaning crosses as horizontal weft using the existing palette; intensity
+is relative score (quantised to the eight-thread tile), never a probability. The inspector
+and visible-node text list carry labels, scores, abstention and reasons independently of colour.

@@ -10,6 +10,7 @@
   import { LoomwardError } from '../../lib/transport/client';
   import { fallbackStep, onRefetchError } from './refetch';
   import { session } from '../../lib/stores/session.svelte';
+  import NodeMeaning from '../../lib/ui/NodeMeaning.svelte';
   import AddToCollection from '../../lib/ui/AddToCollection.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import type { Basis, EntryPage, EntryRow, NodeId, NodeDetail } from '../../lib/contracts.gen';
@@ -24,11 +25,14 @@
   let inspectError = $state('');
   let inspector = $state<HTMLElement>();
   let inspection = 0;
+  let inspectAbort: AbortController | null = null;
   async function inspect(row: EntryRow): Promise<void> {
+    inspectAbort?.abort();
+    const ctl = inspectAbort = new AbortController();
     const mine = ++inspection;
     detail = null; inspectError = '';
     try {
-      const { result } = await session.client!.call('node.inspect', { node_id: row.node_id });
+      const { result } = await session.client!.call('node.inspect', { node_id: row.node_id }, { signal: ctl.signal });
       if (mine !== inspection) return;
       detail = result;
       await tick(); inspector?.focus();
@@ -81,6 +85,7 @@
   async function show(append = false, restarted = false, lost?: string): Promise<void> {
     if (!session.client || (!searching && !here)) return;
     if (!append) {
+      inspection++; inspectAbort?.abort(); detail = null; inspectError = '';
       abort?.abort();
       gen++;
     }
@@ -214,6 +219,8 @@
     }
   }
 
+  $effect(() => () => { inspection++; inspectAbort?.abort(); abort?.abort(); });
+
   // The session starts, or the engine says data may be stale (reconnect, tree.invalidated, roots.changed):
   // keep the user's place and ask again; the first time, find the starting points.
   $effect(() => {
@@ -336,6 +343,8 @@
   <section class="panel" aria-label="Node inspector">
     <h2 tabindex="-1" bind:this={inspector}><VisibleName name={detail.row.name} /></h2>
     <p class="muted">Logical size {formatBytes(detail.row.logical_bytes)} · {detail.row.kind}</p>
+    <h3>Meaning thread</h3>
+    <NodeMeaning nodeId={detail.row.node_id} />
     {#if detail.identity.durable_reference === 'available'}
       {#key detail.row.node_id}<AddToCollection nodeId={detail.row.node_id} />{/key}
     {:else}<p class="muted">This node has no durable identity, so it cannot join a collection.</p>{/if}

@@ -189,6 +189,42 @@ def live_call(page: Page, token: str, command: str, payload: dict) -> dict:
         body: JSON.stringify({protocol: 'loomward/3', request_id: 'live_' + crypto.randomUUID().replaceAll('-', ''), command, payload})})).json())""", [token, command, payload])
 
 
+def meaning_weft(page: Page, base: str) -> None:
+    page.goto(f'{base}/?transport=mock#/atlas')
+    expect(page.get_by_role('heading', name='Atlas', level=1)).to_be_visible()
+    toggle = page.get_by_role('checkbox', name='Meaning', exact=True)
+    expect(toggle).to_be_checked()
+    expect(page.locator('main .legend')).to_contain_text('Suggestions, relative scores, not probabilities, never actions.')
+    page.get_by_text('Meaning as text', exact=False).click()
+    expect(page.locator('[aria-label="Visible meaning threads"] [data-meaning-state="abstained"]').first).to_contain_text('Abstained: neutral')
+    neutral = page.locator('[aria-label="Visible meaning threads"] [data-meaning-state="abstained"]').first
+    expect(neutral).to_contain_text('unfamiliar features')
+    expect(neutral).to_contain_text('relative score')
+    for theme_name in ['Observatory', 'Woven atlas']:
+        page.get_by_role('button', name=theme_name, exact=True).click()
+        expect(neutral).to_be_visible()
+    page.emulate_media(forced_colors='active')
+    expect(neutral).to_be_visible()
+    toggle.uncheck()
+    check(page.locator('[aria-label="Visible meaning threads"]').count() == 0, 'meaning: toggle hides the weft text projection')
+    toggle.check()
+    page.get_by_text('Meaning as text', exact=False).click()
+    expect(page.locator('[aria-label="Visible meaning threads"] [data-meaning-state="suggested"]').first).to_contain_text('relative score')
+    page.emulate_media(forced_colors='none')
+    shots = ROOT / '.loomward'
+    shots.mkdir(exist_ok=True)
+    page.screenshot(path=str(shots / 'meaning-weft-desktop.png'), full_page=False)
+    page.set_viewport_size({'width':390,'height':844})
+    check(page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'meaning: narrow viewport has no page overflow')
+    page.screenshot(path=str(shots / 'meaning-weft-mobile.png'), full_page=False)
+    page.set_viewport_size({'width':1360,'height':900})
+    page.evaluate("location.hash = '#/explorer'")
+    expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
+    page.get_by_role('button', name=re.compile('^Inspect ')).first.click()
+    expect(page.get_by_role('region', name='Node inspector')).to_contain_text('Meaning thread')
+    expect(page.get_by_role('region', name='Node inspector')).to_contain_text('Suggestions, relative scores, not probabilities, never actions.')
+
+
 def live_learning_isolated(browser, exe: Path) -> None:
     """The learning leg plants SQL fixtures, as the collections leg does, so it runs on its own server and state."""
     state = tempfile.TemporaryDirectory(prefix='lw-live-learning-')
@@ -230,6 +266,8 @@ def live_learning(page: Page, token: str, state: Path) -> None:
     queue = live_call(page, token, 'learning.queue', {'root_id': None, 'limit': 20, 'cursor': None})
     check(queue['ok'] and len(queue['result']['items']) == 1, 'learning: real service returns the synthetic durable node')
     node = queue['result']['items'][0]['row']['node_id']
+    before_meaning = live_call(page, token, 'threads.meaning', {'node_ids':[node]})
+    check(before_meaning['ok'] and before_meaning['result']['items'][0]['meaning']['state'] == 'no_model', 'meaning: real service is honest before fitting')
     payload = {'node_id': node, 'label': 'Documents', 'retract': False, 'client_event_id': 'ce_live_learning'}
     first = live_call(page, token, 'feedback.record', payload)
     check(first['ok'] and first['result']['data_class'] == 'human', 'learning: human feedback recorded through real HTTP')
@@ -248,6 +286,8 @@ def live_learning(page: Page, token: str, state: Path) -> None:
     expect(page.get_by_text('Synthetic candidate fitted;', exact=False)).to_be_visible()
     status = live_call(page, token, 'learning.status', {})
     check(status['ok'] and status['result']['training_count'] == 1 and not status['result']['calibrated'] and not status['result']['autonomy_allowed'], 'learning: refit completed; synthetic smoke, not real-user accuracy')
+    thread = live_call(page, token, 'threads.meaning', {'node_ids':[node]})
+    check(thread['ok'] and thread['result']['model_id'] == status['result']['model_id'] and thread['result']['items'][0]['meaning']['suggestion']['abstain'] and thread['result']['items'][0]['meaning']['suggestion']['ranked'][0]['label'] == 'Documents', 'meaning: feedback and refit yield real ranked advice with honest abstention')
     page.get_by_role('button', name='Review synthetic-report.txt').focus()
     page.keyboard.press('Enter')
     page.get_by_label('Human label').select_option('Archive')
@@ -437,7 +477,7 @@ def live_personal_scan(browser, exe: Path) -> None:
         page.evaluate("location.hash = '#/review'")
         expect(page.get_by_text('Personal learning is gated.', exact=False)).to_be_visible()
         expect(page.get_by_role('button', name='Refit from human labels')).to_be_disabled()
-        for command, payload in [('learning.refit', {}), ('feedback.record', {'node_id':'nd_unknown', 'label':'Documents', 'retract':False, 'client_event_id':'ce_personal_live'})]:
+        for command, payload in [('learning.refit', {}), ('threads.meaning', {'node_ids':['nd_unknown']}), ('feedback.record', {'node_id':'nd_unknown', 'label':'Documents', 'retract':False, 'client_event_id':'ce_personal_live'})]:
             refused = live_call(page, token, command, payload)
             check(not refused['ok'] and (refused['error']['detail'] or {}).get('reason') == 'learning_personal_gated', f'learning: personal {command} is gated')
         page.context.close()
@@ -684,6 +724,9 @@ def main() -> None:
         page.set_viewport_size({'width': 1360, 'height': 900})
         page.goto(f'{base}/?transport=mock#/explorer')
         expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
+
+        meaning_weft(page, base)
+        page.goto(f'{base}/?transport=mock#/explorer')
 
         # --- themes ----------------------------------------------------------------------------
         atlas = theme_snapshot(page)

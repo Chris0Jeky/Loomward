@@ -14,8 +14,10 @@
 //!   through its durable `client_event_id`; an identical replay returns the original result with
 //!   `idempotent_replay: true`, a different payload under the same key is `invalid_request`.
 use crate::{jobs::JobSpec, Component, Engine, EngineError, EngineResult};
+mod meaning;
 use loomward_learn::student::{Student, DEFAULT_LABELS};
 use loomward_protocol::*;
+pub use meaning::WORK_BUDGET as MEANING_WORK_BUDGET;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};

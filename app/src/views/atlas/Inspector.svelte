@@ -3,14 +3,18 @@
   // Describes only: there is no effect control here, by design.
   import { formatBytes } from '../../lib/format/bytes';
   import { formatCount, formatTime } from '../../lib/format/time';
-  import type { Basis } from '../../lib/contracts.gen';
+  import type { Basis, MeaningThread } from '../../lib/contracts.gen';
   import type { NodeInfo, Palette } from '../../../viz/types.js';
   import { drawSwatch, zeroCounts } from '../../../viz/woven-treemap.js';
   import { formatApprox } from './shared.svelte';
+  import type { Meaning } from '../../lib/stores/meaning.svelte';
+  import NodeMeaning from '../../lib/ui/NodeMeaning.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
 
   interface Props {
     node: NodeInfo | null;
+    meaning?: MeaningThread;
+    parent?: Meaning;
     status: string;
     basis: Basis;
     provisional: boolean;
@@ -18,7 +22,7 @@
     /** Every name from the top of the trail down to `node` (see pathTo). */
     path: string[];
   }
-  let { node, status, basis, provisional, palette, path }: Props = $props();
+  let { node, meaning, parent, status, basis, provisional, palette, path }: Props = $props();
 
   let swatch = $state<HTMLCanvasElement>();
   $effect(() => {
@@ -26,9 +30,6 @@
     if (swatch && n?.src) drawSwatch(swatch, p, { threads: n.src.threads });
   });
 
-  const MEANING: Record<string, string> = {
-    labelled: 'Labelled', suggested: 'Suggested, not confirmed', mixed: 'Mixed below here', none: 'No meaning yet', pending: 'Pending', unknown: 'Unknown',
-  };
   const PERM: Record<string, string> = {
     granted: 'Observed under the grant', partial: 'Partly observable', excluded: 'Excluded from observation', denied: 'Access denied', revoked: 'Grant revoked', unknown: 'Unknown',
   };
@@ -49,7 +50,7 @@
     if (z.denied) out.push(`${z.denied} folder${z.denied > 1 ? 's' : ''} below here denied access: no area, no count.`);
     if (z.unmeasured) out.push(`${z.unmeasured} item${z.unmeasured > 1 ? 's' : ''} below here unmeasured.`);
     if (src && src.size_unknown_files > 0) out.push(`${formatCount(src.size_unknown_files)} file${src.size_unknown_files > 1 ? 's have' : ' has'} unknown allocation${basis === 'allocated' ? ' (hatched; counted as 0 under this basis)' : ''}.`);
-    if (src && src.threads.residency.tier === null) out.push('Residency unknown: no weft is drawn.');
+    if (src && src.threads.residency.tier === null) out.push('Residency unknown: no tier thread is drawn.');
     if (src?.live || provisional) out.push('Provisional: these sums come from a running scan and may still change.');
     if (src && !src.modified_at && src.kind === 'file') out.push('Modification time not recorded.');
     return out;
@@ -82,11 +83,10 @@
       </dl>
 
       <dl class="channels">
-        <div class="ch"><dt>Warp<small>meaning</small></dt><dd>
-          {MEANING[src.threads.meaning.state] ?? src.threads.meaning.state}{#if src.threads.meaning.label}: <VisibleName name={src.threads.meaning.label} />{/if}
-          {#if src.threads.meaning.source}<span class="sub">source: {src.threads.meaning.source}{#if src.threads.meaning.state === 'suggested'}; a suggestion is not an approval{/if}</span>{/if}
+        <div class="ch"><dt>Weft<small>meaning</small></dt><dd>
+          <NodeMeaning nodeId={src.node_id} {meaning} {parent} />
         </dd></div>
-        <div class="ch"><dt>Weft<small>residency</small></dt><dd>
+        <div class="ch"><dt>Warp<small>residency</small></dt><dd>
           {#if src.threads.residency.tier === null}<span class="unknown">unknown</span>
           {:else}Tier {src.threads.residency.tier} · {TIER[Math.min(src.threads.residency.tier, 2)]}{#if src.threads.permission.reason === 'cloud_placeholder'} · online-only placeholder{/if}
             <span class="sub">{src.threads.residency.volume_id ?? 'volume unknown'} · {human(src.threads.residency.tier_basis)}</span>{/if}

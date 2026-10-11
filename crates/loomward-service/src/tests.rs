@@ -1513,6 +1513,7 @@ fn every_command_answers_a_complete_envelope_and_core_reads_serve_the_catalogue(
                     | Command::LearningStatus
                     | Command::LearningQueue
                     | Command::LearningRefit
+                    | Command::ThreadsMeaning
                     | Command::CollectionsList
                     | Command::CollectionsCreate
                     | Command::CollectionsUpdateMembers
@@ -3640,3 +3641,6 @@ mod learning_tests;
 #[cfg(test)]
 #[path = "collections_tests.rs"]
 mod collections_tests;
+
+#[path = "meaning_tests.rs"]
+mod meaning_tests;

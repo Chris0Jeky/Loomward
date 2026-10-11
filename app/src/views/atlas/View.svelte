@@ -11,6 +11,8 @@
   import type { NodeInfo, ThreadToggles } from '../../../viz/types.js';
   import { createWovenTreemap, drawSwatch } from '../../../viz/woven-treemap.js';
   import Inspector from './Inspector.svelte';
+  import { Meaning } from '../../lib/stores/meaning.svelte';
+  import MeaningThread from '../../lib/ui/MeaningThread.svelte';
   import RegionList from './RegionList.svelte';
   import { SliceNav, announceSlice, canvasLabel, deniedBelow, describeNode, describeSize, formatApprox, pathTo, readPalette, type SliceKey } from './shared.svelte';
   import { Say } from '../../lib/ui/say.svelte';
@@ -29,6 +31,20 @@
   const say = new Say();
   let tip = $state<{ x: number; y: number; name: string; sub: string } | null>(null);
   let show = $state<ThreadToggles>({ meaning: true, residency: true, permission: true });
+  const meaning = new Meaning();
+  let visibleIds = $state<string[]>([]);
+  let meaningTextOpen = $state(false);
+  const clothSlice = $derived(nav.slice ? {
+    ...nav.slice,
+    nodes: nav.slice.nodes.map(n => ({ ...n, threads: {
+      ...n.threads,
+      meaning: meaning.items[n.node_id] ?? { state: 'unknown' as const, label: null, share: null, source: null, collection_ids: [] },
+    } })),
+  } : null);
+  const visibleNodes = $derived.by(() => {
+    const ids = new Set(visibleIds);
+    return clothSlice?.nodes.filter(n => ids.has(n.node_id)) ?? [];
+  });
   let revealed = false;
   let shownKey: SliceKey | null = null; // what the last "Showing ..." announced: a refetch of the same view stays silent
   let well = $state<HTMLDivElement>();
@@ -58,6 +74,12 @@
         if (nav.trail.length < 2) say.say(`Already at the top: ${canvasLabel(nav.here?.name ?? '')}.`);
         void nav.back();
       }),
+      t.on('resize', () => {
+        const ids = t.visibleNodeIds;
+        if (ids.join(',') === visibleIds.join(',')) return;
+        visibleIds = ids;
+        if (show.meaning && !nav.busy && session.client) meaning.loadSoon(session.client, ids);
+      }),
       t.on('edge', (e: { dir: string; node: NodeInfo }) => say.say(`Nothing further ${e.dir}. Still on ${canvasLabel(e.node.name)}.`)),
     ];
     return () => { off.forEach((f) => f()); t.destroy(); tm = null; };
@@ -71,7 +93,7 @@
 
   // Hand every new slice to the renderer; the first one is woven in.
   $effect(() => {
-    const s = nav.slice;
+    const s = clothSlice;
     if (!tm) return;
     const t = tm;
     if (!s) {
@@ -95,6 +117,15 @@
     const p = readPalette();
     palette = p;
     untrack(() => tm?.setTheme(p));
+  });
+  $effect(() => {
+    const slice = nav.slice, enabled = show.meaning, navigating = nav.busy, client = session.client;
+    untrack(() => {
+      visibleIds = tm?.visibleNodeIds ?? [];
+      if (slice && enabled && !navigating && client) void meaning.load(client, visibleIds);
+      else { meaning.clear(); if (!enabled) meaningTextOpen = false; }
+    });
+    return () => meaning.clear();
   });
   $effect(() => { tm?.setThreads({ ...show }); });
   $effect(() => { tm?.setBasis(nav.basis); });
@@ -195,6 +226,9 @@
 </div>
 
 <LoadError {nav} />
+{#if show.meaning}
+  <p class="muted small" role="status">{meaning.busy ? 'Reading visible meaning threads.' : meaning.message}</p>
+{/if}
 
 <div class="stage">
   <section class="map" aria-label="Woven atlas">
@@ -214,23 +248,34 @@
     </div>
     <p id="atlas-live" class="sr-only" aria-live="polite">{say.text}</p>
     <p class="help">Click a region to open it · <kbd>Arrows</kbd> move · <kbd>Enter</kbd> opens · <kbd>Esc</kbd> goes back</p>
-    <RegionList slice={nav.slice} onopen={(id, name) => void nav.drill(id, name)} oninspect={inspectById} />
+    {#if show.meaning && clothSlice}
+      <details class="meaning-list" bind:open={meaningTextOpen}>
+        <summary>Meaning as text ({visibleIds.length} visible regions)</summary>
+        {#if meaningTextOpen}<ul aria-label="Visible meaning threads">
+          {#each visibleNodes as n (n.node_id)}
+            <li><b><VisibleName name={n.name} /></b><MeaningThread meaning={meaning.items[n.node_id]} /></li>
+          {/each}
+        </ul>{/if}
+      </details>
+    {/if}
+    <RegionList slice={clothSlice} onopen={(id, name) => void nav.drill(id, name)} oninspect={inspectById} />
   </section>
 
-  <Inspector node={shown} status={hovered ? 'Hover' : selected ? 'Selected' : 'Nothing selected'} basis={nav.basis} {provisional} {palette} path={pathNames} />
+  <Inspector meaning={shown ? meaning.items[shown.id] : undefined} parent={meaning} node={shown} status={hovered ? 'Hover' : selected ? 'Selected' : 'Nothing selected'} basis={nav.basis} {provisional} {palette} path={pathNames} />
 </div>
 
 <section class="legend" aria-labelledby="threads-h">
   <h2 id="threads-h">Three threads, never one fill</h2>
+  <p class="muted small">Suggestions, relative scores, not probabilities, never actions.</p>
   <div class="groups">
     <div>
-      <h3><em>Warp</em> carries meaning</h3>
-      <p>Vertical threads, dyed per label. A suggestion is half-dyed; pending threads break.</p>
+      <h3><em>Weft</em> carries meaning</h3>
+      <p>Crossing threads, dyed by suggested label. Relative score sets dye intensity; abstention stays neutral.</p>
       <ul>{#each legend.warp as l, i (l.label)}<li><canvas bind:this={swatches[i]} aria-hidden="true"></canvas>{l.label}</li>{/each}</ul>
     </div>
     <div>
-      <h3><em>Weft</em> carries residency</h3>
-      <p>Crossing threads in metals by tier: hot is bright, cold is dark. Unknown residency has no weft.</p>
+      <h3><em>Warp</em> carries residency</h3>
+      <p>Vertical threads in metals by tier: hot is bright, cold is dark. Unknown residency stays unmeasured.</p>
       <ul>{#each legend.weft as l, i (l.label)}<li><canvas bind:this={swatches[legend.warp.length + i]} aria-hidden="true"></canvas>{l.label}</li>{/each}</ul>
     </div>
     <div>
@@ -271,6 +316,10 @@
   .tip { position: absolute; z-index: 2; pointer-events: none; max-width: 260px; padding: 7px 10px; background: color-mix(in srgb, var(--surface) 94%, transparent); border: 1px solid var(--line-strong); border-radius: var(--radius); font-size: 0.82rem; box-shadow: 0 6px 14px -6px rgba(0, 0, 0, 0.7); }
   .tip b { display: block; overflow-wrap: anywhere; }
   .tip span { color: var(--muted); }
+  .meaning-list { margin-top: 10px; font-size: 0.85rem; }
+  .meaning-list summary { cursor: pointer; color: var(--muted); }
+  .meaning-list ul { max-height: 280px; overflow: auto; padding-left: 1.4em; }
+  .meaning-list li { padding: 8px 0; }
   .help { margin: 8px 0 0; font-size: 0.8rem; color: var(--faint); }
   kbd { font: 0.75rem var(--font-mono); padding: 0 4px; border: 1px solid var(--line-strong); border-radius: 3px; color: var(--muted); }
   .legend { margin-top: 24px; padding-top: 14px; border-top: 1px solid var(--line); }

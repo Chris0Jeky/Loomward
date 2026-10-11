@@ -47,7 +47,7 @@ export function labelHash(s) {
  * @typedef {'solid' | 'suggested' | 'mixed' | 'undyed' | 'pending' | 'hidden'} WarpPattern
  *   solid: a confirmed label; suggested: dyed threads alternate with undyed ones (a suggestion is not
  *   an approval); mixed: alternating dyes; undyed: no meaning; pending/unknown: undyed with breaks.
- * @typedef {{ colour: string, alt: string | null, pattern: WarpPattern }} Warp
+ * @typedef {{ colour: string, alt: string | null, pattern: WarpPattern, intensity?: number }} Warp
  */
 
 /** @param {ThreadsLike['meaning']} m @param {Palette} p @param {boolean} [show] @returns {Warp} */
@@ -56,7 +56,7 @@ export function warpOf(m, p, show = true) {
   const dye = (/** @type {string} */ label) => p.dyes[labelHash(label) % p.dyes.length] ?? p.undyed;
   switch (m.state) {
     case 'labelled': return m.label ? { colour: dye(m.label), alt: null, pattern: 'solid' } : { colour: p.undyed, alt: null, pattern: 'undyed' };
-    case 'suggested': return m.label ? { colour: dye(m.label), alt: p.undyed, pattern: 'suggested' } : { colour: p.undyed, alt: null, pattern: 'pending' };
+    case 'suggested': return m.label ? { colour: dye(m.label), alt: p.undyed, pattern: 'suggested', intensity: Math.ceil((m.share ?? 0.5) * 8) / 8 } : { colour: p.undyed, alt: null, pattern: 'pending' };
     case 'mixed': {
       const a = m.label ? labelHash(m.label) % p.dyes.length : 0;
       return { colour: p.dyes[a] ?? p.undyed, alt: p.dyes[(a + 3) % p.dyes.length] ?? p.undyed, pattern: 'mixed' };
@@ -129,4 +129,4 @@ export function paletteCollisions(p) {
 }
 
 /** Batch key for one woven fill. @param {Warp} w @param {Weft} f @param {boolean} loose */
-export const weaveKey = (w, f, loose) => `${w.pattern}|${w.colour}|${w.alt}|${f.pattern}|${f.colour}|${loose ? 1 : 0}`;
+export const weaveKey = (w, f, loose) => `${w.pattern}|${w.intensity ?? 1}|${w.colour}|${w.alt}|${f.pattern}|${f.colour}|${loose ? 1 : 0}`;

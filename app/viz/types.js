@@ -6,12 +6,12 @@
  * Fields the contract is adding (PR #110: `aggregate_state`) are optional here so either version fits.
  */
 
-/** @typedef {'labelled' | 'suggested' | 'mixed' | 'none' | 'pending' | 'unknown'} MeaningState */
+/** @typedef {'labelled' | 'suggested' | 'mixed' | 'none' | 'pending' | 'unknown' | 'no_model' | 'abstained' | 'not_eligible'} MeaningState */
 /** @typedef {'granted' | 'partial' | 'excluded' | 'denied' | 'revoked' | 'unknown'} PermissionState */
 
 /**
  * @typedef {object} ThreadsLike
- * @property {{ state: MeaningState, label: string | null, share?: number | null, source?: string | null, collection_ids?: string[] }} meaning
+ * @property {{ state: MeaningState, label: string | null, share?: number | null, source?: string | null, collection_ids?: string[], suggestion?: import('../src/lib/contracts.gen').Suggestion }} meaning
  * @property {{ volume_id: string | null, tier: number | null, tier_basis: string }} residency
  * @property {{ state: PermissionState, reason: string | null }} permission
  */
@@ -100,7 +100,7 @@
  */
 
 /**
- * @typedef {'select' | 'hover' | 'drill' | 'back' | 'edge'} VizEvent
+ * @typedef {'select' | 'hover' | 'drill' | 'back' | 'edge' | 'resize'} VizEvent
  */
 
 export {};
