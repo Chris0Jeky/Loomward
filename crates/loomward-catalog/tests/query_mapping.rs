@@ -62,10 +62,8 @@ fn sized_flagged(name: &str, logical: u64, flags: u32) -> Observation {
 }
 
 fn file_id_of(db: &Connection, name: &str) -> i64 {
-    db.query_row("SELECT id FROM file WHERE name=?1", [name], |r| {
-        r.get(0)
-    })
-    .unwrap()
+    db.query_row("SELECT id FROM file WHERE name=?1", [name], |r| r.get(0))
+        .unwrap()
 }
 
 // Behaviour 1: Raw::coverage flags override listing state (query.rs ~82).
@@ -173,8 +171,7 @@ fn inspect_threads_map_flag_bits_to_permission_state_and_reason() {
 
 #[test]
 fn inspect_threads_report_declared_tier_basis_after_tier_declaration() {
-    let (tmp, c, _grant, _dir) =
-        setup_with_files(vec![sized_flagged("synthetic-plain", 60, 0)]);
+    let (tmp, c, _grant, _dir) = setup_with_files(vec![sized_flagged("synthetic-plain", 60, 0)]);
     let state = Connection::open(tmp.path().join("state.db")).unwrap();
     state
         .busy_timeout(std::time::Duration::from_secs(5))
@@ -197,8 +194,7 @@ fn inspect_threads_report_declared_tier_basis_after_tier_declaration() {
 
 #[test]
 fn inspect_unknown_file_is_not_found() {
-    let (_tmp, c, _grant, _dir) =
-        setup_with_files(vec![sized_flagged("synthetic-plain", 60, 0)]);
+    let (_tmp, c, _grant, _dir) = setup_with_files(vec![sized_flagged("synthetic-plain", 60, 0)]);
     let mut r = c.reader().unwrap();
     assert!(matches!(
         r.inspect(NodeKey::File(999_999)),
@@ -219,8 +215,7 @@ fn inspect_identity_pins_available_and_unavailable_durable_quality() {
         sized_flagged("synthetic-noid", 90, 0),
     ]);
     let db = Connection::open(tmp.path().join("catalog.db")).unwrap();
-    db.busy_timeout(std::time::Duration::from_secs(5))
-        .unwrap();
+    db.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
     let mut r = c.reader().unwrap();
     let durable = r
         .inspect(NodeKey::File(file_id_of(&db, "synthetic-durable")))
@@ -275,8 +270,7 @@ fn inspect_refuses_display_path_beyond_limit_on_overlong_chain() {
 // Behaviour 4: incarnation binding (query.rs ~791).
 #[test]
 fn check_incarnation_accepts_fresh_binding_and_refuses_after_instance_change() {
-    let (tmp, c, _grant, _dir) =
-        setup_with_files(vec![sized_flagged("synthetic-plain", 60, 0)]);
+    let (tmp, c, _grant, _dir) = setup_with_files(vec![sized_flagged("synthetic-plain", 60, 0)]);
     let db = Connection::open(tmp.path().join("catalog.db")).unwrap();
     let key = NodeKey::File(file_id_of(&db, "synthetic-plain"));
     let mut r = c.reader().unwrap();
