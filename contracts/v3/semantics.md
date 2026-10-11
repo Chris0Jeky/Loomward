@@ -299,6 +299,11 @@ is not a `JobResult` fails. Implementations MUST enable `format` validation for 
 
 ## 11. Disclosure
 
+The Rust-owned native disclosure dialog pages synthetic summaries within its display limits;
+every page must be accepted. A summary that exceeds the character or height limit returns
+`resource_budget` to its caller, rather than being represented as an owner decline. Personal
+disclosure remains gated.
+
 - A teacher preview is immutable and expires after 10 minutes. It yields at most one disclosure grant.
 - A disclosure grant authorises exactly one `teacher.run` with exactly the previewed request (by
   `payload_digest`) under exactly the pinned runner profile (by `runner_profile_digest`). Any mismatch is
