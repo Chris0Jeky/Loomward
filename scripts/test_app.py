@@ -189,6 +189,27 @@ def live_call(page: Page, token: str, command: str, payload: dict) -> dict:
         body: JSON.stringify({protocol: 'loomward/3', request_id: 'live_' + crypto.randomUUID().replaceAll('-', ''), command, payload})})).json())""", [token, command, payload])
 
 
+def live_learning_isolated(browser, exe: Path) -> None:
+    """The learning leg plants SQL fixtures, as the collections leg does, so it runs on its own server and state."""
+    state = tempfile.TemporaryDirectory(prefix='lw-live-learning-')
+    proc = subprocess.Popen([str(exe), '--state-dir', state.name, '--static', str(DIST)], stdout=subprocess.PIPE, text=True)
+    try:
+        url = (proc.stdout.readline() if proc.stdout else '').strip()
+        check('/#token=' in url, 'a synthetic loomward-serve is up for the learning leg')
+        _, token = url.split('/#token=')
+        page = browser.new_context(viewport={'width': 1360, 'height': 900}).new_page()
+        page.set_default_timeout(8000)
+        page.goto(url)
+        expect(page.get_by_role('status', name='Session status')).to_contain_text('Connected')
+        live_learning(page, token, Path(state.name))
+        page.context.close()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=10)
+        state.cleanup()
+
+
 def live_learning(page: Page, token: str, state: Path) -> None:
     """Synthetic SQL fixture, no disk scan or native identity open. Real HTTP/service/student/UI."""
     with closing(sqlite3.connect(state / 'state.db')) as db, db:
@@ -473,7 +494,7 @@ def run_live_serve(browser_path: str | None) -> None:
             live_scan_refusals(browser, exe)
             live_personal_scan(browser, exe)
             live_placement(browser, exe)
-            live_learning(page, token, Path(state.name))
+            live_learning_isolated(browser, exe)
 
             proc.terminate()
             proc.wait(timeout=10)
