@@ -168,17 +168,11 @@ pub fn inventory(reader: &impl RegistryReader) -> Vec<ProviderInventory> {
             };
             app.system_component = system_evidence(entry.values.get("SystemComponent"));
             incomplete |= matches!(app.system_component, Evidence::Unknown { .. });
-            // An unset size (installers often write 0) is unknown, but not an unreadable field:
-            // only unreadable or malformed sizes lower the provider's coverage.
-            let mut size_unreadable = true;
+            // Size evidence is per entry; provider coverage describes registry enumeration.
             app.estimated_size_bytes = match entry.values.get("EstimatedSize") {
-                None => {
-                    size_unreadable = false;
-                    Evidence::Missing
-                }
+                None => Evidence::Missing,
                 Some(RegistryValue::Unknown { reason }) => unknown(reason),
                 Some(RegistryValue::Bytes { kind: 4, data }) if data.len() == 4 => {
-                    size_unreadable = false;
                     match u32::from_le_bytes(data.as_slice().try_into().unwrap()) {
                         0 => unknown("provider reported zero (often unset)"),
                         kib => Evidence::Known(u64::from(kib) * 1024),
@@ -186,7 +180,6 @@ pub fn inventory(reader: &impl RegistryReader) -> Vec<ProviderInventory> {
                 }
                 _ => unknown("expected a four-byte REG_DWORD EstimatedSize"),
             };
-            incomplete |= size_unreadable;
             if incomplete && result.state == ProviderState::Available {
                 result.state = ProviderState::Partial;
                 result.reason =

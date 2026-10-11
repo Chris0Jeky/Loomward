@@ -133,6 +133,67 @@ fn input() -> MemoryInput {
 }
 
 #[test]
+fn placement_unusable_non_source_volumes_are_visible_exclusions() {
+    let engine = engine();
+    for case in 0..8 {
+        let mut input = input();
+        let mut bad = volume("vo_bad", 1000, 500, 2);
+        match case {
+            0 => bad.volume.capacity_bytes = Some(Bytes(0)),
+            1 => bad.volume.free_bytes = Some(Bytes(1001)),
+            2 => bad.reserve_bytes = Bytes(1001),
+            3 => bad.cluster_bytes = Some(0),
+            4 => bad.volume.capacity_bytes = Some(Bytes(MAX_SAFE_INTEGER + 1)),
+            5 => bad.volume.free_bytes = Some(Bytes(MAX_SAFE_INTEGER + 1)),
+            6 => bad.reserve_bytes = Bytes(MAX_SAFE_INTEGER + 1),
+            _ => bad.cluster_bytes = Some(u64::MAX),
+        }
+        input.snapshot.volumes.push(bad);
+        let req = from_value(json!({"source_volume_id": "vo_source", "basis": "largest_dirs", "max_groups": 200, "min_bytes": "0"})).unwrap();
+        let candidates = engine
+            .placement_candidates(&input, &req, deadline())
+            .unwrap();
+        let excluded = json!([{"volume_id": "vo_bad", "reason": "physics_unusable"}]);
+        assert_eq!(
+            serde_json::to_value(&candidates).unwrap()["excluded_volumes"],
+            excluded
+        );
+        assert_eq!(candidates.groups[0].destination_bytes, Bytes(256));
+        let plan = engine
+            .placement_simulate(&input, &request(), deadline(), None)
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&plan).unwrap()["excluded_volumes"],
+            excluded
+        );
+        assert!(plan.satisfied);
+        assert!(!plan
+            .projected_free_bytes
+            .contains_key(&VolumeId::new("vo_bad").unwrap()));
+    }
+}
+
+#[test]
+fn placement_unusable_source_is_refused_by_both_calls() {
+    let engine = engine();
+    let mut input = input();
+    input.snapshot.volumes[0].cluster_bytes = Some(0);
+    let req = from_value(json!({"source_volume_id": "vo_source", "basis": "largest_dirs", "max_groups": 200, "min_bytes": "0"})).unwrap();
+    for result in [
+        engine
+            .placement_candidates(&input, &req, deadline())
+            .map(|_| ()),
+        engine
+            .placement_simulate(&input, &request(), deadline(), None)
+            .map(|_| ()),
+    ] {
+        assert!(
+            matches!(result, Err(EngineError::InvalidRequest { message }) if message == "source_physics_unusable")
+        );
+    }
+}
+
+#[test]
 fn placement_relief_maps_entry_200_to_unique_100_and_planner_accepts() {
     let built = build_scenario(&input(), &request(), deadline()).unwrap();
     let candidate = &built.candidates.groups[0];
@@ -661,7 +722,7 @@ fn placement_missing_allocation_and_unparseable_link_allocation_never_verify_or_
 }
 
 #[test]
-fn placement_refuses_duplicate_names_unsafe_integer_and_rounding_overflow() {
+fn placement_refuses_duplicate_names_unsafe_source_and_excludes_unusable_cluster() {
     let mut input = input();
     input.files.get_mut("cg_one").unwrap()[1].node_id = NodeId::new("nd_a").unwrap();
     assert!(matches!(
@@ -676,10 +737,11 @@ fn placement_refuses_duplicate_names_unsafe_integer_and_rounding_overflow() {
     ));
     let mut input = super::tests::input();
     input.snapshot.volumes[1].cluster_bytes = Some(u64::MAX);
-    assert!(matches!(
-        build_scenario(&input, &request(), deadline()),
-        Err(EngineError::InvalidRequest { .. })
-    ));
+    let built = build_scenario(&input, &request(), deadline()).unwrap();
+    assert_eq!(
+        built.excluded_volumes[0].reason,
+        PlacementPlanExcludedVolumeReason::PhysicsUnusable
+    );
 }
 
 #[test]

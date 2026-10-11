@@ -116,6 +116,12 @@ pre-rejects those groups. Entry-allocation what-ifs remain explicitly labelled a
 reserve preferences are disclosed as an assumed zero reserve. Unknown target clusters and hidden
 descendants retain the engine's assumptions; `pre_rejected` and `excluded_volumes` are preserved.
 
+Both `placement.candidates` and `placement.simulate` expose `excluded_volumes`. Unusable observed
+physics (zero capacity, free or reserve above capacity, zero cluster size, or capacity/free/reserve/
+cluster above the planner's safe integer range) excludes only that volume with `physics_unusable`.
+Excluded targets do not contribute cluster estimates. Selecting an unusable source refuses with
+`invalid_request`, `detail.reason = "source_physics_unusable"`; healthy sources remain usable.
+
 Personal placement reads catalogue metadata only. When source volume physics are not recorded,
 it refuses with `capability_unavailable`, `detail.reason = "personal_placement_physics_unobserved"`,
 explaining the missing observation. It performs no per-file native opens or content reads. A
@@ -125,7 +131,7 @@ reason `overlapping_grant_ancestry_unknown`.
 
 Volumes whose recorded roots have no active grant remain visible in `volumes.list` and
 `tiers.model`, with their observed `online` state and a "No active grant" tier note. They are
-excluded from simulations with `excluded_volumes.reason = "no_active_grant"`; choosing one as
+excluded from candidates and simulations with `excluded_volumes.reason = "no_active_grant"`; choosing one as
 the source refuses with `invalid_request`, `detail.reason = "no_active_grant"`.
 
 Each `tiers.model` volume has a required `source_eligible` boolean. It is false for offline,
@@ -159,7 +165,13 @@ Both commands have `effects: none`, no events, and null catalogue/state revision
 one bounded observation (maximum 4 MiB encoded snapshot), bind the command and session, and never
 trigger a new provider read. Unknown/evicted/foreign cursors answer `stale_generation` with
 `cursor_expired`; a cursor for the other command answers `invalid_request`. `cursor: null` refreshes
-the observation. Paging itself is not `budget_hit`; incomplete provider coverage stays in its
+the observation. Registry EstimatedSize zero is null with a reason (often unset), never a known
+zero-byte size. A malformed size is unknown for that entry without downgrading provider coverage.
+Projection checks the 4 MiB encoded budget incrementally before retaining rows; it does not build
+an unbounded JSON value or encoded buffer first. Application and shortcut snapshot entry bounds
+are 6,144 and 400 respectively. A cursor is issued only for a successfully received response,
+so a timed-out worker cannot evict a cursor a client already received.
+Paging itself is not `budget_hit`; incomplete provider coverage stays in its
 provider state and reason. Provider calls may block in the OS after a caller's deadline; their read
 permit remains held until they finish, preventing unbounded worker accumulation. An elevated
 personal session refuses both reads with `personal_metadata_elevated`; unsupported platforms

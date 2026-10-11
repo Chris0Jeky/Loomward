@@ -74,6 +74,7 @@ impl Inner {
         command: Command,
         ctx: &CallContext,
         work: Option<&crate::ReadWork>,
+        metadata_cursor: Option<&std::sync::Mutex<Option<Position>>>,
     ) -> Handled {
         #[cfg(test)]
         self.hooks.before(command);
@@ -93,7 +94,7 @@ impl Inner {
         let handled = match command {
             SessionHello => self.hello(ctx),
             HealthGet => self.health(),
-            AppsList | DesktopContexts => self.metadata_page(req, command, work),
+            AppsList | DesktopContexts => self.metadata_page(req, command, work, metadata_cursor),
             RootsList => self.roots_list(work),
             RootsRequestGrant => self.request_grant(ctx),
             RootsRevoke => {

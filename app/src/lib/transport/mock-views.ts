@@ -116,7 +116,7 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
     seed(p.source_volume_id);
     const min = typeof p.min_bytes === 'string' && /^\d{1,19}$/.test(p.min_bytes) ? BigInt(p.min_bytes) : fail('invalid_request', 'min_bytes');
     const groups = p.source_volume_id === 'vo_c' ? GROUPS.filter((g) => bytesOf(g) >= min).slice(0, Number(p.max_groups) || 200).map(candidate) : [];
-    return { source_volume_id: String(p.source_volume_id), root_generations: [], groups, note: 'Candidates are non-overlapping folders on the source volume. Sizes are bytes by directory entry; relief is only known where every object was verified.' };
+    return { source_volume_id: String(p.source_volume_id), root_generations: [], groups, excluded_volumes: [], note: 'Candidates are non-overlapping folders on the source volume. Sizes are bytes by directory entry; relief is only known where every object was verified.' };
   };
 
   // Planner v2's eligibility order and thresholds (python/loomward/planner_v2.py), on invented volumes.

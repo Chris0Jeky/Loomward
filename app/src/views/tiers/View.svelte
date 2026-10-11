@@ -35,7 +35,7 @@
     shares_objects_with_other_group: 'Shares file objects with another group (hard links)',
     group_coverage_incomplete: 'Scan coverage of this folder is incomplete',
   };
-  const EXCLUDED = { tier_unknown: 'Tier unknown', capacity_unknown: 'Capacity unknown', offline: 'Offline', no_active_grant: 'No active grant' } as const;
+  const EXCLUDED = { tier_unknown: 'Tier unknown', capacity_unknown: 'Capacity unknown', offline: 'Offline', no_active_grant: 'No active grant', physics_unusable: 'Observed volume physics is unusable' } as const;
   const PRESSURE = { ok: 'Comfortable', watch: 'Watch', pressure: 'Under pressure', unknown: 'Unknown' } as const;
   const BUS: Record<string, string> = { nvme: 'NVMe', sata: 'SATA', sas: 'SAS', scsi: 'SCSI', usb: 'USB', raid: 'RAID', virtual: 'virtual', sd: 'SD', other: 'other bus', unknown: 'unknown bus' };
 
@@ -273,6 +273,9 @@
   <h2 id="h-cand">Candidate groups {#if src}on <VisibleName name={src.display_name} />{/if}</h2>
   {#if cands}
     <p class="muted small">{cands.note}</p>
+    {#if cands.excluded_volumes.length}
+      <ul class="list" aria-label="Excluded placement volumes">{#each cands.excluded_volumes as x (x.volume_id)}<li><VisibleName name={vname(x.volume_id)} /> · {EXCLUDED[x.reason]}</li>{/each}</ul>
+    {/if}
     <div class="tbl-wrap">
       <table class="tbl">
         <caption class="sr-only">Candidate folder groups with what-if assumptions</caption>

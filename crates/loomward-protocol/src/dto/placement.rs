@@ -129,6 +129,7 @@ pub struct PlacementCandidates {
     pub source_volume_id: VolumeId,
     pub root_generations: BoundedVec<RootGeneration, 0, 64>,
     pub groups: BoundedVec<CandidateGroup, 0, 200>,
+    pub excluded_volumes: BoundedVec<PlacementPlanExcludedVolume, 0, 64>,
     pub note: Text<512>,
 }
 
@@ -284,6 +285,7 @@ pub struct PlacementPlanPreRejected {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlacementPlanExcludedVolumeReason {
+    PhysicsUnusable,
     NoActiveGrant,
     TierUnknown,
     CapacityUnknown,

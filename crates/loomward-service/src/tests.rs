@@ -250,6 +250,20 @@ fn placement_revoked_only_volumes_stay_visible_but_are_not_targets() {
         .iter()
         .any(|v| v["volume_id"] == target_id && v["reason"] == "no_active_grant"));
     assert!(plan["projected_free_bytes"].get(&target_id).is_none());
+    // Candidate estimates disclose the same omission (Codex P2 on #350).
+    let (candidates, _) = ok(
+        "placement.candidates",
+        call(
+            &svc,
+            "placement.candidates",
+            json!({"source_volume_id":volume,"basis":"largest_dirs","max_groups":50,"min_bytes":"0"}),
+        ),
+    );
+    assert!(candidates["excluded_volumes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v["volume_id"] == target_id && v["reason"] == "no_active_grant"));
     let (detail, _) = ok(
         "proposals.get",
         call(
@@ -3538,11 +3552,11 @@ fn followup_all_catalogue_reads_observe_deadlines() {
         let cmd = Command::from_name(command).unwrap();
         let control = svc
             .inner
-            .handle(&req, cmd, &CallContext::http(), Some(&active));
+            .handle(&req, cmd, &CallContext::http(), Some(&active), None);
         assert!(control.is_ok(), "{command} control: {:?}", control.err());
         assert_eq!(
             svc.inner
-                .handle(&req, cmd, &CallContext::http(), Some(&expired))
+                .handle(&req, cmd, &CallContext::http(), Some(&expired), None)
                 .err()
                 .expect(command)
                 .code,

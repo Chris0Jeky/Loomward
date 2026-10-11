@@ -63,8 +63,11 @@ fn bounded<T>(v: Result<T, impl std::fmt::Debug>) -> EngineResult<T> {
     })
 }
 
-fn notes(mut plan: PlacementPlan, conn: &Connection) -> EngineResult<PlacementPlan> {
-    let mut excluded = plan.excluded_volumes.to_vec();
+/// Volumes the snapshot dropped for want of an active grant are disclosed, never silently omitted.
+fn with_inactive(
+    mut excluded: Vec<PlacementPlanExcludedVolume>,
+    conn: &Connection,
+) -> EngineResult<BoundedVec<PlacementPlanExcludedVolume, 0, 64>> {
     for row in inactive_volumes(conn)? {
         if excluded
             .iter()
@@ -77,7 +80,11 @@ fn notes(mut plan: PlacementPlan, conn: &Connection) -> EngineResult<PlacementPl
             reason: PlacementPlanExcludedVolumeReason::NoActiveGrant,
         });
     }
-    plan.excluded_volumes = bounded(BoundedVec::new(excluded))?;
+    bounded(BoundedVec::new(excluded))
+}
+
+fn notes(mut plan: PlacementPlan, conn: &Connection) -> EngineResult<PlacementPlan> {
+    plan.excluded_volumes = with_inactive(plan.excluded_volumes.to_vec(), conn)?;
     let mut assumptions = plan.assumptions.to_vec();
     for note in [
         "No reserve preferences are recorded; zero reserve is assumed.",
@@ -135,11 +142,13 @@ impl Inner {
                 r.source_volume_id =
                     VolumeId::new(format!("vo_{}", self.volume_row(&r.source_volume_id)?))
                         .expect("volume row");
-                serde_json::to_value(
-                    self.engine
-                        .placement_candidates(&input, &r, deadline)
-                        .map_err(placement_error)?,
-                )
+                let mut candidates = self
+                    .engine
+                    .placement_candidates(&input, &r, deadline)
+                    .map_err(placement_error)?;
+                candidates.excluded_volumes =
+                    with_inactive(candidates.excluded_volumes.to_vec(), &input.conn)?;
+                serde_json::to_value(candidates)
             }
             Command::PlacementSimulate => {
                 let mut r: PlacementSimulateRequest = req.decode_payload()?;
@@ -303,7 +312,7 @@ fn receive_space<T>(
     deadline: Instant,
     receive: impl FnOnce(Duration) -> Result<T, std::sync::mpsc::RecvTimeoutError>,
 ) -> EngineResult<T> {
-    // recv_timeout owns the deadline decision; scheduling after receipt cannot revoke the answer.
+    // Keep an accepted receipt, including one already queued when the remaining wait is zero.
     receive(deadline.saturating_duration_since(Instant::now())).map_err(|e| match e {
         std::sync::mpsc::RecvTimeoutError::Timeout => EngineError::DeadlineExceeded {
             message: "lab volume observation deadline expired".into(),
@@ -901,7 +910,7 @@ mod followup_tests {
     use super::*;
 
     #[test]
-    fn timely_space_receipt_survives_post_receive_deadline_crossing() {
+    fn accepted_space_receipt_survives_post_receive_deadline_crossing() {
         let (tx, rx) = std::sync::mpsc::channel();
         tx.send(Some((
             loomward_windows::volumes::Space {

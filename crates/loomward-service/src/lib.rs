@@ -507,6 +507,8 @@ impl ViewService for Service {
                 interrupt: Mutex::new(None),
             });
             let worker_work = work.clone();
+            let metadata_cursor = Arc::new(Mutex::new(None));
+            let worker_cursor = metadata_cursor.clone();
             let (tx, rx) = mpsc::channel();
             let spawned = std::thread::Builder::new()
                 .name("lw-read".into())
@@ -518,6 +520,7 @@ impl ViewService for Service {
                         &ctx,
                         started,
                         Some(&worker_work),
+                        Some(&worker_cursor),
                     ));
                 });
             if spawned.is_err() {
@@ -528,7 +531,24 @@ impl ViewService for Service {
                 );
             }
             match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-                Ok(r) => r,
+                Ok(mut r) => {
+                    if let ResponseEnvelope::Ok(ref mut response) = r {
+                        if let Some(position) = metadata_cursor
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .take()
+                        {
+                            let cursor = self.inner.metadata_cursors.issue(
+                                command,
+                                String::new(),
+                                position,
+                                None,
+                            );
+                            response.result.insert("next_cursor".into(), json!(cursor));
+                        }
+                    }
+                    r
+                }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if let Some(handle) = work
                         .interrupt
@@ -665,6 +685,7 @@ impl Service {
                                 &ctx,
                                 started,
                                 (command == Command::PlacementSimulate).then_some(&work),
+                                None,
                             ));
                         })
                 };
@@ -733,6 +754,7 @@ impl Drop for Settle {
 impl Inner {
     /// Runs one command and wraps it. A result that is not exactly the command's result type is a
     /// service bug and becomes `internal_error`, never a malformed envelope.
+    #[allow(clippy::too_many_arguments)]
     fn respond(
         &self,
         request: &RequestEnvelope,
@@ -740,10 +762,11 @@ impl Inner {
         ctx: &CallContext,
         started: Instant,
         work: Option<&ReadWork>,
+        metadata_cursor: Option<&Mutex<Option<cursors::Position>>>,
     ) -> ResponseEnvelope {
         let id = request.request_id.clone();
         let out = self
-            .handle(request, command, ctx, work)
+            .handle(request, command, ctx, work, metadata_cursor)
             .and_then(|out| match out.result {
                 Value::Object(ref map) => command.validate_result(map).map(|_| out).map_err(|_| {
                     fail(

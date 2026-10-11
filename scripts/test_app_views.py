@@ -160,7 +160,7 @@ class FakeEngine:
                     return ('deadline_exceeded', 'synthetic candidate gate expired')
             g = {'group_id': 'cg_a', 'node_id': 'nd_a', 'root_id': 'rt_a', 'name': 'group-a', 'source_bytes': '5000', 'destination_bytes': '5000', 'transfer_bytes': '5000', 'estimate_basis': 'allocated_entries',
                  'estimated_relief_bytes': '5000', 'relief_basis': 'verified_unique_allocation', 'heat': None, 'heat_basis': 'unknown', 'newest_modified_at': None, 'pinned': False, 'active': False, 'protected': False, 'days_since_move': 30, 'coverage': 'complete'}
-            return {'source_volume_id': 'vo_x', 'root_generations': [], 'groups': [g], 'note': 'n'}
+            return {'source_volume_id': 'vo_x', 'root_generations': [], 'groups': [g], 'excluded_volumes': [], 'note': 'n'}
         if cmd == 'volumes.declare_tier':
             return {'volume': json.loads((ROOT / 'contracts/v3/examples/commands/volumes.declare_tier.result.json').read_text())['volume'], 'preference_recorded_at': '2026-10-01T00:00:00Z'}
         if cmd == 'proposals.get':
