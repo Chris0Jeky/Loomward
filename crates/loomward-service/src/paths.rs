@@ -516,10 +516,14 @@ mod tests {
         // Stored grant paths are canonical (long names), as check_root records them.
         assert!(validate_static_dir(Some(&dist), &[canonical.join("gone")], None).is_err());
         assert!(lexical_overlap(&canonical, &canonical.join("gone")));
-        assert!(lexical_overlap(
-            &canonical.join("x"),
-            &PathBuf::from(canonical.to_string_lossy().to_uppercase())
-        ));
+        // Case folds only where the filesystem does (Windows).
+        assert_eq!(
+            lexical_overlap(
+                &canonical.join("x"),
+                &PathBuf::from(canonical.to_string_lossy().to_uppercase())
+            ),
+            cfg!(windows)
+        );
         assert!(!lexical_overlap(
             &canonical,
             &canonical.with_file_name("dist-other")
@@ -560,10 +564,13 @@ mod tests {
         std::fs::create_dir_all(&parent).unwrap();
         let gone = parent.join("gone");
         assert!(overlaps_stored(&parent, &gone));
-        assert!(overlaps_stored(
-            &parent,
-            &PathBuf::from(gone.to_string_lossy().to_uppercase())
-        ));
+        assert_eq!(
+            overlaps_stored(
+                &parent,
+                &PathBuf::from(gone.to_string_lossy().to_uppercase())
+            ),
+            cfg!(windows)
+        );
         assert!(!overlaps_stored(&parent, &base.join("other-gone")));
         // A resolvable stored grant still compares by canonical path.
         assert!(overlaps_stored(&parent.join("."), &parent));
