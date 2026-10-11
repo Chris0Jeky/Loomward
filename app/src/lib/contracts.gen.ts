@@ -785,8 +785,22 @@ export interface Collection {
   name: string;
   kind: "human" | "label_view";
   member_count: Count;
-  logical_bytes: ByteCount;
+  logical_bytes: ByteCount | null;
   created_at: Timestamp;
+}
+
+export interface CollectionMember {
+  member_id: string;
+  status: "resolved" | "unresolved" | "root_revoked";
+  entry: EntryRow | null;
+}
+
+export interface CollectionMemberPage {
+  collection_id: CollectionId;
+  items: CollectionMember[];
+  next_cursor: Cursor | null;
+  total: Count;
+  budget_hit: boolean;
 }
 
 export interface CollectionList {
@@ -1473,7 +1487,7 @@ export interface CommandMap {
   "collections.list": { request: EmptyRequest; result: CollectionList };
   "collections.create": { request: CollectionCreateRequest; result: Collection };
   "collections.update_members": { request: CollectionMembersUpdate; result: Collection };
-  "collections.members": { request: CollectionMembersRequest; result: EntryPage };
+  "collections.members": { request: CollectionMembersRequest; result: CollectionMemberPage };
   "teacher.preview": { request: TeacherPreviewRequest; result: TeacherPreview };
   "grants.list": { request: EmptyRequest; result: GrantList };
   "grants.create_disclosure": { request: DisclosureGrantRequest; result: DisclosureGrantResult };

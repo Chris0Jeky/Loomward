@@ -15,6 +15,10 @@ use std::sync::Mutex;
 pub enum Position {
     Children(ChildrenCursor),
     Search(SearchCursor),
+    Members {
+        after: i64,
+        catalog_rev: i64,
+    },
     Metadata {
         snapshot: std::sync::Arc<serde_json::Value>,
         offset: usize,

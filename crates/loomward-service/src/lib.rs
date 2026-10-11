@@ -16,6 +16,7 @@
 #![forbid(unsafe_code)]
 
 mod apps;
+mod collections;
 mod cursors;
 mod db;
 mod desktop;
@@ -449,7 +450,15 @@ impl ViewService for Service {
             );
             return ResponseEnvelope::error(Some(id), e, None);
         }
-        if command.wave() >= 3 {
+        if command.wave() >= 3
+            && !matches!(
+                command,
+                Command::CollectionsList
+                    | Command::CollectionsCreate
+                    | Command::CollectionsUpdateMembers
+                    | Command::CollectionsMembers
+            )
+        {
             let e = fail(
                 ErrorCode::CapabilityUnavailable,
                 "this command arrives with wave 3 (lane L20)",

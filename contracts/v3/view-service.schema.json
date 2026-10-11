@@ -1182,10 +1182,82 @@
         "name": { "type": "string", "minLength": 1, "maxLength": 64 },
         "kind": { "enum": ["human", "label_view"] },
         "member_count": { "$ref": "#/$defs/Count" },
-        "logical_bytes": { "$ref": "#/$defs/ByteCount" },
+        "logical_bytes": { "anyOf": [{ "$ref": "#/$defs/ByteCount" }, { "type": "null" }] },
         "created_at": { "$ref": "#/$defs/Timestamp" }
       },
       "$comment": "Virtual membership in Loomward's own database. Never moves, links or renames a file."
+    },
+    "CollectionMember": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "member_id",
+        "status",
+        "entry"
+      ],
+      "properties": {
+        "member_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "status": {
+          "enum": [
+            "resolved",
+            "unresolved",
+            "root_revoked"
+          ]
+        },
+        "entry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EntryRow"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "CollectionMemberPage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "collection_id",
+        "items",
+        "next_cursor",
+        "total",
+        "budget_hit"
+      ],
+      "properties": {
+        "collection_id": {
+          "$ref": "#/$defs/CollectionId"
+        },
+        "items": {
+          "type": "array",
+          "maxItems": 200,
+          "items": {
+            "$ref": "#/$defs/CollectionMember"
+          }
+        },
+        "next_cursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Cursor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "total": {
+          "$ref": "#/$defs/Count"
+        },
+        "budget_hit": {
+          "type": "boolean"
+        }
+      }
     },
     "CollectionList": {
       "type": "object",

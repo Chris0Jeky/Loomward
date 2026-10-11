@@ -100,7 +100,7 @@ commands! {
     CollectionsList = "collections.list", EmptyRequest, CollectionList, [Tauri, Http], 3, [];
     CollectionsCreate = "collections.create", CollectionCreateRequest, Collection, [Tauri, Http], 3, [];
     CollectionsUpdateMembers = "collections.update_members", CollectionMembersUpdate, Collection, [Tauri, Http], 3, [];
-    CollectionsMembers = "collections.members", CollectionMembersRequest, EntryPage, [Tauri, Http], 3, [];
+    CollectionsMembers = "collections.members", CollectionMembersRequest, CollectionMemberPage, [Tauri, Http], 3, [];
     TeacherPreview = "teacher.preview", TeacherPreviewRequest, TeacherPreview, [Tauri, Http], 3, [];
     GrantsList = "grants.list", EmptyRequest, GrantList, [Tauri, Http], 2, [];
     GrantsCreateDisclosure = "grants.create_disclosure", DisclosureGrantRequest, DisclosureGrantResult, [Tauri, Http], 3, [];
