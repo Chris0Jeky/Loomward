@@ -202,3 +202,166 @@ pair is materially slower at end-of-run checkpoint despite faster staging;
 retain that negative evidence when deciding whether to land the change. The
 fixed reservation is sized for the current engine chunk shape; a future larger
 chunk must remain within validation/quota or have this bound requalified.
+
+## Attempt 2: async148b — PARK
+
+11 October 2026, native Windows, **shared host**, warm/uncontrolled cache.
+Hardware withheld. Starting head `c3bfc20`; comparison main remains
+`23440d101043b910c8aea9b64de06881dca25405`. All earlier observations above and
+receipt indices 0–9 remain unchanged. This addendum supersedes their decision,
+not their measurements. No commit or push.
+
+### Changed
+
+The catalogue's EndRun checkpoint now temporarily sets its busy timeout to zero,
+attempts the same `main.wal_checkpoint(TRUNCATE)`, and restores the previous
+timeout, including after a checkpoint error. This is best-effort maintenance
+after COMMIT, before the receipt; the prior code already ignored checkpoint
+errors and busy results. Successful uncontended checkpoints still truncate.
+Catalogue NORMAL, state FULL, FULL reference-publication commits, transaction
+boundaries, receipt ordering, publication/revision fences, async quotas and the
+shutdown checkpoint are unchanged. No durable checkpoint-completion guarantee
+existed on a busy EndRun; this change preserves that policy.
+
+`crates/loomward-catalog/src/writer.rs` adds the repair, an actual SQLite
+reader-lock regression test, and opt-in checkpoint profiling. The profile
+records WAL file bytes, live/backfilled frames, pragma result, duration,
+synchronous/journal settings and the writer's transaction/statement state.
+`scripts/bench_scan_throughput.py` accepts that additional aggregate phase while
+remaining compatible with the original binaries. No dependency or CLI option.
+Receipts append to `bench/scan-async148.json`, with a new `async148b` aggregate.
+Build, raw diagnostic, test and mutation logs and frozen binaries are ignored
+under `.loomward/async148b/`.
+
+### Verified
+
+**Diagnosis.** Indices 10–15 are retained diagnostics, excluded from the final
+comparison. An instrumented real main/unchanged-async pair took 0.610/6.164 s.
+Main had a 67,514,472-byte WAL file but only 547 live frames; its checkpoint
+completed in 0.014710 s and truncated. Async had a smaller 60,885,392-byte WAL
+file with 14,778 live frames. Its checkpoint took 5.625231 s and returned
+`[1,14778,8248]`: busy, with only 8,248 frames backfilled. A second async real
+diagnostic repeated the penalty: 6.043 s overall, 5.606125 s checkpoint,
+`[1,14208,8198]`. A lab diagnostic also returned busy after 5.606798 s.
+Another lab diagnostic completed in 1.961 s with a successful checkpoint.
+Every observation, including these conflicting lab outcomes, is retained.
+
+The established delay mechanism is the blocking TRUNCATE checkpoint's busy
+wait, rather than five seconds spent copying a larger WAL. Partial backfill
+supports contention with a WAL reader snapshot. The specific blocking
+connection/process is **not identified**: the service and lookup connections
+reported no active transaction or busy statement immediately before EndRun in
+the extra diagnostics; the writer also reported none in the final runs. These
+samples do not rule out another connection or intervening reads. SQLite can
+wait on a writer as well; blocker attribution beyond the observed checkpoint
+contention remains unproved. [SQLite checkpoint semantics](https://www.sqlite.org/c3ref/wal_checkpoint_v2.html)
+describe the busy-handler wait and passive fallback when the handler refuses.
+
+The idle-gap hypothesis is unsupported: the existing passive WAL hook is
+invoked at COMMIT, with a 16,384-frame catalogue threshold and a 1,000-frame
+state threshold. It requires no idle gap. Settings were WAL/NORMAL for main
+and FULL for state in both variants throughout the measured checkpoint probes.
+The real shape was identical in every final run: 6,356 files / 730 descendant
+directories, complete, zero failed/skipped entries. Shape and fewer transactions
+change live-frame accumulation; they do not explain away the observed busy
+wait. The repeated five-second refusal is not dismissed as host noise.
+
+**Final comparison.** Indices 16–27 are three interleaved A/B pairs per root:
+lab A1/B1, real A1/B1, then pairs 2 and 3. Each variant has one frozen release
+binary; hashes appear in every run. The aggregate pins source hashes for the
+main control and fixed candidate. Main uses its original synchronous sink and
+the same diagnostic probes, retaining its five-second checkpoint wait.
+Own builds/tests did not overlap benchmarks. Each scan uses a fresh service
+process and state outside the root. Synthetic totals have an independent
+disk-walk oracle; real totals match committed catalogue totals without an
+additional traversal. Nine private date/root/`async148b` records (including the
+diagnostics) were appended and verified before the real scans. Public receipts
+contain anonymised labels, aggregate counts and rounded personal byte totals.
+
+| Pair | Lab main s | Lab fixed async s | Real-C main s | Real-C fixed async s |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 2.003 | 2.127 | 0.569 | 0.450 |
+| 2 | 1.971 | 2.328 | 0.691 | 0.542 |
+| 3 | 2.481 | 2.357 | 0.616 | 0.577 |
+| Median [min–max] | 2.003 [1.971–2.481] | 2.328 [2.127–2.357] | 0.616 [0.569–0.691] | 0.542 [0.450–0.577] |
+| HTTP wall median [min–max] | 2.051 [2.002–2.543] | 2.416 [2.187–2.429] | 0.661 [0.629–0.729] | 0.635 [0.531–0.655] |
+
+| EndRun checkpoint, median [min–max] | Lab main | Lab fixed async | Real-C main | Real-C fixed async |
+| --- | ---: | ---: | ---: | ---: |
+| Seconds | 0.045035 [0.043770–0.096667] | 0.000008 [0.000008–0.051835] | 0.011882 [0.009755–0.014427] | 0.030431 [0.023294–0.058632] |
+| WAL file MiB before | 64.870 [64.815–64.882] | 106.613 [64.850–430.732] | 64.414 [64.379–64.458] | 57.919 [57.880–58.088] |
+| WAL file MiB after | 0 [0–0] | 106.613 [0–430.732] | 0 [0–0] | 57.919 [57.880–58.088] |
+| Busy results / runs | 0 / 3 | 2 / 3 | 0 / 3 | 3 / 3 |
+
+WAL bytes measure allocated file size immediately before/after the final
+checkpoint, **not a continuously sampled peak**. Reused WAL capacity and live
+frames are different quantities. Both are recorded per run. In the first two
+lab candidate runs, 109,625/27,134 live frames remained, with only 8,738/1,578
+backfilled; the third truncated successfully. The threshold is not a hard WAL
+size cap when a reader prevents reset. The real candidates backfilled
+4,963/5,526/3,483 of 14,731/14,784/14,741 frames and returned busy promptly.
+
+**Decision: PARK the async branch.** Real-C improved in all three final pairs,
+with a 12.0% shorter scan median, and no repeated five-second final wait. But
+the lab median is **16.2% longer**, and two of its three pairs regress. Its
+staging median increased from 1.807 to 2.131 s and writer COMMIT from 0.916 to
+1.254 s despite transactions dropping from 2,008 to about 1,007. The original
+11% lab gain did not hold in this qualification. Retained WAL frames accompany
+the worse runs, but these observations do not isolate the entire staging
+regression from shared-host scheduling. The requested keep criterion fails;
+do not land the combined branch based on the earlier favourable lab sample.
+Separately qualifying the checkpoint mitigation would require its own scoped
+comparison. No extra benchmark runs were added to select a favourable result.
+
+**Regression and mutation proof.** One new SQLite-backed test holds a real
+read snapshot while a listing and EndRun commit. It requires the EndRun receipt
+within one second, proves snapshot isolation and committed file/run state,
+then holds a write lock to prove the normal writer timeout was restored. It
+also checks that WAL truncation is possible after releasing readers. Before
+the guard, the executed test failed at the receipt timeout (exit 101); after
+the guard, it passes. All three new mutations were killed by that executed
+test (exit 101): remove zero timeout; omit timeout restoration; bypass the
+helper at EndRun. No compilation failure counts as mutation proof. Source
+bytes were restored before the final gates. The earlier nine sink tests and
+12 mutation receipts remain intact.
+
+| Required gate | Final output |
+| --- | --- |
+| `cargo fmt --all --check` | exit 0 |
+| `cargo test --workspace` | exit 0; 789 passed, 0 failed |
+| `cargo test -p loomward-windows --all-features` | exit 0; 93 passed |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | exit 0 |
+| `py -3 scripts/verify.py` | exit 0; 227 Python tests, 1 existing symlink-privilege skip; 2 JS syntax, 9 JS boundary, 80 parity fixtures; Rust gates pass |
+| `py -3 scripts/test_app.py --live-serve` | exit 0; ALL PASS (live serve) |
+| `git diff --check` | exit 0 |
+
+`npm.cmd --prefix app run build` passed as the live-app prerequisite. Final
+receipt preservation and privacy checks passed. No pre-existing test failure
+was waived. A first green-test attempt used an unsupported SQLite unsigned
+64-bit row conversion and failed to compile; the supported unsigned 32-bit
+timeout conversion corrected it before the passing test and mutation runs.
+
+Recommended driver commit messages, if retaining this parked investigation:
+
+- `fix(catalog): avoid reader waits at the EndRun checkpoint`
+- `bench(service): record checkpoint contention and park async staging`
+
+Declined: periodic checkpoint/tuning variants, extra benchmark repetitions,
+schema/index changes and wider pipelines; the finite comparison is complete,
+and the failed keep criterion calls for parking rather than expanding this lane.
+
+### NOT verified
+
+The precise checkpoint blocker, the full cause of the new lab staging
+slowdown, a separately qualified checkpoint-only change on main, continuous
+peak-WAL sampling, controlled/cold cache, universal real-folder performance,
+hosted/Linux/elevated CI, physical power loss or hung volumes, 10M performance,
+and the 250k/s P4 target. No commit, push or publication.
+
+### Residual risk
+
+Async staging can accumulate substantially more live WAL while a reader pins
+frames. Zero timeout removes waiting, not contention or WAL growth. A busy
+checkpoint leaves committed derived data in WAL for later checkpoint/restart;
+reference and precious-state durability retain their existing FULL paths.
+The combined async candidate is parked because the lab gain failed to repeat.
