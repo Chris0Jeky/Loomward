@@ -3240,6 +3240,16 @@ fn scan_start_is_refused_outside_registered_lab_roots() {
     ));
     assert_eq!(e.code, ErrorCode::PermissionDenied);
     assert_eq!(reason(&e), Some("synthetic_session_requires_lab_root"));
+    let inspected = err(call(
+        &synthetic,
+        "duplicates.inspect",
+        json!({"root_id": synthetic.inner.root_id(root), "budget": {"max_candidates": 200, "max_bytes": "1024", "max_ms": 1000}}),
+    ));
+    assert_eq!(inspected.code, ErrorCode::PermissionDenied);
+    assert_eq!(
+        reason(&inspected),
+        Some("synthetic_session_requires_lab_root")
+    );
 }
 
 /// A personal session scans only its own active owner grants: an unknown root, a lab root and
@@ -3255,6 +3265,17 @@ fn personal_scan_start_refuses_unknown_lab_and_revoked_roots() {
             "scan.start",
             json!({"root_id": root, "mode": "full"}),
         ));
+        // q-10: content inspection shares the scan's root gate, so it refuses the same roots.
+        let inspected = err(call(
+            &personal,
+            "duplicates.inspect",
+            json!({"root_id": root, "budget": {"max_candidates": 200, "max_bytes": "1024", "max_ms": 1000}}),
+        ));
+        assert_eq!(
+            (inspected.code, reason(&inspected)),
+            (e.code, reason(&e)),
+            "{root}: {inspected:?}"
+        );
         let (list, _) = ok(
             "jobs.list",
             call(&personal, "jobs.list", json!({"limit": 50})),
@@ -3372,6 +3393,13 @@ fn personal_scan_start_refuses_a_stored_grant_todays_fences_refuse() {
             !e.message.contains(&*base.to_string_lossy()),
             "no path on the wire"
         );
+        let inspected = err(call(
+            &svc,
+            "duplicates.inspect",
+            json!({"root_id": svc.inner.root_id(root), "budget": {"max_candidates": 200, "max_bytes": "1024", "max_ms": 1000}}),
+        ));
+        assert_eq!(inspected.code, ErrorCode::PermissionDenied, "{inspected:?}");
+        assert_eq!(reason(&inspected), Some("protected_profile_or_store"));
         let (list, _) = ok("jobs.list", call(&svc, "jobs.list", json!({"limit": 50})));
         assert_eq!(list["jobs"], json!([]), "no job started");
         assert_eq!(

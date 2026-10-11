@@ -419,13 +419,16 @@ def live_scan_refusals(browser, exe: Path) -> None:
         state.cleanup()
 
 
-# A small owner folder: (relative path, bytes). Four files and three folders below the root, 135 bytes.
-PERSONAL_FIXTURE = [('top.bin', 100), ('a/1.bin', 10), ('a/2.bin', 20), ('a/deep/x.bin', 5)]
+# A small owner folder: (relative path, bytes), every byte 0x01. Five files and three folders below the root, 145 bytes;
+# a/1.bin and b/1-copy.bin are the one synthetic duplicate pair (the only two files of one size).
+PERSONAL_FIXTURE = [('top.bin', 100), ('a/1.bin', 10), ('a/2.bin', 20), ('a/deep/x.bin', 5), ('b/1-copy.bin', 10)]
 
 
 def live_personal_scan(browser, exe: Path) -> None:
     """Personal scans are open: a folder granted through the server's command line (the service's real grant path)
     is scanned by pressing Scan in the app, completes, and its totals match the fixture. An unknown root is refused.
+    Personal duplicate reads are open (q-10): pressing Start inspection confirms the fixture's one duplicate pair,
+    changes no file, and revoking the root redacts the report.
 
     The folder lives under target/test-roots, not the system temp folder: a profile's AppData is never eligible.
     On an elevated host the grant is refused (identity_unavailable) and the server does not start; that is checked."""
@@ -467,17 +470,25 @@ def live_personal_scan(browser, exe: Path) -> None:
         root = listed['result']['roots'][0]
         totals = root.get('totals') or {}
         check(root['origin'] == 'owner_granted' and root['scan']['coverage'] == 'complete', f"personal: the granted folder is scanned with complete coverage: {root['scan']}")
-        check(totals.get('files') == 4 and str(totals.get('logical_bytes')) == '135', f'personal: totals match the fixture (4 files, 135 bytes): {totals}')
+        check(totals.get('files') == 5 and str(totals.get('logical_bytes')) == '145', f'personal: totals match the fixture (5 files, 145 bytes): {totals}')
         check(snapshot() == before, 'personal: the scan changed no file (contents and modification times are identical)')
         r = live_call(page, token, 'scan.start', {'root_id': 'rt_nope', 'mode': 'full'})
         check(not r['ok'] and r['error']['code'] == 'not_found', f"personal: scan.start for an unknown root is not_found: {r.get('error')}")
-        # Content reads stay gated for personal data (q-5): the Duplicates surface says so and the service refuses.
+        # Personal duplicate reads are open (q-10): the view says what it reads, and the granted folder's pair is confirmed.
         page.evaluate("location.hash = '#/duplicates'")
         expect(page.get_by_role('heading', name='Duplicates', level=1)).to_be_visible()
-        expect(page.get_by_role('status').filter(has_text='Personal content inspection is gated')).to_be_visible()
-        check(page.get_by_role('button', name='Start inspection').count() == 0, 'personal: content inspection has a gated surface')
+        expect(page.get_by_text('Reads file contents on this machine to confirm duplicates; nothing is deleted or moved.', exact=True)).to_be_visible()
+        page.get_by_role('button', name='Start inspection').click()
+        expect(page.get_by_role('rowheader', name=re.compile(r'1\.bin.*1-copy\.bin|1-copy\.bin.*1\.bin'))).to_be_visible(timeout=15000)
+        dup_jobs = live_call(page, token, 'jobs.list', {'kinds': ['duplicates'], 'limit': 50})['result']['jobs']
+        check(len(dup_jobs) == 1 and dup_jobs[0]['state'] == 'completed', f'personal: one duplicates job completed: {dup_jobs}')
+        report = dup_jobs[0]['duplicates']
+        names = sorted(report['entries'][i]['relative_path'].replace(chr(92), '/') for i in report['groups'][0]) if len(report['groups']) == 1 else []
+        check(names == ['a/1.bin', 'b/1-copy.bin'], f'personal: the one synthetic duplicate pair is confirmed: {report}')
+        check(not report['skipped'] and report['stop'] is None and 0 < int(report['bytes_read']) <= 60, f'personal: content was read within the stages, nothing skipped: {report}')
+        check(snapshot() == before, 'personal: inspection read the files and changed none of them')
         inspected = live_call(page, token, 'duplicates.inspect', {'root_id': 'rt_nope', 'budget': {'max_candidates': 200, 'max_bytes': '1024', 'max_ms': 1000}})
-        check(not inspected['ok'] and inspected['error']['detail']['reason'] == 'content_read_gated', 'personal: content inspection refused before any root access')
+        check(not inspected['ok'] and inspected['error']['code'] == 'not_found', 'personal: inspection of an unknown root is not_found')
         jobs = live_call(page, token, 'jobs.list', {'kinds': ['scan'], 'limit': 50})
         check(jobs['ok'] and len(jobs['result']['jobs']) == 1, f"personal: only the pressed Scan created a job: {jobs.get('result')}")
         # q-11: the Review surface is open for personal sessions, and the teacher stays refused.
@@ -485,8 +496,13 @@ def live_personal_scan(browser, exe: Path) -> None:
         expect(page.get_by_text('Your labels train a local student on this machine.', exact=False)).to_be_visible()
         expect(page.get_by_role('button', name='Refit from human labels')).to_be_enabled()
         teacher_refusals(page, token, 'personal')
+        # Revoking the root redacts its duplicates report (#318): the job outcome stays, its names do not.
+        revoked = live_call(page, token, 'roots.revoke', {'root_id': root['root_id'], 'purge_catalog': False})
+        check(revoked['ok'], f'personal: the root is revoked: {revoked}')
+        after = live_call(page, token, 'jobs.get', {'job_id': dup_jobs[0]['job_id']})['result']['job']
+        check(after['state'] == 'completed' and after.get('duplicates') is None, f"personal: a revoked root's report is redacted: {after}")
         page.context.close()
-        print('PASS personal: a granted folder scans through the app to the fixture totals, metadata only')
+        print('PASS personal: a granted folder scans to the fixture totals and its duplicate pair is confirmed; revocation redacts')
     finally:
         if proc.poll() is None:
             proc.kill()

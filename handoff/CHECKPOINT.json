@@ -305,8 +305,16 @@
       "#269": "containment re-proved before every relist (#278)"
     },
     "hardening_before_opening": "#284 profile and store fences, scan gates keyed on the durable grant; #286 profiles directory resolved from the OS (FOLDERID_UserProfiles), not by its folder name",
-    "rule": "a personal session scans its own active owner grants (desktop picker or --grant-root); revoked, lab and unknown roots are refused; metadata only; content_read_gated unchanged; no new effect, endpoint or elevation",
+    "rule": "a personal session scans its own active owner grants (desktop picker or --grant-root); revoked, lab and unknown roots are refused; metadata only; no new effect, endpoint or elevation (duplicate content reads opened later: personal_duplicates)",
     "evidence": "evidence/v3/personal-scan-opening.md"
+  },
+  "personal_duplicates": {
+    "state": "open",
+    "opened": "2026-10-11",
+    "decision": "HUMAN_TODO q-10",
+    "rule": "a personal session reads file contents in its own active owner grants (the scan's root gate and fences) to confirm duplicates: same size, partial hash, full hash, byte comparison; pinned, revalidated, non-elevated, no-recall handles; placeholders and offline files skipped, never hydrated; reparse points not followed; rows without a 128-bit identity never read; candidate cap before I/O; byte and time budgets; revocation stops reads and redacts the report; local and read-only, nothing deleted; content_read_gated retired",
+    "not_yet": "FAT/exFAT identity-unverified refusal (q-12) is a separate lane",
+    "evidence": "evidence/v3/personal-duplicates-q10.md"
   },
   "wave7": {
     "merged": [
@@ -373,7 +381,6 @@
     "source": "HUMAN_TODO.md q-5, q-9 to q-19 (recorded in #360)",
     "tier": "T2 daily driver; privacy and security findings weigh lower; secrets and real paths in the public repo stay forbidden",
     "decided_not_yet_implemented": [
-      "q-10 personal duplicate content reads",
       "q-13 P4 KPI retarget plus bulk-load lane",
       "q-14 backups (driver: evidence import, then guarded restic observer, then restore-drill executor)",
       "q-15 diagnostics bundle via native save dialog",
@@ -384,7 +391,8 @@
     "owner_action": "q-19 dismiss Dependabot alert 1",
     "implemented": [
       "q-12 FAT/exFAT identity-unverified listing (#372; state v5; every grant records its filesystem; real FAT volume leg unverified)",
-      "q-11 personal learning on the owner's labels (#368)"
+      "q-11 personal learning on the owner's labels (#368)",
+      "q-10 personal duplicate content reads (#376)"
     ]
   }
 }
