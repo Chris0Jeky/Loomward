@@ -316,7 +316,7 @@ figures, not their correctness or recovery evidence.
 - Ordinary listing commands now stream into an open writer transaction rather than
   batching only the initial queue snapshot. Applied payloads release their byte permits
   so producers can refill the bounded queue. Cumulative input reservations stop at
-  64 MiB; elapsed work stops the next command at 250 ms; idle receive is at most 1 ms.
+  64 MiB; elapsed work stops the next command at 250 ms; idle receive is at most 1 ms (superseded by #310: no idle wait, only already-queued commands batch).
   A single atomic listing and COMMIT can exceed the time target. Control commands end
   the batch, savepoints isolate failures, and every input retains its own revision.
   Receipts still follow COMMIT and reference reconciliation.

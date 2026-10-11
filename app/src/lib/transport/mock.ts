@@ -7,6 +7,7 @@ import type { TelemetrySample } from '../contracts.gen';
 import { createCollectionMock } from './mock-collections';
 import { createScanMock } from './mock-scan';
 import { createViewMock } from './mock-views';
+import { createInventoryMock } from './mock-inventory';
 import { generateTree, prng, type SynthNode } from './synth';
 import type { Transport } from './transport';
 
@@ -281,6 +282,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     'tree.children': (p) => children(p as unknown as TreeChildrenRequest),
     'search.query': (p) => search(p as unknown as SearchRequest),
     ...views.handlers,
+    ...createInventoryMock(now, fail),
     'grants.revoke': (p) => {
       const r = views.handlers['grants.revoke']!(p) as GrantRevokeResult;
       const g = rootGrants().find((x) => x.grant_id === r.grant_id);

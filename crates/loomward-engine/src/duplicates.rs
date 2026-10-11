@@ -52,7 +52,7 @@ impl Engine {
         budget: &DuplicateBudget,
         ctx: JobContext,
     ) -> EngineResult<CoverageState> {
-        let root_cancel = self.duplicate_read_admission(root)?;
+        let root_cancel = self.duplicate_read_admission_worker(root)?;
         let deadline = Instant::now() + Duration::from_millis(budget.max_ms.get() as u64);
         let mut entries = Vec::new();
         let mut indices = Vec::new();
@@ -114,23 +114,8 @@ impl Engine {
         for skip in &report.skipped {
             skips.insert(indices[skip.entry], skip.reason.as_str());
         }
-        let groups = |sets: &[Vec<usize>]| {
-            sets.iter()
-                .map(|set| set.iter().map(|&i| indices[i]).collect::<Vec<_>>())
-                .collect::<Vec<_>>()
-        };
-        let stop = report
-            .stop
-            .map(|s| s.as_str())
-            .or(stop)
-            .or(candidates.truncated.then_some("entry_budget"));
-        let partial = candidates.partial || report.partial || !skips.is_empty() || stop.is_some();
-        let wire: DuplicateReport = serde_json::from_value(serde_json::json!({
-            "entries": candidates.entries.iter().map(|e| serde_json::json!({"relative_path":e.relative,"logical_bytes":e.logical.to_string()})).collect::<Vec<_>>(),
-            "groups": groups(&report.groups), "links": groups(&report.links), "links_not_compared":report.links_not_compared,
-            "skipped":skips.iter().map(|(entry,reason)|serde_json::json!({"entry":entry,"reason":reason})).collect::<Vec<_>>(),
-            "bytes_read": report.bytes_read.to_string(), "partial":partial, "truncated":candidates.truncated, "stop":stop
-        })).map_err(|_| EngineError::Internal { message: "duplicate report bounds".into(), detail: None })?;
+        let wire = duplicate_report(candidates, &report, &indices, &skips, stop)?;
+        let partial = wire.partial;
         ctx.set_duplicates(wire);
         Ok(if partial {
             CoverageState::Partial
@@ -138,6 +123,101 @@ impl Engine {
             CoverageState::Complete
         })
     }
+}
+
+fn duplicate_report(
+    candidates: &DuplicateCandidates,
+    report: &loomward_windows::duplicate_reader::Report,
+    indices: &[usize],
+    skips: &std::collections::BTreeMap<usize, &str>,
+    hydration_stop: Option<&str>,
+) -> EngineResult<DuplicateReport> {
+    let bounded = report.groups.len() > 100
+        || report.links.len() > 200
+        || report
+            .groups
+            .iter()
+            .chain(&report.links)
+            .any(|set| set.len() > 200);
+    let groups = |sets: &[Vec<usize>], cap| {
+        sets.iter()
+            .take(cap)
+            .map(|set| {
+                set.iter()
+                    .take(200)
+                    .map(|&i| indices[i])
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    };
+    let links = groups(&report.links, 200);
+    let stop = report
+        .stop
+        .map(|s| s.as_str())
+        .or(hydration_stop)
+        .or(candidates.truncated.then_some("entry_budget"))
+        .or(bounded.then_some("report_budget"))
+        .or(candidates.skipped.first().copied());
+    let partial = candidates.partial || report.partial || !skips.is_empty() || stop.is_some();
+    serde_json::from_value(serde_json::json!({
+            "entries": candidates.entries.iter().map(|e| serde_json::json!({"relative_path":e.relative,"logical_bytes":e.logical.to_string()})).collect::<Vec<_>>(),
+            "groups": groups(&report.groups, 100), "links": links, "links_not_compared":links.iter().map(Vec::len).sum::<usize>(),
+            "skipped":skips.iter().map(|(entry,reason)|serde_json::json!({"entry":entry,"reason":reason})).collect::<Vec<_>>(),
+            "bytes_read": report.bytes_read.to_string(), "partial":partial, "truncated":candidates.truncated || bounded, "stop":stop
+        })).map_err(|_| EngineError::Internal { message: "duplicate report bounds".into(), detail: None })
+}
+
+#[cfg(test)]
+#[test]
+fn duplicate_report_bounds_reader_groups_and_links_and_carries_path_refusals() {
+    let candidate = DuplicateCandidate {
+        relative: "fixture".into(),
+        volume_key: "fixture".into(),
+        file_id: None,
+        logical: 4,
+        created: None,
+        modified: None,
+        changed: None,
+        attributes: 0,
+    };
+    let candidates = DuplicateCandidates {
+        entries: vec![candidate; 200],
+        ..Default::default()
+    };
+    let indices = (0..200).collect::<Vec<_>>();
+    for links in [false, true] {
+        let mut report = loomward_windows::duplicate_reader::Report::default();
+        if links {
+            report.links = vec![vec![0]; 201];
+        } else {
+            report.groups = vec![vec![0, 1]; 101];
+        }
+        let wire =
+            duplicate_report(&candidates, &report, &indices, &Default::default(), None).unwrap();
+        assert!(wire.partial && wire.truncated);
+        assert_eq!(wire.stop.unwrap().as_str(), "report_budget");
+        if links {
+            assert_eq!(wire.links.len(), 200);
+            assert_eq!(wire.links_not_compared.get(), 200);
+        } else {
+            assert_eq!(wire.groups.len(), 100);
+        }
+    }
+    let candidates = DuplicateCandidates {
+        skipped: vec!["path_depth"],
+        partial: true,
+        ..candidates
+    };
+    let wire = duplicate_report(
+        &candidates,
+        &Default::default(),
+        &indices,
+        &Default::default(),
+        None,
+    )
+    .unwrap();
+    assert!(wire.partial);
+    assert_eq!(wire.stop.unwrap().as_str(), "path_depth");
 }
 
 fn matches_scan(c: &DuplicateCandidate, o: &identity::ObservedIdentity) -> bool {
@@ -160,6 +240,10 @@ mod tests {
     #[test]
     fn duplicate_job_cancel_and_root_revocation_reach_the_worker_and_terminal_state() {
         if loomward_windows::enumerate::running_elevated() {
+            assert!(
+                matches!(loomward_windows::identity::observe(std::path::Path::new("synthetic")),
+                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied)
+            );
             return;
         }
         for (revoke, after_read) in [(false, false), (true, false), (false, true), (true, true)] {
@@ -217,6 +301,7 @@ mod tests {
             .unwrap();
             let runner = engine.duplicate_runner(root.clone(), Default::default(), budget);
             let (entered, started) = std::sync::mpsc::channel();
+            let (returned, drained) = std::sync::mpsc::channel();
             let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
             let worker_gate = gate.clone();
             let gated: JobRunner = Arc::new(move |ctx, spec| {
@@ -226,7 +311,9 @@ mod tests {
                 while !*go {
                     go = worker_gate.1.wait(go).unwrap();
                 }
-                outcome.unwrap_or_else(|| runner(ctx, spec))
+                let result = outcome.unwrap_or_else(|| runner(ctx, spec));
+                returned.send(()).unwrap();
+                result
             });
             let job = engine
                 .jobs
@@ -268,8 +355,26 @@ mod tests {
             assert_eq!(cancel.state, JobState::CancelRequested);
             assert!(cancel.rev > job.rev);
             assert_eq!(engine.job_cancel(&job.job_id).unwrap().rev, cancel.rev);
+            let root_gate = (!revoke && !after_read).then(|| {
+                engine
+                    .scan_roots
+                    .lock()
+                    .unwrap()
+                    .get(root.key())
+                    .unwrap()
+                    .clone()
+            });
+            let held = root_gate.as_ref().map(|gate| gate.lock().unwrap());
             *gate.0.lock().unwrap() = true;
             gate.1.notify_all();
+            if held.is_some() {
+                let premature = drained.recv_timeout(Duration::from_millis(50));
+                drop(held);
+                assert!(
+                    matches!(premature, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
+                    "worker must wait for admission rather than fail busy"
+                );
+            }
             let until = Instant::now() + Duration::from_secs(2);
             let terminal = loop {
                 let latest = engine.job_status(&job.job_id).unwrap();

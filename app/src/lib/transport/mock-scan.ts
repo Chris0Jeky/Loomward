@@ -111,9 +111,10 @@ export function createScanMock(o: ScanMockOptions): ScanMock {
     if (o.isRevoked(id)) o.fail('permission_denied', 'grant_not_active');
     if (!LAB_ROOT_IDS.includes(id)) o.fail('permission_denied', 'Synthetic inspection requires a registered lab root.');
     if (jobs.some((j) => j.kind === 'duplicates' && j.root_id === id && active(j))) o.fail('busy', 'inspection active');
-    const budget = p.budget as { max_bytes?: string; max_candidates?: number; max_ms?: number } | undefined;
+    const budget = p.budget as { max_bytes?: string; max_candidates?: number; max_ms?: number; min_bytes?: unknown } | undefined;
+    const validBytes = (value: unknown) => typeof value === 'string' && /^(0|[1-9][0-9]{0,19})$/.test(value) && BigInt(value) <= 18446744073709551615n;
     if (!budget || !Number.isInteger(budget.max_candidates) || budget.max_candidates! < 2 || budget.max_candidates! > 200 ||
-      !Number.isInteger(budget.max_ms) || budget.max_ms! < 1 || budget.max_ms! > 60000 || typeof budget.max_bytes !== 'string' || !/^(0|[1-9][0-9]*)$/.test(budget.max_bytes)) o.fail('invalid_request', 'duplicate budget');
+      !Number.isInteger(budget.max_ms) || budget.max_ms! < 1 || budget.max_ms! > 60000 || !validBytes(budget.max_bytes) || ('min_bytes' in budget && !validBytes(budget.min_bytes))) o.fail('invalid_request', 'duplicate budget');
     const job: Job = { job_id: `jb_mock_${++n}`, seq: n, rev: 0, kind: 'duplicates', state: 'queued', root_id: id, created_at: iso(), started_at: null, finished_at: null, progress: null, coverage: null, error: null };
     jobs.unshift(job);
     o.emit('job.state', { job: { ...job } });

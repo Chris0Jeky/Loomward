@@ -7,6 +7,8 @@ use crate::error::ErrorBody;
 use crate::types::*;
 use serde::{Deserialize, Serialize};
 
+mod inventory;
+pub use inventory::*;
 mod common;
 mod duplicates;
 pub use duplicates::*;

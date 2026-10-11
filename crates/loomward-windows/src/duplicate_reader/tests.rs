@@ -873,6 +873,35 @@ mod native {
         }
     }
     #[test]
+    fn native_public_inspect_stop_keeps_verified_group_and_marks_partial() {
+        let Some(temp) = fixture() else { return };
+        for (name, bytes) in [
+            ("a", b"same".as_slice()),
+            ("b", b"same"),
+            ("c", b"longer"),
+            ("d", b"longer"),
+        ] {
+            fs::write(temp.path().join(name), bytes).unwrap();
+        }
+        let entries = ["a", "b", "c", "d"].map(|name| entry(temp.path(), name));
+        let report = inspect(
+            temp.path(),
+            &root_id(temp.path()),
+            &entries,
+            Budget {
+                bytes: 48,
+                time: Duration::from_secs(30),
+            },
+            Default::default(),
+        )
+        .unwrap();
+        assert_eq!(report.groups, [vec![0, 1]]);
+        assert_eq!(report.stop, Some(Reason::ByteBudget));
+        assert!(report.partial);
+        assert_eq!(report.bytes_read, 48);
+        assert!(report.skipped.iter().all(|s| s.entry >= 2));
+    }
+    #[test]
     fn native_sharing_violation_visible() {
         use std::os::windows::fs::OpenOptionsExt;
         let Some(temp) = fixture() else { return };
@@ -987,21 +1016,26 @@ mod native {
             fs::write(temp.path().join(n), b"same").unwrap();
         }
         let entries = [entry(temp.path(), "a"), entry(temp.path(), "b")];
-        let r = inspect_with_hook(
+        let mut meter = Meter::new(Budget {
+            bytes: 100,
+            time: Duration::from_millis(100),
+        });
+        // The deadline runs on the injected clock: time moves only at the read hook below,
+        // so it expires exactly there, independent of host scheduling and disk latency.
+        let clock = std::rc::Rc::new(std::cell::Cell::new(Instant::now()));
+        meter.deadline = clock.get() + Duration::from_millis(100);
+        meter.clock = Some(clock.clone());
+        let mut reader = crate::duplicate_reader::native::Reader::new(
             temp.path(),
             &root_id(temp.path()),
-            &entries,
-            Budget {
-                bytes: 100,
-                time: Duration::from_millis(100),
-            },
             |event, _| {
                 if event == Event::Read {
-                    std::thread::sleep(Duration::from_millis(110));
+                    clock.set(clock.get() + Duration::from_millis(110));
                 }
             },
         )
         .unwrap();
+        let r = group(&entries, &mut reader, &mut meter);
         assert!(r.partial);
         assert!(r.groups.is_empty());
         assert_eq!(r.stop, Some(Reason::TimeBudget));

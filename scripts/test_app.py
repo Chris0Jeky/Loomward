@@ -40,6 +40,7 @@ from playwright.sync_api import Page, expect, sync_playwright
 from test_app_collections import run_collections, run_live_collections
 from test_app_a11y import run_a11y
 from test_app_views import run_views, wait_until
+from test_app_inventory import run_inventory
 
 ROOT = Path(__file__).resolve().parents[1]
 TOKEN = 'a1b2c3d4e5f60718293a4b5c6d7e8f90'
@@ -393,6 +394,7 @@ def run_live_serve(browser_path: str | None) -> None:
             expect(status).to_contain_text('Connected')
             print('PASS http transport connected through loomward-serve')
             run_live_collections(page, token, Path(state.name), check)
+            run_inventory(page, base, check, live=True)
             live_scan_refusals(browser, exe)
             live_personal_scan(browser, exe)
             live_placement(browser, exe)
@@ -655,6 +657,7 @@ def main() -> None:
         # --- product views (lane L13): Explorer, Tiers, Companion, Grants & health ------------------
         run_collections(page, base)
         run_views(page, base, a.view_shots)
+        run_inventory(page, base, check, shots=a.view_shots)
 
         # --- hygiene -------------------------------------------------------------------------------
         check(hosts <= {'127.0.0.1'}, f'every request stayed on loopback: {sorted(hosts)}')

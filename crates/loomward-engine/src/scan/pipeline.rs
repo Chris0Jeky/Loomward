@@ -1257,6 +1257,20 @@ pub fn run_scan<S: DirSource>(
     }
     finish?;
     let strategy = *shared.strategy.lock().unwrap();
+    if std::env::var_os("LOOMWARD_SCAN_PROFILE").is_some() {
+        let listings: u64 = arena.iter().map(|slot| u64::from(slot.listings)).sum();
+        eprintln!(
+            "scan-profile pipeline {}",
+            serde_json::json!({
+                "listing_calls": listings, "relist_calls": listings.saturating_sub(arena.len() as u64),
+                "enumeration_attempts": shared.attempted.load(Ordering::Relaxed),
+                "enumeration_worker_seconds": shared.enumeration_ns.load(Ordering::Relaxed) as f64 / 1e9,
+                "enumeration_wall_seconds": enumeration_wall_seconds, "staging_seconds": staging_seconds,
+                "persistence_seconds": persistence_seconds, "aggregation_seconds": aggregation_seconds,
+                "final_directory_calls": arena.len(), "finish_run_calls": 1
+            })
+        );
+    }
     Ok(ScanReport {
         totals: slot.sums,
         complete,

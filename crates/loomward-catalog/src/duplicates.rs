@@ -19,6 +19,8 @@ pub struct DuplicateCandidates {
     pub entries: Vec<DuplicateCandidate>,
     pub truncated: bool,
     pub partial: bool,
+    /// Unrepresentable paths omitted before native I/O, with bounded refusal reasons.
+    pub skipped: Vec<&'static str>,
 }
 impl Reader {
     pub fn duplicate_candidates(
@@ -66,12 +68,13 @@ impl Reader {
                 |r| r.get(0))?;
             let mut truncated = rows.len() > cap;
             let mut entries = Vec::new();
+            let mut skipped = Vec::new();
             let mut path_bytes = 0;
             for (id, mut candidate) in rows.into_iter().take(cap) {
                 let path = crate::query::node_path(conn, NodeKey::File(id))?;
-                if path.truncated { return Err(Error::ResourceBudget); }
+                if path.truncated { skipped.push("path_depth"); continue; }
                 candidate.relative = path.ancestors.iter().skip(1).map(|p| p.name.as_str()).collect::<Vec<_>>().join("\\");
-                if candidate.relative.chars().count() > 32768 { return Err(Error::ResourceBudget); }
+                if candidate.relative.chars().count() > 32768 { skipped.push("path_length"); continue; }
                 // Bound retained reports, including fifty reports in jobs.list, below transport limits.
                 path_bytes += serde_json::to_string(&candidate.relative).expect("string JSON").len();
                 if path_bytes > 64 * 1024 { truncated = true; break; }
@@ -81,7 +84,8 @@ impl Reader {
             let mut sizes = std::collections::HashMap::new();
             for e in &entries { *sizes.entry(e.logical).or_insert(0) += 1; }
             entries.retain(|e| sizes[&e.logical] >= 2);
-            Ok(DuplicateCandidates { entries, truncated, partial: !complete || unknown })
+            let partial = !complete || unknown || !skipped.is_empty();
+            Ok(DuplicateCandidates { entries, truncated, partial, skipped })
         });
         match result {
             Err(Error::Sql(rusqlite::Error::SqliteFailure(e, _)))
