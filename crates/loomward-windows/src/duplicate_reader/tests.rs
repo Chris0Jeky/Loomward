@@ -987,21 +987,26 @@ mod native {
             fs::write(temp.path().join(n), b"same").unwrap();
         }
         let entries = [entry(temp.path(), "a"), entry(temp.path(), "b")];
-        let r = inspect_with_hook(
+        let mut meter = Meter::new(Budget {
+            bytes: 100,
+            time: Duration::from_millis(100),
+        });
+        // The deadline runs on the injected clock: time moves only at the read hook below,
+        // so it expires exactly there, independent of host scheduling and disk latency.
+        let clock = std::rc::Rc::new(std::cell::Cell::new(Instant::now()));
+        meter.deadline = clock.get() + Duration::from_millis(100);
+        meter.clock = Some(clock.clone());
+        let mut reader = crate::duplicate_reader::native::Reader::new(
             temp.path(),
             &root_id(temp.path()),
-            &entries,
-            Budget {
-                bytes: 100,
-                time: Duration::from_millis(100),
-            },
             |event, _| {
                 if event == Event::Read {
-                    std::thread::sleep(Duration::from_millis(110));
+                    clock.set(clock.get() + Duration::from_millis(110));
                 }
             },
         )
         .unwrap();
+        let r = group(&entries, &mut reader, &mut meter);
         assert!(r.partial);
         assert!(r.groups.is_empty());
         assert_eq!(r.stop, Some(Reason::TimeBudget));
