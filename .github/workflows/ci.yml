@@ -46,6 +46,34 @@ jobs:
       - run: cargo +stable fmt --all -- --check
       - run: cargo +stable test --workspace
       - run: cargo +stable clippy --workspace --all-targets -- -D warnings
+  desktop:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-desktop-cargo-${{ hashFiles('Cargo.lock', 'native/Cargo.lock') }}
+      - run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci --prefix app
+      - run: npm --prefix app run build
+      - run: cargo +stable fmt --manifest-path native/Cargo.toml --check
+      - run: cargo +stable build --manifest-path native/Cargo.toml
+      - run: cargo +stable test --manifest-path native/Cargo.toml
+      - run: cargo +stable clippy --manifest-path native/Cargo.toml --all-targets -- -D warnings
+      - run: ./native/target/debug/loomward-desktop.exe --self-test
+      # The WebView2 probe (native/tests/webview2_probe.py) is a local proving check, not a hosted one:
+      # on windows-latest the shell starts and its WebView2 processes run, but WebView2 never opens a
+      # DevTools endpoint (no DevToolsActivePort with a fixed or a self-chosen port), so nothing can
+      # attach. Three different attempts on #282; see native/README.md.
   app:
     strategy:
       fail-fast: false

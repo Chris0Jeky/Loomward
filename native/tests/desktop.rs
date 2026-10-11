@@ -426,6 +426,13 @@ fn call_saturation_is_busy_through_tauri_ipc_and_recovers_after_release() {
     );
 }
 
+/// Hosted CI runs elevated, where the volume open refuses every root's identity: the picked
+/// folder is then refused for that reason alone, and the profile rules cannot be observed.
+fn identity_refused(root: &std::path::Path) -> bool {
+    use loomward_protocol::RootGrantResultRefusal as Refusal;
+    loomward_service::paths::check_root(root, None, &[], true) == Err(Refusal::IdentityUnavailable)
+}
+
 #[test]
 fn nonstandard_profile_parent_does_not_fence_unrelated_siblings() {
     use loomward_desktop::dialogs::validate_picked_folder;
@@ -435,6 +442,10 @@ fn nonstandard_profile_parent_does_not_fence_unrelated_siblings() {
     let sibling = tmp.path().join("fixture-dataset");
     std::fs::create_dir(&profile).unwrap();
     std::fs::create_dir(&sibling).unwrap();
+    if identity_refused(&sibling) {
+        assert!(validate_picked_folder(&sibling, &profile).is_err());
+        return;
+    }
     assert_eq!(
         validate_picked_folder(&sibling, &profile).unwrap(),
         sibling.canonicalize().unwrap()
@@ -744,6 +755,10 @@ fn picked_folder_uses_grant_rules_and_fences_profiles_and_stores() {
         &tmp.path().join("profiles").join("other-fixture"),
     ] {
         std::fs::create_dir_all(path).unwrap();
+    }
+    if identity_refused(&allowed) {
+        assert!(validate_picked_folder(&allowed, &profile).is_err());
+        return;
     }
     assert_eq!(
         validate_picked_folder(&allowed, &profile).unwrap(),
