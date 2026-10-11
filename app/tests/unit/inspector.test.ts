@@ -29,4 +29,17 @@ describe('Inspector sizes', () => {
     expect(fact('Logical')).toBe(logical);
     expect(fact('Allocated')).toBe(allocated);
   });
+
+  // Codex P2 on #355: the catalogue nulls allocated_bytes when some allocation is unknown, but an
+  // allocated-basis slice still carries the known subtotal in size_bytes.
+  it.each([
+    ['allocated', 'at least 10 B'],
+    ['logical', 'unknown'],
+  ] as const)('a %s-basis slice with partial allocation shows %s', (basis, allocated) => {
+    const n = { ...src, size_bytes: '10', logical_bytes: '12', allocated_bytes: null, size_unknown_files: 1 } as unknown as SliceNodeLike;
+    const node = nodeInfo(buildTree({ anchor_node_id: n.node_id, basis, complete: true, truncated: false, nodes: [n] }).root);
+    const { body } = render(Inspector, { props: { node, status: 'synthetic', basis, provisional: false, palette: {} as Palette, path: [n.name] } });
+    const fact = (label: string) => body.match(new RegExp(`<dt[^>]*>${label}</dt>\\s*<dd[^>]*>(.*?)</dd>`))![1]!.replace(/<[^>]*>/g, '').trim();
+    expect(fact('Allocated')).toBe(allocated);
+  });
 });
