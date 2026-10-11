@@ -16,6 +16,7 @@ fn open(
             state_dir: dir.into(),
             dataset,
             allow_personal: true,
+            allow_identity_unverified: false,
             grant_roots: vec![],
         },
         crate::idem::TTL,

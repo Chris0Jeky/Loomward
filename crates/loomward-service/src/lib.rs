@@ -58,6 +58,9 @@ pub struct Config {
     pub allow_personal: bool,
     /// Roots already checked by [`paths::validate_roots`]; consumed exactly (#146).
     pub grant_roots: Vec<PathBuf>,
+    /// #219: the owner's explicit `--allow-identity-unverified`: a personal `grant_roots` entry on
+    /// a FAT, exFAT or unknown filesystem is granted identity-unverified instead of refused.
+    pub allow_identity_unverified: bool,
 }
 
 /// The engine service. Cheap to share; `call` may run on any thread.
@@ -237,10 +240,16 @@ impl Service {
                 .map_err(|e| format!("engine refused the scan writer: {e}"))?;
         }
         for (i, root) in config.grant_roots.iter().enumerate() {
-            inner.grant(root, "cli_flag").map_err(|r| {
+            inner
+                .grant(root, "cli_flag", config.allow_identity_unverified)
+                .map_err(|r| {
                 let rule = match r {
                     Refused::Rule(r) => refusal_name(r),
                     Refused::RootLimit => "root_limit_reached".into(),
+                    Refused::IdentityUnverified => {
+                        "identity_unverified (pass --allow-identity-unverified to list it read-only)"
+                            .into()
+                    }
                 };
                 format!("grant root #{} refused: {rule}", i + 1)
             })?;
@@ -274,6 +283,8 @@ pub(crate) fn refusal_name(r: Refusal) -> String {
 pub(crate) enum Refused {
     Rule(Refusal),
     RootLimit,
+    /// #219: a personal root on a FAT, exFAT or unknown filesystem the owner has not confirmed.
+    IdentityUnverified,
 }
 
 impl From<Refusal> for Refused {
@@ -863,8 +874,50 @@ impl Inner {
     /// Grants one already path-checked root under the session's provenance policy. A synthetic
     /// session accepts only a registered lab root whose native identity matches the registry; a
     /// personal session accepts an owner folder. Re-granting an active root returns it.
-    pub(crate) fn grant(&self, root: &Path, via: &str) -> Result<(i64, bool), Refused> {
+    /// #219: the root volume's filesystem when it cannot verify file identity (FAT, exFAT or
+    /// unknown), observed through the same guarded, non-elevated open a scan uses; `None` on NTFS
+    /// and ReFS. Fails closed.
+    pub(crate) fn root_filesystem(&self, root: &Path) -> Result<Option<String>, Refusal> {
+        #[cfg(windows)]
+        {
+            use loomward_engine::scan::source::DirSource;
+            let source = loomward_windows::enumerate::NativeSource::default();
+            #[cfg(test)]
+            let source = match *self.hooks.filesystem.lock().unwrap() {
+                Some(name) => source.with_filesystem(name),
+                None => source,
+            };
+            let (dir, _) = source
+                .with_identity_unverified()
+                .open_root(root)
+                .map_err(|_| Refusal::IdentityUnavailable)?;
+            let filesystem = dir.filesystem();
+            Ok(
+                (!loomward_windows::enumerate::verifies_identity(filesystem))
+                    .then(|| filesystem.chars().take(32).collect()),
+            )
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = root;
+            Err(Refusal::IdentityUnavailable)
+        }
+    }
+
+    pub(crate) fn grant(
+        &self,
+        root: &Path,
+        via: &str,
+        confirmed_unverified: bool,
+    ) -> Result<(i64, bool), Refused> {
         let (volume_key, file_id) = lab::identity(root)?;
+        // #219: a personal root on a volume that cannot verify identity needs the owner's
+        // explicit confirmation; a synthetic lab root may list unverified freely.
+        let filesystem = self.root_filesystem(root)?;
+        let unverified = filesystem.is_some();
+        if unverified && self.dataset == DatasetClass::Personal && !confirmed_unverified {
+            return Err(Refused::IdentityUnverified);
+        }
         let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
         let conn = self.db();
         let origin = match self.dataset {
@@ -909,7 +962,8 @@ impl Inner {
                 display_name: display_name.chars().take(260).collect(),
                 display_path,
                 root_file_id: Some(file_id),
-                filesystem: None,
+                // Only an unverified filesystem is recorded; the writer marks the grant from it.
+                filesystem,
                 origin: origin.into(),
                 granted_via: via.into(),
                 observed_at_ns: now_ns(),

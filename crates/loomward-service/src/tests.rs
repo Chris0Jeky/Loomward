@@ -28,6 +28,8 @@ pub(crate) struct Hooks {
     pub opened: std::sync::Condvar,
     /// (profile, profiles directory) for the scan-time fence instead of the OS folders (#312).
     pub profile: Mutex<Option<(std::path::PathBuf, std::path::PathBuf)>>,
+    /// #219: the filesystem name grant-time probes observe instead of the volume's.
+    pub filesystem: Mutex<Option<&'static str>>,
 }
 
 impl Hooks {
@@ -70,6 +72,7 @@ fn open(dir: &Path, dataset: DatasetClass) -> Service {
         state_dir: dir.to_path_buf(),
         dataset,
         allow_personal: true,
+        allow_identity_unverified: false,
         grant_roots: vec![],
     })
     .unwrap()
@@ -117,6 +120,7 @@ fn followup_stored_grant_version_errors_fail_closed() {
             state_dir: state,
             dataset: DatasetClass::Synthetic,
             allow_personal: false,
+            allow_identity_unverified: false,
             grant_roots: vec![],
         },
         Some(&dist),
@@ -987,6 +991,7 @@ fn review_stored_overlap_is_refused_before_store_changes() {
                 state_dir: state.clone(),
                 dataset: DatasetClass::Synthetic,
                 allow_personal: false,
+                allow_identity_unverified: false,
                 grant_roots: vec![],
             },
             Some(&dist),
@@ -1160,6 +1165,7 @@ fn hardening_invalid_lab_and_startup_leave_no_files() {
             state_dir: state.clone(),
             dataset: DatasetClass::Synthetic,
             allow_personal: false,
+            allow_identity_unverified: false,
             grant_roots: vec![unknown]
         })
         .is_err());
@@ -1169,6 +1175,7 @@ fn hardening_invalid_lab_and_startup_leave_no_files() {
         state_dir: state.clone(),
         dataset: DatasetClass::Synthetic,
         allow_personal: false,
+        allow_identity_unverified: false,
         grant_roots: vec![tmp.path().join("missing")],
     })
     .is_err());
@@ -1308,13 +1315,13 @@ fn hardening_grant_checks_the_registered_digest_before_writes() {
         .db()
         .execute("UPDATE st.lab_root SET manifest_digest='invalid'", [])
         .unwrap();
-    assert!(svc.inner.grant(&root, "cli_flag").is_err());
+    assert!(svc.inner.grant(&root, "cli_flag", false).is_err());
     assert_eq!(crate::db::active_grants(&svc.inner.db()).unwrap(), 0);
     svc.inner
         .db()
         .execute("UPDATE st.lab_root SET manifest_digest='sha256:0000000000000000000000000000000000000000000000000000000000000000'", [])
         .unwrap();
-    assert!(svc.inner.grant(&root, "cli_flag").is_ok());
+    assert!(svc.inner.grant(&root, "cli_flag", false).is_ok());
 }
 
 fn request(command: &str, payload: Value) -> RequestEnvelope {
@@ -1720,6 +1727,7 @@ fn n4_recovery_replays_the_retained_outcome_and_never_overwrites_a_later_choice(
             state_dir: tmp.path().into(),
             dataset: DatasetClass::Synthetic,
             allow_personal: false,
+            allow_identity_unverified: false,
             grant_roots: vec![],
         },
         Duration::from_millis(1500),
@@ -1926,6 +1934,7 @@ fn provenance_synthetic_accepts_only_identity_verified_lab_roots() {
         state_dir: state.clone(),
         dataset,
         allow_personal: allow,
+        allow_identity_unverified: false,
         grant_roots: roots,
     };
     let refused = Service::open(cfg(
@@ -1997,6 +2006,7 @@ fn provenance_synthetic_accepts_only_identity_verified_lab_roots() {
         state_dir: personal.clone(),
         dataset: DatasetClass::Personal,
         allow_personal: false,
+        allow_identity_unverified: false,
         grant_roots: vec![]
     })
     .is_err());
@@ -2004,6 +2014,7 @@ fn provenance_synthetic_accepts_only_identity_verified_lab_roots() {
         state_dir: personal,
         dataset: DatasetClass::Personal,
         allow_personal: true,
+        allow_identity_unverified: false,
         grant_roots: vec![owner.canonicalize().unwrap()],
     })
     .unwrap();
@@ -2073,6 +2084,7 @@ fn revocation_commits_first_then_fences_then_emits_and_is_monotone() {
             state_dir: tmp.path().into(),
             dataset: DatasetClass::Synthetic,
             allow_personal: false,
+            allow_identity_unverified: false,
             grant_roots: vec![],
         },
         crate::idem::TTL,
@@ -2492,24 +2504,24 @@ fn grants_past_64_active_roots_are_refused_by_rule() {
         .collect();
     if !native_identity_available() {
         // Unsupported platforms and elevated tokens fail closed before the cap.
-        assert!(svc.inner.grant(&dirs[0], "cli_flag").is_err());
+        assert!(svc.inner.grant(&dirs[0], "cli_flag", false).is_err());
         return;
     }
     let mut granted = Vec::new();
     for d in &dirs[..64] {
-        granted.push(svc.inner.grant(d, "cli_flag").unwrap().0);
+        granted.push(svc.inner.grant(d, "cli_flag", false).unwrap().0);
     }
     assert_eq!(
-        svc.inner.grant(&dirs[64], "cli_flag"),
+        svc.inner.grant(&dirs[64], "cli_flag", false),
         Err(crate::Refused::RootLimit)
     );
     assert_eq!(
-        svc.inner.grant(&dirs[0], "cli_flag"),
+        svc.inner.grant(&dirs[0], "cli_flag", false),
         Ok((granted[0], false))
     );
     let grant = crate::db::roots(&svc.inner.db(), Some(granted[0])).unwrap()[0].grant;
     svc.inner.revoke(grant).unwrap();
-    assert!(svc.inner.grant(&dirs[64], "cli_flag").unwrap().1);
+    assert!(svc.inner.grant(&dirs[64], "cli_flag", false).unwrap().1);
 }
 
 fn native_identity_available() -> bool {
@@ -2633,6 +2645,7 @@ fn lab() -> Option<Lab> {
         state_dir: state,
         dataset: DatasetClass::Synthetic,
         allow_personal: false,
+        allow_identity_unverified: false,
         grant_roots: vec![path.clone()],
     })
     .unwrap();
@@ -3147,7 +3160,7 @@ fn personal_hello_reports_metadata_scan_on_windows() {
 /// An active owner grant for `path` made without today's fences: through the grant itself where
 /// native identity opens (as an older build recorded it), else as a fixture row naming the path.
 fn unfenced_owner_grant(svc: &Service, path: &Path) -> i64 {
-    if let Ok((root, _)) = svc.inner.grant(path, "cli_flag") {
+    if let Ok((root, _)) = svc.inner.grant(path, "cli_flag", false) {
         return root;
     }
     let (root, grant) = register_as(svc, 7, "owner_granted");
@@ -3242,6 +3255,7 @@ fn personal_session_scans_a_granted_folder_metadata_only() {
         state_dir: tmp.path().join("state"),
         dataset: DatasetClass::Personal,
         allow_personal: true,
+        allow_identity_unverified: false,
         grant_roots: vec![path.clone()],
     });
     if loomward_windows::enumerate::running_elevated() {
@@ -3661,3 +3675,168 @@ mod collections_tests;
 
 #[path = "meaning_tests.rs"]
 mod meaning_tests;
+
+/// #219: unverified rows never back a placement proposal, even a simulated one.
+#[test]
+fn placement_refuses_identity_unverified_rows() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (root, _, volume) = placement_fixture(&svc);
+    ok(
+        "placement.simulate",
+        call(
+            &svc,
+            "placement.simulate",
+            placement_request(&volume, false),
+        ),
+    );
+    svc.inner
+        .db()
+        .execute(
+            "UPDATE main.dir SET flags=flags|?2 WHERE root_id=?1 AND parent_id IS NOT NULL",
+            rusqlite::params![root, loomward_catalog::IDENTITY_UNVERIFIED],
+        )
+        .unwrap();
+    for (command, payload) in [
+        ("placement.simulate", placement_request(&volume, false)),
+        (
+            "placement.candidates",
+            json!({"source_volume_id":volume,"basis":"largest_dirs","max_groups":50,"min_bytes":"0"}),
+        ),
+    ] {
+        let refused = err(call(&svc, command, payload));
+        assert_eq!(refused.code, ErrorCode::PermissionDenied, "{command}");
+        assert_eq!(refused.message.as_str(), "identity_unverified", "{command}");
+    }
+}
+
+/// The grant row's identity mode and its root row's identity flag for catalogue root `root`.
+#[cfg(windows)]
+fn grant_identity(svc: &Service, root: i64) -> (String, u32, Option<Vec<u8>>) {
+    svc.inner
+        .db()
+        .query_row(
+            "SELECT g.identity_mode,d.flags & ?2,d.file_id FROM main.root r JOIN st.root_grant g ON g.id=r.grant_id
+             JOIN main.dir d ON d.root_id=r.id AND d.parent_id IS NULL WHERE r.id=?1",
+            rusqlite::params![root, loomward_catalog::IDENTITY_UNVERIFIED],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap()
+}
+
+/// #219: a personal root on a FAT, exFAT or unknown filesystem is granted only with the owner's
+/// explicit confirmation (`--allow-identity-unverified`), is marked so in the grant record, and
+/// the engine's granted root then allows identity-unverified listing. NTFS stays verified.
+#[cfg(windows)]
+#[test]
+fn identity_unverified_cli_grants_need_explicit_confirmation() {
+    if loomward_windows::enumerate::running_elevated() {
+        return;
+    }
+    let tmp = temp_root();
+    let svc = open(&tmp.path().join("state"), DatasetClass::Personal);
+    let (fat, ntfs) = (
+        tmp.path().join("fat-folder"),
+        tmp.path().join("ntfs-folder"),
+    );
+    std::fs::create_dir_all(&fat).unwrap();
+    std::fs::create_dir_all(&ntfs).unwrap();
+    let (fat, ntfs) = (fat.canonicalize().unwrap(), ntfs.canonicalize().unwrap());
+    *svc.inner.hooks.filesystem.lock().unwrap() = Some("exFAT");
+    assert_eq!(
+        svc.inner.grant(&fat, "cli_flag", false),
+        Err(crate::Refused::IdentityUnverified)
+    );
+    assert_eq!(crate::db::active_grants(&svc.inner.db()).unwrap(), 0);
+    let (root, fresh) = svc.inner.grant(&fat, "cli_flag", true).unwrap();
+    assert!(fresh);
+    let (mode, flag, root_id) = grant_identity(&svc, root);
+    assert_eq!(
+        (mode.as_str(), flag, root_id),
+        ("unverified", loomward_catalog::IDENTITY_UNVERIFIED, None)
+    );
+    let grant: i64 = svc
+        .inner
+        .db()
+        .query_row("SELECT grant_id FROM main.root WHERE id=?1", [root], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let granted = svc
+        .inner
+        .engine
+        .granted_root(
+            RootId::new("rt_unverified_grant").unwrap(),
+            grant,
+            &loomward_engine::scan::CatalogRootIdentity {
+                row: root,
+                instance: svc.inner.instance.clone(),
+            },
+        )
+        .unwrap();
+    assert!(granted.allows_identity_unverified());
+    *svc.inner.hooks.filesystem.lock().unwrap() = None;
+    let (root, _) = svc.inner.grant(&ntfs, "cli_flag", true).unwrap();
+    assert_eq!(grant_identity(&svc, root).0, "verified");
+}
+
+/// #219: the desktop picker asks the one-line native confirmation only for a volume that cannot
+/// verify identity; declining grants nothing and reports `cancelled_by_user`.
+#[cfg(windows)]
+#[test]
+fn picker_confirms_identity_unverified_volumes_explicitly() {
+    struct Pick(std::path::PathBuf, bool, std::sync::atomic::AtomicUsize);
+    impl NativeDialogs for Pick {
+        fn pick_folder(&self) -> Option<std::path::PathBuf> {
+            Some(self.0.clone())
+        }
+        fn confirm_disclosure(&self, _: &DisclosureSummary) -> bool {
+            false
+        }
+        fn confirm_identity_unverified(&self) -> bool {
+            self.2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.1
+        }
+    }
+    if loomward_windows::enumerate::running_elevated() {
+        return;
+    }
+    let tmp = temp_root();
+    let svc = open(&tmp.path().join("state"), DatasetClass::Personal);
+    let pick = |name: &str, filesystem: Option<&'static str>, accept: bool| {
+        let folder = tmp.path().join(name);
+        std::fs::create_dir_all(&folder).unwrap();
+        *svc.inner.hooks.filesystem.lock().unwrap() = filesystem;
+        // The picker has a two-second cooldown between dialogs.
+        *svc.inner.picker_last.lock().unwrap() = None;
+        let dialogs = Arc::new(Pick(folder, accept, Default::default()));
+        let (result, _) = ok(
+            "roots.request_grant",
+            svc.call(
+                request("roots.request_grant", json!({"purpose":"metadata_scan"})),
+                &CallContext::tauri(dialogs.clone()),
+            ),
+        );
+        (
+            result["outcome"].as_str().unwrap().to_owned(),
+            dialogs.2.load(std::sync::atomic::Ordering::SeqCst),
+        )
+    };
+    assert_eq!(
+        pick("declined", Some("FAT32"), false),
+        ("cancelled_by_user".into(), 1)
+    );
+    assert_eq!(crate::db::active_grants(&svc.inner.db()).unwrap(), 0);
+    assert_eq!(pick("accepted", Some("FAT32"), true), ("granted".into(), 1));
+    assert_eq!(pick("ntfs", None, false), ("granted".into(), 0));
+    let modes: Vec<String> = svc
+        .inner
+        .db()
+        .prepare("SELECT identity_mode FROM st.root_grant ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(modes, ["unverified", "verified"]);
+}
