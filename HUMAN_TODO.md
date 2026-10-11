@@ -112,3 +112,20 @@ broker is already integrated or qualified.
 - The linked `decisions/loomward-teacher-sandbox-path.json` was not present in this repository
   when checked. This section is the durable repository record; no external decision inbox
   has been marked complete by this change.
+
+## q-9 — Revoked personal roots: keep the names until you forget them, or purge on revoke — OPEN (default (a) on 2026-10-18)
+
+Personal scans are open. Revoking a personal root stops access but keeps its display path and catalogue rows in
+Loomward's local state (Loomward#288). Nothing leaves the machine. Posed through the agent-hq inbox on 2026-10-11;
+if unanswered by 2026-10-18, option (a) applies as a recorded default (reversible), not as your answer.
+
+- [ ] **loomward-revoked-root-retention: When you revoke a personal scan root in Loomward, should its name and catalogue stay on your machine until you choose to forget it, or be purged automatically?**
+  - (a) Keep the audit trail; add a 'Forget this root' action (recommended): Revoke keeps today's behaviour. Agents add an explicit, user-initiated 'Forget this revoked root' command and button that purges the display path and catalogue rows and keeps an anonymised audit entry (that a root was granted, revoked and forgotten, with dates, no name).
+    + You keep a record of what you revoked until you decide otherwise; + Forgetting is a deliberate act you can see; - Names of revoked roots stay on disk until you press Forget
+  - (b) Purge automatically on revoke: Revoking a personal root also purges its display path and catalogue rows at once, keeping only the anonymised audit entry.
+    + Nothing named survives a revoke; - No way to see later which folder you had revoked; - A mistaken revoke loses the catalogue (a re-scan rebuilds it)
+  - (c) Keep as is: No change: revoked roots stay listed by name in the audit view, and their catalogue rows stay in state.db.
+    + No work; - The storage-limitation finding stays open
+  - Why: It keeps a visible audit trail by default and gives you a deliberate, explicit way to remove names, without surprising data loss on a mistaken revoke.
+  - Why an agent may not decide: It sets how long Loomward keeps the names of your personal folders after you revoke them: a personal-data retention choice that is yours to make.
+  - Source: `decisions/loomward-revoked-root-retention.json`
