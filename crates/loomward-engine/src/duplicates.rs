@@ -15,13 +15,19 @@ use std::{
 };
 
 impl Engine {
-    /// Submit only already-resolved catalogue observations under a synthetic durable grant.
+    /// Submit only already-resolved catalogue observations under an active durable grant.
     pub fn duplicates_start(
         self: &Arc<Self>,
         root: GrantedRoot,
         candidates: DuplicateCandidates,
         budget: DuplicateBudget,
     ) -> EngineResult<Job> {
+        if candidates.entries.len() > (budget.max_candidates.get() as usize).min(200) {
+            return Err(EngineError::ResourceBudget {
+                message: "duplicate candidate budget exceeded; no metadata or content was opened"
+                    .into(),
+            });
+        }
         self.duplicate_read_admission(&root)?;
         let spec = JobSpec::new(JobKind::Duplicates, Some(root.root_id().clone()));
         // A live inspection of this root is `busy` with its job ID, even when workers are short.
@@ -151,6 +157,8 @@ fn duplicate_report(
             .collect::<Vec<_>>()
     };
     let links = groups(&report.links, 200);
+    // semantics.md: budget and cancellation stops take precedence; a catalogue path refusal is the
+    // fallback, and partial stays true either way.
     let stop = report
         .stop
         .map(|s| s.as_str())
@@ -165,6 +173,86 @@ fn duplicate_report(
             "skipped":skips.iter().map(|(entry,reason)|serde_json::json!({"entry":entry,"reason":reason})).collect::<Vec<_>>(),
             "bytes_read": report.bytes_read.to_string(), "partial":partial, "truncated":candidates.truncated || bounded, "stop":stop
         })).map_err(|_| EngineError::Internal { message: "duplicate report bounds".into(), detail: None })
+}
+
+#[cfg(test)]
+#[test]
+fn duplicate_candidate_budget_refuses_before_root_io() {
+    use loomward_protocol::{DatasetClass, RootId};
+    use loomward_windows::enumerate::{IdBasis, OpenedIdentity};
+    let tmp = tempfile::tempdir().unwrap();
+    let engine = Arc::new(
+        Engine::open(crate::EngineConfig::new(
+            tmp.path().to_owned(),
+            DatasetClass::Synthetic,
+        ))
+        .unwrap(),
+    );
+    let root = GrantedRoot::new(
+        RootId::new("rt_fixture").unwrap(),
+        tmp.path().join("unopened"),
+        DatasetClass::Synthetic,
+        OpenedIdentity {
+            id: None,
+            basis: IdBasis::None,
+            volume_serial: None,
+            attributes: 0,
+            reparse_tag: None,
+        },
+    );
+    for (count, cap) in [(3, 2), (201, 200)] {
+        let candidates = DuplicateCandidates {
+            entries: (0..count)
+                .map(|_| DuplicateCandidate {
+                    relative: "fixture".into(),
+                    volume_key: "fixture".into(),
+                    file_id: Some(vec![1; 16]),
+                    logical: 4,
+                    created: Some(0),
+                    modified: Some(0),
+                    changed: Some(0),
+                    attributes: 0,
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let budget = serde_json::from_value(serde_json::json!({
+            "max_candidates":cap,"max_bytes":"100","max_ms":1000
+        }))
+        .unwrap();
+        let error = engine
+            .duplicates_start(root.clone(), candidates, budget)
+            .unwrap_err();
+        assert!(
+            matches!(error, EngineError::ResourceBudget { .. }),
+            "{error:?}"
+        );
+        assert!(!root.path().exists());
+        assert!(engine
+            .job_list(&serde_json::from_value(serde_json::json!({"limit":50})).unwrap())
+            .unwrap()
+            .jobs
+            .is_empty());
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn duplicate_budget_stop_takes_precedence_over_a_path_refusal() {
+    // Codex P2 on #358: contracts/v3/semantics.md gives budget and cancellation stops precedence.
+    let candidates = DuplicateCandidates {
+        partial: true,
+        skipped: vec!["path_depth"],
+        ..Default::default()
+    };
+    let report = loomward_windows::duplicate_reader::Report {
+        partial: true,
+        stop: Some(loomward_windows::duplicate_reader::Reason::ByteBudget),
+        ..Default::default()
+    };
+    let wire = duplicate_report(&candidates, &report, &[], &Default::default(), None).unwrap();
+    assert!(wire.partial);
+    assert_eq!(wire.stop.unwrap().as_str(), "byte_budget");
 }
 
 #[cfg(test)]

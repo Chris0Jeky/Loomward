@@ -1,11 +1,21 @@
 //! L14 handlers; the engine owns human events and refit, the service resolves session identities.
+//! Personal sessions learn locally from owner labels on active grants (q-11); the teacher stays gated.
 use crate::{catalog_error, fail, sql_error, with_reason, Inner, Out};
-use loomward_catalog::{NodeKey, Reader, WriteCommand, WriteReply};
+use loomward_catalog::{NodeDetail, NodeKey, Reader, WriteCommand, WriteReply};
 use loomward_protocol::*;
 use serde_json::{json, Value};
 
 pub(super) fn features(reader: &mut Reader, key: NodeKey) -> Result<(EntryRow, Value), ErrorBody> {
     let detail = reader.inspect(key).map_err(catalog_error)?;
+    features_of(reader, key, detail)
+}
+
+/// `features` for a caller that already inspected the node.
+pub(super) fn features_of(
+    reader: &mut Reader,
+    key: NodeKey,
+    detail: NodeDetail,
+) -> Result<(EntryRow, Value), ErrorBody> {
     let path = reader.path(key).map_err(catalog_error)?;
     let context = path
         .ancestors
@@ -26,18 +36,6 @@ pub(super) fn features(reader: &mut Reader, key: NodeKey) -> Result<(EntryRow, V
 }
 
 impl Inner {
-    pub(super) fn learning_gate(&self) -> Result<(), ErrorBody> {
-        if self.dataset == DatasetClass::Personal {
-            return Err(with_reason(
-                fail(
-                    ErrorCode::CapabilityUnavailable,
-                    "Personal learning awaits a separate owner decision.",
-                ),
-                "learning_personal_gated",
-            ));
-        }
-        Ok(())
-    }
     fn learning_out<T: serde::Serialize>(&self, result: T) -> Result<Out, ErrorBody> {
         let rev = self.revisions()?;
         let result = serde_json::to_value(result)
@@ -52,7 +50,6 @@ impl Inner {
         self.learning_out(self.engine.learning_status().map_err(ErrorBody::from)?)
     }
     pub(crate) fn feedback_record(&self, r: FeedbackRequest) -> Result<Out, ErrorBody> {
-        self.learning_gate()?;
         let _permit = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(replay) = self.engine.learning_replay(&r).map_err(ErrorBody::from)? {
             return self.learning_out(replay);
@@ -139,7 +136,6 @@ impl Inner {
         self.learning_out(result)
     }
     pub(crate) fn learning_refit(&self) -> Result<Out, ErrorBody> {
-        self.learning_gate()?;
         let _permit = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
         self.learning_out(JobResult {
             job: self.engine.learning_refit().map_err(ErrorBody::from)?,
@@ -150,13 +146,6 @@ impl Inner {
         r: LearningQueueRequest,
         work: Option<&crate::ReadWork>,
     ) -> Result<Out, ErrorBody> {
-        if self.dataset == DatasetClass::Personal {
-            return self.learning_out(LearningQueue {
-                model_id: None,
-                items: BoundedVec::new(vec![]).unwrap(),
-                next_cursor: None,
-            });
-        }
         let root = r.root_id.as_ref().map(|id| self.root_row(id)).transpose()?;
         let revs = self.revisions()?;
         let ids = {

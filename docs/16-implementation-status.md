@@ -110,7 +110,7 @@ tier on E: (L17a).
 
 Not established: personal (real-disk) scans through the product, gated on #206 (excluded entries must stay
 visible, held names charged to the byte budget) and the rest of #184; P4 at 250k (#148); P12 at or under 1%
-(#160); cold-cache or HDD timings; the teacher on real data (q-8 answered broker-first on 10 October, design in `docs/superpowers/specs/2026-10-10-synthetic-inference-broker-design.md`; q-5 still open). An intermittent
+(#160); cold-cache or HDD timings; the teacher on real data (q-8 answered broker-first on 10 October, design in `docs/superpowers/specs/2026-10-10-synthetic-inference-broker-design.md`; q-5 answered on 11 October: names only, per-request preview, after the broker's canaries). An intermittent
 native watch test failure under heavy host load is tracked (#201). No file or process effect exists.
 
 ## v0.3 status, wave 5 (10 October 2026, night; counts measured at `ee39877`)
@@ -145,7 +145,7 @@ receipts withhold host hardware (processor, memory, device model, media) and pri
 
 Teacher: q-8 answered broker-first (inference broker, synthetic only, no credential reuse, no paid fallback,
 no Windows security change); the design spec is `docs/superpowers/specs/2026-10-10-synthetic-inference-broker-design.md`,
-and the owner is carrying that lane. q-5 (personal-data disclosure) stays open.
+and the owner is carrying that lane. q-5 was answered on 11 October (names only, per-request preview, after the broker's canaries).
 
 Not established: personal (real-disk) scans through the product (still gated: `personal_scan_gated_184`;
 #206 and #240 are done, #184's remainder is not); P4 at 250k (#148); P12 at or under 1% (#160); the 10M tier
@@ -194,7 +194,7 @@ resolves the directory from the OS rather than by its folder name.
 | Personal scans | open: a personal session scans its own active owner grants (desktop picker or `--grant-root`), metadata only, explicit roots, never elevated; refused before any filesystem access: an unknown root is `not_found`, a revoked grant `permission_denied` (the grant is not active), and a lab root `permission_denied` with `personal_session_requires_owner_grant`. The `personal_scan_gated_184` refusal is gone | `evidence/v3/personal-scan-opening.md` |
 | Unchanged | a synthetic session scans registered lab roots only; content reads for duplicates stay gated (`content_read_gated`); no file or process effect; no new endpoint | service tests |
 
-Not established: personal scans on FAT, exFAT or RAM-disk volumes (#285 item 2); P4 at 250k (#148); P12 at or
+Not established: personal scans on FAT, exFAT or RAM-disk volumes (#285 item 2; FAT/exFAT now list as identity-unverified, #372, untested on a real FAT volume); P4 at 250k (#148); P12 at or
 under 1% (#160); service, contract and UI wiring for duplicates, applications and desktop contexts; the desktop
 shell in hosted CI (#276). No file or process effect exists.
 
@@ -209,9 +209,9 @@ closed: every product surface the app shows is now served by the real service, n
 |---|---|---|
 | Personal scans | open since #313 (see the section above); stored grants are re-checked against today's fences at scan start (#312, folded into #313) | `evidence/v3/personal-scan-opening.md` |
 | Scan throughput | the catalogue writer no longer idles waiting to batch synchronous listings: 7.7x faster (median) on a 100k-file lab tree, whose runs varied about 2x, and 28x on one run pair over one agent-picked real folder (shared host, profiler on; not a stable bound, #322) | `evidence/v3/scan-throughput-310.md` |
-| Duplicates | read-only synthetic inspection from catalogue candidates to a Duplicates view (#296); lossy or unreadable names keep the report partial; job lifecycle, idempotent revocation, redacted revoked reports and retention caps (#318) | `evidence/v3/duplicates-wire-281.md`, `evidence/v3/jobs-287-duplicates-299.md` |
+| Duplicates | read-only inspection from catalogue candidates to a Duplicates view (#296); lossy or unreadable names keep the report partial; job lifecycle, idempotent revocation, redacted revoked reports and retention caps (#318); **personal content reads open (q-10)**: a personal session reads its own owner grants (same root gate and fences as its scans) through the same staged, pinned, revalidated, non-elevated, no-recall reader within the job's byte, time and candidate budgets; placeholders are skipped, never hydrated; nothing leaves the machine or is deleted; `content_read_gated` is gone | `evidence/v3/duplicates-wire-281.md`, `evidence/v3/jobs-287-duplicates-299.md`, `evidence/v3/personal-duplicates-q10.md` |
 | Storage balancing | `tiers.model`, `placement.candidates`, `placement.simulate`, saved proposals from engine to the Tiers view, simulation only, nothing moves (#316); revoked-only volumes excluded as targets, bounded lab space reads (#331); volumes past 64 refused, never dropped | `evidence/v3/placement-wiring-108.md` |
-| Learning | human feedback with durable replay, a revision-bound review queue and human-only refit jobs over the Rust student, synthetic only; personal sessions refuse with `learning_personal_gated` (#328); grouped temporal evaluation and held-out calibration, scores "relative, not a probability" (#294) | `evidence/v3/learning-wiring-l14.md`, `evidence/v3/eval-calibration-lw025.md` |
+| Learning | human feedback with durable replay, a revision-bound review queue and human-only refit jobs over the Rust student (#328); **open to personal sessions locally on the owner's labels (q-11)**: stores keep their dataset class, revocation sweeps features and models, the teacher refuses personal sessions with `teacher_personal_gated`; grants record their volume filesystem (#372), so real NTFS folders can be labelled; grouped temporal evaluation and held-out calibration, scores "relative, not a probability" (#294) | `evidence/v3/learning-wiring-l14.md`, `evidence/v3/eval-calibration-lw025.md` |
 | Organisation | collections: durable, identity-checked members; idempotent writes; no effects (#325) | `evidence/v3/collections-wiring.md` |
 | Applications and desktop | read-only `apps.list` and `desktop.contexts` with injected providers and dataset separation; personal sessions read the installed-applications registry inventory and known folders read-only when the Applications or Desktop view is opened; personal shortcut enumeration is unavailable by design (#324, #330) | `evidence/v3/apps-desktop-wiring.md` |
 | Catalogue | each caller keeps its first error after a rollback (#295); a too-deep reparent rejects only its own command (#306, #315); first-scan batches charge validated bytes, P4 96k to 109k rows/s on the bench path (#332) | `crates/loomward-catalog/HANDOFF.md` |
@@ -225,6 +225,24 @@ Counts (Windows, at `0b27935`): Rust 763 (apps 23, catalog 130, core 30, engine 
 and `--live-serve`; Python 224 (1 symlink-privilege skip).
 
 Not established: P4 at 250k (#148; the bench path is at about 109k rows/s); a 10-minute quiet-host P12 run
-(#160); personal content reads (duplicates) and personal learning (q-5, #319, #329); personal shortcut
-enumeration; FAT, exFAT and RAM-disk scans (#285); a real picker grant exercised by a person. No file or process
+(#160); personal learning (q-5, #319, #329); personal shortcut
+enumeration; FAT, exFAT and RAM-disk scans (#285; identity-unverified listing since #372, no real FAT volume tested); a real picker grant exercised by a person. No file or process
 effect exists: duplicates, placement and collections observe, simulate or record preferences only.
+
+## Owner decisions (11 October 2026)
+
+Recorded in HUMAN_TODO q-5 and q-9 to q-19 (#360). The repository is **T2 (daily driver)**. Privacy and security
+findings now weigh lower and new evidence no longer withholds host hardware; secrets and real file names, paths or
+inventories in this public repository stay forbidden. Decided, not yet implemented (each lands in its own PR, which
+updates this file when it opens a gate): personal learning on the owner's labels
+(q-11), the P4 KPI retarget and a bulk-load lane (q-13), backups as
+evidence import then a guarded restic observer then a restore-drill executor (q-14), a native-save diagnostics bundle
+(q-15), Forget a revoked root (q-9), an unsigned preview pre-release (q-17) and the hardware scrub (q-18). The teacher
+stays synthetic until the broker passes its canaries; then names only, previewed per request (q-5). Implemented since:
+personal duplicate content reads (q-10; see the wave-7 Duplicates row).
+
+**FAT/exFAT listing (q-12, #372).** Fixed-disk FAT, exFAT and unknown filesystems list as identity-unverified:
+metadata only, every row flagged `identity_unverified`, never watched, never a placement, duplicate or durable-reference
+input; a personal root needs an explicit native confirmation (desktop) or `--allow-identity-unverified` (CLI). Every
+grant now records its volume's real filesystem, so durable references (collections, learning) work on real NTFS folders.
+State schema v5. No real FAT volume was available: that leg is unverified.

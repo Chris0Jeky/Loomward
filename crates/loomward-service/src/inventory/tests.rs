@@ -2,7 +2,10 @@ use super::*;
 use crate::{Config, Service};
 use loomward_protocol::{CallContext, ResponseEnvelope, ViewService};
 use std::{
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Condvar, Mutex,
+    },
     time::Duration,
 };
 
@@ -16,6 +19,7 @@ fn open(
             state_dir: dir.into(),
             dataset,
             allow_personal: true,
+            allow_identity_unverified: false,
             grant_roots: vec![],
         },
         crate::idem::TTL,
@@ -34,6 +38,25 @@ struct Probe {
     calls: AtomicUsize,
     delay: Duration,
     dataset: DatasetClass,
+    /// `read` waits until this is true: a test holds a provider mid-read without a wall-clock delay.
+    released: (Mutex<bool>, Condvar),
+}
+impl Probe {
+    fn new(delay: Duration, dataset: DatasetClass) -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+            delay,
+            dataset,
+            released: (Mutex::new(true), Condvar::new()),
+        }
+    }
+    fn hold(&self) {
+        *self.released.0.lock().unwrap() = false;
+    }
+    fn release(&self) {
+        *self.released.0.lock().unwrap() = true;
+        self.released.1.notify_all();
+    }
 }
 impl Provider for Probe {
     fn dataset(&self) -> DatasetClass {
@@ -42,6 +65,11 @@ impl Provider for Probe {
     fn read(&self, cmd: Command, deadline: Instant) -> Result<Value, ErrorBody> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         std::thread::sleep(self.delay);
+        let mut open = self.released.0.lock().unwrap();
+        while !*open {
+            open = self.released.1.wait(open).unwrap();
+        }
+        drop(open);
         Fixtures.read(cmd, deadline)
     }
 }
@@ -49,11 +77,7 @@ impl Provider for Probe {
 #[test]
 fn injected_synthetic_pages_bind_session_command_and_snapshot() {
     let tmp = tempfile::tempdir().unwrap();
-    let probe = Arc::new(Probe {
-        calls: AtomicUsize::new(0),
-        delay: Duration::ZERO,
-        dataset: DatasetClass::Synthetic,
-    });
+    let probe = Arc::new(Probe::new(Duration::ZERO, DatasetClass::Synthetic));
     let s = open(tmp.path(), DatasetClass::Synthetic, Some(probe.clone()));
     let a = call(&s, "apps.list", json!({"limit": 1, "cursor": null}), 2000);
     assert_eq!(a["ok"], true);
@@ -117,11 +141,7 @@ fn injected_synthetic_pages_bind_session_command_and_snapshot() {
 #[test]
 fn wrong_dataset_and_timed_out_providers_never_publish_fallback() {
     let tmp = tempfile::tempdir().unwrap();
-    let mismatch = Arc::new(Probe {
-        calls: AtomicUsize::new(0),
-        delay: Duration::ZERO,
-        dataset: DatasetClass::Personal,
-    });
+    let mismatch = Arc::new(Probe::new(Duration::ZERO, DatasetClass::Personal));
     let s = open(tmp.path(), DatasetClass::Synthetic, Some(mismatch.clone()));
     assert_eq!(
         call(&s, "apps.list", json!({"limit": 200, "cursor": null}), 2000)["error"]["detail"]
@@ -130,13 +150,10 @@ fn wrong_dataset_and_timed_out_providers_never_publish_fallback() {
     );
     assert_eq!(mismatch.calls.load(Ordering::SeqCst), 0);
     drop(s);
-    let slow = Arc::new(Probe {
-        calls: AtomicUsize::new(0),
-        delay: Duration::from_millis(100),
-        dataset: DatasetClass::Synthetic,
-    });
+    let slow = Arc::new(Probe::new(Duration::ZERO, DatasetClass::Synthetic));
+    slow.hold();
     let s = open(tmp.path(), DatasetClass::Synthetic, Some(slow.clone()));
-    let before = Instant::now();
+    // The provider is parked mid-read, so the call can only come back by its deadline.
     assert_eq!(
         call(
             &s,
@@ -146,11 +163,14 @@ fn wrong_dataset_and_timed_out_providers_never_publish_fallback() {
         )["error"]["code"],
         "deadline_exceeded"
     );
-    assert!(before.elapsed() < Duration::from_millis(90));
     assert_eq!(slow.calls.load(Ordering::SeqCst), 1);
     assert_eq!(*s.inner.reads.lock().unwrap(), 1);
-    std::thread::sleep(Duration::from_millis(120));
-    assert_eq!(*s.inner.reads.lock().unwrap(), 0);
+    slow.release();
+    let until = Instant::now() + Duration::from_secs(60);
+    while *s.inner.reads.lock().unwrap() != 0 {
+        assert!(Instant::now() < until, "the read slot was never released");
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }
 
 #[test]

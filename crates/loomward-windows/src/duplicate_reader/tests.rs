@@ -346,6 +346,24 @@ fn core_final_failed_representative_reverifies_survivors() {
     assert_eq!(report.skipped.len(), 1);
     assert_eq!(report.stop, None);
 }
+/// A row without a verified 128-bit file identity is never read (q-10, q-12): no hash, no byte.
+#[test]
+fn core_unverified_identity_is_never_read() {
+    let entries = [1, 2].map(|id| {
+        let mut e = synthetic_entry(id, "1", 4);
+        e.expected.object.quality = crate::identity::IdentityQuality::Legacy64 {
+            reason: "fixture".into(),
+        };
+        e
+    });
+    let report = group(&entries, &mut Collision, &mut Meter::new(Budget::test()));
+    assert!(report.groups.is_empty() && report.partial);
+    assert_eq!(report.bytes_read, 0);
+    assert_eq!(
+        report.skipped.iter().map(|s| s.reason).collect::<Vec<_>>(),
+        [Reason::Unsupported, Reason::Unsupported]
+    );
+}
 #[test]
 fn core_identity_is_volume_scoped_and_empty_files_claim_nothing() {
     let entries = [
@@ -501,6 +519,35 @@ mod native {
     }
     fn root_id(root: &Path) -> crate::enumerate::OpenedIdentity {
         NativeSource::default().open_root(root).unwrap().1
+    }
+    /// #219: an identity-unverified root is refused before any pin, metadata or content read.
+    #[test]
+    fn identity_unverified_root_is_never_a_content_read_input() {
+        let Some(temp) = fixture() else { return };
+        fs::write(temp.path().join("a"), b"same").unwrap();
+        fs::write(temp.path().join("b"), b"same").unwrap();
+        let mut root = root_id(temp.path());
+        assert!(inspect(
+            temp.path(),
+            &root,
+            &[entry(temp.path(), "a"), entry(temp.path(), "b")],
+            Budget::test(),
+            Default::default()
+        )
+        .is_ok());
+        root.basis = crate::enumerate::IdBasis::Unverified;
+        assert_eq!(
+            inspect(
+                temp.path(),
+                &root,
+                &[entry(temp.path(), "a"), entry(temp.path(), "b")],
+                Budget::test(),
+                Default::default()
+            )
+            .unwrap_err(),
+            Reason::IdentityUnverified
+        );
+        assert_eq!(Reason::IdentityUnverified.as_str(), "identity_unverified");
     }
     #[cfg(feature = "content-read")]
     #[test]

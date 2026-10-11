@@ -1,0 +1,20 @@
+{
+  "def": "TrendSeries",
+  "reason": "Disk queue and throughput have distinct units even when both are numeric.",
+  "value": {
+    "key": "pc_4242_116444736000000001",
+    "metric": "disk_queue_length",
+    "unit": "bytes_per_s",
+    "max_gap_ms": 30000,
+    "points": [
+      {
+        "offset_ms": 0,
+        "observed_at": "2026-10-09T12:00:00Z",
+        "value": 0.5
+      }
+    ],
+    "unknowns": [
+      "Shared resident memory is unknown."
+    ]
+  }
+}

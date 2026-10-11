@@ -3,7 +3,7 @@
 //! grants no dialog permission, no dialog plugin is registered, and the only way in is a service
 //! call that passes the [`CallContext`]. The chosen path never crosses IPC.
 
-use loomward_protocol::{DatasetClass, DisclosureSummary, NativeDialogs};
+use loomward_protocol::{DatasetClass, DisclosureSummary, ErrorBody, ErrorCode, NativeDialogs};
 use serde::Serialize;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
@@ -76,6 +76,10 @@ impl DesktopDialogs {
 }
 
 pub const DISCLOSURE_TITLE: &str = "Loomward: send these items to the teacher?";
+/// #219: the one-line confirmation for a folder on a FAT, exFAT or unknown filesystem.
+pub const UNVERIFIED_TITLE: &str = "Loomward: list this folder without file identity?";
+pub const UNVERIFIED_TEXT: &str =
+    "This volume cannot verify file identity; Loomward will list it read-only and never act on it";
 /// Conservative temporary MessageBox budget; personal use needs LW-111's scrolling dialog.
 pub const MAX_DISCLOSURE_CHARS: usize = 2048;
 pub const MAX_DISCLOSURE_ITEMS: usize = 4;
@@ -89,23 +93,47 @@ impl NativeDialogs for DesktopDialogs {
         self.pick_folder_with(|picker| picker.pick_folder())
     }
 
-    /// Refuses a summary of another dataset class without asking.
-    fn confirm_disclosure(&self, summary: &DisclosureSummary) -> bool {
-        if summary.dataset_class != self.dataset || self.dataset == DatasetClass::Personal {
+    /// Personal sessions only (the picker never opens in a synthetic one); Cancel is the default.
+    fn confirm_identity_unverified(&self) -> bool {
+        if self.dataset != DatasetClass::Personal {
             return false;
         }
         let Ok(_active) = self.active.try_lock() else {
             return false;
         };
-        let text = disclosure_text(summary);
-        summary.items.len() <= MAX_DISCLOSURE_ITEMS
-            && text.chars().count() <= MAX_DISCLOSURE_CHARS
-            && text
-                .lines()
-                .map(|line| line.chars().count().div_ceil(80).max(1))
-                .sum::<usize>()
-                <= MAX_DISCLOSURE_LINES
-            && (self.ask)(DISCLOSURE_TITLE, &text)
+        (self.ask)(UNVERIFIED_TITLE, UNVERIFIED_TEXT)
+    }
+
+    /// Refuses a summary of another dataset class without asking.
+    fn confirm_disclosure(&self, summary: &DisclosureSummary) -> Result<bool, ErrorBody> {
+        if summary.dataset_class != self.dataset || self.dataset == DatasetClass::Personal {
+            return Ok(false);
+        }
+        let Ok(_active) = self.active.try_lock() else {
+            return Ok(false);
+        };
+        let pages = (0..summary.items.len())
+            .step_by(MAX_DISCLOSURE_ITEMS)
+            .map(|start| {
+                disclosure_page(
+                    summary,
+                    start,
+                    (start + MAX_DISCLOSURE_ITEMS).min(summary.items.len()),
+                )
+            })
+            .collect::<Vec<_>>();
+        if pages.iter().any(|text| {
+            text.chars().count() > MAX_DISCLOSURE_CHARS
+                || text
+                    .lines()
+                    .map(|line| line.chars().count().div_ceil(80).max(1))
+                    .sum::<usize>()
+                    > MAX_DISCLOSURE_LINES
+        }) {
+            return Err(ErrorBody::new(ErrorCode::ResourceBudget,
+                "The disclosure exceeds the native display budget; no items were sent. Use shorter fields or a smaller preview.", true));
+        }
+        Ok(pages.iter().all(|text| (self.ask)(DISCLOSURE_TITLE, text)))
     }
 }
 
@@ -122,6 +150,10 @@ pub fn validate_picked_folder(root: &Path, profile: &Path) -> Result<PathBuf, St
 /// The confirmation text: recipient, model, fields and every item, with characters that change
 /// how text looks without showing (controls, bidi overrides, zero-width) written as `\u{..}`.
 pub fn disclosure_text(s: &DisclosureSummary) -> String {
+    disclosure_page(s, 0, s.items.len())
+}
+
+fn disclosure_page(s: &DisclosureSummary, start: usize, end: usize) -> String {
     let fields: Vec<String> = s.fields.iter().map(wire).collect();
     let mut t = String::new();
     let _ = writeln!(
@@ -133,12 +165,16 @@ pub fn disclosure_text(s: &DisclosureSummary) -> String {
     );
     let _ = writeln!(t, "Dataset: {}", wire(&s.dataset_class));
     let _ = writeln!(t, "Fields sent: {}", fields.join(", "));
-    let _ = writeln!(t, "Items ({}):", s.items.len());
-    for (i, item) in s.items.iter().enumerate() {
+    if start == 0 && end == s.items.len() {
+        let _ = writeln!(t, "Items ({}):", s.items.len());
+    } else {
+        let _ = writeln!(t, "Items {}-{} of {}:", start + 1, end, s.items.len());
+    }
+    for (i, item) in s.items[start..end].iter().enumerate() {
         let _ = writeln!(
             t,
             "{:>2}. {}  [{}]  in {}  (size bucket {})",
-            i + 1,
+            start + i + 1,
             visible(&item.name),
             visible(&item.extension),
             visible(&item.context),
@@ -149,7 +185,17 @@ pub fn disclosure_text(s: &DisclosureSummary) -> String {
     let _ = writeln!(t, "Payload: {}", s.payload_digest.as_str());
     let _ = writeln!(t, "Runner profile: {}", s.runner_profile_digest.as_str());
     let _ = writeln!(t, "Expires: {}", s.expires_at.as_str());
-    t.push_str("\nOK sends exactly these items once. Cancel (the default) sends nothing.");
+    if end < s.items.len() {
+        t.push_str("\nOK reviews the next page. Cancel (the default) sends nothing.");
+    } else if start > 0 {
+        let _ = write!(
+            t,
+            "\nOK sends all {} reviewed items once. Cancel (the default) sends nothing.",
+            s.items.len()
+        );
+    } else {
+        t.push_str("\nOK sends exactly these items once. Cancel (the default) sends nothing.");
+    }
     t
 }
 
@@ -196,6 +242,36 @@ mod tests {
             synthetic.pick_folder_with(|_| panic!("synthetic picker opened")),
             None
         );
+    }
+
+    /// #219: the owner sees exactly the one-line text, and only an explicit accept grants.
+    #[test]
+    fn identity_unverified_confirmation_is_explicit_and_personal_only() {
+        for (class, accept, expected) in [
+            (DatasetClass::Personal, true, true),
+            (DatasetClass::Personal, false, false),
+            (DatasetClass::Synthetic, true, false),
+        ] {
+            let asked = Arc::new(Mutex::new(Vec::new()));
+            let seen = asked.clone();
+            let dialogs = DesktopDialogs::with_prompt(class, move |title, text| {
+                seen.lock()
+                    .unwrap()
+                    .push((title.to_owned(), text.to_owned()));
+                accept
+            });
+            assert_eq!(dialogs.confirm_identity_unverified(), expected, "{class:?}");
+            let asked = asked.lock().unwrap();
+            if class == DatasetClass::Personal {
+                assert_eq!(
+                    *asked,
+                    [(UNVERIFIED_TITLE.to_owned(), UNVERIFIED_TEXT.to_owned())]
+                );
+                assert!(!UNVERIFIED_TEXT.contains('\n'));
+            } else {
+                assert!(asked.is_empty());
+            }
+        }
     }
 
     #[test]

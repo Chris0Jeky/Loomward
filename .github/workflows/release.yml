@@ -1,0 +1,119 @@
+name: release-preview
+# Unsigned Windows preview pre-release of the Tauri desktop shell (owner decision HUMAN_TODO q-17).
+# Run it by hand (workflow_dispatch from main) or push a tag v<major>.<minor>.<patch>-preview.<n>.
+# See RELEASING.md. Nothing here signs, publishes a package, or uses a secret other than GITHUB_TOKEN.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Preview version without the leading v, e.g. 0.3.0-preview.1'
+        required: true
+        type: string
+  push:
+    tags:
+      - 'v*-preview.*'
+permissions:
+  contents: read
+concurrency:
+  group: release-preview
+  cancel-in-progress: false
+jobs:
+  windows-preview:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write # create the tag (dispatch) and the release; the only write scope in this file
+    defaults:
+      run:
+        shell: bash
+    env:
+      INPUT_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0 # the reachability check below needs main's history and the tags
+          persist-credentials: false # build scripts and npm never see the token; gh gets it by env below
+      - name: Resolve and check the version
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then raw="$INPUT_VERSION"; else raw="$GITHUB_REF_NAME"; fi
+          version="${raw#v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-preview\.[0-9]+$ ]]; then
+            echo "::error::version must look like 0.3.0-preview.1 (got '$version')"; exit 1
+          fi
+          # Releases come only from main's history, so a dispatch from a side branch is refused.
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_SHA is not reachable from origin/main"; exit 1
+          fi
+          # A dispatch creates the tag, so it must not exist yet; a tag push brought its own.
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            echo "::error::tag v$version already exists; roll it back first (RELEASING.md)"; exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "TAG=v$version" >> "$GITHUB_ENV"
+      - name: Refuse an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::release $TAG already exists; delete it first (RELEASING.md)"; exit 1
+          fi
+      - run: rustup toolchain install stable --profile minimal
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci --prefix app
+      - run: npm --prefix app run build
+      - name: Build the NSIS installer
+        working-directory: native
+        run: |
+          # The config `version` wins over Cargo.toml for the installer name, the PE version and the
+          # app's reported version, so the preview number lives in no tracked file.
+          printf '{"version":"%s"}' "$VERSION" > "$RUNNER_TEMP/tauri-version.json"
+          node ../app/node_modules/@tauri-apps/cli/tauri.js build --ci --bundles nsis --config "$RUNNER_TEMP/tauri-version.json" -- --locked
+      - name: Self-test the release binary
+        run: ./native/target/release/loomward-desktop.exe --self-test
+      - name: Collect the installer and checksums
+        run: |
+          mkdir release-assets
+          cp native/target/release/bundle/nsis/*-setup.exe release-assets/
+          cd release-assets
+          [ "$(ls *-setup.exe | wc -l)" = 1 ] || { echo "::error::expected exactly one installer"; ls; exit 1; }
+          sha256sum *-setup.exe > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Smoke-test a silent per-user install
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem release-assets -Filter '*-setup.exe' | Select-Object -First 1
+          Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait
+          $uninstall = Get-ChildItem $env:LOCALAPPDATA -Recurse -Depth 2 -Filter 'uninstall.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $uninstall) { throw 'no per-user install found under LOCALAPPDATA' }
+          $dir = $uninstall.Directory.FullName
+          Get-ChildItem $dir -Recurse -Depth 1 | ForEach-Object { $_.FullName }
+          $exe = Get-ChildItem $dir -Filter '*.exe' | Where-Object Name -ne 'uninstall.exe' | Select-Object -First 1
+          $examples = @(Get-ChildItem (Join-Path $dir 'contracts/v3/examples/commands') -Filter '*.result.json' -ErrorAction SilentlyContinue)
+          if (-not $exe) { throw 'installed app exe missing' }
+          if ($examples.Count -eq 0) { throw 'bundled contract examples missing from the install' }
+          # Remove the checkout's copy so the installed self-test can only use its own bundled examples.
+          Remove-Item -Recurse -Force contracts/v3/examples
+          $t = Start-Process -FilePath $exe.FullName -ArgumentList '--self-test' -Wait -PassThru -NoNewWindow
+          if ($t.ExitCode -ne 0) { throw "installed self-test failed with code $($t.ExitCode)" }
+          # The default start: the engine service in a personal session, state under LOCALAPPDATA.
+          $p = Start-Process -FilePath $exe.FullName -PassThru
+          Start-Sleep -Seconds 10
+          if ($p.HasExited) { throw "installed app exited early with code $($p.ExitCode)" }
+          Stop-Process -Id $p.Id -Force
+          "installed self-test passed; installed app stayed up for 10 s ($($examples.Count) bundled examples)"
+      - name: Create the pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sed -e "s|{{VERSION}}|$VERSION|g" -e "s|{{TAG}}|$TAG|g" -e "s|{{SHA}}|$GITHUB_SHA|g" \
+            .github/release/preview-notes.md > "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" release-assets/*-setup.exe release-assets/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Loomward $VERSION (unsigned preview)" \
+            --notes-file "$RUNNER_TEMP/notes.md"

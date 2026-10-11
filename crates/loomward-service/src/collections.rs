@@ -40,17 +40,33 @@ fn collection_row(id: &str) -> Result<i64, ErrorBody> {
         .filter(|n| *n > 0 && format!("co_{n}") == id)
         .ok_or_else(|| fail(ErrorCode::NotFound, "unknown collection"))
 }
-fn collection(conn: &Connection, id: i64) -> Result<Value, ErrorBody> {
+/// Summaries of one collection, or of all in id order: the reference CTE is evaluated once per call.
+fn summaries(conn: &Connection, only: Option<i64>) -> Result<Vec<Value>, ErrorBody> {
     let sql=format!("{REFERENCES} SELECT c.id,c.name,c.kind,c.created_at_ns,count(m.object_ref_id),
  CASE WHEN count(m.object_ref_id)=count(CASE WHEN r.grant_state='active' AND r.complete THEN r.logical END)
  THEN coalesce(sum(CASE WHEN r.grant_state='active' AND r.complete THEN r.logical END),0) END
  FROM st.collection c LEFT JOIN st.collection_member m ON m.collection_id=c.id LEFT JOIN resolved r ON r.id=m.object_ref_id
- WHERE c.id=?1 GROUP BY c.id");
-    conn.query_row(&sql,[id],|r| Ok(json!({"collection_id":format!("co_{}",r.get::<_,i64>(0)?),"name":r.get::<_,String>(1)?,"kind":r.get::<_,String>(2)?,"created_at":ts_ns(r.get(3)?),"member_count":r.get::<_,i64>(4)?,"logical_bytes":r.get::<_,Option<i64>>(5)?.map(|n|n.to_string())})))
-        .optional().map_err(sql_error)?.ok_or_else(||fail(ErrorCode::NotFound,"unknown collection"))
+ {} GROUP BY c.id ORDER BY c.id", if only.is_some() { "WHERE c.id=?1" } else { "" });
+    conn.prepare(&sql).map_err(sql_error)?
+        .query_map(rusqlite::params_from_iter(only),|r| Ok(json!({"collection_id":format!("co_{}",r.get::<_,i64>(0)?),"name":r.get::<_,String>(1)?,"kind":r.get::<_,String>(2)?,"created_at":ts_ns(r.get(3)?),"member_count":r.get::<_,i64>(4)?,"logical_bytes":r.get::<_,Option<i64>>(5)?.map(|n|n.to_string())})))
+        .map_err(sql_error)?.collect::<rusqlite::Result<Vec<_>>>().map_err(sql_error)
+}
+fn collection(conn: &Connection, id: i64) -> Result<Value, ErrorBody> {
+    summaries(conn, Some(id))?
+        .pop()
+        .ok_or_else(|| fail(ErrorCode::NotFound, "unknown collection"))
 }
 
 impl Inner {
+    /// Whether `deadline` has passed. Tests may run the clock ahead (`Hooks::skew`) to expire a
+    /// page deterministically at a gate instead of racing a wall-clock budget.
+    fn past(&self, deadline: std::time::Instant) -> bool {
+        #[cfg(test)]
+        let ahead = *self.hooks.skew.lock().unwrap();
+        #[cfg(not(test))]
+        let ahead = std::time::Duration::ZERO;
+        std::time::Instant::now() + ahead >= deadline
+    }
     fn collection_read(&self, work: Option<&ReadWork>) -> Result<Connection, ErrorBody> {
         let conn = db::open(&self.state_dir).map_err(sql_error)?;
         conn.execute_batch("PRAGMA query_only=ON; BEGIN")
@@ -73,23 +89,13 @@ impl Inner {
     pub(crate) fn collections_list(&self, work: Option<&ReadWork>) -> Handled {
         let conn = self.collection_read(work)?;
         let revs = db::revisions(&conn).map_err(sql_error)?;
-        let ids = conn
-            .prepare("SELECT id FROM st.collection ORDER BY id LIMIT 257")
-            .map_err(sql_error)?
-            .query_map([], |r| r.get::<_, i64>(0))
-            .map_err(sql_error)?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(sql_error)?;
-        if ids.len() > 256 {
+        let collections = summaries(&conn, None)?;
+        if collections.len() > 256 {
             return Err(fail(
                 ErrorCode::ResourceBudget,
                 "more than 256 collections; list cannot be represented",
             ));
         }
-        let collections = ids
-            .into_iter()
-            .map(|id| collection(&conn, id))
-            .collect::<Result<Vec<_>, _>>()?;
         Ok(out(json!({"collections":collections}), revs))
     }
     pub(crate) fn collections_create(&self, req: &RequestEnvelope) -> Handled {
@@ -375,7 +381,7 @@ impl Inner {
         self.hooks.gate(Command::CollectionsMembers, "hydrate");
         let mut items = Vec::new();
         for (reference, kind, row, born, grant) in rows.iter().take(r.limit.get() as usize) {
-            if work.is_some_and(|w| std::time::Instant::now() >= w.deadline) {
+            if work.is_some_and(|w| self.past(w.deadline)) {
                 return Err(fail(
                     ErrorCode::DeadlineExceeded,
                     "the read deadline expired",

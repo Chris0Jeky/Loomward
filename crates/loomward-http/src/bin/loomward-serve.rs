@@ -13,7 +13,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 const USAGE: &str = "usage: loomward-serve (--state-dir DIR | --fixtures) [--dataset synthetic|personal] \
-[--allow-personal] [--grant-root DIR]... [--port N] [--allow-origin http://localhost:PORT]... [--static DIR]";
+[--allow-personal] [--grant-root DIR]... [--allow-identity-unverified] [--port N] [--allow-origin http://localhost:PORT]... [--static DIR]";
 
 struct Args {
     dataset: DatasetClass,
@@ -21,6 +21,8 @@ struct Args {
     fixtures: bool,
     state_dir: Option<PathBuf>,
     grant_roots: Vec<PathBuf>,
+    /// #219: list a FAT, exFAT or unknown-filesystem grant root read-only instead of refusing it.
+    allow_identity_unverified: bool,
     port: u16,
     allow_origins: Vec<String>,
     static_dir: Option<PathBuf>,
@@ -46,6 +48,7 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
         fixtures: false,
         state_dir: None,
         grant_roots: Vec::new(),
+        allow_identity_unverified: false,
         port: 0,
         allow_origins: Vec::new(),
         static_dir: None,
@@ -64,6 +67,7 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
             "--fixtures" => a.fixtures = true,
             "--state-dir" => a.state_dir = Some(value()?.into()),
             "--grant-root" => a.grant_roots.push(value()?.into()),
+            "--allow-identity-unverified" => a.allow_identity_unverified = true,
             "--port" => a.port = value()?.parse().map_err(|_| "--port takes 0-65535")?,
             "--allow-origin" => a.allow_origins.push(value()?),
             "--static" => a.static_dir = Some(value()?.into()),
@@ -106,6 +110,7 @@ fn service(args: &Args) -> Result<Started, String> {
             state_dir,
             dataset: args.dataset,
             allow_personal: args.allow_personal,
+            allow_identity_unverified: args.allow_identity_unverified,
             grant_roots: roots.clone(),
         },
         args.static_dir.as_deref(),
@@ -180,6 +185,23 @@ mod tests {
         .unwrap();
         assert!(service(&args).is_err());
         assert!(!state.exists());
+    }
+
+    /// #219: identity-unverified grant roots need the owner's explicit flag; it is off by default.
+    #[test]
+    fn identity_unverified_grants_need_an_explicit_flag() {
+        let args = |extra: &[&str]| {
+            parse(
+                ["--state-dir", "state"]
+                    .iter()
+                    .chain(extra)
+                    .map(|s| s.to_string()),
+            )
+            .unwrap()
+        };
+        assert!(!args(&[]).allow_identity_unverified);
+        assert!(args(&["--allow-identity-unverified"]).allow_identity_unverified);
+        assert!(USAGE.contains("[--allow-identity-unverified]"));
     }
 
     #[test]

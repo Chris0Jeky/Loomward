@@ -99,7 +99,7 @@ export type ExtFamily = "document" | "spreadsheet" | "presentation" | "image" | 
 
 export type FileAttribute = "readonly" | "hidden" | "system" | "archive" | "compressed" | "sparse" | "encrypted" | "offline" | "not_content_indexed" | "reparse_point" | "recall_on_open" | "recall_on_data_access" | "pinned" | "unpinned" | "temporary";
 
-export type EntryFlag = "sensitive_name" | "protected_context" | "hardlink_suspected" | "cloud_placeholder" | "reparse_not_followed" | "excluded_state_dir" | "access_denied" | "enumeration_error" | "identity_unavailable" | "name_lossy" | "on_disk_only_listing" | "listing_incomplete";
+export type EntryFlag = "sensitive_name" | "protected_context" | "hardlink_suspected" | "cloud_placeholder" | "reparse_not_followed" | "excluded_state_dir" | "access_denied" | "enumeration_error" | "identity_unavailable" | "name_lossy" | "on_disk_only_listing" | "listing_incomplete" | "identity_unverified";
 
 /** Display only. Never accepted back as input; no command takes a path string. */
 export interface DisplayPath {
@@ -633,8 +633,8 @@ export interface NodePath {
 }
 
 export interface IdentityObservation {
-  /** Width is preserved: a 64-bit ID is never padded and reported as 128-bit. */
-  quality: "native_file_id_128" | "native_file_id_64" | "path_observation" | "unavailable";
+  /** Width is preserved: a 64-bit ID is never padded and reported as 128-bit. unverified: listed on a FAT, exFAT or unknown filesystem under an identity-unverified grant; metadata only, never an effect, placement or content-read input. */
+  quality: "native_file_id_128" | "native_file_id_64" | "path_observation" | "unavailable" | "unverified";
   /** Whether labels and collection membership may bind to this object (docs/41 section 6.3). Without it, feedback.record returns capability_unavailable. */
   durable_reference: "available" | "unavailable_identity_quality" | "unavailable_filesystem";
   volume_key: string | null;
@@ -1277,6 +1277,127 @@ export interface ProcessSummary {
   top: ProcessRow[];
 }
 
+export type TrendMetric = "total_bytes" | "available_bytes" | "commit_bytes" | "commit_limit_bytes" | "commit_peak_bytes" | "system_cache_bytes" | "kernel_paged_bytes" | "kernel_nonpaged_bytes" | "page_size_bytes" | "standby_bytes" | "modified_bytes" | "free_bytes" | "cpu_busy_fraction" | "disk_busy_fraction" | "disk_queue_length" | "private_commit_bytes" | "private_working_set_bytes" | "working_set_bytes" | "cpu_fraction" | "io_read_bytes_per_s" | "io_write_bytes_per_s" | "gpu_dedicated_bytes";
+
+export type TrendUnit = "bytes" | "fraction" | "queue" | "bytes_per_s";
+
+export type TrendValue = ByteCount | number;
+
+export interface TrendPoint {
+  offset_ms: Count;
+  observed_at: Timestamp;
+  value: TrendValue | null;
+}
+
+export type TrendSeries = {
+  key: string;
+  metric: "total_bytes" | "available_bytes" | "commit_bytes" | "commit_limit_bytes" | "commit_peak_bytes" | "system_cache_bytes" | "kernel_paged_bytes" | "kernel_nonpaged_bytes" | "page_size_bytes" | "standby_bytes" | "modified_bytes" | "free_bytes" | "private_commit_bytes" | "private_working_set_bytes" | "working_set_bytes" | "gpu_dedicated_bytes";
+  unit: "bytes";
+  max_gap_ms: Count;
+  points: ({
+    offset_ms: Count;
+    observed_at: Timestamp;
+    value: ByteCount | null;
+  })[];
+  unknowns: string[];
+} | {
+  key: string;
+  metric: "cpu_busy_fraction" | "disk_busy_fraction" | "cpu_fraction";
+  unit: "fraction";
+  max_gap_ms: Count;
+  points: ({
+    offset_ms: Count;
+    observed_at: Timestamp;
+    value: Fraction | null;
+  })[];
+  unknowns: string[];
+} | {
+  key: string;
+  metric: "disk_queue_length";
+  unit: "queue";
+  max_gap_ms: Count;
+  points: ({
+    offset_ms: Count;
+    observed_at: Timestamp;
+    value: number | null;
+  })[];
+  unknowns: string[];
+} | {
+  key: string;
+  metric: "io_read_bytes_per_s" | "io_write_bytes_per_s";
+  unit: "bytes_per_s";
+  max_gap_ms: Count;
+  points: ({
+    offset_ms: Count;
+    observed_at: Timestamp;
+    value: number | null;
+  })[];
+  unknowns: string[];
+};
+
+export type TrendCandidateKind = "growth" | "cpu_saturation" | "memory_pressure" | "disk_queue";
+
+export type TrendCandidate = {
+  kind: TrendCandidateKind;
+  series_index: Count;
+  unit: "bytes";
+  start_at: Timestamp;
+  end_at: Timestamp;
+  window_ms: Count;
+  sample_count: Count;
+  start_value: ByteCount;
+  end_value: ByteCount;
+  slope_per_s: string;
+  facts: string[];
+  unknowns: string[];
+} | {
+  kind: TrendCandidateKind;
+  series_index: Count;
+  unit: "fraction";
+  start_at: Timestamp;
+  end_at: Timestamp;
+  window_ms: Count;
+  sample_count: Count;
+  start_value: Fraction;
+  end_value: Fraction;
+  slope_per_s: string;
+  facts: string[];
+  unknowns: string[];
+} | {
+  kind: TrendCandidateKind;
+  series_index: Count;
+  unit: "queue";
+  start_at: Timestamp;
+  end_at: Timestamp;
+  window_ms: Count;
+  sample_count: Count;
+  start_value: number;
+  end_value: number;
+  slope_per_s: string;
+  facts: string[];
+  unknowns: string[];
+} | {
+  kind: TrendCandidateKind;
+  series_index: Count;
+  unit: "bytes_per_s";
+  start_at: Timestamp;
+  end_at: Timestamp;
+  window_ms: Count;
+  sample_count: Count;
+  start_value: number;
+  end_value: number;
+  slope_per_s: string;
+  facts: string[];
+  unknowns: string[];
+};
+
+export interface TelemetryTrends {
+  series: TrendSeries[];
+  candidates: TrendCandidate[];
+  candidates_truncated: boolean;
+  unknowns: string[];
+}
+
 export interface TelemetrySample {
   sample_seq: Count;
   observed_at: Timestamp;
@@ -1287,6 +1408,7 @@ export interface TelemetrySample {
   disks: DiskSample | null;
   engine: EngineSample | null;
   processes: ProcessSummary | null;
+  trends: TelemetryTrends;
 }
 
 export interface ProcessListRequest {

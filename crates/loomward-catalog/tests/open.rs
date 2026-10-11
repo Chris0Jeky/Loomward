@@ -384,3 +384,33 @@ fn startup_keeps_seven_owned_backups_and_preserves_migration_backup() {
     assert_eq!(count, 7);
     assert!(temp.path().join("state.before-v0.db").exists());
 }
+
+/// #219: a v4 state store gains `root_grant.identity_mode`, every existing grant `verified`.
+#[test]
+fn v4_state_store_grants_migrate_as_identity_verified() {
+    let temp = tempfile::tempdir().unwrap();
+    drop(Catalog::open(temp.path(), "synthetic").unwrap());
+    let st = Connection::open(temp.path().join("state.db")).unwrap();
+    st.execute_batch(
+        "ALTER TABLE root_grant DROP COLUMN identity_mode;
+         INSERT INTO root_grant(volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns)
+           VALUES('fixture',zeroblob(16),'Synthetic root','fixture','fixture','active',0);
+         PRAGMA user_version=4;",
+    )
+    .unwrap();
+    drop(st);
+    drop(Catalog::open(temp.path(), "synthetic").unwrap());
+    let st = Connection::open(temp.path().join("state.db")).unwrap();
+    assert_eq!(
+        st.query_row(
+            "SELECT identity_mode, (SELECT user_version FROM pragma_user_version) FROM root_grant",
+            [],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        )
+        .unwrap(),
+        ("verified".into(), SCHEMA_VERSION)
+    );
+    assert!(st
+        .execute("UPDATE root_grant SET identity_mode='maybe'", [])
+        .is_err());
+}

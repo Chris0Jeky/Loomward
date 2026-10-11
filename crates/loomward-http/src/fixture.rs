@@ -137,16 +137,20 @@ impl FixtureService {
         events: impl IntoIterator<Item = (EventName, Payload)>,
     ) -> Result<(), ErrorBody> {
         let mut st = self.bus.lock();
+        let mut next_seq = st.last_seq;
+        let mut buffer = st.buffer.clone();
         for (event, data) in events {
             let e = self
                 .bus
-                .envelope(st.last_seq + 1, event, Value::Object(data))?;
-            st.last_seq += 1;
-            st.buffer.push_back(e);
-            while st.buffer.len() > self.bus.capacity {
-                st.buffer.pop_front();
+                .envelope(next_seq + 1, event, Value::Object(data))?;
+            next_seq += 1;
+            buffer.push_back(e);
+            while buffer.len() > self.bus.capacity {
+                buffer.pop_front();
             }
         }
+        st.last_seq = next_seq;
+        st.buffer = buffer;
         drop(st);
         self.bus.wake.notify_all();
         Ok(())

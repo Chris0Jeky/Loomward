@@ -27,6 +27,7 @@
   import { Poller } from './poller';
   import { byteCount, uniqueLabels, vramGiB, vramLabel } from './telemetry';
   import ProcessStrip from './ProcessStrip.svelte';
+  import Trends from './Trends.svelte';
   import { ObservatoryFeed, type ProcessReading } from './feed';
   import type { ProcessLens } from './processes';
 
@@ -185,6 +186,7 @@
   // so the poller is left alone here: it re-polls on its own interval and a fresh connection kicks it below.
   $effect(() => {
     void session.epoch;
+    untrack(() => { tel = null; });
     if (session.client) untrack(() => void nav.start());
   });
   $effect(() => {
@@ -320,6 +322,8 @@
     </section>
 
     <ProcessStrip reading={processReading} {paused} bind:lens={processLens} onchange={changeProcessLens} />
+
+    <Trends sample={tel} {paused} rows={processReading?.list?.rows ?? []} />
 
     <Inspector node={shown} status={hovered ? 'Hover' : selected ? 'Selected' : 'Nothing selected'} basis={nav.basis} {provisional} {palette} path={pathNames} />
   </div>

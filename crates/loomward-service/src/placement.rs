@@ -446,6 +446,7 @@ struct Dir {
     file_id: Option<Vec<u8>>,
     totals: SubtreeTotals,
     newest: Option<i64>,
+    unverified: bool,
 }
 impl PlacementInput for Input<'_> {
     fn snapshot(&self, source: Option<&VolumeId>, deadline: Instant) -> EngineResult<Snapshot> {
@@ -493,7 +494,7 @@ impl PlacementInput for Input<'_> {
         let mut stmt = self.conn.prepare("WITH RECURSIVE visible(id) AS (
             SELECT d.id FROM main.dir d JOIN main.root r ON r.id=d.root_id JOIN st.root_grant g ON g.id=r.grant_id WHERE r.volume_id=?1 AND g.state='active' AND d.parent_id IS NULL AND d.listing_state NOT IN ('excluded','absent_pending') AND d.flags & ?2=0
             UNION ALL SELECT d.id FROM main.dir d JOIN visible v ON d.parent_id=v.id WHERE d.listing_state NOT IN ('excluded','absent_pending') AND d.flags & ?2=0)
-            SELECT d.id,d.root_id,d.parent_id,d.name,d.born_run,d.file_id,d.sub_files,d.sub_dirs,d.sub_logical,d.sub_allocated,d.sub_alloc_unknown,d.sub_skipped,d.sub_errors,d.sub_complete AND d.agg_valid_rev>=d.dirty_rev,d.sub_newest_ft
+            SELECT d.id,d.root_id,d.parent_id,d.name,d.born_run,d.file_id,d.sub_files,d.sub_dirs,d.sub_logical,d.sub_allocated,d.sub_alloc_unknown,d.sub_skipped,d.sub_errors,d.sub_complete AND d.agg_valid_rev>=d.dirty_rev,d.sub_newest_ft,d.flags
             FROM main.dir d JOIN visible v ON v.id=d.id ORDER BY d.id LIMIT 10001").map_err(sql)?;
         let dirs = stmt
             .query_map(params![volume, loomward_catalog::EXCLUDED_FLAGS], |r| {
@@ -523,6 +524,7 @@ impl PlacementInput for Input<'_> {
                         multi_link_entries: Count::ZERO,
                     },
                     newest: r.get(14)?,
+                    unverified: r.get::<_, u32>(15)? & loomward_catalog::IDENTITY_UNVERIFIED != 0,
                 })
             })
             .map_err(sql)?
@@ -531,6 +533,12 @@ impl PlacementInput for Input<'_> {
         if dirs.len() > 10000 {
             return Err(EngineError::ResourceBudget {
                 message: "placement directory bounds".into(),
+            });
+        }
+        // #219: identity-unverified rows never back a placement proposal, even a simulated one.
+        if dirs.iter().any(|d| d.unverified) {
+            return Err(EngineError::PermissionDenied {
+                message: "identity_unverified".into(),
             });
         }
         // Collapse the same native directory seen under overlapping grants before antichain selection.
@@ -955,6 +963,7 @@ mod followup_tests {
             state_dir: tmp.path().to_owned(),
             dataset: DatasetClass::Synthetic,
             allow_personal: false,
+            allow_identity_unverified: false,
             grant_roots: vec![],
         })
         .unwrap();

@@ -39,7 +39,7 @@ export const MEANINGS = {
   projects: 'Projects', media: 'Media', models: 'Models', build: 'Build caches',
   archives: 'Archives', documents: 'Documents', system: 'System', downloads: 'Downloads',
 };
-export const RESIDENCIES = { c: 'C: NVMe · hot', g: 'G: NVMe · warm', e: 'E: HDD · cold', cloud: 'Online-only placeholder' };
+export const RESIDENCIES = { c: 'C: fast local volume · hot', g: 'G: fast local volume · warm', e: 'E: slow local volume · cold', cloud: 'Online-only placeholder' };
 export const PERMISSIONS = { protected: 'Protected', pinned: 'Pinned', none: 'No hold' };
 
 export function createWorkspace(seed = 0x10057) {
@@ -118,9 +118,9 @@ export function createWorkspace(seed = 0x10057) {
 
   const root = node(null, 'Workspace', 'workspace', { meaning: null, residency: null, permission: 'none' });
 
-  // ---------------- C: NVMe 1.86 TB ----------------
+  // ---------------- C: fast local volume 2 TiB ----------------
   const C = node(root, 'C:', 'volume', { residency: 'c', meaning: null, permission: 'none' });
-  Object.assign(C, { label: 'C: · System', media: 'NVMe SSD', capacity: 1.86 * TiB, used: 1.52 * TiB, coverage: 1, observedMin: 4, scanState: 'complete' });
+  Object.assign(C, { label: 'C: · System', media: 'fast local volume', capacity: 2 * TiB, used: 1.63 * TiB, coverage: 1, observedMin: 4, scanState: 'complete' });
   {
     const win = dir(C, 'Windows', { meaning: 'system', permission: 'protected' });
     files(dir(win, 'WinSxS'), 5200, 'component_', ['dll', 'manifest', 'mum', 'cat'], 1.6 * MiB, { spread: 1.5 });
@@ -189,9 +189,9 @@ export function createWorkspace(seed = 0x10057) {
     file(vm, 'test-win11.vhdx', 64 * GiB, { ext: 'vhdx', alloc: 41 * GiB });
   }
 
-  // ---------------- G: NVMe 930 GB ----------------
+  // ---------------- G: fast local volume 1 TiB ----------------
   const G = node(root, 'G:', 'volume', { residency: 'g', meaning: null, permission: 'none' });
-  Object.assign(G, { label: 'G: · Work', media: 'NVMe SSD', capacity: 930 * GiB, used: 287 * GiB, coverage: 1, observedMin: 11, scanState: 'complete' });
+  Object.assign(G, { label: 'G: · Work', media: 'fast local volume', capacity: 1 * TiB, used: 316 * GiB, coverage: 1, observedMin: 11, scanState: 'complete' });
   {
     const dev = dir(G, 'dev', { meaning: 'projects', permission: 'pinned', collections: ['Active work'] });
     for (const [n, s] of [['loomward', 2.2], ['estate-console', 1.4], ['agent-harness', 1.1], ['taskboard', 1.3], ['field-notes', 0.6]]) repo(dev, n, s);
@@ -210,9 +210,9 @@ export function createWorkspace(seed = 0x10057) {
     for (let k = 0; k < 8; k++) files(dir(scratch, `build-${k}`), 300, 'obj_', ['o', 'obj', 'pdb', 'tmp'], 2.2 * MiB, { spread: 1.4 });
   }
 
-  // ---------------- E: HDD 1.86 TB, partially scanned ----------------
+  // ---------------- E: slow local volume 2 TiB, partially scanned ----------------
   const E = node(root, 'E:', 'volume', { residency: 'e', meaning: null, permission: 'none' });
-  Object.assign(E, { label: 'E: · Archive', media: '7200 rpm HDD', capacity: 1.86 * TiB, used: 1.51 * TiB, coverage: 0.72, observedMin: 47, scanState: 'paused' });
+  Object.assign(E, { label: 'E: · Archive', media: 'slow local volume', capacity: 2 * TiB, used: 1.62 * TiB, coverage: 0.72, observedMin: 47, scanState: 'paused' });
   {
     const arch = dir(E, 'Archive', { meaning: 'archives' });
     for (const y of [2019, 2020, 2021, 2022, 2023]) {

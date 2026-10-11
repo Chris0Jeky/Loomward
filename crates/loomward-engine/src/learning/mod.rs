@@ -7,6 +7,11 @@
 //! the refit job. A learned score is never an approval; data classes (human, teacher) stay
 //! separate (invariant 3).
 //!
+//! Personal sessions learn locally from the owner's human labels (HUMAN_TODO q-11): the store is
+//! the session's own `state.db`, whose recorded dataset class must match the engine's, so personal
+//! and synthetic evidence never mix. Revoking a root redacts its labels' features and withdraws
+//! them from training; the teacher stays synthetic-only (`teacher_personal_gated`).
+//!
 //! #117 errata items this lane applies, each with its test before merge:
 //! - Partial #15 state-backed cursors: `learning.queue` cursors also bind a durable
 //!   `state_rev`, since feedback changes `state.db` while `catalog_rev` stays put.
@@ -31,7 +36,11 @@ use std::{
 pub struct Store {
     db: Mutex<Connection>,
     cursors: Mutex<HashMap<String, QueuePosition>>,
+    dataset: String,
 }
+
+/// Feature snapshot left on a human event once its root's grant is no longer active.
+const REDACTED: &str = r#"{"name":"","extension":"","context":"","size_bytes":0}"#;
 type QueuePosition = (Option<RootId>, (i64, i64), usize);
 
 fn internal(_: impl std::fmt::Display) -> EngineError {
@@ -74,6 +83,7 @@ impl Store {
         db.execute_batch("PRAGMA foreign_keys=ON;PRAGMA st.synchronous=FULL;
             CREATE TABLE IF NOT EXISTS st.learning_receipt(client_event_id TEXT PRIMARY KEY, result_json TEXT NOT NULL) STRICT;
             CREATE TABLE IF NOT EXISTS st.learning_node(node_id TEXT PRIMARY KEY, object_ref_id INTEGER NOT NULL REFERENCES object_ref(id)) STRICT;
+            CREATE TABLE IF NOT EXISTS st.learning_redacted(event_id TEXT PRIMARY KEY) STRICT;
             CREATE TEMP VIEW learning_resolved AS SELECT o.id FROM st.object_ref o
             LEFT JOIN st.pending_reference p ON p.object_ref_id=o.id
               AND p.catalog_instance=(SELECT value FROM main.meta WHERE key='instance_id')
@@ -84,10 +94,45 @@ impl Store {
             [json!(DEFAULT_LABELS).to_string()],
         )
         .map_err(internal)?;
+        let dataset: String = db
+            .query_row(
+                "SELECT value FROM st.meta WHERE key='dataset_class'",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(internal)?;
+        Self::redact(&db)?;
         Ok(Arc::new(Self {
             db: Mutex::new(db),
             cursors: Mutex::new(HashMap::new()),
+            dataset,
         }))
+    }
+
+    /// Redacts the features of every human event whose object lies under a grant that is no
+    /// longer active, withdraws those events from training and deletes every stored model (a
+    /// model's state carries name tokens). Idempotent; true when anything changed.
+    fn redact(db: &Connection) -> EngineResult<bool> {
+        // ponytail: maps through the reference's bound catalogue row; a pending rebind is swept on its next run.
+        let tx = db.unchecked_transaction().map_err(internal)?;
+        tx.execute("INSERT OR IGNORE INTO st.learning_redacted SELECT h.event_id FROM st.human_feedback h JOIN st.object_ref o ON o.id=h.object_ref_id
+            WHERE o.catalog_instance=(SELECT value FROM main.meta WHERE key='instance_id') AND EXISTS(
+              SELECT 1 FROM main.dir d JOIN main.root rt ON rt.id=d.root_id JOIN st.root_grant g ON g.id=rt.grant_id
+              WHERE g.state!='active' AND ((o.kind='dir' AND d.id=o.row_id) OR (o.kind='file' AND d.id=(SELECT dir_id FROM main.file WHERE id=o.row_id))))", []).map_err(internal)?;
+        let changed = tx
+            .execute(
+                "UPDATE st.human_feedback SET features_json=?1 WHERE features_json!=?1 AND event_id IN (SELECT event_id FROM st.learning_redacted)",
+                [REDACTED],
+            )
+            .map_err(internal)?;
+        if changed > 0 {
+            tx.execute("DELETE FROM st.student_model", [])
+                .map_err(internal)?;
+            tx.execute("UPDATE st.revision SET state_rev=state_rev+1", [])
+                .map_err(internal)?;
+        }
+        tx.commit().map_err(internal)?;
+        Ok(changed > 0)
     }
 
     fn student(db: &Connection) -> EngineResult<(Student, Option<String>)> {
@@ -103,11 +148,7 @@ impl Store {
     }
 
     fn status(db: &Connection, dataset: DatasetClass) -> EngineResult<LearningStatus> {
-        let (student, fitted) = if dataset == DatasetClass::Personal {
-            (Student::new(&Value::Null).map_err(learned)?, None)
-        } else {
-            Self::student(db)?
-        };
+        let (student, fitted) = Self::student(db)?;
         let human: i64 = db
             .query_row("SELECT count(*) FROM st.human_feedback", [], |r| r.get(0))
             .map_err(internal)?;
@@ -116,7 +157,7 @@ impl Store {
             .map_err(internal)?;
         let unresolved: i64 = db.query_row("SELECT count(*) FROM st.human_feedback WHERE object_ref_id NOT IN (SELECT id FROM learning_resolved)", [], |r|r.get(0)).map_err(internal)?;
         decode(
-            json!({"model_id":fitted.as_ref().map(|_|format!("md_{}",student.model_id())),"algorithm":"weighted_multinomial_nb_v1","taxonomy_version":1,"training_count":student.training_count(),"human_events":human,"teacher_labels":teacher,"human_support":student.labels().iter().zip(student.human_support()).collect::<std::collections::BTreeMap<_,_>>(),"fitted_at":fitted,"dataset_class":dataset,"calibrated":false,"autonomy_allowed":false,"gate":if dataset==DatasetClass::Personal {Some("learning_personal_gated")} else {None},"unresolved_human_events":unresolved}),
+            json!({"model_id":fitted.as_ref().map(|_|format!("md_{}",student.model_id())),"algorithm":"weighted_multinomial_nb_v1","taxonomy_version":1,"training_count":student.training_count(),"human_events":human,"teacher_labels":teacher,"human_support":student.labels().iter().zip(student.human_support()).collect::<std::collections::BTreeMap<_,_>>(),"fitted_at":fitted,"dataset_class":dataset,"calibrated":false,"autonomy_allowed":false,"gate":null,"unresolved_human_events":unresolved}),
         )
     }
 
@@ -142,30 +183,42 @@ impl Engine {
         *self.learning.lock().unwrap() = Some(store);
     }
 
+    /// The installed store, refused unless its recorded dataset class is this engine's: a
+    /// personal session never trains on synthetic labels, nor a synthetic one on personal labels.
     fn learning_store(&self) -> EngineResult<Arc<Store>> {
-        self.learning
+        let store = self
+            .learning
             .lock()
             .unwrap()
             .clone()
-            .ok_or_else(|| EngineError::unavailable(Component::Learning))
-    }
-    fn learning_gate(&self) -> EngineResult<()> {
-        if self.config.dataset_class == DatasetClass::Personal {
+            .ok_or_else(|| EngineError::unavailable(Component::Learning))?;
+        let expected = match self.config.dataset_class {
+            DatasetClass::Synthetic => "synthetic",
+            DatasetClass::Personal => "personal",
+        };
+        if store.dataset != expected {
             return Err(EngineError::PermissionDenied {
-                message: "learning_personal_gated".into(),
+                message: "dataset_class_mismatch".into(),
             });
+        }
+        Ok(store)
+    }
+    /// Revocation sweep (see [`Store::redact`]); the service calls it after a grant stops being active.
+    pub fn learning_redact_revoked(&self) -> EngineResult<()> {
+        let store = self.learning_store()?;
+        let changed = Store::redact(&store.db.lock().unwrap())?;
+        if changed {
+            self.learning_updated()?;
         }
         Ok(())
     }
     /// Durable replay precedes session-local node resolution, including after restart.
     pub fn learning_replay(&self, r: &FeedbackRequest) -> EngineResult<Option<FeedbackResult>> {
-        self.learning_gate()?;
         Store::replay(&self.learning_store()?.db.lock().unwrap(), r)
     }
 
     /// Retrieve the prior human event without resolving or reading the current node.
     pub fn learning_prior(&self, node: &NodeId) -> EngineResult<Option<(i64, Value)>> {
-        self.learning_gate()?;
         let store = self.learning_store()?;
         let db = store.db.lock().unwrap();
         let prior: Option<(i64, String)> = db.query_row("SELECT h.object_ref_id,h.features_json FROM st.learning_node n JOIN st.human_feedback h ON h.object_ref_id=n.object_ref_id WHERE n.node_id=?1 ORDER BY h.revision DESC LIMIT 1", [node.as_str()], |r| Ok((r.get(0)?,r.get(1)?))).optional().map_err(internal)?;
@@ -181,7 +234,6 @@ impl Engine {
 
     /// Validate label semantics before the service creates a durable reference.
     pub fn learning_validate_feedback(&self, r: &FeedbackRequest) -> EngineResult<()> {
-        self.learning_gate()?;
         if r.retract != r.label.is_none() {
             return Err(invalid("label must be null exactly when retract is true"));
         }
@@ -201,7 +253,6 @@ impl Engine {
         object_ref: i64,
         features: &Value,
     ) -> EngineResult<FeedbackResult> {
-        self.learning_gate()?;
         let store = self.learning_store()?;
         let mut db = store.db.lock().unwrap();
         let tx = db
@@ -289,9 +340,6 @@ impl Engine {
         candidates: Vec<(EntryRow, Value)>,
         revisions: (i64, i64),
     ) -> EngineResult<LearningQueue> {
-        if self.config.dataset_class == DatasetClass::Personal {
-            return decode(json!({"model_id":null,"items":[],"next_cursor":null}));
-        }
         let store = self.learning_store()?;
         let db = store.db.lock().unwrap();
         let (student, _) = Store::student(&db)?;
@@ -361,7 +409,6 @@ impl Engine {
 
     /// Starts a cancellable human-only refit job; the registry excludes concurrent refits.
     pub fn learning_refit(&self) -> EngineResult<Job> {
-        self.learning_gate()?;
         let store = self.learning_store()?;
         let events = self.events.clone();
         let dataset = self.config.dataset_class;
@@ -371,11 +418,12 @@ impl Engine {
             }
             let (events_data, rev) = {
                 let db = store.db.lock().unwrap();
+                Store::redact(&db)?;
                 let tx = db.unchecked_transaction().map_err(internal)?;
                 let rev: i64 = tx
                     .query_row("SELECT state_rev FROM st.revision", [], |r| r.get(0))
                     .map_err(internal)?;
-                let mut stmt=tx.prepare("SELECT h.event_id,h.object_ref_id,h.revision,h.label,h.retracted,h.features_json FROM st.human_feedback h WHERE h.object_ref_id IN (SELECT id FROM learning_resolved) AND h.retracted=0 AND NOT EXISTS(SELECT 1 FROM st.human_feedback newer WHERE newer.object_ref_id=h.object_ref_id AND newer.revision>h.revision) ORDER BY h.id DESC LIMIT 10000").map_err(internal)?;
+                let mut stmt=tx.prepare("SELECT h.event_id,h.object_ref_id,h.revision,h.label,h.retracted,h.features_json FROM st.human_feedback h WHERE h.object_ref_id IN (SELECT id FROM learning_resolved) AND h.retracted=0 AND h.event_id NOT IN (SELECT event_id FROM st.learning_redacted) AND NOT EXISTS(SELECT 1 FROM st.human_feedback newer WHERE newer.object_ref_id=h.object_ref_id AND newer.revision>h.revision) ORDER BY h.id DESC LIMIT 10000").map_err(internal)?;
                 let rows = stmt
                     .query_map([], |r| {
                         Ok((

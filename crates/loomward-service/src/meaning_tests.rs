@@ -106,14 +106,18 @@ fn meaning_is_bounded_read_only_advice_with_explicit_unknowns() {
         err(svc.call(req, &CallContext::http())).code,
         ErrorCode::DeadlineExceeded
     );
+    // q-11: personal sessions read meaning too; an unknown node is still refused.
     let personal_dir = temp_root();
     let personal = open(personal_dir.path(), DatasetClass::Personal);
-    let refused = err(call(
-        &personal,
-        "threads.meaning",
-        json!({"node_ids":["nd_unknown"]}),
-    ));
-    assert_eq!(refused.detail.unwrap()["reason"], "learning_personal_gated");
+    assert_eq!(
+        err(call(
+            &personal,
+            "threads.meaning",
+            json!({"node_ids":["nd_unknown"]}),
+        ))
+        .code,
+        ErrorCode::NotFound
+    );
 }
 
 #[test]
@@ -129,11 +133,54 @@ fn meaning_work_budget_is_an_honest_prefix() {
         .map(|n| n["node_id"].clone())
         .collect();
     assert!(ids.len() > 1000);
-    let result = ok(
-        "threads.meaning",
-        call(&svc, "threads.meaning", json!({"node_ids":ids})),
-    )
-    .0;
+    // This pins the work-count budget, which has no clock in it; the 2 s default deadline would
+    // make it a race on a loaded host (a thousand items take ~1 s alone). The protocol maximum
+    // takes time out of the claim, and the 1 ms case in the test above pins the deadline itself.
+    let mut req = request("threads.meaning", json!({"node_ids":ids}));
+    req.deadline_ms = Some(Int::new(60_000).unwrap());
+    let result = ok("threads.meaning", svc.call(req, &CallContext::http())).0;
     assert_eq!(result["budget_hit"], true);
     assert_eq!(result["items"].as_array().unwrap().len(), 1000);
+}
+
+#[test]
+fn meaning_features_read_each_file_once() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    fixture(&svc, 3);
+    svc.inner
+        .db()
+        .execute_batch("UPDATE main.file SET file_id=cast(printf('%016d',id) AS BLOB),created_ft=1")
+        .unwrap();
+    let mut reader = svc.inner.catalog.reader().unwrap();
+    let features =
+        crate::meaning::eligible_features(&mut reader, loomward_catalog::NodeKey::File(1))
+            .unwrap()
+            .expect("a file with a durable identity is eligible");
+    assert_eq!(features["extension"], "txt");
+    assert_eq!(
+        reader.inspect_count, 1,
+        "eligibility and features share one detail read"
+    );
+    let mut reader = svc.inner.catalog.reader().unwrap();
+    assert!(
+        crate::meaning::eligible_features(&mut reader, loomward_catalog::NodeKey::Dir(1))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        reader.inspect_count, 0,
+        "a folder is ineligible without a read"
+    );
+    svc.inner
+        .db()
+        .execute_batch("UPDATE main.file SET file_id=NULL")
+        .unwrap();
+    let mut reader = svc.inner.catalog.reader().unwrap();
+    assert!(
+        crate::meaning::eligible_features(&mut reader, loomward_catalog::NodeKey::File(1))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(reader.inspect_count, 1);
 }

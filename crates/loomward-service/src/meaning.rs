@@ -1,8 +1,24 @@
-use crate::{catalog_error, fail, learning::features, Inner, Out, ReadWork};
-use loomward_catalog::NodeKey;
+use crate::{catalog_error, fail, learning::features_of, Inner, Out, ReadWork};
+use loomward_catalog::{NodeKey, Reader};
 use loomward_engine::learning::MEANING_WORK_BUDGET;
 use loomward_protocol::*;
+use serde_json::Value;
 use std::time::{Duration, Instant};
+
+/// Student features for an eligible file; one detail read decides eligibility and supplies the row.
+pub(crate) fn eligible_features(
+    reader: &mut Reader,
+    key: NodeKey,
+) -> Result<Option<Value>, ErrorBody> {
+    if !matches!(key, NodeKey::File(_)) {
+        return Ok(None);
+    }
+    let detail = reader.inspect(key).map_err(catalog_error)?;
+    if detail.identity.durable_reference != "available" || !detail.exclusions.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(features_of(reader, key, detail)?.1))
+}
 
 impl Inner {
     pub(crate) fn meaning(
@@ -10,7 +26,6 @@ impl Inner {
         r: MeaningRequest,
         work: Option<&ReadWork>,
     ) -> Result<Out, ErrorBody> {
-        self.learning_gate()?;
         let revs = self.revisions()?;
         let deadline = work.map_or_else(|| Instant::now() + Duration::from_secs(2), |w| w.deadline);
         let mut reader = match work {
@@ -34,18 +49,7 @@ impl Inner {
                 None
             } else {
                 let key = self.node(id, &mut reader)?;
-                if matches!(key, NodeKey::File(_)) {
-                    let detail = reader.inspect(key).map_err(catalog_error)?;
-                    if detail.identity.durable_reference == "available"
-                        && detail.exclusions.is_empty()
-                    {
-                        Some(features(&mut reader, key)?.1)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
+                eligible_features(&mut reader, key)?
             };
             candidates.push((id.clone(), feature));
         }

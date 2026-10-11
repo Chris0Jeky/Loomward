@@ -16,6 +16,8 @@ pub struct Reader {
     pub(crate) conn: Connection,
     pub(crate) writer: Option<Arc<Writer>>,
     pub live_clamp_count: u64,
+    /// Detail reads served, so a caller that owes one per node can prove it.
+    pub inspect_count: u64,
     breakdowns: HashMap<(i64, String, Basis, usize, String), Breakdown>,
     pub(crate) deadline: Option<std::time::Instant>,
 }
@@ -359,6 +361,7 @@ impl Reader {
             conn,
             writer: None,
             live_clamp_count: 0,
+            inspect_count: 0,
             breakdowns: HashMap::new(),
             deadline: None,
         })
@@ -422,6 +425,7 @@ impl Reader {
         self.read(|conn| node_path(conn, key))
     }
     pub fn inspect(&mut self, key: NodeKey) -> Result<NodeDetail> {
+        self.inspect_count += 1;
         self.read(|conn|{
             let r=get(conn,key)?;if !r.valid{return Err(Error::RepairRequired);}let path=node_path(conn,key)?;
             let (display,volume,volume_key):(String,Option<i64>,Option<String>)=conn.query_row("SELECT g.display_path,g.volume_id,v.volume_key FROM root_grant g LEFT JOIN volume v ON v.id=g.volume_id WHERE g.id=?1",[r.grant],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
@@ -429,7 +433,7 @@ impl Reader {
             for p in path.ancestors.iter().skip(1) {display_path.push('\\');display_path.push_str(&p.name);}
             if display_path.chars().count()>32768 {return Err(Error::Invalid("display path limit"));}
             let generation=revisions(conn,Some(r.grant))?[0].1.map(|g|g.to_string());
-            let identity=IdentityObservation{quality:match r.file_id.as_ref().map(Vec::len){Some(16)=>"native_file_id_128",Some(8)=>"native_file_id_64",_=>"path_observation"}.into(),volume_key:volume_key.clone(),file_id_hex:r.file_id.as_ref().map(|id|id.iter().map(|v|format!("{v:02x}")).collect()),observed_generation:generation,authorises_effects:false,durable_reference:durable_quality(conn,&r)?};
+            let identity=IdentityObservation{quality:if r.flags&crate::IDENTITY_UNVERIFIED!=0{"unverified"}else{match r.file_id.as_ref().map(Vec::len){Some(16)=>"native_file_id_128",Some(8)=>"native_file_id_64",_=>"path_observation"}}.into(),volume_key:volume_key.clone(),file_id_hex:r.file_id.as_ref().map(|id|id.iter().map(|v|format!("{v:02x}")).collect()),observed_generation:generation,authorises_effects:false,durable_reference:durable_quality(conn,&r)?};
             let mut memberships=Vec::new();
             if let (Some(v),Some(id))=(&volume_key,&r.file_id) {
                 let mut s=conn.prepare("SELECT c.id,c.name FROM st.collection c JOIN st.collection_member m ON m.collection_id=c.id JOIN st.object_ref o ON o.id=m.object_ref_id LEFT JOIN st.pending_reference p ON p.object_ref_id=o.id AND p.catalog_instance=?3 AND p.publication_token=(SELECT value FROM meta WHERE key='reference_publication') WHERE o.volume_key=?1 AND o.file_id=?2 AND o.state='resolved' AND o.retired=0 AND o.catalog_instance=?3 AND ((o.row_id=?4 AND o.born_run=?5) OR (p.row_id=?4 AND p.born_run=?5)) AND o.kind=?6 LIMIT 32")?;

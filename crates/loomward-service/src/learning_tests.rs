@@ -29,7 +29,8 @@ pub(super) fn feedback(node: &str, key: &str, label: Option<&str>, retract: bool
 pub(super) fn finish_refit(svc: &Service) -> Payload {
     let (job, _) = ok("learning.refit", call(svc, "learning.refit", json!({})));
     let id: JobId = serde_json::from_value(job["job"]["job_id"].clone()).unwrap();
-    let until = Instant::now() + Duration::from_secs(5);
+    // Liveness bounds only: no test claims anything about how fast a refit or its status is.
+    let until = Instant::now() + Duration::from_secs(60);
     loop {
         let job = svc.inner.engine.job_status(&id).unwrap();
         if matches!(
@@ -42,7 +43,9 @@ pub(super) fn finish_refit(svc: &Service) -> Payload {
         assert!(Instant::now() < until);
         std::thread::sleep(Duration::from_millis(2));
     }
-    ok("learning.status", call(svc, "learning.status", json!({}))).0
+    let mut status = request("learning.status", json!({}));
+    status.deadline_ms = Some(Int::new(60_000).unwrap());
+    ok("learning.status", svc.call(status, &CallContext::http())).0
 }
 
 #[test]
@@ -219,42 +222,172 @@ fn learning_durable_replay_conflict_and_retraction() {
     assert_eq!(replay["idempotent_replay"], true);
 }
 
+fn count(svc: &Service, sql: &str) -> i64 {
+    svc.inner.db().query_row(sql, [], |r| r.get(0)).unwrap()
+}
+
+/// q-11: a personal session learns locally from the owner's labels on its active grants; the
+/// teacher stays refused, and revocation redacts and withdraws while withdrawal stays possible.
 #[test]
-fn learning_personal_gate_and_unknown_status() {
+fn learning_personal_session_learns_locally_and_revocation_redacts() {
     let tmp = temp_root();
     let svc = open(tmp.path(), DatasetClass::Personal);
-    svc.inner.db().execute("INSERT INTO st.student_model VALUES('md_gated','weighted_multinomial_nb_v1',1,'fixture',1,'invalid stored candidate','candidate',0)",[]).unwrap();
+    let node = learning_node(&svc);
     let (status, _) = ok("learning.status", call(&svc, "learning.status", json!({})));
-    assert_eq!(status["gate"], "learning_personal_gated");
-    assert_eq!(status["model_id"], Value::Null);
-    let queue: LearningQueueRequest =
-        serde_json::from_value(json!({"root_id":null,"limit":1,"cursor":null})).unwrap();
-    assert!(svc
-        .inner
-        .engine
-        .learning_queue(&queue, vec![], (0, 0))
-        .unwrap()
-        .items
-        .is_empty());
-    for (command, p) in [
-        ("learning.refit", json!({})),
-        (
-            "feedback.record",
-            feedback("nd_unknown", "ce_personal", Some("Documents"), false),
+    assert_eq!(status["gate"], Value::Null);
+    assert_eq!(status["dataset_class"], "personal");
+    let (queue, _) = ok(
+        "learning.queue",
+        call(
+            &svc,
+            "learning.queue",
+            json!({"root_id":null,"limit":10,"cursor":null}),
         ),
-    ] {
-        let e = err(call(&svc, command, p));
-        assert_eq!(e.code, ErrorCode::CapabilityUnavailable);
-        assert_eq!(reason(&e), Some("learning_personal_gated"));
-    }
-    assert_eq!(
-        svc.inner
-            .db()
-            .query_row("SELECT count(*) FROM st.human_feedback", [], |r| r
-                .get::<_, i64>(0))
-            .unwrap(),
-        0
     );
+    assert_eq!(queue["items"].as_array().unwrap().len(), 3);
+    let (first, _) = ok(
+        "feedback.record",
+        call(
+            &svc,
+            "feedback.record",
+            feedback(&node, "ce_personal_1", Some("Documents"), false),
+        ),
+    );
+    assert_eq!(first["data_class"], "human");
+    // A teacher row in the same store is a separate class and never trains the student.
+    svc.inner.db().execute_batch("PRAGMA foreign_keys=OFF;INSERT INTO st.teacher_label(event_id,request_id,object_ref_id,revision,label,abstain,reason,evidence_json,taxonomy_version,features_json,received_at_ns) SELECT 'tl_personal',999,object_ref_id,1,'Archive',0,'fixture','[]',1,features_json,0 FROM st.human_feedback LIMIT 1;PRAGMA foreign_keys=ON").unwrap();
+    let status = finish_refit(&svc);
+    assert_eq!(status["training_count"], 1);
+    assert_eq!(status["teacher_labels"], 1);
+    assert_eq!(status["human_support"]["Archive"], 0);
+    assert_eq!(status["calibrated"], false);
+    assert_eq!(status["autonomy_allowed"], false);
+    let (meaning, _) = ok(
+        "threads.meaning",
+        call(&svc, "threads.meaning", json!({"node_ids":[node]})),
+    );
+    assert_eq!(meaning["model_id"], status["model_id"]);
+    let suggestion = &meaning["items"][0]["meaning"]["suggestion"];
+    assert_eq!(suggestion["ranked"][0]["label"], "Documents");
+    assert_eq!(suggestion["calibrated"], false);
+    assert_eq!(suggestion["teacher"], Value::Null);
+    for (command, payload) in [
+        (
+            "teacher.preview",
+            json!({"node_ids":[node],"recipient":"codex_cli_gpt_6_1_sol"}),
+        ),
+        (
+            "grants.create_disclosure",
+            json!({"preview_id":"tp_0001","payload_digest":format!("sha256:{}", "0".repeat(64))}),
+        ),
+        ("teacher.run", json!({"grant_id":"gr_0002"})),
+        ("teacher.results", json!({"job_id":"jb_0010"})),
+    ] {
+        let e = err(call(&svc, command, payload));
+        assert_eq!(e.code, ErrorCode::CapabilityUnavailable, "{command}");
+        assert_eq!(reason(&e), Some("teacher_personal_gated"), "{command}");
+    }
+    assert!(count(&svc, "SELECT count(*) FROM st.human_feedback WHERE features_json LIKE '%name%' AND features_json NOT LIKE '%\"name\":\"\"%'") > 0);
+    let root = svc.inner.root_id(1);
+    ok(
+        "roots.revoke",
+        call(
+            &svc,
+            "roots.revoke",
+            json!({"root_id": root, "purge_catalog": false}),
+        ),
+    );
+    assert_eq!(
+        count(&svc, "SELECT count(*) FROM st.human_feedback WHERE features_json!='{\"name\":\"\",\"extension\":\"\",\"context\":\"\",\"size_bytes\":0}'"),
+        0,
+        "revocation redacts every label's features"
+    );
+    assert_eq!(count(&svc, "SELECT count(*) FROM st.student_model"), 0);
+    let (status, _) = ok("learning.status", call(&svc, "learning.status", json!({})));
+    assert_eq!(status["model_id"], Value::Null);
+    assert_eq!(
+        finish_refit(&svc)["training_count"],
+        0,
+        "revocation withdraws"
+    );
+    assert_eq!(
+        err(call(
+            &svc,
+            "feedback.record",
+            feedback(&node, "ce_after_revoke", Some("Finance"), false),
+        ))
+        .code,
+        ErrorCode::NotFound
+    );
+    ok(
+        "feedback.record",
+        call(
+            &svc,
+            "feedback.record",
+            feedback(&node, "ce_withdraw_revoked", None, true),
+        ),
+    );
+    assert_eq!(
+        count(
+            &svc,
+            "SELECT count(*) FROM st.human_feedback WHERE retracted=1"
+        ),
+        1
+    );
+    let (queue, _) = ok(
+        "learning.queue",
+        call(
+            &svc,
+            "learning.queue",
+            json!({"root_id":null,"limit":10,"cursor":null}),
+        ),
+    );
+    assert!(queue["items"].as_array().unwrap().is_empty());
+}
+
+/// Each store records its dataset class: neither class's session opens, or trains on, the other's labels.
+#[test]
+fn learning_stores_never_cross_dataset_classes() {
+    for (class, other) in [
+        (DatasetClass::Synthetic, DatasetClass::Personal),
+        (DatasetClass::Personal, DatasetClass::Synthetic),
+    ] {
+        let tmp = temp_root();
+        let svc = open(tmp.path(), class);
+        let node = learning_node(&svc);
+        ok(
+            "feedback.record",
+            call(
+                &svc,
+                "feedback.record",
+                feedback(&node, "ce_class", Some("Documents"), false),
+            ),
+        );
+        drop(svc);
+        assert!(Service::open(Config {
+            state_dir: tmp.path().to_path_buf(),
+            dataset: other,
+            allow_personal: true,
+            allow_identity_unverified: false,
+            grant_roots: vec![],
+        })
+        .is_err());
+        // Even an engine handed the wrong store refuses before reading a label.
+        let engine = loomward_engine::Engine::open(loomward_engine::EngineConfig::new(
+            tmp.path().into(),
+            other,
+        ))
+        .unwrap();
+        engine.install_learning(loomward_engine::learning::Store::open(tmp.path()).unwrap());
+        assert_eq!(
+            engine.learning_status().unwrap_err().code(),
+            ErrorCode::PermissionDenied
+        );
+        assert_eq!(
+            engine.learning_refit().unwrap_err().code(),
+            ErrorCode::PermissionDenied
+        );
+    }
 }
 
 #[test]
@@ -641,4 +774,48 @@ fn learning_training_window_uses_newest_distinct_objects() {
     assert_eq!(status["human_support"]["Archive"], 0);
     assert_eq!(status["human_support"]["Finance"], 1);
     assert_eq!(status["human_support"]["Documents"], 9_999);
+}
+
+/// #356: feedback binds its reference through the catalogue writer, so a label cannot land inside
+/// the pending-publication window: it queues behind the publication and then meets the published
+/// catalogue, where the labelled row is gone.
+#[test]
+fn feedback_inside_the_publication_window_queues_behind_the_publication() {
+    let dir = temp_root();
+    let svc = Arc::new(open(dir.path(), DatasetClass::Synthetic));
+    let node = learning_node(&svc);
+    let scan = rescan_paused_in_publication_window(&svc);
+    let writer = svc.inner.catalog.writer();
+    let baseline = writer.queued_bytes();
+    let worker = svc.clone();
+    let label = std::thread::spawn(move || {
+        call(
+            &worker,
+            "feedback.record",
+            feedback(&node, "ce_window", Some("Documents"), false),
+        )
+    });
+    svc.inner
+        .hooks
+        .until("feedback queued behind the publication", |_| {
+            writer.queued_bytes() > baseline
+        });
+    let count = |table: &str| -> i64 {
+        svc.inner
+            .db()
+            .query_row(&format!("SELECT count(*) FROM st.{table}"), [], |r| {
+                r.get(0)
+            })
+            .unwrap()
+    };
+    assert_eq!(
+        count("object_ref"),
+        0,
+        "a reference was bound inside the window"
+    );
+    writer.publication_window().release();
+    scan.join().unwrap();
+    assert_eq!(err(label.join().unwrap()).code, ErrorCode::NotFound);
+    assert_eq!(count("object_ref"), 0);
+    assert_eq!(count("human_feedback"), 0);
 }

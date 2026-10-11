@@ -296,6 +296,215 @@ pub struct TelemetrySample {
     pub engine: Option<EngineSample>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub processes: Option<ProcessSummary>,
+    pub trends: TelemetryTrends,
+}
+
+/// Units are fixed by the metric; bytes remain exact decimal strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrendMetric {
+    TotalBytes,
+    AvailableBytes,
+    CommitBytes,
+    CommitLimitBytes,
+    CommitPeakBytes,
+    SystemCacheBytes,
+    KernelPagedBytes,
+    KernelNonpagedBytes,
+    PageSizeBytes,
+    StandbyBytes,
+    ModifiedBytes,
+    FreeBytes,
+    CpuBusyFraction,
+    DiskBusyFraction,
+    DiskQueueLength,
+    PrivateCommitBytes,
+    PrivateWorkingSetBytes,
+    WorkingSetBytes,
+    CpuFraction,
+    IoReadBytesPerS,
+    IoWriteBytesPerS,
+    GpuDedicatedBytes,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrendUnit {
+    Bytes,
+    Fraction,
+    Queue,
+    BytesPerS,
+}
+
+impl TrendMetric {
+    pub fn unit(self) -> TrendUnit {
+        match self {
+            Self::CpuBusyFraction | Self::DiskBusyFraction | Self::CpuFraction => {
+                TrendUnit::Fraction
+            }
+            Self::DiskQueueLength => TrendUnit::Queue,
+            Self::IoReadBytesPerS | Self::IoWriteBytesPerS => TrendUnit::BytesPerS,
+            _ => TrendUnit::Bytes,
+        }
+    }
+    pub fn channel(self) -> TelemetryChannel {
+        match self {
+            Self::DiskBusyFraction | Self::DiskQueueLength => TelemetryChannel::Disks,
+            Self::PrivateCommitBytes
+            | Self::PrivateWorkingSetBytes
+            | Self::WorkingSetBytes
+            | Self::CpuFraction
+            | Self::IoReadBytesPerS
+            | Self::IoWriteBytesPerS
+            | Self::GpuDedicatedBytes => TelemetryChannel::Processes,
+            _ => TelemetryChannel::System,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TrendValue {
+    Bytes(Bytes),
+    Number(Rate),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrendPoint {
+    pub offset_ms: Count,
+    pub observed_at: Timestamp,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub value: Option<TrendValue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, try_from = "TrendSeriesWire")]
+pub struct TrendSeries {
+    pub key: Text<96>,
+    pub metric: TrendMetric,
+    pub unit: TrendUnit,
+    pub max_gap_ms: Count,
+    pub points: BoundedVec<TrendPoint, 0, 8>,
+    pub unknowns: BoundedVec<Text<256>, 0, 8>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TrendSeriesWire {
+    key: Text<96>,
+    metric: TrendMetric,
+    unit: TrendUnit,
+    max_gap_ms: Count,
+    points: BoundedVec<TrendPoint, 0, 8>,
+    unknowns: BoundedVec<Text<256>, 0, 8>,
+}
+
+/// A value that cannot be in `unit`: bytes only in bytes, numbers never in bytes, fractions at most 1.
+fn value_disagrees(unit: TrendUnit, v: &TrendValue) -> bool {
+    match v {
+        TrendValue::Bytes(_) => unit != TrendUnit::Bytes,
+        TrendValue::Number(n) => {
+            unit == TrendUnit::Bytes || (unit == TrendUnit::Fraction && n.get() > 1.0)
+        }
+    }
+}
+
+impl TryFrom<TrendSeriesWire> for TrendSeries {
+    type Error = &'static str;
+    fn try_from(v: TrendSeriesWire) -> Result<Self, Self::Error> {
+        if v.unit != v.metric.unit()
+            || v.points
+                .iter()
+                .any(|p| p.value.as_ref().is_some_and(|x| value_disagrees(v.unit, x)))
+        {
+            return Err("trend metric/value units disagree");
+        }
+        Ok(Self {
+            key: v.key,
+            metric: v.metric,
+            unit: v.unit,
+            max_gap_ms: v.max_gap_ms,
+            points: v.points,
+            unknowns: v.unknowns,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrendCandidateKind {
+    Growth,
+    CpuSaturation,
+    MemoryPressure,
+    DiskQueue,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, try_from = "TrendCandidateWire")]
+pub struct TrendCandidate {
+    pub kind: TrendCandidateKind,
+    pub series_index: Count,
+    pub unit: TrendUnit,
+    pub start_at: Timestamp,
+    pub end_at: Timestamp,
+    pub window_ms: Count,
+    pub sample_count: Count,
+    pub start_value: TrendValue,
+    pub end_value: TrendValue,
+    /// Signed secant slope in unit/s; no confidence or probability score.
+    pub slope_per_s: Text<64>,
+    pub facts: BoundedVec<Text<256>, 1, 8>,
+    pub unknowns: BoundedVec<Text<256>, 1, 8>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TrendCandidateWire {
+    kind: TrendCandidateKind,
+    series_index: Count,
+    unit: TrendUnit,
+    start_at: Timestamp,
+    end_at: Timestamp,
+    window_ms: Count,
+    sample_count: Count,
+    start_value: TrendValue,
+    end_value: TrendValue,
+    slope_per_s: Text<64>,
+    facts: BoundedVec<Text<256>, 1, 8>,
+    unknowns: BoundedVec<Text<256>, 1, 8>,
+}
+
+impl TryFrom<TrendCandidateWire> for TrendCandidate {
+    type Error = &'static str;
+    fn try_from(v: TrendCandidateWire) -> Result<Self, Self::Error> {
+        if value_disagrees(v.unit, &v.start_value) || value_disagrees(v.unit, &v.end_value) {
+            return Err("trend candidate unit and values disagree");
+        }
+        Ok(Self {
+            kind: v.kind,
+            series_index: v.series_index,
+            unit: v.unit,
+            start_at: v.start_at,
+            end_at: v.end_at,
+            window_ms: v.window_ms,
+            sample_count: v.sample_count,
+            start_value: v.start_value,
+            end_value: v.end_value,
+            slope_per_s: v.slope_per_s,
+            facts: v.facts,
+            unknowns: v.unknowns,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TelemetryTrends {
+    pub series: BoundedVec<std::sync::Arc<TrendSeries>, 0, 8192>,
+    pub candidates: BoundedVec<TrendCandidate, 0, 64>,
+    pub candidates_truncated: bool,
+    pub unknowns: BoundedVec<Text<256>, 0, 8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -84,7 +84,8 @@
     "student": "weighted Naive Bayes; Rust port loomward-learn with exact Python parity (#113)",
     "teacher_mock_http_tested": true,
     "actual_model_tested": "synthetic-only: GPT-6.1 Sol through codex exec, 10/10 schema-valid 25-item batches, median 21.8 s (#116); no personal data",
-    "personal_dataset_evaluated": false
+    "personal_dataset_evaluated": false,
+    "personal": "open locally on the owner's labels (q-11, 2026-10-11): stores keep their dataset class; revocation sweeps features and models; teacher entry points refuse personal sessions (teacher_personal_gated); grants record their volume filesystem (#372), so real granted NTFS folders can be labelled (live test a_live_scanned_ntfs_grant_can_be_labelled_and_collected); evidence/v3/personal-learning-q11.md"
   },
   "experiments": {
     "tiny_allocation_cases": 51,
@@ -98,7 +99,7 @@
     "#148 P4 toward 250k: make the scan pipeline stage asynchronously (the bench path is at about 109k rows/s)",
     "#160 one 10-minute quiet-host P12 run",
     "remaining review follow-ups: #309 (fail_batch MEDIUMs, order-dependent reparent, watch LOWs), #333 (lab-space deadline race, Tiers source eligibility), #337 (redaction and learning LOWs), #326 and #329 LOWs, #320 (the http duplicate-Content-Length flake, awaiting a recurrence)",
-    "LW-111 (teacher: the owner's lane; personal data waits on q-5)"
+    "LW-111 (teacher: the owner's lane; q-5 answered 2026-10-11: names only, per-request preview, after the broker's canaries)"
   ],
   "optional_independent_starts": [
     "LW-065",
@@ -146,7 +147,7 @@
   "estate": {
     "repository": "Chris0Jeky/Loomward (public)",
     "harness": "AGENTS.md is the single agent baseline; estate laws supersede handoff/ process rules",
-    "tier": "T1 sandbox (.agent-harness/tier.json)"
+    "tier": "T2 daily driver (.agent-harness/tier.json; owner, 2026-10-11)"
   },
   "ui": {
     "prototype": "app/prototype: woven atlas + Observatory signature prototype (#112)",
@@ -163,7 +164,7 @@
     ]
   },
   "backlog_github_map": "backlog/github-issues.json (#4-#105, #120-#131); follow-ups #141-#171",
-  "teacher_confinement": "synthetic-only; owner decision q-8 answered 2026-10-10: inference broker first, synthetic tests only, no credential reuse, no paid fallback, no Windows security change; design spec docs/superpowers/specs/2026-10-10-synthetic-inference-broker-design.md (owner's lane); q-5 (personal-data disclosure) remains open",
+  "teacher_confinement": "synthetic-only; owner decision q-8 answered 2026-10-10: inference broker first, synthetic tests only, no credential reuse, no paid fallback, no Windows security change; design spec docs/superpowers/specs/2026-10-10-synthetic-inference-broker-design.md (owner's lane); q-5 answered 2026-10-11 (names only, per-request preview, after the broker's canaries; sensitive_data set then)",
   "wave4": {
     "merged": [
       "#173",
@@ -304,8 +305,16 @@
       "#269": "containment re-proved before every relist (#278)"
     },
     "hardening_before_opening": "#284 profile and store fences, scan gates keyed on the durable grant; #286 profiles directory resolved from the OS (FOLDERID_UserProfiles), not by its folder name",
-    "rule": "a personal session scans its own active owner grants (desktop picker or --grant-root); revoked, lab and unknown roots are refused; metadata only; content_read_gated unchanged; no new effect, endpoint or elevation",
+    "rule": "a personal session scans its own active owner grants (desktop picker or --grant-root); revoked, lab and unknown roots are refused; metadata only; no new effect, endpoint or elevation (duplicate content reads opened later: personal_duplicates)",
     "evidence": "evidence/v3/personal-scan-opening.md"
+  },
+  "personal_duplicates": {
+    "state": "open",
+    "opened": "2026-10-11",
+    "decision": "HUMAN_TODO q-10",
+    "rule": "a personal session reads file contents in its own active owner grants (the scan's root gate and fences) to confirm duplicates: same size, partial hash, full hash, byte comparison; pinned, revalidated, non-elevated, no-recall handles; placeholders and offline files skipped, never hydrated; reparse points not followed; rows without a 128-bit identity never read; candidate cap before I/O; byte and time budgets; revocation stops reads and redacts the report; local and read-only, nothing deleted; content_read_gated retired",
+    "not_yet": "FAT/exFAT identity-unverified refusal (q-12) is a separate lane",
+    "evidence": "evidence/v3/personal-duplicates-q10.md"
   },
   "wave7": {
     "merged": [
@@ -367,5 +376,23 @@
     "p4": "bench path about 109k rows/s after P4f (#332); 250k not reached",
     "open_decision": "loomward-revoked-root-retention (HUMAN_TODO q-9; default (a) on 2026-10-18)",
     "effects": "none: duplicates, placement and collections observe, simulate or record preferences only"
+  },
+  "owner_decisions_2026_10_11": {
+    "source": "HUMAN_TODO.md q-5, q-9 to q-19 (recorded in #360)",
+    "tier": "T2 daily driver; privacy and security findings weigh lower; secrets and real paths in the public repo stay forbidden",
+    "decided_not_yet_implemented": [
+      "q-13 P4 KPI retarget plus bulk-load lane",
+      "q-14 backups (driver: evidence import, then guarded restic observer, then restore-drill executor)",
+      "q-15 diagnostics bundle via native save dialog",
+      "q-9 Forget a revoked root",
+      "q-17 unsigned preview pre-release",
+      "q-18 hardware scrub"
+    ],
+    "owner_action": "q-19 dismiss Dependabot alert 1",
+    "implemented": [
+      "q-12 FAT/exFAT identity-unverified listing (#372; state v5; every grant records its filesystem; real FAT volume leg unverified)",
+      "q-11 personal learning on the owner's labels (#368)",
+      "q-10 personal duplicate content reads (#376)"
+    ]
   }
 }

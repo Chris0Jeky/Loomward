@@ -19,10 +19,11 @@
   const job = $derived(duplicates.book[selected]);
   const report = $derived(job?.duplicates);
   const active = $derived(job ? isActive(job.state) : false);
-  const personal = $derived(session.datasetClass === 'personal' || duplicates.gated);
+  // A session reads its own class of root only: lab roots when synthetic, folders you granted when personal (q-10).
+  const origin = $derived(session.datasetClass === 'personal' ? 'owner_granted' : 'lab_generated');
   const root = $derived(roots.find((r) => r.root_id === selected));
   const status = $derived(duplicates.problem || (duplicates.pending ? 'Sending request…' : job ? `Inspection ${job.state.replace('_', ' ')}` : ''));
-  const canStart = $derived(!personal && root?.grant_state === 'active' && root.origin === 'lab_generated');
+  const canStart = $derived(root?.grant_state === 'active' && root.origin === origin);
 
   $effect(() => session.listen((event) => duplicates.onEvent(event)));
   $effect(() => {
@@ -35,7 +36,7 @@
         const { result } = await c.call('roots.list', {});
         if (!current) return;
         roots = result.roots;
-        if (!roots.some((r) => r.root_id === selected)) selected = roots.find((r) => r.grant_state === 'active' && r.origin === 'lab_generated')?.root_id ?? roots[0]?.root_id ?? '';
+        if (!roots.some((r) => r.root_id === selected)) selected = roots.find((r) => r.grant_state === 'active' && r.origin === origin)?.root_id ?? roots[0]?.root_id ?? '';
         await duplicates.sync();
       } catch (e) { if (current) duplicates.problem = session.handle(e); }
       finally { if (current) loading = false; }
@@ -57,27 +58,24 @@
 </script>
 
 <h1>Duplicates</h1>
-<p class="lede">Inspect default streams in one granted synthetic root. Up to 200 candidates, 64 MiB read and 10 seconds. Empty files are excluded.</p>
+<p class="lede">Reads file contents on this machine to confirm duplicates; nothing is deleted or moved.</p>
+<p class="note">One granted root at a time: same size, then partial hash, full hash and a byte-by-byte comparison. Up to 200 candidates, 64 MiB read and 10 seconds. Empty files, excluded folders and cloud placeholders are skipped; placeholders are never downloaded.</p>
 <p class="note">Equal content is an observation, not a recommendation to delete.</p>
 
 <section class="panel" aria-labelledby="duplicate-inspect">
   <h2 id="duplicate-inspect">Inspect a root</h2>
-  {#if personal}
-    <p class="note gated" role="status">Personal content inspection is gated. No content is opened.</p>
-  {:else}
-    <div class="controls">
-      <div class="lw-field">
-        <label class="lbl" for="duplicate-root">Root</label>
-        <select id="duplicate-root" bind:value={selected} disabled={loading || active || duplicates.pending}>
-          {#each roots as r (r.root_id)}<option value={r.root_id}>{r.display_path.text}</option>{/each}
-        </select>
-      </div>
-      <button class="btn primary" disabled={loading || !canStart || active || duplicates.pending} onclick={() => duplicates.start(selected)}>Start inspection</button>
-      <button class="btn" disabled={!active || job?.state === 'cancel_requested' || duplicates.pending} onclick={() => duplicates.cancel(selected)}>Cancel inspection</button>
+  <div class="controls">
+    <div class="lw-field">
+      <label class="lbl" for="duplicate-root">Root</label>
+      <select id="duplicate-root" bind:value={selected} disabled={loading || active || duplicates.pending}>
+        {#each roots as r (r.root_id)}<option value={r.root_id}>{r.display_path.text}</option>{/each}
+      </select>
     </div>
-    {#if !loading && !roots.length}<p class="empty">No granted roots are available.</p>
-    {:else if root && !canStart}<p class="empty">This root is unavailable for inspection. Use an active registered synthetic lab root.</p>{/if}
-  {/if}
+    <button class="btn primary" disabled={loading || !canStart || active || duplicates.pending} onclick={() => duplicates.start(selected)}>Start inspection</button>
+    <button class="btn" disabled={!active || job?.state === 'cancel_requested' || duplicates.pending} onclick={() => duplicates.cancel(selected)}>Cancel inspection</button>
+  </div>
+  {#if !loading && !roots.length}<p class="empty">No granted roots are available.</p>
+  {:else if root && !canStart}<p class="empty">This root is unavailable for inspection. Use {session.datasetClass === 'personal' ? 'an active folder you granted' : 'an active registered synthetic lab root'}.</p>{/if}
   <p class="live" class:has={!!status} role="status" aria-live="polite">{status}</p>
 </section>
 
