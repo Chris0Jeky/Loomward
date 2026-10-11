@@ -1872,6 +1872,7 @@ dependencies = [
  "loomward-catalog",
  "loomward-engine",
  "loomward-protocol",
+ "loomward-shell",
  "loomward-telemetry",
  "loomward-windows",
  "rusqlite",
@@ -1879,6 +1880,14 @@ dependencies = [
  "serde_json",
  "sha2",
  "subtle",
+]
+
+[[package]]
+name = "loomward-shell"
+version = "0.1.0"
+dependencies = [
+ "loomward-windows",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -22,6 +22,16 @@ use std::{
 pub(crate) struct RootGate {
     revoked: bool,
     duplicate_cancel: Arc<AtomicBool>,
+    aliases: std::collections::HashSet<RootId>,
+}
+
+/// Stable gate identity; wire IDs remain labels for jobs and sink messages only.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum RootKey {
+    /// Primary key in this engine's durable grant store.
+    Grant(i64),
+    /// Standalone lab and test roots have no durable grant row.
+    Fixture(RootId),
 }
 
 /// Catalogue identity resolved by the service after authenticating its wire root ID.
@@ -51,6 +61,7 @@ pub struct CatalogRootIdentity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GrantedRoot {
     root_id: RootId,
+    key: RootKey,
     path: PathBuf,
     dataset_class: DatasetClass,
     pub(crate) expected: Option<source::OpenedIdentity>,
@@ -65,6 +76,7 @@ impl GrantedRoot {
         expected: source::OpenedIdentity,
     ) -> Self {
         Self {
+            key: RootKey::Fixture(root_id.clone()),
             root_id,
             path,
             dataset_class,
@@ -132,6 +144,10 @@ impl GrantedRoot {
     pub fn root_id(&self) -> &RootId {
         &self.root_id
     }
+    /// Stable identity used for start, revocation and writer fencing.
+    pub fn key(&self) -> &RootKey {
+        &self.key
+    }
     /// Granted native directory; never exposed as a wire input.
     pub fn path(&self) -> &Path {
         &self.path
@@ -173,7 +189,7 @@ impl Engine {
             message: reason.as_str().into(),
         })?;
         // Refuse evidence if revocation is observed at this final gate.
-        let gate = self.scan_root_gate(root.root_id());
+        let gate = self.scan_root_gate(root.key());
         let revoked = gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -196,7 +212,7 @@ impl Engine {
         if root.dataset_class != DatasetClass::Synthetic {
             return Err(denied("content_read_gated"));
         }
-        let gate = self.scan_root_gate(root.root_id());
+        let gate = self.scan_root_gate(root.key());
         let revoked = match gate.try_lock() {
             Ok(guard) => guard,
             Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
@@ -318,7 +334,14 @@ impl Engine {
             if !same_id || identity.volume_serial.map(|s| format!("vsn_{s}")) != Some(volume_key) {
                 return Err(denied("root_identity_changed"));
             }
-            Ok(GrantedRoot::new(root_id, path, dataset_class, identity))
+            let mut root = GrantedRoot::new(root_id, path, dataset_class, identity);
+            root.key = RootKey::Grant(grant_id);
+            self.scan_root_gate(root.key())
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .aliases
+                .insert(root.root_id().clone());
+            Ok(root)
         }
         #[cfg(not(windows))]
         {
@@ -359,12 +382,21 @@ impl Engine {
     ) -> EngineResult<Job> {
         self.start_scan(root, budget, RunScope::FullRoot)
     }
-    fn scan_root_gate(&self, root: &RootId) -> Arc<std::sync::Mutex<RootGate>> {
+    fn scan_root_gate(&self, root: &RootKey) -> Arc<std::sync::Mutex<RootGate>> {
         self.scan_roots
             .lock()
             .unwrap()
             .entry(root.clone())
-            .or_default()
+            .or_insert_with(|| {
+                let aliases = match root {
+                    RootKey::Fixture(id) => std::iter::once(id.clone()).collect(),
+                    RootKey::Grant(_) => Default::default(),
+                };
+                Arc::new(std::sync::Mutex::new(RootGate {
+                    aliases,
+                    ..Default::default()
+                }))
+            })
             .clone()
     }
     fn start_scan(
@@ -380,10 +412,10 @@ impl Engine {
             .unwrap()
             .clone()
             .ok_or_else(|| EngineError::unavailable(Component::Scan))?;
-        let gate = self.scan_root_gate(root.root_id());
+        let gate = self.scan_root_gate(root.key());
         // Reserve before any probe/stop/start, and retain through job submission.
         // A panic elsewhere must not leave the root Busy forever: recover a poisoned gate.
-        let revoked = match gate.try_lock() {
+        let mut revoked = match gate.try_lock() {
             Ok(guard) => guard,
             Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
             Err(std::sync::TryLockError::WouldBlock) => {
@@ -398,7 +430,13 @@ impl Engine {
                 message: "root revoked".into(),
             });
         }
-        if let Some(job_id) = self.jobs.root_jobs(root.root_id()).first() {
+        revoked.aliases.insert(root.root_id().clone());
+        if let Some(job_id) = revoked
+            .aliases
+            .iter()
+            .flat_map(|id| self.jobs.root_jobs(id))
+            .next()
+        {
             return Err(EngineError::Busy {
                 message: "root already scanning".into(),
                 detail: Some(
@@ -555,36 +593,48 @@ impl Engine {
         self.job_cancel(id)
     }
     /// Cancel all active scan jobs for a revoked root. Commit revocation before calling this.
-    pub fn scan_cancel_root(&self, root: &RootId) -> EngineResult<Vec<Job>> {
+    pub fn scan_cancel_root(&self, root: &RootKey, wire_id: &RootId) -> EngineResult<Vec<Job>> {
         let gate = self.scan_root_gate(root);
         let mut revoked = gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        revoked.aliases.insert(wire_id.clone());
         revoked.revoked = true;
         revoked.duplicate_cancel.store(true, Ordering::Release);
         // Watch teardown can terminate a queued runner before it reaches the byte budget.
-        let cancelled = self
-            .jobs
-            .root_jobs(root)
+        let cancelled = revoked
+            .aliases
             .iter()
-            .map(|id| self.jobs.cancel_revoked(id, &self.events))
+            .flat_map(|id| self.jobs.root_jobs(id))
+            .map(|id| self.jobs.cancel_revoked(&id, &self.events))
             .collect();
         #[cfg(windows)]
         {
-            let watch = self.scan_watches.lock().unwrap().remove(root);
-            if let Some(watch) = watch {
-                watch.stop();
+            for id in &revoked.aliases {
+                let watch = self.scan_watches.lock().unwrap().remove(id);
+                if let Some(watch) = watch {
+                    watch.stop();
+                }
             }
         }
         cancelled
     }
     /// Writer-fence hook, called after durable revocation and root cancellation by L8.
-    pub fn scan_writer_fence(&self, root: &RootId) -> EngineResult<()> {
-        self.scan_sink
+    pub fn scan_writer_fence(&self, root: &RootKey, wire_id: &RootId) -> EngineResult<()> {
+        let gate = self.scan_root_gate(root);
+        let mut gate = gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        gate.aliases.insert(wire_id.clone());
+        let sink = self
+            .scan_sink
             .lock()
             .unwrap()
-            .as_ref()
-            .ok_or_else(|| EngineError::unavailable(Component::Scan))?
-            .fence_root(root)
+            .clone()
+            .ok_or_else(|| EngineError::unavailable(Component::Scan))?;
+        for id in &gate.aliases {
+            sink.fence_root(id)?;
+        }
+        Ok(())
     }
 }

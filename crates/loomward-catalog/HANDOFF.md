@@ -1216,3 +1216,401 @@ not a claimed performance win; the worktree remains uncommitted and owned.
 Main advanced during this session to `0cc03acd7581c33c0b92a245066553d408193d6f`.
 Measurements and gates cover the frozen `fc79c7f` baseline plus this extraction;
 integration onto the subsequently advanced main remains with the driver.
+
+
+# Catalogue P4e (#148): remaining writer costs — 2026-10-10
+
+## Changed
+
+Uncommitted on `perf/catalog-p4e-148`, frozen main/build base
+`7d77b6b24b39766613b4184f406190bfbb0ee1ec`. The driver commits.
+The retained production change is caller-error preservation in `writer.rs`;
+three new publication tests pin the error and SQLite transaction behavior.
+The benchmark now prints its receipt without overwriting earlier evidence.
+This section and the appended `P4e` object in the
+[benchmark receipt](../../evidence/v3/bench/catalog-1m.json) preserve all prior
+receipts. No schema, dependency, public API, bulk loader or new retained cache.
+
+## Verified
+
+Windows, **shared host**. Synthetic fixtures only. Each numbered probe uses
+three interleaved main/candidate pairs; 1–4 target their specific seams rather
+than relabelling smaller probes as P4. Items 5–7 use the 1M P4 bench, and item 6
+also has three pairs of one 2M-entry directory. Main binaries were frozen from
+the starting main sources before production experiments; candidate binaries,
+source hashes, reconstructable experiment diffs and harness sources are in
+the appended receipt. No own benchmark overlapped another own benchmark.
+Item 2 initial pair 3 was repeated after a candidate build overlapped B3;
+its original observations remain excluded negative evidence. Brief local-check
+overlap around the replacement pair is not ruled out. Other lanes ran throughout.
+Ranges reflect uncontrolled shared-host variability; strict non-regression and
+causality are not claimed. Medians/ranges summarize independent metrics and are
+not additive wall clocks. Every selected 1M/2M bench run passed its accounting
+oracle, all-index assertions and explicit disposable-database cleanup. Reference
+probes assert exact totals, the survivor binding and empty pending intents;
+directory probes assert row counts/native identities. Those smaller probes use
+RAII temp-directory cleanup, without a separate cleanup assertion.
+
+### Item 1: 100k single-directory reference refresh; not P4
+
+DROP bounded first-chunk decode reuse: it clones retained observations and saves only the first of 100 second decodes in this probe. Small listing-phase improvement has overlapping ranges; a whole-listing cache was not attempted. The old-file copy is already reused by P4d.
+
+| Metric | Main | Candidate |
+| --- | ---: | ---: |
+| wall_seconds | 2.008242 [1.823060–2.023032] | 1.875008 [1.857182–2.065386] |
+| rows_per_second | 49794.297699 [49430.248896–54852.275312] | 53332.563915 [48416.606210–53844.486307] |
+| staging_seconds | 0.034480 [0.033912–0.040048] | 0.033229 [0.031858–0.035530] |
+| state_prepare_seconds | 1.261037 [1.141942–1.306852] | 1.197481 [1.193659–1.364326] |
+| listing_seconds | 0.482558 [0.467396–0.520032] | 0.469833 [0.462326–0.478405] |
+| file_insert_seconds | 0.246665 [0.242607–0.265192] | 0.242249 [0.238216–0.246166] |
+| name_validation_seconds | 0.037773 [0.036403–0.041015] | 0.037113 [0.036091–0.038180] |
+| invalidation_seconds | 0.000100 [0.000082–0.000101] | 0.000095 [0.000085–0.000106] |
+| commit_seconds | 0.135098 [0.128799–0.136869] | 0.127370 [0.118255–0.133153] |
+| rollup_seconds | 0.000000 [0.000000–0.000000] | 0.000000 [0.000000–0.000000] |
+| multilink_seconds | 0.000000 [0.000000–0.000000] | 0.000000 [0.000000–0.000000] |
+| checkpoint_seconds | 0.000000 [0.000000–0.000000] | 0.000000 [0.000000–0.000000] |
+
+### Item 2: 100k single-directory reference refresh; not P4
+
+DROP fused replacement/consume UPDATE: preparation improves but COMMIT median rises, with overlapping shared-host ranges. Main already uses two statements once per old-file match, not three statements twice; retain its exact-name/identity/incarnation rules.
+
+| Metric | Main | Candidate |
+| --- | ---: | ---: |
+| wall_seconds | 2.191950 [2.064337–3.419100] | 1.986553 [1.929784–3.386373] |
+| rows_per_second | 45621.018215 [29247.167742–48441.228044] | 50337.942120 [29529.820899–51818.758143] |
+| staging_seconds | 0.036051 [0.035590–0.041736] | 0.030975 [0.030190–0.031627] |
+| state_prepare_seconds | 1.444272 [1.370770–2.157241] | 1.273813 [1.268739–2.157800] |
+| listing_seconds | 0.516974 [0.485630–0.988667] | 0.485714 [0.482822–0.973275] |
+| file_insert_seconds | 0.268657 [0.247029–0.490288] | 0.255646 [0.254699–0.484610] |
+| name_validation_seconds | 0.042196 [0.038062–0.088683] | 0.038679 [0.037356–0.087998] |
+| invalidation_seconds | 0.000118 [0.000081–0.000146] | 0.000083 [0.000069–0.000232] |
+| commit_seconds | 0.127389 [0.120816–0.181523] | 0.136613 [0.101054–0.171954] |
+| rollup_seconds | 0.000000 [0.000000–0.000000] | 0.000000 [0.000000–0.000000] |
+| multilink_seconds | 0.000000 [0.000000–0.000000] | 0.000000 [0.000000–0.000000] |
+| checkpoint_seconds | 0.000000 [0.000000–0.000000] | 0.000000 [0.000000–0.000000] |
+
+### Item 3: 100k child-directory publication + EndRun; not P4
+
+DROP chunk-local directory identity prefetch: publication median is slower. The existing bounded extension ID/family cache already survives transactions and is cleared after rollback; retain it, with its stale-ID mutation test.
+
+| Metric | Main | Candidate |
+| --- | ---: | ---: |
+| wall_seconds | 2.916300 [2.892416–2.924522] | 2.931381 [2.924719–3.022806] |
+| rows_per_second | 34290.029735 [34193.624407–34573.177016] | 34113.610536 [33081.840769–34191.317723] |
+| staging_seconds | 0.050459 [0.048103–0.064892] | 0.053464 [0.052072–0.060478] |
+| state_prepare_seconds | 0.064840 [0.064258–0.065275] | 0.074568 [0.067915–0.103541] |
+| listing_seconds | 1.208095 [1.187885–1.221244] | 1.223581 [1.222501–1.281677] |
+| file_insert_seconds | 0.000000 [0.000000–0.000000] | 0.000000 [0.000000–0.000000] |
+| name_validation_seconds | 0.000000 [0.000000–0.000000] | 0.000000 [0.000000–0.000000] |
+| invalidation_seconds | 0.103775 [0.102745–0.104579] | 0.106194 [0.101386–0.121557] |
+| commit_seconds | 0.404861 [0.389894–0.479279] | 0.406739 [0.379331–0.489573] |
+| rollup_seconds | 0.262667 [0.258141–0.266289] | 0.260277 [0.252269–0.318188] |
+| multilink_seconds | 0.011337 [0.011223–0.011556] | 0.012323 [0.011389–0.017550] |
+| checkpoint_seconds | 0.004937 [0.004933–0.006993] | 0.005020 [0.004946–0.006503] |
+
+### Item 4: 100k child-directory publication + EndRun; not P4
+
+DROP TEMP result table plus set-based directory UPDATE: rollup is slower. Keep checked Rust postorder propagation and the existing prepared UPDATE.
+
+| Metric | Main | Candidate |
+| --- | ---: | ---: |
+| wall_seconds | 2.966963 [2.914084–3.768368] | 3.066314 [2.985003–4.427489] |
+| rows_per_second | 33704.497370 [26536.687142–34316.099525] | 32612.440766 [22586.165147–33500.798240] |
+| staging_seconds | 0.047337 [0.046622–0.055598] | 0.049676 [0.046842–0.089971] |
+| state_prepare_seconds | 0.069249 [0.066799–0.107373] | 0.102042 [0.068024–0.138428] |
+| listing_seconds | 1.262079 [1.227429–1.969682] | 1.258714 [1.249347–2.717487] |
+| file_insert_seconds | 0.000000 [0.000000–0.000000] | 0.000000 [0.000000–0.000000] |
+| name_validation_seconds | 0.000000 [0.000000–0.000000] | 0.000000 [0.000000–0.000000] |
+| invalidation_seconds | 0.100839 [0.100614–0.142155] | 0.120720 [0.108101–0.154773] |
+| commit_seconds | 0.404812 [0.375658–0.678168] | 0.500968 [0.386114–0.755899] |
+| rollup_seconds | 0.272505 [0.263944–0.504799] | 0.313752 [0.281462–0.344980] |
+| multilink_seconds | 0.012448 [0.011761–0.018574] | 0.011440 [0.011156–0.011482] |
+| checkpoint_seconds | 0.005088 [0.004959–0.008272] | 0.004500 [0.004371–0.007835] |
+
+### Item 5: 1M files through staging, all indexes; P4
+
+DROP conservative touched superset (current root identities plus previous duplicate groups): TEMP copying and indexed identity probes increase multilink time. It preserves visible-only filtering, but is broader than a per-command touched journal; no such journal is implemented.
+
+| Metric | Main | Candidate |
+| --- | ---: | ---: |
+| wall_seconds | 10.882810 [10.176663–12.110447] | 11.962814 [11.110624–12.035722] |
+| rows_per_second | 91980.009980 [82655.987733–98362.397427] | 83676.050226 [83169.172009–90094.036479] |
+| staging_seconds | 0.461915 [0.453852–0.464032] | 0.472675 [0.466096–0.512494] |
+| state_prepare_seconds | 0.002562 [0.001847–0.034879] | 0.008207 [0.001846–0.030045] |
+| listing_seconds | 6.056369 [6.014463–6.291665] | 6.873579 [6.326243–6.938372] |
+| file_insert_seconds | 4.428174 [4.382589–4.620185] | 5.067179 [4.641205–5.096337] |
+| name_validation_seconds | 0.357425 [0.355834–0.370290] | 0.396397 [0.381982–0.418841] |
+| invalidation_seconds | 0.002653 [0.002642–0.002983] | 0.002783 [0.002699–0.003541] |
+| commit_seconds | 3.693099 [3.057129–4.646223] | 3.800973 [3.636024–3.817811] |
+| rollup_seconds | 0.000000 [0.000000–0.000000] | 0.000000 [0.000000–0.000000] |
+| endrun_rollup_seconds | 0.002845 [0.002776–0.003781] | 0.002776 [0.002753–0.002927] |
+| multilink_seconds | 0.000000 [0.000000–0.000000] | 0.000000 [0.000000–0.000000] |
+| endrun_multilink_seconds | 0.995757 [0.994059–1.060567] | 2.875035 [2.759572–3.152272] |
+| checkpoint_seconds | 0.000000 [0.000000–0.000000] | 0.000000 [0.000000–0.000000] |
+| endrun_checkpoint_seconds | 0.011890 [0.007712–0.012692] | 0.008780 [0.007536–0.023536] |
+| peak_RSS_MiB | 207.992188 [206.675781–208.320312] | 280.285156 [274.394531–282.300781] |
+| peak_private_commit_MiB | 208.011719 [207.542969–209.437500] | 282.621094 [276.820312–284.925781] |
+
+### Item 6: 1M files through staging, all indexes; P4
+
+DROP conditional FILE spill for an oversized first-in-batch ListingDone, 16 MiB temp cache, main cache unchanged: slower publication and no peak-memory improvement. This prototype can miss an oversized final contained in an existing batch; it is neither a general spill guarantee nor a process-memory cap. The rejected unconditional P4c policy is not imported.
+
+| Metric | Main | Candidate |
+| --- | ---: | ---: |
+| wall_seconds | 20.928314 [20.891744–37.518660] | 26.733742 [21.424655–29.623895] |
+| rows_per_second | 47829.986728 [26680.084204–47913.712210] | 37443.355152 [33790.324112–46721.919646] |
+| staging_seconds | 0.760217 [0.720406–1.188878] | 0.985829 [0.765922–1.030060] |
+| state_prepare_seconds | 0.008061 [0.002474–0.008343] | 0.009203 [0.008525–0.010754] |
+| listing_seconds | 10.933976 [10.788487–19.250420] | 14.384317 [11.860870–15.195507] |
+| file_insert_seconds | 8.051797 [7.924447–14.533196] | 10.786752 [8.816022–11.417998] |
+| name_validation_seconds | 0.748277 [0.720785–1.173926] | 0.926030 [0.801827–0.999895] |
+| invalidation_seconds | 0.005505 [0.003815–0.007016] | 0.005093 [0.004943–0.005597] |
+| commit_seconds | 8.105176 [7.960525–14.751129] | 9.656621 [7.371089–11.537278] |
+| rollup_seconds | 0.000000 [0.000000–0.000000] | 0.000000 [0.000000–0.000000] |
+| endrun_rollup_seconds | 0.004740 [0.004689–0.021718] | 0.004972 [0.004683–0.010462] |
+| multilink_seconds | 0.000000 [0.000000–0.000000] | 0.000000 [0.000000–0.000000] |
+| endrun_multilink_seconds | 2.208744 [1.835960–2.217766] | 2.380567 [2.223768–2.577276] |
+| checkpoint_seconds | 0.000000 [0.000000–0.000000] | 0.000000 [0.000000–0.000000] |
+| endrun_checkpoint_seconds | 0.199510 [0.018154–0.208369] | 0.377016 [0.010379–0.614321] |
+| peak_RSS_MiB | 211.738281 [203.414062–211.746094] | 209.855469 [207.929688–211.226562] |
+| peak_private_commit_MiB | 211.960938 [203.890625–212.429688] | 210.398438 [207.859375–211.632812] |
+
+One 2M-entry directory, three interleaved pairs (same units):
+
+| Metric | Main | Candidate |
+| --- | ---: | ---: |
+| wall_seconds | 28.553218 [28.436412–60.300653] | 66.587080 [64.035980–72.958700] |
+| rows_per_second | 70044.713418 [33167.169738–70332.430542] | 30035.886751 [27412.796442–31232.472598] |
+| staging_seconds | 0.773662 [0.748417–1.651743] | 0.684016 [0.677953–0.801196] |
+| state_prepare_seconds | 0.027391 [0.008645–0.080351] | 0.008617 [0.008265–0.029527] |
+| listing_seconds | 21.902653 [21.569429–48.577381] | 60.474790 [57.116297–66.185653] |
+| file_insert_seconds | 17.772803 [17.397305–39.381467] | 55.839321 [52.892396–61.310358] |
+| name_validation_seconds | 0.896243 [0.867249–2.206519] | 1.230762 [1.129328–1.323697] |
+| commit_seconds | 5.885075 [5.718187–9.662035] | 5.049471 [4.889978–5.696899] |
+| endrun_rollup_seconds | 0.000067 [0.000064–0.000098] | 0.000062 [0.000062–0.000074] |
+| endrun_multilink_seconds | 2.995718 [2.893279–4.712169] | 6.130791 [6.014985–6.206570] |
+| endrun_checkpoint_seconds | 0.041005 [0.029787–0.043794] | 0.034863 [0.033664–0.035340] |
+| peak_RSS_MiB | 459.968750 [459.640625–460.984375] | 466.707031 [466.425781–468.761719] |
+| peak_private_commit_MiB | 467.265625 [466.898438–468.359375] | 532.371094 [531.949219–533.753906] |
+
+### Item 7: original errors and the final 1M P4 comparison
+
+KEEP correctness: preserve already-recorded caller errors on batch commit/cleanup failure; successful rows lost with the transaction report Closed. Keep the existing autocommit guard. No new operation is added to the successful publication path; timings are observations, not a claimed speedup.
+The new failing-caller regression fails against main (exit 101, executed
+assertion: `original failure lost: Closed`), then passes with the fix.
+`RAISE(ROLLBACK)` under a savepoint and real `SQLITE_FULL` from a constrained
+SQLite page count both put the outer transaction in autocommit; the next
+savepoint starts a fresh implicit transaction and RELEASE commits only its new
+row. A later outer COMMIT fails. The FULL probe is a real SQLite error, not a
+physical full disk; it deliberately exercises an outer write without a
+savepoint. The existing writer FULL-under-savepoint control stays green and
+continues to prove statement/savepoint isolation rather than auto-rollback.
+
+| Metric | Main | Candidate |
+| --- | ---: | ---: |
+| wall_seconds | 20.256715 [16.813016–27.759382] | 18.767166 [18.399627–22.987429] |
+| rows_per_second | 49415.762857 [36059.916608–59537.266714] | 53337.888949 [43545.583299–54403.332294] |
+| staging_seconds | 0.774477 [0.565217–1.035747] | 0.659494 [0.657311–0.797871] |
+| state_prepare_seconds | 0.008843 [0.008513–0.008965] | 0.008718 [0.008145–0.008886] |
+| validation_dry_run_seconds | 0.000000 [0.000000–0.000000] | 0.000000 [0.000000–0.000000] |
+| listing_seconds | 11.007964 [8.091077–15.011295] | 9.998713 [9.264585–12.745482] |
+| file_insert_seconds | 8.038164 [6.085817–11.427793] | 7.278819 [6.838933–9.510009] |
+| file_seen_seconds | 0.000000 [0.000000–0.000000] | 0.000000 [0.000000–0.000000] |
+| name_validation_seconds | 0.761657 [0.455499–0.921514] | 0.742905 [0.600282–0.873851] |
+| invalidation_seconds | 0.004711 [0.003200–0.005808] | 0.003649 [0.003517–0.004714] |
+| commit_seconds | 7.224722 [7.179851–9.837656] | 7.412456 [6.938498–7.906121] |
+| transactions | 72.000000 [71.000000–81.000000] | 71.000000 [71.000000–74.000000] |
+| dirty_updates | 2069.000000 [2068.000000–2078.000000] | 2068.000000 [2068.000000–2071.000000] |
+| endrun_rollup_seconds | 0.004654 [0.003091–0.005313] | 0.006510 [0.004579–0.007052] |
+| endrun_multilink_seconds | 1.643064 [1.205359–2.136359] | 2.204798 [1.738004–2.324609] |
+| endrun_checkpoint_seconds | 0.185721 [0.014320–0.242491] | 0.024924 [0.018159–0.103811] |
+| P6_p50_ms | 67.083500 [28.642300–68.797300] | 77.062400 [67.772900–78.042700] |
+| P6_p95_ms | 70.987700 [29.872200–71.540500] | 84.741300 [71.579000–110.911900] |
+| P7_p50_ms | 1.025400 [0.620400–1.101000] | 1.266700 [1.076700–1.286400] |
+| P7_p95_ms | 1.236100 [0.730500–1.361400] | 1.545300 [1.287700–1.805200] |
+| P7_allocated_p50_ms | 0.878100 [0.494300–0.903900] | 1.006300 [0.892700–1.029900] |
+| P7_allocated_p95_ms | 0.966700 [0.509100–1.052800] | 1.653800 [0.954300–3.041800] |
+| P8_p50_ms | 21.558900 [12.269900–22.473000] | 23.797200 [22.253800–25.053000] |
+| P8_p95_ms | 22.924000 [12.859700–24.623400] | 28.823600 [25.995100–34.735500] |
+| peak_RSS_MiB | 210.281250 [203.644531–212.378906] | 209.156250 [203.296875–210.472656] |
+| peak_private_commit_MiB | 210.667969 [204.160156–213.421875] | 209.628906 [203.031250–211.507812] |
+
+P4 includes generation, staging, publication and backpressure; EndRun and the
+index-once diagnostic are outside P4. All live schema indexes remain.
+**250k staged P4 remains unmet.** No throughput win is claimed for an error-only
+change, and no new successful-path work was introduced.
+
+### Gates and mutation results
+
+| Gate | Result |
+| --- | --- |
+| `cargo fmt --all --check` | exit 0 |
+| `cargo test --workspace` | exit 0; 634 passed, 0 failed, 1 pre-existing ignored |
+| `cargo test -p loomward-catalog --all-features` | exit 0; 118 passed, 0 failed, 1 pre-existing ignored |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | exit 0 |
+| `git diff --check` | exit 0 |
+
+
+The #117 errata/rollup oracle and #216/#225/#270 regressions remain green.
+No existing test was weakened. No new cache remains. Four further executed
+mutations fail with exit 101 and pass restored with exit 0: replace the probe
+ROLLBACK fault with ABORT; remove its FULL page cap; remove the existing
+autocommit guard; retain the existing extension cache after rollback. The last
+mutation proves a stale cached ID/family fails its test. Production/test files
+were restored byte-for-byte after each mutation. Together with the main-versus-fix
+regression these are five discriminating failures; the two SQLite probes have no
+new production fix to revert, so removing their fault supplies their negative
+control. All three new tests pass in the final full gates.
+
+## NOT verified
+
+Controlled-host throughput neutrality, removal of every second staged decode,
+a qualified temp spill/process-memory bound, 250k staged P4, 10M/cold-cache
+gates, HTTP/native enumeration integration, Python/UI, Linux execution, hosted
+CI, physical power loss and IOERR/NOMEM injection. The bulk design is not code.
+No commit or push.
+
+## Residual risk
+
+`temp_store=MEMORY` remains unbounded by SQLite spilling; measured peaks are
+workload observations, not a process cap. Extra large-listing caching is declined.
+The ordinary writer still pays indexed insertion/commit costs and full-volume
+multilink work. Error preservation leaves the writer-failure/receipt-loss rules
+intact. Shared-host timing can reject these candidates but cannot establish a
+universal performance ceiling. The open #148 retains these unresolved costs.
+Recommended commits (no commits were made):
+
+1. `fix(catalog): preserve caller errors after transaction rollback`
+2. `bench(catalog): append P4e shared-host comparisons`
+3. `docs(catalog): propose first-scan bulk catalogue generations`
+
+Task-owned raw logs, snapshots, experiment binaries and scripts remain in
+ignored `.loomward/p4e/`, with rebuildable `target/`. Temporary probe examples
+are removed. The supplied worktree remains owned, uncommitted and not removal-ready.
+
+# P4 bulk catalogue for a first scan (design)
+
+
+**Proposal only; no bulk loader, layout change, index removal or activation is
+implemented.** Eligible input is a first scan of a root with no published child
+observations, not a refresh and not permission to scan anything. Grants, dataset
+class, identity, containment, exclusion and enumeration gates remain authoritative.
+P4b remains PARKED and the rejected P4c bulk/spill pieces are not imported.
+
+The proposed fast path builds a new, private **catalogue generation file**, loads
+the new root sequentially with secondary indexes built once, and activates that
+generation only after validation. It retains the catalogue instance and existing
+rows. Replacing an open `catalog.db` on Windows is not the publication protocol:
+an explicit active-generation pointer would route newly opened readers. This
+requires a schema/layout and reader-routing proposal of its own before code.
+
+- **Provisional readers.** Existing readers retain their old generation and its
+  live indexes. A new-root reader sees the registered root, running/provisional
+  coverage and honest unknown aggregates; progress or a bounded scan-arena overlay
+  may show provisional observations. Candidate-file rows are not silently served
+  through indexless queries. Provisional IDs need a staging epoch and cannot mint
+  durable references or become operation grants. If the current UI requires every
+  intermediate listing to be a durable, indexed catalogue row, this path cannot
+  promise that behavior cheaply: either retain the ordinary writer path or first
+  specify the provisional-reader contract. Publishing the new root incrementally
+  into the old file would duplicate the indexed work the proposal aims to remove.
+- **Other roots in the same catalogue.** Start from a consistent catalogue-only
+  snapshot, preserving every unrelated root, file, directory, extension, run,
+  revision and reference witness. The measured file-table probe did not pay for
+  this snapshot. The minimum safe initial design admits one bulk writer, freezes
+  other catalogue writes while the snapshot/build is owned, and keeps reads and
+  precious state writes available. Enter only after draining ordinary receipts,
+  with no other active scan; otherwise use the ordinary path. A priority cancel or
+  revoke aborts the build and returns control to the ordinary writer. Before
+  activation, verify the captured instance and catalogue revision and revalidate
+  the root's active grant/run. Any drift aborts activation; never overwrite newer
+  rows or replay unproven deltas. Pausing admission must not block cancellation or
+  revocation. Concurrent catalogue writes and journal replay are deliberately not
+  part of this proposal; a snapshot of a huge existing catalogue may make this
+  path slower than ordinary insertion.
+- **Stable IDs and instances.** Copy existing numeric IDs, `born_run`, run IDs,
+  extension IDs/families and `sqlite_sequence` high-water marks exactly. Keep the
+  same catalogue instance only if all old observations/bindings are preserved.
+  Reserve any candidate ID ranges with the sole writer; failed builds leave gaps,
+  never reusable IDs. Root/volume identity must not be reinterpreted as a path.
+  Allocate new rows above the retained/reserved high-water marks and record the
+  new run as their birth. Validate all cross-table bindings and uniqueness before
+  activation. A real catalogue rebuild uses a new instance and unresolved old
+  references; calling a replacement a first scan must not bypass that rule.
+- **Reference witnesses.** State remains a separate FULL database. Existing
+  bindings remain intact during construction. If a publication needs pending
+  reference intents, commit those state-only intents first, put their exact token
+  and instance in the candidate, then FULL-commit and durably checkpoint that
+  candidate. Only an *activated* candidate's matching witness may confirm intents.
+  The generation-pointer commit and reference confirmation are state-only FULL
+  transactions; acknowledgement follows both. A pointer and candidate are not a
+  two-file SQLite transaction. Recovery must distinguish an unselected candidate
+  witness from a published one, or it could wrongly confirm a build that never
+  became visible. Existing resolved references must still disable ordinary writer
+  batching, and old readers must retain coherent old-generation bindings.
+- **Reopen and crash recovery.** Validate the selected generation's application ID,
+  schema, dataset class, instance and publication token before exposing it. A crash
+  before a durable candidate leaves the old generation authoritative. A crash after
+  candidate durability but before pointer commit leaves an unselected/orphaned
+  candidate and preserves original bindings; its unmatched intents are discarded.
+  A crash after pointer commit but before confirmation reopens that exact durable
+  generation and confirms only matching intents before serving membership.
+  Interrupted runs stay failed/partial with dirty aggregates repaired under the
+  existing rules. A missing/corrupt selected generation must fail closed or follow
+  explicit catalogue-rebuild recovery; never silently fall back to an older file
+  while retaining newer state bindings. Recovery must remain idempotent. Retaining
+  old generation files until all readers release them, and making backups cover
+  the selected file plus precious state, are additional lifecycle costs.
+- **Atomic publication boundary.** First validate coverage, names/raw names,
+  identities, overflow, foreign keys, all required indexes, rollup and multilink
+  oracles. A NORMAL load is allowed only while private; before activation perform
+  a FULL candidate commit/checkpoint and validate the platform's durable-file
+  barrier. Then one FULL state transaction commits the active-generation pointer
+  to that already durable file. This pointer commit is the logical boundary:
+  old readers finish on the old file, newly routed readers get the new one, never
+  a union of their rows. Invalidate generation-bound cursors/revisions and publish
+  the new generation event only after reference confirmation. Native crash and
+  storage-fault tests must prove the ordering; the SQL timing probe proves none
+  of these barriers. Do not use an unmeasured rename/fsync claim as a safety fact.
+- **Dirty and multilink rules.** New-root ancestors carry their newest input
+  revision/run; repaired totals publish only at that revision. Partial, cancelled,
+  denied and unlisted coverage never becomes complete. Keep checked arithmetic,
+  excluded entries visible but uncounted, shielded descendants, same-run stale-final
+  rejection and both reparent chains. Calculate multilink membership from *all
+  visible* copies on the volume, including other roots, qualified by volume and
+  identity. Excluded directories and hidden descendants contribute nothing, and
+  hidden copies never retain `HARDLINK_SUSPECTED` (#270). New-root identities and
+  any previous duplicate groups they affect require recomputation across roots;
+  dirty rows alone are not a sufficient touched set. A first scan cannot skip this
+  final pass merely because it had no old rows of its own.
+
+The extra costs are snapshot duplication, reserved IDs, an active-generation
+manifest/migration, routing and leases for old readers, provisional-view semantics,
+reference-recovery changes, final all-index/rollup/multilink validation, durable
+activation and generation-aware backup/cleanup. A new gate would first need the
+entire #117/#216/#225/#270 suite plus crash/fault/mutation coverage for these
+boundaries. None of those costs is included in the isolated index-once timing.
+
+## Measured index-once diagnostic (proposal evidence)
+
+
+Three main runs from item 5, **shared host**, 1M file rows. The existing isolated
+probe copies the file table into a temp database with seeded parents and
+foreign keys, creates all four file indexes once, then commits. No live index
+was removed. Independent medians [min–max]:
+
+| Phase / rate | Observation |
+| --- | ---: |
+| insert_seconds | 0.583995 [0.580639–0.594841] |
+| index_seconds | 1.447448 [1.423287–1.461785] |
+| commit_seconds | 0.704420 [0.554491–0.735024] |
+| total_seconds | 2.738949 [2.600271–2.746709] |
+| rows_per_second | 365103.522183 [364072.058598–384575.270456] |
+
+
+**250k is reachable in this isolated SQL subtotal:** all three observations
+exceed it. That is not through-staging P4. A 1M scan has a 4-second target budget;
+the remainder must pay generation/decode, existing-root snapshot costs,
+validation, rollup/multilink, durable activation and provisional-view handling.
+Whether the whole path reaches 250k remains unverified; the proposal preserves
+these invariants by paying the explicit design costs above, not by dropping them.

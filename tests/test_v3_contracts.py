@@ -43,6 +43,7 @@ class V3ContractTests(unittest.TestCase):
             jobs = result.get('jobs', [result['job']] if 'job' in result else [])
             for job in jobs:
                 validator.validate(job)
+        validator.validate(load('examples/events/job.state.json')['job'])
         for field in ('seq', 'rev'):
             invalid = load(f'examples/invalid/job-missing-{field}.json')
             self.assertFalse(validator.is_valid(invalid['value']))

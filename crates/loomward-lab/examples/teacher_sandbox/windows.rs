@@ -21,15 +21,28 @@ use windows_sys::Win32::{
         Authorization::{
             ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
         },
-        Isolation::{DeriveAppContainerSidFromAppContainerName, GetAppContainerFolderPath},
+        Isolation::{
+            CreateAppContainerProfile, DeleteAppContainerProfile,
+            DeriveAppContainerSidFromAppContainerName, GetAppContainerFolderPath,
+        },
         *,
     },
-    System::{Com::CoTaskMemFree, JobObjects::*, SystemServices::SE_GROUP_ENABLED, Threading::*},
-    UI::Shell::{SHGetFolderPathW, CSIDL_PERSONAL, SHGFP_TYPE_CURRENT},
+    System::{
+        Com::CoTaskMemFree,
+        JobObjects::*,
+        Registry::{RegCloseKey, RegOpenKeyExW, HKEY_CURRENT_USER, KEY_READ},
+        SystemServices::SE_GROUP_ENABLED,
+        Threading::*,
+    },
 };
 
 const PINNED_CODEX: &str = "9e7c59c05cc1ce5677b1f94e835b2ac038ca3be14504e78d558eacdb0ea3f55d";
 const SYNTHETIC_PROMPT: &str = "Reply with the fixed synthetic string LOOMWARD_SYNTHETIC_ONLY.";
+/// The one profile the owner authorised (agent-hq decision loomward-teacher-sandbox-path, (c)).
+pub(super) const PROFILE: &str = "Loomward.L15b.Measure";
+/// HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS).
+const ALREADY_EXISTS: i32 = 0x800700B7_u32 as i32;
+const MAPPINGS: &str = r"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppContainer\Mappings";
 
 fn wide(value: impl AsRef<OsStr>) -> Vec<u16> {
     value.as_ref().encode_wide().chain(Some(0)).collect()
@@ -168,7 +181,7 @@ fn directory_acl(path: &Path, owner: &str, container: Option<&str>) -> io::Resul
 struct ProbeConfig {
     canary: PathBuf,
     allowed: PathBuf,
-    documents: PathBuf,
+    system_root: PathBuf,
     endpoints: Vec<SocketAddr>,
     report: PathBuf,
     job: bool,
@@ -179,8 +192,11 @@ fn write_json(path: &Path, value: &impl Serialize) -> io::Result<()> {
 fn read_json(path: &Path) -> io::Result<Value> {
     Ok(serde_json::from_slice(&fs::read(path)?)?)
 }
-fn public_log(path: &Path, root: &Path) -> String {
-    let mut text = fs::read_to_string(path).unwrap_or_default();
+fn public_log(path: &Path, root: &Path) -> Value {
+    let mut text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) => return json!({"read_error": outcome::<()>(Err(e))}),
+    };
     for (path, replacement) in [
         (root.to_string_lossy().into_owned(), "<lab-root>"),
         (
@@ -200,7 +216,18 @@ fn public_log(path: &Path, root: &Path) -> String {
                 .replace(&path.replace('\\', "\\\\"), replacement);
         }
     }
-    text
+    Value::String(text)
+}
+
+// Shell canary: report exit status and whether the expected marker appeared, never raw output.
+fn shell(cmd: &Path, args: &[&OsStr], marker: &str) -> Value {
+    match Command::new(cmd).args(args).stdin(Stdio::null()).output() {
+        Ok(out) => {
+            json!({"spawn": {"ok": true, "error_code": null}, "exit_code": out.status.code(),
+            "marker_in_stdout": String::from_utf8_lossy(&out.stdout).contains(marker)})
+        }
+        Err(e) => json!({"spawn": outcome::<()>(Err(e))}),
+    }
 }
 
 fn probe(config: &Path) -> io::Result<()> {
@@ -209,12 +236,31 @@ fn probe(config: &Path) -> io::Result<()> {
     if parent["appcontainer"] != true {
         return Err(io::Error::other("probe refuses an uncontained token"));
     }
+    let ungranted = cfg.canary.parent().unwrap();
+    let granted = cfg.allowed.parent().unwrap();
+    let tag = cfg
+        .report
+        .file_stem()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    // Opening an iterator tests listing permission; names and contents are never retained.
     let files = json!({
         "ungranted_canary": outcome(fs::read(&cfg.canary)),
         "granted_canary": outcome(fs::read(&cfg.allowed)),
-        // Opening the iterator tests listing permission; never retain names or contents.
-        "documents_listing": outcome(fs::read_dir(&cfg.documents)),
+        "ungranted_listing": outcome(fs::read_dir(ungranted)),
+        "granted_listing": outcome(fs::read_dir(granted)),
+        "ungranted_write": outcome(fs::write(ungranted.join(format!("{tag}.write")), "LOOMWARD_SYNTHETIC")),
+        "granted_write": outcome(fs::write(granted.join(format!("{tag}.write")), "LOOMWARD_SYNTHETIC")),
+        "system_root_listing": outcome(fs::read_dir(&cfg.system_root)),
     });
+    let cmd = cfg.system_root.join("System32").join("cmd.exe");
+    let tools = json!({
+        "cmd_echo": shell(&cmd, &["/d".as_ref(), "/c".as_ref(), "echo LOOMWARD_SYNTHETIC_SHELL".as_ref()], "LOOMWARD_SYNTHETIC_SHELL"),
+        "cmd_type_ungranted_canary": shell(&cmd, &["/d".as_ref(), "/c".as_ref(), "type".as_ref(), cfg.canary.as_os_str()], "LOOMWARD_SYNTHETIC_CANARY"),
+        "cmd_type_granted_canary": shell(&cmd, &["/d".as_ref(), "/c".as_ref(), "type".as_ref(), cfg.allowed.as_os_str()], "LOOMWARD_SYNTHETIC_CANARY"),
+    });
+    let dns = outcome(("api.openai.com", 443).to_socket_addrs());
     let network: Vec<_> = cfg.endpoints.iter().map(|addr| {
         json!({"endpoint": addr.to_string(), "result": outcome(TcpStream::connect_timeout(addr, Duration::from_secs(4)))})
     }).collect();
@@ -279,7 +325,7 @@ fn probe(config: &Path) -> io::Result<()> {
     };
     write_json(
         &cfg.report,
-        &json!({"identity": parent, "filesystem": files, "network": network, "child": child, "breakaway": breakaway, "ui_restrictions_query": ui_query, "ui_restrictions": ui.UIRestrictionsClass}),
+        &json!({"identity": parent, "filesystem": files, "tools": tools, "dns_api_openai_com": dns, "network": network, "child": child, "breakaway": breakaway, "ui_restrictions_query": ui_query, "ui_restrictions": ui.UIRestrictionsClass}),
     )
 }
 
@@ -450,9 +496,13 @@ fn launch(spec: Launch<'_>) -> io::Result<Value> {
     let mut cmd = wide(command_line(&argv));
     let system_root =
         std::env::var_os("SystemRoot").ok_or_else(|| io::Error::other("SystemRoot missing"))?;
+    // A registered-profile launch without LOCALAPPDATA fails with Win32 203 (ERROR_ENVVAR_NOT_FOUND).
+    let local =
+        std::env::var_os("LOCALAPPDATA").ok_or_else(|| io::Error::other("LOCALAPPDATA missing"))?;
     let mut env = Vec::new();
     for (key, value) in [
         ("CODEX_HOME", spec.lab.join("home")),
+        ("LOCALAPPDATA", PathBuf::from(local)),
         ("SystemRoot", PathBuf::from(system_root)),
         ("TEMP", spec.lab.into()),
         ("TMP", spec.lab.into()),
@@ -499,36 +549,17 @@ fn launch(spec: Launch<'_>) -> io::Result<Value> {
     )
 }
 
-fn documents() -> io::Result<PathBuf> {
-    let mut buf = [0u16; 260];
-    let hr = unsafe {
-        SHGetFolderPathW(
-            null_mut(),
-            CSIDL_PERSONAL as i32,
-            null_mut(),
-            SHGFP_TYPE_CURRENT as u32,
-            buf.as_mut_ptr(),
-        )
-    };
-    if hr < 0 {
-        return Err(io::Error::other(format!(
-            "Documents resolution HRESULT {hr:#x}"
-        )));
-    }
-    Ok(PathBuf::from(String::from_utf16_lossy(
-        &buf[..buf.iter().position(|c| *c == 0).unwrap_or(buf.len())],
-    )))
-}
-
-fn measure(root: &Path) -> io::Result<Value> {
+fn measure(root: &Path, registered: Option<&str>) -> io::Result<Value> {
     let buf = token_buffer(TokenUser)?;
     let user = unsafe { &*buf.as_ptr().cast::<TOKEN_USER>() };
     let owner = sid_text(user.User.Sid)?;
     directory_acl(root, &owner, None)?;
-    let name = format!(
-        "Loomward.TeacherSpike.{}",
-        root.file_name().unwrap().to_string_lossy()
-    );
+    let name = registered.map(str::to_owned).unwrap_or_else(|| {
+        format!(
+            "Loomward.TeacherSpike.{}",
+            root.file_name().unwrap().to_string_lossy()
+        )
+    });
     let mut sid = null_mut();
     let hr = unsafe { DeriveAppContainerSidFromAppContainerName(wide(&name).as_ptr(), &mut sid) };
     if hr < 0 {
@@ -567,7 +598,9 @@ fn measure(root: &Path) -> io::Result<Value> {
     fs::create_dir(lab.join("home"))?;
     let exe = lab.join("teacher_sandbox.exe");
     fs::copy(std::env::current_exe()?, &exe)?;
-    let documents = documents()?;
+    let system_root = PathBuf::from(
+        std::env::var_os("SystemRoot").ok_or_else(|| io::Error::other("SystemRoot missing"))?,
+    );
     let api = ("api.openai.com", 443)
         .to_socket_addrs()?
         .find(|a| a.is_ipv4())
@@ -612,7 +645,7 @@ fn measure(root: &Path) -> io::Result<Value> {
             &ProbeConfig {
                 canary: canary.clone(),
                 allowed: allowed.clone(),
-                documents: documents.clone(),
+                system_root: system_root.clone(),
                 endpoints: endpoints.clone(),
                 report: report.clone(),
                 job: with_job,
@@ -732,13 +765,29 @@ fn measure(root: &Path) -> io::Result<Value> {
         Err(e) => json!({"discovery": outcome::<()>(Err(e))}),
     };
     Ok(
-        json!({"schema": 1, "platform": "Windows", "measured_at_unix_seconds": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(), "elevated": false, "profile_registered": false, "profile_lookup": profile_lookup, "container_sid": container, "controls": {"process_launch": launch_control, "identity": control_identity, "stderr": control_stderr, "ungranted_canary": outcome(fs::read(canary)), "granted_canary": outcome(fs::read(allowed)), "documents_listing": outcome(fs::read_dir(documents)), "network": controls}, "cases": cases, "codex": codex}),
+        json!({"schema": 1, "platform": "Windows", "measured_at_unix_seconds": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(), "elevated": false, "profile_registered": registered.is_some(), "profile_lookup": profile_lookup, "container_sid": container, "controls": {"process_launch": launch_control, "identity": control_identity, "stderr": control_stderr, "ungranted_canary": outcome(fs::read(canary)), "granted_canary": outcome(fs::read(allowed)), "system_root_listing": outcome(fs::read_dir(&system_root)), "network": controls}, "cases": cases, "codex": codex}),
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deletion_proof_needs_every_indicator_absent() {
+        let absent = json!({"mapping_key": "absent", "packages_folder_exists": false, "folder_lookup_hresult": "0x80070002"});
+        assert!(profile_absent(&absent));
+        for (key, value) in [
+            ("mapping_key", json!("present")),
+            ("mapping_key", json!({"error_code": 5})),
+            ("packages_folder_exists", json!(true)),
+            ("folder_lookup_hresult", json!("0x00000000")),
+        ] {
+            let mut state = absent.clone();
+            state[key] = value;
+            assert!(!profile_absent(&state), "{key}");
+        }
+    }
 
     #[test]
     fn native_capability_builder_sets_only_the_explicit_sid() {
@@ -770,6 +819,141 @@ mod tests {
     }
 }
 
+/// Read-only view of one profile's registration: derived SID, folder lookup, mapping key, folder.
+fn profile_state(name: &str) -> io::Result<Value> {
+    let mut sid = null_mut();
+    let hr = unsafe { DeriveAppContainerSidFromAppContainerName(wide(name).as_ptr(), &mut sid) };
+    if hr < 0 {
+        return Err(io::Error::other(format!("derive SID HRESULT {hr:#x}")));
+    }
+    let sid = sid_text(Sid(sid).0)?;
+    let mut folder = null_mut();
+    let folder_hr = unsafe { GetAppContainerFolderPath(wide(&sid).as_ptr(), &mut folder) };
+    unsafe { CoTaskMemFree(folder.cast()) };
+    let mut key = null_mut();
+    let status = unsafe {
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            wide(format!("{MAPPINGS}\\{sid}")).as_ptr(),
+            0,
+            KEY_READ,
+            &mut key,
+        )
+    };
+    let mapping = match status {
+        ERROR_SUCCESS => {
+            unsafe { RegCloseKey(key) };
+            json!("present")
+        }
+        ERROR_FILE_NOT_FOUND => json!("absent"),
+        other => json!({"error_code": other}),
+    };
+    let local =
+        std::env::var_os("LOCALAPPDATA").ok_or_else(|| io::Error::other("LOCALAPPDATA missing"))?;
+    Ok(json!({
+        "moniker": name,
+        "derived_sid": sid,
+        "folder_lookup_hresult": format!("0x{:08x}", folder_hr as u32),
+        "mapping_key": mapping,
+        "packages_folder_exists": Path::new(&local).join("Packages").join(name).exists(),
+    }))
+}
+fn profile_absent(state: &Value) -> bool {
+    state["mapping_key"] == "absent"
+        && state["packages_folder_exists"] == false
+        && state["folder_lookup_hresult"] == "0x80070002"
+}
+fn delete_profile() -> io::Result<Value> {
+    let hr = unsafe { DeleteAppContainerProfile(wide(PROFILE).as_ptr()) };
+    let after = profile_state(PROFILE)?;
+    Ok(
+        json!({"delete_hresult": format!("0x{:08x}", hr as u32), "deleted": profile_absent(&after), "after": after}),
+    )
+}
+
+fn measure_in_temp_root(registered: Option<&str>) -> io::Result<Value> {
+    let profile =
+        std::env::var_os("USERPROFILE").ok_or_else(|| io::Error::other("USERPROFILE missing"))?;
+    let root = tempfile::Builder::new()
+        .prefix("loomward-teacher-sandbox-")
+        .tempdir_in(profile)?;
+    let result = measure(root.path(), registered);
+    let removed_path = root.path().to_path_buf();
+    let cleanup = root.close();
+    let mut receipt = match result {
+        Ok(value) => value,
+        Err(e) => json!({"measurement_error": outcome::<()>(Err(e))}),
+    };
+    receipt["cleanup"] = outcome(cleanup);
+    receipt["cleanup"]["root_removed"] = json!(!removed_path.exists());
+    Ok(receipt)
+}
+
+// Create exactly PROFILE, measure, and always delete it, even if the measurement errors or panics.
+fn measure_registered() -> io::Result<Value> {
+    let before = profile_state(PROFILE)?;
+    if !profile_absent(&before) {
+        return Err(io::Error::other(format!(
+            "{PROFILE} already present; run --delete-profile first: {before}"
+        )));
+    }
+    let name = wide(PROFILE);
+    let display = wide("Loomward L15b measurement (temporary)");
+    let mut sid = null_mut();
+    let create_hr = unsafe {
+        CreateAppContainerProfile(
+            name.as_ptr(),
+            display.as_ptr(),
+            display.as_ptr(),
+            null(),
+            0,
+            &mut sid,
+        )
+    };
+    if !sid.is_null() {
+        drop(Sid(sid));
+    }
+    let registered_state = profile_state(PROFILE);
+    let measured = if create_hr < 0 {
+        Ok(Ok(json!({"not_run": "profile creation failed"})))
+    } else {
+        std::panic::catch_unwind(|| measure_in_temp_root(Some(PROFILE)))
+    };
+    // Deletion runs on every path out of creation, except when another invocation created the
+    // profile after our absence check (ERROR_ALREADY_EXISTS): that profile is not ours to delete.
+    let deletion = if create_hr == ALREADY_EXISTS {
+        Ok(json!({"skipped": "profile created by another invocation", "deleted": false}))
+    } else {
+        delete_profile()
+    };
+    let mut receipt = match measured {
+        Ok(Ok(value)) => value,
+        Ok(Err(e)) => json!({"measurement_error": outcome::<()>(Err(e))}),
+        Err(_) => json!({"measurement_error": "panicked"}),
+    };
+    receipt["profile"] = json!({
+        "before": before,
+        "create_hresult": format!("0x{:08x}", create_hr as u32),
+        "registered_state": registered_state.unwrap_or_else(|e| json!({"error": e.to_string()})),
+        "deletion": deletion.unwrap_or_else(|e| json!({"error": e.to_string()})),
+    });
+    Ok(receipt)
+}
+
+fn finish(output: &Path, receipt: Value) -> io::Result<()> {
+    write_json(output, &receipt)?;
+    let profile_ok = receipt
+        .get("profile")
+        .is_none_or(|p| p["deletion"]["deleted"] == true);
+    if receipt.get("measurement_error").is_some() || receipt["cleanup"]["ok"] != true || !profile_ok
+    {
+        return Err(io::Error::other(
+            "measurement, cleanup or profile deletion failed; see receipt",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn run(role: Role) -> io::Result<()> {
     if token_value::<TOKEN_ELEVATION>(TokenElevation)?.TokenIsElevated != 0 {
         return Err(io::Error::other("refusing elevated token"));
@@ -781,33 +965,23 @@ pub(super) fn run(role: Role) -> io::Result<()> {
             if path == Path::new("-") {
                 println!("{who}");
             } else {
-                write_json(&path, &who)?;
+                // Write then rename, so the parent never parses a partial report (#176).
+                let partial = path.with_extension("partial");
+                write_json(&partial, &who)?;
+                fs::rename(&partial, &path)?;
             }
             if linger {
                 thread::sleep(Duration::from_secs(60));
             }
             Ok(())
         }
-        Role::Run(output) => {
-            let profile = std::env::var_os("USERPROFILE")
-                .ok_or_else(|| io::Error::other("USERPROFILE missing"))?;
-            let root = tempfile::Builder::new()
-                .prefix("loomward-teacher-sandbox-")
-                .tempdir_in(profile)?;
-            let result = measure(root.path());
-            let removed_path = root.path().to_path_buf();
-            let cleanup = root.close();
-            let mut receipt = match result {
-                Ok(value) => value,
-                Err(e) => json!({"measurement_error": outcome::<()>(Err(e))}),
-            };
-            receipt["cleanup"] = outcome(cleanup);
-            receipt["cleanup"]["root_removed"] = json!(!removed_path.exists());
-            write_json(&output, &receipt)?;
-            if receipt.get("measurement_error").is_some() || receipt["cleanup"]["ok"] != true {
-                return Err(io::Error::other(
-                    "measurement or cleanup failed; see receipt",
-                ));
+        Role::Run(output) => finish(&output, measure_in_temp_root(None)?),
+        Role::RunRegistered(output) => finish(&output, measure_registered()?),
+        Role::DeleteProfile => {
+            let deletion = delete_profile()?;
+            println!("{deletion}");
+            if deletion["deleted"] != true {
+                return Err(io::Error::other("profile still present"));
             }
             Ok(())
         }

@@ -1,0 +1,33 @@
+{
+  "note": "Hand-written annotations for evidence/v3/teacher-sandbox-registered.json, kept separate so that file stays exactly what `teacher_sandbox --run-registered` emits.",
+  "authority": "agent-hq decision loomward-teacher-sandbox-path, answer (c) 'Both', chat 2026-10-10T22:46:39Z, recorded in agent-hq#356",
+  "diagnostics": [
+    {
+      "role": "first registered run, environment without LOCALAPPDATA",
+      "measured_at": "2026-10-11T09:17:24Z",
+      "profile_create_hresult": "0x00000000",
+      "first_case_create_process": {"ok": false, "error_code": 203},
+      "profile_deleted": true,
+      "interpretation": "ERROR_ENVVAR_NOT_FOUND; adding LOCALAPPDATA to the explicit environment was the only change before the final run"
+    }
+  ],
+  "independent_deletion_check": {
+    "tool": "PowerShell Get-ChildItem and Test-Path, read-only",
+    "at": "2026-10-11T09:19:05Z",
+    "loomward_monikers_in_mappings": 0,
+    "mapping_count_before_and_after": 126,
+    "sid_key_present": false,
+    "packages_folder_present": false,
+    "temporary_roots_remaining": 0,
+    "firewall_rules_named_loomward": 0
+  },
+  "context": {
+    "source_base": "697b617",
+    "windows_version": "10.0.26100.9457",
+    "architecture": "64-bit",
+    "rustc": "1.97.1 (8bab26f4f 2026-07-14)",
+    "codex_binary_sha256": "dd13bdb162a184fa04039488b234a8258ef9b76f84e926c505d5742b19249a6a",
+    "codex_pin": "9e7c59c05cc1ce5677b1f94e835b2ac038ca3be14504e78d558eacdb0ea3f55d",
+    "container_process": "the example's own probe executable; codex.exe not launched"
+  }
+}

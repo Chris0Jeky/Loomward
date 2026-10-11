@@ -151,12 +151,8 @@ impl Service {
                 rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
             )
             .map_err(|_| "cannot inspect stored grants")?;
-            // V1 grants migrate from the catalogue; newer or corrupt derived stores add none.
-            if name == "catalog.db"
-                && !existing
-                    .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-                    .is_ok_and(|version| version == 1)
-            {
+            // V1 grants migrate from the catalogue; a failed version read must refuse startup.
+            if name == "catalog.db" && !stored_grant_catalogue_is_legacy(&existing)? {
                 continue;
             }
             // Empty and pre-v2 state stores have no grant table yet; keep preflight read-only.
@@ -1054,4 +1050,10 @@ pub(crate) fn ts_ns(ns: i64) -> Timestamp {
         rem % 1000
     ))
     .expect("civil date is a contract timestamp")
+}
+
+fn stored_grant_catalogue_is_legacy(conn: &rusqlite::Connection) -> Result<bool, String> {
+    conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+        .map(|version| version == 1)
+        .map_err(|_| "cannot inspect stored grants: catalogue version unavailable".into())
 }

@@ -243,7 +243,7 @@ mod tests {
             let cancel = if revoke {
                 db.execute("UPDATE root_grant SET state='revoked'", [])
                     .unwrap();
-                let jobs = engine.scan_cancel_root(root.root_id()).unwrap();
+                let jobs = engine.scan_cancel_root(root.key(), root.root_id()).unwrap();
                 assert_eq!(jobs.len(), 1);
                 jobs[0].clone()
             } else {

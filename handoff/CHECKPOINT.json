@@ -3,9 +3,9 @@
   "schema_version": 2,
   "as_of": "2026-10-10",
   "version": "0.3.0-dev",
-  "base_commit": "1617411",
+  "base_commit": "6052bad",
   "branch": "main",
-  "phase": "v0.3 wave 5: scan writer gates #206 and #240 closed, start and cancel races fixed, P4d, a 10M lab tier, duplicates (LW-012), application inventory (LW-047) and desktop contexts (LW-044/045) as read-only native slices; personal scans still gated on #184; no effects",
+  "phase": "v0.3 wave 6: #184 closed by audit, scan handles released and reopened by identity, service hardening, job seq and rev in the contract; one personal-scan gate (#269) in review; personal scans still refused; no effects",
   "read_first": [
     "AGENTS.md",
     "handoff/START-HERE.md",
@@ -14,7 +14,7 @@
     "docs/40-parallel-work-packs.md"
   ],
   "reference": {
-    "python_tests": 216,
+    "python_tests": 222,
     "browser_checks": 14,
     "js_boundary_assertions": 9,
     "js_python_parity_cases": 80,
@@ -55,27 +55,30 @@
       "loomward-apps": "read-only application inventory from the Uninstall registry views, scopes, provenance and honest provider states (#229, #249)",
       "loomward-shell": "known-folder desktop contexts and a pure, bounded .lnk parser with target health; no COM, no execution (#245)"
     },
-    "rust_tests_on_windows": 516,
+    "rust_tests_on_windows": 631,
     "compiled": true,
     "toolchain": "rustc 1.97.1",
     "fmt_clippy_clean": true,
     "tauri": "first built 2026-10-10 (#164): lw_call/lw_events only, CSP, Rust-only dialogs, self-test 10/10, WebView2 probe 13/13, Atlas P9 17.5 ms",
     "enumeration": "GetFileInformationByHandleEx(FileIdExtdDirectoryInfo), 8 workers: 3M files in 0.558 s warm (5.38M files/s, 9.2 MiB RSS); cold cache unmeasured",
     "rust_tests_by_crate": {
-      "loomward-catalog": 69,
-      "loomward-core": 30,
-      "loomward-engine": 106,
-      "loomward-http": 40,
-      "loomward-lab": 22,
-      "loomward-learn": 8,
-      "loomward-protocol": 35,
-      "loomward-service": 35,
-      "loomward-telemetry": 28,
-      "loomward-windows": 37
+      "apps": 18,
+      "catalog": 115,
+      "core": 30,
+      "engine": 143,
+      "http": 56,
+      "lab": 26,
+      "learn": 8,
+      "protocol": 36,
+      "service": 58,
+      "shell": 23,
+      "telemetry": 33,
+      "windows": 82,
+      "doc": 3
     },
     "change_tracking": "L16: guarded ReadDirectoryChangesW watchers scoped to each scan (#183, #202); attribute/ACL hints; identity-based absence; USN accelerator not implemented",
-    "scan": "M tier 1M files ~4.9M files/s warm, 20/20 exact manifests (#162); through the product for synthetic lab roots (#205); personal scans gated on #184 (#206 and #240 closed); elevated tokens refused",
-    "rust_tests_measured_at": "ee39877 (later wave-5 merges #249-#252 add catalogue and apps tests)"
+    "scan": "M tier 1M files ~4.9M files/s warm, 20/20 exact manifests (#162); through the product for synthetic lab roots (#205); personal scans gated: #184, #206 and #240 closed, #269 in review (PR #278); elevated tokens refused",
+    "rust_tests_measured_at": "6052bad"
   },
   "learning": {
     "student": "weighted Naive Bayes; Rust port loomward-learn with exact Python parity (#113)",
@@ -91,11 +94,11 @@
     "windows_performance_claim": false
   },
   "next_local_issues": [
-    "#184 remainder (the last gate before personal scans)",
+    "#269 / PR #278 (re-prove containment before relists), then the explicit personal-scan opening step",
+    "#268, #275, #276, #277 (follow-ups in flight)",
     "#148 (P4 toward 250k: receipt pipelining)",
     "#160 (P12 to at or under 1%)",
-    "#238/#247 then wiring: duplicates, applications and desktop contexts into the service, contract and app",
-    "#254 (multilink count of rows hidden under an excluded directory)",
+    "wiring: duplicates, applications and desktop contexts into the service, contract and app",
     "LW-111 (teacher: inference broker first, the owner's lane; personal data waits on q-5)"
   ],
   "optional_independent_starts": [
@@ -136,7 +139,10 @@
     "evidence/v3/duplicate-reader-hardening-238.md",
     "evidence/v3/app-inventory-lw047.md",
     "evidence/v3/shell-lw044-lw045.md",
-    "evidence/v3/telemetry-bughunt.md"
+    "evidence/v3/telemetry-bughunt.md",
+    "evidence/v3/gate-184-closeout.md",
+    "evidence/v3/scan-followups-180.md",
+    "evidence/v3/duplicate-reader-bughunt.md"
   ],
   "estate": {
     "repository": "Chris0Jeky/Loomward (public)",
@@ -249,6 +255,44 @@
     "rust_tests_at_ee39877": 516,
     "app_vitest_at_befd890": 248,
     "python_tests": 221,
-    "personal_scan_gate": "personal_scan_gated_184 stays; #206 and #240 closed, #184 remainder open"
+    "personal_scan_gate": "personal_scan_gated_184 stays; #206 and #240 closed, #184 remainder open (superseded by wave6: #184 closed in #274)"
+  },
+  "wave6": {
+    "merged": [
+      "#253",
+      "#255",
+      "#256",
+      "#257",
+      "#259",
+      "#261",
+      "#262",
+      "#263",
+      "#265",
+      "#267",
+      "#270",
+      "#271",
+      "#272",
+      "#274"
+    ],
+    "rust_tests_by_crate_at_6052bad": {
+      "apps": 18,
+      "catalog": 115,
+      "core": 30,
+      "engine": 143,
+      "http": 56,
+      "lab": 26,
+      "learn": 8,
+      "protocol": 36,
+      "service": 58,
+      "shell": 23,
+      "telemetry": 33,
+      "windows": 82,
+      "doc": 3
+    },
+    "rust_tests_at_6052bad": 631,
+    "app_vitest": 255,
+    "python_tests": 222,
+    "personal_scan_gate": "personal_scan_gated_184 stays; #184, #206, #240 closed; #269 in review (PR #278)",
+    "process": "status files are updated once per wave by the driver (AGENTS.md)"
   }
 }

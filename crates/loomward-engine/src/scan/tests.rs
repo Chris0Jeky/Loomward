@@ -182,7 +182,9 @@ fn duplicate_inspection_checks_engine_dataset_class() {
 fn duplicate_inspection_refuses_revoked_root_before_open() {
     let engine = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Synthetic)).unwrap();
     let grant = root();
-    engine.scan_cancel_root(grant.root_id()).unwrap();
+    engine
+        .scan_cancel_root(grant.key(), grant.root_id())
+        .unwrap();
     let err = engine
         .inspect_duplicates(&grant, &[], duplicate_budget())
         .unwrap_err();
@@ -199,7 +201,7 @@ fn duplicate_admission_uses_the_root_gate_and_cancellation() {
         DatasetClass::Synthetic,
     ))
     .unwrap();
-    let gate = engine.scan_root_gate(grant.root_id());
+    let gate = engine.scan_root_gate(grant.key());
     let held = gate.lock().unwrap();
     assert!(matches!(
         engine.duplicate_read_admission(&grant),
@@ -212,7 +214,9 @@ fn duplicate_admission_uses_the_root_gate_and_cancellation() {
         &cancel,
         &engine.duplicate_read_admission(&grant.clone()).unwrap()
     ));
-    engine.scan_cancel_root(grant.root_id()).unwrap();
+    engine
+        .scan_cancel_root(grant.key(), grant.root_id())
+        .unwrap();
     assert!(cancel.load(Ordering::Acquire));
     assert_eq!(
         engine
@@ -1051,7 +1055,9 @@ fn blocked_worker_cancel_ack_does_not_close_live_handle() {
     }
     let start = std::time::Instant::now();
     assert_eq!(
-        e.scan_cancel_root(&root_id).unwrap()[0].state,
+        e.scan_cancel_root(&RootKey::Fixture(root_id.clone()), &root_id)
+            .unwrap()[0]
+            .state,
         JobState::CancelRequested
     );
     assert!(start.elapsed() < Duration::from_millis(250));
@@ -1060,7 +1066,8 @@ fn blocked_worker_cancel_ack_does_not_close_live_handle() {
         e.job_status(&job.job_id).unwrap().state,
         JobState::CancelRequested
     );
-    e.scan_writer_fence(&root_id).unwrap();
+    e.scan_writer_fence(&RootKey::Fixture(root_id.clone()), &root_id)
+        .unwrap();
     release.store(true, Ordering::Release);
     let deadline = std::time::Instant::now() + Duration::from_secs(1);
     while e.job_status(&job.job_id).unwrap().state != JobState::Cancelled {
@@ -2073,4 +2080,92 @@ fn stale_child_prepare_relists_the_parent() {
         }
     );
     assert_eq!(sink.sink.totals(root.root_id()), Some(report.totals));
+}
+
+#[cfg(windows)]
+#[test]
+fn followup_grant_gate_cancels_and_fences_every_wire_alias() {
+    use loomward_windows::enumerate::{DirSource, NativeSource};
+    if loomward_windows::enumerate::running_elevated() {
+        assert_eq!(
+            NativeSource::default()
+                .open_root(std::path::Path::new("synthetic"))
+                .unwrap_err(),
+            source::SourceError::Refused
+        );
+        return;
+    }
+    let temp = canonical_tempdir();
+    let expected = NativeSource::default().open_root(temp.path()).unwrap().1;
+    let seed = GrantedRoot::new(
+        RootId::new("rt_b").unwrap(),
+        temp.path().to_owned(),
+        DatasetClass::Synthetic,
+        expected,
+    );
+    let state = canonical_tempdir();
+    let _conn = duplicate_grant_store(state.path(), &seed);
+    rusqlite::Connection::open(state.path().join("catalog.db"))
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);
+         INSERT INTO meta VALUES('instance_id','fixture-instance');
+         CREATE TABLE root(id INTEGER PRIMARY KEY,grant_id INTEGER);
+         INSERT INTO root VALUES(7,1);",
+        )
+        .unwrap();
+    let engine = Engine::open(EngineConfig::new(
+        state.path().to_owned(),
+        DatasetClass::Synthetic,
+    ))
+    .unwrap();
+    let identity = CatalogRootIdentity {
+        row: 7,
+        instance: "fixture-instance".into(),
+    };
+    let a = engine
+        .granted_root(RootId::new("rt_a").unwrap(), 1, &identity)
+        .unwrap();
+    let b = engine
+        .granted_root(RootId::new("rt_b").unwrap(), 1, &identity)
+        .unwrap();
+    let sink = Arc::new(MemorySink::default());
+    engine.set_scan_sink(sink.clone()).unwrap();
+    engine.register_job_runner(
+        JobKind::Scan,
+        Arc::new(|ctx, _| {
+            while !ctx.is_cancelled() {
+                std::thread::yield_now();
+            }
+            Ok(loomward_protocol::CoverageState::Cancelled)
+        }),
+    );
+    let job = engine
+        .job_submit(crate::jobs::JobSpec::new(
+            JobKind::Scan,
+            Some(a.root_id().clone()),
+        ))
+        .unwrap();
+    let cancelled = engine
+        .scan_cancel_root(&RootKey::Grant(1), b.root_id())
+        .unwrap();
+    assert_eq!(cancelled.len(), 1);
+    assert_eq!(cancelled[0].job_id, job.job_id);
+    engine
+        .scan_writer_fence(&RootKey::Grant(1), b.root_id())
+        .unwrap();
+    for root in [&a, &b] {
+        assert!(matches!(
+            engine.scan_start(root, None),
+            Err(EngineError::PermissionDenied { .. })
+        ));
+        assert!(matches!(
+            engine.duplicate_read_admission(root),
+            Err(EngineError::PermissionDenied { .. })
+        ));
+        assert!(matches!(
+            sink.begin_run(root.root_id(), 1, &RunScope::FullRoot),
+            Err(EngineError::PermissionDenied { .. })
+        ));
+    }
 }

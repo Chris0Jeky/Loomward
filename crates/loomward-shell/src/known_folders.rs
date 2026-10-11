@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Folder {
+    Profile,
     Desktop,
     PublicDesktop,
     Documents,
@@ -87,6 +88,7 @@ mod native {
 
     pub(super) fn path(folder: Folder, default: bool) -> Result<PathBuf, String> {
         let id = match folder {
+            Folder::Profile => FOLDERID_Profile,
             Folder::Desktop => FOLDERID_Desktop,
             Folder::PublicDesktop => FOLDERID_PublicDesktop,
             Folder::Documents => FOLDERID_Documents,

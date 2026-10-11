@@ -1,0 +1,623 @@
+{
+  "cases": [
+    {
+      "capabilities": [],
+      "child_alive_before_job_close": null,
+      "child_exited_after_job_close": null,
+      "job": false,
+      "launch": {
+        "create_process": {
+          "error_code": null,
+          "ok": true
+        },
+        "exit_code": 0,
+        "timed_out": false
+      },
+      "probe": {
+        "breakaway": {
+          "not_run": "no explicit job in this case"
+        },
+        "child": {
+          "identity": {
+            "appcontainer": true,
+            "container_sid": "S-1-15-2-2308843152-2100933788-584252206-2622922436-4128428495-3045459502-663207587",
+            "in_job": true
+          },
+          "pid": 2000,
+          "spawn": {
+            "error_code": null,
+            "ok": true
+          }
+        },
+        "dns_api_openai_com": {
+          "error_code": 11001,
+          "kind": "Uncategorized",
+          "ok": false
+        },
+        "filesystem": {
+          "granted_canary": {
+            "error_code": null,
+            "ok": true
+          },
+          "granted_listing": {
+            "error_code": null,
+            "ok": true
+          },
+          "granted_write": {
+            "error_code": null,
+            "ok": true
+          },
+          "system_root_listing": {
+            "error_code": null,
+            "ok": true
+          },
+          "ungranted_canary": {
+            "error_code": 5,
+            "kind": "PermissionDenied",
+            "ok": false
+          },
+          "ungranted_listing": {
+            "error_code": 5,
+            "kind": "PermissionDenied",
+            "ok": false
+          },
+          "ungranted_write": {
+            "error_code": 5,
+            "kind": "PermissionDenied",
+            "ok": false
+          }
+        },
+        "identity": {
+          "appcontainer": true,
+          "container_sid": "S-1-15-2-2308843152-2100933788-584252206-2622922436-4128428495-3045459502-663207587",
+          "in_job": true
+        },
+        "network": [
+          {
+            "endpoint": "1.1.1.1:443",
+            "result": {
+              "error_code": 10013,
+              "kind": "PermissionDenied",
+              "ok": false
+            }
+          },
+          {
+            "endpoint": "162.159.140.245:443",
+            "result": {
+              "error_code": 10013,
+              "kind": "PermissionDenied",
+              "ok": false
+            }
+          },
+          {
+            "endpoint": "127.0.0.1:60263",
+            "result": {
+              "error_code": null,
+              "kind": "TimedOut",
+              "ok": false
+            }
+          }
+        ],
+        "tools": {
+          "cmd_echo": {
+            "exit_code": 0,
+            "marker_in_stdout": true,
+            "spawn": {
+              "error_code": null,
+              "ok": true
+            }
+          },
+          "cmd_type_granted_canary": {
+            "exit_code": 0,
+            "marker_in_stdout": true,
+            "spawn": {
+              "error_code": null,
+              "ok": true
+            }
+          },
+          "cmd_type_ungranted_canary": {
+            "exit_code": 1,
+            "marker_in_stdout": false,
+            "spawn": {
+              "error_code": null,
+              "ok": true
+            }
+          }
+        },
+        "ui_restrictions": 0,
+        "ui_restrictions_query": null
+      }
+    },
+    {
+      "capabilities": [
+        "internetClient"
+      ],
+      "child_alive_before_job_close": null,
+      "child_exited_after_job_close": null,
+      "job": false,
+      "launch": {
+        "create_process": {
+          "error_code": null,
+          "ok": true
+        },
+        "exit_code": 0,
+        "timed_out": false
+      },
+      "probe": {
+        "breakaway": {
+          "not_run": "no explicit job in this case"
+        },
+        "child": {
+          "identity": {
+            "appcontainer": true,
+            "container_sid": "S-1-15-2-2308843152-2100933788-584252206-2622922436-4128428495-3045459502-663207587",
+            "in_job": true
+          },
+          "pid": 16784,
+          "spawn": {
+            "error_code": null,
+            "ok": true
+          }
+        },
+        "dns_api_openai_com": {
+          "error_code": null,
+          "ok": true
+        },
+        "filesystem": {
+          "granted_canary": {
+            "error_code": null,
+            "ok": true
+          },
+          "granted_listing": {
+            "error_code": null,
+            "ok": true
+          },
+          "granted_write": {
+            "error_code": null,
+            "ok": true
+          },
+          "system_root_listing": {
+            "error_code": null,
+            "ok": true
+          },
+          "ungranted_canary": {
+            "error_code": 5,
+            "kind": "PermissionDenied",
+            "ok": false
+          },
+          "ungranted_listing": {
+            "error_code": 5,
+            "kind": "PermissionDenied",
+            "ok": false
+          },
+          "ungranted_write": {
+            "error_code": 5,
+            "kind": "PermissionDenied",
+            "ok": false
+          }
+        },
+        "identity": {
+          "appcontainer": true,
+          "container_sid": "S-1-15-2-2308843152-2100933788-584252206-2622922436-4128428495-3045459502-663207587",
+          "in_job": true
+        },
+        "network": [
+          {
+            "endpoint": "1.1.1.1:443",
+            "result": {
+              "error_code": null,
+              "ok": true
+            }
+          },
+          {
+            "endpoint": "162.159.140.245:443",
+            "result": {
+              "error_code": null,
+              "ok": true
+            }
+          },
+          {
+            "endpoint": "127.0.0.1:60263",
+            "result": {
+              "error_code": null,
+              "kind": "TimedOut",
+              "ok": false
+            }
+          }
+        ],
+        "tools": {
+          "cmd_echo": {
+            "exit_code": 0,
+            "marker_in_stdout": true,
+            "spawn": {
+              "error_code": null,
+              "ok": true
+            }
+          },
+          "cmd_type_granted_canary": {
+            "exit_code": 0,
+            "marker_in_stdout": true,
+            "spawn": {
+              "error_code": null,
+              "ok": true
+            }
+          },
+          "cmd_type_ungranted_canary": {
+            "exit_code": 1,
+            "marker_in_stdout": false,
+            "spawn": {
+              "error_code": null,
+              "ok": true
+            }
+          }
+        },
+        "ui_restrictions": 0,
+        "ui_restrictions_query": null
+      }
+    },
+    {
+      "capabilities": [],
+      "child_alive_before_job_close": true,
+      "child_exited_after_job_close": true,
+      "job": true,
+      "launch": {
+        "create_process": {
+          "error_code": null,
+          "ok": true
+        },
+        "exit_code": 0,
+        "timed_out": false
+      },
+      "probe": {
+        "breakaway": {
+          "error_code": 5,
+          "kind": "PermissionDenied",
+          "ok": false
+        },
+        "child": {
+          "identity": {
+            "appcontainer": true,
+            "container_sid": "S-1-15-2-2308843152-2100933788-584252206-2622922436-4128428495-3045459502-663207587",
+            "in_job": true
+          },
+          "pid": 21064,
+          "spawn": {
+            "error_code": null,
+            "ok": true
+          }
+        },
+        "dns_api_openai_com": {
+          "error_code": 11001,
+          "kind": "Uncategorized",
+          "ok": false
+        },
+        "filesystem": {
+          "granted_canary": {
+            "error_code": null,
+            "ok": true
+          },
+          "granted_listing": {
+            "error_code": null,
+            "ok": true
+          },
+          "granted_write": {
+            "error_code": null,
+            "ok": true
+          },
+          "system_root_listing": {
+            "error_code": null,
+            "ok": true
+          },
+          "ungranted_canary": {
+            "error_code": 5,
+            "kind": "PermissionDenied",
+            "ok": false
+          },
+          "ungranted_listing": {
+            "error_code": 5,
+            "kind": "PermissionDenied",
+            "ok": false
+          },
+          "ungranted_write": {
+            "error_code": 5,
+            "kind": "PermissionDenied",
+            "ok": false
+          }
+        },
+        "identity": {
+          "appcontainer": true,
+          "container_sid": "S-1-15-2-2308843152-2100933788-584252206-2622922436-4128428495-3045459502-663207587",
+          "in_job": true
+        },
+        "network": [
+          {
+            "endpoint": "1.1.1.1:443",
+            "result": {
+              "error_code": 10013,
+              "kind": "PermissionDenied",
+              "ok": false
+            }
+          },
+          {
+            "endpoint": "162.159.140.245:443",
+            "result": {
+              "error_code": 10013,
+              "kind": "PermissionDenied",
+              "ok": false
+            }
+          },
+          {
+            "endpoint": "127.0.0.1:60263",
+            "result": {
+              "error_code": null,
+              "kind": "TimedOut",
+              "ok": false
+            }
+          }
+        ],
+        "tools": {
+          "cmd_echo": {
+            "exit_code": 0,
+            "marker_in_stdout": true,
+            "spawn": {
+              "error_code": null,
+              "ok": true
+            }
+          },
+          "cmd_type_granted_canary": {
+            "exit_code": 0,
+            "marker_in_stdout": true,
+            "spawn": {
+              "error_code": null,
+              "ok": true
+            }
+          },
+          "cmd_type_ungranted_canary": {
+            "exit_code": 1,
+            "marker_in_stdout": false,
+            "spawn": {
+              "error_code": null,
+              "ok": true
+            }
+          }
+        },
+        "ui_restrictions": 255,
+        "ui_restrictions_query": {
+          "error_code": null,
+          "ok": true
+        }
+      }
+    },
+    {
+      "capabilities": [
+        "internetClient"
+      ],
+      "child_alive_before_job_close": true,
+      "child_exited_after_job_close": true,
+      "job": true,
+      "launch": {
+        "create_process": {
+          "error_code": null,
+          "ok": true
+        },
+        "exit_code": 0,
+        "timed_out": false
+      },
+      "probe": {
+        "breakaway": {
+          "error_code": 5,
+          "kind": "PermissionDenied",
+          "ok": false
+        },
+        "child": {
+          "identity": {
+            "appcontainer": true,
+            "container_sid": "S-1-15-2-2308843152-2100933788-584252206-2622922436-4128428495-3045459502-663207587",
+            "in_job": true
+          },
+          "pid": 31172,
+          "spawn": {
+            "error_code": null,
+            "ok": true
+          }
+        },
+        "dns_api_openai_com": {
+          "error_code": null,
+          "ok": true
+        },
+        "filesystem": {
+          "granted_canary": {
+            "error_code": null,
+            "ok": true
+          },
+          "granted_listing": {
+            "error_code": null,
+            "ok": true
+          },
+          "granted_write": {
+            "error_code": null,
+            "ok": true
+          },
+          "system_root_listing": {
+            "error_code": null,
+            "ok": true
+          },
+          "ungranted_canary": {
+            "error_code": 5,
+            "kind": "PermissionDenied",
+            "ok": false
+          },
+          "ungranted_listing": {
+            "error_code": 5,
+            "kind": "PermissionDenied",
+            "ok": false
+          },
+          "ungranted_write": {
+            "error_code": 5,
+            "kind": "PermissionDenied",
+            "ok": false
+          }
+        },
+        "identity": {
+          "appcontainer": true,
+          "container_sid": "S-1-15-2-2308843152-2100933788-584252206-2622922436-4128428495-3045459502-663207587",
+          "in_job": true
+        },
+        "network": [
+          {
+            "endpoint": "1.1.1.1:443",
+            "result": {
+              "error_code": null,
+              "ok": true
+            }
+          },
+          {
+            "endpoint": "162.159.140.245:443",
+            "result": {
+              "error_code": null,
+              "ok": true
+            }
+          },
+          {
+            "endpoint": "127.0.0.1:60263",
+            "result": {
+              "error_code": null,
+              "kind": "TimedOut",
+              "ok": false
+            }
+          }
+        ],
+        "tools": {
+          "cmd_echo": {
+            "exit_code": 0,
+            "marker_in_stdout": true,
+            "spawn": {
+              "error_code": null,
+              "ok": true
+            }
+          },
+          "cmd_type_granted_canary": {
+            "exit_code": 0,
+            "marker_in_stdout": true,
+            "spawn": {
+              "error_code": null,
+              "ok": true
+            }
+          },
+          "cmd_type_ungranted_canary": {
+            "exit_code": 1,
+            "marker_in_stdout": false,
+            "spawn": {
+              "error_code": null,
+              "ok": true
+            }
+          }
+        },
+        "ui_restrictions": 255,
+        "ui_restrictions_query": {
+          "error_code": null,
+          "ok": true
+        }
+      }
+    }
+  ],
+  "cleanup": {
+    "error_code": null,
+    "ok": true,
+    "root_removed": true
+  },
+  "codex": {
+    "blocked": "pinned_binary_mismatch",
+    "sha256": "dd13bdb162a184fa04039488b234a8258ef9b76f84e926c505d5742b19249a6a"
+  },
+  "container_sid": "S-1-15-2-2308843152-2100933788-584252206-2622922436-4128428495-3045459502-663207587",
+  "controls": {
+    "granted_canary": {
+      "error_code": null,
+      "ok": true
+    },
+    "identity": {
+      "appcontainer": false,
+      "container_sid": null,
+      "in_job": true
+    },
+    "network": [
+      {
+        "endpoint": "1.1.1.1:443",
+        "result": {
+          "error_code": null,
+          "ok": true
+        }
+      },
+      {
+        "endpoint": "162.159.140.245:443",
+        "result": {
+          "error_code": null,
+          "ok": true
+        }
+      },
+      {
+        "endpoint": "127.0.0.1:60263",
+        "result": {
+          "error_code": null,
+          "ok": true
+        }
+      }
+    ],
+    "process_launch": {
+      "create_process": {
+        "error_code": null,
+        "ok": true
+      },
+      "exit_code": 0,
+      "timed_out": false
+    },
+    "stderr": "",
+    "system_root_listing": {
+      "error_code": null,
+      "ok": true
+    },
+    "ungranted_canary": {
+      "error_code": null,
+      "ok": true
+    }
+  },
+  "elevated": false,
+  "measured_at_unix_seconds": 1791710309,
+  "platform": "Windows",
+  "profile": {
+    "before": {
+      "derived_sid": "S-1-15-2-2308843152-2100933788-584252206-2622922436-4128428495-3045459502-663207587",
+      "folder_lookup_hresult": "0x80070002",
+      "mapping_key": "absent",
+      "moniker": "Loomward.L15b.Measure",
+      "packages_folder_exists": false
+    },
+    "create_hresult": "0x00000000",
+    "deletion": {
+      "after": {
+        "derived_sid": "S-1-15-2-2308843152-2100933788-584252206-2622922436-4128428495-3045459502-663207587",
+        "folder_lookup_hresult": "0x80070002",
+        "mapping_key": "absent",
+        "moniker": "Loomward.L15b.Measure",
+        "packages_folder_exists": false
+      },
+      "delete_hresult": "0x00000000",
+      "deleted": true
+    },
+    "registered_state": {
+      "derived_sid": "S-1-15-2-2308843152-2100933788-584252206-2622922436-4128428495-3045459502-663207587",
+      "folder_lookup_hresult": "0x00000000",
+      "mapping_key": "present",
+      "moniker": "Loomward.L15b.Measure",
+      "packages_folder_exists": true
+    }
+  },
+  "profile_lookup": {
+    "api": "GetAppContainerFolderPath",
+    "folder_exists": true,
+    "hresult": "0x00000000"
+  },
+  "profile_registered": true,
+  "schema": 1
+}
