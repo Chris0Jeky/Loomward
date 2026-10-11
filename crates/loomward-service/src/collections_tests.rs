@@ -775,6 +775,53 @@ fn collections_remove_members_validation_and_noop() {
     }
 }
 
+/// #356: an add that lands between the writer's precious staging and its catalogue publication
+/// creates a reference the staging never saw. It must still follow the publication: the hard
+/// link's identity to its surviving row, the dropped file to retirement.
+#[test]
+fn collections_add_inside_the_publication_window_follows_the_publication() {
+    let (_dir, svc, ids) = setup(DatasetClass::Synthetic);
+    let id = create(&svc, "Projects");
+    let svc = Arc::new(svc);
+    let scan = rescan_paused_in_publication_window(&svc);
+    let rev = svc.inner.revisions().unwrap().1;
+    ok(
+        "collections.update_members",
+        update(&svc, &id, &[ids[0].clone(), ids[2].clone()], &[], rev),
+    );
+    svc.inner.catalog.writer().publication_window().release();
+    scan.join().unwrap();
+    let bindings = {
+        let conn = svc.inner.db();
+        let mut s = conn
+            .prepare("SELECT id,state,retired,row_id FROM st.object_ref ORDER BY id")
+            .unwrap();
+        s.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, bool>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+    };
+    assert_eq!(
+        bindings,
+        vec![
+            (1, "resolved".into(), false, 2),
+            (2, "unresolved".into(), true, 3)
+        ]
+    );
+    let (page, _) = ok("collections.members", members(&svc, &id, 200, Value::Null));
+    assert_eq!(page["total"], 2);
+    assert_eq!(page["items"][0]["status"], "resolved");
+    assert_eq!(page["items"][0]["entry"]["name"], "report-001.txt");
+    assert_eq!(page["items"][1]["status"], "unresolved");
+}
+
 #[test]
 fn collections_list_resolves_references_once_for_all_collections() {
     let (_dir, svc, _) = setup(DatasetClass::Synthetic);

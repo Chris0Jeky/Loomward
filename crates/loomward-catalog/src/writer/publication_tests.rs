@@ -1640,3 +1640,143 @@ fn file_matching_prefers_exact_name_and_consumes_each_old_row_once() {
         -1
     );
 }
+
+/// #356: `fixture()` without the references on "a" (row 1) and "omitted" (row 3), published on a
+/// writer thread that pauses inside the pending-publication window. While it is paused, another
+/// connection binds new references to both rows exactly as `collections.update_members` does: one
+/// IMMEDIATE transaction over both files. The publication then drops both rows; "a" survives as
+/// its hard link "link" (row 2). With `late_commit` that transaction is still open when the window
+/// is released, so the writer reaches its fence while the binding holds both write locks.
+fn publish_with_window_bind(
+    crash: Option<PublicationCrash>,
+    late_commit: bool,
+) -> (tempfile::TempDir, Result<WriteReply>) {
+    let (temp, conn, command) = fixture();
+    conn.execute_batch(
+        "DELETE FROM st.collection_member WHERE object_ref_id IN (1,2);
+        DELETE FROM st.object_ref WHERE id IN (1,2);",
+    )
+    .unwrap();
+    let window = Arc::new(PublicationWindow::default());
+    window.arm();
+    let paused = window.clone();
+    let publication = std::thread::spawn(move || {
+        let (tx, rx) = bounded(1);
+        let (reply, result) = bounded(1);
+        tx.send(Pending {
+            command,
+            reply,
+            _permit: BytePermit {
+                quota: Arc::new((Mutex::new(0), Condvar::new())),
+                bytes: 0,
+            },
+        })
+        .unwrap();
+        drop(tx);
+        let (alive, _) = bounded(0);
+        serve(
+            conn,
+            rx,
+            Arc::new(Mutex::new(WriterTimings::default())),
+            alive,
+            crash,
+            Some(paused),
+        );
+        result.recv().unwrap_or(Err(Error::Closed))
+    });
+    window.wait_paused();
+    let mut other = Connection::open(temp.path().join("catalog.db")).unwrap();
+    other
+        .execute(
+            "ATTACH DATABASE ?1 AS st",
+            [temp.path().join("state.db").to_string_lossy().as_ref()],
+        )
+        .unwrap();
+    let tx = other
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    tx.execute_batch(
+        "INSERT INTO st.object_ref(volume_key,file_id,creation_ft,kind,state,last_resolved_ns,catalog_instance,row_id,born_run)
+            SELECT 'fixture',file_id,created_ft,'file','resolved',0,(SELECT value FROM main.meta WHERE key='instance_id'),id,born_run
+            FROM main.file WHERE id IN (1,3) ORDER BY id;
+        INSERT INTO st.collection_member SELECT 1,id,1 FROM st.object_ref WHERE id>4;",
+    )
+    .unwrap();
+    if late_commit {
+        window.release();
+        // Ordering only: the assertions hold whether the writer is already waiting or not.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        tx.commit().unwrap();
+    } else {
+        tx.commit().unwrap();
+        window.release();
+    }
+    (temp, publication.join().unwrap())
+}
+
+fn pending_references(dir: &std::path::Path) -> Vec<(i64, Option<i64>)> {
+    let st = Connection::open(dir.join("state.db")).unwrap();
+    let mut s = st
+        .prepare("SELECT object_ref_id,row_id FROM pending_reference ORDER BY object_ref_id")
+        .unwrap();
+    s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+}
+
+#[test]
+fn a_reference_bound_inside_the_publication_window_is_restaged_before_publication() {
+    for late_commit in [false, true] {
+        let (temp, result) = publish_with_window_bind(None, late_commit);
+        result.unwrap();
+        assert_eq!(pending_count(temp.path()), 0);
+        let after = bindings(temp.path());
+        // The window's reference to "a" follows the identity to its surviving hard link, row 2.
+        assert_eq!(after[2], (5, "resolved".into(), false, 2, 1));
+        // The one to "omitted" is retired with the row, never left resolved to a deleted row id.
+        assert_eq!(after[3], (6, "unresolved".into(), true, 3, 1));
+        assert_eq!(
+            old_listing(temp.path()).1,
+            vec![(2, "link".into()), (4, "nested".into())]
+        );
+        assert_eq!(
+            Reader::open(temp.path())
+                .unwrap()
+                .inspect(NodeKey::File(2))
+                .unwrap()
+                .memberships[0]
+                .name,
+            "Kept"
+        );
+    }
+}
+
+#[test]
+fn crash_after_a_window_restage_recovers_like_any_publication() {
+    // Before the catalogue commit: the re-staged intents are durable, the witness is not, and
+    // recovery discards them; both window references keep their still-current rows.
+    let (temp, result) = publish_with_window_bind(Some(PublicationCrash::BeforeCatalog), false);
+    assert!(matches!(result, Err(Error::Closed)));
+    assert_eq!(
+        pending_references(temp.path()),
+        vec![(3, None), (4, None), (5, Some(2)), (6, None)]
+    );
+    let listing = old_listing(temp.path());
+    drop(crate::db::open_pair(temp.path(), "synthetic").unwrap());
+    assert_eq!(pending_count(temp.path()), 0);
+    assert_eq!(old_listing(temp.path()).1, listing.1);
+    let after = bindings(temp.path());
+    assert_eq!(after[2], (5, "resolved".into(), false, 1, 1));
+    assert_eq!(after[3], (6, "resolved".into(), false, 3, 1));
+    assert_recovered_slice(temp.path());
+    // After the catalogue commit: the witness names the re-staged token, so recovery confirms it.
+    let (temp, result) = publish_with_window_bind(Some(PublicationCrash::AfterCatalog), false);
+    assert!(matches!(result, Err(Error::Closed)));
+    assert_eq!(pending_count(temp.path()), 4);
+    drop(crate::db::open_pair(temp.path(), "synthetic").unwrap());
+    assert_eq!(pending_count(temp.path()), 0);
+    let after = bindings(temp.path());
+    assert_eq!(after[2], (5, "resolved".into(), false, 2, 1));
+    assert_eq!(after[3], (6, "unresolved".into(), true, 3, 1));
+}
