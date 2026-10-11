@@ -277,6 +277,11 @@ fn validate(c: &WriteCommand) -> Result<usize> {
 #[derive(Clone, Default, serde::Serialize)]
 pub struct WriterTimings {
     pub staging_seconds: f64,
+    pub staging_calls: u64,
+    pub listing_calls: u64,
+    pub rollup_calls: u64,
+    pub batch_wait_calls: u64,
+    pub batch_wait_seconds: f64,
     pub validation_dry_run_seconds: f64,
     pub state_prepare_seconds: f64,
     pub invalidation_seconds: f64,
@@ -523,7 +528,15 @@ fn work(
                     {
                         break;
                     }
-                    match rx.recv_timeout(Duration::from_millis(1)) {
+                    let wait_start = Instant::now();
+                    // A synchronous caller cannot enqueue again until this transaction commits.
+                    let next = rx.try_recv();
+                    {
+                        let mut timing = context.timings.lock().expect("timing lock");
+                        timing.batch_wait_calls += 1;
+                        timing.batch_wait_seconds += wait_start.elapsed().as_secs_f64();
+                    }
+                    match next {
                         Ok(next)
                             if listing_command(&next.command)
                                 && bytes + next._permit.bytes <= TRANSACTION_BYTES =>
@@ -1023,6 +1036,7 @@ fn apply(
             }
             let started = Instant::now();
             stage(conn, *run_id, *dir_id, *seq, files, dirs)?;
+            ctx.timings.lock().expect("timing lock").staging_calls += 1;
             ctx.timings.lock().expect("timing lock").staging_seconds +=
                 started.elapsed().as_secs_f64();
             Ok(WriteReply::Done)
@@ -1091,6 +1105,7 @@ fn apply(
                     started.elapsed().as_secs_f64();
                 let started = Instant::now();
                 rollup(conn, root, full)?;
+                ctx.timings.lock().expect("timing lock").rollup_calls += 1;
                 ctx.timings.lock().expect("timing lock").rollup_seconds +=
                     started.elapsed().as_secs_f64();
             }
@@ -1463,6 +1478,7 @@ fn publish(
     )?;
     {
         let mut timing = ctx.timings.lock().expect("timing lock");
+        timing.listing_calls += 1;
         timing.listing_seconds += listing_start.elapsed().as_secs_f64();
         timing.file_insert_seconds += file_seconds;
         timing.file_seen_seconds += seen_seconds;
@@ -1620,6 +1636,66 @@ mod publication_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn synchronous_listing_receipts_do_not_wait_for_future_commands() {
+        let temp = tempfile::tempdir().unwrap();
+        let writer =
+            Writer::start(crate::db::open_pair(temp.path(), "synthetic").unwrap()).unwrap();
+        writer
+            .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_key: "fixture".into(),
+                display_name: "Fixture".into(),
+                display_path: "Fixture root".into(),
+                root_file_id: Some(vec![1; 16]),
+                filesystem: Some("NTFS".into()),
+                origin: "fixture".into(),
+                granted_via: "fixture".into(),
+                observed_at_ns: 0,
+            }))
+            .unwrap();
+        let WriteReply::Run(run_id) = writer
+            .call(WriteCommand::BeginRun {
+                grant_id: 1,
+                mode: "full".into(),
+                strategy: "fixture".into(),
+                started_at_ns: 1,
+            })
+            .unwrap()
+        else {
+            panic!("run receipt")
+        };
+        let before = writer.timings();
+        for logical in 1..=64 {
+            writer
+                .call(WriteCommand::DirListing(DirListing {
+                    run_id,
+                    dir_id: 1,
+                    files: vec![Observation::file("item", logical, Some(logical))],
+                    dirs: vec![],
+                    state: "complete".into(),
+                    skipped: 0,
+                    errors: 0,
+                }))
+                .unwrap();
+            // A receipt still means COMMIT: a separate reader sees each publication immediately.
+            let reader = Connection::open(temp.path().join("catalog.db")).unwrap();
+            assert_eq!(
+                reader
+                    .query_row("SELECT logical FROM file", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                logical as i64
+            );
+        }
+        let after = writer.timings();
+        assert_eq!(after.listing_calls - before.listing_calls, 64);
+        assert_eq!(after.batch_wait_calls - before.batch_wait_calls, 64);
+        // Measures only the queue probe, excluding SQLite and shared-host disk scheduling.
+        assert!(
+            after.batch_wait_seconds - before.batch_wait_seconds < 0.025,
+            "idle batching delayed synchronous receipts: {} seconds",
+            after.batch_wait_seconds - before.batch_wait_seconds
+        );
+    }
     #[test]
     fn nested_exclusions_shield_each_directory_once() {
         let conn = Connection::open_in_memory().unwrap();

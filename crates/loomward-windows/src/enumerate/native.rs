@@ -203,6 +203,7 @@ fn open_relative_with_attributes(
     };
     let mut status: IO_STATUS_BLOCK = unsafe { zeroed() };
     let mut handle = null_mut();
+    let _profile = profile::OPEN.start();
     let code = unsafe {
         NtCreateFile(
             &mut handle,
@@ -232,6 +233,7 @@ fn open_relative_with_attributes(
     Ok(unsafe { File::from_raw_handle(handle) })
 }
 fn directory_attributes(file: &File) -> Result<FILE_ATTRIBUTE_TAG_INFO, SourceError> {
+    let _profile = profile::ATTRIBUTES.start();
     let attr: FILE_ATTRIBUTE_TAG_INFO =
         information(file.as_raw_handle(), FileAttributeTagInfo).ok_or_else(last_error)?;
     validate_directory_attributes(attr)
@@ -379,6 +381,7 @@ fn root_handles_mode(
         .encode_utf16()
         .chain(Some(0))
         .collect();
+    let _profile = profile::OPEN.start();
     let handle = unsafe {
         CreateFileW(
             anchor.as_ptr(),
@@ -444,6 +447,7 @@ fn opened(
     preferred: Strategy,
     root: Option<Arc<File>>,
 ) -> Result<(NativeDir, OpenedIdentity), SourceError> {
+    let _profile = profile::IDENTITY.start();
     let h = file.as_raw_handle();
     let attr = directory_attributes(&file)?;
     let mut fs_name = [0u16; 64];
@@ -673,6 +677,7 @@ impl DirSource for NativeSource {
                 descriptor.Anonymous.ExtendedFileId.Identifier = id;
             }
         }
+        let _profile = profile::OPEN.start();
         let handle = unsafe {
             OpenFileById(
                 root.file.as_raw_handle(),
@@ -700,6 +705,12 @@ impl DirSource for NativeSource {
         Ok(result)
     }
     fn list(&self, dir: &NativeDir, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+        let _profile = profile::LIST.start();
+        let mut callback = |entry: RawEntry<'_>| {
+            let _profile = profile::CALLBACK.start();
+            sink(entry)
+        };
+        let sink = &mut callback as &mut dyn FnMut(RawEntry<'_>) -> Flow;
         let _thread = match self.cancel.register() {
             Ok(h) => h,
             Err(_) => return ListOutcome::Incomplete(IncompleteReason::Io(-1)),
@@ -721,6 +732,7 @@ fn normalized_path(file: &File) -> Result<Vec<u16>, i32> {
     loop {
         #[cfg(test)]
         PATH_QUERIES.with_borrow_mut(|queries| queries.push((flags, path.len())));
+        let query = profile::PATH_QUERY.start();
         let n = unsafe {
             GetFinalPathNameByHandleW(
                 file.as_raw_handle(),
@@ -729,8 +741,10 @@ fn normalized_path(file: &File) -> Result<Vec<u16>, i32> {
                 flags,
             )
         } as usize;
-        if n == 0 {
-            return Err(unsafe { GetLastError() } as i32);
+        let error = (n == 0).then(|| unsafe { GetLastError() } as i32);
+        drop(query);
+        if let Some(error) = error {
+            return Err(error);
         }
         if n < path.len() {
             path.truncate(n);
@@ -760,6 +774,7 @@ impl NativeSource {
     }
 
     fn containment(&self, dir: &NativeDir) -> Result<(), IncompleteReason> {
+        let _profile = profile::CONTAINMENT.start();
         let root = self.handle_path(&dir.root).map_err(IncompleteReason::Io)?;
         if Arc::ptr_eq(&dir.root, &dir.file) {
             return Ok(());
@@ -985,6 +1000,7 @@ impl NativeSource {
                 _ => return ListOutcome::Incomplete(IncompleteReason::Malformed),
             };
             buffer.fill(0);
+            let query = profile::ENUM_QUERY.start();
             let ok = unsafe {
                 GetFileInformationByHandleEx(
                     dir.file.as_raw_handle(),
@@ -993,8 +1009,9 @@ impl NativeSource {
                     (buffer.len() * 8) as u32,
                 )
             };
-            if ok == 0 {
-                let code = unsafe { GetLastError() };
+            let error = (ok == 0).then(|| unsafe { GetLastError() });
+            drop(query);
+            if let Some(code) = error {
                 if !emitted
                     && matches!(
                         code,

@@ -525,6 +525,12 @@ impl Engine {
                     ctx.cancel.clone(),
                     options.clone(),
                 )?;
+                if std::env::var_os("LOOMWARD_SCAN_PROFILE").is_some() {
+                    eprintln!(
+                        "scan-profile native {}",
+                        loomward_windows::enumerate::scan_profile()
+                    );
+                }
                 ctx.set_scan_report(&report)?;
                 Ok(if report.complete {
                     loomward_protocol::CoverageState::Complete
@@ -582,6 +588,12 @@ impl Engine {
                     options.clone(),
                     &watch,
                 )?;
+                if std::env::var_os("LOOMWARD_SCAN_PROFILE").is_some() {
+                    eprintln!(
+                        "scan-profile native {}",
+                        loomward_windows::enumerate::scan_profile()
+                    );
+                }
                 ctx.set_scan_report(&report)?;
                 Ok(if report.complete {
                     loomward_protocol::CoverageState::Complete
