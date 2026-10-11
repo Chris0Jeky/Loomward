@@ -22,8 +22,10 @@ fn terminal(svc: &Service, id: &JobId) -> Job {
     }
 }
 
+/// q-10: personal inspection is open, so an unknown root is simply `not_found`; the refusal
+/// replays without a second execution and starts no job.
 #[test]
-fn duplicates_personal_refusal_precedes_any_root_or_content_access_and_replays() {
+fn duplicates_personal_unknown_root_is_refused_before_any_job_and_replays() {
     let tmp = tempfile::tempdir().unwrap();
     let svc = open(tmp.path(), DatasetClass::Personal);
     let req = request(
@@ -32,8 +34,7 @@ fn duplicates_personal_refusal_precedes_any_root_or_content_access_and_replays()
     );
     let refused = svc.call(req.clone(), &CallContext::http());
     let error = err(refused.clone());
-    assert_eq!(error.code, ErrorCode::CapabilityUnavailable);
-    assert_eq!(reason(&error), Some("content_read_gated"));
+    assert_eq!(error.code, ErrorCode::NotFound, "{error:?}");
     assert_eq!(svc.call(req, &CallContext::http()), refused);
     assert_eq!(
         svc.inner.hooks.runs.lock().unwrap()[&Command::DuplicatesInspect],
@@ -46,6 +47,108 @@ fn duplicates_personal_refusal_precedes_any_root_or_content_access_and_replays()
         .unwrap()
         .jobs
         .is_empty());
+}
+
+/// q-10 end to end: a personal session confirms duplicates in its own owner-granted folder
+/// (synthetic files in a disposable root), reads no byte it does not need, changes nothing, and a
+/// revoked root's report is redacted.
+#[cfg(windows)]
+#[test]
+fn duplicates_personal_session_confirms_owner_duplicates_and_revocation_redacts() {
+    let tmp = crate::tests::temp_root();
+    let root = tmp.path().join("owner-folder");
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    let files: [(&str, &[u8]); 4] = [
+        ("a.txt", b"same"),
+        (r"sub\copy.txt", b"same"),
+        ("different.txt", b"else"),
+        ("lonely.txt", b"unique size"),
+    ];
+    for (name, bytes) in files {
+        std::fs::write(root.join(name), bytes).unwrap();
+    }
+    let root = root.canonicalize().unwrap();
+    let snapshot = || {
+        files
+            .iter()
+            .map(|(name, _)| {
+                let f = root.join(name);
+                (
+                    std::fs::read(&f).unwrap(),
+                    f.metadata().unwrap().modified().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = snapshot();
+    let opened = Service::open(Config {
+        state_dir: tmp.path().join("state"),
+        dataset: DatasetClass::Personal,
+        allow_personal: true,
+        grant_roots: vec![root.clone()],
+    });
+    if loomward_windows::enumerate::running_elevated() {
+        let e = opened.err().expect("an elevated grant is refused");
+        assert!(e.contains("identity_unavailable"), "{e}");
+        return;
+    }
+    let svc = opened.unwrap();
+    let (roots, _) = ok("roots.list", call(&svc, "roots.list", json!({})));
+    assert_eq!(roots["roots"][0]["origin"], "owner_granted");
+    let root_id = roots["roots"][0]["root_id"].as_str().unwrap().to_owned();
+    let (scan, _) = ok(
+        "scan.start",
+        call(&svc, "scan.start", json!({"root_id":root_id,"mode":"full"})),
+    );
+    let scan: JobResult = serde_json::from_value(json!(scan)).unwrap();
+    assert_eq!(terminal(&svc, &scan.job.job_id).state, JobState::Completed);
+    let (start, _) = ok(
+        "duplicates.inspect",
+        call(
+            &svc,
+            "duplicates.inspect",
+            duplicate_request(&root_id, 1024),
+        ),
+    );
+    let start: JobResult = serde_json::from_value(json!(start)).unwrap();
+    let job = terminal(&svc, &start.job.job_id);
+    assert_eq!(job.state, JobState::Completed, "{:?}", job.error);
+    let report = job.duplicates.unwrap();
+    let mut equal = report.groups[0]
+        .iter()
+        .map(|i| report.entries[i.get() as usize].relative_path.as_str())
+        .collect::<Vec<_>>();
+    equal.sort();
+    assert_eq!(report.groups.len(), 1);
+    assert_eq!(equal, vec!["a.txt", r"sub\copy.txt"]);
+    assert!(report.skipped.is_empty() && report.stop.is_none());
+    // Three same-size names across the stages, never the lone size; well under the budget.
+    assert!(report.bytes_read.get() > 0 && report.bytes_read.get() <= 3 * 4 * 3);
+    assert_eq!(snapshot(), before, "inspection reads; it never writes");
+    ok(
+        "roots.revoke",
+        call(
+            &svc,
+            "roots.revoke",
+            json!({"root_id":root_id,"purge_catalog":false}),
+        ),
+    );
+    let (revoked, _) = ok(
+        "jobs.get",
+        call(&svc, "jobs.get", json!({"job_id":start.job.job_id})),
+    );
+    assert_eq!(revoked["job"]["state"], "completed");
+    assert!(
+        revoked["job"].get("duplicates").is_none_or(Value::is_null),
+        "a revoked root's report is redacted: {revoked:?}"
+    );
+    let refused = err(call(
+        &svc,
+        "duplicates.inspect",
+        duplicate_request(&root_id, 1024),
+    ));
+    assert_eq!(refused.code, ErrorCode::PermissionDenied);
+    assert_eq!(snapshot(), before);
 }
 
 #[cfg(windows)]
