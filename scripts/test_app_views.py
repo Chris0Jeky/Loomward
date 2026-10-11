@@ -85,6 +85,8 @@ class FakeEngine:
         self.backup_answers: list[dict] = []  # backups.import outcomes, in order
         self.backup_calls: list[dict] = []
         self.grant_picker = False  # session.hello features.grant_picker
+        self.diagnostics_answers: list[dict] | None = None  # set: hello offers diagnostics_save, diagnostics.save pops these
+        self.diagnostics_calls: list[dict] = []
         self.roots: list[dict] = []  # roots.list
         self.grant_mode = 'granted'  # roots.request_grant: granted, cancelled, refused, busy, deadline (the root lands before the reply) or deadline_late (after it)
         self.grant_delay = 0.0
@@ -121,7 +123,8 @@ class FakeEngine:
                 'protocol': 'loomward/3', 'engine_version': 'view-fake', 'adapter': 'tauri' if desktop else 'http',
                 'dataset_class': 'personal' if desktop else 'synthetic', 'session_started_at': '2026-10-01T00:00:00Z',
                 'enumeration_strategy': 'std_read_dir', 'capabilities': {'observation': {'process_observation': self.process_error is not None}, 'effects': effects},
-                'features': {k: k == 'grant_picker' and self.grant_picker for k in ('grant_picker', 'disclosure_dialog', 'teacher_available', 'telemetry_available', 'gpu_available')},
+                'features': {**{k: k == 'grant_picker' and self.grant_picker for k in ('grant_picker', 'disclosure_dialog', 'teacher_available', 'telemetry_available', 'gpu_available')},
+                             'diagnostics_save': self.diagnostics_answers is not None},
                 'limits': {'max_request_bytes': 65536, 'max_slice_nodes': 6000, 'max_page_items': 200},
             }
         if self.backups is not None:
@@ -135,6 +138,11 @@ class FakeEngine:
                 if answer['outcome'] == 'imported':
                     self.backups.append(answer['evidence'])
                 return answer
+        if cmd == 'diagnostics.preview':
+            return json.loads((ROOT / 'contracts/v3/examples/commands/diagnostics.preview.result.json').read_text(encoding='utf-8'))
+        if cmd == 'diagnostics.save' and self.diagnostics_answers is not None:
+            self.diagnostics_calls.append(req)
+            return self.diagnostics_answers.pop(0)
         if cmd == 'roots.list':
             return {'roots': self.roots}
         if cmd == 'grants.list':
@@ -736,6 +744,39 @@ def check_backups_import(page: Page, engine: FakeEngine) -> None:
         engine.backups = None
 
 
+def check_diagnostics_save(page: Page, engine: FakeEngine) -> None:
+    """The desktop-like engine offers the save: only the digest of what is shown leaves the page."""
+    fixture = json.loads((ROOT / 'contracts/v3/examples/commands/diagnostics.preview.result.json').read_text(encoding='utf-8'))
+    engine.diagnostics_answers = [
+        {'outcome': 'cancelled_by_user', 'bytes_written': None, 'refusal': None},
+        {'outcome': 'refused', 'bytes_written': None, 'refusal': 'preview_changed'},
+        {'outcome': 'saved', 'bytes_written': fixture['bytes'], 'refusal': None},
+    ]
+    try:
+        page.goto('about:blank')
+        page.goto(f'{engine.base}/#token={TOKEN}')
+        page.evaluate("location.hash = '#/health'")
+        panel = page.locator('section[aria-labelledby="h-diag"]')
+        expect(panel.get_by_text('Nothing is uploaded. Saving writes exactly what is shown to a file you choose.')).to_be_visible()
+        expect(panel.get_by_text('the text below is exactly these bytes')).to_be_visible()
+        expect(panel.get_by_role('region', name='Diagnostic bundle preview')).to_contain_text('"recent_errors"')
+        save = panel.get_by_role('button', name='Save…')
+        save.click()
+        result = panel.get_by_role('status', name='Diagnostic bundle result')
+        expect(result).to_have_text('Save cancelled. No file was written.')
+        save.click()
+        expect(panel.get_by_role('alert')).to_contain_text('The bundle changed since this preview')
+        save.click()
+        expect(result).to_contain_text(f"Saved {int(fixture['bytes']):,} bytes, exactly the text shown.")
+        for call in engine.diagnostics_calls:
+            ok(call['payload'] == {'digest': fixture['digest']}, f'only the shown digest leaves the page: {call["payload"]}')
+            ok(call['deadline_ms'] == 60000, 'the save waits up to 60 s for the owner at the native dialog')
+        ok(len(engine.diagnostics_calls) == 3, 'one call per click')
+        print('PASS diagnostic bundle save: cancel, named refusal and save through the engine; only the digest leaves the page')
+    finally:
+        engine.diagnostics_answers = None
+
+
 # --- Companion --------------------------------------------------------------------------------------
 
 def check_wait_until_dispatches_routes(browser) -> None:
@@ -1029,6 +1070,11 @@ def check_health(page: Page, base: str, shoot) -> None:
     ok(main.get_by_text('off', exact=True).count() == 11, 'the capability matrix shows all 11 effects off')
     ok(main.get_by_text('ON', exact=True).count() == 0, 'no effect is on')
     expect(main.get_by_text('not available').first).to_be_visible()
+    diag = main.locator('section[aria-labelledby="h-diag"]')
+    expect(diag.get_by_text('the text below is exactly these bytes')).to_be_visible()
+    expect(diag.get_by_role('region', name='Diagnostic bundle preview')).to_contain_text('"loomward-diagnostics/1"')
+    ok(diag.get_by_role('button', name='Save…').count() == 0, 'the mock (like HTTP) offers no save')
+    expect(diag.get_by_text('Saving needs the desktop app')).to_be_visible()
     shoot('health')
 
     # revoke a root: asked, confirmed, shown; files untouched
@@ -1353,6 +1399,7 @@ def run_views(page: Page, base: str, shots: Path | None) -> None:
         check_tiers_source_eligibility(page, engine)
         check_tiers_refused(page, engine)
         check_backups_import(page, engine)
+        check_diagnostics_save(page, engine)
         check_add_folder(page, engine)
     finally:
         engine.stop()

@@ -12,6 +12,7 @@
   import { session } from '../../lib/stores/session.svelte';
   import { Say } from '../../lib/ui/say.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
+  import Diagnostics from './Diagnostics.svelte';
   import type { GrantList, Health, Root, RootList } from '../../lib/contracts.gen';
   import type { ScanView } from '../../lib/scan/model';
   import type { Grant } from '../../lib/derived';
@@ -246,6 +247,8 @@
     {/if}
   {:else}<p class="muted">Loading</p>{/if}
 </section>
+
+<Diagnostics />
 
 <section class="panel" aria-labelledby="h-roots">
   <h2 id="h-roots">Roots</h2>
