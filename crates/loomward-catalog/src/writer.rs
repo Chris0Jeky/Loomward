@@ -636,13 +636,25 @@ fn work(
             alive.take();
         }
         if checkpoint {
+            let profile = std::env::var_os("LOOMWARD_SCAN_PROFILE").is_some();
+            let before = profile.then(|| checkpoint_probe(&conn));
             let started = Instant::now();
-            let _ = conn.execute_batch("PRAGMA main.wal_checkpoint(TRUNCATE)");
+            let result = end_checkpoint(&conn);
+            let seconds = started.elapsed().as_secs_f64();
+            if profile {
+                eprintln!(
+                    "scan-profile checkpoint {}",
+                    serde_json::json!({
+                        "before": before, "result": result.ok(), "seconds": seconds,
+                        "after": checkpoint_probe(&conn),
+                    })
+                );
+            }
             context
                 .timings
                 .lock()
                 .expect("timing lock")
-                .checkpoint_seconds += started.elapsed().as_secs_f64();
+                .checkpoint_seconds += seconds;
         }
         for (p, result) in batch.into_iter().zip(results) {
             let Pending { reply, _permit, .. } = p;
@@ -654,6 +666,27 @@ fn work(
         }
     }
     let _ = conn.execute_batch("PRAGMA main.wal_checkpoint(TRUNCATE)");
+}
+fn end_checkpoint(conn: &Connection) -> rusqlite::Result<[i64; 3]> {
+    let timeout = conn.query_row("PRAGMA busy_timeout", [], |r| r.get::<_, u32>(0))?;
+    // Best-effort WAL maintenance must not hold a committed EndRun receipt behind a reader.
+    conn.busy_timeout(Duration::ZERO)?;
+    let result = conn.query_row("PRAGMA main.wal_checkpoint(TRUNCATE)", [], |r| {
+        Ok([r.get(0)?, r.get(1)?, r.get(2)?])
+    });
+    conn.busy_timeout(Duration::from_millis(u64::from(timeout)))?;
+    result
+}
+fn checkpoint_probe(conn: &Connection) -> serde_json::Value {
+    serde_json::json!({
+        "transaction_state": format!("{:?}", conn.transaction_state(Some("main"))),
+        "busy_statement": conn.is_busy(),
+        "wal_bytes": conn.path().and_then(|p| std::fs::metadata(format!("{p}-wal")).ok()).map(|m| m.len()),
+        "frames": conn.query_row("PRAGMA main.wal_checkpoint(NOOP)", [], |r| Ok([r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?])).ok(),
+        "catalogue_synchronous": conn.query_row("PRAGMA main.synchronous", [], |r| r.get::<_, i64>(0)).ok(),
+        "state_synchronous": conn.query_row("PRAGMA st.synchronous", [], |r| r.get::<_, i64>(0)).ok(),
+        "journal_mode": conn.query_row("PRAGMA main.journal_mode", [], |r| r.get::<_, String>(0)).ok(),
+    })
 }
 fn fail_batch(results: &mut [Result<WriteReply>], error: Error) {
     if results.iter().any(Result::is_err) {
@@ -1670,6 +1703,109 @@ mod publication_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn end_run_checkpoint_does_not_wait_for_a_reader_and_restores_write_timeout() {
+        let temp = tempfile::tempdir().unwrap();
+        let conn = crate::db::open_pair(temp.path(), "synthetic").unwrap();
+        let writer = Writer::start(conn).unwrap();
+        writer
+            .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_key: "fixture".into(),
+                display_name: "Fixture".into(),
+                display_path: "Fixture root".into(),
+                root_file_id: Some(vec![1; 16]),
+                filesystem: Some("NTFS".into()),
+                origin: "fixture".into(),
+                granted_via: "fixture".into(),
+                observed_at_ns: 0,
+            }))
+            .unwrap();
+        let WriteReply::Run(run_id) = writer
+            .call(WriteCommand::BeginRun {
+                grant_id: 1,
+                mode: "full".into(),
+                strategy: "fixture".into(),
+                started_at_ns: 1,
+            })
+            .unwrap()
+        else {
+            panic!("run receipt")
+        };
+        let reader = Connection::open(temp.path().join("catalog.db")).unwrap();
+        reader
+            .execute_batch("BEGIN; SELECT count(*) FROM file")
+            .unwrap();
+        writer
+            .call(WriteCommand::DirListing(DirListing {
+                run_id,
+                dir_id: 1,
+                files: vec![Observation::file("item", 7, Some(7))],
+                dirs: vec![],
+                state: "complete".into(),
+                skipped: 0,
+                errors: 0,
+            }))
+            .unwrap();
+        let end = writer
+            .send(WriteCommand::EndRun {
+                run_id,
+                state: "completed".into(),
+                finished_at_ns: 2,
+            })
+            .unwrap();
+        // Keep the snapshot open until the receipt or timeout; release it even on a red run.
+        let result = end.rx.recv_timeout(Duration::from_secs(1));
+        assert_eq!(
+            reader
+                .query_row("SELECT count(*) FROM file", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        reader.execute_batch("ROLLBACK").unwrap();
+        result
+            .expect("EndRun waited for a reader instead of returning its committed receipt")
+            .unwrap();
+        assert!(writer.timings().checkpoint_seconds < 1.0);
+        assert_eq!(
+            reader
+                .query_row("SELECT logical FROM file", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            7
+        );
+        assert_eq!(
+            reader
+                .query_row("SELECT state FROM scan_run WHERE id=?1", [run_id], |r| {
+                    r.get::<_, String>(0)
+                })
+                .unwrap(),
+            "completed"
+        );
+
+        reader.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let barrier = writer.send(WriteCommand::Barrier).unwrap();
+        assert!(matches!(
+            barrier.rx.recv_timeout(Duration::from_millis(100)),
+            Err(crossbeam_channel::RecvTimeoutError::Timeout)
+        ));
+        reader.execute_batch("ROLLBACK").unwrap();
+        barrier
+            .wait()
+            .expect("checkpoint must restore the writer's busy timeout");
+        drop(writer);
+        assert_eq!(
+            reader
+                .query_row("PRAGMA main.wal_checkpoint(TRUNCATE)", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            std::fs::metadata(temp.path().join("catalog.db-wal"))
+                .unwrap()
+                .len(),
+            0
+        );
+    }
     #[test]
     fn synchronous_listing_receipts_do_not_wait_for_future_commands() {
         let temp = tempfile::tempdir().unwrap();
