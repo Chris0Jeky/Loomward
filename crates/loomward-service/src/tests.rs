@@ -1646,6 +1646,9 @@ fn every_command_answers_a_complete_envelope_and_core_reads_serve_the_catalogue(
                     | Command::CollectionsCreate
                     | Command::CollectionsUpdateMembers
                     | Command::CollectionsMembers
+                    | Command::BackupsList
+                    | Command::BackupsImport
+                    | Command::BackupsForget
             ))
             || command == Command::RootsRequestGrant
         {
@@ -3778,3 +3781,7 @@ mod collections_tests;
 
 #[path = "meaning_tests.rs"]
 mod meaning_tests;
+
+#[cfg(test)]
+#[path = "backups_tests.rs"]
+mod backups_tests;

@@ -97,6 +97,9 @@ impl Inner {
             AppsList | DesktopContexts => self.metadata_page(req, command, work, metadata_cursor),
             RootsList => self.roots_list(work),
             RootsRequestGrant => self.request_grant(ctx),
+            BackupsList => self.backups_list(),
+            BackupsImport => self.backups_import(req, ctx),
+            BackupsForget => self.backups_forget(req),
             RootsRevoke => {
                 let r: RootRevokeRequest = req.decode_payload()?;
                 let grant = self.grant_of_root(self.root_row(&r.root_id)?)?;
@@ -547,6 +550,23 @@ impl Inner {
         Ok(out(json!({"grants": grants}), Some(revs)))
     }
 
+    /// One native dialog at a time (#167), and a 2 s cooldown between pickers, shared by the folder
+    /// and file pickers: a second request is `busy`, never a stacked dialog.
+    pub(crate) fn dialog_turn(&self) -> Result<std::sync::MutexGuard<'_, ()>, ErrorBody> {
+        let Ok(turn) = self.dialog.try_lock() else {
+            return Err(fail(ErrorCode::Busy, "a native dialog is already open"));
+        };
+        let mut last = self.picker_last.lock().unwrap_or_else(|e| e.into_inner());
+        if last.is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(2)) {
+            return Err(fail(
+                ErrorCode::Busy,
+                "native picker cooldown; retry shortly",
+            ));
+        }
+        *last = Some(std::time::Instant::now());
+        Ok(turn)
+    }
+
     /// Desktop only. Personal sessions only (a synthetic session refuses before any dialog). The
     /// folder comes from the native picker, is checked exactly like a grant root (#167), and is
     /// granted under the same provenance rules. One dialog at a time.
@@ -566,18 +586,7 @@ impl Inner {
                 "no native dialogs on this adapter",
             )
         })?;
-        let Ok(_dialog) = self.dialog.try_lock() else {
-            return Err(fail(ErrorCode::Busy, "a native dialog is already open"));
-        };
-        let mut last = self.picker_last.lock().unwrap_or_else(|e| e.into_inner());
-        if last.is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(2)) {
-            return Err(fail(
-                ErrorCode::Busy,
-                "native picker cooldown; retry shortly",
-            ));
-        }
-        *last = Some(std::time::Instant::now());
-        drop(last);
+        let _dialog = self.dialog_turn()?;
         let Some(picked) = dialogs.pick_folder() else {
             return Ok(out(
                 json!({"outcome": "cancelled_by_user", "root": null, "refusal": null}),
