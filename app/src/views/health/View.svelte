@@ -151,7 +151,7 @@
 </script>
 
 <h1>Grants &amp; health</h1>
-<p class="muted">What Loomward may read, and how it is doing. Grants come from the desktop folder picker or the server's command line; this page can only ask to end one.</p>
+<p class="lede">What Loomward may read, and how it is doing. Grants come from the desktop folder picker or the server's command line; this page can only ask to end one.</p>
 <!-- live regions stay in the page and only their text changes: one inserted already filled is often not announced -->
 <p class="bad live" class:has={!!error} role="alert">{error}</p>
 <p class="ok live" class:has={!!done} role="status" tabindex="-1" bind:this={doneEl}>{done}</p>

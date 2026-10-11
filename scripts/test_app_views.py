@@ -739,6 +739,8 @@ def check_companion(page: Page, base: str, shoot) -> None:
     expect(observed).to_have_text(observed.get_attribute('datetime'))
     ok(bool(re.fullmatch(r'\d{4}-\d{2}-\d{2}T.*Z', observed.get_attribute('datetime') or '')), 'each process row exposes its own observation time')
     ok(main.get_by_role('button', name=FORBIDDEN_BUTTONS).count() == 0, 'no control to end, pause, re-prioritise or trim anything')
+    # shared form patterns must not restyle this view's own toolbar (Codex on #345)
+    ok(main.locator('.ctl').first.evaluate('e => getComputedStyle(e).flexDirection') == 'row', 'the Companion toolbar stays a wrapping row')
 
     plist = lambda: page.locator('table.procs tbody tr')
     expect(plist()).to_have_count(20)

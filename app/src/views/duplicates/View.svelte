@@ -21,6 +21,7 @@
   const active = $derived(job ? isActive(job.state) : false);
   const personal = $derived(session.datasetClass === 'personal' || duplicates.gated);
   const root = $derived(roots.find((r) => r.root_id === selected));
+  const status = $derived(duplicates.problem || (duplicates.pending ? 'Sending request…' : job ? `Inspection ${job.state.replace('_', ' ')}` : ''));
   const canStart = $derived(!personal && root?.grant_state === 'active' && root.origin === 'lab_generated');
 
   $effect(() => session.listen((event) => duplicates.onEvent(event)));
@@ -55,39 +56,43 @@
   });
 </script>
 
-<section class="panel">
-  <h1>Duplicates</h1>
-  <p>Equal content is an observation, not a recommendation to delete.</p>
-  <p class="muted">Inspect default streams in one granted synthetic root. Up to 200 candidates, 64 MiB read and 10 seconds. Empty files are excluded.</p>
+<h1>Duplicates</h1>
+<p class="lede">Inspect default streams in one granted synthetic root. Up to 200 candidates, 64 MiB read and 10 seconds. Empty files are excluded.</p>
+<p class="note">Equal content is an observation, not a recommendation to delete.</p>
+
+<section class="panel" aria-labelledby="duplicate-inspect">
+  <h2 id="duplicate-inspect">Inspect a root</h2>
   {#if personal}
-    <p role="status">Personal content inspection is gated. No content is opened.</p>
+    <p class="note gated" role="status">Personal content inspection is gated. No content is opened.</p>
   {:else}
     <div class="controls">
-      <label for="duplicate-root">Root</label>
-      <select id="duplicate-root" bind:value={selected} disabled={loading || active || duplicates.pending}>
-        {#each roots as r (r.root_id)}<option value={r.root_id}>{r.display_path.text}</option>{/each}
-      </select>
-      <button class="btn" disabled={loading || !canStart || active || duplicates.pending} onclick={() => duplicates.start(selected)}>Start inspection</button>
+      <div class="lw-field">
+        <label class="lbl" for="duplicate-root">Root</label>
+        <select id="duplicate-root" bind:value={selected} disabled={loading || active || duplicates.pending}>
+          {#each roots as r (r.root_id)}<option value={r.root_id}>{r.display_path.text}</option>{/each}
+        </select>
+      </div>
+      <button class="btn primary" disabled={loading || !canStart || active || duplicates.pending} onclick={() => duplicates.start(selected)}>Start inspection</button>
       <button class="btn" disabled={!active || job?.state === 'cancel_requested' || duplicates.pending} onclick={() => duplicates.cancel(selected)}>Cancel inspection</button>
     </div>
-    {#if !loading && !roots.length}<p class="muted">No granted roots are available.</p>
-    {:else if root && !canStart}<p class="muted">This root is unavailable for inspection. Use an active registered synthetic lab root.</p>{/if}
+    {#if !loading && !roots.length}<p class="empty">No granted roots are available.</p>
+    {:else if root && !canStart}<p class="empty">This root is unavailable for inspection. Use an active registered synthetic lab root.</p>{/if}
   {/if}
-  <p class="live" role="status" aria-live="polite">{duplicates.problem || (duplicates.pending ? 'Sending request…' : job ? `Inspection ${job.state.replace('_', ' ')}` : '')}</p>
+  <p class="live" class:has={!!status} role="status" aria-live="polite">{status}</p>
 </section>
 
 <section class="panel" aria-labelledby="duplicate-results">
   <h2 id="duplicate-results" tabindex="-1" bind:this={resultHeading}>Inspection result</h2>
-  {#if job?.error}<p>{job.error.message}</p>{/if}
+  {#if job?.error}<p class="bad">{job.error.message}</p>{/if}
   {#if report}
-    <p class="evidence">Bytes read <strong class="num">{formatBytes(report.bytes_read)}</strong> · Partial <strong>{report.partial ? 'yes' : 'no'}</strong> · Truncated <strong>{report.truncated ? 'yes' : 'no'}</strong> · Stop <strong>{report.stop ?? 'none'}</strong></p>
+    <p class="evidence">Bytes read <strong class="num">{formatBytes(report.bytes_read)}</strong> · Partial <strong class:warn={report.partial}>{report.partial ? 'yes' : 'no'}</strong> · Truncated <strong class:warn={report.truncated}>{report.truncated ? 'yes' : 'no'}</strong> · Stop <strong>{report.stop ?? 'none'}</strong></p>
     <h3>Verified groups</h3>
     {#if report.groups.length}
       <div class="tbl-wrap"><table class="tbl"><caption class="sr-only">Verified equal default streams</caption>
         <thead><tr><th scope="col">Members</th><th scope="col">Logical size per file</th></tr></thead>
         <tbody>{#each report.groups as group}<tr><th scope="row">{#each group as i}<div><VisibleName name={report.entries[i]!.relative_path} /></div>{/each}</th><td class="num">{formatBytes(report.entries[group[0]!]!.logical_bytes)}</td></tr>{/each}</tbody>
       </table></div>
-    {:else}<p class="muted">No verified groups in this inspection. Unexamined content remains unknown.</p>{/if}
+    {:else}<p class="empty">No verified groups in this inspection. Unexamined content remains unknown.</p>{/if}
     <h3>Link sets</h3>
     <p class="muted">One object per set, with no space to reclaim. {report.links_not_compared} listed names were not compared.</p>
     {#if report.links.length}
@@ -102,13 +107,12 @@
         <thead><tr><th scope="col">Name</th><th scope="col">Reason</th></tr></thead>
         <tbody>{#each report.skipped as skip}<tr><th scope="row"><VisibleName name={report.entries[skip.entry]!.relative_path} /></th><td>{skip.reason}</td></tr>{/each}</tbody>
       </table></div>
-    {:else}<p class="muted">No listed entries were skipped.</p>{/if}
-  {:else}<p class="muted">{active ? 'Inspection is running; verified evidence will appear when it ends.' : 'Start an inspection to see its evidence.'}</p>{/if}
+    {:else}<p class="empty">No listed entries were skipped.</p>{/if}
+  {:else}<p class="empty">{active ? 'Inspection is running; verified evidence will appear when it ends.' : 'Start an inspection to see its evidence.'}</p>{/if}
 </section>
 
 <style>
-  .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-block: 16px; }
-  select { max-width: 100%; }
-  h3 { margin-top: 24px; font-size: 1rem; }
+  h3 { margin: var(--sp-5) 0 var(--sp-2); font-size: 1rem; }
   .evidence { overflow-wrap: anywhere; }
+  .evidence strong { font-family: var(--num-font); }
 </style>

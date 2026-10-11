@@ -81,7 +81,7 @@
 {#snippet P(v: string | null, why: string)}{#if v === null}<span class="unknown">unknown<span class="sr-only"> ({why})</span></span>{:else}{v}{/if}{/snippet}
 
 <h1>Companion</h1>
-<p class="simbanner" role="note"><strong>Observation only.</strong> Loomward reads what the system reports about memory and processes. This page has no control that acts on any process.</p>
+<p class="note" role="note"><strong>Observation only.</strong> Loomward reads what the system reports about memory and processes. This page has no control that acts on any process.</p>
 
 {#if !available}
   <section class="panel" role="status">
@@ -247,7 +247,6 @@
 {/if}
 
 <style>
-  .simbanner { border: 1px dashed var(--permission); border-radius: var(--radius); padding: 8px 12px; background: var(--surface); }
   .bad { color: var(--danger); }
   .warn { color: var(--warn); }
   .small { font-size: 0.8rem; }
