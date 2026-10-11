@@ -352,6 +352,7 @@ fn depth_batch(
     drop(tx);
     let timings = Arc::new(Mutex::new(WriterTimings::default()));
     let (alive, _) = bounded(0);
+    super::hold_batch_window_open();
     work(conn, rx, timings.clone(), alive, None);
     let results = replies.into_iter().map(|r| r.recv().unwrap()).collect();
     let timing = timings.lock().unwrap().clone();
