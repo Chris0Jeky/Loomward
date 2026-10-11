@@ -1272,6 +1272,88 @@ export interface ProcessSummary {
   top: ProcessRow[];
 }
 
+export type TrendMetric = "total_bytes" | "available_bytes" | "commit_bytes" | "commit_limit_bytes" | "commit_peak_bytes" | "system_cache_bytes" | "kernel_paged_bytes" | "kernel_nonpaged_bytes" | "page_size_bytes" | "standby_bytes" | "modified_bytes" | "free_bytes" | "cpu_busy_fraction" | "disk_busy_fraction" | "disk_queue_length" | "private_commit_bytes" | "private_working_set_bytes" | "working_set_bytes" | "cpu_fraction" | "io_read_bytes_per_s" | "io_write_bytes_per_s" | "gpu_dedicated_bytes";
+
+export type TrendUnit = "bytes" | "fraction" | "queue" | "bytes_per_s";
+
+export type TrendValue = ByteCount | number;
+
+export interface TrendPoint {
+  offset_ms: Count;
+  observed_at: Timestamp;
+  value: TrendValue | null;
+}
+
+export type TrendSeries = {
+  key: string;
+  metric: "total_bytes" | "available_bytes" | "commit_bytes" | "commit_limit_bytes" | "commit_peak_bytes" | "system_cache_bytes" | "kernel_paged_bytes" | "kernel_nonpaged_bytes" | "page_size_bytes" | "standby_bytes" | "modified_bytes" | "free_bytes" | "private_commit_bytes" | "private_working_set_bytes" | "working_set_bytes" | "gpu_dedicated_bytes";
+  unit: "bytes";
+  max_gap_ms: Count;
+  points: ({
+    offset_ms: Count;
+    observed_at: Timestamp;
+    value: ByteCount | null;
+  })[];
+  unknowns: string[];
+} | {
+  key: string;
+  metric: "cpu_busy_fraction" | "disk_busy_fraction" | "cpu_fraction";
+  unit: "fraction";
+  max_gap_ms: Count;
+  points: ({
+    offset_ms: Count;
+    observed_at: Timestamp;
+    value: Fraction | null;
+  })[];
+  unknowns: string[];
+} | {
+  key: string;
+  metric: "disk_queue_length";
+  unit: "queue";
+  max_gap_ms: Count;
+  points: ({
+    offset_ms: Count;
+    observed_at: Timestamp;
+    value: number | null;
+  })[];
+  unknowns: string[];
+} | {
+  key: string;
+  metric: "io_read_bytes_per_s" | "io_write_bytes_per_s";
+  unit: "bytes_per_s";
+  max_gap_ms: Count;
+  points: ({
+    offset_ms: Count;
+    observed_at: Timestamp;
+    value: number | null;
+  })[];
+  unknowns: string[];
+};
+
+export type TrendCandidateKind = "growth" | "cpu_saturation" | "memory_pressure" | "disk_queue";
+
+export interface TrendCandidate {
+  kind: TrendCandidateKind;
+  series_index: Count;
+  unit: TrendUnit;
+  start_at: Timestamp;
+  end_at: Timestamp;
+  window_ms: Count;
+  sample_count: Count;
+  start_value: TrendValue;
+  end_value: TrendValue;
+  slope_per_s: string;
+  facts: string[];
+  unknowns: string[];
+}
+
+export interface TelemetryTrends {
+  series: TrendSeries[];
+  candidates: TrendCandidate[];
+  candidates_truncated: boolean;
+  unknowns: string[];
+}
+
 export interface TelemetrySample {
   sample_seq: Count;
   observed_at: Timestamp;
@@ -1282,6 +1364,7 @@ export interface TelemetrySample {
   disks: DiskSample | null;
   engine: EngineSample | null;
   processes: ProcessSummary | null;
+  trends: TelemetryTrends;
 }
 
 export interface ProcessListRequest {

@@ -303,6 +303,55 @@ timestamps refer to that enumeration too. Rates use the interval between process
 An engine thread count not observed on the current tick is null. Requests for channels outside
 the sampled lease union return `partial_coverage` (not sampled), distinct from hardware unavailable.
 
+`TelemetrySample.trends` (LW-051) is read-only and projects the same requested channels.
+The shared lease union retains at most eight points per series, no older than ten minutes:
+the twelve byte-valued memory ledger fields, machine CPU fraction, disk busy fraction and
+queue length (at most sixteen disk rows), and the seven quantities in each sampled process
+row (at most 1,024 rows). GPU process memory remains unknown. The resulting native series
+bound is 7,213; the wire bound is 8,192. Losing a channel's last lease clears its history;
+the final release, expiry, shutdown or sampler unwind discards all history. Snapshot reads
+do not sample or restart observation. Cached process rows do not become new points.
+
+Point offsets and candidate windows use the sampler's monotonic clock. `observed_at` and
+candidate start/end timestamps retain native observation time for display, and can move
+with the wall clock. A gap larger than twice the requested interval breaks a window;
+changing a series cadence discards its prior window explicitly, so a slower lease cannot
+rehabilitate an earlier gap. A fresh contiguous window can then form at the new cadence.
+Process series use at least the fifteen-second enumeration cadence. Null points stay
+null and are drawn as breaks. New exact PID/creation-time instances start new series;
+missing identity, denied handles, absent providers and enumeration gaps cannot yield growth.
+Repeated disk labels cannot establish continuity and their trend values remain null;
+disk labels/ordering do not grant durable device identity.
+
+Units are fixed by `TrendMetric`: byte quantities are exact decimal strings; fractions
+are numbers in [0,1]; queue lengths and bytes/s are nonnegative finite numbers. Schema
+and Rust reject mismatched metric, unit or value representation. Growth calculations
+subtract byte integers before approximate slope conversion; charts likewise subtract
+byte integers before scaling. `slope_per_s` is a signed decimal string in the series
+unit per second, the end-minus-start secant slope, not a score or probability.
+
+Candidates use complete contiguous windows with at least four samples. Process private
+commit or private resident growth requires at least thirty seconds, no decreases,
+at least three increases and at least 1 MiB net growth. Machine contention windows span
+at least three seconds: CPU is at least 0.90 of logical capacity throughout; disk queue
+is at least 2 throughout; available memory is at most 10% of contemporaneous total
+throughout, with standby declining or modified bytes rising over the aligned window.
+These conservative thresholds name candidates, never leaks, unnecessary processes or
+an instruction to act. Facts, exact start/end values, sample counts, windows and uncertainty
+travel with each candidate. `series_index` refers to this response's channel-projected
+series list. At most 64 candidates are returned; truncation remains explicit. No candidate
+is not proof of no problem. No process or file effects are added.
+
+Telemetry event retention keeps the existing 1,024-event count ceiling and adds a
+conservative 16 MiB heap allowance (older events drop first); each retained event contains recent bounded history for system/disks and only
+the process references in its at-most-twenty-row summary. This keeps the emitted
+SSE line below the parser limit; full process history is served by `telemetry.snapshot`.
+Omitted event process coverage is explicit and candidate indexes are remapped to
+that event's series. Snapshot history covers all leased process rows. Sequence gaps remain visible. Phase diagnostics
+separately report trend ingestion/event projection and snapshot trend projection wall
+costs, which are not CPU attribution or whole-application overhead. The event scope projection
+is also included in event mapping wall time; parent/child timers must not be summed.
+
 ## Duplicate inspection (LW-012 / LW-013)
 
 `duplicates.inspect` starts a retained `duplicates` job for one active registered synthetic lab root.

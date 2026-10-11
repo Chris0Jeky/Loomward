@@ -2,7 +2,7 @@ use super::*;
 use loomward_telemetry::{DiskIo, GpuAdapter, Memory, Observation, ProcessTotals, Rates, Unknown};
 use serde_json::{json, to_value};
 
-fn raw() -> Snapshot {
+pub(super) fn raw() -> Snapshot {
     Snapshot {
         schema_version: 2,
         status: "observed".into(),
@@ -64,13 +64,178 @@ fn raw() -> Snapshot {
     }
 }
 
-const CHANNELS: &[TelemetryChannel] = &[
+pub(super) const CHANNELS: &[TelemetryChannel] = &[
     TelemetryChannel::System,
     TelemetryChannel::Processes,
     TelemetryChannel::Gpu,
     TelemetryChannel::Disks,
     TelemetryChannel::Engine,
 ];
+
+#[test]
+fn trend_history_is_purged_at_last_expiry_and_sampler_exit() {
+    let mut state = State::default();
+    let id = live_lease(&mut state);
+    state.trends.push(&raw(), 0, 1000);
+    assert!(!state.trends.report(CHANNELS).series.is_empty());
+    state.leases.get_mut(&id).unwrap().expires = Instant::now() - Duration::from_secs(1);
+    state.expire(Instant::now());
+    assert!(state.trends.report(CHANNELS).series.is_empty());
+    let shared = Arc::new(Shared::default());
+    lock(&shared.state).unwrap().trends.push(&raw(), 0, 1000);
+    drop(SamplerExit(Arc::clone(&shared)));
+    assert!(lock(&shared.state)
+        .unwrap()
+        .trends
+        .report(CHANNELS)
+        .series
+        .is_empty());
+}
+
+#[test]
+fn trend_events_have_a_heap_budget_as_well_as_a_count_cap() {
+    let mut state = State::default();
+    let id = live_lease(&mut state);
+    let mut sample = mapping::sample(&raw(), None, 1, CHANNELS, false).unwrap();
+    state.trends.push(&raw(), 0, 1000);
+    sample.trends = state.trends.report(CHANNELS);
+    for _ in 0..300 {
+        state.queue(TelemetrySampleEvent {
+            subscription_id: id.clone(),
+            sample: sample.clone(),
+        });
+    }
+    assert!(state.events.len() < 300);
+    assert!(
+        state
+            .events
+            .iter()
+            .map(|e| event_weight(&e.sample))
+            .sum::<usize>()
+            <= EVENT_BYTE_BUDGET
+    );
+    assert!(!state.events.is_empty());
+    let mut oversized = sample;
+    let mut s = (*oversized.trends.series[0]).clone();
+    s.unknowns = vec![Text::new("x".repeat(256)).unwrap(); 8]
+        .try_into()
+        .unwrap();
+    let oversized_series = Arc::new(s);
+    oversized.trends.series = vec![oversized_series; 8192].try_into().unwrap();
+    assert!(event_weight(&oversized) > EVENT_BYTE_BUDGET);
+    state.events.clear();
+    state.queue(TelemetrySampleEvent {
+        subscription_id: id,
+        sample: oversized,
+    });
+    assert!(state.events.is_empty());
+}
+
+#[test]
+fn trend_snapshot_projection_and_last_release_keep_the_read_boundary() {
+    let e = Engine::open(crate::EngineConfig::new(
+        "unused-state".into(),
+        DatasetClass::Synthetic,
+    ))
+    .unwrap();
+    let id = {
+        let mut state = lock(&e.telemetry.shared.state).unwrap();
+        let id = live_lease(&mut state);
+        state.trends.push(&raw(), 0, 1000);
+        state.latest = Some(Latest {
+            raw: raw(),
+            own: None,
+            sequence: 1,
+        });
+        id
+    };
+    let request: TelemetrySnapshotRequest =
+        serde_json::from_value(json!({"channels":["system"]})).unwrap();
+    let sample = e.telemetry_snapshot(&request).unwrap();
+    assert_eq!(sample.trends.series.len(), 13);
+    assert!(sample
+        .trends
+        .series
+        .iter()
+        .all(|s| s.metric.channel() == TelemetryChannel::System));
+    e.telemetry_release(&SubscriptionRefRequest {
+        subscription_id: id,
+    })
+    .unwrap();
+    assert!(lock(&e.telemetry.shared.state)
+        .unwrap()
+        .trends
+        .report(CHANNELS)
+        .series
+        .is_empty());
+    assert!(matches!(
+        e.telemetry_snapshot(&request),
+        Err(EngineError::PartialCoverage { .. })
+    ));
+}
+
+#[test]
+fn trend_events_contain_projected_history_and_renewal_purges_dropped_channels() {
+    let telemetry = Telemetry::default();
+    let (mapped_tx, mapped_rx) = std::sync::mpsc::channel();
+    let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+    {
+        let mut state = lock(&telemetry.shared.state).unwrap();
+        let mut r = raw();
+        r.processes = (0..30)
+            .map(|pid| loomward_telemetry::Process {
+                pid,
+                ..r.processes[0].clone()
+            })
+            .collect();
+        state.sample_override = Some(r);
+        state.mapping_pause = Some((mapped_tx, resume_rx));
+    }
+    let request: TelemetrySubscribeRequest = serde_json::from_value(
+        json!({"subscription_id":null,"channels":["system","processes"],"interval_ms":10000}),
+    )
+    .unwrap();
+    let lease = telemetry.lease(&request).unwrap();
+    mapped_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    resume_tx.send(()).unwrap();
+    {
+        let mut state = lock(&telemetry.shared.state).unwrap();
+        while state.busy {
+            let (next, timeout) = telemetry
+                .shared
+                .wake
+                .wait_timeout(state, Duration::from_secs(10))
+                .unwrap();
+            state = next;
+            assert!(!timeout.timed_out());
+        }
+        assert_eq!(state.events[0].sample.trends.series.len(), 153);
+        assert!(state.costs.engine_trends_ms > 0.0);
+        assert!(state.events[0].sample.trends.series.iter().all(|s| [
+            TelemetryChannel::System,
+            TelemetryChannel::Processes
+        ]
+        .contains(&s.metric.channel())));
+    }
+    telemetry
+        .lease(&TelemetrySubscribeRequest {
+            subscription_id: Some(lease.subscription_id.clone()),
+            channels: vec![TelemetryChannel::System].try_into().unwrap(),
+            ..request
+        })
+        .unwrap();
+    assert!(lock(&telemetry.shared.state)
+        .unwrap()
+        .trends
+        .report(&[TelemetryChannel::Processes])
+        .series
+        .is_empty());
+    telemetry
+        .release(&SubscriptionRefRequest {
+            subscription_id: lease.subscription_id,
+        })
+        .unwrap();
+}
 
 fn live_lease(state: &mut State) -> SubscriptionId {
     let id = SubscriptionId::new("sb_synthetic").unwrap();
