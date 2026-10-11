@@ -7,6 +7,8 @@ export type Phase = 'idle' | 'waiting' | 'granted' | 'cancelled' | 'deadline' | 
 
 /** The most the contract allows a call to wait (semantics.md section 2): the owner may sit in the native dialog. */
 export const PICKER_DEADLINE_MS = 60_000;
+/** The service's busy message for a picker that is already open (`handlers.rs`); its other busy replies are not a dialog. */
+const DIALOG_OPEN = 'a native dialog is already open';
 
 const REFUSAL: Record<NonNullable<RootGrantResult['refusal']>, string> = {
   volume_root: 'That is a whole drive. Choose a folder on it instead.',
@@ -68,7 +70,8 @@ class GrantPicker {
       else this.set('failed', 'The service answered in a way this page does not understand. No folder was added.');
     } catch (e) {
       if (e instanceof LoomwardError && e.code === 'deadline_exceeded') await this.reread(known);
-      else if (e instanceof LoomwardError && e.code === 'busy') this.set('deadline', 'A Windows folder dialog is still open. Choose a folder there and it will appear below.');
+      // Only this busy means a dialog is up; the cooldown and mutation-capacity busy replies keep their own message.
+      else if (e instanceof LoomwardError && e.code === 'busy' && e.message === DIALOG_OPEN) this.set('deadline', 'A Windows folder dialog is still open. Choose a folder there and it will appear below.');
       else this.set('failed', e instanceof LoomwardError ? e.message : session.handle(e));
     }
   }

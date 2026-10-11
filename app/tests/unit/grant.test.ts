@@ -124,6 +124,15 @@ describe('"Add a folder…" state machine', () => {
     expect(grantPicker).toMatchObject({ phase: 'granted', rootId: 'rt_new' });
   });
 
+  it('a busy that is not an open dialog (cooldown, mutation capacity) shows the service message and credits no later root', async () => {
+    fake({ 'roots.request_grant': { error: 'busy', message: 'native picker cooldown; retry shortly' } });
+    await grantPicker.ask(['rt_old']);
+    expect(grantPicker).toMatchObject({ phase: 'failed', text: 'native picker cooldown; retry shortly' });
+    grantPicker.sync([root('rt_old'), root('rt_other')]);
+    expect(grantPicker.phase).toBe('failed');
+    expect(grantPicker.rootId).toBeNull();
+  });
+
   it('asks nothing until the first roots read has finished: no baseline, no "Added"', async () => {
     const seen = fake({ 'roots.request_grant': granted(root('rt_old')) });
     await grantPicker.ask(null);
