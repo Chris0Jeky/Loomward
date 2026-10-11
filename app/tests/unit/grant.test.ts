@@ -65,6 +65,16 @@ describe('"Add a folder…" state machine', () => {
     await again;
   });
 
+  it('a reloaded page never reuses a request id, so the service cannot replay an old grant outcome', async () => {
+    // The service's idempotency cache outlives a webview reload; a reload builds a new Client.
+    const ids: string[] = [];
+    const transport = { call: async (r: { request_id: string }) => { ids.push(r.request_id); return { protocol: 'loomward/3', request_id: r.request_id, ok: true, result: {}, meta: {} }; } } as unknown as Transport;
+    await new Client(transport).call('roots.request_grant', { purpose: 'metadata_scan' });
+    await new Client(transport).call('roots.request_grant', { purpose: 'metadata_scan' });
+    expect(ids[1]).not.toBe(ids[0]);
+    expect(ids.every((id) => /^[A-Za-z0-9_-]{1,64}$/.test(id))).toBe(true);
+  });
+
   it('cancelled by the owner is neutral: no root, no failure', async () => {
     fake({ 'roots.request_grant': { outcome: 'cancelled_by_user', root: null, refusal: null } });
     await grantPicker.ask([]);
