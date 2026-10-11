@@ -138,3 +138,45 @@ fn meaning_work_budget_is_an_honest_prefix() {
     assert_eq!(result["budget_hit"], true);
     assert_eq!(result["items"].as_array().unwrap().len(), 1000);
 }
+
+#[test]
+fn meaning_features_read_each_file_once() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    fixture(&svc, 3);
+    svc.inner
+        .db()
+        .execute_batch("UPDATE main.file SET file_id=cast(printf('%016d',id) AS BLOB),created_ft=1")
+        .unwrap();
+    let mut reader = svc.inner.catalog.reader().unwrap();
+    let features =
+        crate::meaning::eligible_features(&mut reader, loomward_catalog::NodeKey::File(1))
+            .unwrap()
+            .expect("a file with a durable identity is eligible");
+    assert_eq!(features["extension"], "txt");
+    assert_eq!(
+        reader.inspect_count, 1,
+        "eligibility and features share one detail read"
+    );
+    let mut reader = svc.inner.catalog.reader().unwrap();
+    assert!(
+        crate::meaning::eligible_features(&mut reader, loomward_catalog::NodeKey::Dir(1))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        reader.inspect_count, 0,
+        "a folder is ineligible without a read"
+    );
+    svc.inner
+        .db()
+        .execute_batch("UPDATE main.file SET file_id=NULL")
+        .unwrap();
+    let mut reader = svc.inner.catalog.reader().unwrap();
+    assert!(
+        crate::meaning::eligible_features(&mut reader, loomward_catalog::NodeKey::File(1))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(reader.inspect_count, 1);
+}

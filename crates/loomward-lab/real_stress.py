@@ -131,7 +131,7 @@ def main():
     receipt["python_comparison"] = json.loads(run.stdout)
     save(receipt)
     if args.synthetic:
-        for drive, storage in (("G", "NVMe"), ("E", "HDD")):
+        for drive, storage in (("G", "fast local volume"), ("E", "slow local volume")):
             root = Path(f"{drive}:\\loomward-lab\\scale\\mixed-1000000")
             generated = not root.exists()
             if generated:

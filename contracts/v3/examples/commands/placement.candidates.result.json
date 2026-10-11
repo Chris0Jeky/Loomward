@@ -28,5 +28,6 @@
       "coverage": "complete"
     }
   ],
+  "excluded_volumes": [{"volume_id": "vo_unusable", "reason": "physics_unusable"}],
   "note": "Heat is unknown for every group; nothing here is a recommendation."
 }

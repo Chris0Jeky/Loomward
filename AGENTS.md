@@ -4,7 +4,7 @@ The one baseline for every agent runtime (Claude Code reads this file because th
 `CLAUDE.md`; Codex, Grok and Muse read it natively). Do not add a `CLAUDE.md` beside it: that
 would stop Claude reading this file.
 
-**T1 sandbox** · push free / merge free · tier and flags: `.agent-harness/tier.json` · delegation
+**T2 daily driver** · push free / merge free · tier and flags: `.agent-harness/tier.json` · delegation
 ceilings: `.agent-harness/delegation.json` · human decisions: `HUMAN_TODO.md`. Global estate laws
 come from each runtime's global instructions; this file holds only what is true of *this* repo.
 
@@ -84,10 +84,15 @@ disable, skip or weaken a failing test to advance a milestone.
    authorisation. LeaseBroker/admission is accounting, not OS enforcement.
 8. **No theatre.** No releases or packages, source retirement, backup pruning or process-policy
    changes merely to demonstrate completion. Pushes, PRs, issues and merges of reviewed work are
-   normal (T1); publishing a release or package is a tier re-review trigger.
+   normal (T2); an unsigned preview pre-release is owner-authorised (HUMAN_TODO q-17); any other release
+   or package is a tier re-review trigger.
 9. **No false claims.** Never blur the Python reference and the native engine in a report, and
    never claim native compilation, backup verification, memory optimisation, learned heat, live
    disk balancing or safe deletion without that capability's own gate evidence.
+
+**Owner posture (2026-10-11).** The owner's data is not high-sensitivity: weigh privacy and security findings lower,
+skip extra security lenses and hardware withholding. Still forbidden because irreversible: secrets in Git and real file
+names, paths or inventories in this public repository. Owner decisions of that day are in HUMAN_TODO q-5, q-9 to q-19.
 
 ## Working the product (after unbundling)
 

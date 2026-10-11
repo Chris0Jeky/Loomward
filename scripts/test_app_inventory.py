@@ -16,6 +16,10 @@ def run_inventory(page, base, check, *, live=False, shots=None):
         if route == 'applications':
             expect(page.locator('main table tbody tr')).to_have_count(2)
             expect(page.locator('main table tbody tr').nth(1)).to_contain_text('unknown')
+            row = page.locator('main table tbody tr').nth(1)
+            expect(row.locator('td').nth(0)).to_contain_text('synthetic publisher unreadable')
+            expect(row.locator('td').nth(0)).to_contain_text('synthetic version malformed')
+            expect(row.locator('td').nth(3)).to_contain_text('synthetic location unavailable')
             expect(page.locator('main')).to_contain_text('denied')
             expect(page.locator('main')).to_contain_text('packaged')
             expect(page.locator('main')).to_contain_text('unavailable')

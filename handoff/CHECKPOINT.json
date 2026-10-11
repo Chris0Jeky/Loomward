@@ -98,7 +98,7 @@
     "#148 P4 toward 250k: make the scan pipeline stage asynchronously (the bench path is at about 109k rows/s)",
     "#160 one 10-minute quiet-host P12 run",
     "remaining review follow-ups: #309 (fail_batch MEDIUMs, order-dependent reparent, watch LOWs), #333 (lab-space deadline race, Tiers source eligibility), #337 (redaction and learning LOWs), #326 and #329 LOWs, #320 (the http duplicate-Content-Length flake, awaiting a recurrence)",
-    "LW-111 (teacher: the owner's lane; personal data waits on q-5)"
+    "LW-111 (teacher: the owner's lane; q-5 answered 2026-10-11: names only, per-request preview, after the broker's canaries)"
   ],
   "optional_independent_starts": [
     "LW-065",
@@ -146,7 +146,7 @@
   "estate": {
     "repository": "Chris0Jeky/Loomward (public)",
     "harness": "AGENTS.md is the single agent baseline; estate laws supersede handoff/ process rules",
-    "tier": "T1 sandbox (.agent-harness/tier.json)"
+    "tier": "T2 daily driver (.agent-harness/tier.json; owner, 2026-10-11)"
   },
   "ui": {
     "prototype": "app/prototype: woven atlas + Observatory signature prototype (#112)",
@@ -163,7 +163,7 @@
     ]
   },
   "backlog_github_map": "backlog/github-issues.json (#4-#105, #120-#131); follow-ups #141-#171",
-  "teacher_confinement": "synthetic-only; owner decision q-8 answered 2026-10-10: inference broker first, synthetic tests only, no credential reuse, no paid fallback, no Windows security change; design spec docs/superpowers/specs/2026-10-10-synthetic-inference-broker-design.md (owner's lane); q-5 (personal-data disclosure) remains open",
+  "teacher_confinement": "synthetic-only; owner decision q-8 answered 2026-10-10: inference broker first, synthetic tests only, no credential reuse, no paid fallback, no Windows security change; design spec docs/superpowers/specs/2026-10-10-synthetic-inference-broker-design.md (owner's lane); q-5 answered 2026-10-11 (names only, per-request preview, after the broker's canaries; sensitive_data set then)",
   "wave4": {
     "merged": [
       "#173",
@@ -367,5 +367,21 @@
     "p4": "bench path about 109k rows/s after P4f (#332); 250k not reached",
     "open_decision": "loomward-revoked-root-retention (HUMAN_TODO q-9; default (a) on 2026-10-18)",
     "effects": "none: duplicates, placement and collections observe, simulate or record preferences only"
+  },
+  "owner_decisions_2026_10_11": {
+    "source": "HUMAN_TODO.md q-5, q-9 to q-19 (recorded in #360)",
+    "tier": "T2 daily driver; privacy and security findings weigh lower; secrets and real paths in the public repo stay forbidden",
+    "decided_not_yet_implemented": [
+      "q-10 personal duplicate content reads",
+      "q-11 personal learning (local, owner labels)",
+      "q-12 FAT/exFAT identity-unverified listing",
+      "q-13 P4 KPI retarget plus bulk-load lane",
+      "q-14 backups (driver: evidence import, then guarded restic observer, then restore-drill executor)",
+      "q-15 diagnostics bundle via native save dialog",
+      "q-9 Forget a revoked root",
+      "q-17 unsigned preview pre-release",
+      "q-18 hardware scrub"
+    ],
+    "owner_action": "q-19 dismiss Dependabot alert 1"
   }
 }

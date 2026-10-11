@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildTree, layoutTreemap, partition, squarify } from '../../viz/layout.js';
 import type { VNode as VNodeT } from '../../viz/layout.js';
+import { zeroCounts } from '../../viz/woven-treemap.js';
 
 type Item = { v: number; item: number };
 const rnd = (seed: number) => () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 2 ** 32);
@@ -112,6 +113,11 @@ describe('labels', () => {
 });
 
 describe('buildTree', () => {
+  it.each(['abc', '007', '', '-1', '100000000000000000000'])('keeps malformed size %j unmeasured, distinct from an empty file', (size_bytes) => {
+    const { root } = buildTree(slice([node(0, null, 10), node(1, 0, 0, { size_bytes }), node(2, 0, 0)]));
+    expect(root.zero.map(n => n.node_id)).toEqual(['n1', 'n2']);
+    expect(zeroCounts(root)).toEqual({ denied: 0, unmeasured: 1, empty: 1 });
+  });
   it('keeps zero-area children named, never as zero-size cells', () => {
     const nodes = [node(0, null, 100), node(1, 0, 100), node(2, 0, 0, { coverage: 'denied' })];
     const { root } = buildTree(slice(nodes));

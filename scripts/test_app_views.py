@@ -162,7 +162,7 @@ class FakeEngine:
                     return ('deadline_exceeded', 'synthetic candidate gate expired')
             g = {'group_id': 'cg_a', 'node_id': 'nd_a', 'root_id': 'rt_a', 'name': 'group-a', 'source_bytes': '5000', 'destination_bytes': '5000', 'transfer_bytes': '5000', 'estimate_basis': 'allocated_entries',
                  'estimated_relief_bytes': '5000', 'relief_basis': 'verified_unique_allocation', 'heat': None, 'heat_basis': 'unknown', 'newest_modified_at': None, 'pinned': False, 'active': False, 'protected': False, 'days_since_move': 30, 'coverage': 'complete'}
-            return {'source_volume_id': 'vo_x', 'root_generations': [], 'groups': [g], 'note': 'n'}
+            return {'source_volume_id': 'vo_x', 'root_generations': [], 'groups': [g], 'excluded_volumes': [], 'note': 'n'}
         if cmd == 'volumes.declare_tier':
             return {'volume': json.loads((ROOT / 'contracts/v3/examples/commands/volumes.declare_tier.result.json').read_text())['volume'], 'preference_recorded_at': '2026-10-01T00:00:00Z'}
         if cmd == 'proposals.get':
@@ -574,6 +574,8 @@ def check_tiers(page: Page, base: str, shoot) -> None:
     model_row = rows(page).filter(has_text='synthetic-model-store').first
     model_row.get_by_role('combobox').select_option('0.1')
     model_row.get_by_role('checkbox').check()
+    # 19% of the generic 2 TiB source (389 GiB) is within 184 GiB free plus 212 GiB relief: the target-met path
+    page.get_by_label('Free space wanted on the source').fill('19')
     page.get_by_role('button', name='Simulate', exact=True).click()
     expect(page.get_by_text('Target met in the simulation')).to_be_visible()
     expect(main.get_by_text('consent required').first).to_be_visible()

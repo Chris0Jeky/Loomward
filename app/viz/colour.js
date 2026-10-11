@@ -2,9 +2,14 @@
  * Thread colour assignment. Pure: no DOM, no canvas.
  *
  * Three channels, three physical elements of a weave, never mixed into one fill:
- *   warp     (vertical threads)   = meaning:    a dye per label; suggestion, mixture and "none" differ in pattern
- *   weft     (horizontal threads) = residency:  a metal per tier, hot bright to cold dark; missing when unknown
- *   selvedge (stitched edge)      = permission: a stitch per state, drawn only where the state begins
+ *   meaning    = a dye per label; suggestion, mixture, "none" and the other undyed states differ in pattern
+ *   residency  = a metal per tier, hot bright to cold dark; missing when unknown
+ *   permission = the selvedge, a stitch per state, drawn only where the state begins
+ *
+ * Orientation, one rule everywhere: on screen MEANING is the horizontal WEFT and RESIDENCY the vertical
+ * WARP (the legend, inspector and contracts/v3/semantics.md say so). The tile is authored the other way
+ * round and turned a quarter (weave.js `meaningWeft`), so inside app/viz the identifiers keep the
+ * authored names: `Warp`/`warpOf` is the meaning channel, `Weft`/`weftOf` the residency channel.
  * Each function returns one channel's own colour from its own palette slot, so no output is ever a
  * blend of two channels (tests/unit/viz-colour.test.ts holds this).
  */
@@ -44,9 +49,11 @@ export function labelHash(s) {
 }
 
 /**
- * @typedef {'solid' | 'suggested' | 'mixed' | 'undyed' | 'pending' | 'hidden'} WarpPattern
+ * @typedef {'solid' | 'suggested' | 'mixed' | 'undyed' | 'pending' | 'no_model' | 'abstained' | 'not_eligible' | 'hidden'} WarpPattern
  *   solid: a confirmed label; suggested: dyed threads alternate with undyed ones (a suggestion is not
- *   an approval); mixed: alternating dyes; undyed: no meaning; pending/unknown: undyed with breaks.
+ *   an approval); mixed: alternating dyes; undyed: no meaning. The other undyed states keep the
+ *   neutral colour and differ by which crossings break (weave.js `warpBreak`): pending/unknown,
+ *   no_model (no model has looked), abstained (a model looked and declined), not_eligible (not a candidate).
  * @typedef {{ colour: string, alt: string | null, pattern: WarpPattern, intensity?: number }} Warp
  */
 
@@ -63,6 +70,9 @@ export function warpOf(m, p, show = true) {
     }
     case 'pending':
     case 'unknown': return { colour: p.undyed, alt: null, pattern: 'pending' };
+    case 'no_model':
+    case 'abstained':
+    case 'not_eligible': return { colour: p.undyed, alt: null, pattern: m.state };
     default: return { colour: p.undyed, alt: null, pattern: 'undyed' };
   }
 }

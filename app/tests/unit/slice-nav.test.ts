@@ -1,10 +1,53 @@
 // SliceNav (lane L10): the breadcrumb only moves when the slice for it has arrived.
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Client } from '../../src/lib/transport/client';
 import { createMockTransport } from '../../src/lib/transport/mock';
 import { session } from '../../src/lib/stores/session.svelte';
 import { SliceNav, pathTo } from '../../src/views/atlas/shared.svelte';
 import type { NodeInfo, SliceLike } from '../../viz/types.js';
+
+describe('SliceNav response validation', () => {
+  afterEach(() => { session.client = null; vi.restoreAllMocks(); });
+  it.each(['empty', 'forward parent', 'self parent', 'second root', 'duplicate id', 'fractional parent', 'missing name', 'missing threads'])('rejects %s before adopting state and recovers on retry', async (bad) => {
+    const client = new Client(createMockTransport());
+    session.client = client;
+    const nav = new SliceNav({ depth: 2, maxNodes: 200, minShare: 0 });
+    expect(await nav.start()).toBe(true);
+    const trail = nav.trail.map(c => c.id);
+    const slice: NonNullable<typeof nav.slice> = JSON.parse(JSON.stringify(nav.slice));
+    if (bad === 'empty') slice.nodes = [];
+    else if (bad === 'forward parent') slice.nodes[1]!.parent = 2;
+    else if (bad === 'self parent') slice.nodes[1]!.parent = 1;
+    else if (bad === 'second root') slice.nodes[1]!.parent = null;
+    else if (bad === 'duplicate id') slice.nodes[1]!.node_id = slice.nodes[0]!.node_id;
+    else if (bad === 'fractional parent') slice.nodes[1]!.parent = 0.5;
+    else if (bad === 'missing name') delete (slice.nodes[1] as Partial<typeof slice.nodes[number]>).name;
+    else delete (slice.nodes[1] as Partial<typeof slice.nodes[number]>).threads;
+    vi.spyOn(client, 'call').mockResolvedValueOnce({ result: slice } as never);
+    expect(await nav.drill('bad', 'Bad slice')).toBe(false);
+    expect(nav.trail.map(c => c.id)).toEqual(trail);
+    expect(nav.slice).toBeNull();
+    expect(nav.error).not.toBe('');
+    expect(await nav.load()).toBe(true);
+    expect(nav.error).toBe('');
+  });
+
+  it('refuses an oversized response before reading any node', async () => {
+    const client = new Client(createMockTransport());
+    session.client = client;
+    const nav = new SliceNav({ depth: 2, maxNodes: 200, minShare: 0 });
+    expect(await nav.start()).toBe(true);
+    const nodes = new Array(201);
+    const read = vi.fn(() => { throw new Error('must not read oversized nodes'); });
+    Object.defineProperty(nodes, 0, { get: read });
+    vi.spyOn(client, 'call').mockResolvedValueOnce({ result: { ...nav.slice, nodes } } as never);
+    expect(await nav.load()).toBe(false);
+    expect(nav.slice).toBeNull();
+    expect(nav.error).toContain('200');
+    expect(read).not.toHaveBeenCalled();
+    expect(await nav.load()).toBe(true);
+  });
+});
 
 describe('SliceNav', () => {
   it('a failed drill leaves the trail where it was and drops the slice; a good one commits both', async () => {
