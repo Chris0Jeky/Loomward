@@ -1030,10 +1030,14 @@ fn default_state_dir_is_per_user_and_per_dataset_class() {
     let base = std::env::temp_dir().join("fixture-local-app-data");
     let personal = default_state_dir(Some(base.clone().into()), DatasetClass::Personal).unwrap();
     let synthetic = default_state_dir(Some(base.clone().into()), DatasetClass::Synthetic).unwrap();
-    assert_eq!(personal, base.join("Loomward").join("v3").join("personal"));
+    // Beside the per-user install directory (`Loomward`), never inside it (#373).
+    assert_eq!(
+        personal,
+        base.join("Loomward Data").join("v3").join("personal")
+    );
     assert_eq!(
         synthetic,
-        base.join("Loomward").join("v3").join("synthetic")
+        base.join("Loomward Data").join("v3").join("synthetic")
     );
     assert!(!personal.starts_with(&synthetic) && !synthetic.starts_with(&personal));
     for missing in [None, Some("relative\\appdata".into()), Some("".into())] {
@@ -1058,7 +1062,7 @@ fn the_default_launch_opens_the_engine_service_in_the_injected_state_dir() {
     assert_eq!(hello["dataset_class"], "personal");
     assert_eq!(hello["features"]["grant_picker"], true);
     assert_eq!(hello["features"]["disclosure_dialog"], false);
-    let state = base.path().join("Loomward/v3/personal");
+    let state = base.path().join("Loomward Data/v3/personal");
     assert!(state.join("state.db").is_file() && state.join("catalog.db").is_file());
     // The adapter's wall holds in front of the engine too: no disclosure dialog in a personal session.
     let refused = ok(
@@ -1067,6 +1071,64 @@ fn the_default_launch_opens_the_engine_service_in_the_injected_state_dir() {
         selftest::example_payload(Command::GrantsCreateDisclosure),
     );
     assert_eq!(refused["refusal"], "confinement_not_enforced");
+}
+
+#[test]
+fn a_second_instance_on_one_state_directory_is_refused_until_the_first_closes() {
+    let scratch = tempfile::tempdir().unwrap();
+    for args in [&["--dataset", "synthetic"][..], &[][..]] {
+        let state = scratch.path().join(args.len().to_string());
+        let launch = Launch {
+            state_dir: Some(state.clone()),
+            ..launch_args(args).unwrap()
+        };
+        let first = launch::open(&launch, None).unwrap();
+        let second = launch::open(&launch, None)
+            .err()
+            .expect("a second instance opened the same state directory");
+        assert!(
+            second.starts_with("busy: Loomward is already open"),
+            "{second}"
+        );
+        assert!(state.join("lock").is_file());
+        // An OS lock on a handle, not a marker file: closing the first frees the directory.
+        drop(first);
+        launch::open(&launch, None).expect("reopen after the first closed");
+    }
+}
+
+#[test]
+fn state_kept_inside_the_install_directory_moves_out_once() {
+    let base = tempfile::tempdir().unwrap();
+    let install = base.path().join("Loomward");
+    let old = install.join("v3/personal");
+    std::fs::create_dir_all(&old).unwrap();
+    std::fs::write(old.join("fixture-marker"), b"synthetic").unwrap();
+    std::fs::write(install.join("uninstall.exe"), b"stand-in").unwrap();
+    let launch = launch_args(&[]).unwrap();
+    drop(launch::open(&launch, Some(base.path().as_os_str().to_owned())).unwrap());
+    let new = base.path().join("Loomward Data/v3/personal");
+    assert!(new.join("fixture-marker").is_file() && new.join("state.db").is_file());
+    assert!(
+        !install.join("v3").exists(),
+        "the old state was copied, not moved"
+    );
+    assert!(install.join("uninstall.exe").is_file());
+    // Once moved, an old directory that reappears is left alone, never merged.
+    std::fs::create_dir_all(&old).unwrap();
+    std::fs::write(old.join("later"), b"synthetic").unwrap();
+    drop(launch::open(&launch, Some(base.path().as_os_str().to_owned())).unwrap());
+    assert!(old.join("later").is_file() && !new.join("later").exists());
+    // An explicit --state-dir never migrates.
+    let other = tempfile::tempdir().unwrap();
+    let legacy = other.path().join("Loomward/v3");
+    std::fs::create_dir_all(&legacy).unwrap();
+    let scratch = Launch {
+        state_dir: Some(other.path().join("scratch")),
+        ..launch.clone()
+    };
+    drop(launch::open(&scratch, Some(other.path().as_os_str().to_owned())).unwrap());
+    assert!(legacy.is_dir() && !other.path().join("Loomward Data").exists());
 }
 
 #[test]
@@ -1100,9 +1162,11 @@ fn a_synthetic_session_cannot_read_personal_state() {
         json!({ "purpose": "metadata_scan" }),
     );
     assert_eq!(r["refusal"], "synthetic_session_requires_lab_root");
-    // Pointed at the personal store, a synthetic session refuses to open at all.
+    // Pointed at the personal store, a synthetic session refuses to open at all (once the
+    // personal window has closed; while it is open the state lock refuses first).
+    drop(personal);
     let wrong = Launch {
-        state_dir: Some(base.path().join("Loomward/v3/personal")),
+        state_dir: Some(base.path().join("Loomward Data/v3/personal")),
         ..launch_args(&["--dataset", "synthetic"]).unwrap()
     };
     let refused = launch::open(&wrong, None)
