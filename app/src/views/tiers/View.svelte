@@ -35,7 +35,7 @@
     shares_objects_with_other_group: 'Shares file objects with another group (hard links)',
     group_coverage_incomplete: 'Scan coverage of this folder is incomplete',
   };
-  const EXCLUDED = { tier_unknown: 'Tier unknown', capacity_unknown: 'Capacity unknown', offline: 'Offline' } as const;
+  const EXCLUDED = { tier_unknown: 'Tier unknown', capacity_unknown: 'Capacity unknown', offline: 'Offline', no_active_grant: 'No active grant' } as const;
   const PRESSURE = { ok: 'Comfortable', watch: 'Watch', pressure: 'Under pressure', unknown: 'Unknown' } as const;
   const BUS: Record<string, string> = { nvme: 'NVMe', sata: 'SATA', sas: 'SAS', scsi: 'SCSI', usb: 'USB', raid: 'RAID', virtual: 'virtual', sd: 'SD', other: 'other bus', unknown: 'unknown bus' };
 
@@ -57,8 +57,10 @@
   let save = $state(false);
   let saved = $state<ProposalSummary[]>([]);
   let savedDetail = $state<ProposalDetail | null>(null);
+  let savedError = $state('');
   const say = new Say(); // result announcements; the Simulate button keeps focus
   let modelTicket = 0;
+  let savedTicket = 0;
   let candTicket = 0;
   let simTicket = 0;
 
@@ -94,6 +96,7 @@
     const c = session.client;
     if (!c) return;
     const mine = ++modelTicket;
+    savedTicket++;
     loading = true;
     try {
       const { result } = await c.call('tiers.model', {});
@@ -124,23 +127,27 @@
 
   async function loadProposals() {
     if (!session.client) return;
-    const { result } = await session.client.call('proposals.list', {});
-    saved = result.proposals;
+    try {
+      const { result } = await session.client.call('proposals.list', {});
+      saved = result.proposals;
+      savedError = '';
+    } catch (e) { saved = []; savedError = session.handle(e); }
   }
 
   async function loadSaved(id: string) {
     const c = session.client;
     if (!c) return;
-    const mine = ++modelTicket;
+    const mine = ++savedTicket;
     try {
       const { result } = await c.call('proposals.get', { proposal_id: id });
-      if (mine !== modelTicket) return;
+      if (mine !== savedTicket) return;
       source = result.summary.source_volume_id;
       await loadCandidates();
-      if (mine !== modelTicket) return;
+      if (mine !== savedTicket) return;
       savedDetail = result;
+      savedError = '';
       say.say(`Saved scenario shown. ${result.summary.status === 'stale' ? 'Its inputs have changed; this is historical.' : 'Simulation only.'}`);
-    } catch (e) { if (mine === modelTicket) error = session.handle(e); }
+    } catch (e) { if (mine === savedTicket) savedError = session.handle(e); }
   }
 
   function choose(id: string) {
@@ -189,7 +196,7 @@
     })) as Record<HeatPolicy, Outcome>;
     shown = 'unknown_is_ineligible';
     say.say(`Simulation finished. ${summary()}`);
-    try { await loadProposals(); } catch (e) { error = session.handle(e); }
+    await loadProposals();
   }
 
   /** One sentence about the plan on show, for the live region (the tables hold the detail). */
@@ -220,7 +227,7 @@
 <p class="bad live" class:has={!!error} role="alert">{error}</p>
 <p class="sr-only" role="status">{say.text}</p>
 
-<section class="panel" aria-labelledby="h-vol">
+<section class="panel" aria-labelledby="h-vol" aria-busy={loading}>
   <h2 id="h-vol">Volumes</h2>
   {#if model}
     <div class="vols">
@@ -360,11 +367,12 @@
 
 <section class="panel" aria-labelledby="h-saved">
   <h2 id="h-saved">Saved scenarios</h2>
-  <p class="muted small">Stored simulations only. Changed inputs are marked stale; nothing can be executed here.</p>
+  <p class="bad live" class:has={!!savedError} role="alert">{savedError}</p>
+  <p class="muted small">Stored simulations only. Catalogue, tier or root changes are marked stale; free-space and capacity drift alone are not. Compare now with this simulation; nothing can be executed here.</p>
   <ul class="list">
     {#each saved as scenario (scenario.proposal_id)}
       <li><button class="btn" type="button" onclick={() => void loadSaved(scenario.proposal_id)}>Show saved scenario {formatTime(scenario.created_at)}</button> <span class="tag">{scenario.status === 'stale' ? 'Stale' : 'Simulation only'}</span></li>
-    {:else}<li class="muted">No saved scenarios.</li>{/each}
+    {:else}<li class="muted">{savedError ? 'Saved scenarios unavailable.' : 'No saved scenarios.'}</li>{/each}
   </ul>
 </section>
 

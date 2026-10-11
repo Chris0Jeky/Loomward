@@ -123,9 +123,21 @@ synthetic registered lab root may supply scoped volume-space observations; no ot
 enumerated. Unprovable ancestry across overlapping grants is `partial_coverage` with the named
 reason `overlapping_grant_ancestry_unknown`.
 
+Volumes whose recorded roots have no active grant remain visible in `volumes.list` and
+`tiers.model`, with their observed `online` state and a "No active grant" tier note. They are
+excluded from simulations with `excluded_volumes.reason = "no_active_grant"`; choosing one as
+the source refuses with `invalid_request`, `detail.reason = "no_active_grant"`.
+
 Proposals are historical simulations. Changed catalogue revisions, declarations or root
 generations mark them `stale`; inactive grants hide them from list/get. Wire IDs are bound to the
 current session and catalogue instance: after restart, clients re-list rather than reuse old IDs.
+Free-space and capacity drift alone does not mark a scenario stale; physics is a point-in-time
+simulation input, not a permission or a current feasibility promise. The UI compares free space
+"now" with free space "in this simulation". A catalogue revision recording new physics still marks
+it stale. Fresh lab-space reads stamp `observed_at` when the read completes, rather than reusing
+the catalogue volume timestamp. Lab identity and space calls run under the call deadline; a timeout
+releases the service read permit while at most eight unfinished observation helpers retain their
+own permits until the OS calls return.
 Stored canonical row references and input digests survive restart and never confer effect authority.
 
 ## 4. Idempotency

@@ -63,6 +63,9 @@ class FakeEngine:
         self.nested = False  # tree.children lists one sub-folder (nd_dir_N+1, down to nd_dir_3) beside a file
         self.gone: set[str] = set()  # node ids the engine no longer knows: tree.children answers not_found
         self.broken: dict[str, str] = {}  # node id -> error code tree.children answers instead of rows (e.g. an ancestor that fails)
+        self.fail_proposals = False
+        self.saved_scenarios = False
+        self.candidate_gate = None  # one (arrived, release) event pair
         self.plan_mode = 'executable'  # 'executable' or 'malformed': how placement.simulate misbehaves
         self.slice_queue: list[tuple[float, str]] = []  # (delay, root name) per tree.slice call, then the default
         self.events: queue.Queue[dict] = queue.Queue()
@@ -146,11 +149,24 @@ class FakeEngine:
             return {'volumes': [{'volume_id': 'vo_x', 'display_name': 'X:', 'tier': tier, 'online': True, 'writable': True, 'capacity_bytes': '1000000000000', 'free_bytes': '90000000000', 'reserve_bytes': '1', 'free_fraction': 0.09, 'pressure': 'pressure'}],
                     'policy': {'watch_free_fraction': 0.2, 'pressure_free_fraction': 0.1, 'reserve_note': 'r', 'note': 'n'}}
         if cmd == 'placement.candidates':
+            gate, self.candidate_gate = self.candidate_gate, None
+            if gate:
+                gate[0].set()
+                if not gate[1].wait(9):
+                    return ('deadline_exceeded', 'synthetic candidate gate expired')
             g = {'group_id': 'cg_a', 'node_id': 'nd_a', 'root_id': 'rt_a', 'name': 'group-a', 'source_bytes': '5000', 'destination_bytes': '5000', 'transfer_bytes': '5000', 'estimate_basis': 'allocated_entries',
                  'estimated_relief_bytes': '5000', 'relief_basis': 'verified_unique_allocation', 'heat': None, 'heat_basis': 'unknown', 'newest_modified_at': None, 'pinned': False, 'active': False, 'protected': False, 'days_since_move': 30, 'coverage': 'complete'}
             return {'source_volume_id': 'vo_x', 'root_generations': [], 'groups': [g], 'note': 'n'}
+        if cmd == 'volumes.declare_tier':
+            return {'volume': json.loads((ROOT / 'contracts/v3/examples/commands/volumes.declare_tier.result.json').read_text())['volume'], 'preference_recorded_at': '2026-10-01T00:00:00Z'}
+        if cmd == 'proposals.get':
+            detail = json.loads((ROOT / 'contracts/v3/examples/commands/proposals.get.result.json').read_text())
+            detail['summary']['source_volume_id'] = 'vo_x'
+            return detail
         if cmd == 'proposals.list':
-            return {'proposals': []}
+            if self.fail_proposals:
+                return ('internal_error', 'synthetic saved scenarios failure')
+            return {'proposals': [self.result({'command': 'proposals.get'})['summary']] if self.saved_scenarios else []}
         if cmd == 'placement.simulate':
             plan = {'mode': 'simulation', 'algorithm': 'bounded_portfolio_search_v2', 'optimality_claim': False, 'optimality_scope': 's', 'shortfall_optimal': True,
                     'search': {'complete': True, 'nodes_visited': 1, 'node_budget': 10, 'reason': 'exhausted', 'eligible_groups': 1, 'eligible_targets': 1, 'lower_bound_shortfall_bytes': '0'},
@@ -420,6 +436,39 @@ def check_tiers_refused(page: Page, engine: FakeEngine) -> None:
         expect(page.get_by_role('heading', name='Do nothing', level=2)).to_be_visible()
         expect(page.get_by_text('No trustworthy plan: nothing to compare').first).to_be_visible()
         ok('short of the target' not in page.locator('main').inner_text(), f'{note}: the do-nothing section makes no claim about the target')
+
+
+def check_tiers_loading_followups(page: Page, engine: FakeEngine) -> None:
+    engine.fail_proposals = True
+    page.goto(f'{engine.base}/#token={TOKEN}')
+    page.evaluate("location.hash = '#/tiers'")
+    panel = page.locator('section[aria-labelledby="h-vol"]')
+    saved = page.locator('section[aria-labelledby="h-saved"]')
+    expect(saved.get_by_role('alert')).to_contain_text('synthetic saved scenarios failure')
+    expect(panel.get_by_role('heading', name='X:', exact=True)).to_be_visible()
+    expect(panel).to_have_attribute('aria-busy', 'false')
+    ok(True, 'Tiers keeps volumes and scopes proposals.list errors to saved scenarios')
+
+    engine.fail_proposals = False
+    engine.saved_scenarios = True
+    page.reload()
+    button = saved.get_by_role('button', name=re.compile('Show saved scenario'))
+    expect(button).to_be_visible()
+    expect(panel).to_have_attribute('aria-busy', 'false')
+    arrived, release = threading.Event(), threading.Event()
+    engine.candidate_gate = (arrived, release)
+    try:
+        panel.get_by_label('Declared tier for X:').select_option('2')
+        wait_until(page, arrived.is_set)
+        expect(panel).to_have_attribute('aria-busy', 'true')
+        button.click()
+        expect(page.get_by_text('Saved scenario shown. Simulation only.', exact=True)).to_be_attached()
+    finally:
+        release.set()
+    expect(panel).to_have_attribute('aria-busy', 'false')
+    expect(panel.get_by_role('heading', name='X:', exact=True)).to_be_visible()
+    ok(True, 'concurrent saved scenario loading cannot strand the model loading flag')
+    engine.saved_scenarios = False
 
 
 # --- Tiers ------------------------------------------------------------------------------------------
@@ -888,6 +937,7 @@ def run_views(page: Page, base: str, shots: Path | None) -> None:
         check_explorer_engine(page, engine)
         check_explorer_starts(page, engine)
         check_explorer_fallback(page, engine)
+        check_tiers_loading_followups(page, engine)
         check_tiers_refused(page, engine)
     finally:
         engine.stop()

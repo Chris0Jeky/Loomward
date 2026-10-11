@@ -63,7 +63,21 @@ fn bounded<T>(v: Result<T, impl std::fmt::Debug>) -> EngineResult<T> {
     })
 }
 
-fn notes(mut plan: PlacementPlan) -> EngineResult<PlacementPlan> {
+fn notes(mut plan: PlacementPlan, conn: &Connection) -> EngineResult<PlacementPlan> {
+    let mut excluded = plan.excluded_volumes.to_vec();
+    for row in inactive_volumes(conn)? {
+        if excluded
+            .iter()
+            .any(|v| v.volume_id.as_str() == format!("vo_{row}"))
+        {
+            continue;
+        }
+        excluded.push(PlacementPlanExcludedVolume {
+            volume_id: VolumeId::new(format!("vo_{row}")).expect("volume row"),
+            reason: PlacementPlanExcludedVolumeReason::NoActiveGrant,
+        });
+    }
+    plan.excluded_volumes = bounded(BoundedVec::new(excluded))?;
     let mut assumptions = plan.assumptions.to_vec();
     for note in [
         "No reserve preferences are recorded; zero reserve is assumed.",
@@ -101,6 +115,14 @@ impl Inner {
             Command::VolumesList => Ok(json!({"volumes":input.volumes(deadline)?.into_iter().map(|v|v.volume).collect::<Vec<_>>()})),
             Command::TiersModel => {
                 let mut model = self.engine.placement_model(&input, deadline)?;
+                let inactive = inactive_volumes(&input.conn)?;
+                let mut volumes = model.volumes.to_vec();
+                for v in &mut volumes {
+                    if inactive.iter().any(|row| v.volume_id.as_str() == format!("vo_{row}")) {
+                        v.tier.note = Text::new("No active grant; excluded from placement simulation. Device speed is unmeasured.").expect("bounded note");
+                    }
+                }
+                model.volumes = bounded(BoundedVec::new(volumes))?;
                 model.policy.reserve_note = Text::new(
                     "No reserve preferences are recorded; these simulations assume zero reserve.",
                 )
@@ -141,7 +163,7 @@ impl Inner {
                         r.save.then_some(&store as &dyn ProposalStore),
                     )
                     .map_err(placement_error)?;
-                serde_json::to_value(notes(plan)?)
+                serde_json::to_value(notes(plan, &input.conn)?)
             }
             Command::ProposalsList => serde_json::to_value(self.engine.proposals_list(&store)?),
             Command::ProposalsGet => {
@@ -214,6 +236,80 @@ fn seal_rows(inner: &Inner, v: &mut Value) {
     }
 }
 
+// Revocation changes permission, not online state or the historical volume observation.
+fn inactive_volumes(conn: &Connection) -> EngineResult<Vec<i64>> {
+    let mut stmt = conn.prepare("SELECT v.id FROM main.volume v WHERE EXISTS(SELECT 1 FROM main.root r WHERE r.volume_id=v.id) AND NOT EXISTS(SELECT 1 FROM main.root r JOIN st.root_grant g ON g.id=r.grant_id WHERE r.volume_id=v.id AND g.state='active') ORDER BY v.id LIMIT 65").map_err(sql)?;
+    let rows = stmt
+        .query_map([], |r| r.get(0))
+        .map_err(sql)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sql)?;
+    if rows.len() > 64 {
+        return Err(EngineError::ResourceBudget {
+            message: "placement volume bounds".into(),
+        });
+    }
+    Ok(rows)
+}
+
+static SPACE_READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+struct SpacePermit;
+impl Drop for SpacePermit {
+    fn drop(&mut self) {
+        SPACE_READS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+// The OS call cannot be cancelled; its own permit survives a caller timeout to bound stragglers.
+fn bounded_space(
+    deadline: Instant,
+    read: impl FnOnce() -> Option<(loomward_windows::volumes::Space, i64)> + Send + 'static,
+) -> EngineResult<Option<(loomward_windows::volumes::Space, i64)>> {
+    check(deadline)?;
+    // A compare-exchange loop: `fetch_update` is deprecated on newer stable toolchains (#276).
+    let mut running = SPACE_READS.load(std::sync::atomic::Ordering::SeqCst);
+    loop {
+        if running >= 8 {
+            return Err(EngineError::ResourceBudget {
+                message: "lab volume observations still running".into(),
+            });
+        }
+        match SPACE_READS.compare_exchange_weak(
+            running,
+            running + 1,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        ) {
+            Ok(_) => break,
+            Err(now) => running = now,
+        }
+    }
+    let permit = SpacePermit;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("lw-volume-space".into())
+        .spawn(move || {
+            let _permit = permit;
+            let _ = tx.send(read());
+        })
+        .map_err(|_| EngineError::ResourceBudget {
+            message: "no volume observation worker".into(),
+        })?;
+    let observed = rx
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .map_err(|e| match e {
+            std::sync::mpsc::RecvTimeoutError::Timeout => EngineError::DeadlineExceeded {
+                message: "lab volume observation deadline expired".into(),
+            },
+            std::sync::mpsc::RecvTimeoutError::Disconnected => EngineError::Internal {
+                message: "lab volume observation worker failed".into(),
+                detail: None,
+            },
+        })?;
+    check(deadline)?;
+    Ok(observed)
+}
+
 /// One SQLite snapshot spans directory headers and every selected group's entries. Reads cannot
 /// combine same-generation changes from separate transactions; revocation fences the next call.
 struct Input<'a> {
@@ -250,6 +346,7 @@ impl<'a> Input<'a> {
                 message: "placement volume bounds".into(),
             });
         }
+        let inactive = inactive_volumes(&self.conn)?;
         let mut volumes = Vec::new();
         for v in rows {
             check(deadline)?;
@@ -269,20 +366,29 @@ impl<'a> Input<'a> {
                 .map_err(sql)?;
             let stored: Value = serde_json::from_str(&capabilities).unwrap_or(Value::Null);
             let mut space = stored.get("space").cloned().unwrap_or(Value::Null);
+            let mut observed_at = v.observed_at_ns;
             // Only registered synthetic roots may supply fresh volume physics. Personal placement
             // stays catalogue-only until the volume observation lane records these facts.
             if space.is_null() && self.inner.dataset == DatasetClass::Synthetic {
                 let root: Option<String> = self.conn.query_row("SELECT g.display_path FROM main.root r JOIN st.root_grant g ON g.id=r.grant_id WHERE r.volume_id=?1 AND g.state='active' AND g.origin='lab_generated' LIMIT 1", [v.id], |r| r.get(0)).optional().map_err(sql)?;
                 if let Some(root) = root {
-                    let path = std::path::Path::new(&root);
-                    // A replacement root cannot supply observations for the old volume.
-                    if crate::lab::identity(path)
-                        .ok()
-                        .is_some_and(|(key, _)| key == v.key)
-                    {
-                        if let Ok(observation) = loomward_windows::volumes::space(path) {
-                            space = serde_json::to_value(observation).expect("space serialises");
+                    let key = v.key.clone();
+                    if let Some((observation, at)) = bounded_space(deadline, move || {
+                        let path = std::path::Path::new(&root);
+                        // A replacement root cannot supply observations for the old volume.
+                        if crate::lab::identity(path)
+                            .ok()
+                            .is_some_and(|(current, _)| current == key)
+                        {
+                            loomward_windows::volumes::space(path)
+                                .ok()
+                                .map(|space| (space, now_ns()))
+                        } else {
+                            None
                         }
+                    })? {
+                        space = serde_json::to_value(observation).expect("space serialises");
+                        observed_at = at;
                     }
                 }
             }
@@ -300,9 +406,9 @@ impl<'a> Input<'a> {
                 "online":v.online,"read_only":space.get("read_only").and_then(Value::as_bool),"removable":null,
                 "capacity_bytes":bytes("capacity_bytes"),"free_bytes":bytes("free_bytes"),
                 "device":{"bus_type":"unknown","seek_penalty":null,"multiple_disks":null,"basis":"unavailable"},
-                "tier":{"tier":declared,"basis":if declared.is_some(){"declared"}else{"unknown"},"declared_tier":declared,"hint_tier":null,"note":"Declared tier; device speed is unmeasured."},
+                "tier":{"tier":declared,"basis":if declared.is_some(){"declared"}else{"unknown"},"declared_tier":declared,"hint_tier":null,"note":if inactive.contains(&v.id){"No active grant; excluded from placement simulation. Device speed is unmeasured."}else{"Declared tier; device speed is unmeasured."}},
                 "features":{"file_ids_128":null,"hard_links":null,"sparse_files":null,"compression":null,"reparse_points":null,"usn_journal":null},
-                "observed_at":ts_ns(v.observed_at_ns)
+                "observed_at":ts_ns(observed_at)
             })).map_err(|_| EngineError::Internal { message: "invalid volume observation".into(), detail: None })?;
             volumes.push(VolumeObservation {
                 volume,
@@ -330,7 +436,7 @@ struct Dir {
 impl PlacementInput for Input<'_> {
     fn snapshot(&self, source: Option<&VolumeId>, deadline: Instant) -> EngineResult<Snapshot> {
         check(deadline)?;
-        let volumes = self.volumes(deadline)?;
+        let mut volumes = self.volumes(deadline)?;
         let Some(source) = source else {
             return Ok(Snapshot {
                 volumes,
@@ -344,6 +450,17 @@ impl PlacementInput for Input<'_> {
             .ok_or_else(|| EngineError::InvalidRequest {
                 message: "source_volume_unknown".into(),
             })?;
+        let inactive = inactive_volumes(&self.conn)?;
+        if inactive.contains(&volume) {
+            return Err(EngineError::InvalidRequest {
+                message: "no_active_grant".into(),
+            });
+        }
+        volumes.retain(|v| {
+            !inactive
+                .iter()
+                .any(|row| v.volume.volume_id.as_str() == format!("vo_{row}"))
+        });
         if self.inner.dataset == DatasetClass::Personal
             && volumes.iter().any(|v| {
                 v.volume.volume_id == *source
@@ -665,7 +782,7 @@ impl ProposalStore for Store<'_> {
         deadline: Instant,
     ) -> EngineResult<PlacementPlan> {
         check(deadline)?;
-        let annotated = notes(plan.clone())?;
+        let annotated = notes(plan.clone(), self.conn)?;
         let plan = &annotated;
         let _m = self
             .inner
@@ -687,11 +804,19 @@ impl ProposalStore for Store<'_> {
         }
         let digest = format!(
             "sha256:{:x}",
-            Sha256::digest(format!("{}:{}", self.inner.instance, digest.as_str()).as_bytes())
+            Sha256::digest(
+                format!(
+                    "{}:{}:{}",
+                    self.inner.instance,
+                    digest.as_str(),
+                    serde_json::to_string(&plan.excluded_volumes).expect("exclusions serialise")
+                )
+                .as_bytes()
+            )
         );
         let existing: Option<i64> = tx
             .query_row(
-                "SELECT id FROM st.proposal WHERE inputs_digest=?1 ORDER BY id LIMIT 1",
+                "SELECT id FROM st.proposal WHERE inputs_digest=?1 AND kind='placement_simulation' ORDER BY id LIMIT 1",
                 [&digest],
                 |r| r.get(0),
             )
@@ -763,5 +888,57 @@ impl ProposalStore for Store<'_> {
                 message: "unknown proposal".into(),
             })?;
         self.detail(self.conn, row)
+    }
+}
+
+#[cfg(test)]
+mod followup_tests {
+    use super::*;
+
+    #[test]
+    fn placement_space_timeout_releases_read_permit_while_os_call_finishes() {
+        let tmp = crate::tests::temp_root();
+        let svc = crate::Service::open(crate::Config {
+            state_dir: tmp.path().to_owned(),
+            dataset: DatasetClass::Synthetic,
+            allow_personal: false,
+            grant_roots: vec![],
+        })
+        .unwrap();
+        let inner = svc.inner.clone();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _permit = crate::ReadPermit::acquire(inner).unwrap();
+            let result = bounded_space(Instant::now() + Duration::from_millis(100), move || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                finished_tx.send(()).unwrap();
+                None
+            });
+            drop(_permit);
+            done_tx.send(result).unwrap();
+        });
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let result = done_rx.recv_timeout(Duration::from_secs(2));
+        // Release on failure too: the mutation must fail rather than hang the test runner.
+        let finished_early = finished_rx.try_recv().is_ok();
+        let reads = *svc.inner.reads.lock().unwrap();
+        release_tx.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(matches!(
+            result.unwrap(),
+            Err(EngineError::DeadlineExceeded { .. })
+        ));
+        assert!(!finished_early);
+        assert_eq!(reads, 0);
+        finished_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(
+            bounded_space(Instant::now() + Duration::from_secs(2), || None)
+                .unwrap()
+                .is_none()
+        );
     }
 }

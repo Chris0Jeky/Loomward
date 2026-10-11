@@ -1707,7 +1707,7 @@
             "required": ["volume_id", "reason"],
             "properties": {
               "volume_id": { "$ref": "#/$defs/VolumeId" },
-              "reason": { "enum": ["tier_unknown", "capacity_unknown", "offline"] }
+              "reason": { "enum": ["tier_unknown", "capacity_unknown", "offline", "no_active_grant"] }
             }
           }
         },
