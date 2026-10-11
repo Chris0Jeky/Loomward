@@ -3,14 +3,19 @@
 Usage: py -3 native/tests/webview2_probe.py [--exe native/target/debug/loomward-desktop.exe]
                                             [--out evidence/v3/native] [--p9-runs 5]
 
-Checks, in the shipped window and its real IPC:
+Checks, in the shipped window and its real IPC, over the engine service in a synthetic session with a
+scratch state directory (never the owner's state):
   * the app loads from the embedded app/dist at http://tauri.localhost and selects the tauri transport;
-  * lw_call answers; lw_events streams stream.hello, and repeats it after 15 s of silence (real heartbeat);
+  * lw_call answers from the engine service; lw_events streams stream.hello, and repeats it after 15 s
+    of silence (real heartbeat);
   * core/plugin commands (event, window, webview, app, path, dialog, fs, shell) are refused by the ACL;
   * the CSP is in force (an injected inline script is refused);
   * a page reload and a window close each tear the window's event streams down (the shell logs it);
   * raw IPC bounds and duplicate keys, blocked navigation/popups, production mock denial, renderer lag.
-  * P9: 2,500-node Atlas layout + first draw in a separate development fixture shell build.
+  * P9: 2,500-node Atlas layout + first draw in a separate development fixture shell build (--fixtures).
+  * The personal default (scratch state): the real native picker, driven by Win32 messages, grants a
+    disposable folder under .loomward/, which is then scanned (metadata only) and revoked. On an
+    elevated host native identity is refused and this leg reports UNVERIFIED.
 Writes webview2-probe.json, the shell's stderr (webview2-shell.log) and screenshots. The remote
 debugging port is opened only for this run, through WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS.
 """
@@ -25,6 +30,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from ctypes import wintypes
 from pathlib import Path
@@ -34,6 +40,7 @@ from playwright.sync_api import sync_playwright
 ROOT = Path(__file__).resolve().parents[2]
 HEARTBEAT_S = 15
 PROFILES = ROOT / '.loomward/webview2-profiles'
+PICKER_TITLE = 'Loomward: choose a folder to observe (metadata only)'
 
 OPEN_CHANNEL = """async () => {
   const t = window.__TAURI_INTERNALS__;
@@ -99,7 +106,7 @@ def p9(exe: Path, out: Path, count: int) -> dict:
     env = dict(os.environ, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS='--remote-debugging-port=0',
                WEBVIEW2_USER_DATA_FOLDER=str(profile.resolve()))
     with open(out / 'webview2-p9-shell.log', 'w', encoding='utf-8') as log:
-        shell = subprocess.Popen([str(exe)], env=env, stdout=log, stderr=subprocess.STDOUT)
+        shell = subprocess.Popen([str(exe), '--fixtures'], env=env, stdout=log, stderr=subprocess.STDOUT)
         try:
             with sync_playwright() as pw:
                 browser = connect_webview(pw, profile)
@@ -151,6 +158,153 @@ def close_window(pid: int) -> bool:
     return bool(found)
 
 
+def drive_picker(folder: Path, done: list, timeout_s: float = 30) -> None:
+    """Types `folder` into the native folder picker's Folder box and presses Select Folder, with Win32
+    messages to the real dialog. Appends what it did to `done`."""
+    user32 = ctypes.WinDLL('user32', use_last_error=True)
+    user32.FindWindowW.restype = wintypes.HWND
+    user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+    user32.GetDlgItem.restype = wintypes.HWND
+    user32.GetDlgItem.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.FindWindowExW.restype = wintypes.HWND
+    user32.FindWindowExW.argtypes = [wintypes.HWND, wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR]
+    user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPCWSTR]
+    user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.IsWindow.argtypes = [wintypes.HWND]
+    user32.GetParent.restype = wintypes.HWND
+    user32.GetParent.argtypes = [wintypes.HWND]
+    user32.GetDlgCtrlID.argtypes = [wintypes.HWND]
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    wm_settext, bm_click = 0x000C, 0x00F5
+
+    def cls(hwnd) -> str:
+        buf = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(hwnd, buf, 64)
+        return buf.value
+
+    def children(dialog) -> list:
+        found: list = []
+        each = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        user32.EnumChildWindows(dialog, each(lambda h, _: found.append(h) or True), 0)
+        return found
+
+    end = time.monotonic() + timeout_s
+    while time.monotonic() < end:
+        dialog = user32.FindWindowW('#32770', PICKER_TITLE)
+        if not dialog:
+            time.sleep(0.1)
+            continue
+        time.sleep(1.0)  # let the dialog finish building its controls
+        kids = children(dialog)
+        # In folder mode the Folder: box is the dialog's own Edit edt1 (1152); Select Folder is IDOK.
+        edit = next((h for h in kids if cls(h) == 'Edit' and user32.GetDlgCtrlID(h) == 1152
+                     and user32.IsWindowVisible(h)), None)
+        ok = next((h for h in kids if cls(h) == 'Button' and user32.GetDlgCtrlID(h) == 1), None)
+        if not edit or not ok:
+            done.append('picker controls not found: ' + '; '.join(
+                f'{cls(h)}#{user32.GetDlgCtrlID(h)}<{cls(user32.GetParent(h))} v{user32.IsWindowVisible(h)}'
+                for h in kids if cls(h) in ('Edit', 'Button', 'ComboBox', 'ComboBoxEx32')))
+            user32.PostMessageW(dialog, 0x0010, 0, 0)  # WM_CLOSE: cancel, so nothing is granted
+            return
+        user32.SendMessageW(edit, wm_settext, 0, str(folder))
+        user32.PostMessageW(ok, bm_click, 0, 0)
+        done.append('folder typed, Select Folder pressed')
+        # A typed path can navigate into the folder first; a second press selects the current folder.
+        time.sleep(1.5)
+        if user32.IsWindow(dialog):
+            user32.PostMessageW(ok, bm_click, 0, 0)
+            done.append('Select Folder pressed again')
+        return
+    done.append('the picker never appeared')
+
+
+CALL = """async ([command, payload]) => {
+  window.__n = (window.__n || 0) + 1;
+  // The picker waits on a person: give it the protocol's longest deadline (60 s).
+  const deadline_ms = command === 'roots.request_grant' ? 60000 : undefined;
+  const body = JSON.stringify({ protocol: 'loomward/3', request_id: 'r_personal_' + window.__n, command, payload, deadline_ms });
+  return window.__TAURI_INTERNALS__.invoke('lw_call', new TextEncoder().encode(body));
+}"""
+
+
+def personal_grant(exe: Path, out: Path, check) -> dict:
+    """The personal default with a scratch state directory: a picker grant of a disposable folder
+    under .loomward/ (outside AppData, which the grant rules fence), a metadata scan, a revocation."""
+    PROFILES.mkdir(parents=True, exist_ok=True)
+    profile = Path(tempfile.mkdtemp(prefix='personal-profile-', dir=PROFILES))
+    state = Path(tempfile.mkdtemp(prefix='personal-state-', dir=PROFILES))
+    folder = Path(tempfile.mkdtemp(prefix='probe-grant-', dir=ROOT / '.loomward'))
+    (folder / 'sub').mkdir()
+    for name in ('a.txt', 'b.txt', 'sub/c.txt'):
+        (folder / name).write_text('synthetic probe file\n', encoding='utf-8')
+    env = dict(os.environ, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS='--remote-debugging-port=0',
+               WEBVIEW2_USER_DATA_FOLDER=str(profile.resolve()))
+    result: dict = {}
+    with open(out / 'webview2-personal-shell.log', 'w', encoding='utf-8') as log:
+        shell = subprocess.Popen([str(exe), '--state-dir', str(state)], env=env, stdout=log, stderr=subprocess.STDOUT)
+        try:
+            with sync_playwright() as pw:
+                page = next(p for c in connect_webview(pw, profile).contexts for p in c.pages)
+                page.wait_for_load_state('load')
+                page.wait_for_timeout(1500)
+
+                def call(command: str, payload: dict) -> dict:
+                    return page.evaluate(CALL, [command, payload])
+
+                hello = call('session.hello', {})['result']
+                check(hello['dataset_class'] == 'personal' and hello['features']['grant_picker'] is True
+                      and hello['engine_version'].startswith('loomward-service/'),
+                      'personal default: the engine service offers the native picker', engine=hello['engine_version'])
+                done: list = []
+                driver = threading.Thread(target=drive_picker, args=(folder.resolve(), done))
+                driver.start()
+                granted = call('roots.request_grant', {'purpose': 'metadata_scan'})
+                driver.join(timeout=40)
+                outcome = granted.get('result') or {}
+                result.update(picker=done, outcome=outcome.get('outcome'), refusal=outcome.get('refusal'))
+                if outcome.get('refusal') == 'identity_unavailable':
+                    result['verdict'] = 'UNVERIFIED: native identity is refused on this (elevated) host'
+                    print('UNVERIFIED personal picker grant: identity_unavailable (elevated host)')
+                else:
+                    root = outcome.get('root') or {}
+                    shown = Path((root.get('display_path') or {}).get('text') or '')
+                    # The random folder name proves the grant is the disposable folder and nothing else.
+                    ours = outcome.get('outcome') == 'granted' and shown.name == folder.name
+                    check(ours and root.get('granted_via') == 'desktop_picker',
+                          'personal default: the native picker grants the typed disposable folder', outcome=outcome.get('outcome'),
+                          refusal=outcome.get('refusal'), picker=done, error=granted.get('error'), ours=ours)
+                    if root.get('root_id') and not ours:
+                        # Anything else (a person clicked, or the dialog's own default) is revoked unscanned.
+                        call('roots.revoke', {'root_id': root['root_id'], 'purge_catalog': False})
+                        result['verdict'] = 'FAILED: an unexpected folder was granted and revoked without a scan'
+                    elif ours:
+                        root_id = root['root_id']
+                        job = call('scan.start', {'root_id': root_id, 'mode': 'full'})['result']['job']
+                        status = job
+                        for _ in range(100):
+                            status = call('jobs.get', {'job_id': job['job_id']})['result']['job']
+                            if status['state'] in ('completed', 'failed', 'cancelled'):
+                                break
+                            page.wait_for_timeout(100)
+                        files = (status.get('progress') or {}).get('indexed_files')
+                        check(status['state'] == 'completed' and files == 3,
+                              'personal default: the granted folder is scanned (metadata only)', state=status['state'], indexed_files=files)
+                        page.screenshot(path=str(out / 'desktop-personal.png'))
+                        call('roots.revoke', {'root_id': root_id, 'purge_catalog': False})
+                        states = [r['grant_state'] for r in call('roots.list', {})['result']['roots']]
+                        check(states == ['revoked'], 'personal default: revocation over real IPC', states=states)
+                        result.update(verdict='VERIFIED', scan_state=status['state'], indexed_files=files)
+                check(close_window(shell.pid), 'personal default: WM_CLOSE posted')
+                shell.wait(timeout=20)
+        finally:
+            if shell.poll() is None:
+                shell.kill()
+                shell.wait(timeout=20)
+            for path in (state, folder):
+                shutil.rmtree(path, ignore_errors=True)
+    return result
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--exe', type=Path, default=ROOT / 'native/target/debug/loomward-desktop.exe')
@@ -175,8 +329,10 @@ def main() -> int:
         results['checks'].append({'pass': bool(ok), 'check': label, **detail})
         print(('PASS ' if ok else 'FAIL ') + label + (f' {detail}' if detail else ''))
 
+    state = Path(tempfile.mkdtemp(prefix='probe-state-', dir=PROFILES))
     with open(log_path, 'w', encoding='utf-8') as log:
-        shell = subprocess.Popen([str(a.exe)], env=env, stdout=log, stderr=subprocess.STDOUT)
+        shell = subprocess.Popen([str(a.exe), '--dataset', 'synthetic', '--state-dir', str(state)],
+                                 env=env, stdout=log, stderr=subprocess.STDOUT)
         try:
             with sync_playwright() as pw:
                 try:
@@ -202,8 +358,10 @@ def main() -> int:
 
                 hello = page.evaluate("""() => window.__TAURI_INTERNALS__.invoke('lw_call', new TextEncoder().encode(JSON.stringify(
                     { protocol: 'loomward/3', request_id: 'r_probe', command: 'session.hello', payload: {} })))""")
-                check(hello.get('ok') is True and hello['result']['adapter'] == 'tauri' and hello['result']['dataset_class'] == 'synthetic',
-                      'lw_call session.hello over real IPC', adapter=hello.get('result', {}).get('adapter'))
+                check(hello.get('ok') is True and hello['result']['adapter'] == 'tauri' and hello['result']['dataset_class'] == 'synthetic'
+                      and hello['result']['engine_version'].startswith('loomward-service/'),
+                      'lw_call session.hello over real IPC, answered by the engine service',
+                      engine=hello.get('result', {}).get('engine_version'))
                 refused = page.evaluate("""() => window.__TAURI_INTERNALS__.invoke('lw_call', new TextEncoder().encode(JSON.stringify(
                     { protocol: 'loomward/3', request_id: 'r_probe2', command: 'roots.request_grant', payload: { purpose: 'metadata_scan' } })))""")
                 check(refused['result']['refusal'] == 'synthetic_session_requires_lab_root',
@@ -289,6 +447,11 @@ def main() -> int:
     text = log_path.read_text(encoding='utf-8')
     check(text.count('window close: closed') > before, 'window close tears down the open streams')
     results['shell_log'] = text.splitlines()
+    shutil.rmtree(state, ignore_errors=True)
+    try:
+        results['personal'] = personal_grant(a.exe, a.out, check)
+    except Exception as e:
+        check(False, 'personal default: picker grant leg completed', error=f'{type(e).__name__}: {e}')
     try:
         results['p9'] = p9(fixture_shell(), a.out, a.p9_runs)
         med = results['p9']['median_layout_plus_paint_ms']
