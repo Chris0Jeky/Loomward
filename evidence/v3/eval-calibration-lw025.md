@@ -106,8 +106,14 @@ Personal data and real-user accuracy remain unverified; q-5 is open. Teacher exe
 behavior and the inference broker are outside this lane (LW-111). A calibrated-map acceptance gate,
 map application and model promotion are outside this lane (LW-027). Correction rate and interruption
 cost require human interaction observations. No UI/browser/native-shell gate was run for this
-offline-only change. Python was not edited, so `py -3 scripts/verify.py` was not required here; the
-existing Rust/Python parity fixtures were exercised through Cargo. No commit or push was performed.
+offline-only change. `py -3 scripts/verify.py` (required because a fixture was added) was run by the
+driver after review: PASS, 222 Python tests with 1 skip, JS boundary and parity fixtures, Rust format,
+tests and lint.
+
+Review fix (Codex P1 on #294): a teacher label carried by its own provenance record (same logical ID
+and revision as the human record) now joins the human truth for teacher accuracy; a label on the human
+record takes precedence. Pinned by `a_teacher_label_on_its_own_record_joins_the_human_truth`, which
+fails (5 observations instead of 6) when the join is removed.
 
 ## Residual risk
 

@@ -94,6 +94,24 @@ fn provenance_is_explicit_and_teacher_never_becomes_holdout_truth() {
 }
 
 #[test]
+fn a_teacher_label_on_its_own_record_joins_the_human_truth() {
+    let mut c = corpus();
+    let items = c["items"].as_array_mut().unwrap();
+    let human = items.iter_mut().find(|r| r["id"] == "eval-a").unwrap();
+    let mut teacher = human.clone();
+    human["teacher_label"] = Value::Null;
+    teacher["id"] = json!("eval-a-teacher");
+    teacher["source"] = json!("teacher");
+    teacher["teacher_label"] = Value::Null;
+    items.push(teacher);
+    let m = manifest(&c);
+    let r = evaluate(&c, &m, 100, 25).unwrap();
+    assert_eq!(r["teacher_accuracy"]["metrics"]["count"], 6);
+    assert_eq!(r["student_imitation"]["metrics"]["count"], 7);
+    assert_eq!(entry(&m, "eval-a-teacher")["holdout_truth"], false);
+}
+
+#[test]
 fn macro_metrics_match_a_worked_confusion_matrix_and_unknowns_stay_null() {
     let labels = vec!["Documents".into(), "Finance".into(), "Absent".into()];
     let pairs = vec![

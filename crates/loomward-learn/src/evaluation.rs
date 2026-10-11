@@ -470,9 +470,29 @@ pub fn evaluate(
         .copied()
         .filter(|r| r.item.source == Source::Human)
         .collect();
+    // A teacher label may arrive as its own provenance record (same logical ID and revision);
+    // a label carried on the human record itself takes precedence.
+    let separate: BTreeMap<_, _> = evaluation
+        .iter()
+        .filter(|r| r.item.source == Source::Teacher)
+        .map(|r| {
+            (
+                (r.item.logical.as_str(), r.item.revision),
+                r.item.label.as_str(),
+            )
+        })
+        .collect();
     let teacher_pairs: Vec<_> = human
         .iter()
-        .filter_map(|r| teacher(r.item).map(|t| (r.item.label.clone(), t.to_owned())))
+        .filter_map(|r| {
+            teacher(r.item)
+                .or_else(|| {
+                    separate
+                        .get(&(r.item.logical.as_str(), r.item.revision))
+                        .copied()
+                })
+                .map(|t| (r.item.label.clone(), t.to_owned()))
+        })
         .collect();
     let imitation: Vec<_> = evaluation
         .iter()
