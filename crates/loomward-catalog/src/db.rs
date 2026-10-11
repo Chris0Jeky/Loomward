@@ -326,10 +326,48 @@ pub(crate) fn open_pair(dir: &Path, dataset: &str) -> Result<Connection> {
     }
     tx.execute("UPDATE scan_run SET state='failed',error_json='{\"code\":\"restart_interrupted\"}' WHERE state='running'",[])?;
     tx.execute("DELETE FROM stage_entry", [])?;
+    bulk_tables(&tx)?;
     tx.execute("UPDATE revision SET catalog_rev=catalog_rev+1", [])?;
     tx.commit()?;
     grant_view(&conn)?;
     Ok(conn)
+}
+/// First-scan bulk build tables (#148): the live `dir`/`file` definitions and the `dir` indexes,
+/// but none of the `file` secondary indexes. Rebuilt at every open, which also discards any build
+/// an interrupted run left behind; no reader queries them.
+fn bulk_tables(conn: &Connection) -> Result<()> {
+    conn.execute_batch("DROP TABLE IF EXISTS bulk_file; DROP TABLE IF EXISTS bulk_dir")?;
+    let mut s = conn.prepare(
+        "SELECT type,name,sql FROM sqlite_schema WHERE tbl_name IN ('dir','file') AND sql IS NOT NULL AND (type='table' OR tbl_name='dir') ORDER BY type DESC,tbl_name",
+    )?;
+    let ddl = s
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (kind, name, sql) in ddl {
+        let bulk = if kind == "table" {
+            sql.replacen(
+                &format!("CREATE TABLE {name} "),
+                &format!("CREATE TABLE bulk_{name} "),
+                1,
+            )
+            .replace("REFERENCES dir(id)", "REFERENCES bulk_dir(id)")
+        } else {
+            sql.replacen(&name, &format!("bulk_{name}"), 1)
+                .replacen("ON dir(", "ON bulk_dir(", 1)
+        };
+        if !bulk.contains("bulk_") || bulk.contains("REFERENCES dir(") || bulk.contains("ON dir(") {
+            return Err(Error::Invalid("bulk table definition"));
+        }
+        conn.execute_batch(&bulk)?;
+    }
+    conn.execute_batch("CREATE INDEX bulk_file_by_dir ON bulk_file(dir_id)")?;
+    Ok(())
 }
 /// Only state.db is written; read the publication witness before recovery changes main.
 pub(crate) fn reconcile_references(conn: &mut Connection) -> Result<()> {
