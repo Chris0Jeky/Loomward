@@ -365,3 +365,14 @@ frames. Zero timeout removes waiting, not contention or WAL growth. A busy
 checkpoint leaves committed derived data in WAL for later checkpoint/restart;
 reference and precious-state durability retain their existing FULL paths.
 The combined async candidate is parked because the lab gain failed to repeat.
+
+## Landing (driver, 11 October 2026)
+
+The async staging stays parked on branch `perf/scan-async-staging-148`
+(commits `3386d6f`, `c3bfc20`, `80cf5e3`, `946b6f1`); main does not get it.
+Main gets only the EndRun checkpoint change, its regression test and the opt-in
+checkpoint profile, plus this evidence and its receipts as negative evidence for
+#148. Qualification on main is the regression test and the main gates, not a
+benchmark: an uncontended EndRun still runs the same TRUNCATE checkpoint, and
+only a checkpoint that finds a reader stops waiting before the committed
+receipt. A main-only A/B was not run.
