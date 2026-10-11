@@ -76,6 +76,10 @@ impl DesktopDialogs {
 }
 
 pub const DISCLOSURE_TITLE: &str = "Loomward: send these items to the teacher?";
+/// #219: the one-line confirmation for a folder on a FAT, exFAT or unknown filesystem.
+pub const UNVERIFIED_TITLE: &str = "Loomward: list this folder without file identity?";
+pub const UNVERIFIED_TEXT: &str =
+    "This volume cannot verify file identity; Loomward will list it read-only and never act on it";
 /// Conservative temporary MessageBox budget; personal use needs LW-111's scrolling dialog.
 pub const MAX_DISCLOSURE_CHARS: usize = 2048;
 pub const MAX_DISCLOSURE_ITEMS: usize = 4;
@@ -87,6 +91,17 @@ impl NativeDialogs for DesktopDialogs {
     /// (`synthetic_session_requires_lab_root`, docs/41 section 12).
     fn pick_folder(&self) -> Option<PathBuf> {
         self.pick_folder_with(|picker| picker.pick_folder())
+    }
+
+    /// Personal sessions only (the picker never opens in a synthetic one); Cancel is the default.
+    fn confirm_identity_unverified(&self) -> bool {
+        if self.dataset != DatasetClass::Personal {
+            return false;
+        }
+        let Ok(_active) = self.active.try_lock() else {
+            return false;
+        };
+        (self.ask)(UNVERIFIED_TITLE, UNVERIFIED_TEXT)
     }
 
     /// Refuses a summary of another dataset class without asking.
@@ -196,6 +211,36 @@ mod tests {
             synthetic.pick_folder_with(|_| panic!("synthetic picker opened")),
             None
         );
+    }
+
+    /// #219: the owner sees exactly the one-line text, and only an explicit accept grants.
+    #[test]
+    fn identity_unverified_confirmation_is_explicit_and_personal_only() {
+        for (class, accept, expected) in [
+            (DatasetClass::Personal, true, true),
+            (DatasetClass::Personal, false, false),
+            (DatasetClass::Synthetic, true, false),
+        ] {
+            let asked = Arc::new(Mutex::new(Vec::new()));
+            let seen = asked.clone();
+            let dialogs = DesktopDialogs::with_prompt(class, move |title, text| {
+                seen.lock()
+                    .unwrap()
+                    .push((title.to_owned(), text.to_owned()));
+                accept
+            });
+            assert_eq!(dialogs.confirm_identity_unverified(), expected, "{class:?}");
+            let asked = asked.lock().unwrap();
+            if class == DatasetClass::Personal {
+                assert_eq!(
+                    *asked,
+                    [(UNVERIFIED_TITLE.to_owned(), UNVERIFIED_TEXT.to_owned())]
+                );
+                assert!(!UNVERIFIED_TEXT.contains('\n'));
+            } else {
+                assert!(asked.is_empty());
+            }
+        }
     }
 
     #[test]
