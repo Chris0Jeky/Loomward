@@ -111,7 +111,7 @@
       } else if (p.kind === 'forget') {
         const { result } = await c.call('roots.forget', { root_id: p.id });
         // the result does not repeat the name it just removed
-        done = `Forgotten at ${formatTime(result.forgotten_at)}. Loomward no longer holds that root's name or catalogue. No scanned file was touched.`;
+        done = `Forgotten at ${formatTime(result.forgotten_at)}. Its name and catalogue were removed from Loomward's database and its own backup copies; traces may remain in unused disk space until it is overwritten. No scanned file was touched.`;
       } else {
         const { result } = await c.call('grants.revoke', { grant_id: p.id });
         done = `Revoked ${escapedName(p.label)} at ${formatTime(result.revoked_at)}.`;
@@ -192,7 +192,7 @@
     <h2 id="h-confirm">{#if pending.kind === 'forget'}Forget {escapedName(leaf(pending.label))}?{:else}Revoke {pending.kind === 'root' ? 'root access' : 'grant'}?{/if}</h2>
     <p><VisibleName name={pending.label} /></p>
     {#if pending.kind === 'forget'}
-      <p class="muted">Loomward removes its name and catalogue from this machine, its own backup copies included; your files are not touched. A dated record that a root was granted, revoked and forgotten stays in the grants list, without the name.</p>
+      <p class="muted">Loomward removes its name and catalogue from its database and its own backup copies, and discards the start-up backup copies (they hold every root's state); traces may remain in unused disk space until it is overwritten. Your files are not touched. A dated record that a root was granted, revoked and forgotten stays in the grants list, without the name.</p>
     {:else if pending.kind === 'root'}
       <p class="muted">Loomward stops reading this root. The files on disk are never touched.</p>
       <label class="chk"><input type="checkbox" bind:checked={purge} /> Also delete Loomward's own catalogue rows for this root (the scanned files stay as they are)</label>

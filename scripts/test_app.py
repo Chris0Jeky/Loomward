@@ -520,7 +520,7 @@ def live_personal_scan(browser, exe: Path) -> None:
         check(after['state'] == 'completed' and after.get('duplicates') is None, f"personal: a revoked root's report is redacted: {after}")
         row.get_by_role('button', name=re.compile('^Forget…')).click()
         ask = page.get_by_role('group', name='Forget owner-folder?')
-        expect(ask).to_contain_text('your files are not touched')
+        expect(ask).to_contain_text('Your files are not touched')
         ask.get_by_role('button', name='Forget', exact=True).click()
         expect(page.get_by_role('status').filter(has_text='Forgotten')).to_contain_text('No scanned file was touched')
         expect(page.locator('main section[aria-labelledby="h-roots"] table tbody')).to_contain_text('No roots granted')
