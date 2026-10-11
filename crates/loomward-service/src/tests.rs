@@ -3769,6 +3769,8 @@ fn followup_inspect_uses_the_roots_actual_grant() {
 
 #[path = "duplicates_tests.rs"]
 mod duplicates_tests;
+#[path = "forget_tests.rs"]
+mod forget_tests;
 #[path = "learning_tests.rs"]
 mod learning_tests;
 

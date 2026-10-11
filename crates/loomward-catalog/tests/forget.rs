@@ -425,3 +425,69 @@ fn a_very_deep_tree_is_deleted_without_a_recursion_limit() {
         0
     );
 }
+
+fn ref_of(f: &Fixture, grant: i64) -> i64 {
+    // The fixture records references in grant order: the n-th reference belongs to the n-th root.
+    let n = if grant == f.grant_a { 0 } else { 1 };
+    state_count(
+        f,
+        &format!("SELECT id FROM object_ref ORDER BY id LIMIT 1 OFFSET {n}"),
+    )
+}
+
+#[test]
+fn a_reference_after_a_catalogue_rebuild_is_matched_by_native_identity() {
+    let f = fixture();
+    // As after a rebuild: A's reference is unresolved and bound to no row, but its object is A's.
+    let a = ref_of(&f, f.grant_a);
+    Connection::open(f.temp.path().join("state.db"))
+        .unwrap()
+        .execute(
+            "UPDATE object_ref SET state='unresolved',retired=1,catalog_instance=NULL,row_id=NULL,born_run=NULL WHERE id=?1",
+            [a],
+        )
+        .unwrap();
+    revoke(&f, f.grant_a);
+    forget(&f, f.grant_a, None).unwrap();
+    assert_eq!(
+        state_count(&f, &format!("SELECT count(*) FROM object_ref WHERE id={a}")),
+        0
+    );
+    assert_eq!(state_count(&f, "SELECT count(*) FROM object_ref"), 1);
+    assert_eq!(state_count(&f, "SELECT count(*) FROM human_feedback"), 1);
+    assert_eq!(state_count(&f, "SELECT count(*) FROM collection_member"), 1);
+}
+
+#[test]
+fn an_object_another_root_still_observes_keeps_its_reference() {
+    let f = fixture();
+    // Root B also lists the object A's reference names (a hard link across roots).
+    let (a, b) = (ref_of(&f, f.grant_a), ref_of(&f, f.grant_b));
+    Connection::open(f.temp.path().join("catalog.db"))
+        .unwrap()
+        .execute(
+            "UPDATE file SET file_id=?1 WHERE dir_id IN (SELECT id FROM dir WHERE root_id=?2)",
+            rusqlite::params![vec![101u8; 16], f.root_b],
+        )
+        .unwrap();
+    let state = Connection::open(f.temp.path().join("state.db")).unwrap();
+    state
+        .execute(
+            "UPDATE object_ref SET file_id=?2,creation_ft=2 WHERE id=?1",
+            rusqlite::params![b, vec![101u8; 16]],
+        )
+        .unwrap();
+    state
+        .execute(
+            "UPDATE object_ref SET state='unresolved',retired=1,catalog_instance=NULL,row_id=NULL,born_run=NULL WHERE id=?1",
+            [a],
+        )
+        .unwrap();
+    drop(state);
+    revoke(&f, f.grant_a);
+    forget(&f, f.grant_a, None).unwrap();
+    // A's unresolved reference names an object B still observes: it is not "only A's".
+    assert_eq!(state_count(&f, "SELECT count(*) FROM object_ref"), 2);
+    assert_eq!(state_count(&f, "SELECT count(*) FROM human_feedback"), 2);
+    assert_eq!(state_count(&f, "SELECT count(*) FROM collection_member"), 2);
+}

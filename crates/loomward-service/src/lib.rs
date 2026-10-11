@@ -290,6 +290,7 @@ pub(crate) fn is_mutation(c: Command) -> bool {
         c,
         RootsRequestGrant
             | RootsRevoke
+            | RootsForget
             | VolumesDeclareTier
             | ScanStart
             | ScanCancel

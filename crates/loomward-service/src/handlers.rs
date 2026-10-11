@@ -51,6 +51,17 @@ fn grant_number(id: &str) -> Result<i64, ErrorBody> {
         .ok_or_else(|| fail(ErrorCode::NotFound, "unknown grant"))
 }
 
+/// The rolling `state.start-*.db` copies made on every open still hold what was forgotten. They
+/// are recreated clean at the next open; the one-off `state.before-v*.db` migration copies stay.
+fn drop_start_backups(dir: &std::path::Path) {
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with("state.start-") && name.ends_with(".db") {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 fn encode<T: Serialize>(v: &T) -> Result<Value, ErrorBody> {
     serde_json::to_value(v).map_err(|_| fail(ErrorCode::InternalError, "encode"))
 }
@@ -106,6 +117,7 @@ impl Inner {
                     Some(revs),
                 ))
             }
+            RootsForget => self.roots_forget(req),
             GrantsRevoke => {
                 let r: GrantRevokeRequest = req.decode_payload()?;
                 let (at, revs) = self.revoke(grant_number(&r.grant_id)?)?;
@@ -501,6 +513,58 @@ impl Inner {
         Ok((ts_ns(at), revs))
     }
 
+    /// Owner decision q-9: a deliberate, user-initiated purge of one revoked root from Loomward's
+    /// own state, never from disk. Active roots are refused; the writer does the work (state half
+    /// first, then the catalogue half) and keeps an anonymised grant record. A mismatch of the
+    /// optional `expected_state_rev` writes nothing.
+    fn roots_forget(&self, req: &RequestEnvelope) -> Handled {
+        let r: RootForgetRequest = req.decode_payload()?;
+        let root = self.root_row(&r.root_id)?;
+        let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
+        let (grant, grant_state) = db::roots(&self.db(), Some(root))
+            .map_err(sql_error)?
+            .first()
+            .map(|r| (r.grant, r.grant_state.clone()))
+            .ok_or_else(|| fail(ErrorCode::NotFound, "unknown root"))?;
+        if grant_state != "revoked" {
+            return Err(with_reason(
+                fail(
+                    ErrorCode::InvalidRequest,
+                    "only a revoked root can be forgotten; revoke it first",
+                ),
+                if grant_state == "active" {
+                    "root_active"
+                } else {
+                    "root_not_revoked"
+                },
+            ));
+        }
+        let at = now_ns();
+        self.catalog
+            .writer()
+            .call(WriteCommand::ForgetGrant {
+                grant_id: grant,
+                forgotten_at_ns: at,
+                expected_state_rev: req.expected_state_rev.map(|g| g.get() as i64),
+            })
+            .map_err(|e| match e {
+                loomward_catalog::Error::StaleGeneration => stale(
+                    "state.db changed since your read; re-read and ask the owner again",
+                    "state_rev_changed",
+                ),
+                e => catalog_error(e),
+            })?;
+        drop_start_backups(&self.state_dir);
+        let revs = self.revisions()?;
+        if let Ok(list) = self.root_list(None) {
+            self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));
+        }
+        Ok(out(
+            json!({"root_id": r.root_id, "forgotten_at": ts_ns(at)}),
+            Some(revs),
+        ))
+    }
+
     /// The granted folder no longer has the grant's identity (docs/41 section 7 step 1): the
     /// grant ends `identity_changed`, committed in `state.db` first as a revocation is; then the
     /// root's jobs are cancelled and its writer fenced, and `roots.changed` stops the UI from
@@ -541,10 +605,28 @@ impl Inner {
                     "granted_at": ts_ns(r.granted_at_ns),
                     "granted_via": r.granted_via,
                     "revoked_at": r.revoked_at_ns.map(ts_ns),
+                    "forgotten_at": null,
                 })
             })
             .collect();
-        Ok(out(json!({"grants": grants}), Some(revs)))
+        // What is left of a forgotten root: dates and an ID, no path, name or volume.
+        let forgotten =
+            db::forgotten_grants(&self.db(), 256 - rows.len() as i64).map_err(sql_error)?;
+        let grants = grants.into_iter().chain(forgotten.iter().map(|f| {
+            json!({
+                "grant_id": format!("gr_{}", f.grant),
+                "kind": "metadata_root",
+                "root_id": self.root_id(f.root),
+                "granted_at": ts_ns(f.granted_at_ns),
+                "granted_via": f.granted_via,
+                "revoked_at": f.revoked_at_ns.map(ts_ns),
+                "forgotten_at": ts_ns(f.forgotten_at_ns),
+            })
+        }));
+        Ok(out(
+            json!({"grants": grants.collect::<Vec<_>>()}),
+            Some(revs),
+        ))
     }
 
     /// Desktop only. Personal sessions only (a synthetic session refuses before any dialog). The
