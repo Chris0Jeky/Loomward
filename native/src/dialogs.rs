@@ -1,5 +1,5 @@
-//! [`NativeDialogs`] for the desktop: the folder picker, the backup-receipt file picker and the
-//! disclosure confirmation, owned by Rust (docs/41 sections 5.3 and 12). The webview cannot open either: the capability file
+//! [`NativeDialogs`] for the desktop: the folder picker, the backup-receipt file picker, the
+//! diagnostic-bundle save dialog and the disclosure confirmation, owned by Rust (docs/41 sections 5.3 and 12). The webview cannot open either: the capability file
 //! grants no dialog permission, no dialog plugin is registered, and the only way in is a service
 //! call that passes the [`CallContext`]. The chosen path never crosses IPC.
 
@@ -99,6 +99,28 @@ impl DesktopDialogs {
     }
 }
 
+impl DesktopDialogs {
+    /// The same parented dialog from the profile start folder, as a save dialog named for a
+    /// diagnostic bundle (docs/42 ADR-V3-24). Every session may save: the bundle is redacted and
+    /// holds no personal data. One dialog at a time. Windows' save dialog (IFileSaveDialog, whose
+    /// defaults include FOS_OVERWRITEPROMPT) asks before an existing file is replaced.
+    pub fn save_with(
+        &self,
+        title: &str,
+        default_name: &str,
+        save: impl FnOnce(rfd::FileDialog) -> Option<PathBuf>,
+    ) -> Option<PathBuf> {
+        let _active = self.active.try_lock().ok()?;
+        let picker = self.picker.lock().ok()?.clone()?;
+        save(
+            picker
+                .set_title(title)
+                .set_file_name(default_name)
+                .add_filter("Loomward diagnostic bundle", &["json"]),
+        )
+    }
+}
+
 pub const PICKER_TITLE: &str = "Loomward: choose a folder to observe (metadata only)";
 pub const GRANT_TITLE: &str = "Loomward: read this folder?";
 
@@ -154,6 +176,11 @@ impl NativeDialogs for DesktopDialogs {
     /// path goes to the service in-process and never crosses IPC.
     fn pick_file(&self, title: &str) -> Option<PathBuf> {
         self.pick_file_with(title, |picker| picker.pick_file())
+    }
+
+    /// Any session: the path goes to the service in-process and never crosses IPC.
+    fn save_file(&self, title: &str, default_name: &str) -> Option<PathBuf> {
+        self.save_with(title, default_name, |dialog| dialog.save_file())
     }
 
     /// Personal sessions only (the picker never opens in a synthetic one); Cancel is the default.
@@ -405,6 +432,39 @@ mod tests {
             synthetic.pick_file_with(title, |_| panic!("synthetic file picker opened")),
             None
         );
+    }
+
+    #[test]
+    fn save_dialog_opens_in_every_session_retitled_and_one_at_a_time() {
+        let title = "Loomward: save a synthetic bundle";
+        let name = "loomward-diagnostics-20261011-120000.json";
+        for class in [DatasetClass::Synthetic, DatasetClass::Personal] {
+            let dialogs = DesktopDialogs::new(class);
+            // No owner window yet, so no picker: nothing opens.
+            assert_eq!(
+                dialogs.save_with(title, name, |_| panic!("unparented save dialog")),
+                None
+            );
+            *dialogs.picker.lock().unwrap() = Some(rfd::FileDialog::new());
+            let chosen = PathBuf::from("C:/synthetic/bundle.json");
+            assert_eq!(
+                dialogs.save_with(title, name, |d| {
+                    let configured = format!("{d:?}");
+                    assert!(configured.contains(title), "{configured}");
+                    assert!(configured.contains(name), "{configured}");
+                    assert!(configured.contains("json"), "{configured}");
+                    Some(chosen.clone())
+                }),
+                Some(chosen)
+            );
+            assert_eq!(dialogs.save_with(title, name, |_| None), None);
+            let active = dialogs.active.lock().unwrap();
+            assert_eq!(
+                dialogs.save_with(title, name, |_| panic!("stacked dialog")),
+                None
+            );
+            drop(active);
+        }
     }
 
     #[test]
