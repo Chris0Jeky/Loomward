@@ -190,6 +190,9 @@ pub struct RootGrantRecord {
     pub granted_via: RootGrantedVia,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub revoked_at: Option<Timestamp>,
+    /// Set once the owner forgot the revoked root: only this anonymised record remains.
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub forgotten_at: Option<Timestamp>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

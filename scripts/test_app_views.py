@@ -1047,13 +1047,36 @@ def check_health(page: Page, base: str, shoot) -> None:
     expect(first_root).to_contain_text('revoked')
     expect(first_root.get_by_role('button', name='Revoke…')).to_be_disabled()
 
-    # revoke the teacher disclosure grant
+    # forget the revoked root (owner decision q-9): asked with the folder named, confirmed, then only a dated record remains
     grants = main.locator('section[aria-labelledby="h-grants"]')
+    shown = first_root.locator('th').inner_text().splitlines()[0]
+    forget = first_root.get_by_role('button', name=re.compile('^Forget…'))
+    expect(forget).to_have_count(1)
+    forget.click()
+    ask = page.get_by_role('group', name=re.compile('^Forget '))
+    expect(ask).to_be_focused()
+    expect(ask).to_contain_text('removes its name and catalogue from its database and its own backup copies, and discards the start-up backup copies')
+    expect(ask).to_contain_text('traces may remain in unused disk space until it is overwritten. Your files are not touched.')
+    ask.get_by_role('button', name='Keep it').click()
+    expect(ask).to_have_count(0)
+    expect(forget).to_be_focused()  # a cancelled question hands focus back to the button that asked it
+    forget.click()
+    ask.get_by_role('button', name='Forget', exact=True).click()
+    expect(page.get_by_role('status').filter(has_text='Forgotten')).to_contain_text('No scanned file was touched')
+    ok(shown not in roots_table.inner_text(), 'the forgotten root is gone from the roots table')
+    record = grants.locator('li', has_text='name forgotten')
+    expect(record).to_have_count(1)
+    expect(record).to_contain_text('revoked')
+    expect(record).to_contain_text('· forgotten')
+    ok(shown not in grants.inner_text(), 'the grants list keeps the record without the name')
+    expect(record.get_by_role('button')).to_have_count(0)
+
+    # revoke the teacher disclosure grant
     grants.locator('li', has_text='Teacher disclosure').get_by_role('button', name='Revoke…').click()
     page.get_by_role('group', name=re.compile('Revoke grant')).get_by_role('button', name='Revoke', exact=True).click()
     expect(grants.locator('li', has_text='Teacher disclosure')).to_contain_text('revoked')
     expect(grants.locator('li', has_text='Teacher disclosure').get_by_role('button')).to_have_count(0)
-    print('PASS Grants & health: revoke root and grant with confirmation, state reflected, all effects off')
+    print('PASS Grants & health: revoke root and grant with confirmation, forget a revoked root, state reflected, all effects off')
 
 
 ROOTS = 'main section[aria-labelledby="h-roots"]'

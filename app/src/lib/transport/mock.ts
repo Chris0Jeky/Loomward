@@ -33,7 +33,7 @@ const REVS: Partial<Record<string, 'c' | 's' | 'cs'>> = {
   'health.get': 'c', 'tree.children': 'c', 'search.query': 'c',
   'roots.list': 'cs', 'tree.slice': 'cs', 'placement.candidates': 'cs', 'placement.simulate': 'cs',
   'proposals.list': 'cs', 'proposals.get': 'cs', 'volumes.declare_tier': 'cs',
-  'roots.revoke': 'cs', 'backups.list': 's', 'backups.forget': 's', 'grants.list': 's', 'grants.revoke': 's', 'volumes.list': 's', 'tiers.model': 's',
+  'roots.revoke': 'cs', 'roots.forget': 'cs', 'backups.list': 's', 'backups.forget': 's', 'grants.list': 's', 'grants.revoke': 's', 'volumes.list': 's', 'tiers.model': 's',
 };
 
 class CommandFailure extends Error {
@@ -265,10 +265,10 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
       warnings: [{ code: 'telemetry_unavailable', message: 'The mock transport has no GPU or disk counters; those figures are unknown.', at: t0 }],
     }),
     // A third root whose path hides a right-to-left override: Grants & health must show and speak it escaped.
-    'roots.list': (): RootList => ({ roots: [...tree.rootIndexes.map((i) => rootRow(tree.nodes[i]!)), hostileRoot(), ...scan.roots()] }),
+    'roots.list': (): RootList => ({ roots: [...tree.rootIndexes.map((i) => rootRow(tree.nodes[i]!)), hostileRoot(), ...scan.roots()].filter((r) => !views.forgottenRoots.has(r.root_id)) }),
     'grants.list': (): GrantList => ({
       grants: [
-        ...rootGrants().map((g) => ({ ...g, kind: 'metadata_root' as const, granted_at: GRANTED_AT, granted_via: 'fixture' as const, revoked_at: views.revokedGrants.get(g.grant_id) ?? views.revokedRoots.get(g.root_id) ?? null })),
+        ...rootGrants().map((g) => ({ ...g, kind: 'metadata_root' as const, granted_at: GRANTED_AT, granted_via: 'fixture' as const, revoked_at: views.revokedGrants.get(g.grant_id) ?? views.revokedRoots.get(g.root_id) ?? null, forgotten_at: views.forgottenRoots.get(g.root_id) ?? null })),
         { grant_id: 'gr_mock_teacher_0', kind: 'teacher_disclosure' as const, recipient: 'codex_cli_gpt_6_1_sol', dataset_class: DATASET, fields: ['name', 'extension'], item_count: 25, payload_digest: 'sha256:' + '0'.repeat(64), created_at: GRANTED_AT, expires_at: '2026-10-01T10:00:00Z', revoked_at: views.revokedGrants.get('gr_mock_teacher_0') ?? null, used: false, confirmed_via: 'synthetic_policy' as const },
       ],
     }),
@@ -321,6 +321,9 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     const h = Object.hasOwn(handlers, req.command) ? handlers[req.command] : undefined;
     if (!h && !req.command.startsWith('collections.')) return err('capability_unavailable', `the mock transport does not implement ${req.command}`);
     try {
+      if (req.command === 'roots.forget' && req.expected_state_rev != null && String(req.expected_state_rev) !== collections.stateRev()) {
+        failWith('stale_generation', 'state.db changed since your read; re-read and ask the owner again', { reason: 'state_rev_changed' });
+      }
       const result = (req.command.startsWith('collections.') ? collections.handle(req) : h!((req.payload ?? {}) as Record<string, unknown>)) as Record<string, unknown>;
       const scope = REVS[req.command] ?? '';
       // Read after the handler, so a mutation reports the revision it committed.

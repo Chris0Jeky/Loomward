@@ -110,6 +110,8 @@ pub fn roundtrip(def: &str, v: &Value) -> Option<Result<Value, String>> {
         "RootGrantResult" => rt::<RootGrantResult>(v),
         "RootRevokeRequest" => rt::<RootRevokeRequest>(v),
         "RootRevokeResult" => rt::<RootRevokeResult>(v),
+        "RootForgetRequest" => rt::<RootForgetRequest>(v),
+        "RootForgetResult" => rt::<RootForgetResult>(v),
         "DeviceHint" => rt::<DeviceHint>(v),
         "TierInfo" => rt::<TierInfo>(v),
         "VolumeFeatures" => rt::<VolumeFeatures>(v),

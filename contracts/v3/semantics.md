@@ -67,6 +67,7 @@ re-send as stated.
 | `collections.create` | Yes | `request_id`, 10 min | `collections.list`; a duplicate name is `invalid_request` with `detail.existing_id` | Not needed: the name is the key |
 | `collections.update_members` | Yes | `request_id`, 10 min | `collections.members` | Re-send adds and removes only with `expected_state_rev` from that read; set operations are not idempotent against intervening changes |
 | `roots.revoke`, `grants.revoke` | Yes | Revocation is monotone: revoking a revoked grant returns the original `revoked_at` | `roots.list`, `grants.list` | Re-send is safe |
+| `roots.forget` | Yes | `request_id`, 10 min. A root already forgotten is `not_found` under a new `request_id`: read `grants.list`, where the anonymised record (`forgotten_at` set) shows it was forgotten | `roots.list`, `grants.list` | Re-send with the same `request_id` returns the original result. After cache expiry read first; re-send only with `expected_state_rev` from that read |
 | `roots.request_grant` | Yes, if the owner already picked a folder | `request_id`, 10 min | `roots.list` | Never reopen the picker automatically |
 | `backups.import` | Yes, if the owner already picked a receipt | `request_id`, 10 min | `backups.list` | Never reopen the dialog automatically; a repeat import of the same label replaces its record |
 | `backups.forget` | Yes | `request_id`, 10 min | `backups.list` | Re-send is safe: an absent record is `not_found` and nothing else changes |
@@ -218,7 +219,7 @@ Rules:
 - `expected_generation` is accepted only for commands anchored in exactly one root (`tree.*`, `node.inspect`,
   `stats.breakdown` on a root or node anchor). Elsewhere it is `invalid_request`. If the root's current
   generation differs, the response is `stale_generation`.
-- `expected_state_rev` is accepted only by `volumes.declare_tier` and `collections.update_members`; elsewhere it
+- `expected_state_rev` is accepted only by `volumes.declare_tier`, `collections.update_members` and `roots.forget`; elsewhere it
   is `invalid_request`. A mismatch is `stale_generation` with `detail.reason = "state_rev_changed"` and nothing
   is written (section 3, step 3).
 - A cursor binds the command, the complete filter set, the sort, the basis, the tie-breaker (row ID), the

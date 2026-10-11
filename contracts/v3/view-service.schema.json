@@ -345,6 +345,19 @@
         "purge_catalog": { "type": "boolean", "$comment": "Deletes Loomward's own catalogue rows for the root. Never touches the scanned files." }
       }
     },
+    "RootForgetRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root_id"],
+      "properties": { "root_id": { "$ref": "#/$defs/RootId" } },
+      "$comment": "Loomward's own state only: the scanned files are never touched. Applies to a revoked root; an active one is refused."
+    },
+    "RootForgetResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root_id", "forgotten_at"],
+      "properties": { "root_id": { "$ref": "#/$defs/RootId" }, "forgotten_at": { "$ref": "#/$defs/Timestamp" } }
+    },
     "RootRevokeResult": {
       "type": "object",
       "additionalProperties": false,
@@ -1449,14 +1462,15 @@
     "RootGrantRecord": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["grant_id", "kind", "root_id", "granted_at", "granted_via", "revoked_at"],
+      "required": ["grant_id", "kind", "root_id", "granted_at", "granted_via", "revoked_at", "forgotten_at"],
       "properties": {
         "grant_id": { "$ref": "#/$defs/GrantId" },
         "kind": { "const": "metadata_root" },
         "root_id": { "$ref": "#/$defs/RootId" },
         "granted_at": { "$ref": "#/$defs/Timestamp" },
         "granted_via": { "enum": ["desktop_picker", "cli_flag", "fixture"] },
-        "revoked_at": { "$ref": "#/$defs/NullableTimestamp" }
+        "revoked_at": { "$ref": "#/$defs/NullableTimestamp" },
+        "forgotten_at": { "$ref": "#/$defs/NullableTimestamp", "$comment": "Set once the owner forgot the revoked root: only this anonymised record remains." }
       }
     },
     "GrantList": {
