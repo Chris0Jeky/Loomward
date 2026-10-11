@@ -1677,8 +1677,8 @@ these invariants by paying the explicit design costs above, not by dropping them
 
 ## Changed
 
-Uncommitted on `perf/catalog-p4f-148`, frozen main/HEAD
-`98bd4be25e56a0b6feb329f312d029e2c1fd7eb0`. The driver commits. Owned changes:
+On `perf/catalog-p4f-148` (PR #332), measured against main
+`98bd4be25e56a0b6feb329f312d029e2c1fd7eb0`. Owned changes:
 `src/writer.rs`, `src/writer/publication_tests.rs`, this handoff and
 [benchmark evidence](../../evidence/v3/bench/catalog-1m.json). Prior receipts are
 preserved; the new `P4f` object contains the six observations, source/binary
@@ -1787,10 +1787,10 @@ publish during StageChunk before the final chunk.
 Source bytes were restored after every mutation, then the full gates passed.
 Raw task-owned logs/scripts/frozen executables remain ignored in `.loomward/p4f/`.
 
-Recommended commits (none made):
-
-1. `perf(catalog): charge first-scan batches by validated payload bytes`
-2. `bench(catalog): record P4f shared-host comparisons`
+Scope of the gain: the bench reserves 4 MiB per chunk through `reserve_bytes`/`send_reserved`, so
+the validated-bytes charge lets more chunks share a transaction there. The production service sink
+calls `StageChunk` synchronously and reserves exactly `validate()` bytes, so its charge already
+equals its reservation and this change does not speed up user scans as they stand (review of #332).
 
 ## NOT verified
 
