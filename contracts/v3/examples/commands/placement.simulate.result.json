@@ -39,6 +39,7 @@
     }
   ],
   "excluded_volumes": [
+    {"volume_id": "vo_revoked", "reason": "no_active_grant"},
     {
       "volume_id": "vo_lab3",
       "reason": "tier_unknown"

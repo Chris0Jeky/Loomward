@@ -175,6 +175,212 @@ fn volume_inventory_past_its_bound_is_refused_not_truncated() {
 }
 
 #[test]
+fn placement_revoked_only_volumes_stay_visible_but_are_not_targets() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (_, _, volume) = placement_fixture(&svc);
+    let WriteReply::Root {
+        grant_id: grant,
+        root_id,
+        ..
+    } = svc
+        .inner
+        .catalog
+        .writer()
+        .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_key: "revoked".into(),
+            display_name: "Revoked target".into(),
+            display_path: "Synthetic target".into(),
+            root_file_id: Some(vec![2; 16]),
+            filesystem: Some("NTFS".into()),
+            origin: "fixture".into(),
+            granted_via: "fixture".into(),
+            observed_at_ns: 0,
+        }))
+        .unwrap()
+    else {
+        panic!("root registration");
+    };
+    let conn = svc.inner.db();
+    let target: i64 = conn
+        .query_row(
+            "SELECT volume_id FROM main.root WHERE id=?1",
+            [root_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    conn.execute("UPDATE main.volume SET capabilities_json=(SELECT capabilities_json FROM main.volume WHERE volume_key='fixture') WHERE id=?1", [target]).unwrap();
+    conn.execute(
+        "UPDATE st.root_grant SET state='revoked' WHERE id=?1",
+        [grant],
+    )
+    .unwrap();
+    let target_id = svc.inner.volume_id(target);
+    conn.execute(
+        "INSERT INTO st.tier_declaration(volume_key,tier,declared_at_ns) VALUES('revoked',1,0)",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    for command in ["volumes.list", "tiers.model"] {
+        let (result, _) = ok(command, call(&svc, command, json!({})));
+        let row = result["volumes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["volume_id"] == target_id)
+            .unwrap();
+        assert_eq!(row["online"], true);
+        assert!(row["tier"]["note"]
+            .as_str()
+            .unwrap()
+            .contains("No active grant"));
+    }
+    let (plan, _) = ok(
+        "placement.simulate",
+        call(&svc, "placement.simulate", placement_request(&volume, true)),
+    );
+    assert!(plan["excluded_volumes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v["volume_id"] == target_id && v["reason"] == "no_active_grant"));
+    assert!(plan["projected_free_bytes"].get(&target_id).is_none());
+    let (detail, _) = ok(
+        "proposals.get",
+        call(
+            &svc,
+            "proposals.get",
+            json!({"proposal_id":plan["proposal_id"]}),
+        ),
+    );
+    assert_eq!(detail["plan"]["excluded_volumes"], plan["excluded_volumes"]);
+    let refused = err(call(
+        &svc,
+        "placement.simulate",
+        placement_request(&target_id, false),
+    ));
+    assert_eq!(refused.code, ErrorCode::InvalidRequest);
+    assert_eq!(refused.detail.unwrap()["reason"], "no_active_grant");
+    svc.inner
+        .db()
+        .execute(
+            "UPDATE st.root_grant SET state='active' WHERE id=?1",
+            [grant],
+        )
+        .unwrap();
+    let (model, _) = ok("tiers.model", call(&svc, "tiers.model", json!({})));
+    assert!(!model["volumes"][1]["tier"]["note"]
+        .as_str()
+        .unwrap()
+        .contains("No active grant"));
+    ok(
+        "placement.simulate",
+        call(
+            &svc,
+            "placement.simulate",
+            placement_request(&target_id, false),
+        ),
+    );
+}
+
+#[test]
+fn placement_physics_drift_alone_keeps_the_historical_scenario() {
+    let semantics = include_str!("../../../contracts/v3/semantics.md");
+    assert!(
+        semantics.contains("Free-space and capacity drift alone does not mark a scenario stale")
+    );
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (_, _, volume) = placement_fixture(&svc);
+    let (plan, _) = ok(
+        "placement.simulate",
+        call(&svc, "placement.simulate", placement_request(&volume, true)),
+    );
+    svc.inner.db().execute("UPDATE main.volume SET capabilities_json=?1", [json!({"space":{"capacity_bytes":"2097152","free_bytes":"131072","read_only":false}}).to_string()]).unwrap();
+    let (model, _) = ok("tiers.model", call(&svc, "tiers.model", json!({})));
+    assert_eq!(model["volumes"][0]["free_bytes"], "131072");
+    assert_eq!(model["volumes"][0]["capacity_bytes"], "2097152");
+    let (detail, _) = ok(
+        "proposals.get",
+        call(
+            &svc,
+            "proposals.get",
+            json!({"proposal_id":plan["proposal_id"]}),
+        ),
+    );
+    assert_eq!(detail["summary"]["status"], "simulation_only");
+    assert_eq!(detail["plan"], Value::Object(plan.clone()));
+    svc.inner
+        .db()
+        .execute(
+            "UPDATE main.revision SET catalog_rev=catalog_rev+1 WHERE id=1",
+            [],
+        )
+        .unwrap();
+    let (detail, _) = ok(
+        "proposals.get",
+        call(
+            &svc,
+            "proposals.get",
+            json!({"proposal_id":plan["proposal_id"]}),
+        ),
+    );
+    assert_eq!(detail["summary"]["status"], "stale");
+}
+
+#[test]
+fn placement_save_deduplicates_only_placement_kind() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (_, _, volume) = placement_fixture(&svc);
+    let (plan, _) = ok(
+        "placement.simulate",
+        call(&svc, "placement.simulate", placement_request(&volume, true)),
+    );
+    {
+        // Simulate a migrated/corrupted row of another kind; today's schema only permits placement.
+        let conn = svc.inner.db();
+        conn.pragma_update(None, "ignore_check_constraints", true)
+            .unwrap();
+        conn.execute("UPDATE st.proposal SET kind='other_simulation'", [])
+            .unwrap();
+        conn.pragma_update(None, "ignore_check_constraints", false)
+            .unwrap();
+    }
+    let (next, _) = ok(
+        "placement.simulate",
+        call(&svc, "placement.simulate", placement_request(&volume, true)),
+    );
+    assert_ne!(next["proposal_id"], plan["proposal_id"]);
+    let (again, _) = ok(
+        "placement.simulate",
+        call(&svc, "placement.simulate", placement_request(&volume, true)),
+    );
+    assert_eq!(again["proposal_id"], next["proposal_id"]);
+}
+
+#[cfg(windows)]
+#[test]
+fn placement_lab_space_timestamp_is_fresh() {
+    let Some(lab) = lab() else {
+        return;
+    };
+    lab.svc
+        .inner
+        .db()
+        .execute("UPDATE main.volume SET observed_at_ns=0", [])
+        .unwrap();
+    let before = crate::now_ns();
+    let (volumes, _) = ok("volumes.list", call(&lab.svc, "volumes.list", json!({})));
+    let after = crate::now_ns();
+    assert!(!volumes["volumes"][0]["free_bytes"].is_null());
+    let observed: Timestamp =
+        serde_json::from_value(volumes["volumes"][0]["observed_at"].clone()).unwrap();
+    assert!(observed >= crate::ts_ns(before) && observed <= crate::ts_ns(after));
+}
+
+#[test]
 fn placement_wire_preserves_unknowns_and_exclusions() {
     let tmp = temp_root();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
