@@ -43,7 +43,7 @@ The owner chose GPT-6.1 Sol (medium) through the local Codex CLI as the learning
 cloud provider and so a tier re-review trigger. The confinement spike (#116) showed the CLI cannot be
 fully confined by flags (one collaboration tool stayed callable). **Owner, in chat 2026-10-10:
 authorise the OS-enforced sandbox work (LW-111, lane L15b).** Until its enforcement canaries pass,
-the teacher sees synthetic metadata only. Still open for the owner, after the canaries pass: may real
+the teacher sees synthetic metadata only. Originally asked (answered below on 2026-10-11, when the repo also moved to T2): may real
 names and paths leave the machine, in what scope, and does the tier stay T1 or gain `sensitive_data`?
 
 **Owner, in chat 2026-10-11 (interactive choice), selected: "Scoped: names only, per-request preview"** — after the broker passes
@@ -121,7 +121,7 @@ broker is already integrated or qualified.
 
 Personal scans are open. Revoking a personal root stops access but keeps its display path and catalogue rows in
 Loomward's local state (Loomward#288). Nothing leaves the machine. Posed through the agent-hq inbox on 2026-10-11;
-if unanswered by 2026-10-18, option (a) applies as a recorded default (reversible), not as your answer.
+the expiry default (option (a) on 2026-10-18) no longer applies: the owner answered (a) in chat on 2026-10-11 (below).
 
 - [x] **loomward-revoked-root-retention: When you revoke a personal scan root in Loomward, should its name and catalogue stay on your machine until you choose to forget it, or be purged automatically?**
   - (a) Keep the audit trail; add a 'Forget this root' action (recommended): Revoke keeps today's behaviour. Agents add an explicit, user-initiated 'Forget this revoked root' command and button that purges the display path and catalogue rows and keeps an anonymised audit entry (that a root was granted, revoked and forgotten, with dates, no name).
