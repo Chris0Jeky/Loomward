@@ -561,8 +561,10 @@ def check_tiers(page: Page, base: str, shoot) -> None:
     model_row = rows(page).filter(has_text='synthetic-model-store').first
     model_row.get_by_role('combobox').select_option('0.1')
     model_row.get_by_role('checkbox').check()
+    # 19% of the generic 2 TiB source (389 GiB) is within 184 GiB free plus 212 GiB relief: the target-met path
+    page.get_by_label('Free space wanted on the source').fill('19')
     page.get_by_role('button', name='Simulate', exact=True).click()
-    expect(page.get_by_text('Still 13.3 GiB short')).to_be_visible()  # 20% of the 2 TiB source (409.6 GiB) less 184 GiB free less 212 GiB relief; formatBytes shows one decimal above 10 GiB
+    expect(page.get_by_text('Target met in the simulation')).to_be_visible()
     expect(main.get_by_text('consent required').first).to_be_visible()
     expect(main.get_by_text('not executable').first).to_be_visible()
     expect(main.get_by_text('assumed 0.1').first).to_be_visible()
