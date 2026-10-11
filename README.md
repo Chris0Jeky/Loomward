@@ -276,9 +276,21 @@ in [docs/41](docs/41-v03-architecture.md) section 15 are hypotheses, not results
 - **Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md). Fixtures here
   must be synthetic. Open owner decisions: [HUMAN_TODO.md](HUMAN_TODO.md).
 
-## Licence and stance
+## Licence
 
-MIT ([LICENSE](LICENSE)). No theatre and no false claims: no release, package or "done" status is declared to show progress;
+GNU Affero General Public License v3.0 only (`AGPL-3.0-only`; [LICENSE](LICENSE)).
+Copyright (C) 2026 Cristian Tcaci.
+
+- **Earlier versions.** Commits and releases published before the relicensing change (2026-10-11) were
+  published under the MIT licence and stay available under it. This and later versions are AGPL-3.0-only.
+- **Commercial licences.** Loomward is dual licensed: besides the AGPL, the maintainer can grant
+  proprietary licences. To ask for one, contact the maintainer through GitHub ([@Chris0Jeky](https://github.com/Chris0Jeky)).
+- **Contributions** are accepted under the [Contributor Licence Agreement](CLA.md); you keep your copyright.
+- **The name.** "Loomward" is an unregistered project name; see [TRADEMARKS.md](TRADEMARKS.md).
+
+## Stance
+
+No theatre and no false claims: no release, package or "done" status is declared to show progress;
 unknown, partial and unverified stay visible; failed experiments are kept. Loomward does not claim
 native compilation of its desktop shell, backup verification, memory optimisation, learned heat,
 live disk balancing or safe deletion, because none of them has passed its own gate.
