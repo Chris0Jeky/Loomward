@@ -41,6 +41,7 @@ ROOT = Path(__file__).resolve().parents[2]
 HEARTBEAT_S = 15
 PROFILES = ROOT / '.loomward/webview2-profiles'
 PICKER_TITLE = 'Loomward: choose a folder to observe (metadata only)'
+GRANT_TITLE = 'Loomward: read this folder?'
 
 OPEN_CHANNEL = """async () => {
   const t = window.__TAURI_INTERNALS__;
@@ -158,9 +159,33 @@ def close_window(pid: int) -> bool:
     return bool(found)
 
 
-def drive_picker(folder: Path, done: list, timeout_s: float = 30) -> None:
+def close_dialogs(pid: int) -> list:
+    """Posts WM_CLOSE (Cancel) to every dialog the shell process still shows: a picker or a
+    confirmation that appeared after the driver gave up. Returns their titles."""
+    user32 = ctypes.WinDLL('user32', use_last_error=True)
+    closed: list = []
+    proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def each(hwnd, _):
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        cls = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(hwnd, cls, 64)
+        if owner.value == pid and cls.value == '#32770':
+            title = ctypes.create_unicode_buffer(128)
+            user32.GetWindowTextW(hwnd, title, 128)
+            user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE: Cancel on both dialogs
+            closed.append(title.value)
+        return True
+
+    user32.EnumWindows(proc(each), 0)
+    return closed
+
+
+def drive_picker(folder: Path, done: list, accept: bool, stop: threading.Event, timeout_s: float = 30) -> None:
     """Types `folder` into the native folder picker's Folder box and presses Select Folder, with Win32
-    messages to the real dialog. Appends what it did to `done`."""
+    messages to the real dialog, then answers the confirmation box: OK only when `accept` and the box
+    names `folder`, else Cancel. Appends what it did to `done`. Does nothing once `stop` is set."""
     user32 = ctypes.WinDLL('user32', use_last_error=True)
     user32.FindWindowW.restype = wintypes.HWND
     user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
@@ -175,7 +200,8 @@ def drive_picker(folder: Path, done: list, timeout_s: float = 30) -> None:
     user32.GetParent.argtypes = [wintypes.HWND]
     user32.GetDlgCtrlID.argtypes = [wintypes.HWND]
     user32.IsWindowVisible.argtypes = [wintypes.HWND]
-    wm_settext, bm_click = 0x000C, 0x00F5
+    user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+    wm_settext, wm_gettext, bm_click = 0x000C, 0x000D, 0x00F5
 
     def cls(hwnd) -> str:
         buf = ctypes.create_unicode_buffer(64)
@@ -188,8 +214,37 @@ def drive_picker(folder: Path, done: list, timeout_s: float = 30) -> None:
         user32.EnumChildWindows(dialog, each(lambda h, _: found.append(h) or True), 0)
         return found
 
+    def confirm() -> None:
+        end = time.monotonic() + 10
+        while time.monotonic() < end and not stop.is_set():
+            box = user32.FindWindowW('#32770', GRANT_TITLE)
+            if not box:
+                time.sleep(0.1)
+                continue
+            time.sleep(0.3)
+            kids = children(box)
+            buf = ctypes.create_unicode_buffer(1024)
+            for h in kids:
+                if cls(h) == 'Static' and user32.GetDlgCtrlID(h) == 0xFFFF:
+                    user32.SendMessageW(h, wm_gettext, 1024, ctypes.cast(buf, wintypes.LPCWSTR))
+            text = buf.value
+            button = {user32.GetDlgCtrlID(h): h for h in kids if cls(h) == 'Button'}
+            # BS_DEFPUSHBUTTON on Cancel (IDCANCEL 2): a stray Enter declines.
+            default_cancel = 2 in button and user32.GetWindowLongW(button[2], -16) & 0x0F == 1
+            names = str(folder) in text
+            done.append(f'confirmation shown: names the folder {names}, Cancel is the default {default_cancel}')
+            choice = 1 if accept and names else 2
+            if choice in button:
+                user32.PostMessageW(button[choice], bm_click, 0, 0)
+            else:
+                user32.PostMessageW(box, 0x0010, 0, 0)  # WM_CLOSE: Cancel
+                choice = 2
+            done.append('confirmation accepted' if choice == 1 else 'confirmation declined')
+            return
+        done.append('the confirmation never appeared')
+
     end = time.monotonic() + timeout_s
-    while time.monotonic() < end:
+    while time.monotonic() < end and not stop.is_set():
         dialog = user32.FindWindowW('#32770', PICKER_TITLE)
         if not dialog:
             time.sleep(0.1)
@@ -218,9 +273,10 @@ def drive_picker(folder: Path, done: list, timeout_s: float = 30) -> None:
         done.append('folder typed, Select Folder pressed')
         # A typed path can navigate into the folder first; a second press selects the current folder.
         time.sleep(1.5)
-        if user32.IsWindow(dialog):
+        if user32.IsWindow(dialog) and not user32.FindWindowW('#32770', GRANT_TITLE):
             user32.PostMessageW(ok, bm_click, 0, 0)
             done.append('Select Folder pressed again')
+        confirm()
         return
     done.append('the picker never appeared')
 
@@ -247,6 +303,7 @@ def personal_grant(exe: Path, out: Path, check) -> dict:
     env = dict(os.environ, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS='--remote-debugging-port=0',
                WEBVIEW2_USER_DATA_FOLDER=str(profile.resolve()))
     result: dict = {}
+    stop = threading.Event()
     with open(out / 'webview2-personal-shell.log', 'w', encoding='utf-8') as log:
         shell = subprocess.Popen([str(exe), '--state-dir', str(state)], env=env, stdout=log, stderr=subprocess.STDOUT)
         try:
@@ -262,8 +319,21 @@ def personal_grant(exe: Path, out: Path, check) -> dict:
                 check(hello['dataset_class'] == 'personal' and hello['features']['grant_picker'] is True
                       and hello['engine_version'].startswith('loomward-service/'),
                       'personal default: the engine service offers the native picker', engine=hello['engine_version'])
+                # Declined at the confirmation: no grant, and the outcome is cancelled_by_user.
+                declined: list = []
+                driver = threading.Thread(target=drive_picker, args=(folder.resolve(), declined, False, stop))
+                driver.start()
+                cancelled = call('roots.request_grant', {'purpose': 'metadata_scan'})
+                driver.join(timeout=40)
+                roots = call('roots.list', {})['result']['roots']
+                result.update(declined=declined)
+                check((cancelled.get('result') or {}).get('outcome') == 'cancelled_by_user' and roots == []
+                      and 'confirmation shown: names the folder True, Cancel is the default True' in declined,
+                      'personal default: declining the native confirmation grants nothing (Cancel is the default)',
+                      outcome=(cancelled.get('result') or {}).get('outcome'), roots=len(roots), picker=declined)
+                page.wait_for_timeout(2500)  # the service's 2 s picker cooldown
                 done: list = []
-                driver = threading.Thread(target=drive_picker, args=(folder.resolve(), done))
+                driver = threading.Thread(target=drive_picker, args=(folder.resolve(), done, True, stop))
                 driver.start()
                 granted = call('roots.request_grant', {'purpose': 'metadata_scan'})
                 driver.join(timeout=40)
@@ -304,6 +374,13 @@ def personal_grant(exe: Path, out: Path, check) -> dict:
                 check(close_window(shell.pid), 'personal default: WM_CLOSE posted')
                 shell.wait(timeout=20)
         finally:
+            # A picker or confirmation that appeared after the driver's window is cancelled, never left open.
+            stop.set()
+            if shell.poll() is None:
+                late = close_dialogs(shell.pid)
+                if late:
+                    result['late_dialogs_closed'] = late
+                    time.sleep(1)
             if shell.poll() is None:
                 shell.kill()
                 shell.wait(timeout=20)
