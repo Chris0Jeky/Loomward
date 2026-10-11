@@ -28,7 +28,7 @@ Each level has a different completion claim. A passing Python suite does not adv
 
 ## Open-source boundaries
 
-Loomward's original code and documents were MIT. Decided 2026-10-11: AGPL-3.0-only with dual licensing (paid proprietary licences on request) and a CLA; earlier versions stay MIT. Integrate with other applications through their documented interfaces and respect their licences. The inspected current Taskdeck source is proprietary; it is not a code dependency to copy into this project.
+Loomward's original code and documents were MIT. Decided 2026-10-11/12, effective with #396 (2026-10-12): AGPL-3.0-only with dual licensing (paid proprietary licences on request) and a CLA; earlier versions stay MIT. Integrate with other applications through their documented interfaces and respect their licences. The inspected current Taskdeck source is proprietary; it is not a code dependency to copy into this project.
 
 Keep provider adapters small, individually testable and optional. Publish a compatibility matrix and redacted fixtures rather than bundling credentials or private estate paths. An adapter should not force an account, network service or telemetry pipeline on users who only want local file inspection.
 

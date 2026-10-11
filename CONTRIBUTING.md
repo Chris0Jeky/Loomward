@@ -4,7 +4,7 @@ Read `AGENTS.md` and the implementation status first. Start with one backlog iss
 
 The reference uses Python 3.11+ with no mandatory dependencies; optional process telemetry uses psutil. Run `python scripts/verify.py`. UI browser tests require Playwright and a Chromium executable. Native compilation is pending; help establish the Rust/Windows baseline without lowering the safety boundary.
 
-Use synthetic data in committed tests and screenshots. Do not include personal paths, credentials, model weights, database files, native build artifacts or third-party fonts. Source is AGPL-3.0-only (versions before 2026-10-11 were MIT); independently review the licences of any new dependencies/assets. Report exact native builds and tests rather than assuming portability from Linux.
+Use synthetic data in committed tests and screenshots. Do not include personal paths, credentials, model weights, database files, native build artifacts or third-party fonts. Source is AGPL-3.0-only (versions before #396, merged 2026-10-12, were MIT); independently review the licences of any new dependencies/assets. Report exact native builds and tests rather than assuming portability from Linux.
 
 ## Licence and the CLA
 

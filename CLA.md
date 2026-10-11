@@ -6,7 +6,7 @@
 > project (<https://github.com/contributor-assistant/github-action>) and similar CLA bots. The main
 > change is clause 2, which also lets the Maintainer relicense contributions under any terms.
 >
-> This is a standard template, not legal advice; the owner reviews it before the first outside contribution.
+<!-- Maintainer note: a standard template, not legal advice; the owner reads it before the first outside contribution (HUMAN_TODO q-22). -->
 
 "Maintainer" means Cristian Tcaci (GitHub: @Chris0Jeky), the copyright holder of Loomward and the
 person who receives your Contribution under this agreement. "You" means the individual who signs
@@ -22,19 +22,19 @@ You accept and agree to the following terms for Your present and future Contribu
    any other intellectual property rights You hold in them. This agreement is a licence, not an
    assignment.
 
-2. **Copyright licence.** You grant the Maintainer, and recipients of software distributed by the
-   Maintainer, a perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable copyright
-   licence to reproduce, prepare derivative works of, publicly display, publicly perform,
-   sublicense and distribute Your Contributions and such derivative works, **and to relicense Your
-   Contributions, in whole or in part, under any terms the Maintainer chooses, including
-   proprietary and commercial terms**. Contributions in the public repository are offered under
-   AGPL-3.0-only unless the Maintainer decides otherwise.
+2. **Copyright licence.** You grant the Maintainer, and the Maintainer's successors and assigns, a
+   perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable copyright licence to
+   reproduce, prepare derivative works of, publicly display, publicly perform, sublicense and
+   distribute Your Contributions and such derivative works, **and to relicense Your Contributions, in
+   whole or in part, under any terms the Maintainer chooses, including proprietary and commercial
+   terms**. Everyone else receives Your Contributions under the licence the Maintainer distributes
+   them under: AGPL-3.0-only in the public repository unless the Maintainer decides otherwise.
 
-3. **Patent licence.** You grant the Maintainer, and recipients of software distributed by the
-   Maintainer or by anyone the Maintainer licenses, directly or through further tiers, a perpetual,
-   worldwide, non-exclusive, no-charge, royalty-free, irrevocable (except as stated in this clause)
-   patent licence, which the Maintainer may sublicense together with the licence in clause 2, to make, have made, use, offer to sell, sell, import and
-   otherwise transfer the Contribution, where such licence applies only to those patent claims
+3. **Patent licence.** You grant the Maintainer, the Maintainer's successors and assigns, and
+   recipients of software distributed by the Maintainer or by anyone the Maintainer licenses,
+   directly or through further tiers, a perpetual, worldwide, non-exclusive, no-charge, royalty-free,
+   irrevocable (except as stated in this clause) patent licence to make, have made, use, offer to
+   sell, sell, import and otherwise transfer the Contribution, where such licence applies only to those patent claims
    licensable by You that are necessarily infringed by Your Contribution alone or by combination of
    Your Contribution with the work to which it was submitted. If any entity brings patent litigation
    against You or any other entity alleging that Your Contribution, or the work to which You
@@ -51,7 +51,9 @@ You accept and agree to the following terms for Your present and future Contribu
    You include third-party material, You will say so when submitting, identify its source and
    licence, and mark it as such. You represent that Your Contribution submissions include complete
    details of any third-party licence or other restriction of which You are aware and which are
-   associated with any part of Your Contributions.
+   associated with any part of Your Contributions. Do not submit third-party material whose licence
+   would stop the Maintainer relicensing it under clause 2 (for example someone else's GPL or AGPL
+   code) unless the Maintainer agrees in writing first.
 
 6. **No support or warranty.** You are not expected to provide support for Your Contributions
    except to the extent You choose. Unless required by applicable law or agreed in writing, You
@@ -67,3 +69,12 @@ You accept and agree to the following terms for Your present and future Contribu
    covers all Your Contributions to Loomward, past and future, until the Maintainer publishes a new
    version of this agreement and asks You to sign it again for later Contributions. Maintainer and
    bot accounts do not need to sign.
+
+9. **No obligation.** The Maintainer is not obliged to accept, merge or use any Contribution.
+
+10. **Moral rights.** To the extent the law allows, You waive, or agree not to assert, any moral
+    rights in Your Contributions against the Maintainer, the Maintainer's successors and assigns, and
+    their licensees.
+
+11. **Successors.** The Maintainer may assign this agreement and the rights granted under it to a
+    successor, such as an organisation the Maintainer forms to steward Loomward.

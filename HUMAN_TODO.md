@@ -199,10 +199,8 @@ Selected: "Unsigned preview pre-release": a GitHub pre-release of the Tauri desk
 
 Selected: "Scrub to generic labels". Media and core counts become generic labels; the mock volume capacities become
 generic round numbers. Git history keeps the old text.
-- [x] Scrub merged: #365 (docs and mocks) and #394 (raw receipts and old Python fixtures; PNG screenshots under `evidence/v3/` not inspected). #365 scrubbed the docs and mocks. Still open: the raw receipts under `evidence/v3/` (for example
-  `enumeration-spike.json`, `real-folder-stress.json`) keep processor counts and media models. The old Python reference
-  fixtures (`fixtures/demo.json`, `fixtures/tier-scenario.json`, `scripts/make_demo.py`, `ui/demo-data.js`, `preview.html`)
-  still say 'Project SSD' and 'Archive HDD'.
+- [x] Scrub merged: #365 (docs and mocks), #394 (raw receipts and old Python fixtures) and #396 (one UX example).
+  Not inspected: the PNG screenshots under `evidence/v3/`.
 
 ### q-19 — Dependabot alert #182 (glib, Linux-only) — OWNER ACTION: dismiss as not reachable
 

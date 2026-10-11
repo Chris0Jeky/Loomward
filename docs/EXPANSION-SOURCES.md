@@ -130,4 +130,4 @@ Base message and notification semantics; MCP revision-specific rules remain auth
 
 ## Connected repository context
 
-Only the three named README files were reviewed through the GitHub connector. Their recorded blob hashes are in `evidence/v2/estate-review.json`. This is documentation-level context, not a live deployment inventory or proof of API compatibility. Taskdeck is described by its current README as proprietary; the proposed bridge must not copy its implementation into this MIT project.
+Only the three named README files were reviewed through the GitHub connector. Their recorded blob hashes are in `evidence/v2/estate-review.json`. This is documentation-level context, not a live deployment inventory or proof of API compatibility. Taskdeck is described by its current README as proprietary; the proposed bridge must not copy its implementation into this project (MIT then; AGPL-3.0-only since #396).

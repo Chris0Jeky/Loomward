@@ -18,7 +18,7 @@
 | Effective and efficient | Proposed budgets/bench methodology; bounded reference; own-worker and content-read budgets | Real controlled Windows comparison and field evidence LW-032,052,056,062 |
 | Research through implementation and setup | 32-source research register, 12 ADRs, source, tests, scripts, UI and fixture package | Local environment prerequisites and recorded Windows checks |
 | Issue writing, structure and local LLM handoff | 64 individually specified, dependency-linked local issues; launch prompt, checkpoint and packs | Optional explicit remote publishing after review |
-| Open source and a suitable name | Loomward provisional name, original MIT code, contribution/security/release docs | Public namespace/trademark/license governance LW-063 |
+| Open source and a suitable name | Loomward provisional name, original code (MIT until #396, AGPL-3.0-only since 2026-10-12), contribution/security/release docs | Public namespace/trademark/license governance LW-063 |
 | Do not lose ideas or work | Original brief, numbered docs, issue manifest, evidence, checksums and source archive | Continue checkpointing and preserving failed experiments in local Git |
 
 Nothing here requires replacing Explorer, PowerShell or Windows memory management immediately. The product route starts with an independent observation/recommendation workbench, then integrates specific native capabilities under tested boundaries. A polished UI is not evidence that every capability behind its roadmap is built.
