@@ -126,6 +126,21 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    #[cfg(windows)]
+    #[test]
+    fn linkcount_one_refuses_forced_elevation_before_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let entry = Entry {
+            path: temp.path().join("missing-synthetic-file"),
+            expected: None,
+            attributes: 0,
+        };
+        let _reset = crate::enumerate::force_elevation_for_test();
+        assert!(
+            matches!(one(&entry), Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied && error.to_string() == "non-elevated access required")
+        );
+    }
+
     #[test]
     fn linkcount_skips_placeholders_and_stops_at_deadline_and_file_cap() {
         let entry = Entry {

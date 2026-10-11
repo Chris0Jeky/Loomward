@@ -2,6 +2,48 @@
 use super::*;
 use std::sync::{atomic::AtomicUsize, Mutex};
 
+#[cfg(windows)]
+#[test]
+fn native_scan_completes_with_different_case_root_alias() {
+    use loomward_windows::enumerate::NativeSource;
+    if skip_elevated() {
+        return;
+    }
+    let temp = canonical_tempdir();
+    let path = temp.path().join("synthetic-case-root");
+    std::fs::create_dir_all(path.join("child")).unwrap();
+    std::fs::write(path.join("child/synthetic-file"), b"synthetic").unwrap();
+    let alias = temp.path().join("SYNTHETIC-CASE-ROOT");
+    for strategy in [Strategy::Extended, Strategy::Both, Strategy::Find] {
+        let source = NativeSource::with_strategy(strategy);
+        let (_, id) = source.open_root(&path).unwrap();
+        let root = GrantedRoot::new(
+            RootId::new("rt_case_alias").unwrap(),
+            alias.clone(),
+            DatasetClass::Synthetic,
+            id,
+        );
+        let report = run_scan(
+            &source,
+            &root,
+            1,
+            Arc::new(MemorySink::default()),
+            Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+            Arc::new(AtomicBool::new(false)),
+            ScanOptions {
+                workers: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(report.complete, "{strategy:?}: {report:?}");
+        assert_eq!(
+            (report.failed, report.totals.dirs, report.totals.files),
+            (0, 1, 1)
+        );
+    }
+}
+
 enum Notice<'a> {
     Message(ScanMessage),
     Prepare(&'a mut OpenedIdentity),
@@ -829,7 +871,12 @@ fn reopen_failure_or_changed_identity_keeps_the_run_partial() {
         }
         fn list(&self, dir: &u64, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
             self.1.fetch_add(1, Ordering::Relaxed);
-            Tree.list(dir, sink)
+            let outcome = Tree.list(dir, sink);
+            if *dir == 2 && self.0 >= 3 {
+                ListOutcome::Incomplete(IncompleteReason::Io(5))
+            } else {
+                outcome
+            }
         }
         fn can_reopen(&self, _: &Self::Dir, _: OpenedIdentity) -> bool {
             true
@@ -840,16 +887,23 @@ fn reopen_failure_or_changed_identity_keeps_the_run_partial() {
             _: OpenedIdentity,
             expected: OpenedIdentity,
         ) -> Result<(u64, OpenedIdentity), SourceError> {
-            if self.0 == 2 {
+            if self.0 == 2 || self.0 == 3 {
                 return Err(SourceError::AccessDenied);
             }
             let Some(FileIdObs::Id64(id)) = expected.id else {
                 unreachable!()
             };
-            Ok((id, if self.0 == 1 { identity(99) } else { expected }))
+            Ok((
+                id,
+                if self.0 == 1 || self.0 == 4 {
+                    identity(99)
+                } else {
+                    expected
+                },
+            ))
         }
     }
-    for mode in [0, 1, 2] {
+    for mode in [0, 1, 2, 3, 4] {
         let source = Source(mode, AtomicUsize::new(0));
         let sink = Arc::new(DirtyWriter {
             sink: MemorySink::default(),
@@ -860,7 +914,7 @@ fn reopen_failure_or_changed_identity_keeps_the_run_partial() {
         let report = scan(&source, sink.clone());
         assert_eq!(report.complete, mode == 0);
         assert_eq!(sink.sink.sweep_allowed(root().root_id()), mode == 0);
-        assert_eq!(report.failed, u64::from(mode != 0));
+        assert_eq!(report.failed, u64::from(mode != 0) + u64::from(mode >= 3));
         assert_eq!(
             report.totals.files, 1,
             "unknown remains the prior observation"

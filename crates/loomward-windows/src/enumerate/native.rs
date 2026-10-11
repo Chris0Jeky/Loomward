@@ -541,6 +541,16 @@ pub fn running_elevated() -> bool {
 thread_local! {
     static TEST_ELEVATED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
+#[cfg(test)]
+pub(crate) fn force_elevation_for_test() -> impl Drop {
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_ELEVATED.set(self.0);
+        }
+    }
+    Reset(TEST_ELEVATED.replace(true))
+}
 pub(crate) fn non_elevated() -> Result<(), SourceError> {
     #[cfg(test)]
     if TEST_ELEVATED.get() {
@@ -828,6 +838,7 @@ mod containment_tests {
         assert!(n > 0 && n < short.len());
         short.truncate(n);
         for alias in [
+            path.with_file_name("SYNTHETIC-LONG-ROOT-NAME"),
             path,
             canonical,
             std::path::PathBuf::from(std::ffi::OsString::from_wide(&short)),
@@ -1400,14 +1411,7 @@ mod cancellation_tests {
                 .unwrap(),
             )
         };
-        struct Reset;
-        impl Drop for Reset {
-            fn drop(&mut self) {
-                TEST_ELEVATED.set(false);
-            }
-        }
-        TEST_ELEVATED.set(true);
-        let _reset = Reset;
+        let _reset = force_elevation_for_test();
         for time in [Duration::from_secs(1), Duration::ZERO] {
             assert_eq!(
                 crate::duplicate_reader::inspect(
