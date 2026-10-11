@@ -2,7 +2,8 @@
 
 Create the disposable fixture with the service's scan_throughput_fixture example first.
 The seed state is copied before each synthetic run, giving both binaries the same lab identity
-and an empty catalogue. Personal measurements require an explicit root and a prior owner log.
+and an empty catalogue. Personal measurements require an explicit root, --roots-log (the root is
+appended and flushed before the service starts) and an anonymised --label for the receipt.
 """
 import argparse
 import hashlib
@@ -25,7 +26,19 @@ def main():
     p.add_argument('--state', type=Path, required=True)
     p.add_argument('--receipt', type=Path, required=True)
     p.add_argument('--source', required=True, help='Git base or measured source digest')
+    p.add_argument('--roots-log', type=Path, help='personal only: the gitignored .loomward/scan-roots.log; the root is appended before scanning')
+    p.add_argument('--label', help='personal only: the anonymised label written to the receipt, e.g. "real-B (owner-authorised, agent-picked)"')
     a = p.parse_args()
+    if a.dataset == 'personal':
+        # Owner grant q-4: every agent-picked real root is recorded before it is scanned.
+        if a.roots_log is None or a.label is None:
+            p.error('--dataset personal requires --roots-log and --label')
+        if a.roots_log.parent.name != '.loomward':
+            p.error('--roots-log must be a file in a gitignored .loomward/ directory')
+        with a.roots_log.open('a', encoding='utf-8') as roots_log:
+            roots_log.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')}\tbench_scan_throughput\t{a.root.resolve()}\n")
+            roots_log.flush()
+            os.fsync(roots_log.fileno())
     # Only synthetic roots get an independent walk; a real root gets one product scan per variant.
     files = dirs = logical = 0
     if a.dataset == 'synthetic':
@@ -107,7 +120,7 @@ def main():
                 data[key.replace('_bytes', '_gib')] = None if value is None else round(int(value) / 2**30, 1)
     receipt = {'variant': a.variant, 'source': a.source, 'binary_sha256': hashlib.sha256(a.exe.read_bytes()).hexdigest(),
                'platform': 'Windows', 'host': 'shared host', 'cache': 'warm/uncontrolled',
-               'root': 'synthetic service S tier' if a.dataset == 'synthetic' else 'real-B (owner-authorised, agent-picked)',
+               'root': 'synthetic service S tier' if a.dataset == 'synthetic' else a.label,
                'files': files, 'directories': dirs, 'wall_seconds': wall, 'progress': progress,
                'phases': phases, 'catalogue_totals': totals,
                'oracle': 'independent disk walk + service progress + committed root totals; exact' if a.dataset == 'synthetic' else 'service progress matches committed tree root totals; no extra real-root traversal',
