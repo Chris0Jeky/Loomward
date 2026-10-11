@@ -49,7 +49,7 @@ Index 0 preserves the initial diagnostic scan; it is excluded from the final med
 | 3 | 33.373 | 4.260 | 3,026 | 23,706 |
 | Median | 32.947 | 4.260 | 3,065 | 23,706 |
 
-Median improvement **7.73×**; elapsed ranges 32.293–33.373 s / 2.393–5.171 s. All six have
+Median improvement **7.73×**; elapsed ranges 32.293–33.373 s / 2.393–5.171 s (the branch varies about 2x run to run on this shared host). All throughput figures were measured with `LOOMWARD_SCAN_PROFILE=1`, so they include the profiler's overhead in both variants. All six have
 complete coverage, exact counts/bytes, zero failed/skipped entries, no limit and no relist.
 Elapsed is engine-reported; receipts also retain HTTP-observed wall time, including polling.
 
