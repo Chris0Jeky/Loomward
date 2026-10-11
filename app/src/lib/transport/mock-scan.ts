@@ -41,6 +41,7 @@ export interface ScanMockOptions {
 export interface ScanMock {
   handlers: Record<string, (payload: Record<string, unknown>) => unknown>;
   roots(): Root[];
+  revoke(rootId: string): void;
 }
 
 export function createScanMock(o: ScanMockOptions): ScanMock {
@@ -158,7 +159,7 @@ export function createScanMock(o: ScanMockOptions): ScanMock {
   return {
     handlers: {
       'duplicates.inspect': inspect,
-      'duplicates.cancel': (p) => { if (find(p.job_id).kind !== 'duplicates') o.fail('invalid_request', 'not a duplicates job'); return cancel(p); },
+      'duplicates.cancel': (p) => { if (find(p.job_id).kind !== 'duplicates') o.fail('invalid_request', 'not a duplicates job'); return { job: { ...cancel(p).job, duplicates: undefined } }; },
       'scan.start': start,
       'scan.cancel': cancel,
       'jobs.get': (p) => ({ job: { ...find(p.job_id) } }),
@@ -167,6 +168,12 @@ export function createScanMock(o: ScanMockOptions): ScanMock {
         const limit = Number.isInteger(p.limit) && (p.limit as number) >= 1 && (p.limit as number) <= 200 ? (p.limit as number) : o.fail('invalid_request', 'limit must be 1..200');
         return { jobs: jobs.filter((j) => !kinds || kinds.includes(j.kind)).slice(0, limit).map((j) => ({ ...j })) };
       },
+    },
+    revoke: (rootId) => {
+      for (const job of jobs.filter((j) => j.root_id === rootId && j.kind === 'duplicates')) {
+        if (job.duplicates) set(job, { duplicates: undefined });
+        if (active(job)) cancel({ job_id: job.job_id });
+      }
     },
     roots: () =>
       LABS.map((s): Root => ({
