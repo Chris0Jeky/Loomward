@@ -51,7 +51,7 @@
     },
     "ExtFamily": { "enum": ["document", "spreadsheet", "presentation", "image", "video", "audio", "archive", "code", "data", "model", "executable", "system", "font", "other", "none"] },
     "FileAttribute": { "enum": ["readonly", "hidden", "system", "archive", "compressed", "sparse", "encrypted", "offline", "not_content_indexed", "reparse_point", "recall_on_open", "recall_on_data_access", "pinned", "unpinned", "temporary"] },
-    "EntryFlag": { "enum": ["sensitive_name", "protected_context", "hardlink_suspected", "cloud_placeholder", "reparse_not_followed", "excluded_state_dir", "access_denied", "enumeration_error", "identity_unavailable", "name_lossy", "on_disk_only_listing", "listing_incomplete"] },
+    "EntryFlag": { "enum": ["sensitive_name", "protected_context", "hardlink_suspected", "cloud_placeholder", "reparse_not_followed", "excluded_state_dir", "access_denied", "enumeration_error", "identity_unavailable", "name_lossy", "on_disk_only_listing", "listing_incomplete", "identity_unverified"] },
     "DisplayPath": {
       "type": "object",
       "additionalProperties": false,
@@ -872,7 +872,7 @@
         "dirs": { "$ref": "#/$defs/NullableCount" },
         "modified_at": { "$ref": "#/$defs/NullableTimestamp" },
         "attributes": { "type": "array", "maxItems": 16, "uniqueItems": true, "items": { "$ref": "#/$defs/FileAttribute" } },
-        "flags": { "type": "array", "maxItems": 12, "uniqueItems": true, "items": { "$ref": "#/$defs/EntryFlag" } },
+        "flags": { "type": "array", "maxItems": 13, "uniqueItems": true, "items": { "$ref": "#/$defs/EntryFlag" } },
         "coverage": { "$ref": "#/$defs/CoverageState" },
         "location_hint": { "anyOf": [{ "$ref": "#/$defs/DisplayPath" }, { "type": "null" }], "$comment": "Search and collection results only: the parent's display path." }
       }
@@ -936,7 +936,7 @@
       "additionalProperties": false,
       "required": ["quality", "volume_key", "file_id_hex", "observed_generation", "durable_reference", "authorises_effects"],
       "properties": {
-        "quality": { "enum": ["native_file_id_128", "native_file_id_64", "path_observation", "unavailable"], "$comment": "Width is preserved: a 64-bit ID is never padded and reported as 128-bit." },
+        "quality": { "enum": ["native_file_id_128", "native_file_id_64", "path_observation", "unavailable", "unverified"], "$comment": "Width is preserved: a 64-bit ID is never padded and reported as 128-bit. unverified: listed on a FAT, exFAT or unknown filesystem under an identity-unverified grant; metadata only, never an effect, placement or content-read input." },
         "durable_reference": { "enum": ["available", "unavailable_identity_quality", "unavailable_filesystem"], "$comment": "Whether labels and collection membership may bind to this object (docs/41 section 6.3). Without it, feedback.record returns capability_unavailable." },
         "volume_key": { "type": ["string", "null"], "maxLength": 80 },
         "file_id_hex": { "type": ["string", "null"], "pattern": "^[0-9a-f]{16,32}$" },

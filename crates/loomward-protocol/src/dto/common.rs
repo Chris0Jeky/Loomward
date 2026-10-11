@@ -87,6 +87,7 @@ pub enum EntryFlag {
     NameLossy,
     OnDiskOnlyListing,
     ListingIncomplete,
+    IdentityUnverified,
 }
 
 /// Display only. Never accepted back as input; no command takes a path string.
