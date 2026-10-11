@@ -19,6 +19,13 @@ pub trait NativeDialogs: Send + Sync {
         let _ = title;
         None
     }
+    /// Rust-side save dialog for a diagnostic bundle (docs/42 ADR-V3-24); the chosen path never
+    /// crosses IPC. The dialog asks before replacing an existing file. An adapter without one never
+    /// opens a dialog.
+    fn save_file(&self, title: &str, default_name: &str) -> Option<PathBuf> {
+        let _ = (title, default_name);
+        None
+    }
     /// Native modal listing recipient, model, fields and every item of the summary. `true` only on
     /// explicit accept. A display-budget refusal is an error, not an owner decline.
     fn confirm_disclosure(&self, summary: &DisclosureSummary) -> Result<bool, crate::ErrorBody>;

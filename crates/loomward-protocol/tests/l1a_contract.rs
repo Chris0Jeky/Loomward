@@ -17,14 +17,21 @@ fn commands_json() -> Value {
 fn command_table_equals_commands_json() {
     let doc = commands_json();
     let commands = doc["commands"].as_object().unwrap();
-    assert_eq!(commands.len(), 54);
+    assert_eq!(commands.len(), 56);
     assert_eq!(Command::ALL.len(), commands.len());
     for c in Command::ALL {
         let row = &commands[c.as_str()];
         assert_eq!(row["request"], c.request_def(), "{}", c.as_str());
         assert_eq!(row["result"], c.result_def(), "{}", c.as_str());
         assert_eq!(row["wave"], c.wave(), "{}", c.as_str());
-        assert_eq!(row["effects"], "none", "{}", c.as_str());
+        // The one gated effect (docs/42 ADR-V3-24): Loomward's own previewed bytes, written to a
+        // file the owner picks in a Rust-side save dialog.
+        let effect = if *c == Command::DiagnosticsSave {
+            "owner_picked_export"
+        } else {
+            "none"
+        };
+        assert_eq!(row["effects"], effect, "{}", c.as_str());
         let adapters: Vec<_> = row["adapters"]
             .as_array()
             .unwrap()
