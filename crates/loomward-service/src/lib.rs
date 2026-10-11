@@ -191,6 +191,8 @@ impl Service {
             .map_err(|_| "cannot resolve the state directory".to_string())?;
         let catalog = Catalog::open(&state_dir, class_name(config.dataset))
             .map_err(|e| format!("catalogue refused to open: {e}"))?;
+        // A root's first full scan publishes once, atomically, with its file indexes built once (#148).
+        catalog.writer().set_bulk_first_scan(true);
         let engine = Engine::open(EngineConfig::new(state_dir.clone(), config.dataset))
             .map_err(|e| format!("engine refused to open: {e}"))?;
         let conn = db::open(&state_dir).map_err(|e| format!("state store: {e}"))?;
