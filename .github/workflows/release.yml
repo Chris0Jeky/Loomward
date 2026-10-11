@@ -95,13 +95,16 @@ jobs:
           $examples = @(Get-ChildItem (Join-Path $dir 'contracts/v3/examples/commands') -Filter '*.result.json' -ErrorAction SilentlyContinue)
           if (-not $exe) { throw 'installed app exe missing' }
           if ($examples.Count -eq 0) { throw 'bundled contract examples missing from the install' }
-          # Remove the checkout's copy so the installed app can only use its own bundled examples.
+          # Remove the checkout's copy so the installed self-test can only use its own bundled examples.
           Remove-Item -Recurse -Force contracts/v3/examples
+          $t = Start-Process -FilePath $exe.FullName -ArgumentList '--self-test' -Wait -PassThru -NoNewWindow
+          if ($t.ExitCode -ne 0) { throw "installed self-test failed with code $($t.ExitCode)" }
+          # The default start: the engine service in a personal session, state under LOCALAPPDATA.
           $p = Start-Process -FilePath $exe.FullName -PassThru
           Start-Sleep -Seconds 10
           if ($p.HasExited) { throw "installed app exited early with code $($p.ExitCode)" }
           Stop-Process -Id $p.Id -Force
-          "installed app stayed up for 10 s with $($examples.Count) bundled examples"
+          "installed self-test passed; installed app stayed up for 10 s ($($examples.Count) bundled examples)"
       - name: Create the pre-release
         env:
           GH_TOKEN: ${{ github.token }}

@@ -1,12 +1,15 @@
 //! `loomward-desktop --self-test`: drives the command layer the webview reaches (`lw_call`,
-//! `lw_events`) against the fixture service, without a window. The Rust tests run it too.
+//! `lw_events`) without a window: the protocol checks against the fixture service, then the engine
+//! service the window hosts by default, in a scratch state directory. It needs no checkout: an
+//! installed exe reads the contract examples bundled beside it. The Rust tests run it too.
 
 use crate::dialogs::DesktopDialogs;
+use crate::launch::{self, examples_dir, Launch};
 use crate::Desktop;
-use loomward_http::fixture::{FixtureService, EXAMPLES_DIR};
+use loomward_http::fixture::FixtureService;
 use loomward_protocol::{Command, DatasetClass, EventEnvelope, EventName, ResponseEnvelope};
 use serde_json::{json, Value};
-use std::path::Path;
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -17,7 +20,7 @@ pub const TEST_HEARTBEAT: Duration = Duration::from_millis(300);
 /// A fixture-backed desktop with a short heartbeat and a dialog stand-in that records nothing
 /// and always declines.
 pub fn fixture_desktop(heartbeat: Duration) -> Result<(Arc<FixtureService>, Desktop), String> {
-    let service = FixtureService::new(DatasetClass::Synthetic)
+    let service = FixtureService::load(DatasetClass::Synthetic, &examples_dir())
         .map_err(|e| e.to_string())?
         .with_stream_limits(heartbeat, loomward_protocol::limits::EVENT_QUEUE_CAPACITY);
     let service = Arc::new(service);
@@ -32,7 +35,7 @@ pub fn envelope(command: &str, payload: Value) -> Value {
 
 /// The contract's example payload for `command`.
 pub fn example_payload(command: Command) -> Value {
-    let file = Path::new(EXAMPLES_DIR)
+    let file = examples_dir()
         .join("commands")
         .join(format!("{}.request.json", command.as_str()));
     std::fs::read_to_string(file)
@@ -352,13 +355,90 @@ pub fn run(log: &mut dyn FnMut(&str)) -> bool {
         })(),
     );
 
+    for (dataset, name) in [
+        (
+            DatasetClass::Synthetic,
+            "engine service (synthetic, scratch state): hello, picker refused, stream.hello first",
+        ),
+        (
+            DatasetClass::Personal,
+            "default session: personal engine service (scratch state) offers the native picker",
+        ),
+    ] {
+        report(name, engine_session(dataset));
+    }
+
     all
 }
 
+/// The engine service as `main` opens it, in a scratch state directory that is removed after.
+fn engine_session(dataset: DatasetClass) -> Result<(), String> {
+    let scratch = scratch_dir();
+    let result = (|| {
+        let launch = Launch {
+            self_test: false,
+            dataset,
+            fixtures: false,
+            state_dir: Some(scratch.clone()),
+        };
+        let service = launch::open(&launch, None)?;
+        let dialogs = DesktopDialogs::with_prompt(dataset, |_, _| false);
+        let desktop = Desktop::new(service, dataset, Arc::new(dialogs));
+        let r = desktop.call(&envelope("session.hello", json!({})))?;
+        let hello = ok_result(&r)?;
+        let engine = hello.get("engine_version").and_then(Value::as_str);
+        check(
+            engine.is_some_and(|v| v.starts_with("loomward-service/")),
+            format!("engine_version {engine:?}"),
+        )?;
+        check(hello.get("adapter") == Some(&json!("tauri")), "adapter")?;
+        check(
+            hello.get("dataset_class") == Some(&json!(dataset)),
+            "dataset_class",
+        )?;
+        let personal = dataset == DatasetClass::Personal;
+        check(
+            hello["features"]["grant_picker"] == json!(personal),
+            format!("grant_picker {}", hello["features"]["grant_picker"]),
+        )?;
+        check(
+            scratch.join("state.db").is_file(),
+            "state.db is not in the state directory",
+        )?;
+        if !personal {
+            let r = desktop.call(&envelope(
+                "roots.request_grant",
+                json!({ "purpose": "metadata_scan" }),
+            ))?;
+            check(
+                ok_result(&r)?.get("refusal")
+                    == Some(&json!("synthetic_session_requires_lab_root")),
+                "synthetic picker request not refused",
+            )?;
+            let (tx, rx) = sink();
+            desktop.open_stream("selftest-engine", None, None, tx)?;
+            let hello = rx
+                .recv_timeout(Duration::from_secs(2))
+                .map_err(|e| e.to_string())?;
+            check(hello.event == EventName::StreamHello, "first event")?;
+            desktop.close_webview("selftest-engine");
+        }
+        Ok(())
+    })();
+    // Best effort: a store the engine still holds open stays in the temp directory.
+    let _ = std::fs::remove_dir_all(&scratch);
+    result
+}
+
+fn scratch_dir() -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    std::env::temp_dir().join(format!("loomward-selftest-{}-{nanos}", std::process::id()))
+}
+
 fn example_event(name: &str) -> Value {
-    let file = Path::new(EXAMPLES_DIR)
-        .join("events")
-        .join(format!("{name}.json"));
+    let file = examples_dir().join("events").join(format!("{name}.json"));
     std::fs::read_to_string(file)
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
