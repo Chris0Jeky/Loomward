@@ -265,10 +265,11 @@ impl Engine {
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .map_err(|_| denied("grant store unavailable"))?;
-        // GrantedRoot carries native identity, not a durable row id: ambiguous matches fail closed.
-        let (count, active, class): (i64, i64, String) = conn
+        // GrantedRoot carries native identity, not a durable row id: ambiguous active matches fail
+        // closed. Revoked rows for the same folder (a revoke, then a fresh grant) do not count.
+        let (active, class): (i64, String) = conn
             .query_row(
-                "SELECT count(*),count(CASE WHEN state='active' THEN 1 END),
+                "SELECT count(CASE WHEN state='active' THEN 1 END),
                     (SELECT value FROM meta WHERE key='dataset_class')
              FROM root_grant WHERE display_path=?1 AND volume_key=?2 AND root_file_id=?3",
                 rusqlite::params![
@@ -276,7 +277,7 @@ impl Engine {
                     format!("vsn_{volume}"),
                     id
                 ],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .map_err(|_| denied("grant store unavailable"))?;
         let expected_class = match root.dataset_class {
@@ -286,7 +287,7 @@ impl Engine {
         if class != expected_class {
             return Err(denied("dataset_class_mismatch"));
         }
-        if count != 1 || active != 1 {
+        if active != 1 {
             return Err(denied("grant_not_active"));
         }
         Ok(revoked.duplicate_cancel.clone())

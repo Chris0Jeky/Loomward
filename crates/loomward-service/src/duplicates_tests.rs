@@ -53,6 +53,69 @@ fn duplicates_personal_unknown_root_is_refused_before_any_job_and_replays() {
 /// (synthetic files in a disposable root), reads no byte it does not need, changes nothing, and a
 /// revoked root's report is redacted.
 #[cfg(windows)]
+/// Review on #376: a folder revoked and then granted again leaves a revoked row beside the new
+/// active one; inspection must follow the active grant instead of refusing forever.
+#[test]
+fn duplicates_follow_a_fresh_grant_after_the_same_folder_was_revoked() {
+    let tmp = crate::tests::temp_root();
+    let root = tmp.path().join("regranted-folder");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("a.txt"), b"same").unwrap();
+    std::fs::write(root.join("b.txt"), b"same").unwrap();
+    let root = root.canonicalize().unwrap();
+    let open = || {
+        Service::open(Config {
+            state_dir: tmp.path().join("state"),
+            dataset: DatasetClass::Personal,
+            allow_personal: true,
+            grant_roots: vec![root.clone()],
+        })
+    };
+    let first = open();
+    if loomward_windows::enumerate::running_elevated() {
+        let e = first.err().expect("an elevated grant is refused");
+        assert!(e.contains("identity_unavailable"), "{e}");
+        return;
+    }
+    let svc = first.unwrap();
+    let (roots, _) = ok("roots.list", call(&svc, "roots.list", json!({})));
+    let old = roots["roots"][0]["root_id"].as_str().unwrap().to_owned();
+    ok(
+        "roots.revoke",
+        call(
+            &svc,
+            "roots.revoke",
+            json!({"root_id": old, "purge_catalog": false}),
+        ),
+    );
+    drop(svc);
+    let svc = open().unwrap();
+    let (roots, _) = ok("roots.list", call(&svc, "roots.list", json!({})));
+    let active = roots["roots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["grant_state"] == "active")
+        .expect("the fresh grant is active")["root_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (scan, _) = ok(
+        "scan.start",
+        call(&svc, "scan.start", json!({"root_id":active,"mode":"full"})),
+    );
+    let scan: JobResult = serde_json::from_value(json!(scan)).unwrap();
+    assert_eq!(terminal(&svc, &scan.job.job_id).state, JobState::Completed);
+    let (start, _) = ok(
+        "duplicates.inspect",
+        call(&svc, "duplicates.inspect", duplicate_request(&active, 1024)),
+    );
+    let start: JobResult = serde_json::from_value(json!(start)).unwrap();
+    let job = terminal(&svc, &start.job.job_id);
+    assert_eq!(job.state, JobState::Completed, "{:?}", job.error);
+    assert_eq!(job.duplicates.unwrap().groups.len(), 1);
+}
+
 #[test]
 fn duplicates_personal_session_confirms_owner_duplicates_and_revocation_redacts() {
     let tmp = crate::tests::temp_root();
