@@ -496,6 +496,42 @@ fn health_rechecks_volume_and_refuses_resolver_flags() {
     assert_eq!(health(&s, &p), Health::NetworkUnreachableUnknown);
     assert_eq!(p.calls.get(), 0);
 }
+#[test]
+fn unknown_extra_block_alone_keeps_health_unknown() {
+    let mut b = header(2);
+    b.extend(local_info());
+    b.extend(8u32.to_le_bytes());
+    b.extend(0xa00000ffu32.to_le_bytes());
+    let s = parse(&finish(b)).unwrap();
+    assert_eq!(s.environment_target, None);
+    assert_eq!(s.unknown_extra_blocks, [0xa00000ff]);
+    let p = probe(VolumeState::Available, MetadataState::Present);
+    assert_eq!(health(&s, &p), Health::Unknown);
+    assert_eq!(p.calls.get(), 0);
+}
+#[test]
+fn remote_drive_type_on_local_link_is_network_without_probing() {
+    let mut info = local_info();
+    put32(&mut info, 32, 4);
+    let mut b = header(2);
+    b.extend(info);
+    let s = parse(&finish(b)).unwrap();
+    let v = s.link_info.as_ref().unwrap().volume.as_ref().unwrap();
+    assert_eq!(v.drive_type, 4);
+    let p = probe(VolumeState::Available, MetadataState::Present);
+    assert_eq!(health(&s, &p), Health::NetworkUnreachableUnknown);
+    assert_eq!(p.calls.get(), 0);
+}
+#[test]
+fn expstring_and_darwin_flags_are_ambiguous_on_their_own() {
+    for flag in [0x200, 0x2000000] {
+        let mut s = local();
+        s.flags |= flag;
+        let p = probe(VolumeState::Available, MetadataState::Present);
+        assert_eq!(health(&s, &p), Health::Ambiguous, "flag {flag:#x}");
+        assert_eq!(p.calls.get(), 0, "flag {flag:#x}");
+    }
+}
 struct FakeFolders;
 impl FolderProvider for FakeFolders {
     fn location(&self, f: Folder) -> Location {
