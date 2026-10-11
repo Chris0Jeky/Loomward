@@ -2,7 +2,8 @@
 //! scheduler, placement scenario builder, learning jobs, teacher runner and own-pool budgets.
 //!
 //! L7 implements read-only scans through an installed catalogue sink, kind-dispatched jobs,
-//! own-pool budgets and event replay; L11b adds the read-only telemetry scheduler. Other lane
+//! own-pool budgets and event replay; L11b adds the read-only telemetry scheduler; L14 adds
+//! synthetic human feedback, candidate refits and active review. Other lane
 //! entry points remain explicitly unavailable. No catalogue durability is implied by the
 //! aggregate-only in-memory fixture sink.
 //!
@@ -73,6 +74,7 @@ pub struct Engine {
     scan_watches:
         Mutex<std::collections::HashMap<loomward_protocol::RootId, Arc<scan::watch::RootWatch>>>,
     telemetry: telemetry::Telemetry,
+    learning: Mutex<Option<Arc<learning::Store>>>,
 }
 
 impl Engine {
@@ -93,6 +95,7 @@ impl Engine {
             #[cfg(windows)]
             scan_watches: Mutex::new(Default::default()),
             telemetry: telemetry::Telemetry::default(),
+            learning: Mutex::new(None),
         })
     }
 

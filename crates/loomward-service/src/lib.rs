@@ -21,6 +21,7 @@ mod handlers;
 mod idem;
 mod ids;
 pub mod lab;
+mod learning;
 pub mod paths;
 mod sink;
 #[cfg(test)]
@@ -183,6 +184,10 @@ impl Service {
         let engine = Engine::open(EngineConfig::new(state_dir.clone(), config.dataset))
             .map_err(|e| format!("engine refused to open: {e}"))?;
         let conn = db::open(&state_dir).map_err(|e| format!("state store: {e}"))?;
+        engine.install_learning(
+            loomward_engine::learning::Store::open(&state_dir)
+                .map_err(|e| format!("learning store: {e}"))?,
+        );
         if static_dir.is_some() {
             let mut protected = config.grant_roots.clone();
             protected
@@ -274,6 +279,7 @@ pub(crate) fn is_mutation(c: Command) -> bool {
             | VolumesDeclareTier
             | ScanStart
             | ScanCancel
+            | JobsCancel
             | FeedbackRecord
             | LearningRefit
             | CollectionsCreate
@@ -435,7 +441,15 @@ impl ViewService for Service {
             );
             return ResponseEnvelope::error(Some(id), e, None);
         }
-        if command.wave() >= 3 {
+        if command.wave() >= 3
+            && !matches!(
+                command,
+                Command::FeedbackRecord
+                    | Command::LearningStatus
+                    | Command::LearningQueue
+                    | Command::LearningRefit
+            )
+        {
             let e = fail(
                 ErrorCode::CapabilityUnavailable,
                 "this command arrives with wave 3 (lane L20)",

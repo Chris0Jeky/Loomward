@@ -232,7 +232,7 @@ fn valid_examples_validate_and_round_trip() {
     let examples = valid_examples();
     assert_eq!(
         examples.len(),
-        45 * 2 + 10 + files("envelopes").len() + files("dtos").len()
+        Command::ALL.len() * 2 + 10 + files("envelopes").len() + files("dtos").len()
     );
     for (label, def, value) in examples {
         let errors = schema.errors(&def, &value);

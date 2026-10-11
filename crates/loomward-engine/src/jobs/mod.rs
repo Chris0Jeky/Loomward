@@ -144,14 +144,19 @@ impl Registry {
         {
             let mut records = self.records.lock().unwrap();
             Self::prune(&mut records);
-            if spec.kind == JobKind::Scan {
+            if matches!(spec.kind, JobKind::Scan | JobKind::Refit) {
                 if let Some(r) = records.values().find(|r| {
-                    r.job.kind == JobKind::Scan
-                        && r.job.root_id == spec.root_id
+                    r.job.kind == spec.kind
+                        && (spec.kind == JobKind::Refit || r.job.root_id == spec.root_id)
                         && r.terminal.is_none()
                 }) {
                     return Err(EngineError::Busy {
-                        message: "root already scanning".into(),
+                        message: if spec.kind == JobKind::Refit {
+                            "refit already running"
+                        } else {
+                            "root already scanning"
+                        }
+                        .into(),
                         detail: Some(
                             loomward_protocol::Detail::new(std::collections::BTreeMap::from([(
                                 "job_id".into(),
@@ -358,6 +363,7 @@ mod tests {
     #[test]
     fn concurrent_submissions_have_unique_monotonic_sequences() {
         let e = Arc::new(engine());
+        e.register_job_runner(JobKind::Scan, Arc::new(|_, _| Ok(CoverageState::Complete)));
         e.register_job_runner(JobKind::Refit, Arc::new(|_, _| Ok(CoverageState::Complete)));
         e.register_job_runner(
             JobKind::Teacher,
@@ -373,11 +379,11 @@ mod tests {
                     barrier.wait();
                     e.job_submit(JobSpec::new(
                         if i % 2 == 0 {
-                            JobKind::Refit
+                            JobKind::Scan
                         } else {
                             JobKind::Teacher
                         },
-                        None,
+                        Some(RootId::new(format!("rt_sequence_{i}")).unwrap()),
                     ))
                     .unwrap()
                 })

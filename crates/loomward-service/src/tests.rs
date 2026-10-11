@@ -751,7 +751,16 @@ fn every_command_answers_a_complete_envelope_and_core_reads_serve_the_catalogue(
                 .unwrap();
         let r = call(&svc, command.as_str(), serde_json::from_str(&text).unwrap());
         checked(command.as_str(), &r);
-        if command.wave() >= 3 || command == Command::RootsRequestGrant {
+        if (command.wave() >= 3
+            && !matches!(
+                command,
+                Command::FeedbackRecord
+                    | Command::LearningStatus
+                    | Command::LearningQueue
+                    | Command::LearningRefit
+            ))
+            || command == Command::RootsRequestGrant
+        {
             assert_eq!(
                 err(r).code,
                 ErrorCode::CapabilityUnavailable,
@@ -2633,3 +2642,6 @@ fn followup_inspect_uses_the_roots_actual_grant() {
     assert_eq!(result["root_id"], svc.inner.root_id(root));
     assert_eq!(result["display_path"]["text"], "Synthetic root");
 }
+
+#[path = "learning_tests.rs"]
+mod learning_tests;

@@ -37,6 +37,12 @@ pub(crate) fn timestamp() -> Timestamp {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs();
+    timestamp_seconds(seconds)
+}
+pub(crate) fn timestamp_ns(ns: i64) -> Timestamp {
+    timestamp_seconds(ns.max(0) as u64 / 1_000_000_000)
+}
+fn timestamp_seconds(seconds: u64) -> Timestamp {
     let days = (seconds / 86400) as i64;
     // Gregorian civil date from days since Unix epoch.
     let z = days + 719468;

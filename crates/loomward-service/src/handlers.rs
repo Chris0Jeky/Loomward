@@ -130,6 +130,15 @@ impl Inner {
                     .map(|job| JobResult { job }),
             ),
             JobsList => engine(self.engine.job_list(&req.decode_payload()?)),
+            JobsCancel => engine(
+                self.engine
+                    .job_cancel(&req.decode_payload::<JobRefRequest>()?.job_id)
+                    .map(|job| JobResult { job }),
+            ),
+            FeedbackRecord => self.feedback_record(req.decode_payload()?),
+            LearningStatus => self.learning_status(),
+            LearningQueue => self.learning_queue(req.decode_payload()?, work),
+            LearningRefit => self.learning_refit(),
             TreeSlice => self.tree_slice(req, work),
             TreeChildren => self.tree_children(req, work),
             TreePath => self.node_read(req, work, |reader, key| {

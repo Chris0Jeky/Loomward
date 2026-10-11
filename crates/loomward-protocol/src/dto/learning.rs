@@ -27,6 +27,11 @@ const_str!(
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LearningStatus {
+    /// Named personal-learning refusal, or null for synthetic sessions.
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub gate: Option<BoundedStr<1, 64>>,
+    /// Stored human events excluded because their durable references are unresolved.
+    pub unresolved_human_events: Count,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub model_id: Option<ModelId>,
     pub algorithm: LearningStatusAlgorithm,
