@@ -55,7 +55,10 @@ class V3ContractTests(unittest.TestCase):
                         self.assertIn(spec[key], self.defs, f'{kind} {name}.{key}')
 
     def test_duplicate_examples_validate_requests_and_terminal_evidence(self):
-        import jsonschema
+        try:
+            import jsonschema
+        except ImportError:
+            self.skipTest('jsonschema not installed')
         for name in ('duplicates.inspect', 'duplicates.cancel'):
             for side, key in (('request', 'request'), ('result', 'result')):
                 schema = {'$defs': self.defs, '$ref': f"#/$defs/{self.commands['commands'][name][key]}"}
