@@ -1,7 +1,7 @@
 import type { ByteCount, ErrorCode, Timestamp } from '../contracts.gen';
 import type {
   CandidateGroup, GroupOverride, HeatBasis, OwnBudgets, PlacementCandidates, PlacementPlan, PlacementProposal,
-  PlacementSimulateRequest, PoolName, PoolUse, ProcessExplanation, ProcessList, ProcessRow,
+  PlacementSimulateRequest, ProposalDetail, PoolName, PoolUse, ProcessExplanation, ProcessList, ProcessRow,
   RootRevokeResult, GrantRevokeResult, TelemetryChannel, TelemetrySample, TelemetrySubscription, TierModel, Volume, VolumeList,
 } from '../contracts.gen';
 import type { PreRejectReason, RejectReason } from '../derived';
@@ -55,6 +55,8 @@ export interface ViewMock {
 }
 
 export function createViewMock(now: () => Date, fail: Fail): ViewMock {
+  const volumes = VOLUMES.map(v => ({ ...v }));
+  const saved = new Map<string, ProposalDetail>();
   const iso = () => now().toISOString();
   const revokedRoots = new Map<string, Timestamp>();
   const revokedGrants = new Map<string, Timestamp>();
@@ -64,7 +66,7 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
   let sampleSeq = 0;
 
   const free = (v: VolumeSeed): bigint => BigInt(Math.round(Number(v.capacity) * v.freeFraction));
-  const seed = (id: unknown): VolumeSeed => VOLUMES.find((v) => v.id === id) ?? fail('not_found', 'no such volume');
+  const seed = (id: unknown): VolumeSeed => volumes.find((v) => v.id === id) ?? fail('not_found', 'no such volume');
   const tierInfo = (v: VolumeSeed): Volume['tier'] => {
     const tier = v.declared ?? v.hint;
     return {
@@ -81,7 +83,7 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
   });
 
   const model = (): TierModel => ({
-    volumes: VOLUMES.map((v) => {
+    volumes: volumes.map((v) => {
       const frac = Number(free(v)) / Number(v.capacity);
       return {
         volume_id: v.id, display_name: v.name, tier: tierInfo(v), online: true, writable: true,
@@ -123,9 +125,9 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
     if (!['verified_only', 'entry_allocation_whatif'].includes(p.relief_policy)) fail('invalid_request', 'relief_policy');
     const overrides = new Map<string, GroupOverride>((Array.isArray(p.overrides) ? p.overrides : []).map((o) => [o.group_id, o]));
     const tier = tierInfo(source).tier;
-    const excluded: PlacementPlan['excluded_volumes'] = VOLUMES.filter((v) => v.id !== source.id && tierInfo(v).tier === null).map((v) => ({ volume_id: v.id, reason: 'tier_unknown' }));
+    const excluded: PlacementPlan['excluded_volumes'] = volumes.filter((v) => v.id !== source.id && tierInfo(v).tier === null).map((v) => ({ volume_id: v.id, reason: 'tier_unknown' }));
     if (tier === null) fail('invalid_request', 'source tier unknown');
-    const targets = VOLUMES.filter((v) => v.id !== source.id && (tierInfo(v).tier ?? -1) >= tier);
+    const targets = volumes.filter((v) => v.id !== source.id && (tierInfo(v).tier ?? -1) >= tier);
 
     const assumptions: string[] = [];
     const preRejected: PlacementPlan['pre_rejected'] = [];
@@ -197,11 +199,11 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
       return { group_id: x.g.id, source_id: source.id, target_id: x.to, source_bytes_relieved: str(x.relief), destination_bytes_required: c.destination_bytes, transfer_bytes: c.transfer_bytes, reason: 'bounded_capacity_budget_allocation', requires_consent: true, executable: false };
     });
     const projected: Record<string, ByteCount> = {};
-    for (const v of VOLUMES) if (v.id === source.id || targets.some((t) => t.id === v.id)) projected[v.id] = str(free(v));
+    for (const v of volumes) if (v.id === source.id || targets.some((t) => t.id === v.id)) projected[v.id] = str(free(v));
     projected[source.id] = str(free(source) + best.picks.reduce((s, x) => s + x.relief, 0n));
     for (const x of best.picks) projected[x.to] = str(BigInt(projected[x.to]!) - BigInt(candidate(x.g).destination_bytes));
     const transfer = best.picks.reduce((s, x) => s + BigInt(candidate(x.g).transfer_bytes), 0n);
-    return {
+    const plan: PlacementPlan = {
       mode: 'simulation', algorithm: 'bounded_portfolio_search_v2', optimality_claim: false, shortfall_optimal: true,
       optimality_scope: 'Static supplied estimates; lexicographic shortfall, transfer, group count, heat, IDs only. Not a claim about real disks.',
       search: { complete: true, nodes_visited: visited, node_budget: p.node_budget, reason: 'exhausted', eligible_groups: eligible.length, eligible_targets: targets.length, lower_bound_shortfall_bytes: str(best.short) },
@@ -211,6 +213,13 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
       assumption: 'Simulation only. No file is moved; every proposal needs the owner’s consent and is not executable in this build.',
       heat_policy: p.heat_policy, assumptions: [...new Set(assumptions)].slice(0, 16), root_generations: [], proposal_id: null,
     };
+    if (p.save) {
+      const id = `pp_mock_${saved.size + 1}`;
+      plan.proposal_id = id;
+      saved.set(id, { summary: { proposal_id: id, kind: 'placement_simulation', status: 'simulation_only', created_at: iso(), source_volume_id: p.source_volume_id, satisfied: plan.satisfied, shortfall_bytes: plan.shortfall_bytes }, inputs_digest: `sha256:${'0'.repeat(64)}`, plan: structuredClone(plan) });
+      stateRev++;
+    }
+    return plan;
   };
 
   // --- companion ------------------------------------------------------------------------------
@@ -312,7 +321,21 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
   };
 
   const handlers: Record<string, Handler> = {
-    'volumes.list': (): VolumeList => ({ volumes: VOLUMES.map(volumeRow) }),
+    'volumes.list': (): VolumeList => ({ volumes: volumes.map(volumeRow) }),
+    'volumes.declare_tier': (p) => {
+      const volume = seed(String(p.volume_id));
+      if (p.tier !== null && (typeof p.tier !== 'number' || !Number.isInteger(p.tier) || p.tier < 0 || p.tier > 9)) fail('invalid_request', 'tier must be 0 to 9 or unknown');
+      volume.declared = p.tier as number | null;
+      for (const detail of saved.values()) detail.summary.status = 'stale';
+      stateRev++;
+      return { volume: volumeRow(volume), preference_recorded_at: iso() };
+    },
+    'proposals.list': () => ({ proposals: [...saved.values()].map(d => structuredClone(d.summary)).reverse() }),
+    'proposals.get': (p) => {
+      const detail = saved.get(String(p.proposal_id));
+      if (!detail) fail('not_found', 'unknown proposal');
+      return structuredClone(detail);
+    },
     'tiers.model': model,
     'placement.candidates': candidates,
     'placement.simulate': simulate,

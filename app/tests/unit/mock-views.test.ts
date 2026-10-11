@@ -13,6 +13,21 @@ const sim = (c: Client, o: Partial<PlacementSimulateRequest> = {}) =>
   });
 
 describe('mock tiers and placement', () => {
+  it('records declarations and retrieves saved scenarios without giving them effects', async () => {
+    const c = client();
+    const declared = await c.call('volumes.declare_tier', { volume_id: 'vo_f', tier: 3 });
+    expect(declared.result.volume.tier.declared_tier).toBe(3);
+    expect((await c.call('tiers.model', {})).result.volumes.find(v => v.volume_id === 'vo_f')!.tier.tier).toBe(3);
+    const { result: plan } = await sim(c, { save: true });
+    expect(plan.proposal_id).not.toBeNull();
+    const { result: list } = await c.call('proposals.list', {});
+    expect(list.proposals).toHaveLength(1);
+    const { result: detail } = await c.call('proposals.get', { proposal_id: plan.proposal_id! });
+    expect(detail.plan).toEqual(plan);
+    expect(detail.summary.status).toBe('simulation_only');
+    expect(detail.plan.filesystem_changed).toBe(false);
+    await expect(c.call('proposals.get', { proposal_id: 'pp_missing' })).rejects.toMatchObject({ code: 'not_found' });
+  });
   it('models three real-shaped volumes plus one with an unknown tier', async () => {
     const { result } = await client().call('tiers.model', {});
     const by = Object.fromEntries(result.volumes.map((v) => [v.display_name, v]));
