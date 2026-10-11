@@ -3139,6 +3139,41 @@ fn a_replaced_root_records_identity_changed_and_emits_roots_changed() {
     assert_eq!(again.code, ErrorCode::PermissionDenied);
 }
 
+/// #378: duplicate inspection that finds the root replaced records `identity_changed` and emits
+/// `roots.changed` exactly as scan start does, so the UI stops offering an inspection that fails.
+#[cfg(windows)]
+#[test]
+fn a_replaced_root_found_by_inspection_records_identity_changed() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    std::fs::rename(&lab.path, lab.path.with_file_name("lab-moved")).unwrap();
+    std::fs::create_dir(&lab.path).unwrap();
+    let mut events = svc.subscribe(None);
+    let e = err(call(
+        svc,
+        "duplicates.inspect",
+        json!({"root_id": lab.root, "budget": {"max_candidates": 200, "max_bytes": "1024", "max_ms": 1000}}),
+    ));
+    assert_eq!(
+        (e.code, e.message.as_str()),
+        (ErrorCode::PermissionDenied, "root_identity_changed")
+    );
+    let state: String = svc
+        .inner
+        .db()
+        .query_row("SELECT state FROM st.root_grant", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(state, "identity_changed");
+    let event = loop {
+        match events.recv_timeout(Duration::from_secs(2)) {
+            RecvOutcome::Event(e) if e.event == EventName::RootsChanged => break e,
+            RecvOutcome::Event(_) => continue,
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(event.data["roots"][0]["grant_state"], "identity_changed");
+}
+
 /// Revocation mid-scan: the grant commits revoked first, the run is cancelled and the writer
 /// fenced; nothing more is written for the root and its catalogue run ends cancelled.
 #[cfg(windows)]
