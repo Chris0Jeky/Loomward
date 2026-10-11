@@ -80,6 +80,14 @@ fn learning_refuses_nondurable_invalid_and_unresolved_labels() {
             ErrorCode::InvalidRequest
         );
     }
+    assert_eq!(
+        svc.inner
+            .db()
+            .query_row("SELECT count(*) FROM st.object_ref", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
     ok(
         "feedback.record",
         call(
@@ -256,7 +264,8 @@ fn learning_queue_binds_both_revisions_and_filters() {
     let node = learning_node(&svc);
     let p = json!({"root_id":null,"limit":1,"cursor":null});
     let (page, _) = ok("learning.queue", call(&svc, "learning.queue", p.clone()));
-    assert_eq!(page["model_id"], Value::Null);
+    assert!(page["model_id"].is_string());
+    assert_eq!(page["model_id"], page["items"][0]["suggestion"]["model_id"]);
     assert_eq!(page["items"][0]["suggestion"]["calibrated"], false);
     let cursor = page["next_cursor"].clone();
     assert!(cursor.is_string());
@@ -325,6 +334,33 @@ fn learning_refit_is_human_only_candidate_and_retraction_withdraws() {
         panic!()
     };
     svc.inner.db().execute_batch(&format!("PRAGMA foreign_keys=OFF;INSERT INTO st.teacher_label(event_id,request_id,object_ref_id,revision,label,abstain,reason,evidence_json,taxonomy_version,features_json,received_at_ns) SELECT 'tl_fixture',999,{teacher_ref},1,'Archive',0,'fixture','[]',1,features_json,0 FROM st.human_feedback LIMIT 1;PRAGMA foreign_keys=ON")).unwrap();
+    let teacher_node = svc.inner.ids.seal(
+        loomward_catalog::NodeKey::File(2),
+        svc.inner
+            .db()
+            .query_row("SELECT born_run FROM main.file WHERE id=2", [], |r| {
+                r.get(0)
+            })
+            .unwrap(),
+        &svc.inner.instance,
+    );
+    assert_eq!(
+        err(call(
+            &svc,
+            "feedback.record",
+            feedback(&teacher_node, "ce_teacher_only", None, true)
+        ))
+        .code,
+        ErrorCode::InvalidRequest
+    );
+    assert_eq!(
+        svc.inner
+            .db()
+            .query_row("SELECT count(*) FROM st.human_feedback", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
     for (expected, retract) in [(1, false), (0, true)] {
         if retract {
             ok(
@@ -429,7 +465,29 @@ fn learning_retracts_without_current_node_access_and_beyond_history_budget() {
                 feedback(&node, "ce_withdraw", None, true),
             ),
         );
+        let (status, _) = ok("learning.status", call(&svc, "learning.status", json!({})));
+        assert_eq!(status["model_id"], Value::Null, "{mode}");
+        assert_eq!(status["human_support"]["Documents"], 0, "{mode}");
+        let (queue, _) = ok(
+            "learning.queue",
+            call(
+                &svc,
+                "learning.queue",
+                json!({"root_id":null,"limit":1,"cursor":null}),
+            ),
+        );
+        if let Some(item) = queue["items"].as_array().unwrap().first() {
+            assert!(item["suggestion"]["reasons"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("no_training_examples")));
+        }
+        // Resolution loss alone must not be what suppresses the withdrawn example.
+        if matches!(mode, "unresolved" | "missing") {
+            svc.inner.db().execute_batch("UPDATE st.object_ref SET state='resolved',retired=0,row_id=1,born_run=(SELECT born_run FROM main.file WHERE id=1)").unwrap();
+        }
         assert_eq!(finish_refit(&svc)["training_count"], 0, "{mode}");
+        assert_eq!(svc.inner.db().query_row("SELECT count(*) FROM st.student_model WHERE status='candidate' AND training_count=0", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
         assert_eq!(
             svc.inner
                 .db()
@@ -484,4 +542,103 @@ fn learning_latest_label_window_does_not_cap_history_or_withdrawal() {
         ),
     );
     assert_eq!(finish_refit(&svc)["training_count"], 0);
+}
+
+#[test]
+fn learning_queue_filters_before_its_candidate_budget() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    fixture(&svc, 10_002);
+    svc.inner.db().execute_batch("UPDATE main.file SET file_id=NULL,created_ft=NULL;UPDATE main.file SET file_id=cast('1111111111111111' AS BLOB),created_ft=1 WHERE id=10002").unwrap();
+    let (page, _) = ok(
+        "learning.queue",
+        call(
+            &svc,
+            "learning.queue",
+            json!({"root_id":null,"limit":100,"cursor":null}),
+        ),
+    );
+    assert_eq!(page["items"].as_array().unwrap().len(), 1);
+    assert_eq!(page["next_cursor"], Value::Null);
+    // A genuinely eligible overflow must still be refused.
+    svc.inner
+        .db()
+        .execute_batch("UPDATE main.file SET file_id=cast(printf('%016d',id) AS BLOB),created_ft=1")
+        .unwrap();
+    assert_eq!(
+        err(call(
+            &svc,
+            "learning.queue",
+            json!({"root_id":null,"limit":1,"cursor":null})
+        ))
+        .code,
+        ErrorCode::ResourceBudget
+    );
+}
+
+#[test]
+fn learning_legacy_retraction_prefers_live_then_newest_reference() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let node = learning_node(&svc);
+    ok(
+        "feedback.record",
+        call(
+            &svc,
+            "feedback.record",
+            feedback(&node, "ce_first", Some("Documents"), false),
+        ),
+    );
+    svc.inner.db().execute_batch("DELETE FROM st.learning_node;
+        INSERT INTO st.object_ref(volume_key,file_id,creation_ft,kind,state,incarnation,retired,catalog_instance,row_id,born_run) SELECT volume_key,file_id,creation_ft,kind,'unresolved',incarnation+1,1,catalog_instance,row_id,born_run FROM st.object_ref WHERE id=1;
+        INSERT INTO st.human_feedback(event_id,client_event_id,content_digest,object_ref_id,revision,label,retracted,taxonomy_version,features_json,recorded_at_ns) SELECT 'fe_stale','ce_stale',content_digest,2,100,'Archive',0,1,features_json,recorded_at_ns FROM st.human_feedback WHERE object_ref_id=1").unwrap();
+    ok(
+        "feedback.record",
+        call(
+            &svc,
+            "feedback.record",
+            feedback(&node, "ce_live_retract", None, true),
+        ),
+    );
+    assert_eq!(svc.inner.db().query_row("SELECT object_ref_id FROM st.human_feedback WHERE client_event_id='ce_live_retract'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    svc.inner
+        .db()
+        .execute_batch(
+            "DELETE FROM st.learning_node;UPDATE st.object_ref SET state='unresolved',retired=1",
+        )
+        .unwrap();
+    ok(
+        "feedback.record",
+        call(
+            &svc,
+            "feedback.record",
+            feedback(&node, "ce_newest_retract", None, true),
+        ),
+    );
+    assert_eq!(svc.inner.db().query_row("SELECT object_ref_id FROM st.human_feedback WHERE client_event_id='ce_newest_retract'", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+}
+
+#[test]
+fn learning_training_window_uses_newest_distinct_objects() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let node = learning_node(&svc);
+    ok(
+        "feedback.record",
+        call(
+            &svc,
+            "feedback.record",
+            feedback(&node, "ce_first", Some("Archive"), false),
+        ),
+    );
+    svc.inner.db().execute_batch("WITH RECURSIVE n(i) AS (SELECT 2 UNION ALL SELECT i+1 FROM n WHERE i<10001)
+        INSERT INTO st.object_ref(volume_key,file_id,creation_ft,kind,state,retired) SELECT 'fixture',cast(printf('%016d',i+100) AS BLOB),1,'file','resolved',0 FROM n;
+        INSERT INTO st.human_feedback(event_id,client_event_id,content_digest,object_ref_id,revision,label,retracted,taxonomy_version,features_json,recorded_at_ns)
+        SELECT 'fe_distinct'||o.id,'ce_distinct'||o.id,'fixture',o.id,10002-o.id,CASE WHEN o.id=10001 THEN 'Finance' ELSE 'Documents' END,0,1,'{\"name\":\"fixture.txt\",\"extension\":\"txt\",\"context\":\"fixture\",\"size_bytes\":1}',0 FROM st.object_ref o WHERE o.id>1 ORDER BY o.id").unwrap();
+    let status = finish_refit(&svc);
+    assert_eq!(status["training_count"], 10_000);
+    assert_eq!(status["human_events"], 10_001);
+    assert_eq!(status["human_support"]["Archive"], 0);
+    assert_eq!(status["human_support"]["Finance"], 1);
+    assert_eq!(status["human_support"]["Documents"], 9_999);
 }
