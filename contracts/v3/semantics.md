@@ -131,7 +131,7 @@ reason `overlapping_grant_ancestry_unknown`.
 
 Volumes whose recorded roots have no active grant remain visible in `volumes.list` and
 `tiers.model`, with their observed `online` state and a "No active grant" tier note. They are
-excluded from simulations with `excluded_volumes.reason = "no_active_grant"`; choosing one as
+excluded from candidates and simulations with `excluded_volumes.reason = "no_active_grant"`; choosing one as
 the source refuses with `invalid_request`, `detail.reason = "no_active_grant"`.
 
 Each `tiers.model` volume has a required `source_eligible` boolean. It is false for offline,
