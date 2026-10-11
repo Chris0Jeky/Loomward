@@ -407,6 +407,7 @@ def live_scan_refusals(browser, exe: Path) -> None:
         expect(page.locator('main table.tbl tbody')).to_contain_text('No roots granted')
         check(page.locator('ul.scans li').count() == 0 and page.locator('ul.scans button').count() == 0, 'synthetic: no root, so no Scan control is offered')
         check(page.locator('p.bad.live').inner_text() == '', 'synthetic: Grants & health loaded against the real service (jobs.list answered), no error shown')
+        check(page.get_by_role('button', name='Add a folder…').count() == 0 and 'Folders are added in the desktop app.' in page.locator('main').inner_text(), 'synthetic: loomward-serve has no folder picker, so no Add a folder button, and the page says where folders are added')
         r = live_call(page, token, 'scan.start', {'root_id': 'rt_nope', 'mode': 'full'})
         check(not r['ok'] and r['error']['code'] == 'not_found', f"synthetic: scan.start for an unknown root is not_found: {r.get('error')}")
         jobs = live_call(page, token, 'jobs.list', {'kinds': ['scan'], 'limit': 50})

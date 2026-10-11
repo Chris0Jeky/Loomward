@@ -79,6 +79,11 @@ class FakeEngine:
         self.explain_partial_once = False
         self.explain_calls: list[str] = []
         self.process_observed_at: str | None = None
+        self.grant_picker = False  # session.hello features.grant_picker
+        self.roots: list[dict] = []  # roots.list
+        self.grant_mode = 'granted'  # roots.request_grant: granted, cancelled, refused, busy, deadline (the root lands before the reply) or deadline_late (after it)
+        self.grant_delay = 0.0
+        self.grant_calls: list[dict] = []
 
     @property
     def base(self) -> str:
@@ -89,6 +94,16 @@ class FakeEngine:
         self.seq += 1
         self.events.put({'protocol': 'loomward/3', 'epoch': EPOCH, 'seq': self.seq, 'event': 'tree.invalidated', 'at': '2026-10-01T00:00:00Z', 'catalog_rev': str(self.seq + 1), 'state_rev': None, 'data': {'root_id': None, 'generation': None, 'scope': 'all', 'node_ids': []}})
 
+    def fake_root(self, name: str) -> dict:
+        return {'root_id': f'rt_picked_{len(self.roots) + 1}', 'display_path': {'text': name, 'truncated': False}, 'origin': 'owner_granted', 'dataset_class': 'personal', 'volume_id': None,
+                'granted_at': '2026-10-01T00:00:00Z', 'granted_via': 'desktop_picker', 'grant_state': 'active',
+                'scan': {'state': 'never_scanned', 'last_job_id': None, 'generation': None, 'finished_at': None, 'coverage': 'unscanned'}, 'totals': None}
+
+    def land(self, name: str) -> None:
+        self.roots.append(self.fake_root(name))
+        self.seq += 1
+        self.events.put({'protocol': 'loomward/3', 'epoch': EPOCH, 'seq': self.seq, 'event': 'roots.changed', 'at': '2026-10-01T00:00:00Z', 'catalog_rev': str(self.seq + 1), 'state_rev': None, 'data': {'roots': self.roots}})
+
     def result(self, req: dict):
         cmd, p = req['command'], req.get('payload') or {}
         row = lambda name, i: {'node_id': f'nd_{name}', 'kind': 'file', 'name': name, 'extension': 'txt', 'ext_family': 'document', 'logical_bytes': str(1000 + i), 'allocated_bytes': '4096', 'files': None, 'dirs': None, 'modified_at': '2026-01-01T00:00:00Z', 'attributes': [], 'flags': [], 'coverage': 'complete', 'location_hint': None}
@@ -97,9 +112,34 @@ class FakeEngine:
             return {
                 'protocol': 'loomward/3', 'engine_version': 'view-fake', 'adapter': 'http', 'dataset_class': 'synthetic', 'session_started_at': '2026-10-01T00:00:00Z',
                 'enumeration_strategy': 'std_read_dir', 'capabilities': {'observation': {'process_observation': self.process_error is not None}, 'effects': effects},
-                'features': {k: False for k in ('grant_picker', 'disclosure_dialog', 'teacher_available', 'telemetry_available', 'gpu_available')},
+                'features': {k: k == 'grant_picker' and self.grant_picker for k in ('grant_picker', 'disclosure_dialog', 'teacher_available', 'telemetry_available', 'gpu_available')},
                 'limits': {'max_request_bytes': 65536, 'max_slice_nodes': 6000, 'max_page_items': 200},
             }
+        if cmd == 'roots.list':
+            return {'roots': self.roots}
+        if cmd == 'grants.list':
+            return {'grants': []}
+        if cmd == 'jobs.list':
+            return {'jobs': []}
+        if cmd == 'health.get':
+            return json.loads((ROOT / 'contracts/v3/examples/commands/health.get.result.json').read_text())
+        if cmd == 'roots.request_grant':
+            self.grant_calls.append(req)
+            time.sleep(self.grant_delay)
+            if self.grant_mode == 'cancelled':
+                return {'outcome': 'cancelled_by_user', 'root': None, 'refusal': None}
+            if self.grant_mode == 'refused':
+                return {'outcome': 'refused', 'root': None, 'refusal': 'identity_unavailable'}
+            if self.grant_mode == 'busy':
+                return ('busy', 'a native dialog is already open')
+            if self.grant_mode == 'deadline':
+                self.land('E:\\Picked At The Deadline')
+                return ('deadline_exceeded', 'the dialog outlived the deadline')
+            if self.grant_mode == 'deadline_late':
+                threading.Timer(0.8, self.land, ['E:\\Picked After The Deadline']).start()
+                return ('deadline_exceeded', 'the dialog outlived the deadline')
+            self.land('E:\\Picked Folder')
+            return {'outcome': 'granted', 'root': self.roots[-1], 'refusal': None}
         if self.process_error is not None:
             if cmd == 'processes.explain':
                 self.explain_calls.append(p['process_ref'])
@@ -930,6 +970,94 @@ def check_scan_controls(page: Page, base: str, shots: Path | None) -> None:
     print('PASS scan controls: idle, refused, running indeterminate, complete, refresh and cancel, partial, survives leaving the view')
 
 
+def check_add_folder(page: Page, engine: FakeEngine) -> None:
+    """'Add a folder…' against an engine with a native picker: waiting, granted, cancelled, refused, busy and
+    the deadline paths. The page never sends a path, and a deadline never reopens the dialog."""
+    engine.grant_picker = True
+    page.set_viewport_size({'width': 1360, 'height': 900})
+
+    def fresh() -> None:
+        engine.roots, engine.grant_calls = [], []
+        page.goto(f'{engine.base}/#token={TOKEN}')
+        page.reload()
+        page.evaluate("location.hash = '#/health'")
+        expect(page.get_by_role('status', name='Session status')).to_contain_text('Connected')
+        expect(page.get_by_role('heading', name='Grants & health', level=1)).to_be_visible()
+
+    add = page.get_by_role('button', name='Add a folder…', exact=True)
+    status = page.locator('main section[aria-labelledby="h-roots"] .add p.live')
+    cards = page.locator('main ul.scans li')
+    table = page.locator('main table.tbl tbody')
+    error = page.locator('main p.bad.live')
+
+    # granted: waiting text while the dialog is open (the button stays, aria-disabled, so focus is not lost), then the root and its Scan button
+    engine.grant_mode, engine.grant_delay = 'granted', 1.0
+    fresh()
+    expect(table).to_contain_text('No roots granted')
+    ok(status.get_attribute('role') == 'status' and status.inner_text() == '', 'the add-folder status region is in the page and empty before any click')
+    add.click()
+    expect(status).to_have_text('Waiting for you to choose a folder in the Windows dialog.')
+    expect(add).to_have_attribute('aria-disabled', 'true')
+    expect(add).to_be_focused()
+    add.click(force=True)  # a second click while the dialog is open sends nothing (force: Playwright waits out aria-disabled otherwise)
+    page.evaluate('document.activeElement.blur()')  # the native dialog took the window focus: it must come back to the button
+    expect(status).to_contain_text('Added E:\\Picked Folder', timeout=5000)
+    ok(len(engine.grant_calls) == 1, 'one dialog, one request, however often the button is pressed while waiting')
+    call = engine.grant_calls[0]
+    ok(call['payload'] == {'purpose': 'metadata_scan'} and call['deadline_ms'] == 60000, f"the request carries no path and asks for the longest deadline: {call['payload']} {call['deadline_ms']}")
+    expect(table).to_contain_text('Picked Folder')
+    expect(add).not_to_have_attribute('aria-disabled', 'true')
+    expect(add).to_be_focused()
+    card = cards.filter(has_text='Picked Folder')
+    expect(card.get_by_role('button', name=re.compile('^Scan ')).first).to_be_visible()
+    expect(card).to_contain_text('just added')
+    ok(error.inner_text() == '', 'a granted folder shows no error')
+
+    # cancelled: quiet and neutral, no root
+    engine.grant_mode, engine.grant_delay = 'cancelled', 0.0
+    fresh()
+    add.click()
+    expect(status).to_have_text('No folder was added.')
+    expect(add).to_be_focused()
+    ok('Picked' not in table.inner_text() and error.inner_text() == '', 'cancelling adds nothing and raises no error')
+
+    # refused (the unverified-identity refusal): the reason as plain text
+    engine.grant_mode = 'refused'
+    fresh()
+    add.click()
+    expect(status).to_contain_text('could not verify that folder')
+    expect(table).to_contain_text('No roots granted')
+
+    # busy: the service's own words
+    engine.grant_mode = 'busy'
+    fresh()
+    add.click()
+    expect(status).to_have_text('a native dialog is already open')
+    expect(add).to_be_focused()
+
+    # deadline, the grant landed: the roots are read again and the new one is reported; the dialog is not reopened
+    engine.grant_mode = 'deadline'
+    fresh()
+    add.click()
+    expect(status).to_contain_text('Added E:\\Picked At The Deadline')
+    ok(len(engine.grant_calls) == 1, 'deadline_exceeded never reopens the picker')
+
+    # deadline, nothing yet, the owner picks afterwards: the status says so, and the root appears on roots.changed
+    engine.grant_mode = 'deadline_late'
+    fresh()
+    add.click()
+    expect(status).to_contain_text('No folder was added yet')
+    expect(table).to_contain_text('Picked After The Deadline', timeout=5000)
+    ok(len(engine.grant_calls) == 1, 'a grant that lands after the deadline shows up from roots.changed without a second request')
+
+    # no picker: the button is gone and the page says where folders are added
+    engine.grant_picker = False
+    fresh()
+    expect(page.get_by_role('button', name='Add a folder…')).to_have_count(0)
+    expect(page.locator('main')).to_contain_text('Folders are added in the desktop app.')
+    print('PASS Add a folder: waiting, granted, cancelled, refused, busy, deadline then re-read, no picker')
+
+
 def check_narrow(page: Page, base: str) -> None:
     page.set_viewport_size({'width': 390, 'height': 844})
     for view in ('explorer', 'tiers', 'companion', 'health'):
@@ -1001,6 +1129,7 @@ def run_views(page: Page, base: str, shots: Path | None) -> None:
         check_tiers_loading_followups(page, engine)
         check_tiers_source_eligibility(page, engine)
         check_tiers_refused(page, engine)
+        check_add_folder(page, engine)
     finally:
         engine.stop()
     check_tiers(page, base, shoot)
