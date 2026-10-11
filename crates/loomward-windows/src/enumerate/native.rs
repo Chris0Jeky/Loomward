@@ -679,7 +679,7 @@ impl DirSource for NativeSource {
         }
         let handle = {
             let _profile = profile::OPEN.start();
-            unsafe {
+            let handle = unsafe {
                 OpenFileById(
                     root.file.as_raw_handle(),
                     &descriptor,
@@ -690,11 +690,13 @@ impl DirSource for NativeSource {
                         | FILE_FLAG_OPEN_REPARSE_POINT
                         | FILE_FLAG_OPEN_NO_RECALL,
                 )
+            };
+            // Read the thread's last error before the timer's drop can run platform code.
+            if handle == INVALID_HANDLE_VALUE {
+                return Err(last_error());
             }
+            handle
         };
-        if handle == INVALID_HANDLE_VALUE {
-            return Err(last_error());
-        }
         let result = opened(
             Arc::new(unsafe { File::from_raw_handle(handle) }),
             identity.id,
