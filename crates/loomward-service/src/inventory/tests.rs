@@ -305,6 +305,101 @@ fn metadata_snapshots_and_cursors_have_finite_budgets() {
 }
 
 #[test]
+fn metadata_entry_bounds_refuse_the_whole_page_and_issue_no_cursor() {
+    struct Rows {
+        key: &'static str,
+        count: usize,
+    }
+    impl Provider for Rows {
+        fn dataset(&self) -> DatasetClass {
+            DatasetClass::Synthetic
+        }
+        fn read(&self, command: Command, deadline: Instant) -> Result<Value, ErrorBody> {
+            let mut value = Fixtures.read(command, deadline)?;
+            let row = value[self.key][0].clone();
+            value[self.key] = Value::Array(vec![row; self.count]);
+            Ok(value)
+        }
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let at_apps_bound = open(
+        tmp.path(),
+        DatasetClass::Synthetic,
+        Some(Arc::new(Rows {
+            key: "applications",
+            count: 6144,
+        })),
+    );
+    let page = call(
+        &at_apps_bound,
+        "apps.list",
+        json!({"limit": 1, "cursor": null}),
+        2000,
+    );
+    assert_eq!(page["ok"], true, "{page}");
+    assert!(!page["result"]["next_cursor"].is_null());
+    drop(at_apps_bound);
+
+    let over_apps_bound = open(
+        tmp.path(),
+        DatasetClass::Synthetic,
+        Some(Arc::new(Rows {
+            key: "applications",
+            count: 6145,
+        })),
+    );
+    let refused = call(
+        &over_apps_bound,
+        "apps.list",
+        json!({"limit": 1, "cursor": null}),
+        2000,
+    );
+    assert_eq!(refused["ok"], false);
+    assert_eq!(refused["error"]["code"], "resource_budget");
+    assert!(refused["error"]["detail"].is_null());
+    assert!(refused["result"].is_null());
+    drop(over_apps_bound);
+
+    let at_shortcut_bound = open(
+        tmp.path(),
+        DatasetClass::Synthetic,
+        Some(Arc::new(Rows {
+            key: "shortcuts",
+            count: 400,
+        })),
+    );
+    assert_eq!(
+        call(
+            &at_shortcut_bound,
+            "desktop.contexts",
+            json!({"limit": 1, "cursor": null}),
+            2000
+        )["ok"],
+        true
+    );
+    drop(at_shortcut_bound);
+
+    let over_shortcut_bound = open(
+        tmp.path(),
+        DatasetClass::Synthetic,
+        Some(Arc::new(Rows {
+            key: "shortcuts",
+            count: 401,
+        })),
+    );
+    let refused = call(
+        &over_shortcut_bound,
+        "desktop.contexts",
+        json!({"limit": 1, "cursor": null}),
+        2000,
+    );
+    assert_eq!(refused["ok"], false);
+    assert_eq!(refused["error"]["code"], "resource_budget");
+    assert!(refused["error"]["detail"].is_null());
+    assert!(refused["result"].is_null());
+}
+
+#[test]
 fn metadata_modules_expose_no_effect_or_unbounded_filesystem_api() {
     for source in [
         include_str!("../apps.rs"),

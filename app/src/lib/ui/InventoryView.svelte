@@ -83,10 +83,10 @@
         <tbody>
           {#each apps.applications as app, i (i)}
             <tr><th scope="row"><VisibleName name={evidence(app.name)} />{#if app.name.expandable}<span class="muted"> · literal expandable text</span>{/if}{#if app.name.reason}<small>{app.name.reason}</small>{/if}</th>
-              <td><VisibleName name={evidence(app.publisher)} /><small><VisibleName name={evidence(app.version)} /></small></td>
+              <td><VisibleName name={evidence(app.publisher)} />{#if app.publisher.reason}<small>{app.publisher.reason}</small>{/if}<small><VisibleName name={evidence(app.version)} /></small>{#if app.version.reason}<small>{app.version.reason}</small>{/if}</td>
               <td>{label(app.scope)}<small>{label(app.provider)} · <VisibleName name={app.registry_key} /></small></td>
               <td>{formatBytes(app.estimated_size_bytes)}{#if app.size_reason}<small>{app.size_reason}</small>{/if}</td>
-              <td><VisibleName name={evidence(app.install_location)} /></td></tr>
+              <td><VisibleName name={evidence(app.install_location)} />{#if app.install_location.reason}<small>{app.install_location.reason}</small>{/if}</td></tr>
           {/each}
         </tbody>
       </table>
