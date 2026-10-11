@@ -1,0 +1,11 @@
+{
+  "def": "IdentityObservation",
+  "value": {
+    "quality": "unverified",
+    "durable_reference": "unavailable_filesystem",
+    "volume_key": "vsn_synthetic_exfat",
+    "file_id_hex": null,
+    "observed_generation": "3",
+    "authorises_effects": false
+  }
+}

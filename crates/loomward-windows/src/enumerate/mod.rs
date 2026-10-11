@@ -107,6 +107,16 @@ pub enum IdBasis {
     NonUnique,
     /// Neither: identity quality `path_observation`, no durable references.
     None,
+    /// The volume's filesystem cannot verify file identity (FAT, exFAT, unknown), listed only
+    /// because its grant allows that (#219). Any ID beside it is a weak observation that binds
+    /// nothing but the grant root: no matching, reopening, durable references or effects.
+    Unverified,
+}
+
+/// Whether a filesystem can verify file identity. Only NTFS and ReFS can; FAT, FAT32, exFAT and
+/// unknown filesystems list identity-unverified, and only under a grant that allows it (#219).
+pub fn verifies_identity(filesystem: &str) -> bool {
+    filesystem.eq_ignore_ascii_case("NTFS") || filesystem.eq_ignore_ascii_case("ReFS")
 }
 
 /// The facts read from an opened (and post-open validated) directory handle.
@@ -132,7 +142,8 @@ pub enum SourceError {
     /// The listed and post-open IDs disagree; the directory is recorded `partial`.
     IdentityChanged,
     /// Required identity is unverified: a listed ID cannot be bound, Find has no verified
-    /// directory identity, or an identity is unsuitable for reopening.
+    /// directory identity on a filesystem that should have one, an identity is unsuitable for
+    /// reopening, or a FAT, exFAT or unknown filesystem was opened without an unverified grant.
     IdentityUnverified,
     /// Access denied.
     AccessDenied,

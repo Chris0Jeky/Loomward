@@ -428,6 +428,21 @@ with stop=cancelled when no earlier reader stop exists; a permission refusal ins
 and no duplicates report. seq and rev
 have the same ordering semantics as scan jobs. Personal scan gating is unchanged.
 
+## Identity-unverified volumes (#219)
+
+Only NTFS and ReFS verify file identity. A root on a FAT, FAT32, exFAT or unknown filesystem is
+granted identity-unverified: a personal one only after the owner confirms it (the desktop picker's
+one-line native confirmation, or `--allow-identity-unverified` beside `--grant-root`; declining the
+confirmation is `cancelled_by_user`). A synthetic or lab root needs no confirmation. Without such a
+grant the root opens refused, as before. Such a root lists metadata only (names, sizes, dates); every
+row carries `identity.quality` `unverified` and the `identity_unverified` entry flag, no
+`file_id_hex`, and `durable_reference` `unavailable_filesystem`. Each relist rechecks containment
+by normalised path under the granted root; a failed recheck leaves that listing partial and never
+refreshes its rows. Unverified rows are never placement candidates (`placement.simulate` refuses
+`identity_unverified`), never duplicate content-read inputs (they count as unknowns, so candidate
+coverage is partial, and the engine refuses content reads with `identity_unverified`), and never a
+durable reference. NTFS and ReFS never fall back to this mode.
+
 ## Collections (local preferences)
 
 The four `collections.*` commands work in synthetic and personal sessions. They read catalogue

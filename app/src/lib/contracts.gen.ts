@@ -99,7 +99,7 @@ export type ExtFamily = "document" | "spreadsheet" | "presentation" | "image" | 
 
 export type FileAttribute = "readonly" | "hidden" | "system" | "archive" | "compressed" | "sparse" | "encrypted" | "offline" | "not_content_indexed" | "reparse_point" | "recall_on_open" | "recall_on_data_access" | "pinned" | "unpinned" | "temporary";
 
-export type EntryFlag = "sensitive_name" | "protected_context" | "hardlink_suspected" | "cloud_placeholder" | "reparse_not_followed" | "excluded_state_dir" | "access_denied" | "enumeration_error" | "identity_unavailable" | "name_lossy" | "on_disk_only_listing" | "listing_incomplete";
+export type EntryFlag = "sensitive_name" | "protected_context" | "hardlink_suspected" | "cloud_placeholder" | "reparse_not_followed" | "excluded_state_dir" | "access_denied" | "enumeration_error" | "identity_unavailable" | "name_lossy" | "on_disk_only_listing" | "listing_incomplete" | "identity_unverified";
 
 /** Display only. Never accepted back as input; no command takes a path string. */
 export interface DisplayPath {
@@ -633,8 +633,8 @@ export interface NodePath {
 }
 
 export interface IdentityObservation {
-  /** Width is preserved: a 64-bit ID is never padded and reported as 128-bit. */
-  quality: "native_file_id_128" | "native_file_id_64" | "path_observation" | "unavailable";
+  /** Width is preserved: a 64-bit ID is never padded and reported as 128-bit. unverified: listed on a FAT, exFAT or unknown filesystem under an identity-unverified grant; metadata only, never an effect, placement or content-read input. */
+  quality: "native_file_id_128" | "native_file_id_64" | "path_observation" | "unavailable" | "unverified";
   /** Whether labels and collection membership may bind to this object (docs/41 section 6.3). Without it, feedback.record returns capability_unavailable. */
   durable_reference: "available" | "unavailable_identity_quality" | "unavailable_filesystem";
   volume_key: string | null;

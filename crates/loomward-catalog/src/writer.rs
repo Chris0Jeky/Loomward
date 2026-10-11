@@ -947,7 +947,16 @@ fn prepare_state(
                 None
             };
             let tx = conn.transaction()?;
-            tx.execute("INSERT INTO st.root_grant(volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns,lab_root_id) VALUES (?1,?2,?3,?4,?5,'active',?6,?7)",params![o.volume_key,o.root_file_id,o.display_path,o.origin,o.granted_via,o.observed_at_ns,lab])?;
+            // #219: a root observed on a filesystem that cannot verify identity is granted
+            // identity-unverified; the service confirmed a personal one with the owner first.
+            let mode = if o.filesystem.as_deref().is_some_and(|fs| {
+                !fs.eq_ignore_ascii_case("NTFS") && !fs.eq_ignore_ascii_case("ReFS")
+            }) {
+                "unverified"
+            } else {
+                "verified"
+            };
+            tx.execute("INSERT INTO st.root_grant(volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns,lab_root_id,identity_mode) VALUES (?1,?2,?3,?4,?5,'active',?6,?7,?8)",params![o.volume_key,o.root_file_id,o.display_path,o.origin,o.granted_via,o.observed_at_ns,lab,mode])?;
             let grant = tx.last_insert_rowid();
             state_revision(&tx)?;
             tx.commit()?;

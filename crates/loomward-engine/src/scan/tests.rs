@@ -177,14 +177,14 @@ fn duplicate_grant_store(state: &std::path::Path, root: &GrantedRoot) -> rusqlit
     let conn = rusqlite::Connection::open(state.join("state.db")).unwrap();
     conn.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);
         INSERT INTO meta VALUES('dataset_class','synthetic');
-        CREATE TABLE root_grant(id INTEGER PRIMARY KEY,display_path TEXT,volume_key TEXT,root_file_id BLOB,state TEXT);").unwrap();
+        CREATE TABLE root_grant(id INTEGER PRIMARY KEY,display_path TEXT,volume_key TEXT,root_file_id BLOB,state TEXT,identity_mode TEXT NOT NULL DEFAULT 'verified');").unwrap();
     let expected = root.expected.unwrap();
     let id = match expected.id.unwrap() {
         FileIdObs::Id128(id) => id.to_vec(),
         FileIdObs::Id64(id) => id.to_le_bytes().to_vec(),
     };
     conn.execute(
-        "INSERT INTO root_grant VALUES(1,?1,?2,?3,'active')",
+        "INSERT INTO root_grant(id,display_path,volume_key,root_file_id,state) VALUES(1,?1,?2,?3,'active')",
         rusqlite::params![
             root.path.to_str().unwrap(),
             format!("vsn_{}", expected.volume_serial.unwrap()),
@@ -193,6 +193,100 @@ fn duplicate_grant_store(state: &std::path::Path, root: &GrantedRoot) -> rusqlit
     )
     .unwrap();
     conn
+}
+
+/// #219: a scan's native source lists identity-unverified only for a root allowed to: a
+/// synthetic fixture root, or a granted root whose grant record says so; personal otherwise not.
+#[cfg(windows)]
+#[test]
+fn scan_source_allows_identity_unverified_only_when_the_root_does() {
+    use loomward_windows::enumerate::NativeSource;
+    let temp = canonical_tempdir();
+    if skip_elevated() {
+        return;
+    }
+    let (_, id) = NativeSource::default().open_root(temp.path()).unwrap();
+    for (class, allowed) in [
+        (DatasetClass::Synthetic, true),
+        (DatasetClass::Personal, false),
+    ] {
+        let root = GrantedRoot::new(
+            RootId::new("rt_unverified_fixture").unwrap(),
+            temp.path().into(),
+            class,
+            id,
+        );
+        assert_eq!(root.allows_identity_unverified(), allowed);
+        let opened = super::native_source(&root, Default::default())
+            .with_filesystem("exFAT")
+            .open_root(temp.path());
+        assert_eq!(
+            opened.map(|(_, id)| id.basis).ok(),
+            allowed.then_some(IdBasis::Unverified),
+            "{class:?}"
+        );
+    }
+}
+
+/// #219: an identity-unverified root is scanned unwatched (the watch reopens by file ID); a
+/// verified root on the same watch-capable sink is watched.
+#[cfg(windows)]
+#[test]
+fn identity_unverified_roots_are_never_watched() {
+    use loomward_windows::enumerate::NativeSource;
+    let temp = canonical_tempdir();
+    if skip_elevated() {
+        return;
+    }
+    let (_, id) = NativeSource::default().open_root(temp.path()).unwrap();
+    for (name, basis, watched) in [
+        ("rt_watch_verified", IdBasis::PostOpen, true),
+        ("rt_watch_unverified", IdBasis::Unverified, false),
+    ] {
+        let root = GrantedRoot::new(
+            RootId::new(name).unwrap(),
+            temp.path().into(),
+            DatasetClass::Synthetic,
+            OpenedIdentity { basis, ..id },
+        );
+        let e = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Synthetic)).unwrap();
+        e.set_scan_sink(Arc::new(MemorySink::default())).unwrap();
+        let job = e.scan_start(&root, None).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while e.job_status(&job.job_id).unwrap().state != loomward_protocol::JobState::Completed {
+            assert!(std::time::Instant::now() < deadline, "{name}");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let watch = e.scan_watches.lock().unwrap().remove(root.root_id());
+        assert_eq!(watch.is_some(), watched, "{name}");
+        if let Some(watch) = watch {
+            watch.stop();
+        }
+    }
+}
+
+/// #219: an identity-unverified root is refused at content-read admission, before the grant
+/// store is even consulted.
+#[test]
+fn duplicate_admission_refuses_an_identity_unverified_root() {
+    let state = tempfile::tempdir().unwrap();
+    let mut grant = root();
+    let _conn = duplicate_grant_store(state.path(), &grant);
+    let engine = Engine::open(EngineConfig::new(
+        state.path().to_owned(),
+        DatasetClass::Synthetic,
+    ))
+    .unwrap();
+    assert!(engine.duplicate_read_admission(&grant).is_ok());
+    grant.expected.as_mut().unwrap().basis = IdBasis::Unverified;
+    for err in [
+        engine.duplicate_read_admission(&grant).unwrap_err(),
+        engine
+            .inspect_duplicates(&grant, &[], duplicate_budget())
+            .unwrap_err(),
+    ] {
+        assert_eq!(err.to_body().message.as_str(), "identity_unverified");
+    }
 }
 
 #[test]
@@ -296,7 +390,7 @@ fn duplicate_admission_rechecks_durable_class_identity_and_ambiguity() {
             "grant_not_active"
         );
     }
-    conn.execute("INSERT INTO root_grant SELECT 2,display_path,volume_key,root_file_id,'active' FROM root_grant WHERE id=1", []).unwrap();
+    conn.execute("INSERT INTO root_grant(id,display_path,volume_key,root_file_id,state) SELECT 2,display_path,volume_key,root_file_id,'active' FROM root_grant WHERE id=1", []).unwrap();
     assert_eq!(
         engine
             .duplicate_read_admission(&grant)
@@ -1831,13 +1925,13 @@ fn granted_root_comes_only_from_an_active_durable_grant() {
     conn.execute_batch(
         "CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);
          INSERT INTO meta VALUES('dataset_class','synthetic');
-         CREATE TABLE root_grant(id INTEGER PRIMARY KEY,display_path TEXT,volume_key TEXT,root_file_id BLOB,state TEXT);",
+         CREATE TABLE root_grant(id INTEGER PRIMARY KEY,display_path TEXT,volume_key TEXT,root_file_id BLOB,state TEXT,identity_mode TEXT NOT NULL DEFAULT 'verified');",
     )
     .unwrap();
     let path = root_dir.path().to_string_lossy().into_owned();
     let insert = |id: i64, file_id: &[u8], state: &str| {
         conn.execute(
-            "INSERT INTO root_grant VALUES(?1,?2,?3,?4,?5)",
+            "INSERT INTO root_grant(id,display_path,volume_key,root_file_id,state) VALUES(?1,?2,?3,?4,?5)",
             rusqlite::params![id, path, volume, file_id, state],
         )
         .unwrap();
@@ -1871,6 +1965,22 @@ fn granted_root_comes_only_from_an_active_durable_grant() {
     assert_eq!(root.root_id(), &rt(1));
     assert_eq!(root.path(), root_dir.path());
     assert_eq!(root.dataset_class(), DatasetClass::Synthetic);
+    // #219: only the grant record allows identity-unverified listing, and on NTFS the root
+    // keeps its verified identity even then.
+    assert!(!root.allows_identity_unverified());
+    conn.execute(
+        "UPDATE root_grant SET identity_mode='unverified' WHERE id=1",
+        [],
+    )
+    .unwrap();
+    let unverified = engine.granted_root(rt(1), 1, &catalog_root(1)).unwrap();
+    assert!(unverified.allows_identity_unverified());
+    assert_eq!(unverified.expected.unwrap().basis, IdBasis::PostOpen);
+    conn.execute(
+        "UPDATE root_grant SET identity_mode='verified' WHERE id=1",
+        [],
+    )
+    .unwrap();
     assert_eq!(
         message(engine.granted_root(rt(2), 2, &catalog_root(2))),
         "grant_not_active"
