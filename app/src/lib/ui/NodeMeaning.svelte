@@ -4,12 +4,12 @@
   import { session } from '../stores/session.svelte';
   import MeaningThread from './MeaningThread.svelte';
   import type { MeaningThread as Thread } from '../contracts.gen';
-  let { nodeId, meaning }: { nodeId: string; meaning?: Thread } = $props();
+  let { nodeId, meaning, parent }: { nodeId: string; meaning?: Thread; parent?: Meaning } = $props();
   const own = new Meaning();
   $effect(() => {
-    const id = nodeId, supplied = meaning, client = session.client;
+    const id = nodeId, supplied = meaning, client = session.client, asked = parent?.settled;
     void session.epoch;
-    if (!supplied && client) untrack(() => void own.load(client, [id]));
+    if (!supplied && !asked && client) untrack(() => void own.load(client, [id]));
     return () => own.clear();
   });
 </script>

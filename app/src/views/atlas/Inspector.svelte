@@ -7,12 +7,14 @@
   import type { NodeInfo, Palette } from '../../../viz/types.js';
   import { drawSwatch, zeroCounts } from '../../../viz/woven-treemap.js';
   import { formatApprox } from './shared.svelte';
+  import type { Meaning } from '../../lib/stores/meaning.svelte';
   import NodeMeaning from '../../lib/ui/NodeMeaning.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
 
   interface Props {
     node: NodeInfo | null;
     meaning?: MeaningThread;
+    parent?: Meaning;
     status: string;
     basis: Basis;
     provisional: boolean;
@@ -20,7 +22,7 @@
     /** Every name from the top of the trail down to `node` (see pathTo). */
     path: string[];
   }
-  let { node, meaning, status, basis, provisional, palette, path }: Props = $props();
+  let { node, meaning, parent, status, basis, provisional, palette, path }: Props = $props();
 
   let swatch = $state<HTMLCanvasElement>();
   $effect(() => {
@@ -82,7 +84,7 @@
 
       <dl class="channels">
         <div class="ch"><dt>Weft<small>meaning</small></dt><dd>
-          <NodeMeaning nodeId={src.node_id} {meaning} />
+          <NodeMeaning nodeId={src.node_id} {meaning} {parent} />
         </dd></div>
         <div class="ch"><dt>Warp<small>residency</small></dt><dd>
           {#if src.threads.residency.tier === null}<span class="unknown">unknown</span>

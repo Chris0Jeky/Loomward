@@ -78,7 +78,7 @@
         const ids = t.visibleNodeIds;
         if (ids.join(',') === visibleIds.join(',')) return;
         visibleIds = ids;
-        if (show.meaning && !nav.busy && session.client) void meaning.load(session.client, ids);
+        if (show.meaning && !nav.busy && session.client) meaning.loadSoon(session.client, ids);
       }),
       t.on('edge', (e: { dir: string; node: NodeInfo }) => say.say(`Nothing further ${e.dir}. Still on ${canvasLabel(e.node.name)}.`)),
     ];
@@ -261,7 +261,7 @@
     <RegionList slice={clothSlice} onopen={(id, name) => void nav.drill(id, name)} oninspect={inspectById} />
   </section>
 
-  <Inspector meaning={shown ? meaning.items[shown.id] : undefined} node={shown} status={hovered ? 'Hover' : selected ? 'Selected' : 'Nothing selected'} basis={nav.basis} {provisional} {palette} path={pathNames} />
+  <Inspector meaning={shown ? meaning.items[shown.id] : undefined} parent={meaning} node={shown} status={hovered ? 'Hover' : selected ? 'Selected' : 'Nothing selected'} basis={nav.basis} {provisional} {palette} path={pathNames} />
 </div>
 
 <section class="legend" aria-labelledby="threads-h">

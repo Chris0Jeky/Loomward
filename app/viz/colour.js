@@ -56,7 +56,7 @@ export function warpOf(m, p, show = true) {
   const dye = (/** @type {string} */ label) => p.dyes[labelHash(label) % p.dyes.length] ?? p.undyed;
   switch (m.state) {
     case 'labelled': return m.label ? { colour: dye(m.label), alt: null, pattern: 'solid' } : { colour: p.undyed, alt: null, pattern: 'undyed' };
-    case 'suggested': return m.label ? { colour: dye(m.label), alt: p.undyed, pattern: 'suggested', intensity: m.share ?? 0.5 } : { colour: p.undyed, alt: null, pattern: 'pending' };
+    case 'suggested': return m.label ? { colour: dye(m.label), alt: p.undyed, pattern: 'suggested', intensity: Math.ceil((m.share ?? 0.5) * 8) / 8 } : { colour: p.undyed, alt: null, pattern: 'pending' };
     case 'mixed': {
       const a = m.label ? labelHash(m.label) % p.dyes.length : 0;
       return { colour: p.dyes[a] ?? p.undyed, alt: p.dyes[(a + 3) % p.dyes.length] ?? p.undyed, pattern: 'mixed' };
