@@ -13,6 +13,12 @@ use std::time::Duration;
 pub trait NativeDialogs: Send + Sync {
     /// Rust-side folder picker; the chosen path never crosses IPC.
     fn pick_folder(&self) -> Option<PathBuf>;
+    /// Rust-side open-file dialog for a backup receipt; the chosen path never crosses IPC. `title`
+    /// names what to pick. An adapter without one never opens a dialog.
+    fn pick_file(&self, title: &str) -> Option<PathBuf> {
+        let _ = title;
+        None
+    }
     /// Native modal listing recipient, model, fields and every item of the summary. `true` only on
     /// explicit accept. A display-budget refusal is an error, not an owner decline.
     fn confirm_disclosure(&self, summary: &DisclosureSummary) -> Result<bool, crate::ErrorBody>;

@@ -599,15 +599,23 @@ fn chain_lengths_reuse_proven_seeds_but_count_the_unproven_prefix() {
         extensions: HashMap::new(),
         revision: 1,
         fenced_listings: HashSet::new(),
+        bulk: HashMap::new(),
+        bulk_enabled: Arc::default(),
     };
     let mut proven = HashMap::new();
-    assert_eq!(ctx.chain_length(&conn, 512, &mut proven).unwrap(), 512);
+    assert_eq!(
+        ctx.chain_length(&conn, LIVE, 512, &mut proven).unwrap(),
+        512
+    );
     assert_eq!(proven.len(), 512);
     // No table exists: revisiting this proven seed must need neither a parent walk nor SQL.
     ctx.parents.remove(&512);
-    assert_eq!(ctx.chain_length(&conn, 512, &mut proven).unwrap(), 512);
+    assert_eq!(
+        ctx.chain_length(&conn, LIVE, 512, &mut proven).unwrap(),
+        512
+    );
     assert!(matches!(
-        ctx.chain_length(&conn, 513, &mut proven),
+        ctx.chain_length(&conn, LIVE, 513, &mut proven),
         Err(Error::Invalid("tree depth limit"))
     ));
 }
@@ -1572,7 +1580,7 @@ fn rejected_single_pass_publication_discards_intents_before_the_next_witness() {
 fn prepared_file_matches_survive_until_publication_without_recopied_or_rematched_rows() {
     let (temp, mut conn, command) = fixture();
     let timings = Arc::new(Mutex::new(WriterTimings::default()));
-    let prepared = prepare_state(&mut conn, &command, &HashSet::new()).unwrap();
+    let prepared = prepare_state(&mut conn, &command, &HashSet::new(), &HashMap::new()).unwrap();
     assert!(matches!(prepared, Some(Prepared::Listing)));
     assert_eq!(pending_count(temp.path()), 4);
     conn.execute_batch("CREATE TEMP TRIGGER no_rematch BEFORE UPDATE ON old_file BEGIN SELECT RAISE(ABORT,'second match'); END;
@@ -1585,6 +1593,8 @@ fn prepared_file_matches_survive_until_publication_without_recopied_or_rematched
         extensions: HashMap::new(),
         revision: 0,
         fenced_listings: HashSet::new(),
+        bulk: HashMap::new(),
+        bulk_enabled: Arc::default(),
     };
     let tx = conn.transaction().unwrap();
     tx.execute("UPDATE revision SET catalog_rev=catalog_rev+1", [])
@@ -1613,7 +1623,7 @@ fn prepared_file_matches_survive_until_publication_without_recopied_or_rematched
 #[test]
 fn file_matching_prefers_exact_name_and_consumes_each_old_row_once() {
     let (_temp, conn, _) = fixture();
-    old_files(&conn, 1).unwrap();
+    old_files(&conn, LIVE, 1).unwrap();
     let identity = [2; 16];
     assert_eq!(
         match_file(&conn, "link", None, Some(&identity), Some(42))
@@ -1683,6 +1693,7 @@ fn publish_with_window_bind(
             rx,
             Arc::new(Mutex::new(WriterTimings::default())),
             alive,
+            Arc::default(),
             crash,
             Some(paused),
         );

@@ -144,13 +144,16 @@ impl Desktop {
                 None,
             ));
         }
-        // Fail closed before the service, so neither dialog can open for these (docs/41 5.2,
+        // Fail closed before the service, so no dialog can open for these (docs/41 5.2,
         // semantics.md 11). The engine service refuses both itself (a synthetic picker request,
         // and every teacher command until wave 3); this stays as the adapter's second wall and
         // because the `--fixtures` service would answer "granted".
         let refusal = match (command, self.dataset) {
             (Some(Command::RootsRequestGrant), DatasetClass::Synthetic) => Some(json!({
                 "outcome": "refused", "root": null, "refusal": "synthetic_session_requires_lab_root"
+            })),
+            (Some(Command::BackupsImport), DatasetClass::Synthetic) => Some(json!({
+                "outcome": "refused", "evidence": null, "refusal": "synthetic_session"
             })),
             (Some(Command::GrantsCreateDisclosure), DatasetClass::Personal) => Some(json!({
                 "outcome": "refused", "grant": null, "refusal": "confinement_not_enforced"

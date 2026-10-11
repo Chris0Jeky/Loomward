@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 
 from playwright.sync_api import Browser, Page, expect
-from test_app_views import wait_until
+from test_app_views import TOKEN, FakeEngine, wait_until
 
 ROOT = Path(__file__).resolve().parents[1]
 TOKENS = ROOT / 'app' / 'src' / 'styles' / 'tokens.css'
@@ -225,7 +225,7 @@ def run_a11y(browser: Browser, base: str, check) -> None:
 
     # --- unique names, row headers, dangling references (2.4.6, 4.1.2, 1.3.1) ---------------------------------------
     page = new_page()
-    for view, heading in (('explorer', 'Explorer'), ('collections', 'Collections'), ('atlas', 'Atlas'), ('observatory', 'Observatory'), ('tiers', 'Tiers'), ('companion', 'Companion'), ('health', 'Grants & health')):
+    for view, heading in (('explorer', 'Explorer'), ('collections', 'Collections'), ('atlas', 'Atlas'), ('observatory', 'Observatory'), ('tiers', 'Tiers'), ('companion', 'Companion'), ('health', 'Grants & health'), ('backups', 'Backups')):
         goto(page, base, view, heading)
         expect(page.locator('main canvas, main table, main .vols').first).to_be_visible()
         if view in ('atlas', 'observatory'):
@@ -383,7 +383,7 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     check('hidden character' not in page.locator('main .ctl').first.inner_text(), 'badge: the visible text is still only the code')
 
     # --- 2.5.8: target size ---------------------------------------------------------------------------------------------
-    for view, heading in (('explorer', 'Explorer'), ('collections', 'Collections'), ('atlas', 'Atlas'), ('observatory', 'Observatory'), ('tiers', 'Tiers'), ('companion', 'Companion'), ('health', 'Grants & health')):
+    for view, heading in (('explorer', 'Explorer'), ('collections', 'Collections'), ('atlas', 'Atlas'), ('observatory', 'Observatory'), ('tiers', 'Tiers'), ('companion', 'Companion'), ('health', 'Grants & health'), ('backups', 'Backups')):
         goto(page, base, view, heading)
         page.wait_for_timeout(300)
         small = page.evaluate("""() => [...document.querySelectorAll('button, a[href], select, input')].filter((el) => !el.closest('.skip') && !el.classList.contains('skip')).flatMap((el) => {
@@ -693,5 +693,43 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     bar = page.evaluate("() => ({ bg: getComputedStyle(document.querySelector('.scanbar i')).backgroundColor, canvas: getComputedStyle(document.body).backgroundColor, edge: getComputedStyle(document.querySelector('.scanbar')).borderTopColor })")
     check(bar['bg'] != bar['canvas'] and bar['edge'] != bar['canvas'], f'1.4.1 forced colours: the scan bar and its edge are not the canvas colour ({bar})')
     page.context.close()
+
+    # --- Add a folder on Grants & health, with a native picker present (2.4.3, 2.5.3, 2.5.8, 3.3.1, 4.1.2, 4.1.3) ---------------------
+    page = new_page(1280, 900)
+    goto(page, base, 'health', 'Grants & health')
+    note = page.locator('main .note')
+    check(note.inner_text().strip() == 'Folders are added in the desktop app.' and page.get_by_role('button', name='Add a folder…').count() == 0,
+          '3.3.2 without a picker the page says where folders are added and offers no dead button')
+    page.context.close()
+    engine = FakeEngine()
+    engine.grant_picker, engine.grant_mode, engine.grant_delay = True, 'cancelled', 0.8
+    engine.start()
+    try:
+        page = new_page(1280, 900)
+        page.goto(f'{engine.base}/#token={TOKEN}')
+        page.evaluate("location.hash = '#/health'")
+        expect(page.get_by_role('heading', name='Grants & health', level=1)).to_be_visible()
+        add = page.get_by_role('button', name='Add a folder…', exact=True)
+        status = page.locator('.add p.live')
+        expect(add).to_be_visible()
+        box = add.bounding_box()
+        check(box['width'] >= 24 and box['height'] >= 24, f"2.5.8 the Add a folder button is at least 24 x 24 px ({box['width']:.0f} x {box['height']:.0f})")
+        check(add.evaluate('(b) => b.tagName') == 'BUTTON' and status.get_attribute('role') == 'status' and status.inner_text() == '',
+              '4.1.2 a real button, and a status region that is in the page and empty before any use')
+        page.evaluate("document.querySelector('.add p.live').dataset.same = 'yes'")
+        add.focus()
+        page.evaluate("document.activeElement.dataset.mark = 'add'")
+        page.keyboard.press('Enter')
+        expect(status).to_have_text('Waiting for you to choose a folder in the Windows dialog.')
+        check(add.get_attribute('aria-disabled') == 'true' and page.evaluate("document.activeElement.dataset.mark") == 'add',
+              '2.4.3 while the dialog is open the button is aria-disabled, not disabled: it keeps keyboard focus')
+        expect(status).to_have_text('No folder was added.')
+        check(page.evaluate("document.querySelector('.add p.live').dataset.same") == 'yes', '4.1.3 both states are said in the region that was already in the page')
+        check(page.evaluate("document.activeElement.dataset.mark") == 'add' and add.get_attribute('aria-disabled') is None, '2.4.3 focus is on the button when the dialog closes, and it can be used again')
+        check(page.locator('main p.bad.live').inner_text() == '', '3.3.1 cancelling is not an error: the alert region stays empty')
+        check(not duplicate_names(page), f'4.1.2 no two controls share a role and name: {duplicate_names(page)[:3]}')
+        page.context.close()
+    finally:
+        engine.stop()
 
     check(not errors, f'no console errors or page errors in the accessibility leg: {errors[:3]}')

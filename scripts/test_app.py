@@ -407,6 +407,7 @@ def live_scan_refusals(browser, exe: Path) -> None:
         expect(page.locator('main table.tbl tbody')).to_contain_text('No roots granted')
         check(page.locator('ul.scans li').count() == 0 and page.locator('ul.scans button').count() == 0, 'synthetic: no root, so no Scan control is offered')
         check(page.locator('p.bad.live').inner_text() == '', 'synthetic: Grants & health loaded against the real service (jobs.list answered), no error shown')
+        check(page.get_by_role('button', name='Add a folder…').count() == 0 and 'Folders are added in the desktop app.' in page.locator('main').inner_text(), 'synthetic: loomward-serve has no folder picker, so no Add a folder button, and the page says where folders are added')
         r = live_call(page, token, 'scan.start', {'root_id': 'rt_nope', 'mode': 'full'})
         check(not r['ok'] and r['error']['code'] == 'not_found', f"synthetic: scan.start for an unknown root is not_found: {r.get('error')}")
         jobs = live_call(page, token, 'jobs.list', {'kinds': ['scan'], 'limit': 50})
@@ -419,13 +420,16 @@ def live_scan_refusals(browser, exe: Path) -> None:
         state.cleanup()
 
 
-# A small owner folder: (relative path, bytes). Four files and three folders below the root, 135 bytes.
-PERSONAL_FIXTURE = [('top.bin', 100), ('a/1.bin', 10), ('a/2.bin', 20), ('a/deep/x.bin', 5)]
+# A small owner folder: (relative path, bytes), every byte 0x01. Five files and three folders below the root, 145 bytes;
+# a/1.bin and b/1-copy.bin are the one synthetic duplicate pair (the only two files of one size).
+PERSONAL_FIXTURE = [('top.bin', 100), ('a/1.bin', 10), ('a/2.bin', 20), ('a/deep/x.bin', 5), ('b/1-copy.bin', 10)]
 
 
 def live_personal_scan(browser, exe: Path) -> None:
     """Personal scans are open: a folder granted through the server's command line (the service's real grant path)
     is scanned by pressing Scan in the app, completes, and its totals match the fixture. An unknown root is refused.
+    Personal duplicate reads are open (q-10): pressing Start inspection confirms the fixture's one duplicate pair,
+    changes no file, and revoking the root redacts the report.
 
     The folder lives under target/test-roots, not the system temp folder: a profile's AppData is never eligible.
     On an elevated host the grant is refused (identity_unavailable) and the server does not start; that is checked."""
@@ -467,17 +471,25 @@ def live_personal_scan(browser, exe: Path) -> None:
         root = listed['result']['roots'][0]
         totals = root.get('totals') or {}
         check(root['origin'] == 'owner_granted' and root['scan']['coverage'] == 'complete', f"personal: the granted folder is scanned with complete coverage: {root['scan']}")
-        check(totals.get('files') == 4 and str(totals.get('logical_bytes')) == '135', f'personal: totals match the fixture (4 files, 135 bytes): {totals}')
+        check(totals.get('files') == 5 and str(totals.get('logical_bytes')) == '145', f'personal: totals match the fixture (5 files, 145 bytes): {totals}')
         check(snapshot() == before, 'personal: the scan changed no file (contents and modification times are identical)')
         r = live_call(page, token, 'scan.start', {'root_id': 'rt_nope', 'mode': 'full'})
         check(not r['ok'] and r['error']['code'] == 'not_found', f"personal: scan.start for an unknown root is not_found: {r.get('error')}")
-        # Content reads stay gated for personal data (q-5): the Duplicates surface says so and the service refuses.
+        # Personal duplicate reads are open (q-10): the view says what it reads, and the granted folder's pair is confirmed.
         page.evaluate("location.hash = '#/duplicates'")
         expect(page.get_by_role('heading', name='Duplicates', level=1)).to_be_visible()
-        expect(page.get_by_role('status').filter(has_text='Personal content inspection is gated')).to_be_visible()
-        check(page.get_by_role('button', name='Start inspection').count() == 0, 'personal: content inspection has a gated surface')
+        expect(page.get_by_text('Reads file contents on this machine to confirm duplicates; nothing is deleted or moved.', exact=True)).to_be_visible()
+        page.get_by_role('button', name='Start inspection').click()
+        expect(page.get_by_role('rowheader', name=re.compile(r'1\.bin.*1-copy\.bin|1-copy\.bin.*1\.bin'))).to_be_visible(timeout=15000)
+        dup_jobs = live_call(page, token, 'jobs.list', {'kinds': ['duplicates'], 'limit': 50})['result']['jobs']
+        check(len(dup_jobs) == 1 and dup_jobs[0]['state'] == 'completed', f'personal: one duplicates job completed: {dup_jobs}')
+        report = dup_jobs[0]['duplicates']
+        names = sorted(report['entries'][i]['relative_path'].replace(chr(92), '/') for i in report['groups'][0]) if len(report['groups']) == 1 else []
+        check(names == ['a/1.bin', 'b/1-copy.bin'], f'personal: the one synthetic duplicate pair is confirmed: {report}')
+        check(not report['skipped'] and report['stop'] is None and 0 < int(report['bytes_read']) <= 60, f'personal: content was read within the stages, nothing skipped: {report}')
+        check(snapshot() == before, 'personal: inspection read the files and changed none of them')
         inspected = live_call(page, token, 'duplicates.inspect', {'root_id': 'rt_nope', 'budget': {'max_candidates': 200, 'max_bytes': '1024', 'max_ms': 1000}})
-        check(not inspected['ok'] and inspected['error']['detail']['reason'] == 'content_read_gated', 'personal: content inspection refused before any root access')
+        check(not inspected['ok'] and inspected['error']['code'] == 'not_found', 'personal: inspection of an unknown root is not_found')
         jobs = live_call(page, token, 'jobs.list', {'kinds': ['scan'], 'limit': 50})
         check(jobs['ok'] and len(jobs['result']['jobs']) == 1, f"personal: only the pressed Scan created a job: {jobs.get('result')}")
         # q-11: the Review surface is open for personal sessions, and the teacher stays refused.
@@ -503,6 +515,9 @@ def live_personal_scan(browser, exe: Path) -> None:
         row.get_by_role('button', name=re.compile('^Revoke…')).click()
         page.get_by_role('group', name=re.compile('Revoke root access')).get_by_role('button', name='Revoke', exact=True).click()
         expect(row.get_by_role('button', name=re.compile('^Forget…'))).to_be_visible()
+        # Revoking the root redacts its duplicates report (#318): the job outcome stays, its names do not.
+        after = live_call(page, token, 'jobs.get', {'job_id': dup_jobs[0]['job_id']})['result']['job']
+        check(after['state'] == 'completed' and after.get('duplicates') is None, f"personal: a revoked root's report is redacted: {after}")
         row.get_by_role('button', name=re.compile('^Forget…')).click()
         ask = page.get_by_role('group', name='Forget owner-folder?')
         expect(ask).to_contain_text('your files are not touched')
@@ -521,7 +536,7 @@ def live_personal_scan(browser, exe: Path) -> None:
             time.sleep(0.25)
         check(not stored('owner-folder'), f"forget: the folder name is in no state.db, WAL or start-up backup: {holders('owner-folder')}")
         check(snapshot() == before, 'forget: no file of the granted folder changed (contents and modification times are identical)')
-        print('PASS personal: a granted folder scans through the app to the fixture totals, metadata only')
+        print('PASS personal: a granted folder scans to the fixture totals and its duplicate pair is confirmed; revocation redacts; forget removes the name')
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -637,6 +652,23 @@ def build_app(out: Path | None, development: bool) -> None:
     subprocess.run(args, cwd=ROOT, env=dict(os.environ, NODE_ENV='development') if development else None, check=True)
 
 
+def live_backups(page: Page, token: str) -> None:
+    """Backups over the real HTTP adapter: read and forget exist, import does not (no Rust-owned dialog)."""
+    listed = live_call(page, token, 'backups.list', {})
+    check(listed['ok'] and listed['result'] == {'evidence': []} and listed['meta']['state_rev'] is not None, f'backups.list answers an empty synthetic list: {listed}')
+    imported = live_call(page, token, 'backups.import', {'repository_label': 'synthetic-nas', 'snapshot_id': '1' * 64, 'source_volume_id': None, 'target_volume_id': None,
+                                                          'required': [{'relative_name': 'fixture/ledger.ods', 'version': 'sha256:' + 'a' * 64}], 'integrity_check': False})
+    check(not imported['ok'] and imported['error']['code'] == 'capability_unavailable', f'backups.import is not offered over HTTP: {imported}')
+    forgot = live_call(page, token, 'backups.forget', {'evidence_id': 'be_1'})
+    check(not forgot['ok'] and forgot['error']['code'] == 'not_found', f'backups.forget of an unknown record is not_found: {forgot}')
+    page.evaluate("location.hash = '#/backups'")
+    expect(page.get_by_role('heading', name='Backups', level=1)).to_be_visible()
+    expect(page.get_by_text('No backup evidence imported yet.')).to_be_visible()
+    expect(page.get_by_text('Importing needs the desktop app in a personal session')).to_be_visible()
+    check(page.locator('main p.bad.live').inner_text() == '', 'backups: the view loaded from the engine with no error')
+    print('PASS live Backups: list and forget over HTTP, import refused, the view shows no evidence rather than demo data')
+
+
 def run_live_serve(browser_path: str | None) -> None:
     """The app's http transport against the real loomward-serve binary (lane L6) and engine service (L8)."""
     subprocess.run(['cargo', 'build', '-q', '-p', 'loomward-http', '--bin', 'loomward-serve'], cwd=ROOT, check=True)
@@ -684,6 +716,7 @@ def run_live_serve(browser_path: str | None) -> None:
             print('PASS http transport connected through loomward-serve')
             run_live_collections(page, token, Path(state.name), check)
             run_inventory(page, base, check, live=True)
+            live_backups(page, token)
             live_scan_refusals(browser, exe)
             live_personal_scan(browser, exe)
             live_placement(browser, exe)

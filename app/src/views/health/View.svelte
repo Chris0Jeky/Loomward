@@ -7,6 +7,7 @@
   import { formatBytes } from '../../lib/format/bytes';
   import { escapedName } from '../../lib/format/names';
   import { formatCount, formatDuration, formatTime } from '../../lib/format/time';
+  import { grantPicker as picker } from '../../lib/stores/grant.svelte';
   import { scans } from '../../lib/stores/scan.svelte';
   import { session } from '../../lib/stores/session.svelte';
   import { Say } from '../../lib/ui/say.svelte';
@@ -129,6 +130,29 @@
 
   const rootActive = (r: Root) => r.grant_state === 'active';
 
+  let addBtn = $state<HTMLButtonElement>();
+  /** The native picker exists only where the service says so; elsewhere the page says where folders are added. */
+  const canPick = $derived(session.info?.features.grant_picker === true);
+  const pickNote = $derived(
+    !session.info || canPick ? ''
+    : session.info.adapter === 'http' ? 'Folders are added in the desktop app.'
+    : session.info.dataset_class === 'synthetic' ? 'A synthetic session scans registered lab folders only; it cannot add a folder.'
+    : 'This session has no folder picker.');
+
+  /**
+   * One native dialog at a time. The roots are read again afterwards. The button stays in the page (aria-disabled, never
+   * disabled) so it keeps focus while the dialog is open; if focus was lost meanwhile it comes back, but it is never
+   * pulled away from wherever the owner moved it.
+   */
+  async function addFolder() {
+    if (picker.phase === 'waiting') return;
+    await picker.ask(roots?.roots.map((r) => r.root_id) ?? []);
+    await load();
+    await tick();
+    const a = document.activeElement;
+    if (!a || a === document.body || !a.isConnected) addBtn?.focus();
+  }
+
   /** Scan or Cancel: one button that keeps its place, so keyboard focus is never lost while a scan starts, runs and ends. */
   async function primary(r: Root, v: ScanView | null) {
     if (v?.activity === 'cancelling') return;
@@ -158,7 +182,7 @@
 </script>
 
 <h1>Grants &amp; health</h1>
-<p class="lede">What Loomward may read, and how it is doing. Grants come from the desktop folder picker or the server's command line; this page can only ask to end one.</p>
+<p class="lede">What Loomward may read, and how it is doing. Grants come from the desktop folder picker or the server's command line. This page can add a folder where a picker exists, and can end a grant.</p>
 <!-- live regions stay in the page and only their text changes: one inserted already filled is often not announced -->
 <p class="bad live" class:has={!!error} role="alert">{error}</p>
 <p class="ok live" class:has={!!done} role="status" tabindex="-1" bind:this={doneEl}>{done}</p>
@@ -222,6 +246,12 @@
 
 <section class="panel" aria-labelledby="h-roots">
   <h2 id="h-roots">Roots</h2>
+  {#if canPick}
+    <div class="add">
+      <button class="btn primary" type="button" bind:this={addBtn} aria-disabled={picker.phase === 'waiting' ? 'true' : undefined} onclick={() => void addFolder()}>Add a folder…</button>
+      <p class="live" class:has={!!picker.text} role="status">{picker.text}</p>
+    </div>
+  {:else if pickNote}<p class="note">{pickNote}</p>{/if}
   {#if roots}
     <div class="tbl-wrap">
       <table class="tbl">
@@ -265,7 +295,7 @@
         {@const problem = scans.problems[r.root_id]}
         {@const label = escapedName(r.display_path.text)}
         <li class="scan">
-          <div class="who"><VisibleName name={r.display_path.text} /> <span class="muted small">{r.origin.replaceAll('_', ' ')}</span></div>
+          <div class="who"><VisibleName name={r.display_path.text} /> <span class="muted small">{r.origin.replaceAll('_', ' ')}</span>{#if r.root_id === picker.rootId} <span class="tag ok">just added</span>{/if}</div>
           <div class="acts">
             <button class="btn" type="button" data-scan-primary={r.root_id} aria-disabled={v?.activity === 'cancelling' ? 'true' : undefined}
               aria-label={v?.activity === 'cancelling' ? `Cancelling scan of ${label}` : v?.active ? `Cancel scan of ${label}` : `Scan ${label}`}
@@ -335,6 +365,8 @@
   .ok { color: var(--ok); }
   .live:focus-visible { outline-offset: 4px; }
   .small { font-size: 0.8rem; }
+  .add { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-bottom: 12px; }
+  .add .live { margin: 0; flex: 1 1 18rem; }
   .head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
   .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 8px 32px; }
   .list { margin: 0 0 8px; padding-left: 1.1em; }

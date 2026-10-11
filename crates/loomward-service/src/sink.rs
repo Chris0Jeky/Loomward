@@ -342,7 +342,8 @@ impl CatalogScanSink {
     }
 
     /// The child row the parent's publication committed: by native identity first, else by exact
-    /// name among identity-less children. Hidden tombstones never match.
+    /// name among identity-less children. Hidden tombstones never match. A root's first full scan
+    /// commits its rows to the writer's bulk build, which only this lookup reads before EndRun.
     fn child_row(
         &self,
         root_dir: i64,
@@ -356,6 +357,8 @@ impl CatalogScanSink {
             let row = conn
                 .query_row(
                     "SELECT id FROM main.dir WHERE root_id=(SELECT root_id FROM main.dir WHERE id=?1)
+                     AND file_id=?2 AND parent_id=?3 AND listing_state!='absent_pending'
+                     UNION ALL SELECT id FROM main.bulk_dir WHERE root_id=(SELECT root_id FROM main.dir WHERE id=?1)
                      AND file_id=?2 AND parent_id=?3 AND listing_state!='absent_pending'",
                     params![root_dir, id, parent],
                     |r| r.get(0),
@@ -369,6 +372,8 @@ impl CatalogScanSink {
         let (text, raw) = self::name(name);
         conn.query_row(
             "SELECT id FROM main.dir WHERE parent_id=?1 AND name=?2 AND name_utf16 IS ?3
+             AND file_id IS NULL AND listing_state!='absent_pending'
+             UNION ALL SELECT id FROM main.bulk_dir WHERE parent_id=?1 AND name=?2 AND name_utf16 IS ?3
              AND file_id IS NULL AND listing_state!='absent_pending'",
             params![parent, text, raw],
             |r| r.get(0),

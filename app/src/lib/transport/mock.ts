@@ -8,6 +8,7 @@ import { createCollectionMock } from './mock-collections';
 import { createScanMock } from './mock-scan';
 import { createViewMock } from './mock-views';
 import { createInventoryMock } from './mock-inventory';
+import { createBackupMock } from './mock-backups';
 import { generateTree, prng, type SynthNode } from './synth';
 import type { Transport } from './transport';
 
@@ -32,7 +33,7 @@ const REVS: Partial<Record<string, 'c' | 's' | 'cs'>> = {
   'health.get': 'c', 'tree.children': 'c', 'search.query': 'c',
   'roots.list': 'cs', 'tree.slice': 'cs', 'placement.candidates': 'cs', 'placement.simulate': 'cs',
   'proposals.list': 'cs', 'proposals.get': 'cs', 'volumes.declare_tier': 'cs',
-  'roots.revoke': 'cs', 'roots.forget': 'cs', 'grants.list': 's', 'grants.revoke': 's', 'volumes.list': 's', 'tiers.model': 's',
+  'roots.revoke': 'cs', 'roots.forget': 'cs', 'backups.list': 's', 'backups.forget': 's', 'grants.list': 's', 'grants.revoke': 's', 'volumes.list': 's', 'tiers.model': 's',
 };
 
 class CommandFailure extends Error {
@@ -293,6 +294,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     'search.query': (p) => search(p as unknown as SearchRequest),
     ...views.handlers,
     ...createInventoryMock(now, fail),
+    ...createBackupMock(now, fail),
     'roots.revoke': (p) => {
       const r = views.handlers['roots.revoke']!(p) as RootRevokeResult;
       scan.revoke(r.root_id);

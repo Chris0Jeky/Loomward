@@ -1,4 +1,4 @@
-//! Synthetic/lab default-stream equality evidence. Never effect authority or reclaimability.
+//! Default-stream equality evidence for admitted grants. Never effect authority or reclaimability.
 use crate::{enumerate::OpenedIdentity, identity::ObservedIdentity};
 #[cfg(any(windows, test))]
 use std::{
@@ -100,7 +100,7 @@ enum Event {
     PendingRead,
 }
 
-/// Internal reader for trusted synthetic/lab listings; callers must use Engine::inspect_duplicates.
+/// Internal reader for trusted catalogue listings; callers must use Engine::inspect_duplicates.
 #[cfg(any(feature = "content-read", test))]
 #[doc(hidden)]
 pub fn inspect(
@@ -121,7 +121,7 @@ pub fn inspect(
     }
 }
 /// Metadata-only hydration through the same pinned, non-reparse root-relative handles.
-/// Engine callers must first admit the durable synthetic grant.
+/// Engine callers must first admit the durable grant.
 #[cfg(feature = "content-read")]
 #[doc(hidden)]
 pub fn observe_candidate(

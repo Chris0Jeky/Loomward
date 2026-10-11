@@ -5,7 +5,10 @@ use rusqlite::{
 };
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, Condvar, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Condvar, Mutex,
+    },
     thread::JoinHandle,
     time::{Duration, Instant},
 };
@@ -82,6 +85,7 @@ pub struct Writer {
     stopped: Receiver<()>,
     join: Option<JoinHandle<()>>,
     timings: Arc<Mutex<WriterTimings>>,
+    bulk: Arc<AtomicBool>,
     #[cfg(any(test, feature = "test-hooks"))]
     window: Arc<PublicationWindow>,
 }
@@ -104,6 +108,8 @@ impl Writer {
         };
         let timings = Arc::new(Mutex::new(WriterTimings::default()));
         let measured = timings.clone();
+        let bulk = Arc::new(AtomicBool::new(false));
+        let enabled = bulk.clone();
         #[cfg(any(test, feature = "test-hooks"))]
         let window = Arc::new(PublicationWindow::default());
         #[cfg(any(test, feature = "test-hooks"))]
@@ -117,6 +123,7 @@ impl Writer {
                     rx,
                     measured,
                     alive,
+                    enabled,
                     #[cfg(test)]
                     None,
                     #[cfg(any(test, feature = "test-hooks"))]
@@ -129,9 +136,16 @@ impl Writer {
             stopped,
             join: Some(join),
             timings,
+            bulk,
             #[cfg(any(test, feature = "test-hooks"))]
             window,
         })
+    }
+    /// A full scan of a root with no earlier run then builds into unindexed bulk tables that
+    /// readers never see, and its `EndRun` publishes the whole root atomically (#148). Decided per
+    /// run at `BeginRun`; off by default.
+    pub fn set_bulk_first_scan(&self, enabled: bool) {
+        self.bulk.store(enabled, Ordering::Relaxed);
     }
     /// Test seam (#356): the gate inside the pending-publication window.
     #[cfg(any(test, feature = "test-hooks"))]
@@ -332,6 +346,22 @@ pub struct WriterTimings {
     pub checkpoint_seconds: f64,
     pub dirty_updates: u64,
 }
+/// The tables a run's listings publish into: the live catalogue, or a first-scan bulk build (#148)
+/// that no reader queries until `EndRun` swaps it in. Directory IDs are unique across both pairs
+/// except the root directory, whose bulk copy keeps its ID and parent.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct Tables {
+    dir: &'static str,
+    file: &'static str,
+}
+const LIVE: Tables = Tables {
+    dir: "dir",
+    file: "file",
+};
+const BULK: Tables = Tables {
+    dir: "bulk_dir",
+    file: "bulk_file",
+};
 struct Context {
     timings: Arc<Mutex<WriterTimings>>,
     parents: HashMap<i64, Option<i64>>,
@@ -339,22 +369,35 @@ struct Context {
     extensions: HashMap<String, (i64, String)>,
     revision: i64,
     fenced_listings: HashSet<(i64, i64)>,
+    /// Runs building into the bulk tables, with their root.
+    bulk: HashMap<i64, i64>,
+    bulk_enabled: Arc<AtomicBool>,
 }
 impl Context {
+    fn tables(&self, run: i64) -> Tables {
+        if self.bulk.contains_key(&run) {
+            BULK
+        } else {
+            LIVE
+        }
+    }
     fn dirty(&mut self, start: i64, run: i64) {
         self.dirty.push((start, self.revision, run));
     }
-    fn parent(&mut self, conn: &Connection, id: i64) -> Result<Option<i64>> {
+    fn parent(&mut self, conn: &Connection, t: Tables, id: i64) -> Result<Option<i64>> {
         if let Some(parent) = self.parents.get(&id) {
             return Ok(*parent);
         }
-        let parent = conn.query_row("SELECT parent_id FROM dir WHERE id=?1", [id], |r| r.get(0))?;
+        let parent = conn
+            .prepare_cached(&format!("SELECT parent_id FROM {} WHERE id=?1", t.dir))?
+            .query_row([id], |r| r.get(0))?;
         self.parents.insert(id, parent);
         Ok(parent)
     }
     fn chain_length(
         &mut self,
         conn: &Connection,
+        t: Tables,
         start: i64,
         proven: &mut HashMap<i64, usize>,
     ) -> Result<usize> {
@@ -370,7 +413,7 @@ impl Context {
             if path.len() > 512 {
                 return Err(Error::Invalid("tree depth limit"));
             }
-            current = self.parent(conn, id)?;
+            current = self.parent(conn, t, id)?;
         }
         if path.len() + length > 512 {
             return Err(Error::Invalid("tree depth limit"));
@@ -385,28 +428,31 @@ impl Context {
     fn check_chains(&mut self, conn: &Connection, from: usize) -> Result<()> {
         let mut proven = HashMap::new();
         for i in from..self.dirty.len() {
-            self.chain_length(conn, self.dirty[i].0, &mut proven)?;
+            let (start, _, run) = self.dirty[i];
+            self.chain_length(conn, self.tables(run), start, &mut proven)?;
         }
         Ok(())
     }
     fn flush_dirty(&mut self, conn: &Connection) -> Result<()> {
         let started = Instant::now();
         let mut marked = HashSet::new();
-        let mut update = conn.prepare_cached(
-            "UPDATE dir SET subtree_rev=?2,dirty_rev=?2,dirty_run=?3,sub_complete=0 WHERE id=?1",
-        )?;
         // Newest seeds win: every ancestor retains its latest input revision, not the batch's first.
         // Taking the seeds empties them on error too; the failed commit clears them anyway.
         for (start, revision, run) in std::mem::take(&mut self.dirty).into_iter().rev() {
+            let t = self.tables(run);
+            let mut update = conn.prepare_cached(&format!(
+                "UPDATE {} SET subtree_rev=?2,dirty_rev=?2,dirty_run=?3,sub_complete=0 WHERE id=?1",
+                t.dir
+            ))?;
             let mut current = Some(start);
             let mut count = 0;
             while let Some(id) = current {
-                if !marked.insert(id) {
+                if !marked.insert((t, id)) {
                     break;
                 }
                 update.execute(params![id, revision, run])?;
                 self.timings.lock().expect("timing lock").dirty_updates += 1;
-                current = self.parent(conn, id)?;
+                current = self.parent(conn, t, id)?;
                 count += 1;
                 // Backstop only: check_chains already bounded every seed inside its savepoint.
                 if count > 512 {
@@ -541,13 +587,14 @@ fn work(
     alive: Sender<()>,
     crash: Option<PublicationCrash>,
 ) {
-    serve(conn, rx, timings, alive, crash, None)
+    serve(conn, rx, timings, alive, Arc::default(), crash, None)
 }
 fn serve(
     mut conn: Connection,
     rx: Receiver<Pending>,
     timings: Arc<Mutex<WriterTimings>>,
     alive: Sender<()>,
+    bulk_enabled: Arc<AtomicBool>,
     #[cfg(test)] crash: Option<PublicationCrash>,
     #[cfg(any(test, feature = "test-hooks"))] window: Option<Arc<PublicationWindow>>,
 ) {
@@ -560,6 +607,8 @@ fn serve(
         extensions: HashMap::new(),
         revision: 0,
         fenced_listings: HashSet::new(),
+        bulk: HashMap::new(),
+        bulk_enabled,
     };
     // The WAL cut after a forget, when a reader outlasted the first try: retried between commands.
     let mut cut_pending = false;
@@ -616,6 +665,7 @@ fn serve(
                     &mut conn,
                     &batch[0].command,
                     &context.fenced_listings,
+                    &context.bulk,
                 ));
                 context
                     .timings
@@ -907,11 +957,11 @@ fn fail_batch(results: &mut [Result<WriteReply>], error: Error) {
         }
     }
 }
-fn active_run(conn: &Connection, run: i64, dir: Option<i64>) -> Result<i64> {
+fn active_run(conn: &Connection, t: Tables, run: i64, dir: Option<i64>) -> Result<i64> {
     let root:Option<i64>=conn.query_row("SELECT s.root_id FROM scan_run s JOIN root r ON r.id=s.root_id JOIN st.root_grant g ON g.id=r.grant_id WHERE s.id=?1 AND s.state='running' AND r.active_run=s.id AND g.state='active'",[run],|r|r.get(0)).optional()?;
     let root = root.ok_or(Error::Invalid("inactive run or grant"))?;
     if let Some(dir) = dir {
-        if !conn.query_row("SELECT EXISTS(SELECT 1 FROM dir WHERE id=?1 AND root_id=?2 AND listing_state!='absent_pending')",params![dir,root],|r|r.get::<_,bool>(0))?{return Err(Error::NotFound);}
+        if !conn.prepare_cached(&format!("SELECT EXISTS(SELECT 1 FROM {} WHERE id=?1 AND root_id=?2 AND listing_state!='absent_pending')",t.dir))?.query_row(params![dir,root],|r|r.get::<_,bool>(0))?{return Err(Error::NotFound);}
     }
     Ok(root)
 }
@@ -930,8 +980,16 @@ fn prepare_state(
     conn: &mut Connection,
     c: &WriteCommand,
     fenced: &HashSet<(i64, i64)>,
+    bulk: &HashMap<i64, i64>,
 ) -> Result<Option<Prepared>> {
     match c {
+        // No reference can bind a row that was never published, so a bulk build retires none.
+        WriteCommand::DirListing(DirListing { run_id, .. })
+        | WriteCommand::ListingDone { run_id, .. }
+            if bulk.contains_key(run_id) =>
+        {
+            Ok(None)
+        }
         WriteCommand::RegisterRoot(o) => {
             let dataset: String = conn.query_row(
                 "SELECT value FROM st.meta WHERE key='dataset_class'",
@@ -1311,7 +1369,7 @@ fn retire_files(
     incoming: Option<(&[Observation], &[Observation])>,
     complete: bool,
 ) -> Result<bool> {
-    active_run(conn, run, Some(dir))?;
+    active_run(conn, LIVE, run, Some(dir))?;
     if !conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM st.object_ref WHERE state='resolved')",
         [],
@@ -1321,7 +1379,7 @@ fn retire_files(
     }
     // Unmatched pending intents are discarded after rejection; bindings change only after a committed witness.
     conn.execute_batch("CREATE TEMP TABLE IF NOT EXISTS continuity_entry(kind INTEGER,name TEXT,raw BLOB,identity BLOB,created_ft INTEGER,matched_id INTEGER);CREATE INDEX IF NOT EXISTS continuity_by_identity ON continuity_entry(kind,identity,created_ft);CREATE INDEX IF NOT EXISTS continuity_by_name ON continuity_entry(kind,name,raw);DELETE FROM continuity_entry")?;
-    old_files(conn, dir)?;
+    old_files(conn, LIVE, dir)?;
     let fs: Option<String> = conn.query_row("SELECT v.filesystem FROM dir d JOIN root r ON r.id=d.root_id JOIN volume v ON v.id=r.volume_id WHERE d.id=?1", [dir], |r| r.get(0))?;
     let mut direct = incoming;
     {
@@ -1391,7 +1449,7 @@ fn full_traversal(conn: &Connection, run: i64, root: i64) -> Result<bool> {
 /// may treat them as gone (invariant 4). Both statements use this same set.
 const SHIELDED: &str = "shielded(id) AS (SELECT id FROM dir WHERE root_id=?1 AND listing_state='excluded' UNION SELECT d.id FROM dir d JOIN shielded s ON d.parent_id=s.id)";
 fn retire_pending(conn: &mut Connection, run: i64) -> Result<()> {
-    let root = active_run(conn, run, None)?;
+    let root = active_run(conn, LIVE, run, None)?;
     if !full_traversal(conn, run, root)? {
         return Ok(());
     }
@@ -1440,6 +1498,19 @@ fn apply(
                 "UPDATE root SET active_run=?2,state='scanning' WHERE id=?1",
                 params![root, run],
             )?;
+            // P4f's first scan, with nothing published under the root directory yet.
+            if ctx.bulk_enabled.load(Ordering::Relaxed)
+                && mode == "full"
+                && conn.query_row("SELECT NOT EXISTS(SELECT 1 FROM scan_run WHERE root_id=?1 AND id<?2) AND NOT EXISTS(SELECT 1 FROM dir WHERE root_id=?1 AND parent_id IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM file f JOIN dir d ON d.id=f.dir_id WHERE d.root_id=?1)", params![root, run], |r| r.get::<_, bool>(0))?
+            {
+                conn.execute("DELETE FROM bulk_dir WHERE root_id=?1", [root])?;
+                conn.execute(
+                    "INSERT INTO bulk_dir SELECT * FROM dir WHERE root_id=?1",
+                    [root],
+                )?;
+                share_sequences(conn)?;
+                ctx.bulk.insert(run, root);
+            }
             Ok(WriteReply::Run(run))
         }
         WriteCommand::DirListing(l) => publish(
@@ -1469,7 +1540,15 @@ fn apply(
                 return Err(Error::Invalid("failed staged listing"));
             }
             let started = Instant::now();
-            stage(conn, *run_id, *dir_id, *seq, files, dirs)?;
+            stage(
+                conn,
+                ctx.tables(*run_id),
+                *run_id,
+                *dir_id,
+                *seq,
+                files,
+                dirs,
+            )?;
             ctx.timings.lock().expect("timing lock").staging_calls += 1;
             ctx.timings.lock().expect("timing lock").staging_seconds +=
                 started.elapsed().as_secs_f64();
@@ -1505,8 +1584,9 @@ fn apply(
             totals: t,
             input_revision,
         } => {
-            active_run(conn, *run_id, Some(*dir_id))?;
-            let count=conn.execute("UPDATE dir SET sub_files=?2,sub_dirs=?3,sub_logical=?4,sub_allocated=?5,sub_alloc_unknown=?6,sub_skipped=?7,sub_errors=?8,sub_newest_ft=?9,sub_complete=?10,agg_valid_rev=?11 WHERE id=?1 AND dirty_run=?12 AND dirty_rev=?11",params![dir_id,t.files as i64,t.dirs as i64,t.logical as i64,t.allocated as i64,t.allocation_unknown as i64,t.skipped as i64,t.errors as i64,t.newest_ft,t.complete,input_revision,run_id])?;
+            let tables = ctx.tables(*run_id);
+            active_run(conn, tables, *run_id, Some(*dir_id))?;
+            let count=conn.prepare_cached(&format!("UPDATE {} SET sub_files=?2,sub_dirs=?3,sub_logical=?4,sub_allocated=?5,sub_alloc_unknown=?6,sub_skipped=?7,sub_errors=?8,sub_newest_ft=?9,sub_complete=?10,agg_valid_rev=?11 WHERE id=?1 AND dirty_run=?12 AND dirty_rev=?11",tables.dir))?.execute(params![dir_id,t.files as i64,t.dirs as i64,t.logical as i64,t.allocated as i64,t.allocation_unknown as i64,t.skipped as i64,t.errors as i64,t.newest_ft,t.complete,input_revision,run_id])?;
             if count == 0 {
                 return Err(Error::StaleGeneration);
             }
@@ -1517,9 +1597,18 @@ fn apply(
             state,
             finished_at_ns,
         } => {
-            let root = active_run(conn, *run_id, None)?;
+            let root = active_run(conn, LIVE, *run_id, None)?;
             if !matches!(state.as_str(), "completed" | "cancelled" | "failed") {
                 return Err(Error::Invalid("end state"));
+            }
+            if ctx.bulk.contains_key(run_id) {
+                // A failed run is an abort: its build is discarded and the root shows no rows.
+                if state == "failed" {
+                    conn.execute("DELETE FROM bulk_dir WHERE root_id=?1", [root])?;
+                } else {
+                    swap_bulk(conn, root)?;
+                }
+                ctx.parents.clear();
             }
             let full = state == "completed" && full_traversal(conn, *run_id, root)?;
             if full {
@@ -1550,6 +1639,7 @@ fn apply(
             let completed=state=="completed" && conn.query_row("SELECT mode='targeted' AND NOT EXISTS(SELECT 1 FROM dir WHERE root_id=?2 AND seen_run=?1 AND listing_state='incomplete') FROM scan_run WHERE id=?1",params![run_id,root],|r|r.get::<_,bool>(0))?;
             conn.execute("UPDATE root SET active_run=NULL,generation=CASE WHEN ?2 THEN ?3 ELSE generation END,state=CASE WHEN ?4 THEN 'complete' ELSE 'partial' END WHERE id=?1",params![root,full||completed,run_id,full])?;
             ctx.fenced_listings.retain(|(run, _)| run != run_id);
+            ctx.bulk.remove(run_id);
             Ok(WriteReply::Done)
         }
         WriteCommand::RevokeGrant { grant_id, .. }
@@ -1565,6 +1655,9 @@ fn apply(
                 .query_map([grant_id], |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()?;
             for root in roots {
+                // Revocation mid-build discards the build: its rows were never visible.
+                conn.execute("DELETE FROM bulk_dir WHERE root_id=?1", [root])?;
+                ctx.bulk.retain(|_, building| *building != root);
                 rebuild_multilink(conn, root)?;
             }
             Ok(WriteReply::Done)
@@ -1597,13 +1690,14 @@ fn apply(
 }
 fn stage(
     conn: &Connection,
+    t: Tables,
     run: i64,
     dir: i64,
     seq: i64,
     files: &Vec<Observation>,
     dirs: &Vec<Observation>,
 ) -> Result<()> {
-    active_run(conn, run, Some(dir))?;
+    active_run(conn, t, run, Some(dir))?;
     let previous:Option<(i64,i64)>=conn.query_row("SELECT seq,entry_count_total FROM stage_entry WHERE run_id=?1 AND dir_id=?2 ORDER BY seq DESC LIMIT 1",params![run,dir],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
     let (next, count) = previous.map_or((0, 0), |(seq, count)| (seq + 1, count));
     if seq != next {
@@ -1632,9 +1726,13 @@ type DirectoryMatch = (
     String,
     Option<i64>,
 );
-fn old_files(conn: &Connection, dir: i64) -> Result<bool> {
+fn old_files(conn: &Connection, t: Tables, dir: i64) -> Result<bool> {
     conn.execute_batch("CREATE TEMP TABLE IF NOT EXISTS old_file(id INTEGER PRIMARY KEY,name TEXT,raw BLOB,identity BLOB,created_ft INTEGER,used INTEGER);CREATE INDEX IF NOT EXISTS old_by_name ON old_file(name,raw);CREATE INDEX IF NOT EXISTS old_by_identity ON old_file(identity,used);DELETE FROM old_file")?;
-    conn.execute("INSERT INTO old_file SELECT id,name,name_utf16,file_id,created_ft,0 FROM file WHERE dir_id=?1", [dir])?;
+    conn.prepare_cached(&format!(
+        "INSERT INTO old_file SELECT id,name,name_utf16,file_id,created_ft,0 FROM {} WHERE dir_id=?1",
+        t.file
+    ))?
+    .execute([dir])?;
     Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM old_file)", [], |r| r.get(0))?)
 }
 fn match_file(
@@ -1663,15 +1761,20 @@ fn publish(
     let mut file_seconds = 0.0;
     let mut seen_seconds = 0.0;
     let mut names_seconds = 0.0;
-    let root = active_run(conn, run, Some(dir))?;
-    let (depth,fs):(i64,Option<String>)=conn.query_row("SELECT d.depth,v.filesystem FROM dir d JOIN root r ON r.id=d.root_id LEFT JOIN volume v ON v.id=r.volume_id WHERE d.id=?1",[dir],|r|Ok((r.get(0)?,r.get(1)?)))?;
+    let t = ctx.tables(run);
+    let d = t.dir;
+    let root = active_run(conn, t, run, Some(dir))?;
+    if t == BULK {
+        share_sequences(conn)?;
+    }
+    let (depth,fs):(i64,Option<String>)=conn.query_row(&format!("SELECT d.depth,v.filesystem FROM {d} d JOIN root r ON r.id=d.root_id LEFT JOIN volume v ON v.id=r.volume_id WHERE d.id=?1"),[dir],|r|Ok((r.get(0)?,r.get(1)?)))?;
     let complete = matches!(outcome, ListingOutcome::Complete);
     let coverage = outcome.coverage()?;
     let is_direct = direct.is_some();
     let has_old = if prepared {
         conn.query_row("SELECT EXISTS(SELECT 1 FROM old_file)", [], |r| r.get(0))?
     } else {
-        old_files(conn, dir)?
+        old_files(conn, t, dir)?
     };
     conn.execute_batch("CREATE TEMP TABLE IF NOT EXISTS listing_seen(kind INTEGER,id INTEGER,PRIMARY KEY(kind,id));DELETE FROM listing_seen;CREATE TEMP TABLE IF NOT EXISTS listing_names(name TEXT,raw BLOB,kind INTEGER);DELETE FROM listing_names")?;
     let mut own = Totals {
@@ -1801,36 +1904,36 @@ fn publish(
                 names_seconds += name_start.elapsed().as_secs_f64();
             }
             if tuples.len() == 128 {
-                let (insert, seen) = insert_files(conn, &mut values, &mut tuples, has_old)?;
+                let (insert, seen) = insert_files(conn, t, &mut values, &mut tuples, has_old)?;
                 file_seconds += insert;
                 seen_seconds += seen;
             }
         }
-        let (insert, seen) = insert_files(conn, &mut values, &mut tuples, has_old)?;
+        let (insert, seen) = insert_files(conn, t, &mut values, &mut tuples, has_old)?;
         file_seconds += insert;
         seen_seconds += seen;
         for o in dirs {
             let identity = native_id(o, fs.as_deref());
             let excluded = o.flags & EXCLUDED_FLAGS != 0;
             let mut old_dir: Option<DirectoryMatch> = if let Some(id) = identity {
-                conn.prepare_cached("SELECT id,parent_id,name,name_utf16,listing_state,created_ft FROM dir WHERE root_id=?1 AND file_id=?2")?.query_row(params![root,id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()?
+                conn.prepare_cached(&format!("SELECT id,parent_id,name,name_utf16,listing_state,created_ft FROM {d} WHERE root_id=?1 AND file_id=?2"))?.query_row(params![root,id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()?
             } else {
-                conn.prepare_cached("SELECT id,parent_id,name,name_utf16,listing_state,created_ft FROM dir WHERE parent_id=?1 AND name=?2 AND name_utf16 IS ?3 AND file_id IS NULL AND listing_state!='absent_pending'")?.query_row(params![dir,o.name,o.name_utf16],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()?
+                conn.prepare_cached(&format!("SELECT id,parent_id,name,name_utf16,listing_state,created_ft FROM {d} WHERE parent_id=?1 AND name=?2 AND name_utf16 IS ?3 AND file_id IS NULL AND listing_state!='absent_pending'"))?.query_row(params![dir,o.name,o.name_utf16],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()?
             };
             if let Some((id, parent, _, _, state, created)) = &old_dir {
                 if *created == o.created_ft && excluded && state != "excluded" {
                     // Same directory, now excluded: hide its descendants but shield their
                     // identities and references until rediscovery or an observed absent ancestor.
-                    conn.execute("UPDATE dir SET listing_state='absent_pending' WHERE parent_id=?1 AND listing_state!='absent_pending'", [id])?;
+                    conn.execute(&format!("UPDATE {d} SET listing_state='absent_pending' WHERE parent_id=?1 AND listing_state!='absent_pending'"), [id])?;
                     ctx.dirty(*id, run);
                     members_changed = true;
                 }
                 if *created != o.created_ft {
                     let parent = parent.ok_or(Error::Invalid("cannot replace root"))?;
                     ctx.dirty(parent, run);
-                    conn.execute("WITH RECURSIVE replaced(id) AS (SELECT ?1 UNION ALL SELECT d.id FROM dir d JOIN replaced x ON d.parent_id=x.id) UPDATE dir SET listing_state='absent_pending',file_id=NULL,id_quality='path_observation',id_basis='none' WHERE id IN (SELECT id FROM replaced)", [id])?;
+                    conn.execute(&format!("WITH RECURSIVE replaced(id) AS (SELECT ?1 UNION ALL SELECT d.id FROM {d} d JOIN replaced x ON d.parent_id=x.id) UPDATE {d} SET listing_state='absent_pending',file_id=NULL,id_quality='path_observation',id_basis='none' WHERE id IN (SELECT id FROM replaced)"), [id])?;
                     conn.execute(
-                        "UPDATE dir SET listing_rev=listing_rev+1 WHERE id=?1",
+                        &format!("UPDATE {d} SET listing_rev=listing_rev+1 WHERE id=?1"),
                         [parent],
                     )?;
                     old_dir = None;
@@ -1839,7 +1942,7 @@ fn publish(
             let id = if let Some((id, parent, name, utf16, state, _)) = old_dir {
                 if parent != Some(dir) {
                     let parent = parent.ok_or(Error::Invalid("cannot reparent root"))?;
-                    let cycle:bool=conn.query_row("WITH RECURSIVE a(id) AS (SELECT ?1 UNION ALL SELECT d.parent_id FROM dir d JOIN a ON d.id=a.id WHERE d.parent_id IS NOT NULL) SELECT EXISTS(SELECT 1 FROM a WHERE id=?2)",params![dir,id],|r|r.get(0))?;
+                    let cycle:bool=conn.query_row(&format!("WITH RECURSIVE a(id) AS (SELECT ?1 UNION ALL SELECT d.parent_id FROM {d} d JOIN a ON d.id=a.id WHERE d.parent_id IS NOT NULL) SELECT EXISTS(SELECT 1 FROM a WHERE id=?2)"),params![dir,id],|r|r.get(0))?;
                     if cycle {
                         return Err(Error::Invalid("directory identity cycle"));
                     }
@@ -1849,13 +1952,13 @@ fn publish(
                     ctx.dirty(id, run);
                     members_changed = true;
                     conn.execute(
-                        "UPDATE dir SET listing_rev=listing_rev+1 WHERE id=?1",
+                        &format!("UPDATE {d} SET listing_rev=listing_rev+1 WHERE id=?1"),
                         [parent],
                     )?;
                 }
                 members_changed |=
                     name != o.name || utf16 != o.name_utf16 || state == "absent_pending";
-                conn.prepare_cached("UPDATE dir SET parent_id=?2,name=?3,name_utf16=?4,attrs=?5,reparse_tag=?6,flags=?7,created_ft=?8,modified_ft=?9,changed_ft=?10,listing_outcome=CASE WHEN ?11 OR listing_state IN ('absent_pending','excluded') THEN NULL ELSE listing_outcome END,listing_state=CASE WHEN ?11 THEN 'excluded' WHEN listing_state IN ('absent_pending','excluded') THEN 'unlisted' ELSE listing_state END,seen_run=CASE WHEN ?11 THEN ?12 ELSE seen_run END WHERE id=?1")?.execute(params![id,dir,o.name,o.name_utf16,o.attrs,o.reparse_tag,o.flags,o.created_ft,o.modified_ft,o.changed_ft,excluded,run])?;
+                conn.prepare_cached(&format!("UPDATE {d} SET parent_id=?2,name=?3,name_utf16=?4,attrs=?5,reparse_tag=?6,flags=?7,created_ft=?8,modified_ft=?9,changed_ft=?10,listing_outcome=CASE WHEN ?11 OR listing_state IN ('absent_pending','excluded') THEN NULL ELSE listing_outcome END,listing_state=CASE WHEN ?11 THEN 'excluded' WHEN listing_state IN ('absent_pending','excluded') THEN 'unlisted' ELSE listing_state END,seen_run=CASE WHEN ?11 THEN ?12 ELSE seen_run END WHERE id=?1"))?.execute(params![id,dir,o.name,o.name_utf16,o.attrs,o.reparse_tag,o.flags,o.created_ft,o.modified_ft,o.changed_ft,excluded,run])?;
                 id
             } else {
                 let quality = identity.map_or("path_observation", |id| {
@@ -1865,7 +1968,7 @@ fn publish(
                         "native_file_id_64"
                     }
                 });
-                conn.prepare_cached("INSERT INTO dir(root_id,parent_id,name,name_utf16,file_id,id_quality,id_basis,depth,attrs,reparse_tag,flags,created_ft,modified_ft,changed_ft,listing_state,born_run,seen_run) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?16,?15,?17)")?.execute(params![root,dir,o.name,o.name_utf16,identity,quality,if identity.is_some(){o.id_basis.as_str()}else{"none"},depth+1,o.attrs,o.reparse_tag,o.flags,o.created_ft,o.modified_ft,o.changed_ft,run,if excluded {"excluded"} else {"unlisted"},if excluded {run} else {0}])?;
+                conn.prepare_cached(&format!("INSERT INTO {d}(root_id,parent_id,name,name_utf16,file_id,id_quality,id_basis,depth,attrs,reparse_tag,flags,created_ft,modified_ft,changed_ft,listing_state,born_run,seen_run) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?16,?15,?17)"))?.execute(params![root,dir,o.name,o.name_utf16,identity,quality,if identity.is_some(){o.id_basis.as_str()}else{"none"},depth+1,o.attrs,o.reparse_tag,o.flags,o.created_ft,o.modified_ft,o.changed_ft,run,if excluded {"excluded"} else {"unlisted"},if excluded {run} else {0}])?;
                 let id = conn.last_insert_rowid();
                 ctx.parents.insert(id, Some(dir));
                 ctx.dirty(id, run);
@@ -1892,18 +1995,24 @@ fn publish(
         ));
     }
     members_changed |= conn.execute(
-        "DELETE FROM file WHERE id IN (SELECT id FROM old_file WHERE used=-1)",
+        &format!(
+            "DELETE FROM {} WHERE id IN (SELECT id FROM old_file WHERE used=-1)",
+            t.file
+        ),
         [],
     )? > 0;
     if complete {
         members_changed |= conn.execute(
-            "DELETE FROM file WHERE id IN (SELECT id FROM old_file WHERE used=0)",
+            &format!(
+                "DELETE FROM {} WHERE id IN (SELECT id FROM old_file WHERE used=0)",
+                t.file
+            ),
             [],
         )? > 0;
-        let missing=conn.execute("UPDATE dir SET listing_state='absent_pending' WHERE parent_id=?1 AND listing_state!='absent_pending' AND id NOT IN (SELECT id FROM listing_seen WHERE kind=0)",[dir])?;
+        let missing=conn.execute(&format!("UPDATE {d} SET listing_state='absent_pending' WHERE parent_id=?1 AND listing_state!='absent_pending' AND id NOT IN (SELECT id FROM listing_seen WHERE kind=0)"),[dir])?;
         members_changed |= missing > 0;
     } else {
-        let sums:(i64,i64,i64,i64,i64,Option<i64>)=conn.query_row("SELECT count(*),coalesce(sum(logical),0),coalesce(sum(allocated),0),coalesce(sum(allocated IS NULL),0),coalesce(sum(file_id IS NULL),0),max(modified_ft) FROM file WHERE dir_id=?1 AND flags & ?2 = 0",params![dir,EXCLUDED_FLAGS],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?;
+        let sums:(i64,i64,i64,i64,i64,Option<i64>)=conn.query_row(&format!("SELECT count(*),coalesce(sum(logical),0),coalesce(sum(allocated),0),coalesce(sum(allocated IS NULL),0),coalesce(sum(file_id IS NULL),0),max(modified_ft) FROM {} WHERE dir_id=?1 AND flags & ?2 = 0", t.file),params![dir,EXCLUDED_FLAGS],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?;
         own.files = sums.0 as u64;
         own.logical = sums.1 as u64;
         own.allocated = sums.2 as u64;
@@ -1911,14 +2020,14 @@ fn publish(
         noid = sums.4;
         own.newest_ft = sums.5;
     }
-    conn.execute("UPDATE dir SET listing_state=?2,seen_run=?3,listing_rev=listing_rev+?4,own_files=?5,own_logical=?6,own_allocated=?7,own_alloc_unknown=?8,own_noid=?9,own_newest_ft=?10,own_skipped=?11,own_errors=?12,listing_outcome=?13 WHERE id=?1",params![dir,if complete{"complete"}else{"incomplete"},run,i64::from(members_changed),own.files as i64,own.logical as i64,own.allocated as i64,own.allocation_unknown as i64,noid,own.newest_ft,skipped as i64,errors as i64,coverage])?;
+    conn.execute(&format!("UPDATE {d} SET listing_state=?2,seen_run=?3,listing_rev=listing_rev+?4,own_files=?5,own_logical=?6,own_allocated=?7,own_alloc_unknown=?8,own_noid=?9,own_newest_ft=?10,own_skipped=?11,own_errors=?12,listing_outcome=?13 WHERE id=?1"),params![dir,if complete{"complete"}else{"incomplete"},run,i64::from(members_changed),own.files as i64,own.logical as i64,own.allocated as i64,own.allocation_unknown as i64,noid,own.newest_ft,skipped as i64,errors as i64,coverage])?;
     ctx.dirty(dir, run);
     if !moved.is_empty() {
-        let destination = ctx.chain_length(conn, dir, &mut HashMap::new())?;
+        let destination = ctx.chain_length(conn, t, dir, &mut HashMap::new())?;
         // Later moves in this listing can flatten an earlier move's subtree.
         for id in moved {
             let too_deep: bool = conn.prepare_cached(
-                "WITH RECURSIVE subtree(id,height) AS (SELECT ?1,0 UNION ALL SELECT d.id,s.height+1 FROM dir d JOIN subtree s ON d.parent_id=s.id WHERE s.height<?2) SELECT EXISTS(SELECT 1 FROM subtree WHERE height=?2)",
+                &format!("WITH RECURSIVE subtree(id,height) AS (SELECT ?1,0 UNION ALL SELECT d.id,s.height+1 FROM {d} d JOIN subtree s ON d.parent_id=s.id WHERE s.height<?2) SELECT EXISTS(SELECT 1 FROM subtree WHERE height=?2)"),
             )?.query_row(params![id, 512 - destination as i64], |r| r.get(0))?;
             if too_deep {
                 return Err(Error::Invalid("tree depth limit"));
@@ -1929,6 +2038,9 @@ fn publish(
         "DELETE FROM stage_entry WHERE run_id=?1 AND dir_id=?2",
         params![run, dir],
     )?;
+    if t == BULK {
+        share_sequences(conn)?;
+    }
     {
         let mut timing = ctx.timings.lock().expect("timing lock");
         timing.listing_calls += 1;
@@ -1943,6 +2055,7 @@ fn publish(
 }
 fn insert_files(
     conn: &Connection,
+    t: Tables,
     values: &mut Vec<Value<'_>>,
     tuples: &mut Vec<&str>,
     has_old: bool,
@@ -1956,7 +2069,7 @@ fn insert_files(
     } else {
         ""
     };
-    let sql=format!("INSERT INTO file(id,dir_id,name,name_utf16,ext_id,file_id,logical,allocated,created_ft,modified_ft,changed_ft,accessed_ft,attrs,reparse_tag,flags,born_run,seen_run) VALUES {}{conflict}",tuples.join(","));
+    let sql=format!("INSERT INTO {}(id,dir_id,name,name_utf16,ext_id,file_id,logical,allocated,created_ft,modified_ft,changed_ft,accessed_ft,attrs,reparse_tag,flags,born_run,seen_run) VALUES {}{conflict}",t.file,tuples.join(","));
     conn.prepare_cached(&sql)?
         .execute(rusqlite::params_from_iter(
             values.iter().map(|v| ToSqlOutput::Borrowed(*v)),
@@ -1970,6 +2083,76 @@ fn checked(a: u64, b: u64) -> Result<u64> {
     a.checked_add(b)
         .filter(|v| *v <= i64::MAX as u64)
         .ok_or(Error::Invalid("aggregate byte overflow"))
+}
+/// Live and bulk tables draw IDs from one sequence: neither side reuses the other's IDs, and a
+/// lone first scan gets exactly the IDs the incremental path would give it.
+fn share_sequences(conn: &Connection) -> Result<()> {
+    conn.prepare_cached("INSERT INTO sqlite_sequence(name,seq) SELECT n.name,0 FROM (SELECT 'dir' AS name UNION ALL SELECT 'file' UNION ALL SELECT 'bulk_dir' UNION ALL SELECT 'bulk_file') n WHERE NOT EXISTS(SELECT 1 FROM sqlite_sequence s WHERE s.name=n.name)")?.execute([])?;
+    for pair in ["('dir','bulk_dir')", "('file','bulk_file')"] {
+        conn.prepare_cached(&format!("UPDATE sqlite_sequence SET seq=(SELECT max(seq) FROM sqlite_sequence WHERE name IN {pair}) WHERE name IN {pair}"))?.execute([])?;
+    }
+    Ok(())
+}
+/// Publish a bulk build inside the EndRun savepoint: readers see the root before or after, never
+/// in between. The file indexes are built once when the build is at least as large as everything
+/// already live; otherwise its rows join the indexed table in one transaction.
+fn swap_bulk(conn: &Connection, root: i64) -> Result<()> {
+    let root_dir: i64 = conn.query_row(
+        "SELECT id FROM bulk_dir WHERE root_id=?1 AND parent_id IS NULL",
+        [root],
+        |r| r.get(0),
+    )?;
+    if conn.query_row("SELECT EXISTS(SELECT 1 FROM dir WHERE root_id=?1 AND id!=?2) OR EXISTS(SELECT 1 FROM file WHERE dir_id=?2)", params![root, root_dir], |r| r.get::<_, bool>(0))? {
+        return Err(Error::Invalid("bulk root gained live rows"));
+    }
+    conn.execute("DELETE FROM dir WHERE id=?1", [root_dir])?;
+    conn.execute(
+        "INSERT INTO dir SELECT * FROM bulk_dir WHERE root_id=?1 ORDER BY id",
+        [root],
+    )?;
+    // The usual case is the only build in progress: copy and empty the table without a filter.
+    let alone = !conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM bulk_dir WHERE root_id!=?1)",
+        [root],
+        |r| r.get::<_, bool>(0),
+    )?;
+    let source = if alone {
+        "bulk_file WHERE ?1 IS NOT NULL"
+    } else {
+        "bulk_file WHERE dir_id IN (SELECT id FROM bulk_dir WHERE root_id=?1)"
+    };
+    let rows: i64 = conn.query_row(&format!("SELECT count(*) FROM {source}"), [root], |r| {
+        r.get(0)
+    })?;
+    let deferred = if conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM file LIMIT 1 OFFSET ?1)",
+        [rows],
+        |r| r.get::<_, bool>(0),
+    )? {
+        Vec::new()
+    } else {
+        let mut s = conn.prepare("SELECT name,sql FROM sqlite_schema WHERE type='index' AND tbl_name='file' AND sql IS NOT NULL")?;
+        let indexes = s
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (name, _) in &indexes {
+            conn.execute_batch(&format!("DROP INDEX \"{name}\""))?;
+        }
+        indexes
+    };
+    conn.execute(
+        &format!("INSERT INTO file SELECT * FROM {source} ORDER BY id"),
+        [root],
+    )?;
+    for (_, sql) in deferred {
+        conn.execute_batch(&sql)?;
+    }
+    if alone {
+        crate::db::bulk_tables(conn, true)?;
+    }
+    // Cascades to the build's files.
+    conn.execute("DELETE FROM bulk_dir WHERE root_id=?1", [root])?;
+    Ok(())
 }
 fn rebuild_multilink(conn: &Connection, root: i64) -> Result<()> {
     let volume: i64 = conn.query_row("SELECT volume_id FROM root WHERE id=?1", [root], |r| {
@@ -2084,6 +2267,8 @@ pub(crate) fn rollup(conn: &Connection, root: i64, clean: bool) -> Result<()> {
     }
     Ok(())
 }
+#[cfg(test)]
+mod bulk_tests;
 #[cfg(test)]
 mod publication_tests;
 #[cfg(test)]

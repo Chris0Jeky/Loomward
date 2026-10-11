@@ -1,0 +1,60 @@
+{
+  "outcome": "imported",
+  "evidence": {
+    "evidence_id": "be_1",
+    "repository_label": "synthetic-nas",
+    "snapshot_id": "1111111111111111111111111111111111111111111111111111111111111111",
+    "snapshot_time": "2026-10-09T21:00:00.123456789+01:00",
+    "imported_at": "2026-10-10T08:00:00.000Z",
+    "snapshot_observed_at": "2026-10-09T20:05:00.000Z",
+    "integrity_observed_at": "2026-10-09T22:30:00.000Z",
+    "snapshot_taken": true,
+    "integrity_checked": true,
+    "integrity_read_all_data": false,
+    "restore_drill_succeeded": false,
+    "required_versions": [
+      {
+        "relative_name": "fixture/ledger.ods",
+        "version": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ],
+    "restore_coverage": [],
+    "topology": "unknown",
+    "topology_basis": "different_volumes_device_unknown",
+    "snapshot_age_seconds": 57300,
+    "integrity_age_seconds": 48000,
+    "max_age_seconds": 604800,
+    "reported_recovery_evidence": false,
+    "refusals": [
+      "version_not_covered",
+      "target_not_independent",
+      "credentials_unavailable",
+      "integrity_not_checked",
+      "restore_not_succeeded",
+      "partial_restore",
+      "unsupported_metadata"
+    ],
+    "proposed_drill": {
+      "files": [
+        {
+          "relative_name": "fixture/ledger.ods",
+          "version": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "target": "new_disposable_target",
+      "compare_metadata": [
+        "acl",
+        "timestamps"
+      ],
+      "proofs": [
+        "repository_and_snapshot_binding",
+        "independent_content_sha256",
+        "required_metadata_comparison",
+        "complete_manifest",
+        "fresh_observation"
+      ],
+      "executable": false
+    }
+  },
+  "refusal": null
+}

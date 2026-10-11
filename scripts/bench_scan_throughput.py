@@ -1,5 +1,10 @@
 """One fresh-process HTTP service scan; append aggregate receipts, preserve every prior run.
 
+The #148 KPI (owner decision q-13) is end-to-end files/s through the service on lab and real
+trees; 250k rows/s stays a stretch note. Each receipt carries a `kpi` block (files/s by engine
+elapsed and by HTTP wall, plus the main phase seconds) and the host's sampled CPU load, labelled
+"quiet host" below 25 percent. `--summarize RECEIPT` prints per-variant medians and ranges.
+
 Create the disposable fixture with the service's scan_throughput_fixture example first.
 The seed state is copied before each synthetic run, giving both binaries the same lab identity
 and an empty catalogue. Personal measurements require an explicit root, --roots-log (the root is
@@ -11,24 +16,95 @@ import json
 import os
 from pathlib import Path
 import shutil
+import statistics
 import subprocess
 import time
 from urllib.request import Request, urlopen
 
+QUIET_CPU_PERCENT = 25.0
+STRETCH_ROWS_PER_SECOND = 250_000
+
+
+def host_cpu(seconds):
+    """Mean total CPU percent over `seconds` (Windows performance counter), or None."""
+    if seconds <= 0:
+        return None
+    samples = max(1, seconds // 2)
+    command = (r"(Get-Counter '\Processor(_Total)\% Processor Time' -SampleInterval 2 "
+               f"-MaxSamples {samples}).CounterSamples.CookedValue | Measure-Object -Average "
+               "| ForEach-Object Average")
+    try:
+        out = subprocess.run(['powershell', '-NoProfile', '-Command', command], capture_output=True,
+                             text=True, timeout=seconds + 60).stdout.strip()
+        return round(float(out), 1)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+def kpi(files, wall, progress, phases):
+    writer, pipeline = phases['writer'], phases['pipeline']
+    return {
+        'files_per_second': files / (progress['elapsed_ms'] / 1000),
+        'files_per_second_http_wall': files / wall,
+        'stretch_rows_per_second': STRETCH_ROWS_PER_SECOND,
+        'phase_seconds': {
+            'scan_elapsed': progress['elapsed_ms'] / 1000,
+            'pipeline_persistence': pipeline['persistence_seconds'],
+            'pipeline_aggregation_and_end': pipeline['aggregation_seconds'],
+            'native_enumeration_queries': phases['native']['enumeration_queries']['seconds'],
+            'writer_staging': writer['staging_seconds'],
+            'writer_listing_publication': writer['listing_seconds'],
+            'writer_file_insert': writer['file_insert_seconds'],
+            'writer_commit': writer['commit_seconds'],
+            'writer_multilink': writer['multilink_seconds'],
+            'writer_rollup': writer['rollup_seconds'],
+            'writer_checkpoint': writer['checkpoint_seconds'],
+        },
+        'transactions': writer['transactions'],
+    }
+
+
+def summarize(path, first):
+    runs = json.loads(path.read_text())['runs'][first:]
+    for variant in ('main', 'branch'):
+        chosen = [r for r in runs if r['variant'] == variant and 'kpi' in r]
+        if not chosen:
+            continue
+        rows = {'files_per_second': [r['kpi']['files_per_second'] for r in chosen],
+                'files_per_second_http_wall': [r['kpi']['files_per_second_http_wall'] for r in chosen]}
+        for phase in chosen[0]['kpi']['phase_seconds']:
+            rows[phase] = [r['kpi']['phase_seconds'][phase] for r in chosen]
+        print(f"{variant}: {len(chosen)} runs; hosts {sorted({r['host'] for r in chosen})}")
+        for key, values in rows.items():
+            print(f"  {key}: median {statistics.median(values):.3f} [{min(values):.3f}-{max(values):.3f}]")
+
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--exe', type=Path, required=True)
-    p.add_argument('--variant', choices=('main', 'branch'), required=True)
-    p.add_argument('--root', type=Path, required=True)
+    p.add_argument('--summarize', type=Path, help='print medians and ranges of an existing receipt file, then exit')
+    p.add_argument('--first-index', type=int, default=0, help='with --summarize: the first run index to include')
+    p.add_argument('--host-sample-seconds', type=int, default=30,
+                   help='CPU sampling before the scan; 0 skips it and labels the run "shared host"')
+    p.add_argument('--max-cpu', type=float, help='refuse to measure when the sampled CPU percent exceeds this')
+    p.add_argument('--exe', type=Path)
+    p.add_argument('--variant', choices=('main', 'branch'))
+    p.add_argument('--root', type=Path)
     p.add_argument('--seed-state', type=Path)
     p.add_argument('--dataset', choices=('synthetic', 'personal'), default='synthetic')
-    p.add_argument('--state', type=Path, required=True)
-    p.add_argument('--receipt', type=Path, required=True)
-    p.add_argument('--source', required=True, help='Git base or measured source digest')
+    p.add_argument('--state', type=Path)
+    p.add_argument('--receipt', type=Path)
+    p.add_argument('--source', help='Git base or measured source digest')
     p.add_argument('--roots-log', type=Path, help='personal only: the gitignored .loomward/scan-roots.log; the root is appended before scanning')
     p.add_argument('--label', help='personal only: the anonymised label written to the receipt, e.g. "real-B (owner-authorised, agent-picked)"')
     a = p.parse_args()
+    if a.summarize:
+        return summarize(a.summarize, a.first_index)
+    missing = [name for name in ('exe', 'variant', 'root', 'state', 'receipt', 'source') if getattr(a, name) is None]
+    if missing:
+        p.error('required: ' + ', '.join('--' + name for name in missing))
+    cpu = host_cpu(a.host_sample_seconds)
+    if a.max_cpu is not None and (cpu is None or cpu > a.max_cpu):
+        p.error(f'host CPU {cpu} percent exceeds --max-cpu {a.max_cpu}; not measuring')
     if a.dataset == 'personal':
         # Owner grant q-4: every agent-picked real root is recorded before it is scanned.
         if a.roots_log is None or a.label is None:
@@ -119,7 +195,9 @@ def main():
                 value = data.pop(key)
                 data[key.replace('_bytes', '_gib')] = None if value is None else round(int(value) / 2**30, 1)
     receipt = {'variant': a.variant, 'source': a.source, 'binary_sha256': hashlib.sha256(a.exe.read_bytes()).hexdigest(),
-               'platform': 'Windows', 'host': 'shared host', 'cache': 'warm/uncontrolled',
+               'platform': 'Windows', 'cache': 'warm/uncontrolled',
+               'host': 'quiet host' if cpu is not None and cpu < QUIET_CPU_PERCENT else 'shared host',
+               'host_cpu_percent_before': cpu, 'kpi': kpi(files, wall, progress, phases),
                'root': 'synthetic service S tier' if a.dataset == 'synthetic' else a.label,
                'files': files, 'directories': dirs, 'wall_seconds': wall, 'progress': progress,
                'phases': phases, 'catalogue_totals': totals,
@@ -130,7 +208,8 @@ def main():
     a.receipt.parent.mkdir(parents=True, exist_ok=True)
     a.receipt.write_text(json.dumps(prior, indent=2) + '\n')
     print(json.dumps({'variant': a.variant, 'elapsed_ms': progress['elapsed_ms'],
-                      'entries_per_second': progress['entries_per_second'], 'phases': phases}))
+                      'entries_per_second': progress['entries_per_second'], 'host': receipt['host'],
+                      'host_cpu_percent_before': cpu, 'kpi': receipt['kpi'], 'phases': phases}))
 
 
 if __name__ == '__main__':

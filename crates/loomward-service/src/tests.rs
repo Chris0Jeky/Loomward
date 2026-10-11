@@ -1537,12 +1537,15 @@ fn relist(svc: &Service, grant: i64, dir: i64, files: u64) {
         errors: 0,
     }))
     .unwrap();
+    // A first full scan builds in bulk until EndRun; the sink resolves children the same way.
     let sub_id: i64 = svc
         .inner
         .db()
-        .query_row("SELECT id FROM main.dir WHERE parent_id=?1", [dir], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT id FROM main.dir WHERE parent_id=?1 UNION ALL SELECT id FROM main.bulk_dir WHERE parent_id=?1",
+            [dir],
+            |r| r.get(0),
+        )
         .unwrap();
     w.call(WriteCommand::DirListing(DirListing {
         run_id: run,
@@ -1656,6 +1659,9 @@ fn every_command_answers_a_complete_envelope_and_core_reads_serve_the_catalogue(
                     | Command::CollectionsCreate
                     | Command::CollectionsUpdateMembers
                     | Command::CollectionsMembers
+                    | Command::BackupsList
+                    | Command::BackupsImport
+                    | Command::BackupsForget
             ))
             || command == Command::RootsRequestGrant
         {
@@ -3139,6 +3145,41 @@ fn a_replaced_root_records_identity_changed_and_emits_roots_changed() {
     assert_eq!(again.code, ErrorCode::PermissionDenied);
 }
 
+/// #378: duplicate inspection that finds the root replaced records `identity_changed` and emits
+/// `roots.changed` exactly as scan start does, so the UI stops offering an inspection that fails.
+#[cfg(windows)]
+#[test]
+fn a_replaced_root_found_by_inspection_records_identity_changed() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    std::fs::rename(&lab.path, lab.path.with_file_name("lab-moved")).unwrap();
+    std::fs::create_dir(&lab.path).unwrap();
+    let mut events = svc.subscribe(None);
+    let e = err(call(
+        svc,
+        "duplicates.inspect",
+        json!({"root_id": lab.root, "budget": {"max_candidates": 200, "max_bytes": "1024", "max_ms": 1000}}),
+    ));
+    assert_eq!(
+        (e.code, e.message.as_str()),
+        (ErrorCode::PermissionDenied, "root_identity_changed")
+    );
+    let state: String = svc
+        .inner
+        .db()
+        .query_row("SELECT state FROM st.root_grant", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(state, "identity_changed");
+    let event = loop {
+        match events.recv_timeout(Duration::from_secs(2)) {
+            RecvOutcome::Event(e) if e.event == EventName::RootsChanged => break e,
+            RecvOutcome::Event(_) => continue,
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(event.data["roots"][0]["grant_state"], "identity_changed");
+}
+
 /// Revocation mid-scan: the grant commits revoked first, the run is cancelled and the writer
 /// fenced; nothing more is written for the root and its catalogue run ends cancelled.
 #[cfg(windows)]
@@ -3240,6 +3281,16 @@ fn scan_start_is_refused_outside_registered_lab_roots() {
     ));
     assert_eq!(e.code, ErrorCode::PermissionDenied);
     assert_eq!(reason(&e), Some("synthetic_session_requires_lab_root"));
+    let inspected = err(call(
+        &synthetic,
+        "duplicates.inspect",
+        json!({"root_id": synthetic.inner.root_id(root), "budget": {"max_candidates": 200, "max_bytes": "1024", "max_ms": 1000}}),
+    ));
+    assert_eq!(inspected.code, ErrorCode::PermissionDenied);
+    assert_eq!(
+        reason(&inspected),
+        Some("synthetic_session_requires_lab_root")
+    );
 }
 
 /// A personal session scans only its own active owner grants: an unknown root, a lab root and
@@ -3255,6 +3306,17 @@ fn personal_scan_start_refuses_unknown_lab_and_revoked_roots() {
             "scan.start",
             json!({"root_id": root, "mode": "full"}),
         ));
+        // q-10: content inspection shares the scan's root gate, so it refuses the same roots.
+        let inspected = err(call(
+            &personal,
+            "duplicates.inspect",
+            json!({"root_id": root, "budget": {"max_candidates": 200, "max_bytes": "1024", "max_ms": 1000}}),
+        ));
+        assert_eq!(
+            (inspected.code, reason(&inspected)),
+            (e.code, reason(&e)),
+            "{root}: {inspected:?}"
+        );
         let (list, _) = ok(
             "jobs.list",
             call(&personal, "jobs.list", json!({"limit": 50})),
@@ -3372,6 +3434,13 @@ fn personal_scan_start_refuses_a_stored_grant_todays_fences_refuse() {
             !e.message.contains(&*base.to_string_lossy()),
             "no path on the wire"
         );
+        let inspected = err(call(
+            &svc,
+            "duplicates.inspect",
+            json!({"root_id": svc.inner.root_id(root), "budget": {"max_candidates": 200, "max_bytes": "1024", "max_ms": 1000}}),
+        ));
+        assert_eq!(inspected.code, ErrorCode::PermissionDenied, "{inspected:?}");
+        assert_eq!(reason(&inspected), Some("protected_profile_or_store"));
         let (list, _) = ok("jobs.list", call(&svc, "jobs.list", json!({"limit": 50})));
         assert_eq!(list["jobs"], json!([]), "no job started");
         assert_eq!(
@@ -3505,13 +3574,18 @@ fn obsolete_listing_revisions_are_refused_and_never_complete() {
         outcome: ListOutcome::Complete,
     };
     assert!(sink.consume(&id, done(old)).is_err());
-    let files = || -> Vec<String> {
+    // A first full scan commits into the writer's bulk build until EndRun publishes it (#148).
+    let rows = |table: &str| -> Vec<String> {
         let conn = svc.inner.db();
         let mut s = conn
-            .prepare("SELECT name FROM main.file ORDER BY name")
+            .prepare(&format!("SELECT name FROM main.{table} ORDER BY name"))
             .unwrap();
         let names = s.query_map([], |r| r.get(0)).unwrap();
         names.map(Result::unwrap).collect()
+    };
+    let files = || {
+        assert!(rows("file").is_empty(), "nothing is visible before EndRun");
+        rows("bulk_file")
     };
     // The refresh published the obsolete stage upsert-only.
     assert_eq!(files(), vec!["stale.bin".to_string()]);
@@ -3519,6 +3593,8 @@ fn obsolete_listing_revisions_are_refused_and_never_complete() {
     sink.consume(&id, done(new)).unwrap();
     assert_eq!(files(), vec!["kept.bin".to_string()]);
     sink.finish_run(&id, 41, &RunScope::FullRoot, true).unwrap();
+    assert_eq!(rows("file"), vec!["kept.bin".to_string()]);
+    assert!(rows("bulk_file").is_empty());
     assert_eq!(
         sink.consume(&id, listing(new, &["after.bin"]))
             .unwrap_err()
@@ -4177,3 +4253,7 @@ fn a_live_scanned_ntfs_grant_can_be_labelled_and_collected() {
     let root = roots["roots"][0]["root_id"].as_str().unwrap().to_owned();
     label_and_collect_live(&svc, &root, "synthetic-note.txt");
 }
+
+#[cfg(test)]
+#[path = "backups_tests.rs"]
+mod backups_tests;
