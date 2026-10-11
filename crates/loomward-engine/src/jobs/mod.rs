@@ -139,8 +139,11 @@ impl Registry {
     pub(crate) fn check_conflict(&self, spec: &JobSpec) -> EngineResult<()> {
         Self::conflict(&self.records.lock().unwrap(), spec)
     }
-    fn prune(records: &mut HashMap<JobId, Record>, events: &Bus) -> EngineResult<()> {
+    fn expire(records: &mut HashMap<JobId, Record>) {
         records.retain(|_, r| r.terminal.is_none_or(|t| t.elapsed() < TERMINAL_RETENTION));
+    }
+    fn prune(records: &mut HashMap<JobId, Record>, events: &Bus) -> EngineResult<()> {
+        Self::expire(records);
         let mut reports: Vec<_> = records
             .values_mut()
             .filter(|r| r.terminal.is_some() && r.job.duplicates.is_some())
@@ -467,9 +470,10 @@ impl Engine {
     }
     /// Retained state of a job, including terminal outcomes inside the idempotency window.
     pub fn job_status(&self, id: &JobId) -> EngineResult<Job> {
-        // Retention holds for jobs.get too: an expired report is never served (Codex P2 on #318).
+        // Retention holds for jobs.get too: an expired record is never served (Codex P2 on #318).
+        // Only the cheap time expiry runs here; the size caps run on writes and listings.
         let mut records = self.jobs.records.lock().unwrap();
-        Registry::prune(&mut records, &self.events)?;
+        Registry::expire(&mut records);
         records
             .get(id)
             .map(|r| r.job.clone())
