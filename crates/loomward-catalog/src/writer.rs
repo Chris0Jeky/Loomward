@@ -522,8 +522,7 @@ fn work(
                 }
                 if let Err(e) = committed {
                     failed = true;
-                    results.clear();
-                    results.push(Err(e));
+                    fail_batch(&mut results, e);
                     context.parents.clear();
                     context.dirty.clear();
                     context.extensions.clear();
@@ -537,8 +536,7 @@ fn work(
         if full {
             if let Err(e) = conn.execute_batch("PRAGMA main.synchronous=NORMAL") {
                 failed = true;
-                results.clear();
-                results.push(Err(Error::Sql(e)));
+                fail_batch(&mut results, Error::Sql(e));
             }
         }
         #[cfg(test)]
@@ -552,8 +550,7 @@ fn work(
         }
         if let Err(e) = crate::db::reconcile_references(&mut conn) {
             failed = true;
-            results.clear();
-            results.push(Err(e));
+            fail_batch(&mut results, e);
         }
         while results.len() < batch.len() {
             results.push(Err(Error::Closed));
@@ -580,6 +577,19 @@ fn work(
         }
     }
     let _ = conn.execute_batch("PRAGMA main.wal_checkpoint(TRUNCATE)");
+}
+fn fail_batch(results: &mut Vec<Result<WriteReply>>, error: Error) {
+    if results.iter().any(Result::is_err) {
+        // An aborted batch loses successful rows, but keeps each caller's first failure.
+        for result in results {
+            if result.is_ok() {
+                *result = Err(Error::Closed);
+            }
+        }
+    } else {
+        results.clear();
+        results.push(Err(error));
+    }
 }
 fn active_run(conn: &Connection, run: i64, dir: Option<i64>) -> Result<i64> {
     let root:Option<i64>=conn.query_row("SELECT s.root_id FROM scan_run s JOIN root r ON r.id=s.root_id JOIN st.root_grant g ON g.id=r.grant_id WHERE s.id=?1 AND s.state='running' AND r.active_run=s.id AND g.state='active'",[run],|r|r.get(0)).optional()?;

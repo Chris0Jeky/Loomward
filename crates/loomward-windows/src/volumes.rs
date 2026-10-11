@@ -1,7 +1,7 @@
 use serde::Serialize;
 use std::io;
 
-/// Drive classification only; never enumerates volumes or reads capacity/device metadata.
+/// Drive and bus classification for one path; never enumerates volumes or reads capacity.
 #[cfg(windows)]
 pub fn is_removable(path: &std::path::Path) -> io::Result<bool> {
     use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetVolumePathNameW};
@@ -10,7 +10,11 @@ pub fn is_removable(path: &std::path::Path) -> io::Result<bool> {
     if unsafe { GetVolumePathNameW(path.as_ptr(), mount.as_mut_ptr(), mount.len() as u32) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    removable_drive_type(unsafe { GetDriveTypeW(mount.as_ptr()) })
+    let kind = unsafe { GetDriveTypeW(mount.as_ptr()) };
+    if removable_drive_type(kind)? || kind != 3 {
+        return removable_drive_type(kind);
+    }
+    native::removable_bus(&mount, kind)
 }
 
 #[cfg(not(windows))]
@@ -121,6 +125,37 @@ mod native {
         Storage::FileSystem::*,
         System::{Ioctl::*, SystemServices::*, WindowsProgramming::*, IO::DeviceIoControl},
     };
+
+    pub(super) fn removable_bus(mount: &[u16], kind: u32) -> io::Result<bool> {
+        let mut volume = vec![0u16; 32768];
+        if unsafe {
+            GetVolumeNameForVolumeMountPointW(
+                mount.as_ptr(),
+                volume.as_mut_ptr(),
+                volume.len() as u32,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let len = volume
+            .iter()
+            .position(|c| *c == 0)
+            .ok_or_else(|| io::Error::other("invalid volume name"))?;
+        let name = String::from_utf16(&volume[..len])
+            .map_err(|_| io::Error::other("invalid volume name"))?;
+        let handle = open(
+            Path::new(name.trim_end_matches('\\')),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        )?;
+        let descriptor = property::<STORAGE_DEVICE_DESCRIPTOR>(&handle, StorageDeviceProperty)?;
+        removable_device(
+            kind,
+            &bus_name(descriptor.BusType),
+            descriptor.RemovableMedia,
+        )
+    }
 
     struct Search(HANDLE);
     impl Drop for Search {
@@ -401,5 +436,30 @@ mod hardening_tests {
         assert!(!super::removable_drive_type(3).unwrap());
         assert!(super::removable_drive_type(0).is_err());
         assert!(super::removable_drive_type(4).is_err());
+    }
+}
+
+#[cfg(any(windows, test))]
+fn removable_device(kind: u32, bus: &str, removable_media: bool) -> io::Result<bool> {
+    if removable_drive_type(kind)? || removable_media || matches!(bus, "usb" | "sd") {
+        return Ok(true);
+    }
+    if bus == "unknown" {
+        return Err(io::Error::other("local bus type unavailable"));
+    }
+    Ok(false)
+}
+
+#[cfg(test)]
+mod followup_tests {
+    #[test]
+    fn followup_usb_and_sd_are_removable_even_on_fixed_drives() {
+        for bus in ["usb", "sd"] {
+            assert!(super::removable_device(3, bus, false).unwrap());
+        }
+        assert!(super::removable_device(3, "sata", true).unwrap());
+        assert!(!super::removable_device(3, "sata", false).unwrap());
+        assert!(super::removable_device(2, "sata", false).unwrap());
+        assert!(super::removable_device(3, "unknown", false).is_err());
     }
 }

@@ -851,6 +851,166 @@ mod native_tests {
     };
 
     use super::tests::RecordingSink;
+
+    fn containment_repair_failure(move_out: bool) {
+        let temp = fixture();
+        let path = temp.path().join("root");
+        let child = path.join("child");
+        std::fs::create_dir_all(&child).unwrap();
+        std::fs::write(child.join("sentinel"), b"synthetic").unwrap();
+        if grant(&path).is_none() {
+            return;
+        }
+        struct Source {
+            native: NativeSource,
+            repair: AtomicBool,
+            child: PathBuf,
+            outside: PathBuf,
+            move_out: bool,
+        }
+        impl DirSource for Source {
+            type Dir = (NativeDir, bool);
+            fn strategy(&self) -> Strategy {
+                self.native.strategy()
+            }
+            fn open_root(&self, path: &Path) -> Result<(Self::Dir, OpenedIdentity), SourceError> {
+                self.native
+                    .open_root(path)
+                    .map(|(dir, id)| ((dir, false), id))
+            }
+            fn open_child(
+                &self,
+                parent: &Self::Dir,
+                entry: &RawEntry<'_>,
+            ) -> Result<(Self::Dir, OpenedIdentity), SourceError> {
+                self.native
+                    .open_child(&parent.0, entry)
+                    .map(|(dir, id)| ((dir, true), id))
+            }
+            fn list(
+                &self,
+                dir: &Self::Dir,
+                sink: &mut dyn FnMut(RawEntry<'_>) -> Flow,
+            ) -> ListOutcome {
+                if dir.1 && self.repair.load(Ordering::Acquire) {
+                    if self.move_out {
+                        std::fs::rename(&self.child, &self.outside).unwrap();
+                    } else {
+                        return self
+                            .native
+                            .clone()
+                            .with_path_query_failure(50)
+                            .list(&dir.0, sink);
+                    }
+                }
+                self.native.list(&dir.0, sink)
+            }
+        }
+        for strategy in [Strategy::Extended, Strategy::Both, Strategy::Find] {
+            let source = Source {
+                native: NativeSource::with_strategy(strategy),
+                repair: AtomicBool::new(false),
+                child: child.clone(),
+                outside: temp.path().join("outside"),
+                move_out,
+            };
+            let identity = source.open_root(&path).unwrap().1;
+            let root = GrantedRoot::new(
+                RootId::new("rt_containment_repair").unwrap(),
+                path.clone(),
+                DatasetClass::Synthetic,
+                identity,
+            );
+            let sink = Arc::new(RecordingSink::default());
+            let dirty = Mutex::new(Dirty::default());
+            let checkpoints = std::sync::atomic::AtomicUsize::new(0);
+            let report = reconcile(
+                &source,
+                &root,
+                1,
+                sink.clone(),
+                Arc::new(ByteBudget::new(crate::budgets::SCAN_BYTES)),
+                Arc::new(AtomicBool::new(false)),
+                ScanOptions {
+                    workers: 1,
+                    ..Default::default()
+                },
+                &dirty,
+                || {
+                    if checkpoints.fetch_add(1, Ordering::Relaxed) == 1 {
+                        source.repair.store(true, Ordering::Release);
+                        dirty.lock().unwrap().record(vec![Change::Name {
+                            action: 3,
+                            name: "child\\sentinel".encode_utf16().collect(),
+                        }]);
+                    }
+                    true
+                },
+            )
+            .unwrap();
+            assert!(!report.complete, "{strategy:?}: {report:?}");
+            assert_eq!(report.failed, 1);
+            assert!(sink
+                .scopes
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|s| matches!(s, RunScope::Targeted(_))));
+            assert!(sink.memory.is_repairing(root.root_id()));
+            assert!(!sink.memory.sweep_allowed(root.root_id()));
+            assert!(sink
+                .rows
+                .lock()
+                .unwrap()
+                .values()
+                .any(|rows| rows.contains_key(&"sentinel".encode_utf16().collect::<Vec<_>>())));
+            if move_out {
+                std::fs::rename(&source.outside, &child).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn native_containment_repair_query_failure_stays_partial() {
+        containment_repair_failure(false);
+    }
+
+    #[test]
+    fn native_containment_repair_moved_out_stays_partial() {
+        containment_repair_failure(true);
+    }
+
+    #[test]
+    fn native_containment_query_failure_on_every_listing_is_failed_not_stale() {
+        let temp = fixture();
+        std::fs::create_dir(temp.path().join("child")).unwrap();
+        std::fs::write(temp.path().join("sentinel"), b"synthetic").unwrap();
+        let Some(root) = grant(temp.path()) else {
+            return;
+        };
+        let native = NativeSource::default();
+        let sink = Arc::new(RecordingSink::default());
+        let report = reconcile(
+            &native.with_path_query_failure(50),
+            &root,
+            1,
+            sink.clone(),
+            Arc::new(ByteBudget::new(crate::budgets::SCAN_BYTES)),
+            Arc::new(AtomicBool::new(false)),
+            ScanOptions {
+                workers: 1,
+                ..Default::default()
+            },
+            &Mutex::new(Dirty::default()),
+            || true,
+        )
+        .unwrap();
+        assert!(!report.complete);
+        assert_eq!(report.failed, 1);
+        assert_eq!(report.examined, 0);
+        assert!(sink.memory.is_repairing(root.root_id()));
+        assert!(!sink.memory.sweep_allowed(root.root_id()));
+    }
     #[test]
     fn completed_scan_releases_pins_and_refreshes_full_baseline() {
         let tree = fixture();
@@ -1121,7 +1281,7 @@ mod native_tests {
         engine.set_scan_sink(sink).unwrap();
         let job = engine.scan_start(&root, None).unwrap();
         engine.scan_cancel(&job.job_id).unwrap();
-        engine.scan_cancel_root(root.root_id()).unwrap();
+        engine.scan_cancel_root(root.key(), root.root_id()).unwrap();
     }
     #[test]
     fn root_cancellation_requests_job_before_stopping_watch() {
@@ -1170,7 +1330,7 @@ mod native_tests {
                 })),
             )
             .unwrap();
-        let cancelled = engine.scan_cancel_root(root.root_id()).unwrap();
+        let cancelled = engine.scan_cancel_root(root.key(), root.root_id()).unwrap();
         release.send(()).unwrap();
         assert!(
             cancelled_before_stop.load(Ordering::Acquire),
@@ -1257,7 +1417,7 @@ mod native_tests {
                 engine.jobs.root_jobs(root.root_id()),
                 vec![winner.job_id.clone()]
             );
-            let cancelled = engine.scan_cancel_root(root.root_id()).unwrap();
+            let cancelled = engine.scan_cancel_root(root.key(), root.root_id()).unwrap();
             assert_eq!(cancelled.len(), 1);
             assert_eq!(cancelled[0].job_id, winner.job_id);
             assert!(engine.scan_watches.lock().unwrap().is_empty());
@@ -1307,7 +1467,7 @@ mod native_tests {
             entry.recv_timeout(Duration::from_secs(2)).unwrap();
             threads.spawn(|| {
                 cancelling.send(()).unwrap();
-                let cancelled = engine.scan_cancel_root(root.root_id());
+                let cancelled = engine.scan_cancel_root(root.key(), root.root_id());
                 let returned_after_release = gate_released.load(Ordering::Acquire);
                 results.send((cancelled, returned_after_release)).unwrap()
             });
@@ -1353,7 +1513,10 @@ mod native_tests {
         }));
         engine.set_scan_sink(sink).unwrap();
         // Cancellation precedes the writer fence; even the stale resolved grant is refused.
-        assert!(engine.scan_cancel_root(root.root_id()).unwrap().is_empty());
+        assert!(engine
+            .scan_cancel_root(root.key(), root.root_id())
+            .unwrap()
+            .is_empty());
         for result in [
             engine.scan_start(&root, None),
             engine.scan_refresh(&root, None),
@@ -1610,8 +1773,10 @@ mod native_tests {
             .insert(root.root_id().clone(), watch.clone());
         assert!(watch.checkpoint());
         let start = Instant::now();
-        engine.scan_cancel_root(root.root_id()).unwrap();
-        engine.scan_writer_fence(root.root_id()).unwrap();
+        engine.scan_cancel_root(root.key(), root.root_id()).unwrap();
+        engine
+            .scan_writer_fence(root.key(), root.root_id())
+            .unwrap();
         let epoch = watch.dirty.lock().unwrap().epoch;
         std::fs::write(tree.path().join("after-revocation"), b"fixture").unwrap();
         std::thread::sleep(Duration::from_millis(30));

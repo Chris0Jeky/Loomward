@@ -2,10 +2,7 @@
 use loomward_catalog::*;
 use rusqlite::Connection;
 use serde_json::json;
-use std::{
-    path::{Path, PathBuf},
-    time::Instant,
-};
+use std::{path::Path, time::Instant};
 
 fn summary(mut ms: Vec<f64>) -> serde_json::Value {
     ms.sort_by(f64::total_cmp);
@@ -371,15 +368,6 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     receipt["files_per_directory"] = json!(per_directory);
     receipt["phases"] = json!({"publication_memory_high_water":publication_memory,"finalise_memory_high_water":finalise_memory});
     receipt["limitations"] = json!(["shared-host warm synthetic workload; no controlled host-load or cold-cache claim", "P6 and P14 below 10M target; no HTTP or native scan integration", "process high-water is measured through queries, excluding the isolated index probe; cache settings are not an OS process-memory cap"]);
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf();
-    let output = root.join("evidence/v3/bench/catalog-1m.json");
-    std::fs::create_dir_all(output.parent().unwrap())?;
-    std::fs::write(&output, serde_json::to_string_pretty(&receipt)? + "\n")?;
     println!("{}", serde_json::to_string_pretty(&receipt)?);
     Ok(())
 }

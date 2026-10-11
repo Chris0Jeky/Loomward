@@ -61,6 +61,18 @@ impl DesktopDialogs {
             picker: Mutex::new(None),
         }
     }
+    fn pick_folder_with(
+        &self,
+        pick: impl FnOnce(rfd::FileDialog) -> Option<PathBuf>,
+    ) -> Option<PathBuf> {
+        if self.dataset != DatasetClass::Personal {
+            return None;
+        }
+        let _active = self.active.try_lock().ok()?;
+        let picker = self.picker.lock().ok()?.clone()?;
+        // The service reports typed refusals; None means the owner cancelled the dialog.
+        pick(picker)
+    }
 }
 
 pub const DISCLOSURE_TITLE: &str = "Loomward: send these items to the teacher?";
@@ -74,14 +86,7 @@ impl NativeDialogs for DesktopDialogs {
     /// Never opens in a synthetic session: an owner-picked folder is personal data
     /// (`synthetic_session_requires_lab_root`, docs/41 section 12).
     fn pick_folder(&self) -> Option<PathBuf> {
-        if self.dataset != DatasetClass::Personal {
-            return None;
-        }
-        let _active = self.active.try_lock().ok()?;
-        let picker = self.picker.lock().ok()?.clone()?;
-        let picked = picker.pick_folder()?;
-        let profile = std::env::var_os("USERPROFILE")?;
-        validate_picked_folder(&picked, Path::new(&profile)).ok()
+        self.pick_folder_with(|picker| picker.pick_folder())
     }
 
     /// Refuses a summary of another dataset class without asking.
@@ -175,6 +180,23 @@ pub fn visible(s: &str) -> String {
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn followup_picker_preserves_refused_selection() {
+        let dialogs = DesktopDialogs::new(DatasetClass::Personal);
+        *dialogs.picker.lock().unwrap() = Some(rfd::FileDialog::new());
+        let picked = PathBuf::from("C:/synthetic/Users/fixture/.ssh");
+        assert_eq!(
+            dialogs.pick_folder_with(|_| Some(picked.clone())),
+            Some(picked)
+        );
+        assert_eq!(dialogs.pick_folder_with(|_| None), None);
+        let synthetic = DesktopDialogs::new(DatasetClass::Synthetic);
+        assert_eq!(
+            synthetic.pick_folder_with(|_| panic!("synthetic picker opened")),
+            None
+        );
+    }
 
     #[test]
     fn picker_keeps_the_main_window_handle() {

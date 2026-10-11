@@ -1,5 +1,10 @@
 # L15b: the unregistered AppContainer launch gate
 
+> **Update, 11 October 2026:** the owner then authorised one temporary profile registration
+> purely to measure (agent-hq decision `loomward-teacher-sandbox-path`, option c). The
+> registered-profile results are in [Registered profile measurement](#registered-profile-measurement-11-october-2026)
+> below. The 10 October sections are kept unchanged as the record of the no-profile run.
+
 Measured on **10 October 2026**, Windows x64 **10.0.26300**, Rust/Cargo **1.97.1**,
 from `spike/l15b-teacher-sandbox`, base/head
 `35f020850e282f223aa37bc29475f9b9b1158f2a`, with uncommitted spike changes.
@@ -209,3 +214,112 @@ commit: `Measure the unregistered teacher AppContainer launch gate`.
 `evidence/v3/teacher-sandbox.json` is the machine receipt exactly as `--run` emits it. The diagnostics, blocked questions and context written by hand during the spike live in `evidence/v3/teacher-sandbox-annotations.json`, so a rerun cannot silently drop them.
 
 The receipt's `cleanup.ok` and `root_removed` cover only the run's own temporary root: the example does not enumerate other `loomward-teacher-sandbox-*` directories. After the spike the driver listed the user temp folder for that prefix and found none remaining (10 October 2026); that check is manual and outside the receipt.
+
+## Registered profile measurement (11 October 2026)
+
+Measured on Windows **10.0.26100.9457** x64, Rust 1.97.1, non-elevated, from branch
+`spike/appcontainer-measure-broker-adr` on base `697b617`. Authority: the owner's answer (c) to
+agent-hq decision `loomward-teacher-sandbox-path` (chat, 2026-10-10 22:46 UTC, recorded in
+agent-hq#356): register one named Loomward test profile, rerun the canaries, delete it. This is
+measurement only. It leaves no profile registered for later use, and it qualifies no teacher.
+
+### Method
+
+`--run-registered <out.json>` checks that `Loomward.L15b.Measure` is absent, calls
+`CreateAppContainerProfile` for exactly that moniker with no capabilities, runs the same
+measurement as `--run` under the registered SID, then calls `DeleteAppContainerProfile` on every
+path out of creation (measurement error, panic or success) and re-reads the registration.
+`--delete-profile` is the manual recovery for an interrupted run. The receipt is
+[teacher-sandbox-registered.json](../../evidence/v3/teacher-sandbox-registered.json); hand-written
+context is in [teacher-sandbox-registered-annotations.json](../../evidence/v3/teacher-sandbox-registered-annotations.json).
+
+```powershell
+cargo run -p loomward-lab --example teacher_sandbox -- --run-registered evidence/v3/teacher-sandbox-registered.json
+```
+
+The container process is the spike's own probe executable, not Codex. The installed native
+`codex.exe` no longer matches the pinned SHA-256 (it is now `dd13bdb1...249a6a`), so the example
+refused to copy or launch it (`pinned_binary_mismatch`). Even with a matching pin, contained Codex
+would start with an empty `CODEX_HOME` and so could not authenticate: these results say what the
+OS boundary does to any process, not whether Codex can work inside it.
+
+Changes from the 10 October run, all inside the example: the real Documents listing was dropped
+(it opened a handle on the owner's real folder) and replaced with listing, read and write probes on
+the synthetic directories and a `%SystemRoot%` listing; `cmd.exe` canaries, an in-container DNS
+lookup and the profile lifecycle were added; the child report is written then renamed, and log read
+errors are kept in the receipt (both from #176).
+
+### What a registered launch needed
+
+The first registered run still failed, now with Win32 **203** (`ERROR_ENVVAR_NOT_FOUND`) instead
+of 2: the explicit minimal environment had no `LOCALAPPDATA`. Adding only `LOCALAPPDATA` to the
+block made every contained launch succeed. So on this host a contained launch needs **both** a
+registered profile and `LOCALAPPDATA` in the environment. The 10 October Win32 2 is consistent
+with the missing profile, but it is still not proven to be the only cause, because that
+environment also lacked `LOCALAPPDATA`.
+
+### Results
+
+Every contained case launched, ran and exited 0, and its token reported `appcontainer=true` with
+the registered SID. "Denied" means the Win32 or Winsock error shown.
+
+| Canary | No capabilities | `internetClient` | With the explicit job |
+|---|---|---|---|
+| Read synthetic canary in the ungranted directory | Denied (5) | Denied (5) | Same |
+| List the ungranted directory | Denied (5) | Denied (5) | Same |
+| Write into the ungranted directory | Denied (5) | Denied (5) | Same |
+| Read, list, write in the granted directory (container SID ACE) | Allowed | Allowed | Same |
+| List `%SystemRoot%` | **Allowed** | **Allowed** | Same |
+| DNS lookup of `api.openai.com` inside the container | Failed (11001) | Allowed | Same |
+| TCP connect `1.1.1.1:443` (non-provider) | Denied (10013) | **Allowed** | Same |
+| TCP connect resolved API address, port 443 | Denied (10013) | Allowed | Same |
+| TCP connect loopback listener | Timed out (4 s) | Timed out (4 s) | Same |
+| `cmd.exe /c echo` | **Starts, exit 0, output seen** | Same | Same |
+| `cmd.exe /c type` ungranted canary | Starts, exit 1, canary not seen | Same | Same |
+| `cmd.exe /c type` granted canary | Starts, exit 0, canary seen | Same | Same |
+| Child process identity | Inherits the container SID | Same | Same |
+| `CREATE_BREAKAWAY_FROM_JOB` child | Not run (no explicit job) | Not run | Denied (5), both capability sets |
+| Lingering child after the job handle closes | Not run | Not run | Alive before, exited after (kill-on-close) |
+| Job UI restrictions seen from inside | 0 (host job only) | 0 | 255 (all eight bits) |
+
+Outside-container controls in the same run: the launcher read both canaries, listed `%SystemRoot%`
+and connected to all three endpoints, so each denial above comes from the container, not from a
+missing file or a down network.
+
+Profile lifecycle, from the receipt and an independent read-only PowerShell check afterwards:
+
+| Check | Before | While registered | After delete |
+|---|---|---|---|
+| `GetAppContainerFolderPath` | `0x80070002` | `0x00000000` | `0x80070002` |
+| `HKCU\...\AppContainer\Mappings\<SID>` | absent | present | absent |
+| `%LOCALAPPDATA%\Packages\Loomward.L15b.Measure` | absent | present | absent |
+| Mappings with a Loomward moniker (PowerShell) | 0 | not checked | 0 |
+| Total mapping count (PowerShell) | 126 | not checked | 126 |
+
+`CreateAppContainerProfile` and `DeleteAppContainerProfile` both returned `S_OK`. The SID is derived
+from the moniker alone, so it identifies the test profile, not the user. Both registered runs
+(the 203 run and the final run) deleted the profile; no temporary root, firewall rule or other
+registration remained. No firewall, registry, policy or ACL change was made outside the run's own
+temporary directories and the one profile.
+
+### What this establishes
+
+1. **Filesystem (C-FS): partly.** Standard AppContainer denies a user-owned directory that has no
+   container ACE (read, list, write), and allows the granted directory. It is **not** a strict
+   read allowlist: `%SystemRoot%` is listable. A strict allowlist would need LPAC, which was not
+   tested.
+2. **Network (C-NET): measured, not met.** With no capability the container has no DNS and no
+   public egress. With `internetClient` it reaches any public address, the non-provider control
+   included. Loopback is blocked either way, so a loopback TCP broker is unreachable from a
+   container without a loopback exemption (a system change, not made). Endpoint-only egress still
+   needs the owner's q-6 rule.
+3. **Tools (C-TOOLS): the OS limits what a tool can touch, not whether one starts.** A shell starts
+   inside the container and inherits its denials. Removing tools stays the job of the runner, or
+   of having no agent at all (the broker path).
+4. **Processes: met for this probe.** Children inherit the container identity; with the explicit
+   job, breakaway is denied and kill-on-close ends a lingering child.
+5. **Codex: not measured.** Pin mismatch, and no credential inside the boundary by design.
+
+LW-111 stays open and personal teacher use stays refused (`confinement_not_enforced`). What the
+results change for the broker design is in
+[the broker ADR](../superpowers/specs/2026-10-11-inference-broker-adr.md).

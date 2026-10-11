@@ -429,6 +429,141 @@ fn auto_rollback_never_commits_a_failed_receipt_or_acknowledges_lost_rows() {
 }
 
 #[test]
+fn auto_rollback_keeps_the_failing_callers_original_error() {
+    let (temp, conn, _) = fixture();
+    conn.execute_batch(
+        "DELETE FROM st.collection_member; DELETE FROM st.object_ref;
+        CREATE TRIGGER abort_transaction BEFORE INSERT ON file WHEN NEW.name='fault'
+        BEGIN SELECT RAISE(ROLLBACK,'first synthetic failure'); END;",
+    )
+    .unwrap();
+    let before = old_listing(temp.path());
+    let (sender, receiver) = bounded(3);
+    let mut replies = Vec::new();
+    for name in ["before", "fault", "after"] {
+        let (reply, result) = bounded(1);
+        sender
+            .send(Pending {
+                command: WriteCommand::DirListing(DirListing {
+                    run_id: 2,
+                    dir_id: 1,
+                    files: vec![observation(name, 6, 42)],
+                    dirs: vec![],
+                    state: "complete".into(),
+                    skipped: 0,
+                    errors: 0,
+                }),
+                reply,
+                _permit: BytePermit {
+                    quota: Arc::new((Mutex::new(0), Condvar::new())),
+                    bytes: 0,
+                },
+            })
+            .unwrap();
+        replies.push(result);
+    }
+    drop(sender);
+    let (alive, _) = bounded(0);
+    work(
+        conn,
+        receiver,
+        Arc::new(Mutex::new(WriterTimings::default())),
+        alive,
+        None,
+    );
+    let error = replies[1].recv().unwrap().unwrap_err();
+    assert!(
+        matches!(error, Error::Sql(rusqlite::Error::SqliteFailure(code, Some(ref message)))
+        if code.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_TRIGGER && message == "first synthetic failure"),
+        "original failure lost: {error:?}"
+    );
+    assert!(matches!(replies[0].recv().unwrap(), Err(Error::Closed)));
+    assert!(replies[2].recv().unwrap_or(Err(Error::Closed)).is_err());
+    assert_eq!(old_listing(temp.path()), before);
+}
+
+#[test]
+fn a_savepoint_after_auto_rollback_would_start_and_commit_a_fresh_transaction() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE probe(value TEXT);
+        CREATE TRIGGER abort_transaction BEFORE INSERT ON probe WHEN NEW.value='fault'
+        BEGIN SELECT RAISE(ROLLBACK,'synthetic auto rollback'); END;",
+    )
+    .unwrap();
+    let mut tx = conn.transaction().unwrap();
+    tx.execute("INSERT INTO probe VALUES('lost')", []).unwrap();
+    {
+        let save = tx.savepoint().unwrap();
+        let error = save
+            .execute("INSERT INTO probe VALUES('fault')", [])
+            .unwrap_err();
+        assert_eq!(
+            error.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::ConstraintViolation)
+        );
+    }
+    assert!(tx.is_autocommit());
+    {
+        let save = tx.savepoint().unwrap();
+        assert!(
+            !save.is_autocommit(),
+            "SAVEPOINT did not start a fresh transaction"
+        );
+        save.execute("INSERT INTO probe VALUES('fresh')", [])
+            .unwrap();
+        save.commit().unwrap();
+    }
+    assert!(tx.is_autocommit());
+    assert!(tx.commit().is_err());
+    assert_eq!(
+        conn.query_row("SELECT group_concat(value) FROM probe", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        "fresh"
+    );
+}
+
+#[test]
+fn real_disk_full_auto_rollback_also_allows_a_new_implicit_transaction() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch("CREATE TABLE growth(value BLOB);")
+        .unwrap();
+    let pages: i64 = conn
+        .query_row("PRAGMA page_count", [], |r| r.get(0))
+        .unwrap();
+    conn.pragma_update(None, "max_page_count", pages + 8)
+        .unwrap();
+    let mut tx = conn.transaction().unwrap();
+    tx.execute("INSERT INTO growth VALUES(zeroblob(1))", [])
+        .unwrap();
+    let error = tx
+        .execute("INSERT INTO growth VALUES(zeroblob(10000000))", [])
+        .unwrap_err();
+    assert_eq!(
+        error.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DiskFull)
+    );
+    assert!(
+        tx.is_autocommit(),
+        "FULL did not roll back the outer transaction"
+    );
+    let save = tx.savepoint().unwrap();
+    assert!(!save.is_autocommit());
+    save.execute("INSERT INTO growth VALUES(zeroblob(2))", [])
+        .unwrap();
+    save.commit().unwrap();
+    assert!(tx.is_autocommit());
+    assert!(tx.commit().is_err());
+    assert_eq!(
+        conn.query_row("SELECT length(value) FROM growth", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+}
+
+#[test]
 fn hardlink_membership_survives_publication_before_confirmation() {
     for crash in [
         PublicationCrash::BeforeCatalog,

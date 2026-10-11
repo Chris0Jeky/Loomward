@@ -64,18 +64,21 @@ export async function createTauriTransport(api?: TauriApi, opts: TauriOptions = 
           const channel = new Channel<EventEnvelope>();
           let lagged = false;
           let firstHello = true;
-          let replayThrough: { epoch: string; seq: number } | null = null;
+          let replayThrough: { epoch: string; oldest: number; seq: number } | null = null;
           channel.onmessage = (m) => {
             if (!attemptLive || stopped) return;
             beat(); // any message, even a malformed one, proves the channel is alive
             const ev = asEvent(m);
             if (ev?.event === 'stream.hello' && firstHello) {
               firstHello = false;
-              const last = (ev.data as { last_seq?: unknown }).last_seq;
-              if (tracker.point?.epoch === ev.epoch && Number.isSafeInteger(last)) replayThrough = { epoch: ev.epoch, seq: last as number };
+              const { last_seq: last, oldest_replayable_seq: oldest } = ev.data as { last_seq?: unknown; oldest_replayable_seq?: unknown };
+              if (tracker.point?.epoch === ev.epoch && Number.isSafeInteger(last) && (last as number) >= 0 &&
+                Number.isSafeInteger(oldest) && (oldest as number) >= 0 && (oldest as number) <= ev.seq) {
+                replayThrough = { epoch: ev.epoch, oldest: oldest as number, seq: Math.min(ev.seq, Math.max(oldest as number, last as number)) };
+              }
             }
             // Channel.send is fire-and-forget: discard queued stale data after a renderer stall.
-            const replay = ev && replayThrough !== null && ev.epoch === replayThrough.epoch && ev.seq <= replayThrough.seq;
+            const replay = ev && replayThrough !== null && ev.epoch === replayThrough.epoch && ev.seq >= replayThrough.oldest && ev.seq <= replayThrough.seq;
             if (ev && !replay && Date.now() - Date.parse(ev.at) > 5000) {
               if (!lagged) {
                 const gap: EventEnvelope = { ...ev, event: 'stream.lagged', at: new Date().toISOString(),
