@@ -51,6 +51,15 @@ fn collection(conn: &Connection, id: i64) -> Result<Value, ErrorBody> {
 }
 
 impl Inner {
+    /// Whether `deadline` has passed. Tests may run the clock ahead (`Hooks::skew`) to expire a
+    /// page deterministically at a gate instead of racing a wall-clock budget.
+    fn past(&self, deadline: std::time::Instant) -> bool {
+        #[cfg(test)]
+        let ahead = *self.hooks.skew.lock().unwrap();
+        #[cfg(not(test))]
+        let ahead = std::time::Duration::ZERO;
+        std::time::Instant::now() + ahead >= deadline
+    }
     fn collection_read(&self, work: Option<&ReadWork>) -> Result<Connection, ErrorBody> {
         let conn = db::open(&self.state_dir).map_err(sql_error)?;
         conn.execute_batch("PRAGMA query_only=ON; BEGIN")
@@ -375,7 +384,7 @@ impl Inner {
         self.hooks.gate(Command::CollectionsMembers, "hydrate");
         let mut items = Vec::new();
         for (reference, kind, row, born, grant) in rows.iter().take(r.limit.get() as usize) {
-            if work.is_some_and(|w| std::time::Instant::now() >= w.deadline) {
+            if work.is_some_and(|w| self.past(w.deadline)) {
                 return Err(fail(
                     ErrorCode::DeadlineExceeded,
                     "the read deadline expired",

@@ -26,6 +26,8 @@ pub(crate) struct Hooks {
     pub closed: Mutex<Vec<(Command, &'static str)>>,
     pub arrived: Mutex<Vec<(Command, &'static str)>>,
     pub opened: std::sync::Condvar,
+    /// How far ahead of the wall clock the collection page loop reads time (`Inner::past`).
+    pub skew: Mutex<Duration>,
     /// (profile, profiles directory) for the scan-time fence instead of the OS folders (#312).
     pub profile: Mutex<Option<(std::path::PathBuf, std::path::PathBuf)>>,
 }
