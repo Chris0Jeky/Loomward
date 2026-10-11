@@ -80,7 +80,7 @@ Two service tests that inspected first-scan rows mid-run were adapted, not weake
 child lookup reads `bulk_dir` as the sink does, and the N1 test now asserts nothing is visible in
 `file` before EndRun, the stale/relist behaviour in the build, and the published row afterwards.
 
-Fourteen mutations, each restored byte for byte, all killed by executed tests (exit 101, no
+Thirteen mutations, each restored byte for byte, all killed by executed tests (exit 101, no
 compile failures): never build in bulk; ignore the prior-run guard; skip the swap; omit sequence
 sharing before, or after, a bulk publication; drop indexes without rebuilding; keep builds across
 open; keep the build on revocation; publish a failed run; retire references for bulk listings;
@@ -109,6 +109,19 @@ During development one full `cargo test -p loomward-service` run failed
 `meaning_work_budget_is_an_honest_prefix` at an `ok()` call; its message was not captured. It
 passed alone three times and in six later full runs, including the final gate. That handler has a
 2 s deadline, which a loaded shared host can exceed; the cause is not proven.
+
+## Catalogue size (P14): a measured regression
+
+File size does not depend on host load, so this one comparison stands on the shared host. The 1M
+bench, main `6e6682d` against this branch: **155.0 bytes/entry** (155,176,960 B) against
+**229.9 bytes/entry** (230,080,512 B), with a target of 200. Main meets P14 and this branch does
+not. The build is written once into `bulk_*` and copied once into `file`. The dropped build's
+pages stay on the freelist and nothing reclaims them, so the file keeps both copies' worth until
+later writes reuse those pages. Tracked in #386.
+
+`P4.met` is judged on `through_end_run_rows_per_second` (`met_basis` in the receipt), because
+`insert_seconds` no longer includes the swap and index builds. The same run read 218,593 rows/s
+insert-only and 108,702 through EndRun on the shared host, so `met` is false.
 
 ## A/B measurement: UNVERIFIED (host never quiet)
 
