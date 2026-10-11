@@ -46,6 +46,7 @@ export class ResumeTracker {
   accept(ev: EventEnvelope): boolean {
     if (ev.event === 'stream.hello') {
       const d = ev.data as { epoch?: unknown; last_seq?: unknown };
+      this.helloLast = null; // a hello without a valid last_seq must not leave an earlier connection's value behind
       if (typeof d.epoch === 'string' && Number.isSafeInteger(d.last_seq)) {
         this.helloLast = d.last_seq as number;
         if (this.point?.epoch !== d.epoch) this.point = { epoch: d.epoch, seq: d.last_seq as number };
