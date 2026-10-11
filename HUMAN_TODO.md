@@ -128,4 +128,4 @@ if unanswered by 2026-10-18, option (a) applies as a recorded default (reversibl
     + No work; - The storage-limitation finding stays open
   - Why: It keeps a visible audit trail by default and gives you a deliberate, explicit way to remove names, without surprising data loss on a mistaken revoke.
   - Why an agent may not decide: It sets how long Loomward keeps the names of your personal folders after you revoke them: a personal-data retention choice that is yours to make.
-  - Source: `decisions/loomward-revoked-root-retention.json`
+  - Source: agent-hq `decisions/loomward-revoked-root-retention.json` (the owner inbox; not a file in this repository)

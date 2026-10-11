@@ -202,13 +202,13 @@ shell in hosted CI (#276). No file or process effect exists.
 
 The sections above are kept as history. This wave merged 33 PRs (counting the wave-6 checkpoint #279 and the owner's teacher-sandbox #291), each with one fresh-context review (an Opus
 deep review for the opening, Sonnet reviewers for engine, catalogue and wiring changes, Muse lenses for the
-rest, scoped round-2 passes after logic fixes) and green hosted CI, except where noted. The wiring backlog
+rest, scoped round-2 passes after logic fixes) and green hosted CI at merge (lanes' own receipts list hosted CI as not run because it ran on the PR). The wiring backlog
 closed: every product surface the app shows is now served by the real service, not only the mock.
 
 | Area | State on `main` | Evidence |
 |---|---|---|
 | Personal scans | open since #313 (see the section above); stored grants are re-checked against today's fences at scan start (#312, folded into #313) | `evidence/v3/personal-scan-opening.md` |
-| Scan throughput | the catalogue writer no longer idles waiting to batch synchronous listings: 7.7x faster on a 100k-file lab tree, 28x on one agent-picked real folder (shared host, #322) | `evidence/v3/scan-throughput-310.md` |
+| Scan throughput | the catalogue writer no longer idles waiting to batch synchronous listings: 7.7x faster (median) on a 100k-file lab tree, whose runs varied about 2x, and 28x on one run pair over one agent-picked real folder (shared host, profiler on; not a stable bound, #322) | `evidence/v3/scan-throughput-310.md` |
 | Duplicates | read-only synthetic inspection from catalogue candidates to a Duplicates view (#296); lossy or unreadable names keep the report partial; job lifecycle, idempotent revocation, redacted revoked reports and retention caps (#318) | `evidence/v3/duplicates-wire-281.md`, `evidence/v3/jobs-287-duplicates-299.md` |
 | Storage balancing | `tiers.model`, `placement.candidates`, `placement.simulate`, saved proposals from engine to the Tiers view, simulation only, nothing moves (#316); revoked-only volumes excluded as targets, bounded lab space reads (#331); volumes past 64 refused, never dropped | `evidence/v3/placement-wiring-108.md` |
 | Learning | human feedback with durable replay, a revision-bound review queue and human-only refit jobs over the Rust student, synthetic only; personal sessions refuse with `learning_personal_gated` (#328); grouped temporal evaluation and held-out calibration, scores "relative, not a probability" (#294) | `evidence/v3/learning-wiring-l14.md`, `evidence/v3/eval-calibration-lw025.md` |
