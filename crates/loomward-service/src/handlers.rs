@@ -118,6 +118,8 @@ impl Inner {
                 Ok(out(json!({"volumes": self.volumes(None)?}), Some(revs)))
             }
             VolumesDeclareTier => self.declare_tier(req.decode_payload()?, req.expected_state_rev),
+            DuplicatesInspect => self.duplicates_inspect(req),
+            DuplicatesCancel => self.duplicates_cancel(req.decode_payload()?),
             ScanStart => self.scan_start(req.decode_payload()?),
             ScanCancel => engine(
                 self.engine

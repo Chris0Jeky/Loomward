@@ -93,7 +93,16 @@ impl<F: FnMut(Event, usize)> Reader<F> {
     }
     fn open(&self, entry: &Entry, content: bool, meter: &Meter) -> Result<Opened, Reason> {
         meter.check()?;
-        let components: Vec<_> = entry.relative.components().collect();
+        self.open_relative(&entry.relative, Some(entry), content, meter)
+    }
+    fn open_relative(
+        &self,
+        relative: &Path,
+        expected: Option<&Entry>,
+        content: bool,
+        meter: &Meter,
+    ) -> Result<Opened, Reason> {
+        let components: Vec<_> = relative.components().collect();
         if components.is_empty()
             || components.iter().any(|c| match c {
                 Component::Normal(name) => {
@@ -135,7 +144,7 @@ impl<F: FnMut(Event, usize)> Reader<F> {
             ancestors.push(current.object);
             pins.push(dir);
         }
-        if ancestors != entry.expected.ancestors {
+        if expected.is_some_and(|entry| ancestors != entry.expected.ancestors) {
             return Err(Reason::ChangedDuringRead);
         }
         let Component::Normal(name) = components.last().unwrap() else {
@@ -152,7 +161,11 @@ impl<F: FnMut(Event, usize)> Reader<F> {
             false,
         )
         .map_err(source)?;
-        self.verify(&metadata, &ancestors, entry)?;
+        if let Some(entry) = expected {
+            self.verify(&metadata, &ancestors, entry)?;
+        } else {
+            attributes(observe(&metadata)?.attributes)?;
+        }
         let file = if content {
             enumerate::open_relative_mode(
                 parent,
@@ -165,7 +178,9 @@ impl<F: FnMut(Event, usize)> Reader<F> {
         } else {
             metadata
         };
-        self.verify(&file, &ancestors, entry)?;
+        if let Some(entry) = expected {
+            self.verify(&file, &ancestors, entry)?;
+        }
         Ok(Opened { file, pins })
     }
     fn verify(
@@ -358,6 +373,30 @@ impl<F: FnMut(Event, usize)> ContentReader for Reader<F> {
             .map_err(failed_right)?;
         Ok(equal)
     }
+}
+
+pub(super) fn observe_candidate(
+    root: &Path,
+    expected: &OpenedIdentity,
+    relative: &Path,
+    budget: Budget,
+    cancel: Arc<AtomicBool>,
+) -> Result<ObservedIdentity, Reason> {
+    let reader = Reader::new(root, expected, |_, _| {})?;
+    let mut meter = Meter::new(budget);
+    meter.cancel = Some(cancel);
+    meter.check()?;
+    let opened = reader.open_relative(relative, None, false, &meter)?;
+    let mut observed = observe(&opened.file)?;
+    observed.ancestors = reader
+        .pins
+        .iter()
+        .chain(&opened.pins)
+        .map(observe)
+        .map(|r| r.map(|o| o.object))
+        .collect::<Result<Vec<_>, _>>()?;
+    meter.check()?;
+    Ok(observed)
 }
 
 #[cfg(test)]

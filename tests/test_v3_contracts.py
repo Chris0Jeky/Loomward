@@ -54,6 +54,19 @@ class V3ContractTests(unittest.TestCase):
                     if isinstance(spec, dict) and isinstance(spec.get(key), str):
                         self.assertIn(spec[key], self.defs, f'{kind} {name}.{key}')
 
+    def test_duplicate_examples_validate_requests_and_terminal_evidence(self):
+        import jsonschema
+        for name in ('duplicates.inspect', 'duplicates.cancel'):
+            for side, key in (('request', 'request'), ('result', 'result')):
+                schema = {'$defs': self.defs, '$ref': f"#/$defs/{self.commands['commands'][name][key]}"}
+                jsonschema.Draft202012Validator(schema).validate(load(f'examples/commands/{name}.{side}.json'))
+        result = load('examples/dtos/duplicates-result.json')['value']
+        validator = jsonschema.Draft202012Validator({'$defs': self.defs, '$ref': '#/$defs/JobResult'})
+        validator.validate(result)
+        self.assertEqual(result['job']['duplicates']['links'], [[2, 3]])
+        result['job']['duplicates']['groups'] = [[0, 0]]
+        self.assertFalse(validator.is_valid(result))
+
     def test_no_command_declares_an_effect(self):
         for name, spec in self.commands['commands'].items():
             self.assertEqual(spec.get('effects', 'none'), 'none', name)

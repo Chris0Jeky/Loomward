@@ -2485,3 +2485,6 @@ fn a_scan_that_finds_the_root_swapped_records_identity_changed() {
         "the writer is fenced"
     );
 }
+
+#[path = "duplicates_tests.rs"]
+mod duplicates_tests;
