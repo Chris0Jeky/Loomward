@@ -84,7 +84,7 @@ with `capability_unavailable` and `detail.reason: learning_personal_gated`; `lea
 reports that same rule, and `learning.queue` is empty. Opening personal learning requires a separate
 owner decision. A label is not a preference or an operation grant.
 
-`feedback.record` binds only a resolved durable native reference. `label` is null exactly when
+`feedback.record` binds new labels only to a resolved durable native reference. Retractions use the prior human event and remain available after exclusion, loss of resolution or root revocation. `label` is null exactly when
 `retract` is true; a retraction with no prior human label is `invalid_request`. It stores the
 withdrawn label at the next human revision. The durable receipt preserves the original complete
 result across restart, including its learning status; replay changes only `idempotent_replay`.
@@ -96,10 +96,10 @@ events are excluded and counted in `learning.status.unresolved_human_events`.
 use the latest candidate for advice only; `calibrated` and `autonomy_allowed` remain false. Scores
 are **relative scores, not probabilities**. Queue order is descending review priority with a node
 ID tie-break. The synthetic smoke queue is bounded to 10,000 eligible files; refits accept at most
-10,000 raw human events. Exceeding either budget is `resource_budget`, never silent truncation.
+the latest unretracted human labels for at most 10,000 resolved objects, newest event first. Human history and durable replay receipts remain intact; older objects fall outside this explicit training window.
 Feedback changed during a refit is `stale_generation`; retry explicitly. Cancellation is available
 through `jobs.cancel` for any retained job kind; `scan.cancel` remains scan-only. Cancellation
-acknowledges immediately and completion remains a separate job state.
+acknowledges immediately and completion remains a separate job state. Refit cancellation and candidate commit are serialized: cancellation before commit rolls back without `learning.updated`; after commit the job completes. The Learning view warns when human history exceeds fitted examples; this is a conservative freshness warning, not an exact stale flag.
 
 ### Placement reads and stored scenarios
 
@@ -327,7 +327,7 @@ partial report with stop=report_budget unless an earlier stop takes precedence.
 
 Terminal job status remains recoverable for ten minutes. Duplicate evidence is retained for at
 most ten minutes, 50 reports and 4 MiB of JSON-encoded reports per engine, whichever expires first.
-Newest reports are retained first; eviction removes job.duplicates, increments rev and publishes
+Retention prefers the newest job submission sequence; an oversized report is evicted even if newer than retained small reports. Eviction removes job.duplicates, increments rev and publishes
 job.state without changing the terminal outcome. jobs.list returns at most 50 jobs; retained report
 bytes plus bounded job metadata fit below the HTTP client's 8 MiB response limit. Tauri carries the
 same envelope and imposes no separate response-byte limit.
@@ -345,9 +345,7 @@ detail.reason=content_read_gated. The engine repeats the synthetic-grant admissi
 and content I/O. Scan file identity, size, attributes and creation/write/change ticks must match
 fresh root-relative metadata before the existing handle reader compares content. Root revocation
 uses the existing root cancellation fence and refuses the report: after revocation `jobs.get` and
-`jobs.list` carry no report, including evidence from an already-terminal job. Events published before
-the revocation (the replay ring) and responses already cached for idempotent replay are not rewritten
-and may still hold the earlier report (tracked for redaction). Removing terminal evidence increments rev and
+`jobs.list` carry no report, including evidence from an already-terminal job: no report survives revocation. Retained `job.state` events are redacted, and `duplicates.cancel` and `jobs.cancel` receipts never contain a report. Removing terminal evidence increments rev and
 publishes job.state once, without changing its outcome. Repeated revocation is idempotent. A pending
 job's permission error is published only with its terminal state; pending evidence stays private.
 `duplicates.cancel` uses the existing non-joining job cancellation seam and is idempotent; jobs.get
@@ -368,12 +366,20 @@ return `resource_budget`, never a truncated list. There is no rename command.
 `collections.update_members` requires `expected_state_rev`; omission is `invalid_request`, a
 mismatch is `stale_generation` / `state_rev_changed` before any state write. Adds/removes are atomic
 sets of current node IDs, require durable native identity and an active root, and may not overlap.
+Optional `remove_members` is a unique set of at most 500 stable `member_id` values from a members
+page (omission means empty). It removes only membership in the named collection, even when the
+object vanished, was replaced or its root is unavailable; it never resolves or authorises an
+object. IDs use canonical `om_<positive decimal>` spelling; malformed IDs are `invalid_request`.
+An ID absent from this collection is a no-op. Adding and removing the same reference is refused.
 An unchanged set is a no-op. Removed or replaced objects are never rebound by path. Members bind
 `object_ref`, including pending reference publication during rescans; unresolved references remain
-members until explicitly removed through a resolvable node ID. `member_id` is a stable local
-reference identifier, not an operation grant. `status` is `resolved`, `root_revoked` or `unresolved`;
-`entry` is null for the latter two, so no names, paths or zero sizes are fabricated. Collection
+members until explicitly removed by node ID or `remove_members`. `member_id` is a stable local
+reference identifier, not an operation grant. `status` is `resolved`, `root_revoked`,
+`root_unavailable` (another non-active grant state) or `unresolved`;
+`entry` is present exactly when resolved, so no names, paths or zero sizes are fabricated. Collection
 `member_count` includes unresolved members; `logical_bytes` is null if any member's size is unknown
 or directory coverage is incomplete. The sum is virtual entry size, not reclaimable disk space.
 Pages order by durable member ID and cursors bind the collection, session, catalogue instance,
 `catalog_rev` and `state_rev`. Changed limits may reuse a cursor; changed bindings may not.
+Member hydration shares the page deadline and its interrupt handle; expiry stops further rows
+and interrupts an ongoing catalogue inspection rather than retaining a read slot for the page.

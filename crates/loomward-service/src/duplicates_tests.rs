@@ -93,6 +93,11 @@ fn duplicates_native_service_job_reads_synthetic_content_and_never_counts_links_
     );
     let scan: JobResult = serde_json::from_value(json!(scan)).unwrap();
     assert_eq!(terminal(&svc, &scan.job.job_id).state, JobState::Completed);
+    let mut events = svc.inner.engine.subscribe_events(None).unwrap();
+    let RecvOutcome::Event(hello) = events.recv_timeout(Duration::ZERO) else {
+        panic!("missing hello")
+    };
+    let last_event_id = format!("{}.{}", hello.epoch, hello.seq.get());
     let req = request("duplicates.inspect", duplicate_request(root_id, 1024));
     let submitted = svc.call(req.clone(), &CallContext::http());
     assert_eq!(svc.call(req, &CallContext::http()), submitted);
@@ -156,4 +161,48 @@ fn duplicates_native_service_job_reads_synthetic_content_and_never_counts_links_
             .as_str()
             == "a.txt"
             && skip.reason.as_str() == "changed_during_read"));
+    // Cache a cancel before revocation; neither its retry nor resumed SSE may recover names.
+    let cancel = request("duplicates.cancel", json!({"job_id":start.job.job_id}));
+    let cancelled = svc.call(cancel.clone(), &CallContext::http());
+    assert!(ok("duplicates.cancel", cancelled.clone()).0["job"]
+        .get("duplicates")
+        .is_none());
+    ok(
+        "roots.revoke",
+        call(
+            &svc,
+            "roots.revoke",
+            json!({"root_id":root_id,"purge_catalog":false}),
+        ),
+    );
+    let generic = request("jobs.cancel", json!({"job_id":start.job.job_id}));
+    assert!(
+        ok("jobs.cancel", svc.call(generic, &CallContext::http())).0["job"]
+            .get("duplicates")
+            .is_none()
+    );
+    let replay = svc.call(cancel, &CallContext::http());
+    assert_eq!(replay, cancelled);
+    assert!(ok("duplicates.cancel", replay).0["job"]
+        .get("duplicates")
+        .is_none());
+    let mut resumed = svc
+        .inner
+        .engine
+        .subscribe_events(loomward_engine::events::EventResume::from_last_event_id(
+            &last_event_id,
+        ))
+        .unwrap();
+    let mut states = 0;
+    while let RecvOutcome::Event(event) = resumed.recv_timeout(Duration::ZERO) {
+        event.validate().unwrap();
+        if event.event == EventName::JobState && event.data["job"]["kind"] == "duplicates" {
+            states += 1;
+            assert!(event.data["job"].get("duplicates").is_none(), "{event:?}");
+        }
+    }
+    assert!(
+        states > 0,
+        "resume must exercise retained duplicate job states"
+    );
 }

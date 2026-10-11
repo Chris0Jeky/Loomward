@@ -57,6 +57,47 @@ impl Inner {
         if let Some(replay) = self.engine.learning_replay(&r).map_err(ErrorBody::from)? {
             return self.learning_out(replay);
         }
+        if r.retract {
+            let prior = self
+                .engine
+                .learning_prior(&r.node_id)
+                .map_err(ErrorBody::from)?;
+            // Older labels predate the node lookup; authenticate the old incarnation without resolving it.
+            let (reference, features) = match prior {
+                Some(prior) => prior,
+                None => {
+                    use rusqlite::OptionalExtension;
+                    let (key, born) = self
+                        .ids
+                        .open(r.node_id.as_str(), &self.instance)
+                        .map_err(|e| crate::id_refusal(e, "unknown node"))?;
+                    let (kind, row) = match key {
+                        NodeKey::File(id) => ("file", id),
+                        NodeKey::Dir(id) => ("dir", id),
+                        _ => {
+                            return Err(fail(
+                                ErrorCode::InvalidRequest,
+                                "no prior human label to retract",
+                            ))
+                        }
+                    };
+                    let prior: Option<(i64, String)> = self.db().query_row("SELECT h.object_ref_id,h.features_json FROM st.human_feedback h JOIN st.object_ref o ON o.id=h.object_ref_id WHERE o.catalog_instance=?1 AND o.kind=?2 AND o.row_id=?3 AND o.born_run=?4 ORDER BY h.revision DESC LIMIT 1", rusqlite::params![self.instance, kind, row, born], |r| Ok((r.get(0)?,r.get(1)?))).optional().map_err(sql_error)?;
+                    let (reference, features) = prior.ok_or_else(|| {
+                        fail(ErrorCode::InvalidRequest, "no prior human label to retract")
+                    })?;
+                    (
+                        reference,
+                        serde_json::from_str(&features)
+                            .map_err(|_| fail(ErrorCode::InternalError, "learning features"))?,
+                    )
+                }
+            };
+            return self.learning_out(
+                self.engine
+                    .learning_feedback(&r, reference, &features)
+                    .map_err(ErrorBody::from)?,
+            );
+        }
         let mut reader = self.catalog.reader().map_err(catalog_error)?;
         let key = self.node(&r.node_id, &mut reader)?;
         let detail = reader.inspect(key).map_err(catalog_error)?;

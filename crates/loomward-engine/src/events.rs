@@ -185,6 +185,22 @@ impl Bus {
         self.changed.notify_all();
         Ok(())
     }
+    pub(crate) fn redact_job(&self, id: &loomward_protocol::JobId) {
+        for retained in &mut self.state.lock().unwrap().replay {
+            if retained.event.event == EventName::JobState {
+                if let Some(job) = retained
+                    .event
+                    .data
+                    .get_mut("job")
+                    .and_then(|v| v.as_object_mut())
+                {
+                    if job.get("job_id").and_then(|v| v.as_str()) == Some(id.as_str()) {
+                        job.remove("duplicates");
+                    }
+                }
+            }
+        }
+    }
     fn subscribe(self: &Arc<Self>, resume: Option<EventResume>) -> Subscription {
         let state = self.state.lock().unwrap();
         let mut initial = VecDeque::from([self.hello(&state)]);

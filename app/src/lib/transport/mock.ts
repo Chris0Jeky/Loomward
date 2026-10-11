@@ -1,5 +1,5 @@
 import type {
-  EventKey, EventMap, Basis, DatasetClass, EntryPage, EntryRow, ErrorCode, EventEnvelope, GrantList, GrantRevokeResult, Health, RequestEnvelope,
+  EventKey, EventMap, Basis, DatasetClass, EntryPage, EntryRow, ErrorCode, EventEnvelope, GrantList, GrantRevokeResult, RootRevokeResult, Health, RequestEnvelope,
   ResponseEnvelope, Root, RootList, SearchRequest, SessionInfo, SliceNode, TreeChildrenRequest, TreeSlice,
   TreeSliceRequest, Threads,
 } from '../contracts.gen';
@@ -283,10 +283,16 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     'search.query': (p) => search(p as unknown as SearchRequest),
     ...views.handlers,
     ...createInventoryMock(now, fail),
+    'roots.revoke': (p) => {
+      const r = views.handlers['roots.revoke']!(p) as RootRevokeResult;
+      scan.revoke(r.root_id);
+      return r;
+    },
     'grants.revoke': (p) => {
       const r = views.handlers['grants.revoke']!(p) as GrantRevokeResult;
       const g = rootGrants().find((x) => x.grant_id === r.grant_id);
       if (g && !views.revokedRoots.has(g.root_id)) views.revokedRoots.set(g.root_id, r.revoked_at); // roots.list shows it too
+      if (g) scan.revoke(g.root_id);
       return r;
     },
     ...scan.handlers,
