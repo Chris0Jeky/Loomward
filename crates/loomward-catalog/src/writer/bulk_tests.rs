@@ -354,38 +354,49 @@ fn dump(path: &Path, catalog: &crate::Catalog, roots: &[(i64, i64)]) -> Vec<Stri
         .collect()
 }
 
-/// Root A's first scan, with root B's ordinary refresh publishing between A's commands; B is
-/// larger than A when `crowded`, so A's swap takes the ordered-insert branch.
-fn equivalent_catalogue(bulk: bool, state: &str, crowded: bool) -> (Vec<String>, Vec<String>) {
+/// Root A's first scan with a neighbour publishing between A's commands: none; root B's ordinary
+/// refresh, larger than A by A's swap, so the swap takes the ordered-insert branch; or root C's
+/// own first scan, still building when A swaps, so A's swap must leave C's build alone.
+fn equivalent_catalogue(bulk: bool, state: &str, neighbour: &str) -> (Vec<String>, Vec<String>) {
     let temp = tempfile::tempdir().unwrap();
     let catalog = open(temp.path(), bulk);
     let w = catalog.writer();
     let (grant_b, root_b) = register(w, 2);
     end(w, begin(w, grant_b), "completed").unwrap();
     let run_b = begin(w, grant_b);
+    let (grant_c, root_c) = register(w, 3);
+    let run_c = begin(w, grant_c);
     let (grant_a, root_a) = register(w, 1);
-    let mut next = 0;
+    let mut next = 0u8;
     let mut built = 0;
     let mut between = || {
         built = built.max(bulk_rows(temp.path()));
-        if crowded {
-            w.call(WriteCommand::DirListing(DirListing {
-                run_id: run_b,
-                dir_id: root_b,
-                files: (0..=next)
-                    .map(|i| obs(&format!("b{i}.log"), 100 + i, Some(100 + i as u8)))
-                    .collect(),
-                dirs: vec![obs(&format!("bdir{next}"), 0, Some(200 + next as u8))],
-                state: "complete".into(),
-                skipped: 0,
-                errors: 0,
-            }))
-            .unwrap();
-            next += 1;
-        }
+        let (run_id, dir_id, prefix) = match neighbour {
+            "live" => (run_b, root_b, 100),
+            "bulk" => (run_c, root_c, 60),
+            _ => return,
+        };
+        w.call(WriteCommand::DirListing(DirListing {
+            run_id,
+            dir_id,
+            files: (0..=next)
+                .map(|i| obs(&format!("n{i}.log"), 100 + u64::from(i), Some(prefix + i)))
+                .collect(),
+            dirs: vec![obs(&format!("ndir{next}"), 0, Some(250 - next))],
+            state: "complete".into(),
+            skipped: 0,
+            errors: 0,
+        }))
+        .unwrap();
+        next += 1;
     };
     let (_, replies) = scan(w, temp.path(), grant_a, root_a, state, &mut between);
+    assert!(
+        next == 0 || next > 11,
+        "the neighbour outgrows A's eleven files"
+    );
     end(w, run_b, "completed").unwrap();
+    end(w, run_c, "completed").unwrap();
     // The bulk variant really built off to the side; the incremental one never did.
     assert_eq!(built > 0, bulk);
     assert_eq!(bulk_rows(temp.path()), 0);
@@ -394,7 +405,7 @@ fn equivalent_catalogue(bulk: bool, state: &str, crowded: bool) -> (Vec<String>,
         dump(
             temp.path(),
             &catalog,
-            &[(grant_a, root_a), (grant_b, root_b)],
+            &[(grant_a, root_a), (grant_b, root_b), (grant_c, root_c)],
         ),
     )
 }
@@ -402,13 +413,13 @@ fn equivalent_catalogue(bulk: bool, state: &str, crowded: bool) -> (Vec<String>,
 #[test]
 fn bulk_first_scan_matches_the_incremental_path_row_for_row_and_query_for_query() {
     for state in ["completed", "cancelled"] {
-        for crowded in [false, true] {
-            let (normal_replies, normal) = equivalent_catalogue(false, state, crowded);
-            let (bulk_replies, bulk) = equivalent_catalogue(true, state, crowded);
-            assert_eq!(normal_replies, bulk_replies, "{state} crowded={crowded}");
+        for neighbour in ["none", "live", "bulk"] {
+            let (normal_replies, normal) = equivalent_catalogue(false, state, neighbour);
+            let (bulk_replies, bulk) = equivalent_catalogue(true, state, neighbour);
+            assert_eq!(normal_replies, bulk_replies, "{state} {neighbour}");
             assert_eq!(normal.len(), bulk.len());
             for (n, b) in normal.iter().zip(&bulk) {
-                assert_eq!(n, b, "{state} crowded={crowded}");
+                assert_eq!(n, b, "{state} {neighbour}");
             }
             // The scenario really published: files under A, a hard link and an extension.
             assert!(normal[1].contains("b-link.bin") && normal[3].contains("Blob"));

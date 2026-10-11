@@ -1734,11 +1734,20 @@ fn swap_bulk(conn: &Connection, root: i64) -> Result<()> {
         "INSERT INTO dir SELECT * FROM bulk_dir WHERE root_id=?1 ORDER BY id",
         [root],
     )?;
-    let rows: i64 = conn.query_row(
-        "SELECT count(*) FROM bulk_file WHERE dir_id IN (SELECT id FROM bulk_dir WHERE root_id=?1)",
+    // The usual case is the only build in progress: copy and empty the table without a filter.
+    let alone = !conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM bulk_dir WHERE root_id!=?1)",
         [root],
-        |r| r.get(0),
+        |r| r.get::<_, bool>(0),
     )?;
+    let source = if alone {
+        "bulk_file WHERE ?1 IS NOT NULL"
+    } else {
+        "bulk_file WHERE dir_id IN (SELECT id FROM bulk_dir WHERE root_id=?1)"
+    };
+    let rows: i64 = conn.query_row(&format!("SELECT count(*) FROM {source}"), [root], |r| {
+        r.get(0)
+    })?;
     let deferred = if conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM file LIMIT 1 OFFSET ?1)",
         [rows],
@@ -1755,9 +1764,15 @@ fn swap_bulk(conn: &Connection, root: i64) -> Result<()> {
         }
         indexes
     };
-    conn.execute("INSERT INTO file SELECT * FROM bulk_file WHERE dir_id IN (SELECT id FROM bulk_dir WHERE root_id=?1) ORDER BY id", [root])?;
+    conn.execute(
+        &format!("INSERT INTO file SELECT * FROM {source} ORDER BY id"),
+        [root],
+    )?;
     for (_, sql) in deferred {
         conn.execute_batch(&sql)?;
+    }
+    if alone {
+        crate::db::bulk_tables(conn, true)?;
     }
     // Cascades to the build's files.
     conn.execute("DELETE FROM bulk_dir WHERE root_id=?1", [root])?;
