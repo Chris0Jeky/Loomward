@@ -194,7 +194,7 @@ resolves the directory from the OS rather than by its folder name.
 | Personal scans | open: a personal session scans its own active owner grants (desktop picker or `--grant-root`), metadata only, explicit roots, never elevated; refused before any filesystem access: an unknown root is `not_found`, a revoked grant `permission_denied` (the grant is not active), and a lab root `permission_denied` with `personal_session_requires_owner_grant`. The `personal_scan_gated_184` refusal is gone | `evidence/v3/personal-scan-opening.md` |
 | Unchanged | a synthetic session scans registered lab roots only; content reads for duplicates stay gated (`content_read_gated`); no file or process effect; no new endpoint | service tests |
 
-Not established: personal scans on FAT, exFAT or RAM-disk volumes (#285 item 2); P4 at 250k (#148); P12 at or
+Not established: personal scans on FAT, exFAT or RAM-disk volumes (#285 item 2; FAT/exFAT now list as identity-unverified, #372, untested on a real FAT volume); P4 at 250k (#148); P12 at or
 under 1% (#160); service, contract and UI wiring for duplicates, applications and desktop contexts; the desktop
 shell in hosted CI (#276). No file or process effect exists.
 
@@ -226,7 +226,7 @@ and `--live-serve`; Python 224 (1 symlink-privilege skip).
 
 Not established: P4 at 250k (#148; the bench path is at about 109k rows/s); a 10-minute quiet-host P12 run
 (#160); personal content reads (duplicates) and personal learning (q-5, #319, #329); personal shortcut
-enumeration; FAT, exFAT and RAM-disk scans (#285); a real picker grant exercised by a person. No file or process
+enumeration; FAT, exFAT and RAM-disk scans (#285; identity-unverified listing since #372, no real FAT volume tested); a real picker grant exercised by a person. No file or process
 effect exists: duplicates, placement and collections observe, simulate or record preferences only.
 
 ## Owner decisions (11 October 2026)
