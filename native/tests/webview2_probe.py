@@ -194,12 +194,19 @@ def drive_picker(folder: Path, done: list, timeout_s: float = 30) -> None:
         if not dialog:
             time.sleep(0.1)
             continue
-        time.sleep(1.0)  # let the dialog finish building its controls
-        kids = children(dialog)
         # In folder mode the Folder: box is the dialog's own Edit edt1 (1152); Select Folder is IDOK.
-        edit = next((h for h in kids if cls(h) == 'Edit' and user32.GetDlgCtrlID(h) == 1152
-                     and user32.IsWindowVisible(h)), None)
-        ok = next((h for h in kids if cls(h) == 'Button' and user32.GetDlgCtrlID(h) == 1), None)
+        # The dialog shows its window before its controls: wait until both are visible.
+        edit = ok = None
+        for _ in range(100):
+            kids = children(dialog)
+            edit = next((h for h in kids if cls(h) == 'Edit' and user32.GetDlgCtrlID(h) == 1152
+                         and user32.IsWindowVisible(h)), None)
+            ok = next((h for h in kids if cls(h) == 'Button' and user32.GetDlgCtrlID(h) == 1
+                       and user32.IsWindowVisible(h)), None)
+            if edit and ok:
+                break
+            time.sleep(0.1)
+        time.sleep(0.3)
         if not edit or not ok:
             done.append('picker controls not found: ' + '; '.join(
                 f'{cls(h)}#{user32.GetDlgCtrlID(h)}<{cls(user32.GetParent(h))} v{user32.IsWindowVisible(h)}'
