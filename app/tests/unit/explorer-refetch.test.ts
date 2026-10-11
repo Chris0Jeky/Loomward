@@ -1,9 +1,10 @@
 // Explorer stale-breadcrumb fallback (issue #198): a `not_found` while refetching a saved
-// breadcrumb falls back to the starting points; any other error, or a `not_found` for a
+// breadcrumb climbs to the deepest ancestor that still lists (the starting points when none
+// does) and names the folder that vanished; any other error, or a `not_found` for a
 // node the user just clicked, keeps today's error behaviour.
 import { describe, expect, it } from 'vitest';
 import { LoomwardError } from '../../src/lib/transport/client';
-import { FALLBACK_NOTICE, onRefetchError } from '../../src/views/explorer/refetch';
+import { fallbackStep, onRefetchError } from '../../src/views/explorer/refetch';
 
 const boom = (code: 'not_found' | 'stale_generation' | 'invalid_request' | 'internal_error', detail: Record<string, unknown> | null = null) =>
   new LoomwardError({ code, message: `fake engine: ${code}`, retryable: false, detail });
@@ -29,7 +30,13 @@ describe('onRefetchError', () => {
     expect(onRefetchError(new Error('engine down'), true)).toBe('error');
   });
 
-  it('announces the fallback with the agreed status note', () => {
-    expect(FALLBACK_NOTICE).toBe('The catalogue changed, so the view went back to the top level.');
+  it('climbs one crumb per step and keeps naming the deepest folder that vanished', () => {
+    const trail = [{ id: 'a', name: 'Root' }, { id: 'b', name: 'Docs' }, { id: 'c', name: 'Old' }];
+    const first = fallbackStep(trail);
+    expect(first).toEqual({ keep: trail.slice(0, 2), lost: 'Old' });
+    const second = fallbackStep(first.keep, first.lost);
+    expect(second).toEqual({ keep: trail.slice(0, 1), lost: 'Old' });
+    const top = fallbackStep(second.keep, second.lost);
+    expect(top).toEqual({ keep: [], lost: 'Old' }); // nothing left: reload the starting points
   });
 });

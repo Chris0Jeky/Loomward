@@ -1,5 +1,245 @@
 use super::*;
 
+fn depth_fixture() -> (tempfile::TempDir, Connection) {
+    let (temp, conn, _) = fixture();
+    conn.execute_batch(
+        "DELETE FROM st.collection_member; DELETE FROM st.object_ref; DELETE FROM stage_entry;
+         DELETE FROM file; DELETE FROM dir WHERE id!=1;
+         UPDATE dir SET own_files=0,own_logical=0,own_allocated=0,own_noid=0;
+         WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<511)
+         INSERT INTO dir(id,root_id,parent_id,name,file_id,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run)
+         SELECT i+9,1,CASE i WHEN 1 THEN 1 ELSE i+8 END,'spine-'||i,
+                CASE i WHEN 1 THEN x'0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a'
+                       WHEN 2 THEN x'0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c'
+                       WHEN 511 THEN x'0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b' END,
+                CASE WHEN i IN (1,2,511) THEN 'native_file_id_128' ELSE 'path_observation' END,
+                CASE WHEN i IN (1,2,511) THEN 'listed' ELSE 'none' END,i,0,'complete',2,2 FROM n;
+         INSERT INTO dir(id,root_id,parent_id,name,file_id,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run)
+         VALUES(600,1,1,'destination',x'14141414141414141414141414141414','native_file_id_128','listed',1,0,'complete',2,2),
+               (601,1,1,'control',NULL,'path_observation','none',1,0,'complete',2,2);
+         UPDATE dir SET created_ft=0;"
+    ).unwrap();
+    (temp, conn)
+}
+
+fn depth_listing(dir_id: i64, files: Vec<Observation>, dirs: Vec<Observation>) -> WriteCommand {
+    WriteCommand::DirListing(DirListing {
+        run_id: 2,
+        dir_id,
+        files,
+        dirs,
+        state: "complete".into(),
+        skipped: 0,
+        errors: 0,
+    })
+}
+
+fn depth_batch(
+    conn: Connection,
+    commands: Vec<WriteCommand>,
+) -> (Vec<Result<WriteReply>>, WriterTimings) {
+    let (tx, rx) = bounded(commands.len());
+    let mut replies = Vec::new();
+    for command in commands {
+        let (reply, result) = bounded(1);
+        tx.send(Pending {
+            command,
+            reply,
+            _permit: BytePermit {
+                quota: Arc::new((Mutex::new(0), Condvar::new())),
+                bytes: 0,
+            },
+        })
+        .unwrap();
+        replies.push(result);
+    }
+    drop(tx);
+    let timings = Arc::new(Mutex::new(WriterTimings::default()));
+    let (alive, _) = bounded(0);
+    work(conn, rx, timings.clone(), alive, None);
+    let results = replies.into_iter().map(|r| r.recv().unwrap()).collect();
+    let timing = timings.lock().unwrap().clone();
+    (results, timing)
+}
+
+fn depth_end_run() -> WriteCommand {
+    WriteCommand::EndRun {
+        run_id: 2,
+        state: "completed".into(),
+        finished_at_ns: 6,
+    }
+}
+
+#[test]
+fn reparent_bounds_the_whole_subtree_and_keeps_the_batch_and_end_run_usable() {
+    let (temp, conn) = depth_fixture();
+    let (mut results, timing) = depth_batch(
+        conn,
+        vec![
+            depth_listing(601, vec![observation("before", 30, 42)], vec![]),
+            depth_listing(
+                600,
+                vec![observation("rolled-back", 31, 42)],
+                vec![observation("spine-1", 10, 0)],
+            ),
+            depth_listing(520, vec![observation("after", 32, 42)], vec![]),
+            // Moving spine-2 instead lands its deepest descendant at exactly depth 511.
+            depth_listing(600, vec![], vec![observation("spine-2", 12, 0)]),
+            depth_end_run(),
+        ],
+    );
+    assert!(matches!(
+        results.remove(1),
+        Err(Error::Invalid("tree depth limit"))
+    ));
+    for result in results {
+        result.unwrap();
+    }
+    assert_eq!(timing.max_transaction_commands, 4);
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    assert_eq!(
+        db.query_row("SELECT parent_id FROM dir WHERE id=10", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row("SELECT parent_id FROM dir WHERE id=11", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        600
+    );
+    assert_eq!(
+        db.query_row("SELECT max(depth) FROM dir", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        511
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM file", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT sub_files,sub_logical,agg_valid_rev=dirty_rev FROM dir WHERE id=1",
+            [],
+            |r| Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, bool>(2)?
+            ))
+        )
+        .unwrap(),
+        (2, 20, true)
+    );
+}
+
+#[test]
+fn a_shallower_intra_batch_reparent_does_not_trust_stored_depth() {
+    let (temp, conn) = depth_fixture();
+    assert_eq!(
+        conn.query_row("SELECT depth FROM dir WHERE id=520", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        511
+    );
+    let (results, timing) = depth_batch(
+        conn,
+        vec![
+            depth_listing(600, vec![], vec![observation("spine-511", 11, 0)]),
+            depth_listing(520, vec![], vec![observation("new-child", 13, 42)]),
+            depth_end_run(),
+        ],
+    );
+    for result in results {
+        result.unwrap();
+    }
+    assert_eq!(timing.max_transaction_commands, 2);
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    assert_eq!(
+        db.query_row("SELECT depth FROM dir WHERE name='new-child'", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        3
+    );
+}
+
+#[test]
+fn rejected_reparent_clears_parent_cache_before_the_next_chain_check() {
+    let (temp, conn) = depth_fixture();
+    let (mut results, timing) = depth_batch(
+        conn,
+        vec![
+            depth_listing(
+                600,
+                vec![],
+                vec![observation("spine-511", 11, 0), observation("cycle", 20, 0)],
+            ),
+            // A stale cache says this is shallow; SQLite still has the 511-deep spine.
+            depth_listing(520, vec![], vec![observation("too-deep", 13, 42)]),
+            depth_listing(520, vec![observation("accepted", 30, 42)], vec![]),
+            depth_end_run(),
+        ],
+    );
+    assert!(matches!(
+        results.remove(0),
+        Err(Error::Invalid("directory identity cycle"))
+    ));
+    assert!(matches!(
+        results.remove(0),
+        Err(Error::Invalid("tree depth limit"))
+    ));
+    for result in results {
+        result.unwrap();
+    }
+    assert_eq!(timing.max_transaction_commands, 3);
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    assert_eq!(
+        db.query_row("SELECT parent_id FROM dir WHERE id=520", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        519
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM dir WHERE name='too-deep'", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        db.query_row("SELECT sub_logical FROM dir WHERE id=1", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        10
+    );
+}
+
+#[test]
+fn chain_lengths_reuse_proven_seeds_but_count_the_unproven_prefix() {
+    let conn = Connection::open_in_memory().unwrap();
+    let mut ctx = Context {
+        timings: Arc::new(Mutex::new(WriterTimings::default())),
+        parents: (1..=513)
+            .map(|id| (id, (id > 1).then_some(id - 1)))
+            .collect(),
+        dirty: Vec::new(),
+        extensions: HashMap::new(),
+        revision: 1,
+        fenced_listings: HashSet::new(),
+    };
+    let mut proven = HashMap::new();
+    assert_eq!(ctx.chain_length(&conn, 512, &mut proven).unwrap(), 512);
+    assert_eq!(proven.len(), 512);
+    // No table exists: revisiting this proven seed must need neither a parent walk nor SQL.
+    ctx.parents.remove(&512);
+    assert_eq!(ctx.chain_length(&conn, 512, &mut proven).unwrap(), 512);
+    assert!(matches!(
+        ctx.chain_length(&conn, 513, &mut proven),
+        Err(Error::Invalid("tree depth limit"))
+    ));
+}
+
 fn observation(name: &str, identity: u8, creation: i64) -> Observation {
     let mut o = Observation::file(name, 10, Some(10));
     o.file_id = Some(vec![identity; 16]);
