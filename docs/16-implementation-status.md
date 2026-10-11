@@ -197,3 +197,34 @@ resolves the directory from the OS rather than by its folder name.
 Not established: personal scans on FAT, exFAT or RAM-disk volumes (#285 item 2); P4 at 250k (#148); P12 at or
 under 1% (#160); service, contract and UI wiring for duplicates, applications and desktop contexts; the desktop
 shell in hosted CI (#276). No file or process effect exists.
+
+## v0.3 status, wave 7 (11 October 2026; counts measured at `0b27935`)
+
+The sections above are kept as history. This wave merged 33 PRs (counting the wave-6 checkpoint #279 and the owner's teacher-sandbox #291), each with one fresh-context review (an Opus
+deep review for the opening, Sonnet reviewers for engine, catalogue and wiring changes, Muse lenses for the
+rest, scoped round-2 passes after logic fixes) and green hosted CI at merge (lanes' own receipts list hosted CI as not run because it ran on the PR). The wiring backlog
+closed: every product surface the app shows is now served by the real service, not only the mock.
+
+| Area | State on `main` | Evidence |
+|---|---|---|
+| Personal scans | open since #313 (see the section above); stored grants are re-checked against today's fences at scan start (#312, folded into #313) | `evidence/v3/personal-scan-opening.md` |
+| Scan throughput | the catalogue writer no longer idles waiting to batch synchronous listings: 7.7x faster (median) on a 100k-file lab tree, whose runs varied about 2x, and 28x on one run pair over one agent-picked real folder (shared host, profiler on; not a stable bound, #322) | `evidence/v3/scan-throughput-310.md` |
+| Duplicates | read-only synthetic inspection from catalogue candidates to a Duplicates view (#296); lossy or unreadable names keep the report partial; job lifecycle, idempotent revocation, redacted revoked reports and retention caps (#318) | `evidence/v3/duplicates-wire-281.md`, `evidence/v3/jobs-287-duplicates-299.md` |
+| Storage balancing | `tiers.model`, `placement.candidates`, `placement.simulate`, saved proposals from engine to the Tiers view, simulation only, nothing moves (#316); revoked-only volumes excluded as targets, bounded lab space reads (#331); volumes past 64 refused, never dropped | `evidence/v3/placement-wiring-108.md` |
+| Learning | human feedback with durable replay, a revision-bound review queue and human-only refit jobs over the Rust student, synthetic only; personal sessions refuse with `learning_personal_gated` (#328); grouped temporal evaluation and held-out calibration, scores "relative, not a probability" (#294) | `evidence/v3/learning-wiring-l14.md`, `evidence/v3/eval-calibration-lw025.md` |
+| Organisation | collections: durable, identity-checked members; idempotent writes; no effects (#325) | `evidence/v3/collections-wiring.md` |
+| Applications and desktop | read-only `apps.list` and `desktop.contexts` with injected providers and dataset separation; personal sessions read the installed-applications registry inventory and known folders read-only when the Applications or Desktop view is opened; personal shortcut enumeration is unavailable by design (#324, #330) | `evidence/v3/apps-desktop-wiring.md` |
+| Catalogue | each caller keeps its first error after a rollback (#295); a too-deep reparent rejects only its own command (#306, #315); first-scan batches charge validated bytes, P4 96k to 109k rows/s on the bench path (#332) | `crates/loomward-catalog/HANDOFF.md` |
+| Telemetry | P12 0.53% of one core above idle in a shortened shared-host A/B (main 0.66%); interval renewals invalidate mapped batches (#307) | `evidence/v3/telemetry-engine.md` |
+| Service and serve | OS profile and profiles-directory fences, scan gates keyed by the durable grant (#284, #313); `--static` and the picker share one stored-grant overlap rule (#304) | service tests |
+| App | WCAG 2.2 AA audit findings pinned (#302); Explorer climbs to the nearest folder still listed (#311); hello resume watermark bounded (#314) | `evidence/v3/wcag-157.md` |
+| Desktop shell | build, tests, clippy and `--self-test` in hosted CI; the WebView2 probe stays local (hosted WebView2 opens no DevTools endpoint) (#282) | `native/README.md` |
+| Tests and privacy | HTTP security pins (#290); lab guard, shell and apps test gaps (#297, #298); an honest targeted watch repair (#301, #308); a deterministic duplicate-reader deadline test (#321); host CPU and GPU models withheld from older receipts (#305) | test suites |
+
+Counts (Windows, at `0b27935`): Rust 763 (apps 23, catalog 130, core 30, engine 164, http 66, lab 27, learn 18, protocol 36, service 112, shell 27, telemetry 34, windows 93, doc 3); app 320 vitest plus Playwright e2e, `--a11y`
+and `--live-serve`; Python 224 (1 symlink-privilege skip).
+
+Not established: P4 at 250k (#148; the bench path is at about 109k rows/s); a 10-minute quiet-host P12 run
+(#160); personal content reads (duplicates) and personal learning (q-5, #319, #329); personal shortcut
+enumeration; FAT, exFAT and RAM-disk scans (#285); a real picker grant exercised by a person. No file or process
+effect exists: duplicates, placement and collections observe, simulate or record preferences only.
