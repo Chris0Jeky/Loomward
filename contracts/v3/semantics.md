@@ -79,10 +79,24 @@ re-send as stated.
 | `budgets.set` | Yes | `request_id`, 10 min | `budgets.get` | Loomward's own pools reset at restart. After cache expiry set a value only if the owner confirms it against the value read |
 | `telemetry.subscribe`, `telemetry.unsubscribe` | Yes | `subscription_id` | Unknown or expired IDs are `not_found` | Re-subscribe with a fresh lease |
 
-L14 learning is synthetic-only. Personal sessions refuse `feedback.record` and `learning.refit`
-with `capability_unavailable` and `detail.reason: learning_personal_gated`; `learning.status.gate`
-reports that same rule, and `learning.queue` is empty. Opening personal learning requires a separate
-owner decision. A label is not a preference or an operation grant.
+Learning is local and human-only in both dataset classes. Personal sessions opened it under
+HUMAN_TODO q-11: `feedback.record`, `learning.queue`, `learning.refit` and `threads.meaning` work on
+nodes of the session's active owner grants, with features read from those roots on this machine;
+`learning.status.gate` is null. Each `state.db` records its dataset class, and a session refuses a
+store of the other class, so personal and synthetic (lab or fixture) labels never train together.
+Training reads human events only; teacher labels and preferences are separate classes and never
+train the student. A label is not a preference or an operation grant, and a suggestion is advice
+with relative scores, never an approval.
+
+Revoking a root (or its grant ending `identity_changed`) redacts the stored features of every
+human event on its nodes to empty values, withdraws those events from training and deletes every
+stored model, since a model carries name tokens; the sweep repeats at startup and before each refit.
+A revoked root's nodes cannot be labelled (`not_found`); withdrawal of an earlier label stays possible.
+
+Every teacher entry point (`teacher.preview`, `grants.create_disclosure`, `teacher.run`,
+`teacher.results`) refuses a personal session with `capability_unavailable` and
+`detail.reason: teacher_personal_gated` once the envelope validates, before any handler work:
+q-11 opens the local student only, and the teacher's personal conditions (q-5) are unmet.
 
 `feedback.record` binds new labels only to a resolved durable native reference. Retractions use the prior human event and remain available after exclusion, loss of resolution or root revocation. `label` is null exactly when
 `retract` is true; a retraction with no prior human label is `invalid_request`. It stores the
@@ -311,8 +325,9 @@ disclosure remains gated.
 - The grant is consumed, and the teacher request row created, in one `state.db` transaction with
   `synchronous=FULL` **before** the process starts. A crash after consumption leaves a consumed grant and a
   request in state `interrupted`; it is never retried.
-- Personal-dataset grants are refused with `confinement_not_enforced` until the confinement profile in
-  `docs/41-v03-architecture.md` section 9.2 is demonstrated by enforcement tests.
+- Personal sessions are refused at every teacher entry point with `teacher_personal_gated` (section 3);
+  behind that gate, personal-dataset grants are refused with `confinement_not_enforced` until the
+  confinement profile in `docs/41-v03-architecture.md` section 9.2 is demonstrated by enforcement tests.
 
 ## 12. Telemetry leases
 
@@ -503,9 +518,8 @@ catalogue work and is checked between feature reads and predictions; expiration 
 change returns `stale_generation`. Unknown or stale IDs in the processed prefix refuse
 the request. A suffix beyond the work cap is not resolved or authorised.
 
-Personal sessions refuse with `capability_unavailable`, `detail.reason=learning_personal_gated`,
-before resolving IDs or features. This is the same gate named in `learning.status.gate`;
-status remains readable, and no personal candidate is used.
+Personal sessions read meaning like synthetic ones (q-11): features come only from nodes of the
+session's active grants, and the candidate is the session's own, fitted from the owner's labels.
 
 Only non-excluded files with an available durable native identity are eligible. Folders,
 virtual/folded nodes and files lacking identity are `not_eligible`, with null label/share/source.

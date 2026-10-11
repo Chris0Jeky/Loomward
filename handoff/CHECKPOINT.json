@@ -84,7 +84,8 @@
     "student": "weighted Naive Bayes; Rust port loomward-learn with exact Python parity (#113)",
     "teacher_mock_http_tested": true,
     "actual_model_tested": "synthetic-only: GPT-6.1 Sol through codex exec, 10/10 schema-valid 25-item batches, median 21.8 s (#116); no personal data",
-    "personal_dataset_evaluated": false
+    "personal_dataset_evaluated": false,
+    "personal": "open locally on the owner's labels (q-11, 2026-10-11): stores keep their dataset class; revocation sweeps features and models; teacher entry points refuse personal sessions (teacher_personal_gated); grants record their volume filesystem (#372), so real granted NTFS folders can be labelled (live test a_live_scanned_ntfs_grant_can_be_labelled_and_collected); evidence/v3/personal-learning-q11.md"
   },
   "experiments": {
     "tiny_allocation_cases": 51,
@@ -380,7 +381,6 @@
     "source": "HUMAN_TODO.md q-5, q-9 to q-19 (recorded in #360)",
     "tier": "T2 daily driver; privacy and security findings weigh lower; secrets and real paths in the public repo stay forbidden",
     "decided_not_yet_implemented": [
-      "q-11 personal learning (local, owner labels)",
       "q-13 P4 KPI retarget plus bulk-load lane",
       "q-14 backups (driver: evidence import, then guarded restic observer, then restore-drill executor)",
       "q-15 diagnostics bundle via native save dialog",
@@ -390,7 +390,9 @@
     ],
     "owner_action": "q-19 dismiss Dependabot alert 1",
     "implemented": [
-      "q-12 FAT/exFAT identity-unverified listing (#372; state v5; every grant records its filesystem; real FAT volume leg unverified)"
+      "q-12 FAT/exFAT identity-unverified listing (#372; state v5; every grant records its filesystem; real FAT volume leg unverified)",
+      "q-11 personal learning on the owner's labels (#368)",
+      "q-10 personal duplicate content reads (#376)"
     ]
   }
 }
