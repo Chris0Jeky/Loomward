@@ -610,8 +610,9 @@ fn serve(
         bulk: HashMap::new(),
         bulk_enabled,
     };
-    // The WAL cut after a forget, when a reader outlasted the first try: retried between commands.
+    // The state rewrite and WAL cut after a forget, when a lock outlasted the first try: retried between commands.
     let mut cut_pending = false;
+    let mut vacuum_pending = false;
     loop {
         let first = loop {
             if let Some(p) = pending.take() {
@@ -623,7 +624,7 @@ fn serve(
             match rx.recv_timeout(Duration::from_millis(500)) {
                 Ok(p) => break Some(p),
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                    cut_pending = !wal_cut(&conn, Duration::ZERO)
+                    cut_pending = !wal_cut(&conn, Duration::ZERO, &mut vacuum_pending)
                 }
                 Err(_) => break None,
             }
@@ -887,7 +888,8 @@ fn serve(
                 .checkpoint_seconds += seconds;
         }
         if forget && results.iter().all(Result::is_ok) {
-            cut_pending = !wal_cut(&conn, Duration::from_millis(750));
+            vacuum_pending = true;
+            cut_pending = !wal_cut(&conn, Duration::from_millis(750), &mut vacuum_pending);
         }
         for (p, result) in batch.into_iter().zip(results) {
             let Pending { reply, _permit, .. } = p;
@@ -900,14 +902,23 @@ fn serve(
     }
     let _ = conn.execute_batch("PRAGMA main.wal_checkpoint(TRUNCATE)");
 }
-/// Page images from before a purge sit in the WALs until they are folded in and cut. Waits at most
-/// `wait` for readers, so a slow one never holds the committed receipt; the caller retries until
-/// both logs are cut. Whether every log was cut.
-pub(crate) fn wal_cut(conn: &Connection, wait: Duration) -> bool {
+/// Page images from before a purge sit in the WALs until they are folded in and cut, and stale
+/// cells an earlier build freed without secure_delete sit in state.db's free space until it is
+/// rewritten: while `vacuum` is set, `VACUUM st` runs first. Waits at most `wait` for a lock, so a
+/// slow reader or writer never holds the committed receipt; the caller retries until the rewrite is
+/// done and both logs are cut. Whether all of it was done.
+pub(crate) fn wal_cut(conn: &Connection, wait: Duration, vacuum: &mut bool) -> bool {
     let Ok(timeout) = conn.query_row("PRAGMA busy_timeout", [], |r| r.get::<_, u32>(0)) else {
         return false;
     };
     let _ = conn.busy_timeout(wait);
+    if *vacuum {
+        *vacuum = conn.execute_batch("VACUUM st").is_err();
+        if *vacuum {
+            let _ = conn.busy_timeout(Duration::from_millis(u64::from(timeout)));
+            return false;
+        }
+    }
     let cut = |db: &str| {
         conn.query_row(&format!("PRAGMA {db}.wal_checkpoint(TRUNCATE)"), [], |r| {
             r.get::<_, i64>(0)

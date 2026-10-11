@@ -368,7 +368,7 @@ pub(crate) fn open_pair(dir: &Path, dataset: &str) -> Result<Connection> {
     }
     tx.commit()?;
     if !forgotten.is_empty() {
-        crate::writer::wal_cut(&conn, Duration::from_millis(750));
+        crate::writer::wal_cut(&conn, Duration::from_millis(750), &mut true);
     }
     Ok(conn)
 }

@@ -656,3 +656,41 @@ fn leftover_bulk_rows_of_the_root_go_too_however_deep() {
     assert_eq!(catalog_count(&f, "SELECT count(*) FROM bulk_file"), 0);
     assert!(!on_disk(&f, BUILT), "a leftover bulk row kept its name");
 }
+
+#[test]
+fn a_grant_revoked_before_secure_delete_leaves_no_stale_path_after_the_forget() {
+    let f = fixture();
+    // As main before #288 revoked it: no secure_delete, and the row grows, so SQLite frees the old
+    // cell and its bytes stay in free space. With enough grants to fill the page the moved cell lands
+    // elsewhere, so the forget's own (secure) update never touches the stale image.
+    let st = Connection::open(f.temp.path().join("state.db")).unwrap();
+    st.execute_batch(
+        "PRAGMA secure_delete=OFF;
+         INSERT INTO root_grant(volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns)
+           WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<100)
+           SELECT 'vol',zeroblob(16),printf('C:\\Synthetic\\Filler%03d',i),'fixture','fixture','active',1 FROM n;",
+    )
+    .unwrap();
+    st.execute(
+        "UPDATE root_grant SET state='revoked',revoked_at_ns=1791756482298000000 WHERE id=?1",
+        [f.grant_a],
+    )
+    .unwrap();
+    drop(st);
+    fold_wal(&f);
+    let bytes = std::fs::read(f.temp.path().join("state.db")).unwrap();
+    let copies = bytes
+        .windows(PATH_A.len())
+        .filter(|w| *w == PATH_A.as_bytes())
+        .count();
+    assert!(
+        copies >= 2,
+        "the insecure revoke left no stale image ({copies})"
+    );
+    forget(&f, f.grant_a, None).unwrap();
+    fold_wal(&f);
+    assert!(
+        !on_disk(&f, PATH_A),
+        "a stale image of the path survived the forget"
+    );
+}
