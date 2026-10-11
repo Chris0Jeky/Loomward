@@ -40,7 +40,8 @@ def wait_until(page, expression: str | Callable[[], bool], arg=None, timeout_ms:
     while not (expression() if callable(expression) else page.evaluate(expression, arg)):
         if time.monotonic() > deadline:
             raise AssertionError(f'timed out waiting for: {expression}')
-        time.sleep(0.05)
+        # Python predicates still need to dispatch intercepted browser requests.
+        page.wait_for_timeout(50)
 
 def ok(cond: bool, msg: str) -> None:
     if not cond:
@@ -65,6 +66,7 @@ class FakeEngine:
         self.broken: dict[str, str] = {}  # node id -> error code tree.children answers instead of rows (e.g. an ancestor that fails)
         self.fail_proposals = False
         self.saved_scenarios = False
+        self.served: dict[str, int] = {}  # command -> times answered, so a test can wait for a reload to be served
         self.candidate_gate = None  # one (arrived, release) event pair
         self.tier_volumes: list[dict] | None = None
         self.candidate_sources: list[str] = []
@@ -79,6 +81,7 @@ class FakeEngine:
         self.explain_partial_once = False
         self.explain_calls: list[str] = []
         self.process_observed_at: str | None = None
+        self.trend_mode: str | None = None
 
     @property
     def base(self) -> str:
@@ -91,6 +94,7 @@ class FakeEngine:
 
     def result(self, req: dict):
         cmd, p = req['command'], req.get('payload') or {}
+        self.served[cmd] = self.served.get(cmd, 0) + 1
         row = lambda name, i: {'node_id': f'nd_{name}', 'kind': 'file', 'name': name, 'extension': 'txt', 'ext_family': 'document', 'logical_bytes': str(1000 + i), 'allocated_bytes': '4096', 'files': None, 'dirs': None, 'modified_at': '2026-01-01T00:00:00Z', 'attributes': [], 'flags': [], 'coverage': 'complete', 'location_hint': None}
         if cmd == 'session.hello':
             effects = {k: False for k in 'file_move file_delete file_rename file_write content_read process_kill process_suspend process_priority memory_trim uninstall elevation'.split()}
@@ -120,6 +124,19 @@ class FakeEngine:
                 if cmd == 'processes.list' and self.process_error:
                     return (self.process_error, 'synthetic process observation failure')
                 result = json.loads((ROOT / f'contracts/v3/examples/commands/{cmd}.result.json').read_text())
+                if cmd == 'processes.list' and self.trend_mode:
+                    result['rows'][0]['process_ref'] = 'pc_4242_116444736000000001'
+                if cmd == 'telemetry.snapshot' and self.trend_mode:
+                    if self.trend_mode == 'refused':
+                        return ('partial_coverage', 'synthetic telemetry gap')
+                    if self.trend_mode == 'missing':
+                        result['trends'] = {'series': [], 'candidates': [], 'candidates_truncated': False, 'unknowns': ['Missing samples and denied handles: coverage unknown.']}
+                    else:
+                        result['trends']['series'].append({
+                            'key': 'system', 'metric': 'cpu_busy_fraction', 'unit': 'fraction', 'max_gap_ms': 2000,
+                            'points': [{'offset_ms': t, 'observed_at': f'2026-10-09T12:00:{i:02}Z', 'value': v} for i, (t, v) in enumerate(zip((0, 1000, 2000, 9000, 10000), (0, 0.4, None, 0.8, 1)))],
+                            'unknowns': ['Missing samples and sampling gaps remain gaps, not zero.'],
+                        })
                 if cmd == 'processes.list' and self.process_observed_at:
                     result['observed_at'] = self.process_observed_at
                     for row in result['rows']:
@@ -467,7 +484,7 @@ def check_tiers_loading_followups(page: Page, engine: FakeEngine) -> None:
         wait_until(page, arrived.is_set)
         expect(panel).to_have_attribute('aria-busy', 'true')
         button.click()
-        expect(page.get_by_text('Saved scenario shown. Simulation only.', exact=True)).to_be_attached()
+        expect(page.get_by_role('heading', name='Placement plan', level=2)).to_be_visible()  # durable: the live-region sentence can be replaced
     finally:
         release.set()
     expect(panel).to_have_attribute('aria-busy', 'false')
@@ -477,6 +494,19 @@ def check_tiers_loading_followups(page: Page, engine: FakeEngine) -> None:
 
 
 # --- Tiers ------------------------------------------------------------------------------------------
+
+def declare_tier(page: Page, engine: FakeEngine, panel, tier: str) -> None:
+    """Declares a tier and returns only once the reload it triggers has been served and applied.
+
+    `aria-busy` covers the reload but not the declare round trip before it, so on its own it reads
+    'false' straight after the change and a later step can race the reload (which discards a
+    scenario that is loading, `loadModel` bumps its ticket)."""
+    expect(panel).to_have_attribute('aria-busy', 'false')
+    before = {c: engine.served.get(c, 0) for c in ('volumes.declare_tier', 'proposals.list')}
+    panel.get_by_label('Declared tier for X:').select_option(tier)
+    wait_until(page, lambda: all(engine.served.get(c, 0) > n for c, n in before.items()))
+    expect(panel).to_have_attribute('aria-busy', 'false')
+
 
 def check_tiers_source_eligibility(page: Page, engine: FakeEngine) -> None:
     template = engine.result({'command': 'tiers.model'})['volumes'][0]
@@ -494,21 +524,19 @@ def check_tiers_source_eligibility(page: Page, engine: FakeEngine) -> None:
     expect(panel.get_by_role('button', name=re.compile(r'^Use as source\s*:\s*Blocked$'))).to_be_disabled()
     panel.get_by_role('button', name=re.compile(r'^Use as source\s*:\s*Other$')).click()
     expect(selected).to_contain_text('Other')
-    panel.get_by_label('Declared tier for X:').select_option('2')
-    expect(panel).to_have_attribute('aria-busy', 'false')
+    declare_tier(page, engine, panel, '2')
     expect(selected).to_contain_text('Other')
     engine.tier_volumes[2]['source_eligible'] = False
-    panel.get_by_label('Declared tier for X:').select_option('3')
+    declare_tier(page, engine, panel, '3')
     expect(selected).to_contain_text('X:')
     expect(panel.get_by_role('button', name=re.compile(r'^Use as source\s*:\s*Other$'))).to_be_disabled()
     engine.tier_volumes[1]['source_eligible'] = False
     engine.saved_scenarios = True
-    panel.get_by_label('Declared tier for X:').select_option('4')
-    expect(panel).to_have_attribute('aria-busy', 'false')
+    declare_tier(page, engine, panel, '4')
     expect(selected).to_have_count(0)
     count = len(engine.candidate_sources)
     page.get_by_role('button', name=re.compile('Show saved scenario')).click()
-    expect(page.get_by_text('Saved scenario shown. Simulation only.', exact=True)).to_be_attached()
+    expect(page.get_by_role('heading', name='Placement plan', level=2)).to_be_visible()  # durable: the live-region sentence can be replaced
     expect(selected).to_have_count(0)
     ok(len(engine.candidate_sources) == count and 'vo_blocked' not in engine.candidate_sources,
        'Tiers defaults, preserves, enables and restores only eligible sources; ineligible saved sources stay historical')
@@ -520,7 +548,7 @@ def check_tiers_source_eligibility(page: Page, engine: FakeEngine) -> None:
     expect(selected).to_contain_text('X:')
     page.get_by_label('Assumed heat for group-a').select_option('0.9')
     engine.tier_volumes[0]['source_eligible'] = False
-    panel.get_by_label('Declared tier for X:').select_option('5')
+    declare_tier(page, engine, panel, '5')
     expect(selected).to_contain_text('Other')
     expect(panel).to_have_attribute('aria-busy', 'false')
     engine.simulate_overrides.clear()
@@ -577,6 +605,78 @@ def check_tiers(page: Page, base: str, shoot) -> None:
 
 
 # --- Companion --------------------------------------------------------------------------------------
+
+def check_wait_until_dispatches_routes(browser) -> None:
+    """Python predicates must pump Playwright so routed requests can complete."""
+    engine = FakeEngine()
+    engine.start()
+    page = browser.new_page()
+    seen = []
+    try:
+        page.goto(engine.base)
+        def reply(route):
+            seen.append(True)
+            route.fulfill(status=200, content_type='text/plain', body='ok')
+        url = engine.base + '/poll-probe'
+        page.route(url, reply)
+        page.evaluate("url => { setTimeout(() => { void fetch(url); }, 100); }", url)
+        wait_until(page, lambda: bool(seen), timeout_ms=1500)
+        ok(len(seen) == 1, 'Python predicate polling dispatches routed requests')
+    finally:
+        page.close()
+        engine.stop()
+
+
+def check_resource_trends(browser) -> None:
+    check_wait_until_dispatches_routes(browser)
+    engine = FakeEngine()
+    engine.process_error = ''
+    engine.trend_mode = 'gap'
+    engine.start()
+    page = browser.new_page()
+    errors = []
+    page.on('pageerror', lambda e: errors.append(str(e)))
+    try:
+        page.goto(f'{engine.base}/?transport=http#token={TOKEN}&/observatory')
+        page.evaluate("location.hash = '#/observatory'")
+        panel = page.get_by_role('region', name='Recent trends')
+        expect(panel).to_be_visible()
+        expect(panel.get_by_text('growth candidate', exact=True)).to_be_visible()
+        expect(panel.locator('.explanations')).to_contain_text('synthetic-app.exe')
+        expect(panel.get_by_text(re.compile('slope 69905.066667 bytes/s'))).to_be_visible()
+        expect(panel.get_by_text('Private commit grew by 3145728 bytes over 45 s with three increases and no decreases.')).to_be_visible()
+        expect(panel.get_by_text(re.compile('exact creation time separates PID reuse'))).to_be_visible()
+        expect(panel.locator('svg path')).to_have_count(2)
+        expect(panel.get_by_role('img')).to_have_attribute('aria-label', re.compile('fraction over 10 s; 5 samples'))
+        expect(panel.get_by_text('Missing samples and sampling gaps remain gaps, not zero.')).to_be_visible()
+        panel.get_by_text('Sample facts', exact=True).click()
+        expect(panel.locator('.samples')).to_contain_text('unknown')
+        expect(panel.locator('.samples')).to_contain_text('0.0%')
+        panel.get_by_label('Trend metric').select_option('private_commit_bytes')
+        expect(panel.get_by_role('img')).to_have_attribute('aria-label', re.compile('bytes over 45 s; 4 samples'))
+        expect(panel.locator('.samples')).to_contain_text('3.00 MiB')
+        page.get_by_role('button', name='Pause updates').click()
+        expect(panel.get_by_text('Paused; retained observation window.', exact=False)).to_be_visible()
+        for theme in ('Observatory', 'Woven atlas'):
+            page.get_by_role('group', name='Theme').get_by_role('button', name=theme).click()
+            expect(panel.locator('svg path')).to_have_count(1)
+        page.set_viewport_size({'width': 320, 'height': 844})
+        ok(page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'resource trends: fits 320 px')
+        engine.trend_mode = 'missing'
+        page.get_by_role('button', name='Resume updates').click()
+        expect(panel.get_by_text('Trend history unavailable or awaiting leased samples.')).to_be_visible()
+        expect(panel.get_by_text('Missing samples and denied handles: coverage unknown.')).to_be_visible()
+        expect(panel.locator('svg')).to_have_count(0)
+        engine.trend_mode = 'refused'
+        expect(page.get_by_text('Telemetry unavailable, retrying')).to_be_visible(timeout=10000)
+        expect(panel.get_by_text('growth candidate', exact=True)).to_have_count(0)
+        ok(not errors, f'resource trends: no page errors {errors}')
+        ok(panel.get_by_role('button', name=FORBIDDEN_BUTTONS).count() == 0, 'resource trends: no effect controls')
+        print('PASS LW-051: windows, units, fact citations, gaps, pause, themes and missing/refused samples')
+    finally:
+        page.close()
+        engine.stop()
+
 
 def check_process_strip_failures(browser) -> None:
     engine = FakeEngine()
@@ -991,6 +1091,7 @@ def run_views(page: Page, base: str, shots: Path | None) -> None:
     page.set_viewport_size({'width': 1360, 'height': 900})
     check_process_strip(page.context.browser, base, shots)
     check_process_strip_failures(page.context.browser)
+    check_resource_trends(page.context.browser)
     check_explorer_mock(page, base, shoot)
     engine = FakeEngine()
     engine.start()

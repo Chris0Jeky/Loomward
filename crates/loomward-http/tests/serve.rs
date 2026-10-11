@@ -1515,13 +1515,11 @@ fn conflicting_content_length_is_refused_and_identical_duplicates_coalesce() {
     );
     assert_eq!(r.status, 200);
     // Conflicting values are the smuggling case: hyper refuses them with a bare 400 before the
-    // adapter runs, so no body is framed two ways.
+    // adapter runs, so no body is framed two ways. The head alone decides it, so no body is sent:
+    // hyper replies and closes without reading one, and a body still in flight meets that close
+    // as a connection reset that discards the unread 400 (a loaded host loses this race).
     let dup_diff = format!("\r\nContent-Length: {}", HELLO.len() + 1);
-    let r = exchange(
-        h.addr(),
-        &call_head(&h, HELLO.len(), &dup_diff),
-        HELLO.as_bytes(),
-    );
+    let r = exchange(h.addr(), &call_head(&h, HELLO.len(), &dup_diff), b"");
     assert_eq!(r.status, 400);
 }
 

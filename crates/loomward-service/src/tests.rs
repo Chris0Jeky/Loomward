@@ -27,6 +27,8 @@ pub(crate) struct Hooks {
     pub closed: Mutex<Vec<(Command, &'static str)>>,
     pub arrived: Mutex<Vec<(Command, &'static str)>>,
     pub opened: std::sync::Condvar,
+    /// How far ahead of the wall clock the collection page loop reads time (`Inner::past`).
+    pub skew: Mutex<Duration>,
     /// (profile, profiles directory) for the scan-time fence instead of the OS folders (#312).
     pub profile: Mutex<Option<(std::path::PathBuf, std::path::PathBuf)>>,
 }
@@ -2285,6 +2287,53 @@ fn register_as(svc: &Service, file_id: u8, origin: &str) -> (i64, i64) {
     (root_id, grant_id)
 }
 
+/// A worker answers its caller before its closure ends, so for a moment after any call it still
+/// holds the service and its catalogue connections. The gate holds that moment open; dropping the
+/// service must wait for it rather than return with `catalog.db` still open.
+#[test]
+fn dropping_the_service_waits_for_workers_that_already_replied() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    for command in [Command::RootsList, Command::RootsRevoke] {
+        let tmp = temp_root();
+        let svc = open(tmp.path(), DatasetClass::Synthetic);
+        let (a, _) = register(&svc, 1);
+        let root = svc.inner.root_id(a);
+        svc.inner
+            .hooks
+            .closed
+            .lock()
+            .unwrap()
+            .push((command, "worker_exit"));
+        let reply = if command == Command::RootsList {
+            call(&svc, "roots.list", json!({}))
+        } else {
+            call(
+                &svc,
+                "roots.revoke",
+                json!({"root_id": root, "purge_catalog": false}),
+            )
+        };
+        ok(command.as_str(), reply);
+        let released = Arc::new(AtomicBool::new(false));
+        let (flag, weak) = (released.clone(), Arc::downgrade(&svc.inner));
+        let opener = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            flag.store(true, Ordering::SeqCst);
+            weak.upgrade()
+                .expect("the held worker keeps the service alive")
+                .hooks
+                .open(command, "worker_exit");
+        });
+        drop(svc);
+        assert!(
+            released.load(Ordering::SeqCst),
+            "{command:?}: drop returned while a replied worker still held the service"
+        );
+        std::fs::remove_file(tmp.path().join("catalog.db")).unwrap();
+        opener.join().unwrap();
+    }
+}
+
 /// H1: a rebuilt catalogue reassigns root and volume rows. An ID minted before the rebuild is
 /// refused with `catalog_instance_changed` and never selects the row that now has its number.
 #[test]
@@ -2309,7 +2358,9 @@ fn root_and_volume_ids_from_a_rebuilt_catalogue_never_select_a_new_row() {
         ),
     );
     drop(svc);
-    for name in ["catalog.db", "catalog.db-wal", "catalog.db-shm"] {
+    // Dropping the service closed every connection, so the catalogue is removable (#320 follow-up).
+    std::fs::remove_file(tmp.path().join("catalog.db")).unwrap();
+    for name in ["catalog.db-wal", "catalog.db-shm"] {
         let _ = std::fs::remove_file(tmp.path().join(name));
     }
     assert!(!tmp.path().join("catalog.db").exists());
