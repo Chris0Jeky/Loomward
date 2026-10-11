@@ -2162,8 +2162,6 @@ fn register_as(svc: &Service, file_id: u8, origin: &str) -> (i64, i64) {
     (root_id, grant_id)
 }
 
-/// H1: a rebuilt catalogue reassigns root and volume rows. An ID minted before the rebuild is
-/// refused with `catalog_instance_changed` and never selects the row that now has its number.
 /// A worker answers its caller before its closure ends, so for a moment after any call it still
 /// holds the service and its catalogue connections. The gate holds that moment open; dropping the
 /// service must wait for it rather than return with `catalog.db` still open.
@@ -2211,6 +2209,8 @@ fn dropping_the_service_waits_for_workers_that_already_replied() {
     }
 }
 
+/// H1: a rebuilt catalogue reassigns root and volume rows. An ID minted before the rebuild is
+/// refused with `catalog_instance_changed` and never selects the row that now has its number.
 #[test]
 fn root_and_volume_ids_from_a_rebuilt_catalogue_never_select_a_new_row() {
     let tmp = temp_root();
