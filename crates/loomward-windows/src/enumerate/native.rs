@@ -94,32 +94,43 @@ impl IoCancellation {
 pub struct NativeSource {
     cancel: IoCancellation,
     preferred: Option<Strategy>,
+    allow_unverified: bool,
     #[cfg(any(test, feature = "fixtures"))]
     path_query_error: Option<i32>,
+    #[cfg(any(test, feature = "fixtures"))]
+    filesystem: Option<&'static str>,
 }
 impl NativeSource {
     /// A source sharing this run's cancellation.
     pub fn new(cancel: IoCancellation) -> Self {
         Self {
             cancel,
-            preferred: None,
-            #[cfg(any(test, feature = "fixtures"))]
-            path_query_error: None,
+            ..Self::default()
         }
     }
     /// Select a starting class for fallback fixture tests and measurements.
     pub fn with_strategy(strategy: Strategy) -> Self {
         Self {
-            cancel: IoCancellation::default(),
             preferred: Some(strategy),
-            #[cfg(any(test, feature = "fixtures"))]
-            path_query_error: None,
+            ..Self::default()
         }
+    }
+    /// Allow identity-unverified listing on a filesystem that cannot verify file identity (#219).
+    /// Only a grant that allows it may set this; NTFS and ReFS never list unverified.
+    pub fn with_identity_unverified(mut self) -> Self {
+        self.allow_unverified = true;
+        self
     }
     /// Inject a normalised handle-path query failure in disposable fixture scans only.
     #[cfg(any(test, feature = "fixtures"))]
     pub fn with_path_query_failure(mut self, code: i32) -> Self {
         self.path_query_error = Some(code);
+        self
+    }
+    /// Report this filesystem name instead of the volume's, in disposable fixture scans only.
+    #[cfg(any(test, feature = "fixtures"))]
+    pub fn with_filesystem(mut self, name: &'static str) -> Self {
+        self.filesystem = Some(name);
         self
     }
 }
@@ -130,12 +141,18 @@ pub struct NativeDir {
     root: Arc<File>,
     refs: bool,
     reopen_safe: bool,
+    unverified: bool,
+    filesystem: String,
     strategy: Mutex<Strategy>,
 }
 impl NativeDir {
     /// Actual class last used for this directory.
     pub fn strategy(&self) -> Strategy {
         *self.strategy.lock().unwrap()
+    }
+    /// The volume's filesystem name as observed from this handle (or a fixture's injected name).
+    pub fn filesystem(&self) -> &str {
+        &self.filesystem
     }
 }
 fn last_error() -> SourceError {
@@ -442,11 +459,12 @@ fn information<T>(handle: HANDLE, class: FILE_INFO_BY_HANDLE_CLASS) -> Option<T>
         .then_some(info)
 }
 fn opened(
+    source: &NativeSource,
     file: Arc<File>,
     listed: Option<FileIdObs>,
-    preferred: Strategy,
     root: Option<Arc<File>>,
 ) -> Result<(NativeDir, OpenedIdentity), SourceError> {
+    let preferred = source.strategy();
     let _profile = profile::IDENTITY.start();
     let h = file.as_raw_handle();
     let attr = directory_attributes(&file)?;
@@ -472,6 +490,14 @@ fn opened(
             .position(|c| *c == 0)
             .unwrap_or(fs_name.len())],
     );
+    #[cfg(any(test, feature = "fixtures"))]
+    let fs_name = source.filesystem.map_or(fs_name, str::to_owned);
+    // #219: never a silent fallback. NTFS and ReFS keep every identity check; anything else lists
+    // only under a grant that allows identity-unverified listing.
+    let unverified = !verifies_identity(&fs_name);
+    if unverified && !source.allow_unverified {
+        return Err(SourceError::IdentityUnverified);
+    }
     let refs = fs_name.eq_ignore_ascii_case("ReFS");
     let mut basic: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
     let basic_ok = unsafe { GetFileInformationByHandle(h, &mut basic) } != 0;
@@ -491,14 +517,22 @@ fn opened(
         Some(FileIdObs::Id128(_)) => extended,
         None => extended.or(legacy),
     };
-    let (id, basis) = validate_identity(listed, id, refs)?;
+    let (id, basis) = if unverified {
+        // Recyclable FAT/exFAT IDs are kept only as the grant root's weak binding.
+        (extended.or(legacy), IdBasis::Unverified)
+    } else {
+        validate_identity(listed, id, refs)?
+    };
     let root = root.unwrap_or_else(|| file.clone());
     Ok((
         NativeDir {
             file,
             root,
             refs,
-            reopen_safe: reopen_safe_fs(&fs_name),
+            // FAT/exFAT IDs can be recycled when a directory entry is reused after handle release.
+            reopen_safe: verifies_identity(&fs_name),
+            unverified,
+            filesystem: fs_name,
             strategy: Mutex::new(preferred),
         },
         OpenedIdentity {
@@ -513,10 +547,6 @@ fn opened(
         },
     ))
 }
-fn reopen_safe_fs(name: &str) -> bool {
-    // FAT/exFAT IDs can be recycled when a directory entry is reused after handle release.
-    name.eq_ignore_ascii_case("NTFS") || name.eq_ignore_ascii_case("ReFS")
-}
 /// Retain component-wise, no-recall pins while opening the final component asynchronously.
 pub(crate) fn open_watch_root(
     path: &Path,
@@ -529,9 +559,9 @@ pub(crate) fn open_watch_root(
         true,
     )?;
     let (dir, identity) = opened(
+        &NativeSource::default(),
         Arc::new(pins.pop().unwrap()),
         None,
-        Strategy::Extended,
         None,
     )?;
     drop(dir.root);
@@ -607,7 +637,7 @@ impl DirSource for NativeSource {
             FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         )?;
-        opened(Arc::new(pins.pop().unwrap()), None, self.strategy(), None)
+        opened(self, Arc::new(pins.pop().unwrap()), None, None)
     }
     fn open_child(
         &self,
@@ -629,9 +659,9 @@ impl DirSource for NativeSource {
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         )?;
         opened(
+            self,
             Arc::new(file),
             entry.file_id,
-            self.strategy(),
             Some(parent.root.clone()),
         )
     }
@@ -651,12 +681,7 @@ impl DirSource for NativeSource {
         if !self.can_reopen(root, identity) {
             return Err(SourceError::IdentityUnverified);
         }
-        let (_, observed) = opened(
-            root.file.clone(),
-            None,
-            self.strategy(),
-            Some(root.root.clone()),
-        )?;
+        let (_, observed) = opened(self, root.file.clone(), None, Some(root.root.clone()))?;
         if observed.id != root_identity.id || observed.volume_serial != root_identity.volume_serial
         {
             return Err(SourceError::IdentityChanged);
@@ -698,9 +723,9 @@ impl DirSource for NativeSource {
             handle
         };
         let result = opened(
+            self,
             Arc::new(unsafe { File::from_raw_handle(handle) }),
             identity.id,
-            self.strategy(),
             Some(root.root.clone()),
         )?;
         if result.1.volume_serial != identity.volume_serial {
@@ -710,8 +735,12 @@ impl DirSource for NativeSource {
     }
     fn list(&self, dir: &NativeDir, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
         let _profile = profile::LIST.start();
-        let mut callback = |entry: RawEntry<'_>| {
+        let mut callback = |mut entry: RawEntry<'_>| {
             let _profile = profile::CALLBACK.start();
+            if dir.unverified {
+                // A listed FAT/exFAT ID is recyclable: never let it reach matching or storage.
+                entry.file_id = None;
+            }
             sink(entry)
         };
         let sink = &mut callback as &mut dyn FnMut(RawEntry<'_>) -> Flow;
@@ -1109,8 +1138,10 @@ impl NativeSource {
         };
         let original = identity(dir.file.as_raw_handle());
         let pinned = identity(pins.last().unwrap().as_raw_handle());
-        // Path pins must be bound to the original handle before Find opens by name.
-        if original.is_none() || pinned.is_none() {
+        // Path pins must be bound to the original handle before Find opens by name. An
+        // identity-unverified volume (#219) binds by path alone: the pins deny rename and delete,
+        // so the original handle still at the pinned path below is the pinned directory.
+        if (original.is_none() || pinned.is_none()) && !dir.unverified {
             return incomplete(SourceError::IdentityUnverified);
         }
         if original
@@ -1220,7 +1251,9 @@ mod cancellation_tests {
                 file: file.clone(),
                 root: file,
                 refs: name.eq_ignore_ascii_case("ReFS"),
-                reopen_safe: reopen_safe_fs(name),
+                reopen_safe: verifies_identity(name),
+                unverified: !verifies_identity(name),
+                filesystem: name.into(),
                 strategy: Mutex::new(Strategy::Extended),
             };
             let safe = matches!(name, "NTFS" | "ntfs" | "ReFS" | "refs");
@@ -1373,6 +1406,164 @@ mod cancellation_tests {
             source.list(&dir, &mut |_| Flow::Continue),
             ListOutcome::Complete
         );
+    }
+    #[test]
+    fn only_ntfs_and_refs_verify_identity() {
+        for (name, verified) in [
+            ("NTFS", true),
+            ("ntfs", true),
+            ("ReFS", true),
+            ("FAT", false),
+            ("FAT32", false),
+            ("exFAT", false),
+            ("UDF", false),
+            ("", false),
+        ] {
+            assert_eq!(verifies_identity(name), verified, "{name:?}");
+        }
+    }
+    /// #219: a FAT, exFAT or unknown filesystem opens only under an unverified grant; NTFS and
+    /// ReFS never list unverified, even when the grant would allow it.
+    #[test]
+    fn unverified_filesystems_open_only_under_an_unverified_grant() {
+        let temp = super::super::tests::canonical_tempdir();
+        std::fs::create_dir(temp.path().join("child")).unwrap();
+        if running_elevated() {
+            assert!(matches!(
+                NativeSource::default()
+                    .with_identity_unverified()
+                    .open_root(temp.path()),
+                Err(SourceError::Refused)
+            ));
+            return;
+        }
+        for fs in ["FAT", "FAT32", "exFAT", "UDF"] {
+            assert!(matches!(
+                NativeSource::default()
+                    .with_filesystem(fs)
+                    .open_root(temp.path()),
+                Err(SourceError::IdentityUnverified)
+            ));
+            let source = NativeSource::default()
+                .with_filesystem(fs)
+                .with_identity_unverified();
+            let (dir, id) = source.open_root(temp.path()).unwrap();
+            assert_eq!((id.basis, dir.filesystem()), (IdBasis::Unverified, fs));
+            assert!(!source.can_reopen(&dir, id));
+        }
+        for fs in ["NTFS", "ReFS"] {
+            let source = NativeSource::default()
+                .with_filesystem(fs)
+                .with_identity_unverified();
+            let (dir, id) = source.open_root(temp.path()).unwrap();
+            assert_eq!(id.basis, IdBasis::PostOpen, "{fs}");
+            assert!(source.can_reopen(&dir, id));
+        }
+    }
+    /// #219: every strategy lists names, sizes and dates with no file ID, children open by name
+    /// relative to their parent and stay unverified, and nothing can be released for reopening.
+    #[test]
+    fn unverified_listing_keeps_metadata_and_drops_every_id() {
+        let temp = super::super::tests::canonical_tempdir();
+        if running_elevated() {
+            return;
+        }
+        std::fs::create_dir(temp.path().join("child")).unwrap();
+        std::fs::write(temp.path().join("child").join("file"), b"synthetic").unwrap();
+        for strategy in [Strategy::Extended, Strategy::Both, Strategy::Find] {
+            let source = NativeSource::with_strategy(strategy)
+                .with_filesystem("exFAT")
+                .with_identity_unverified();
+            let (root, _) = source.open_root(temp.path()).unwrap();
+            let mut children = Vec::new();
+            assert_eq!(
+                source.list(&root, &mut |e| {
+                    assert_eq!(e.file_id, None, "{strategy:?}");
+                    let (child, id) = source.open_child(&root, &e).unwrap();
+                    assert_eq!(id.basis, IdBasis::Unverified);
+                    assert!(!source.can_reopen(&child, id));
+                    children.push(child);
+                    Flow::Continue
+                }),
+                ListOutcome::Complete
+            );
+            let mut files = 0;
+            assert_eq!(
+                source.list(&children[0], &mut |e| {
+                    assert_eq!((e.file_id, e.end_of_file), (None, 9), "{strategy:?}");
+                    assert!(e.last_write.is_some());
+                    files += 1;
+                    Flow::Continue
+                }),
+                ListOutcome::Complete
+            );
+            assert_eq!(files, 1);
+        }
+    }
+    /// #219: Find binds an unverified directory's pins by path when no identity query answers;
+    /// on NTFS the same missing answers still refuse, whatever the grant allows.
+    #[test]
+    fn find_binds_unverified_pins_by_path_but_never_on_ntfs() {
+        let temp = super::super::tests::canonical_tempdir();
+        if running_elevated() {
+            return;
+        }
+        std::fs::write(temp.path().join("file"), b"synthetic").unwrap();
+        for (fs, allowed) in [("exFAT", true), ("NTFS", false)] {
+            let source = NativeSource::with_strategy(Strategy::Find)
+                .with_filesystem(fs)
+                .with_identity_unverified();
+            let (dir, _) = source.open_root(temp.path()).unwrap();
+            let mut emitted = 0;
+            let outcome = source.find_with_identity(
+                &dir,
+                &mut |_| {
+                    emitted += 1;
+                    Flow::Continue
+                },
+                |_| None,
+            );
+            if allowed {
+                assert_eq!((outcome, emitted), (ListOutcome::Complete, 1));
+            } else {
+                assert_eq!(
+                    (outcome, emitted),
+                    (
+                        ListOutcome::Incomplete(IncompleteReason::IdentityUnverified),
+                        0
+                    )
+                );
+            }
+        }
+    }
+    /// #219: each relist of an unverified directory rechecks containment by normalised path; a
+    /// failed recheck refuses the listing before any entry is emitted.
+    #[test]
+    fn unverified_relist_refuses_when_containment_cannot_be_proven() {
+        let temp = super::super::tests::canonical_tempdir();
+        if running_elevated() {
+            return;
+        }
+        std::fs::create_dir(temp.path().join("child")).unwrap();
+        for strategy in [Strategy::Extended, Strategy::Find] {
+            let source = NativeSource::with_strategy(strategy)
+                .with_filesystem("FAT32")
+                .with_identity_unverified();
+            let (root, _) = source.open_root(temp.path()).unwrap();
+            let mut child = None;
+            source.list(&root, &mut |e| {
+                child = Some(source.open_child(&root, &e).unwrap().0);
+                Flow::Continue
+            });
+            let failing = source.clone().with_path_query_failure(1234);
+            for dir in [&root, child.as_ref().unwrap()] {
+                assert_eq!(
+                    failing.list(dir, &mut |_| panic!("unproven containment listed")),
+                    ListOutcome::Incomplete(IncompleteReason::Io(1234)),
+                    "{strategy:?}"
+                );
+            }
+        }
     }
     #[test]
     fn list_revalidation_preserves_each_attribute_refusal() {

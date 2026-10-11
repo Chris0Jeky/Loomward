@@ -51,7 +51,7 @@
     },
     "ExtFamily": { "enum": ["document", "spreadsheet", "presentation", "image", "video", "audio", "archive", "code", "data", "model", "executable", "system", "font", "other", "none"] },
     "FileAttribute": { "enum": ["readonly", "hidden", "system", "archive", "compressed", "sparse", "encrypted", "offline", "not_content_indexed", "reparse_point", "recall_on_open", "recall_on_data_access", "pinned", "unpinned", "temporary"] },
-    "EntryFlag": { "enum": ["sensitive_name", "protected_context", "hardlink_suspected", "cloud_placeholder", "reparse_not_followed", "excluded_state_dir", "access_denied", "enumeration_error", "identity_unavailable", "name_lossy", "on_disk_only_listing", "listing_incomplete"] },
+    "EntryFlag": { "enum": ["sensitive_name", "protected_context", "hardlink_suspected", "cloud_placeholder", "reparse_not_followed", "excluded_state_dir", "access_denied", "enumeration_error", "identity_unavailable", "name_lossy", "on_disk_only_listing", "listing_incomplete", "identity_unverified"] },
     "DisplayPath": {
       "type": "object",
       "additionalProperties": false,
@@ -872,7 +872,7 @@
         "dirs": { "$ref": "#/$defs/NullableCount" },
         "modified_at": { "$ref": "#/$defs/NullableTimestamp" },
         "attributes": { "type": "array", "maxItems": 16, "uniqueItems": true, "items": { "$ref": "#/$defs/FileAttribute" } },
-        "flags": { "type": "array", "maxItems": 12, "uniqueItems": true, "items": { "$ref": "#/$defs/EntryFlag" } },
+        "flags": { "type": "array", "maxItems": 13, "uniqueItems": true, "items": { "$ref": "#/$defs/EntryFlag" } },
         "coverage": { "$ref": "#/$defs/CoverageState" },
         "location_hint": { "anyOf": [{ "$ref": "#/$defs/DisplayPath" }, { "type": "null" }], "$comment": "Search and collection results only: the parent's display path." }
       }
@@ -936,7 +936,7 @@
       "additionalProperties": false,
       "required": ["quality", "volume_key", "file_id_hex", "observed_generation", "durable_reference", "authorises_effects"],
       "properties": {
-        "quality": { "enum": ["native_file_id_128", "native_file_id_64", "path_observation", "unavailable"], "$comment": "Width is preserved: a 64-bit ID is never padded and reported as 128-bit." },
+        "quality": { "enum": ["native_file_id_128", "native_file_id_64", "path_observation", "unavailable", "unverified"], "$comment": "Width is preserved: a 64-bit ID is never padded and reported as 128-bit. unverified: listed on a FAT, exFAT or unknown filesystem under an identity-unverified grant; metadata only, never an effect, placement or content-read input." },
         "durable_reference": { "enum": ["available", "unavailable_identity_quality", "unavailable_filesystem"], "$comment": "Whether labels and collection membership may bind to this object (docs/41 section 6.3). Without it, feedback.record returns capability_unavailable." },
         "volume_key": { "type": ["string", "null"], "maxLength": 80 },
         "file_id_hex": { "type": ["string", "null"], "pattern": "^[0-9a-f]{16,32}$" },
@@ -1967,10 +1967,491 @@
         "top": { "type": "array", "maxItems": 20, "items": { "$ref": "#/$defs/ProcessRow" } }
       }
     },
+    "TrendMetric": {
+      "enum": [
+        "total_bytes",
+        "available_bytes",
+        "commit_bytes",
+        "commit_limit_bytes",
+        "commit_peak_bytes",
+        "system_cache_bytes",
+        "kernel_paged_bytes",
+        "kernel_nonpaged_bytes",
+        "page_size_bytes",
+        "standby_bytes",
+        "modified_bytes",
+        "free_bytes",
+        "cpu_busy_fraction",
+        "disk_busy_fraction",
+        "disk_queue_length",
+        "private_commit_bytes",
+        "private_working_set_bytes",
+        "working_set_bytes",
+        "cpu_fraction",
+        "io_read_bytes_per_s",
+        "io_write_bytes_per_s",
+        "gpu_dedicated_bytes"
+      ]
+    },
+    "TrendUnit": {
+      "enum": [
+        "bytes",
+        "fraction",
+        "queue",
+        "bytes_per_s"
+      ]
+    },
+    "TrendValue": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ByteCount"
+        },
+        {
+          "type": "number", "minimum": 0
+        }
+      ]
+    },
+    "TrendPoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "offset_ms",
+        "observed_at",
+        "value"
+      ],
+      "properties": {
+        "offset_ms": {
+          "$ref": "#/$defs/Count"
+        },
+        "observed_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrendValue"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "TrendSeries": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "key",
+            "metric",
+            "unit",
+            "max_gap_ms",
+            "points",
+            "unknowns"
+          ],
+          "properties": {
+            "key": {
+              "type": "string",
+              "maxLength": 96
+            },
+            "metric": {
+              "enum": [
+                "total_bytes",
+                "available_bytes",
+                "commit_bytes",
+                "commit_limit_bytes",
+                "commit_peak_bytes",
+                "system_cache_bytes",
+                "kernel_paged_bytes",
+                "kernel_nonpaged_bytes",
+                "page_size_bytes",
+                "standby_bytes",
+                "modified_bytes",
+                "free_bytes",
+                "private_commit_bytes",
+                "private_working_set_bytes",
+                "working_set_bytes",
+                "gpu_dedicated_bytes"
+              ]
+            },
+            "unit": {
+              "const": "bytes"
+            },
+            "max_gap_ms": {
+              "$ref": "#/$defs/Count"
+            },
+            "points": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "offset_ms",
+                  "observed_at",
+                  "value"
+                ],
+                "properties": {
+                  "offset_ms": {
+                    "$ref": "#/$defs/Count"
+                  },
+                  "observed_at": {
+                    "$ref": "#/$defs/Timestamp"
+                  },
+                  "value": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/ByteCount"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "unknowns": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 256
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "key",
+            "metric",
+            "unit",
+            "max_gap_ms",
+            "points",
+            "unknowns"
+          ],
+          "properties": {
+            "key": {
+              "type": "string",
+              "maxLength": 96
+            },
+            "metric": {
+              "enum": [
+                "cpu_busy_fraction",
+                "disk_busy_fraction",
+                "cpu_fraction"
+              ]
+            },
+            "unit": {
+              "const": "fraction"
+            },
+            "max_gap_ms": {
+              "$ref": "#/$defs/Count"
+            },
+            "points": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "offset_ms",
+                  "observed_at",
+                  "value"
+                ],
+                "properties": {
+                  "offset_ms": {
+                    "$ref": "#/$defs/Count"
+                  },
+                  "observed_at": {
+                    "$ref": "#/$defs/Timestamp"
+                  },
+                  "value": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/Fraction"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "unknowns": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 256
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "key",
+            "metric",
+            "unit",
+            "max_gap_ms",
+            "points",
+            "unknowns"
+          ],
+          "properties": {
+            "key": {
+              "type": "string",
+              "maxLength": 96
+            },
+            "metric": {
+              "enum": [
+                "disk_queue_length"
+              ]
+            },
+            "unit": {
+              "const": "queue"
+            },
+            "max_gap_ms": {
+              "$ref": "#/$defs/Count"
+            },
+            "points": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "offset_ms",
+                  "observed_at",
+                  "value"
+                ],
+                "properties": {
+                  "offset_ms": {
+                    "$ref": "#/$defs/Count"
+                  },
+                  "observed_at": {
+                    "$ref": "#/$defs/Timestamp"
+                  },
+                  "value": {
+                    "anyOf": [
+                      {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "unknowns": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 256
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "key",
+            "metric",
+            "unit",
+            "max_gap_ms",
+            "points",
+            "unknowns"
+          ],
+          "properties": {
+            "key": {
+              "type": "string",
+              "maxLength": 96
+            },
+            "metric": {
+              "enum": [
+                "io_read_bytes_per_s",
+                "io_write_bytes_per_s"
+              ]
+            },
+            "unit": {
+              "const": "bytes_per_s"
+            },
+            "max_gap_ms": {
+              "$ref": "#/$defs/Count"
+            },
+            "points": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "offset_ms",
+                  "observed_at",
+                  "value"
+                ],
+                "properties": {
+                  "offset_ms": {
+                    "$ref": "#/$defs/Count"
+                  },
+                  "observed_at": {
+                    "$ref": "#/$defs/Timestamp"
+                  },
+                  "value": {
+                    "anyOf": [
+                      {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "unknowns": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 256
+              }
+            }
+          }
+        }
+      ]
+    },
+    "TrendCandidateKind": {
+      "enum": [
+        "growth",
+        "cpu_saturation",
+        "memory_pressure",
+        "disk_queue"
+      ]
+    },
+    "TrendCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "series_index",
+        "unit",
+        "start_at",
+        "end_at",
+        "window_ms",
+        "sample_count",
+        "start_value",
+        "end_value",
+        "slope_per_s",
+        "facts",
+        "unknowns"
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/TrendCandidateKind"
+        },
+        "series_index": {
+          "$ref": "#/$defs/Count"
+        },
+        "unit": {
+          "$ref": "#/$defs/TrendUnit"
+        },
+        "start_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "end_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "window_ms": {
+          "$ref": "#/$defs/Count"
+        },
+        "sample_count": {
+          "$ref": "#/$defs/Count"
+        },
+        "start_value": {
+          "$ref": "#/$defs/TrendValue"
+        },
+        "end_value": {
+          "$ref": "#/$defs/TrendValue"
+        },
+        "slope_per_s": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "facts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "maxLength": 256
+          }
+        },
+        "unknowns": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "maxLength": 256
+          }
+        }
+      }
+    },
+    "TelemetryTrends": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "series",
+        "candidates",
+        "candidates_truncated",
+        "unknowns"
+      ],
+      "properties": {
+        "series": {
+          "type": "array",
+          "maxItems": 8192,
+          "items": {
+            "$ref": "#/$defs/TrendSeries"
+          }
+        },
+        "candidates": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/TrendCandidate"
+          }
+        },
+        "candidates_truncated": {
+          "type": "boolean"
+        },
+        "unknowns": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "maxLength": 256
+          }
+        }
+      }
+    },
     "TelemetrySample": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["sample_seq", "observed_at", "elapsed_ms", "system", "gpu", "disks", "engine", "processes"],
+      "required": ["sample_seq", "observed_at", "elapsed_ms", "system", "gpu", "disks", "engine", "processes", "trends"],
       "properties": {
         "sample_seq": { "$ref": "#/$defs/Count" },
         "observed_at": { "$ref": "#/$defs/Timestamp" },
@@ -1979,7 +2460,8 @@
         "gpu": { "anyOf": [{ "$ref": "#/$defs/GpuSample" }, { "type": "null" }] },
         "disks": { "anyOf": [{ "$ref": "#/$defs/DiskSample" }, { "type": "null" }] },
         "engine": { "anyOf": [{ "$ref": "#/$defs/EngineSample" }, { "type": "null" }] },
-        "processes": { "anyOf": [{ "$ref": "#/$defs/ProcessSummary" }, { "type": "null" }] }
+        "processes": { "anyOf": [{ "$ref": "#/$defs/ProcessSummary" }, { "type": "null" }] },
+        "trends": { "$ref": "#/$defs/TelemetryTrends" }
       }
     },
     "ProcessListRequest": {

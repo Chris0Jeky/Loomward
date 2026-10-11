@@ -92,6 +92,7 @@ fn first_scan_batches_staged_payloads_without_charging_unused_reservations() {
         drop(tx);
         let timings = Arc::new(Mutex::new(WriterTimings::default()));
         let (alive, _) = bounded(0);
+        super::hold_batch_window_open();
         work(conn, rx, timings.clone(), alive, None);
         for reply in replies {
             let result = reply.recv().unwrap();
@@ -163,6 +164,7 @@ fn first_scan_ignores_another_roots_prior_run() {
     drop(tx);
     let timings = Arc::new(Mutex::new(WriterTimings::default()));
     let (alive, _) = bounded(0);
+    super::hold_batch_window_open();
     work(conn, rx, timings.clone(), alive, None);
     for reply in replies {
         reply.recv().unwrap().unwrap();
@@ -352,6 +354,7 @@ fn depth_batch(
     drop(tx);
     let timings = Arc::new(Mutex::new(WriterTimings::default()));
     let (alive, _) = bounded(0);
+    super::hold_batch_window_open();
     work(conn, rx, timings.clone(), alive, None);
     let results = replies.into_iter().map(|r| r.recv().unwrap()).collect();
     let timing = timings.lock().unwrap().clone();
@@ -1420,6 +1423,7 @@ fn batch_dirtying_uses_latest_revisions_and_both_move_chains_after_rejection() {
     drop(tx);
     let timings = Arc::new(Mutex::new(WriterTimings::default()));
     let (alive, _) = bounded(0);
+    super::hold_batch_window_open();
     work(conn, rx, timings.clone(), alive, None);
     let mut revisions = Vec::new();
     for (i, reply) in replies.into_iter().enumerate() {

@@ -6,7 +6,9 @@ CREATE TABLE root_grant (
   granted_via TEXT NOT NULL CHECK (granted_via IN ('desktop_picker','cli_flag','fixture')),
   lab_root_id INTEGER REFERENCES lab_root(id),                    -- required when origin = 'lab_generated'
   state TEXT NOT NULL CHECK (state IN ('active','revoked','identity_changed')),
-  granted_at_ns INTEGER NOT NULL, revoked_at_ns INTEGER) STRICT;
+  granted_at_ns INTEGER NOT NULL, revoked_at_ns INTEGER,
+  identity_mode TEXT NOT NULL DEFAULT 'verified' CHECK (identity_mode IN ('verified','unverified'))) STRICT;
+  -- identity_mode 'unverified' (#219): FAT, exFAT or unknown filesystem; metadata only, never acted on
 CREATE TABLE lab_root (                   -- synthetic state.db only; written by `loomward-lab generate --register`
   id INTEGER PRIMARY KEY AUTOINCREMENT, volume_key TEXT NOT NULL, root_file_id BLOB NOT NULL,
   manifest_digest TEXT NOT NULL, seed TEXT NOT NULL, tier TEXT NOT NULL, registered_at_ns INTEGER NOT NULL,

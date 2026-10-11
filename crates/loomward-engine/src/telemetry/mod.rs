@@ -2,6 +2,7 @@
 //! No lease means no sampler or retained sample. Health observes own usage directly.
 //! The service/event-bus lane drains bounded subscription samples via `telemetry_events`.
 mod mapping;
+mod trends;
 
 use crate::{Engine, EngineError, EngineResult};
 use loomward_protocol::*;
@@ -14,6 +15,31 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const LEASE_DURATION: Duration = Duration::from_secs(60);
 const MAX_LEASES: usize = 32;
 const EVENT_CAPACITY: usize = 1024;
+const EVENT_BYTE_BUDGET: usize = 16 * 1024 * 1024;
+
+fn event_weight(sample: &TelemetrySample) -> usize {
+    // Conservative heap allowance for the other bounded DTO channels, plus trend storage.
+    64 * 1024
+        + sample
+            .trends
+            .series
+            .iter()
+            .map(|s| {
+                std::mem::size_of::<TrendSeries>()
+                    + 3 * std::mem::size_of::<usize>()
+                    + s.key.as_str().len()
+                    + s.points
+                        .iter()
+                        .map(|p| std::mem::size_of::<TrendPoint>() + p.observed_at.as_str().len())
+                        .sum::<usize>()
+                    + s.unknowns
+                        .iter()
+                        .map(|u| std::mem::size_of::<Text<256>>() + u.as_str().len())
+                        .sum::<usize>()
+            })
+            .sum::<usize>()
+        + sample.trends.candidates.len() * 20 * 1024
+}
 
 #[derive(Debug)]
 struct Lease {
@@ -43,6 +69,7 @@ struct State {
     busy: bool,
     shutdown: bool,
     costs: loomward_telemetry::SamplingCosts,
+    trends: trends::History,
     #[cfg(test)]
     panic_sample: bool,
     #[cfg(test)]
@@ -54,10 +81,36 @@ struct State {
 }
 
 impl State {
+    fn queue(&mut self, event: TelemetrySampleEvent) {
+        let weight = event_weight(&event.sample);
+        if weight > EVENT_BYTE_BUDGET {
+            return;
+        }
+        let mut retained: usize = self.events.iter().map(|e| event_weight(&e.sample)).sum();
+        while self.events.len() >= EVENT_CAPACITY || retained + weight > EVENT_BYTE_BUDGET {
+            let Some(old) = self.events.pop_front() else {
+                break;
+            };
+            retained = retained.saturating_sub(event_weight(&old.sample));
+        }
+        self.events.push_back(event);
+    }
+
     fn expire(&mut self, now: Instant) {
         self.leases.retain(|_, lease| lease.expires > now);
         self.events
             .retain(|event| self.leases.contains_key(&event.subscription_id));
+        let channels: Vec<_> = [
+            TelemetryChannel::System,
+            TelemetryChannel::Processes,
+            TelemetryChannel::Gpu,
+            TelemetryChannel::Disks,
+            TelemetryChannel::Engine,
+        ]
+        .into_iter()
+        .filter(|c| self.leases.values().any(|l| l.channels.contains(c)))
+        .collect();
+        self.trends.retain_channels(&channels);
         if self.leases.is_empty() {
             self.latest = None;
         }
@@ -178,6 +231,7 @@ impl Telemetry {
                 next_event,
             },
         );
+        state.expire(Instant::now());
         if !state.running {
             if let Some(old) = worker.take() {
                 drop(state);
@@ -221,6 +275,7 @@ impl Telemetry {
         state
             .events
             .retain(|e| e.subscription_id != request.subscription_id);
+        state.expire(Instant::now());
         let last = state.leases.is_empty();
         self.shared.wake.notify_one();
         drop(state);
@@ -266,6 +321,7 @@ impl Drop for SamplerExit {
         state.busy = false;
         state.latest = None;
         state.events.clear();
+        state.trends = trends::History::default();
         self.0.wake.notify_all();
     }
 }
@@ -273,6 +329,7 @@ impl Drop for SamplerExit {
 fn run(shared: Arc<Shared>) {
     let _exit = SamplerExit(Arc::clone(&shared));
     let mut sampler = Sampler::default();
+    let history_start = Instant::now();
     let mut next_sample = Instant::now();
     let mut previous_sample: Option<(Instant, Instant)> = None;
     loop {
@@ -338,6 +395,14 @@ fn run(shared: Arc<Shared>) {
         let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
         state.expire(Instant::now());
         let sequence = state.sequence.saturating_add(1);
+        let trend_started = Instant::now();
+        if !state.leases.is_empty() {
+            state.trends.push(
+                &raw,
+                history_start.elapsed().as_millis() as u64,
+                interval.as_millis() as u64,
+            );
+        }
         let mut due = vec![];
         for (id, lease) in &mut state.leases {
             if lease.next_event <= started {
@@ -346,6 +411,14 @@ fn run(shared: Arc<Shared>) {
                     started + Duration::from_millis(u64::from(lease.interval.millis()));
             }
         }
+        let due: Vec<_> = due
+            .into_iter()
+            .map(|(id, channels, generation)| {
+                let trends = state.trends.report(&channels);
+                (id, channels, generation, trends)
+            })
+            .collect();
+        state.costs.engine_trends_ms += trend_started.elapsed().as_secs_f64() * 1000.0;
         #[cfg(test)]
         let panic_mapping = std::mem::take(&mut state.panic_mapping);
         #[cfg(test)]
@@ -355,17 +428,25 @@ fn run(shared: Arc<Shared>) {
         assert!(!panic_mapping, "injected mapping panic");
         // Contract mapping can fail or panic: neither happens while holding the state mutex.
         let mapping_started = Instant::now();
+        let mut event_projection_ms = 0.0;
         let events: Vec<_> = due
             .into_iter()
-            .map(|(id, channels, generation)| {
+            .map(|(id, channels, generation, trends)| {
                 (
                     generation,
-                    mapping::sample(&raw, own.as_ref(), sequence, &channels, true).map(|sample| {
-                        TelemetrySampleEvent {
-                            subscription_id: id,
-                            sample,
-                        }
-                    }),
+                    mapping::sample(&raw, own.as_ref(), sequence, &channels, true).map(
+                        |mut sample| {
+                            let projection_started = Instant::now();
+                            sample.trends =
+                                trends::event_projection(trends, sample.processes.as_ref());
+                            event_projection_ms +=
+                                projection_started.elapsed().as_secs_f64() * 1000.0;
+                            TelemetrySampleEvent {
+                                subscription_id: id,
+                                sample,
+                            }
+                        },
+                    ),
                 )
             })
             .collect();
@@ -378,6 +459,7 @@ fn run(shared: Arc<Shared>) {
         let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
         state.costs.add(sampler.phase_costs());
         state.costs.engine_mapping_ms += mapping_ms;
+        state.costs.engine_trends_ms += event_projection_ms;
         let publication_started = Instant::now();
         let finished = Instant::now();
         state.busy = false;
@@ -392,10 +474,7 @@ fn run(shared: Arc<Shared>) {
                             .get(&event.subscription_id)
                             .is_some_and(|lease| lease.generation == generation) =>
                     {
-                        if state.events.len() == EVENT_CAPACITY {
-                            state.events.pop_front();
-                        }
-                        state.events.push_back(event);
+                        state.queue(event);
                     }
                     Err(_) => {
                         state.costs.mapping_errors = state.costs.mapping_errors.saturating_add(1)
@@ -452,13 +531,18 @@ impl Engine {
         let busy = state.busy;
         let latest = state.latest()?;
         let started = Instant::now();
-        let sample = mapping::sample(
+        let mut sample = mapping::sample(
             &latest.raw,
             latest.own.as_ref(),
             latest.sequence,
             &request.channels,
             busy,
         );
+        if let Ok(sample) = &mut sample {
+            let trend_started = Instant::now();
+            sample.trends = state.trends.report(&request.channels);
+            state.costs.engine_snapshot_trends_ms += trend_started.elapsed().as_secs_f64() * 1000.0;
+        }
         state.costs.engine_snapshot_mapping_ms += started.elapsed().as_secs_f64() * 1000.0;
         sample
     }

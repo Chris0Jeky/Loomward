@@ -10,6 +10,7 @@
 //! from the webview directly ([`dialogs`]).
 
 pub mod dialogs;
+pub mod launch;
 pub mod selftest;
 pub mod shell;
 
@@ -144,8 +145,9 @@ impl Desktop {
             ));
         }
         // Fail closed before the service, so neither dialog can open for these (docs/41 5.2,
-        // semantics.md 11). ponytail: the real service (lane L8) must refuse these too; this guard
-        // stays as the adapter's second wall and because the fixture would answer "granted".
+        // semantics.md 11). The engine service refuses both itself (a synthetic picker request,
+        // and every teacher command until wave 3); this stays as the adapter's second wall and
+        // because the `--fixtures` service would answer "granted".
         let refusal = match (command, self.dataset) {
             (Some(Command::RootsRequestGrant), DatasetClass::Synthetic) => Some(json!({
                 "outcome": "refused", "root": null, "refusal": "synthetic_session_requires_lab_root"

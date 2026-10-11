@@ -133,11 +133,12 @@ fn meaning_work_budget_is_an_honest_prefix() {
         .map(|n| n["node_id"].clone())
         .collect();
     assert!(ids.len() > 1000);
-    let result = ok(
-        "threads.meaning",
-        call(&svc, "threads.meaning", json!({"node_ids":ids})),
-    )
-    .0;
+    // This pins the work-count budget, which has no clock in it; the 2 s default deadline would
+    // make it a race on a loaded host (a thousand items take ~1 s alone). The protocol maximum
+    // takes time out of the claim, and the 1 ms case in the test above pins the deadline itself.
+    let mut req = request("threads.meaning", json!({"node_ids":ids}));
+    req.deadline_ms = Some(Int::new(60_000).unwrap());
+    let result = ok("threads.meaning", svc.call(req, &CallContext::http())).0;
     assert_eq!(result["budget_hit"], true);
     assert_eq!(result["items"].as_array().unwrap().len(), 1000);
 }

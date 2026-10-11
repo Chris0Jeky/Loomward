@@ -29,7 +29,8 @@ pub(super) fn feedback(node: &str, key: &str, label: Option<&str>, retract: bool
 pub(super) fn finish_refit(svc: &Service) -> Payload {
     let (job, _) = ok("learning.refit", call(svc, "learning.refit", json!({})));
     let id: JobId = serde_json::from_value(job["job"]["job_id"].clone()).unwrap();
-    let until = Instant::now() + Duration::from_secs(5);
+    // Liveness bounds only: no test claims anything about how fast a refit or its status is.
+    let until = Instant::now() + Duration::from_secs(60);
     loop {
         let job = svc.inner.engine.job_status(&id).unwrap();
         if matches!(
@@ -42,7 +43,9 @@ pub(super) fn finish_refit(svc: &Service) -> Payload {
         assert!(Instant::now() < until);
         std::thread::sleep(Duration::from_millis(2));
     }
-    ok("learning.status", call(svc, "learning.status", json!({}))).0
+    let mut status = request("learning.status", json!({}));
+    status.deadline_ms = Some(Int::new(60_000).unwrap());
+    ok("learning.status", svc.call(status, &CallContext::http())).0
 }
 
 #[test]

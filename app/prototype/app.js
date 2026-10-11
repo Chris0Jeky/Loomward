@@ -129,7 +129,7 @@ function crumbs(node) {
 
 // ---------- inspector ----------
 const describeResidency = (n) => {
-  if (n.kind === 'workspace') return ['Three volumes', 'C: hot NVMe, G: warm NVMe, E: cold HDD'];
+  if (n.kind === 'workspace') return ['Three volumes', 'C: hot fast local volume, G: warm fast local volume, E: cold slow local volume'];
   if (n.kind === 'gap') return ['Unknown', 'Counted by the volume, not attributed to any file'];
   if (n.residency === 'cloud') return [RESIDENCIES.cloud, 'Logical size is counted; 0 B is resident on a local disk'];
   if (n.residency == null) return ['Unknown', 'No residency evidence'];
