@@ -266,8 +266,10 @@ Personal sessions are refused before resolving or opening a root, with capabilit
 detail.reason=content_read_gated. The engine repeats the synthetic-grant admission before metadata
 and content I/O. Scan file identity, size, attributes and creation/write/change ticks must match
 fresh root-relative metadata before the existing handle reader compares content. Root revocation
-uses the existing root cancellation fence and refuses the report; no report survives that refusal,
-including evidence from an already-terminal job. Removing terminal evidence increments rev and
+uses the existing root cancellation fence and refuses the report: after revocation `jobs.get` and
+`jobs.list` carry no report, including evidence from an already-terminal job. Events published before
+the revocation (the replay ring) and responses already cached for idempotent replay are not rewritten
+and may still hold the earlier report (tracked for redaction). Removing terminal evidence increments rev and
 publishes job.state once, without changing its outcome. Repeated revocation is idempotent. A pending
 job's permission error is published only with its terminal state; pending evidence stays private.
 `duplicates.cancel` uses the existing non-joining job cancellation seam and is idempotent; jobs.get
