@@ -4,9 +4,10 @@
  * Segoe UI Variable for the interface, Cascadia Mono for Observatory numerics. Nothing is fetched.
  *
  * Three threads, never one fill:
- *   warp     = meaning:    natural dyes (--dye-1..8), --undyed when there is no meaning
- *   weft     = residency:  metals by tier, hot bright to cold dark (--weft-hot/warm/cold), --weft-hollow
- *   selvedge = permission: brass stitches (--selvedge); --unknown for the dotted "unknown" stitch
+ *   meaning    (on screen the horizontal weft): natural dyes (--dye-1..8), --undyed when there is no meaning
+ *   residency  (on screen the vertical warp):   metals by tier, hot bright to cold dark (--weft-hot/warm/cold), --weft-hollow
+ *   (the --weft-* tokens keep the tile's authored names; app/viz/colour.js explains the quarter turn)
+ *   selvedge   = permission: brass stitches (--selvedge); --unknown for the dotted "unknown" stitch
  * Each thread also differs in structure (vertical, horizontal, edge stitch), so colour is never the
  * only carrier. --meaning, --residency and --permission name one representative of each for chrome.
  */

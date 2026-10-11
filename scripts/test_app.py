@@ -195,6 +195,11 @@ def meaning_weft(page: Page, base: str) -> None:
     toggle = page.get_by_role('checkbox', name='Meaning', exact=True)
     expect(toggle).to_be_checked()
     expect(page.locator('main .legend')).to_contain_text('Suggestions, relative scores, not probabilities, never actions.')
+    # The undyed states are told apart on the canvas itself (swatches share one renderer with the cloth), and the legend says what each means.
+    expect(page.locator('main .legend')).to_contain_text('with no model, nothing has looked')
+    swatch = page.evaluate("""() => Object.fromEntries([...document.querySelectorAll('main .legend li')].map(li => [li.textContent.trim(), li.querySelector('canvas').toDataURL()]))""")
+    undyed = ['None', 'Pending', 'No model', 'Abstained', 'Not eligible']
+    check(all(k in swatch for k in undyed) and len({swatch[k] for k in undyed}) == len(undyed), 'meaning: none, pending, no model, abstained and not eligible draw five different swatches')
     page.get_by_text('Meaning as text', exact=False).click()
     expect(page.locator('[aria-label="Visible meaning threads"] [data-meaning-state="abstained"]').first).to_contain_text('Abstained: neutral')
     neutral = page.locator('[aria-label="Visible meaning threads"] [data-meaning-state="abstained"]').first

@@ -11,7 +11,7 @@
   import type { NodeInfo, ThreadToggles } from '../../../viz/types.js';
   import { createWovenTreemap, drawSwatch } from '../../../viz/woven-treemap.js';
   import Inspector from './Inspector.svelte';
-  import { Meaning } from '../../lib/stores/meaning.svelte';
+  import { isHumanMeaning, Meaning, overlayMeaning } from '../../lib/stores/meaning.svelte';
   import MeaningThread from '../../lib/ui/MeaningThread.svelte';
   import RegionList from './RegionList.svelte';
   import { SliceNav, announceSlice, canvasLabel, deniedBelow, describeNode, describeSize, formatApprox, pathTo, readPalette, type SliceKey } from './shared.svelte';
@@ -34,13 +34,9 @@
   const meaning = new Meaning();
   let visibleIds = $state<string[]>([]);
   let meaningTextOpen = $state(false);
-  const clothSlice = $derived(nav.slice ? {
-    ...nav.slice,
-    nodes: nav.slice.nodes.map(n => ({ ...n, threads: {
-      ...n.threads,
-      meaning: meaning.items[n.node_id] ?? { state: 'unknown' as const, label: null, share: null, source: null, collection_ids: [] },
-    } })),
-  } : null);
+  const clothSlice = $derived(nav.slice ? overlayMeaning(nav.slice, meaning.items) : null);
+  const human = $derived(new Map((nav.slice?.nodes ?? []).filter((n) => isHumanMeaning(n.threads.meaning)).map((n) => [n.node_id, n.threads.meaning])));
+  const humanOf = (id: string) => human.get(id);
   const visibleNodes = $derived.by(() => {
     const ids = new Set(visibleIds);
     return clothSlice?.nodes.filter(n => ids.has(n.node_id)) ?? [];
@@ -155,14 +151,17 @@
 
   // Legend swatches, drawn by the same renderer as the cloth.
   const legend = {
-    warp: [
+    meaning: [
       { label: 'Labelled', threads: { meaning: { state: 'labelled', label: 'Projects' } } },
       { label: 'Suggested', threads: { meaning: { state: 'suggested', label: 'Projects' } } },
       { label: 'Mixed', threads: { meaning: { state: 'mixed', label: 'Media' } } },
       { label: 'None', threads: { meaning: { state: 'none', label: null } } },
       { label: 'Pending', threads: { meaning: { state: 'pending', label: null } } },
+      { label: 'No model', threads: { meaning: { state: 'no_model', label: null } } },
+      { label: 'Abstained', threads: { meaning: { state: 'abstained', label: null } } },
+      { label: 'Not eligible', threads: { meaning: { state: 'not_eligible', label: null } } },
     ],
-    weft: [
+    residency: [
       { label: 'Tier 0 · hot', threads: { residency: { volume_id: 'v', tier: 0, tier_basis: 'declared' } } },
       { label: 'Tier 1 · warm', threads: { residency: { volume_id: 'v', tier: 1, tier_basis: 'declared' } } },
       { label: 'Tier 2 · cold', threads: { residency: { volume_id: 'v', tier: 2, tier_basis: 'declared' } } },
@@ -182,8 +181,8 @@
   $effect(() => {
     const p = palette;
     const items = [
-      ...legend.warp.map((l) => ({ threads: { ...base, ...l.threads }, only: 'warp' as const })),
-      ...legend.weft.map((l) => ({ threads: { ...base, ...l.threads }, only: 'weft' as const })),
+      ...legend.meaning.map((l) => ({ threads: { ...base, ...l.threads }, only: 'warp' as const })),
+      ...legend.residency.map((l) => ({ threads: { ...base, ...l.threads }, only: 'weft' as const })),
       ...legend.selvedge.map((l) => ({ only: 'selvedge' as const, stitch: l.stitch })),
     ];
     items.forEach((o, i) => { const c = swatches[i]; if (c) drawSwatch(c, p, o as never); });
@@ -253,7 +252,7 @@
         <summary>Meaning as text ({visibleIds.length} visible regions)</summary>
         {#if meaningTextOpen}<ul aria-label="Visible meaning threads">
           {#each visibleNodes as n (n.node_id)}
-            <li><b><VisibleName name={n.name} /></b><MeaningThread meaning={meaning.items[n.node_id]} /></li>
+            <li><b><VisibleName name={n.name} /></b><MeaningThread meaning={n.threads.meaning} /></li>
           {/each}
         </ul>{/if}
       </details>
@@ -261,7 +260,7 @@
     <RegionList slice={clothSlice} onopen={(id, name) => void nav.drill(id, name)} oninspect={inspectById} />
   </section>
 
-  <Inspector meaning={shown ? meaning.items[shown.id] : undefined} parent={meaning} node={shown} status={hovered ? 'Hover' : selected ? 'Selected' : 'Nothing selected'} basis={nav.basis} {provisional} {palette} path={pathNames} />
+  <Inspector meaning={shown ? humanOf(shown.id) ?? meaning.items[shown.id] : undefined} parent={meaning} node={shown} status={hovered ? 'Hover' : selected ? 'Selected' : 'Nothing selected'} basis={nav.basis} {provisional} {palette} path={pathNames} />
 </div>
 
 <section class="legend" aria-labelledby="threads-h">
@@ -270,18 +269,18 @@
   <div class="groups">
     <div>
       <h3><em>Weft</em> carries meaning</h3>
-      <p>Crossing threads, dyed by suggested label. Relative score sets dye intensity; abstention stays neutral.</p>
-      <ul>{#each legend.warp as l, i (l.label)}<li><canvas bind:this={swatches[i]} aria-hidden="true"></canvas>{l.label}</li>{/each}</ul>
+      <p>Crossing threads, dyed by suggested label. Relative score sets dye intensity. Undyed is not one thing: with no model, nothing has looked; abstained, a model looked and declined; not eligible, the item is not a candidate (folders and files without a durable identity).</p>
+      <ul>{#each legend.meaning as l, i (l.label)}<li><canvas bind:this={swatches[i]} aria-hidden="true"></canvas>{l.label}</li>{/each}</ul>
     </div>
     <div>
       <h3><em>Warp</em> carries residency</h3>
       <p>Vertical threads in metals by tier: hot is bright, cold is dark. Unknown residency stays unmeasured.</p>
-      <ul>{#each legend.weft as l, i (l.label)}<li><canvas bind:this={swatches[legend.warp.length + i]} aria-hidden="true"></canvas>{l.label}</li>{/each}</ul>
+      <ul>{#each legend.residency as l, i (l.label)}<li><canvas bind:this={swatches[legend.meaning.length + i]} aria-hidden="true"></canvas>{l.label}</li>{/each}</ul>
     </div>
     <div>
       <h3><em>Selvedge</em> carries permission</h3>
       <p>The edge is stitched where a state begins; inside it, children inherit. Granted needs no stitch.</p>
-      <ul>{#each legend.selvedge as l, i (l.label)}<li><canvas bind:this={swatches[legend.warp.length + legend.weft.length + i]} aria-hidden="true"></canvas>{l.label}</li>{/each}</ul>
+      <ul>{#each legend.selvedge as l, i (l.label)}<li><canvas bind:this={swatches[legend.meaning.length + legend.residency.length + i]} aria-hidden="true"></canvas>{l.label}</li>{/each}</ul>
     </div>
   </div>
   <p class="muted small">Loose threads are bytes the parent counts but this slice does not list; fringe is many items too small to draw; cross-hatching is unknown allocation. None of them is zero.</p>
