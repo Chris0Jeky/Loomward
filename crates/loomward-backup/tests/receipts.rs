@@ -65,7 +65,7 @@ fn evidence(source: &BackupSource) -> RecoveryEvidence {
 
 fn refused(source: &BackupSource, reason: Refusal) {
     let e = evidence(source);
-    assert!(!e.verified_recovery, "{e:?}");
+    assert!(!e.reported_recovery_evidence, "{e:?}");
     assert!(e.refusals.contains(&reason), "{e:?}");
 }
 
@@ -74,7 +74,10 @@ fn complete_restore_is_scoped_and_proposal_is_only_data() {
     let s = source();
     let e = evidence(&s);
     assert!(
-        e.snapshot_taken && e.integrity_checked && e.restore_drill_succeeded && e.verified_recovery
+        e.snapshot_taken
+            && e.integrity_checked
+            && e.restore_drill_succeeded
+            && e.reported_recovery_evidence
     );
     assert!(e.integrity_read_all_data);
     assert_eq!(e.snapshot_time.as_deref(), Some("2026-01-01T00:00:00Z"));
@@ -101,11 +104,11 @@ fn snapshot_and_integrity_are_distinct_from_restore() {
     s.restore = None;
     let e = evidence(&s);
     assert!(e.snapshot_taken);
-    assert!(!e.integrity_checked && !e.restore_drill_succeeded && !e.verified_recovery);
+    assert!(!e.integrity_checked && !e.restore_drill_succeeded && !e.reported_recovery_evidence);
     assert!(e.restored_versions.is_empty() && e.restore_coverage.is_empty());
     s.integrity = source().integrity;
     let e = evidence(&s);
-    assert!(e.integrity_checked && !e.restore_drill_succeeded && !e.verified_recovery);
+    assert!(e.integrity_checked && !e.restore_drill_succeeded && !e.reported_recovery_evidence);
     s.integrity = None;
     s.restore = source().restore;
     refused(&s, Refusal::IntegrityNotChecked);
@@ -197,7 +200,7 @@ fn stale_and_future_observations_are_not_recovery() {
     let mut s = source();
     s.observed_at = 940;
     assert!(
-        evidence(&s).verified_recovery,
+        evidence(&s).reported_recovery_evidence,
         "expiry is inclusive at the configured age"
     );
 }
@@ -205,7 +208,7 @@ fn stale_and_future_observations_are_not_recovery() {
 #[test]
 fn missing_snapshot_and_unbound_or_failed_observations_are_not_recovery() {
     let e = normalise_backup_receipt(b"[]", &source()).unwrap();
-    assert!(!e.snapshot_taken && !e.verified_recovery);
+    assert!(!e.snapshot_taken && !e.reported_recovery_evidence);
     assert!(e.refusals.contains(&Refusal::SnapshotMissing));
     for which in 0..2 {
         for failure in 0..3 {
@@ -312,6 +315,8 @@ fn traversal_and_windows_ambiguous_names_are_refused() {
         "fixture/file.",
         "fixture/CON",
         "fixture/NUL.txt",
+        "fixture/CON .txt",
+        "fixture/com1  .log",
         "fixture/file\0",
         "/absolute",
         "Q:/absolute",
@@ -360,7 +365,7 @@ fn integrity_summary_errors_and_structure_only_check_do_not_verify_recovery() {
     let mut s = source();
     s.integrity.as_mut().unwrap().read_all_data = false;
     let e = evidence(&s);
-    assert!(e.integrity_checked && !e.integrity_read_all_data && !e.verified_recovery);
+    assert!(e.integrity_checked && !e.integrity_read_all_data && !e.reported_recovery_evidence);
     // restic prints `"broken_packs":null` on a clean check (no omitempty), or may omit it.
     for raw in [
         br#"{"message_type":"summary","num_errors":0,"broken_packs":null,"suggest_repair_index":false,"suggest_prune":false}"#.as_slice(),
@@ -368,7 +373,7 @@ fn integrity_summary_errors_and_structure_only_check_do_not_verify_recovery() {
     ] {
         let mut s = source();
         s.integrity.as_mut().unwrap().raw = raw.to_vec();
-        assert!(evidence(&s).verified_recovery, "a clean summary verifies integrity");
+        assert!(evidence(&s).reported_recovery_evidence, "a clean summary verifies integrity");
     }
     for (field, value) in [
         ("num_errors", json!(1)),
@@ -382,16 +387,102 @@ fn integrity_summary_errors_and_structure_only_check_do_not_verify_recovery() {
         s.integrity.as_mut().unwrap().raw = serde_json::to_vec(&raw).unwrap();
         refused(&s, Refusal::IntegrityNotChecked);
     }
-    for (raw, expected) in [
-        (b"{}".as_slice(), ReceiptError::InvalidReceipt),
-        (
-            br#"{"message_type":"summary","num_errors":false}"#.as_slice(),
-            ReceiptError::InvalidReceipt,
-        ),
-        (b"green job".as_slice(), ReceiptError::InvalidJson),
+}
+
+/// #349: an empty, plain-text or non-summary check document is a named refusal that keeps the
+/// snapshot evidence, never an error that loses it.
+#[test]
+fn unreadable_integrity_documents_refuse_without_losing_the_snapshot() {
+    for raw in [
+        b"".as_slice(),
+        b"Fatal: unable to open repository",
+        b"{}",
+        br#"{"message_type":"summary","num_errors":false}"#,
+        br#"{"message_type":"summary","num_errors":-1}"#,
+        br#"{"message_type":"status","num_errors":0}"#,
+        br#"[{"message_type":"summary","num_errors":0}]"#,
     ] {
         let mut s = source();
         s.integrity.as_mut().unwrap().raw = raw.to_vec();
-        assert_eq!(normalise_backup_receipt(&snapshots(), &s), Err(expected));
+        let e = evidence(&s);
+        assert!(e.snapshot_taken && !e.integrity_checked, "{raw:?}");
+        assert!(e.refusals.contains(&Refusal::IntegrityNotChecked));
     }
+}
+
+/// #349: unrelated snapshots need only a unique digest ID, so more than 256 entries or one odd
+/// root elsewhere cannot hide the bound snapshot; the bound one stays strict.
+#[test]
+fn only_the_bound_snapshot_is_validated_strictly() {
+    let bound: Value = serde_json::from_slice(&snapshots()).unwrap();
+    let mut list: Vec<Value> = (0..300)
+        .map(|i| json!({"id": format!("{i:064x}"), "time": "\u{7}", "paths": ["../odd"]}))
+        .collect();
+    list.push(bound[0].clone());
+    let e = normalise_backup_receipt(&serde_json::to_vec(&list).unwrap(), &source()).unwrap();
+    assert!(e.snapshot_taken && e.reported_recovery_evidence, "{e:?}");
+    list.push(json!({"id": "c".repeat(64), "time": 1}));
+    list.push(json!({"id": "c".repeat(64)}));
+    assert_eq!(
+        normalise_backup_receipt(&serde_json::to_vec(&list).unwrap(), &source()),
+        Err(ReceiptError::InvalidReceipt),
+        "duplicate unrelated IDs are still refused"
+    );
+    list.pop();
+    list.pop();
+    list.push(json!({"time": "2026"}));
+    assert_eq!(
+        normalise_backup_receipt(&serde_json::to_vec(&list).unwrap(), &source()),
+        Err(ReceiptError::InvalidReceipt),
+        "an entry without a digest ID is refused"
+    );
+}
+
+/// #349: the repository label and the provider's time text are restricted charsets, so a URL,
+/// path or credential can never be echoed into evidence.
+#[test]
+fn labels_and_snapshot_time_are_restricted_charsets() {
+    for label in [
+        "s3:https://host/bucket",
+        r"C:\backups",
+        "user:secret@host",
+        "",
+        &"x".repeat(65),
+        "label with space",
+    ] {
+        let mut s = source();
+        s.repository_id = label.into();
+        assert_eq!(
+            normalise_backup_receipt(&snapshots(), &s),
+            Err(ReceiptError::InvalidSource),
+            "{label}"
+        );
+    }
+    let mut s = source();
+    s.repository_id = "Synthetic_repo.v2-a".into();
+    s.integrity = None;
+    s.restore = None;
+    assert!(evidence(&s).snapshot_taken);
+    for time in [
+        "2026-01-01 00:00:00",
+        "C:/x",
+        "https://host",
+        "time\u{0}",
+        &"1".repeat(65),
+    ] {
+        let mut raw: Value = serde_json::from_slice(&snapshots()).unwrap();
+        raw[0]["time"] = json!(time);
+        assert_eq!(
+            normalise_backup_receipt(&serde_json::to_vec(&raw).unwrap(), &source()),
+            Err(ReceiptError::InvalidReceipt),
+            "{time}"
+        );
+    }
+    let mut raw: Value = serde_json::from_slice(&snapshots()).unwrap();
+    raw[0]["time"] = json!("2026-01-01T00:00:00.123456789+01:00");
+    let e = normalise_backup_receipt(&serde_json::to_vec(&raw).unwrap(), &source()).unwrap();
+    assert_eq!(
+        e.snapshot_time.as_deref(),
+        Some("2026-01-01T00:00:00.123456789+01:00")
+    );
 }

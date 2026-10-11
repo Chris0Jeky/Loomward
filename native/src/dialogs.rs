@@ -1,5 +1,5 @@
-//! [`NativeDialogs`] for the desktop: the folder picker and the disclosure confirmation, owned
-//! by Rust (docs/41 sections 5.3 and 12). The webview cannot open either: the capability file
+//! [`NativeDialogs`] for the desktop: the folder picker, the backup-receipt file picker and the
+//! disclosure confirmation, owned by Rust (docs/41 sections 5.3 and 12). The webview cannot open either: the capability file
 //! grants no dialog permission, no dialog plugin is registered, and the only way in is a service
 //! call that passes the [`CallContext`]. The chosen path never crosses IPC.
 
@@ -73,6 +73,21 @@ impl DesktopDialogs {
         // The service reports typed refusals; None means the owner cancelled the dialog.
         pick(picker)
     }
+
+    /// The same parented dialog, retitled for one receipt file and filtered to JSON and text.
+    pub fn pick_file_with(
+        &self,
+        title: &str,
+        pick: impl FnOnce(rfd::FileDialog) -> Option<PathBuf>,
+    ) -> Option<PathBuf> {
+        self.pick_folder_with(|picker| {
+            pick(
+                picker
+                    .set_title(title)
+                    .add_filter("restic JSON output", &["json", "txt"]),
+            )
+        })
+    }
 }
 
 pub const DISCLOSURE_TITLE: &str = "Loomward: send these items to the teacher?";
@@ -91,6 +106,12 @@ impl NativeDialogs for DesktopDialogs {
     /// (`synthetic_session_requires_lab_root`, docs/41 section 12).
     fn pick_folder(&self) -> Option<PathBuf> {
         self.pick_folder_with(|picker| picker.pick_folder())
+    }
+
+    /// Never opens in a synthetic session either: an owner-picked receipt is personal data. The
+    /// path goes to the service in-process and never crosses IPC.
+    fn pick_file(&self, title: &str) -> Option<PathBuf> {
+        self.pick_file_with(title, |picker| picker.pick_file())
     }
 
     /// Personal sessions only (the picker never opens in a synthetic one); Cancel is the default.
@@ -272,6 +293,37 @@ mod tests {
                 assert!(asked.is_empty());
             }
         }
+    }
+
+    #[test]
+    fn file_picker_is_personal_only_and_retitled() {
+        let dialogs = DesktopDialogs::new(DatasetClass::Personal);
+        *dialogs.picker.lock().unwrap() = Some(rfd::FileDialog::new());
+        let picked = PathBuf::from("C:/synthetic/receipt.json");
+        let title = "Loomward: choose a synthetic receipt";
+        assert_eq!(
+            dialogs.pick_file_with(title, |d| {
+                let configured = format!("{d:?}");
+                assert!(configured.contains(title), "{configured}");
+                assert!(configured.contains("json"), "{configured}");
+                Some(picked.clone())
+            }),
+            Some(picked)
+        );
+        assert_eq!(dialogs.pick_file_with(title, |_| None), None);
+        // A second dialog while one is open is refused, never stacked.
+        let active = dialogs.active.lock().unwrap();
+        assert_eq!(
+            dialogs.pick_file_with(title, |_| panic!("stacked dialog")),
+            None
+        );
+        drop(active);
+        let synthetic = DesktopDialogs::new(DatasetClass::Synthetic);
+        *synthetic.picker.lock().unwrap() = Some(rfd::FileDialog::new());
+        assert_eq!(
+            synthetic.pick_file_with(title, |_| panic!("synthetic file picker opened")),
+            None
+        );
     }
 
     #[test]

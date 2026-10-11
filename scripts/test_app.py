@@ -619,6 +619,23 @@ def build_app(out: Path | None, development: bool) -> None:
     subprocess.run(args, cwd=ROOT, env=dict(os.environ, NODE_ENV='development') if development else None, check=True)
 
 
+def live_backups(page: Page, token: str) -> None:
+    """Backups over the real HTTP adapter: read and forget exist, import does not (no Rust-owned dialog)."""
+    listed = live_call(page, token, 'backups.list', {})
+    check(listed['ok'] and listed['result'] == {'evidence': []} and listed['meta']['state_rev'] is not None, f'backups.list answers an empty synthetic list: {listed}')
+    imported = live_call(page, token, 'backups.import', {'repository_label': 'synthetic-nas', 'snapshot_id': '1' * 64, 'source_volume_id': None, 'target_volume_id': None,
+                                                          'required': [{'relative_name': 'fixture/ledger.ods', 'version': 'sha256:' + 'a' * 64}], 'integrity_check': False})
+    check(not imported['ok'] and imported['error']['code'] == 'capability_unavailable', f'backups.import is not offered over HTTP: {imported}')
+    forgot = live_call(page, token, 'backups.forget', {'evidence_id': 'be_1'})
+    check(not forgot['ok'] and forgot['error']['code'] == 'not_found', f'backups.forget of an unknown record is not_found: {forgot}')
+    page.evaluate("location.hash = '#/backups'")
+    expect(page.get_by_role('heading', name='Backups', level=1)).to_be_visible()
+    expect(page.get_by_text('No backup evidence imported yet.')).to_be_visible()
+    expect(page.get_by_text('Importing needs the desktop app in a personal session')).to_be_visible()
+    check(page.locator('main p.bad.live').inner_text() == '', 'backups: the view loaded from the engine with no error')
+    print('PASS live Backups: list and forget over HTTP, import refused, the view shows no evidence rather than demo data')
+
+
 def run_live_serve(browser_path: str | None) -> None:
     """The app's http transport against the real loomward-serve binary (lane L6) and engine service (L8)."""
     subprocess.run(['cargo', 'build', '-q', '-p', 'loomward-http', '--bin', 'loomward-serve'], cwd=ROOT, check=True)
@@ -666,6 +683,7 @@ def run_live_serve(browser_path: str | None) -> None:
             print('PASS http transport connected through loomward-serve')
             run_live_collections(page, token, Path(state.name), check)
             run_inventory(page, base, check, live=True)
+            live_backups(page, token)
             live_scan_refusals(browser, exe)
             live_personal_scan(browser, exe)
             live_placement(browser, exe)

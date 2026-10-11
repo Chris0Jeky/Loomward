@@ -134,6 +134,10 @@ fn migrate(path: &Path, schema: &str, version: i64, dataset: &str, precious: boo
             // v5 (#219): existing grants were all observed on identity-verifying volumes.
             tx.execute_batch("ALTER TABLE root_grant ADD COLUMN identity_mode TEXT NOT NULL DEFAULT 'verified' CHECK (identity_mode IN ('verified','unverified'))")?;
         }
+        if precious && version < 6 {
+            // v6 (backups stage 1): normalised evidence only; v5 above is #372.
+            tx.execute_batch(include_str!("backup-evidence.sql"))?;
+        }
         if !precious && !tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('dir') WHERE name='listing_outcome')", [], |r| r.get::<_, bool>(0))? {
             tx.execute_batch("ALTER TABLE dir ADD COLUMN listing_outcome TEXT CHECK (listing_outcome IN ('complete','partial','denied','excluded','cancelled','unscanned','stale'))")?;
         }

@@ -1659,6 +1659,9 @@ fn every_command_answers_a_complete_envelope_and_core_reads_serve_the_catalogue(
                     | Command::CollectionsCreate
                     | Command::CollectionsUpdateMembers
                     | Command::CollectionsMembers
+                    | Command::BackupsList
+                    | Command::BackupsImport
+                    | Command::BackupsForget
             ))
             || command == Command::RootsRequestGrant
         {
@@ -4248,3 +4251,7 @@ fn a_live_scanned_ntfs_grant_can_be_labelled_and_collected() {
     let root = roots["roots"][0]["root_id"].as_str().unwrap().to_owned();
     label_and_collect_live(&svc, &root, "synthetic-note.txt");
 }
+
+#[cfg(test)]
+#[path = "backups_tests.rs"]
+mod backups_tests;

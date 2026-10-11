@@ -143,6 +143,23 @@ pub fn run(log: &mut dyn FnMut(&str)) -> bool {
     );
 
     report(
+        "lw_call backups.import is refused in a synthetic session (file dialog never opens)",
+        (|| {
+            let r = desktop.call(&envelope(
+                "backups.import",
+                example_payload(Command::BackupsImport),
+            ))?;
+            let result = ok_result(&r)?;
+            check(result.get("outcome") == Some(&json!("refused")), "outcome")?;
+            check(
+                result.get("refusal") == Some(&json!("synthetic_session")),
+                "refusal",
+            )?;
+            check(result.get("evidence") == Some(&Value::Null), "evidence")
+        })(),
+    );
+
+    report(
         "lw_call roots.request_grant is refused in a synthetic session (picker never opens)",
         (|| {
             let r = desktop.call(&envelope(
