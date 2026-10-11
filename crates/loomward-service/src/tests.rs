@@ -2289,12 +2289,19 @@ fn scan_start_is_refused_outside_registered_lab_roots() {
 fn personal_scan_start_refuses_unknown_lab_and_revoked_roots() {
     let tmp = temp_root();
     let personal = open(&tmp.path().join("personal"), DatasetClass::Personal);
+    // Every refusal leaves no job behind.
     let scan = |root: &str| {
-        err(call(
+        let e = err(call(
             &personal,
             "scan.start",
             json!({"root_id": root, "mode": "full"}),
-        ))
+        ));
+        let (list, _) = ok(
+            "jobs.list",
+            call(&personal, "jobs.list", json!({"limit": 50})),
+        );
+        assert_eq!(list["jobs"], json!([]), "{root}: no job started");
+        e
     };
     let e = scan("rt_x");
     assert_eq!(e.code, ErrorCode::NotFound, "{e:?}");
@@ -2338,6 +2345,20 @@ fn personal_scan_start_refuses_unknown_lab_and_revoked_roots() {
     let e = scan(&personal.inner.root_id(owner));
     assert_eq!(e.code, ErrorCode::PermissionDenied);
     assert_eq!(e.message.as_str(), "the root's grant is not active");
+}
+
+/// Deep review LOW 3: a personal session advertises metadata scans exactly where they run
+/// (Windows), like a synthetic one.
+#[test]
+fn personal_hello_reports_metadata_scan_on_windows() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Personal);
+    let (hello, _) = ok("session.hello", call(&svc, "session.hello", json!({})));
+    assert_eq!(hello["dataset_class"], "personal");
+    assert_eq!(
+        hello["capabilities"]["observation"]["metadata_scan"],
+        cfg!(windows)
+    );
 }
 
 /// An active owner grant for `path` made without today's fences: through the grant itself where
