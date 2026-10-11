@@ -377,22 +377,84 @@
     "open_decision": "loomward-revoked-root-retention (HUMAN_TODO q-9; default (a) on 2026-10-18)",
     "effects": "none: duplicates, placement and collections observe, simulate or record preferences only"
   },
+  "wave8": {
+    "merged": [
+      "#334",
+      "#335",
+      "#336",
+      "#338",
+      "#340",
+      "#343",
+      "#345",
+      "#346",
+      "#347",
+      "#350",
+      "#351",
+      "#354",
+      "#355",
+      "#357",
+      "#358",
+      "#360",
+      "#362",
+      "#364",
+      "#365",
+      "#367",
+      "#368",
+      "#371",
+      "#372",
+      "#374",
+      "#376",
+      "#379",
+      "#380",
+      "#381",
+      "#383",
+      "#387",
+      "#388",
+      "#382"
+    ],
+    "rust_tests_by_crate_at_b00c564": {
+      "apps": 24,
+      "backup": 19,
+      "catalog": 164,
+      "core": 30,
+      "engine": 206,
+      "http": 72,
+      "lab": 27,
+      "learn": 18,
+      "protocol": 36,
+      "service": 163,
+      "shell": 27,
+      "telemetry": 34,
+      "windows": 97
+    },
+    "rust_tests_at_b00c564": 917,
+    "app_vitest": 383,
+    "python_tests": 227,
+    "wired_commands": "contract 54 commands after #382 (roots.forget; backups.list, backups.import, backups.forget from #383); state schema v7; counts above measured before #382 (its lane: 936 workspace tests at 39b372e)",
+    "p4": "first full scans build in bulk tables and publish atomically (#387); 250k not reached; quiet-host A/B unverified (#148)",
+    "p14": "regressed 155 to 230 bytes/entry at 1M under the bulk path; freed build pages stay on the freelist (#386)",
+    "crash_recovery": "a host shutdown zeroed the primary .git/config and six manifests in one worktree; config rebuilt, manifests restored from Git, every checkout scanned",
+    "in_review": "#390 long-lived state.db reader delays the WAL cut",
+    "effects": "none: duplicates, placement, collections and backups observe, simulate or record only",
+    "forget": "roots.forget (#382): purges a revoked root's name, catalogue, labels and references (shared hard-linked objects kept), scrubs start-up and migration copies of state.db, VACUUMs state and cuts the logs; anonymised audit entry kept; residual: #390, #391"
+  },
   "owner_decisions_2026_10_11": {
     "source": "HUMAN_TODO.md q-5, q-9 to q-19 (recorded in #360)",
     "tier": "T2 daily driver; privacy and security findings weigh lower; secrets and real paths in the public repo stay forbidden",
     "decided_not_yet_implemented": [
-      "q-13 P4 KPI retarget plus bulk-load lane",
-      "q-14 backups (driver: evidence import, then guarded restic observer, then restore-drill executor)",
+      "q-14 backups stages 2 and 3 (guarded restic observer, then restore-drill executor; stage 1 landed in #383)",
       "q-15 diagnostics bundle via native save dialog",
-      "q-9 Forget a revoked root",
-      "q-17 unsigned preview pre-release",
-      "q-18 hardware scrub"
+      "q-17 first unsigned preview pre-release (workflow #362 and prerequisites #379 merged; nothing published)",
+      "q-18 hardware scrub: docs and mocks done (#365); raw evidence/v3 receipts and old Python fixtures still carry processor counts and media models"
     ],
     "owner_action": "q-19 dismiss Dependabot alert 1",
     "implemented": [
       "q-12 FAT/exFAT identity-unverified listing (#372; state v5; every grant records its filesystem; real FAT volume leg unverified)",
-      "q-11 personal learning on the owner's labels (#368)",
-      "q-10 personal duplicate content reads (#376)"
+      "q-11 personal learning on the owner's labels (#368; real granted NTFS folder leg in 9fa5159 after #372)",
+      "q-10 personal duplicate content reads (#376)",
+      "q-13 first-scan bulk load (#387; KPI end-to-end files/s; quiet-host A/B unverified; P14 155 to 230 bytes/entry, #386)",
+      "q-14 stage 1 backup evidence import (#383; state v6; never verified recovery)",
+      "q-9 Forget a revoked root (#382; state v7; 54 commands)"
     ]
   }
 }
