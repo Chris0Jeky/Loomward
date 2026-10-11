@@ -1,8 +1,10 @@
 import type { MeaningThread } from '../contracts.gen';
 import { LoomwardError, type Client } from '../transport/client';
 
-/** Meaning a person set (a label, a mixture of labels): a student suggestion never replaces it. */
-export const isHumanMeaning = (m: Pick<MeaningThread, 'state'> | undefined) => m?.state === 'labelled' || m?.state === 'mixed';
+/** Meaning a person set (a label, a mixture of labels): a student suggestion never replaces it.
+ *  A system aggregate or a teacher label is not human, so the projection still overlays it. */
+export const isHumanMeaning = (m: Pick<MeaningThread, 'state' | 'source'> | undefined) =>
+  (m?.state === 'labelled' || m?.state === 'mixed') && m.source === 'human';
 
 const UNKNOWN: MeaningThread = { state: 'unknown', label: null, share: null, source: null, collection_ids: [] };
 

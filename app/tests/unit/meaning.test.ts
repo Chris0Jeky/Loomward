@@ -152,20 +152,25 @@ it('the undyed meaning states keep the neutral colour but weave differently, so 
   expect(crossings('not_eligible').every(Boolean)).toBe(true);
 });
 
-const thread = (state: string, label: string | null = null) => ({ state, label, share: null, source: null, collection_ids: [] }) as never;
+const thread = (state: string, label: string | null = null, source: string | null = null) => ({ state, label, share: null, source, collection_ids: [] }) as never;
 
 it('a student suggestion never replaces a human meaning already in the slice', () => {
-  const node = (id: string, state: string, label: string | null = null) => ({ node_id: id, threads: { meaning: thread(state, label), residency: 'r' } });
-  const slice = { anchor: 'a', nodes: [node('nd_h', 'labelled', 'Projects'), node('nd_m', 'mixed', 'Media'), node('nd_f', 'none'), node('nd_x', 'none')] } as never;
-  const items = Object.fromEntries(['nd_h', 'nd_m', 'nd_f'].map(id => [id, thread('suggested', 'Documents')]));
+  const node = (id: string, state: string, label: string | null = null, source: string | null = null) => ({ node_id: id, threads: { meaning: thread(state, label, source), residency: 'r' } });
+  // nd_s is a system aggregate and nd_t a teacher label: neither is human, so the projection overlays both.
+  const slice = { anchor: 'a', nodes: [node('nd_h', 'labelled', 'Projects', 'human'), node('nd_m', 'mixed', 'Media', 'human'), node('nd_s', 'mixed'), node('nd_t', 'labelled', 'Media', 'teacher'), node('nd_f', 'none'), node('nd_x', 'none')] } as never;
+  const items = Object.fromEntries(['nd_h', 'nd_m', 'nd_s', 'nd_t', 'nd_f'].map(id => [id, thread('suggested', 'Documents')]));
   const out = overlayMeaning(slice, items) as unknown as { nodes: { node_id: string; threads: { meaning: { state: string; label: string | null }; residency: string } }[] };
   const by = Object.fromEntries(out.nodes.map(n => [n.node_id, n.threads]));
   expect(by.nd_h!.meaning).toMatchObject({ state: 'labelled', label: 'Projects' });
   expect(by.nd_m!.meaning).toMatchObject({ state: 'mixed', label: 'Media' });
+  expect(by.nd_s!.meaning).toMatchObject({ state: 'suggested', label: 'Documents' });
+  expect(by.nd_t!.meaning).toMatchObject({ state: 'suggested', label: 'Documents' });
   expect(by.nd_f!.meaning).toMatchObject({ state: 'suggested', label: 'Documents' });
   expect(by.nd_x!.meaning.state).toBe('unknown');
   expect(by.nd_h!.residency).toBe('r');
-  expect(isHumanMeaning(thread('labelled'))).toBe(true);
+  expect(isHumanMeaning(thread('labelled', 'Projects', 'human'))).toBe(true);
+  expect(isHumanMeaning(thread('labelled'))).toBe(false);
+  expect(isHumanMeaning(thread('mixed'))).toBe(false);
   expect(isHumanMeaning(thread('suggested'))).toBe(false);
 });
 
