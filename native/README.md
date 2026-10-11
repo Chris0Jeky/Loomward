@@ -6,14 +6,15 @@ Cargo workspace and has its own `Cargo.lock`. First built and tested on Windows 
 2026-10-10 (`evidence/v3/native/`).
 
 The shell hosts the engine service (`loomward_service::Service`) in a **personal session by
-default**, with its state under `%LOCALAPPDATA%\Loomward\v3\personal` (docs/41 section 3). It scans
+default**, with its state under `%LOCALAPPDATA%\Loomward Data\v3\personal`, beside the per-user
+install directory `%LOCALAPPDATA%\Loomward` rather than inside it (#373). It scans
 only folders the owner grants through the native folder picker, metadata only. `src/launch.rs` holds
 the command line and the service it opens.
 
 | Start | Service | State |
 |---|---|---|
-| `loomward-desktop.exe` | engine, personal session | `%LOCALAPPDATA%\Loomward\v3\personal` |
-| `--dataset synthetic` | engine, synthetic session (registered lab roots only) | `%LOCALAPPDATA%\Loomward\v3\synthetic` |
+| `loomward-desktop.exe` | engine, personal session | `%LOCALAPPDATA%\Loomward Data\v3\personal` |
+| `--dataset synthetic` | engine, synthetic session (registered lab roots only) | `%LOCALAPPDATA%\Loomward Data\v3\synthetic` |
 | `--fixtures` | the contract examples (`FixtureService`): no state, no scanning | none |
 | `--state-dir DIR` | overrides the state directory of either engine session | `DIR` |
 
@@ -33,10 +34,20 @@ The per-class state directories keep a synthetic session away from personal stat
 refuses to open a store of the other class (`a_synthetic_session_cannot_read_personal_state`). The
 grant rules refuse a folder that contains the state directory, so on the system drive the native
 picker cannot grant the volume root `C:\`. Run the app unelevated: native identity opens are refused
-when elevated, so every grant is refused with `identity_unavailable`. The per-user installer also
-installs into `%LOCALAPPDATA%\Loomward`; uninstalling removes the program files but leaves `v3\`
-(the state) in place. Two instances on one state directory are not prevented yet (docs/41's lock
-file is not implemented).
+when elevated, so every grant is refused with `identity_unavailable`.
+
+**State, uninstall and one instance (#373).** The per-user installer installs into
+`%LOCALAPPDATA%\Loomward`; the state lives in the sibling `%LOCALAPPDATA%\Loomward Data\v3`, out of
+the uninstaller's reach (`release.yml` uninstalls silently and asserts the state survives). A default
+start (no `--state-dir`) moves state that an earlier build left in `%LOCALAPPDATA%\Loomward\v3` there
+once. It never merges into an existing `Loomward Data\v3`, and a move that fails refuses to start
+rather than open an empty store. `launch::open` takes docs/41's exclusive `lock` file in the state
+directory before the stores open and holds it while the service lives. It is an OS lock on an open
+handle, so a crash leaves nothing stale. A second instance on the same state directory is refused
+with `busy` and exits; it does not focus the first window (no single-instance plugin, so the shell
+stays plugin-free). `loomward-serve` takes no such lock. A start that fails prints to a console when
+there is one (a parent console, the debug build's own, or a redirected stderr) and otherwise shows a
+native error box, so an installed build never exits silently.
 
 ## Build and run
 
@@ -68,7 +79,7 @@ and personal, each in a scratch state directory that it removes.
 | Command layer, dialog guards, Tauri IPC + ACL (mock runtime) | `cargo test --manifest-path native/Cargo.toml` |
 | The real Win32 disclosure box (needs an interactive desktop) | `cargo test --manifest-path native/Cargo.toml -- --ignored native_disclosure` |
 | Self test | `native/target/debug/loomward-desktop.exe --self-test` |
-| Real WebView2 over the engine service (synthetic, scratch state): raw IPC, ACL, CSP, navigation, heartbeat, renderer lag, teardown; then the personal default (scratch state): the real native picker grants, scans and revokes a disposable `.loomward/` folder | `py -3 native/tests/webview2_probe.py` (Playwright over CDP; writes `evidence/v3/native/`, or `--out DIR`) |
+| Real WebView2 over the engine service (synthetic, scratch state): raw IPC, ACL, CSP, navigation, heartbeat, renderer lag, teardown; then the personal default (scratch state): the real native picker and confirmation, declined (no grant) and then accepted, grant, scan and revoke a disposable `.loomward/` folder; a dialog still open at the end is cancelled | `py -3 native/tests/webview2_probe.py` (Playwright over CDP; writes `evidence/v3/native/`, or `--out DIR`) |
 
 CI runs the build, format, test, clippy and headless self-test checks in one cached
 `windows-latest` desktop job, after building `app/dist`. The WebView2 probe is a local proving
@@ -108,7 +119,14 @@ options do not share the application's normal profile or another run's environme
 ## Native dialogs
 
 `DesktopDialogs` (`src/dialogs.rs`) implements `NativeDialogs` in Rust; the webview cannot open
-either dialog. The folder picker (`rfd`) never opens in a synthetic session. Its result goes
+either dialog. The folder picker (`rfd`) never opens in a synthetic session. It opens on the user's
+profile folder (`USERPROFILE`) with nothing selected, never on the folder Windows remembers: a stray
+Enter there picks the whole profile, which the grant rules refuse. With no usable profile it does
+not open. Every pick is then confirmed in a main-window-owned `MessageBoxW` that names the folder
+(letters of any script shown; controls, bidi and zero-width characters escaped) and whose default
+button is Cancel; declining returns `cancelled_by_user` and creates no grant. Volumes that cannot
+prove file identity (FAT/exFAT, #372, not merged when this landed) get no separate confirmation here
+yet. Its result goes
 through the service's grant-root validator (native selection permits volume roots), then refuses
 whole profiles and credential/browser stores (including `.docker`, `.cargo`, `.npm`,
 `.terraform.d` and `.gemini`); the service must still check state overlap,
