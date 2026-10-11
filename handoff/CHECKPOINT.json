@@ -55,7 +55,7 @@
       "loomward-apps": "read-only application inventory from the Uninstall registry views, scopes, provenance and honest provider states (#229, #249)",
       "loomward-shell": "known-folder desktop contexts and a pure, bounded .lnk parser with target health; no COM, no execution (#245)"
     },
-    "rust_tests_on_windows": 631,
+    "rust_tests_on_windows": 763,
     "compiled": true,
     "toolchain": "rustc 1.97.1",
     "fmt_clippy_clean": true,
@@ -78,7 +78,7 @@
     },
     "change_tracking": "L16: guarded ReadDirectoryChangesW watchers scoped to each scan (#183, #202); attribute/ACL hints; identity-based absence; USN accelerator not implemented",
     "scan": "M tier 1M files ~4.9M files/s warm, 20/20 exact manifests (#162); through the product for synthetic lab roots (#205); personal scans open for active owner grants, metadata only (gates #184, #206, #240, #269 closed; evidence/v3/personal-scan-opening.md); elevated tokens refused",
-    "rust_tests_measured_at": "6052bad"
+    "rust_tests_measured_at": "0b27935"
   },
   "learning": {
     "student": "weighted Naive Bayes; Rust port loomward-learn with exact Python parity (#113)",
@@ -94,10 +94,10 @@
     "windows_performance_claim": false
   },
   "next_local_issues": [
-    "threads.meaning (the Woven Atlas weft) and the privacy follow-ups #319 and #329 (lanes running)",
-    "#148 (P4 toward 250k: make the scan pipeline stage asynchronously; bench path at about 109k rows/s)",
-    "#160 (one 10-minute quiet-host P12 run)",
-    "follow-ups: #309, #317 remainder (#333), #320, #323, #326, #327 (lane running), #329",
+    "#338 meaning threads (in review)",
+    "#148 P4 toward 250k: make the scan pipeline stage asynchronously (the bench path is at about 109k rows/s)",
+    "#160 one 10-minute quiet-host P12 run",
+    "remaining review follow-ups: #309 (fail_batch MEDIUMs, order-dependent reparent, watch LOWs), #333 (lab-space deadline race, Tiers source eligibility), #337 (redaction and learning LOWs), #326 and #329 LOWs, #320 (the http duplicate-Content-Length flake, awaiting a recurrence)",
     "LW-111 (teacher: the owner's lane; personal data waits on q-5)"
   ],
   "optional_independent_starts": [
