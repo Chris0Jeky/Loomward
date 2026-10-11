@@ -1,4 +1,4 @@
-"""Browser checks for the product views of app/ (lane L13): Explorer, Tiers, Companion, Grants & health.
+"""Browser checks for the product views of app/ (lane L13): Explorer, Tiers, Companion, Grants & health, Backups.
 
 Called from scripts/test_app.py (`run_views`). Mock-transport scenarios run against the page that
 test_app.py already serves; the Explorer's stale-response and invalidation scenarios need an engine
@@ -79,6 +79,9 @@ class FakeEngine:
         self.explain_partial_once = False
         self.explain_calls: list[str] = []
         self.process_observed_at: str | None = None
+        self.backups: list[dict] | None = None  # set: hello says a personal desktop session, and backups.* answer
+        self.backup_answers: list[dict] = []  # backups.import outcomes, in order
+        self.backup_calls: list[dict] = []
 
     @property
     def base(self) -> str:
@@ -94,12 +97,25 @@ class FakeEngine:
         row = lambda name, i: {'node_id': f'nd_{name}', 'kind': 'file', 'name': name, 'extension': 'txt', 'ext_family': 'document', 'logical_bytes': str(1000 + i), 'allocated_bytes': '4096', 'files': None, 'dirs': None, 'modified_at': '2026-01-01T00:00:00Z', 'attributes': [], 'flags': [], 'coverage': 'complete', 'location_hint': None}
         if cmd == 'session.hello':
             effects = {k: False for k in 'file_move file_delete file_rename file_write content_read process_kill process_suspend process_priority memory_trim uninstall elevation'.split()}
+            desktop = self.backups is not None
             return {
-                'protocol': 'loomward/3', 'engine_version': 'view-fake', 'adapter': 'http', 'dataset_class': 'synthetic', 'session_started_at': '2026-10-01T00:00:00Z',
+                'protocol': 'loomward/3', 'engine_version': 'view-fake', 'adapter': 'tauri' if desktop else 'http',
+                'dataset_class': 'personal' if desktop else 'synthetic', 'session_started_at': '2026-10-01T00:00:00Z',
                 'enumeration_strategy': 'std_read_dir', 'capabilities': {'observation': {'process_observation': self.process_error is not None}, 'effects': effects},
                 'features': {k: False for k in ('grant_picker', 'disclosure_dialog', 'teacher_available', 'telemetry_available', 'gpu_available')},
                 'limits': {'max_request_bytes': 65536, 'max_slice_nodes': 6000, 'max_page_items': 200},
             }
+        if self.backups is not None:
+            if cmd == 'backups.list':
+                return {'evidence': self.backups}
+            if cmd == 'volumes.list':
+                return {'volumes': []}
+            if cmd == 'backups.import':
+                self.backup_calls.append(req)
+                answer = self.backup_answers.pop(0)
+                if answer['outcome'] == 'imported':
+                    self.backups.append(answer['evidence'])
+                return answer
         if self.process_error is not None:
             if cmd == 'processes.explain':
                 self.explain_calls.append(p['process_ref'])
@@ -576,6 +592,82 @@ def check_tiers(page: Page, base: str, shoot) -> None:
     print('PASS Tiers: simulation label, alternatives with do nothing, what-if assumptions, no effect controls')
 
 
+# --- Backups ----------------------------------------------------------------------------------------
+
+def check_backups(page: Page, base: str, shoot) -> None:
+    page.goto(f'{base}/?transport=mock#/backups')
+    expect(page.get_by_role('heading', name='Backups', level=1)).to_be_visible()
+    main = page.locator('main')
+    expect(main.get_by_text('A green backup job is not verified recovery.', exact=True)).to_be_visible()
+    for repo in ('synthetic-nas', 'synthetic-usb'):
+        expect(page.get_by_role('heading', name=repo, level=2)).to_be_visible()
+    nas = main.locator('section').filter(has=page.get_by_role('heading', name='synthetic-nas'))
+    # three separate observations, each with its own refusals in plain words
+    table = nas.get_by_role('table', name='Recovery evidence for synthetic-nas')
+    ok(table.locator('tbody th').all_inner_texts() == ['Snapshot taken', 'Integrity checked', 'Restore drill'], 'snapshot, integrity and restore drill are separate rows')
+    expect(table.get_by_role('row', name=re.compile('^Integrity checked'))).to_contain_text('Structure only, or full data read not shown')
+    expect(table.get_by_role('row', name=re.compile('^Integrity checked'))).to_contain_text('No clean integrity check that read all the data.')
+    expect(table.get_by_role('row', name=re.compile('^Restore drill'))).to_contain_text('No restore drill has been observed.')
+    expect(nas.get_by_text('Recovery not shown', exact=True)).to_be_visible()
+    expect(nas.get_by_text('0 of 2 needed versions covered by a restore')).to_be_visible()
+    expect(nas.get_by_text('cannot yet tell whether they share a physical disk')).to_be_visible()
+    expect(main.locator('section').filter(has=page.get_by_role('heading', name='synthetic-usb')).get_by_text('An observation is older than the freshness window.')).to_be_visible()
+    # the proposed drill is data: escaped names, no control to run it
+    nas.locator('details.drill summary').click()
+    expect(nas.get_by_text('U+202E RLO', exact=True)).to_be_visible()
+    ok(CONTROL_CHARS.search(main.inner_text()) is None, 'backups: a bidi control in a needed file name is shown as a badge, never raw')
+    expect(nas.get_by_text('Loomward does not run this drill.')).to_be_visible()
+    labels = [b.inner_text() for b in main.get_by_role('button').all()]
+    ok(not any(FORBIDDEN_BUTTONS.search(t) for t in labels), f'backups: no effect control among {labels}')
+    expect(main.get_by_text('Importing needs the desktop app in a personal session')).to_be_visible()
+    shoot('backups')
+    page.get_by_role('button', name='Forget the evidence for synthetic-usb').click()
+    expect(page.get_by_role('status', name='Backup result')).to_have_text('Forgot the evidence for synthetic-usb. No backup or file was changed.')
+    expect(page.get_by_role('heading', name='synthetic-usb')).to_have_count(0)
+    expect(page.get_by_role('heading', name='Backups', level=1)).to_be_focused()
+    print('PASS Backups: separate observations with plain refusals, honest coverage and topology, drill as data, forget')
+
+
+def check_backups_import(page: Page, engine: FakeEngine) -> None:
+    fixture = json.loads((ROOT / 'contracts/v3/examples/commands/backups.import.result.json').read_text(encoding='utf-8'))
+    imported = {**fixture, 'evidence': {**fixture['evidence'], 'evidence_id': 'be_9', 'repository_label': 'synthetic-new'}}
+    engine.backups = []
+    engine.backup_answers = [
+        {'outcome': 'cancelled_by_user', 'evidence': None, 'refusal': None},
+        {'outcome': 'refused', 'evidence': None, 'refusal': 'too_large'},
+        imported,
+    ]
+    try:
+        page.goto('about:blank')  # a new document, so session.hello runs again against the desktop-like engine
+        page.goto(f'{engine.base}/#token={TOKEN}')
+        page.evaluate("location.hash = '#/backups'")
+        expect(page.get_by_role('heading', name='Backups', level=1)).to_be_visible()
+        expect(page.get_by_text('No backup evidence imported yet.')).to_be_visible()
+        choose = page.get_by_role('button', name='Choose receipt file')
+        page.get_by_label('Repository label').fill('s3:https://bucket')
+        choose.click()
+        expect(page.get_by_role('alert')).to_have_text('Use a label of 1–64 letters, digits, dots, dashes or underscores.')
+        ok(engine.backup_calls == [], 'an invalid label never reaches the engine')
+        page.get_by_label('Repository label').fill('synthetic-new')
+        page.get_by_label('Snapshot ID').fill('1' * 64)
+        page.get_by_label('Files you need back').fill('fixture/ledger.ods ' + 'A' * 64)
+        choose.click()
+        expect(page.get_by_role('status', name='Backup result')).to_have_text('Import cancelled. Nothing was stored.')
+        choose.click()
+        expect(page.get_by_role('alert')).to_contain_text('larger than 256 KiB')
+        choose.click()
+        expect(page.get_by_role('status', name='Backup result')).to_contain_text('Evidence imported.')
+        expect(page.get_by_role('heading', name='synthetic-new', level=2)).to_be_visible()
+        call = engine.backup_calls[0]
+        ok(call['deadline_ms'] == 60000, 'the import waits up to 60 s for the owner at the native dialog')
+        ok(call['payload'] == {'repository_label': 'synthetic-new', 'snapshot_id': '1' * 64, 'source_volume_id': None, 'target_volume_id': None,
+                               'required': [{'relative_name': 'fixture/ledger.ods', 'version': 'sha256:' + 'a' * 64}], 'integrity_check': True},
+           f'the request carries the form and no path: {call["payload"]}')
+        print('PASS Backups import: form validation, cancel, named refusal and import through the engine; no path leaves the page')
+    finally:
+        engine.backups = None
+
+
 # --- Companion --------------------------------------------------------------------------------------
 
 def check_process_strip_failures(browser) -> None:
@@ -1001,11 +1093,13 @@ def run_views(page: Page, base: str, shots: Path | None) -> None:
         check_tiers_loading_followups(page, engine)
         check_tiers_source_eligibility(page, engine)
         check_tiers_refused(page, engine)
+        check_backups_import(page, engine)
     finally:
         engine.stop()
     check_tiers(page, base, shoot)
     check_companion(page, base, shoot)
     check_health(page, base, shoot)
+    check_backups(page, base, shoot)
     check_scan_controls(page, base, shots)
     check_narrow(page, base)
     check_narrow_wide_fonts(page, base)

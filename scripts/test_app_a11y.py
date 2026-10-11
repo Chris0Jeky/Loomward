@@ -225,7 +225,7 @@ def run_a11y(browser: Browser, base: str, check) -> None:
 
     # --- unique names, row headers, dangling references (2.4.6, 4.1.2, 1.3.1) ---------------------------------------
     page = new_page()
-    for view, heading in (('explorer', 'Explorer'), ('collections', 'Collections'), ('atlas', 'Atlas'), ('observatory', 'Observatory'), ('tiers', 'Tiers'), ('companion', 'Companion'), ('health', 'Grants & health')):
+    for view, heading in (('explorer', 'Explorer'), ('collections', 'Collections'), ('atlas', 'Atlas'), ('observatory', 'Observatory'), ('tiers', 'Tiers'), ('companion', 'Companion'), ('health', 'Grants & health'), ('backups', 'Backups')):
         goto(page, base, view, heading)
         expect(page.locator('main canvas, main table, main .vols').first).to_be_visible()
         if view in ('atlas', 'observatory'):
@@ -383,7 +383,7 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     check('hidden character' not in page.locator('main .ctl').first.inner_text(), 'badge: the visible text is still only the code')
 
     # --- 2.5.8: target size ---------------------------------------------------------------------------------------------
-    for view, heading in (('explorer', 'Explorer'), ('collections', 'Collections'), ('atlas', 'Atlas'), ('observatory', 'Observatory'), ('tiers', 'Tiers'), ('companion', 'Companion'), ('health', 'Grants & health')):
+    for view, heading in (('explorer', 'Explorer'), ('collections', 'Collections'), ('atlas', 'Atlas'), ('observatory', 'Observatory'), ('tiers', 'Tiers'), ('companion', 'Companion'), ('health', 'Grants & health'), ('backups', 'Backups')):
         goto(page, base, view, heading)
         page.wait_for_timeout(300)
         small = page.evaluate("""() => [...document.querySelectorAll('button, a[href], select, input')].filter((el) => !el.closest('.skip') && !el.classList.contains('skip')).flatMap((el) => {
