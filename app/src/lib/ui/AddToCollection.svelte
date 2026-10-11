@@ -31,7 +31,7 @@
   }
 </script>
 <div class="controls">
-  <label class="ctl"><span class="lbl">Add to collection</span> <select bind:value={selected} disabled={busy || !collections.length}>
+  <label class="lw-field"><span class="lbl">Add to collection</span> <select bind:value={selected} disabled={busy || !collections.length}>
     {#each collections as c (c.collection_id)}<option value={c.collection_id}>{escapedName(c.name)}</option>{/each}
   </select></label>
   <button class="btn primary" type="button" disabled={!selected} aria-disabled={busy} onclick={() => void add()}>Add to collection</button>

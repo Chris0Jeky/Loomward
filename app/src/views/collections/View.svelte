@@ -99,14 +99,14 @@
 <section class="panel" aria-labelledby="collection-make">
   <h2 id="collection-make">Make a collection</h2>
   <form class="controls" onsubmit={(e) => { e.preventDefault(); void create(); }}>
-    <label class="ctl"><span class="lbl">Collection name</span> <input type="text" bind:value={name} maxlength="64" required /></label>
+    <label class="lw-field"><span class="lbl">Collection name</span> <input type="text" bind:value={name} maxlength="64" required /></label>
     <button class="btn primary" type="submit" aria-disabled={creating || !name.length} onclick={(e) => { if (creating || !name.length) e.preventDefault(); }}>Create collection</button>
   </form>
 </section>
 
 <section class="panel">
   <div class="controls pick">
-    <label class="ctl"><span class="lbl">Collection</span> <select bind:value={selected} onchange={() => void load()} disabled={!collections.length}>
+    <label class="lw-field"><span class="lbl">Collection</span> <select bind:value={selected} onchange={() => void load()} disabled={!collections.length}>
       {#each collections as c (c.collection_id)}<option value={c.collection_id}>{escapedName(c.name)}</option>{/each}
     </select></label>
     <button class="btn" type="button" aria-disabled={loading} onclick={() => { if (!loading) void load(); }}>Refresh collections</button>

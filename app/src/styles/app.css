@@ -126,8 +126,8 @@ table.tbl { width: 100%; border-collapse: collapse; }
 
 /* Controls: a row of labelled fields and the buttons that act on them */
 .controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-3); margin: var(--sp-4) 0; }
-.ctl { display: flex; flex-direction: column; align-items: flex-start; gap: var(--sp-1); }
-.ctl .lbl, .lbl { font-size: var(--fs-xs); color: var(--muted); }
+.lw-field { display: flex; flex-direction: column; align-items: flex-start; gap: var(--sp-1); }
+.lw-field .lbl, .lbl { font-size: var(--fs-xs); color: var(--muted); }
 .controls select, .controls input { max-width: 100%; }
 .btn.primary { border-color: var(--accent); color: var(--accent); }
 .btn.primary:disabled, .btn.primary[aria-disabled='true'] { border-color: var(--control-line); color: var(--text); }

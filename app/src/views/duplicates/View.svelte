@@ -66,7 +66,7 @@
     <p class="note gated" role="status">Personal content inspection is gated. No content is opened.</p>
   {:else}
     <div class="controls">
-      <div class="ctl">
+      <div class="lw-field">
         <label class="lbl" for="duplicate-root">Root</label>
         <select id="duplicate-root" bind:value={selected} disabled={loading || active || duplicates.pending}>
           {#each roots as r (r.root_id)}<option value={r.root_id}>{r.display_path.text}</option>{/each}

@@ -33,7 +33,7 @@ four views needed them). New patterns in `app.css`:
 | `.tag.sim` | a fact about what the product will not do (read-only, advice only): dashed edge |
 | `.tag.unk` | unknown, not zero: dotted edge and italics |
 | `.empty` | nothing to show yet: dotted unknown edge, so it is never read as a result |
-| `.controls` / `.ctl` / `.lbl` | one control row: stacked small label over its field, buttons on the baseline; `.btn.primary` marks the one action |
+| `.controls` / `.lw-field` / `.lbl` | one control row: stacked small label over its field, buttons on the baseline; `.btn.primary` marks the one action |
 | `dl.cards` | short records as a grid of cards |
 | `.tbl caption`, `.tbl small`, row hover | one caption, second-line and hover treatment |
 | `.bad .warn .ok .small` | text colours that were duplicated per view |

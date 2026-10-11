@@ -130,7 +130,7 @@
       </div>
       {#if selected}
         <div class="controls feedback">
-          <div class="ctl">
+          <div class="lw-field">
             <label class="lbl" for="human-label">Human label</label>
             <select id="human-label" bind:value={label} disabled={working || pending !== null}>
               {#each Object.keys(status?.human_support ?? {}) as choice}<option>{choice}</option>{/each}
