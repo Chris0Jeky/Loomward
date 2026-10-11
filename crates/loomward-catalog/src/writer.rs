@@ -1122,16 +1122,21 @@ fn forget_state(conn: &mut Connection, grant: i64, at: i64, expected: Option<i64
         .optional()?;
     if let Some(root) = root {
         // The objects of this root: bound to its rows now, or (after a catalogue rebuild) matched
-        // by native identity, unless another root of the volume still observes the same object.
-        tx.execute_batch("CREATE TEMP TABLE forget_ref(id INTEGER PRIMARY KEY)")?;
-        tx.execute("INSERT OR IGNORE INTO forget_ref SELECT o.id FROM st.object_ref o WHERE o.volume_key=?2 AND (
-              (o.catalog_instance=(SELECT value FROM main.meta WHERE key='instance_id') AND (
+        // by native identity, unless another root of the same volume still observes the object
+        // (a hard link seen under both): its labels and memberships are not only this root's.
+        let bound = "o.catalog_instance=(SELECT value FROM main.meta WHERE key='instance_id') AND (
                 (o.kind='dir' AND o.row_id IN (SELECT id FROM main.dir WHERE root_id=?1))
-                OR (o.kind='file' AND o.row_id IN (SELECT f.id FROM main.file f JOIN main.dir d ON d.id=f.dir_id WHERE d.root_id=?1))))
-              OR ((EXISTS(SELECT 1 FROM main.file f JOIN main.dir d ON d.id=f.dir_id WHERE f.file_id=o.file_id AND d.root_id=?1)
-                   OR EXISTS(SELECT 1 FROM main.dir d WHERE d.root_id=?1 AND d.file_id=o.file_id))
-                AND NOT EXISTS(SELECT 1 FROM main.file f JOIN main.dir d ON d.id=f.dir_id WHERE f.file_id=o.file_id AND d.root_id!=?1)
-                AND NOT EXISTS(SELECT 1 FROM main.dir d WHERE d.root_id!=?1 AND d.file_id=o.file_id)))", params![root, volume])?;
+                OR (o.kind='file' AND o.row_id IN (SELECT f.id FROM main.file f JOIN main.dir d ON d.id=f.dir_id WHERE d.root_id=?1)))";
+        let elsewhere = "(SELECT r.id FROM main.root r JOIN main.volume v ON v.id=r.volume_id WHERE v.volume_key=?2 AND r.id!=?1)";
+        tx.execute_batch("CREATE TEMP TABLE forget_ref(id INTEGER PRIMARY KEY)")?;
+        tx.execute(&format!("INSERT OR IGNORE INTO forget_ref SELECT o.id FROM st.object_ref o WHERE o.volume_key=?2 AND (
+              ({bound})
+              OR EXISTS(SELECT 1 FROM main.file f JOIN main.dir d ON d.id=f.dir_id WHERE f.file_id=o.file_id AND d.root_id=?1)
+              OR EXISTS(SELECT 1 FROM main.dir d WHERE d.root_id=?1 AND d.file_id=o.file_id))
+            AND NOT EXISTS(SELECT 1 FROM main.file f JOIN main.dir d ON d.id=f.dir_id WHERE f.file_id=o.file_id AND d.root_id IN {elsewhere})
+            AND NOT EXISTS(SELECT 1 FROM main.dir d WHERE d.file_id=o.file_id AND d.root_id IN {elsewhere})"), params![root, volume])?;
+        // A kept object bound to one of this root's rows loses the row: unresolved, as after a rebuild.
+        tx.execute(&format!("UPDATE st.object_ref AS o SET state='unresolved',retired=1 WHERE o.state='resolved' AND {bound} AND o.id NOT IN (SELECT id FROM forget_ref)"), params![root])?;
         let has = |table: &str| {
             tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM st.sqlite_schema WHERE type='table' AND name=?1)",

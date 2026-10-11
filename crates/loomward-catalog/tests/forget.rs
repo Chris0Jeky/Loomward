@@ -522,3 +522,51 @@ fn a_reader_that_outlasts_the_forget_only_delays_the_log_cut() {
         "the writer cuts the log once the reader is gone"
     );
 }
+
+#[test]
+fn a_bound_object_another_root_still_observes_keeps_its_labels_and_membership() {
+    let f = fixture();
+    // Root B lists the very object A's reference is bound to (a hard link seen under both roots);
+    // A's reference stays resolved and bound to A's row, as it is right after labelling.
+    let (a, b) = (ref_of(&f, f.grant_a), ref_of(&f, f.grant_b));
+    Connection::open(f.temp.path().join("catalog.db"))
+        .unwrap()
+        .execute(
+            "UPDATE file SET file_id=?1 WHERE dir_id IN (SELECT id FROM dir WHERE root_id=?2)",
+            rusqlite::params![vec![101u8; 16], f.root_b],
+        )
+        .unwrap();
+    Connection::open(f.temp.path().join("state.db"))
+        .unwrap()
+        .execute(
+            "UPDATE object_ref SET file_id=?2,creation_ft=2 WHERE id=?1",
+            rusqlite::params![b, vec![101u8; 16]],
+        )
+        .unwrap();
+    assert_eq!(
+        state_count(
+            &f,
+            &format!("SELECT state='resolved' FROM object_ref WHERE id={a}")
+        ),
+        1
+    );
+    revoke(&f, f.grant_a);
+    forget(&f, f.grant_a, None).unwrap();
+    assert_eq!(state_count(&f, "SELECT count(*) FROM object_ref"), 2);
+    assert_eq!(state_count(&f, "SELECT count(*) FROM human_feedback"), 2);
+    assert_eq!(state_count(&f, "SELECT count(*) FROM collection_member"), 2);
+    // Its row in A is gone, so the binding is no longer trusted: unresolved, as after a rebuild.
+    assert_eq!(
+        state_count(
+            &f,
+            &format!("SELECT state='unresolved' AND retired=1 FROM object_ref WHERE id={a}")
+        ),
+        1
+    );
+    // Once no other root observes it, forgetting B takes it with the rest.
+    revoke(&f, f.grant_b);
+    forget(&f, f.grant_b, None).unwrap();
+    assert_eq!(state_count(&f, "SELECT count(*) FROM object_ref"), 0);
+    assert_eq!(state_count(&f, "SELECT count(*) FROM human_feedback"), 0);
+    assert_eq!(state_count(&f, "SELECT count(*) FROM collection_member"), 0);
+}
