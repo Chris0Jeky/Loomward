@@ -132,6 +132,53 @@ fn first_scan_batches_staged_payloads_without_charging_unused_reservations() {
 }
 
 #[test]
+fn first_scan_ignores_another_roots_prior_run() {
+    let (temp, conn) = first_scan_fixture("full", false);
+    conn.execute_batch("INSERT INTO st.root_grant(id,volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns) VALUES(2,'fixture',zeroblob(16),'Other synthetic root','fixture','fixture','active',0);
+        INSERT INTO root(id,grant_id,volume_id,root_file_id,state) VALUES(2,2,1,zeroblob(16),'complete');
+        INSERT INTO scan_run(id,root_id,mode,strategy,state,started_at_ns,counters_json,budget_json) VALUES(1,2,'full','fixture','completed',0,'{}','{}');").unwrap();
+    let reservation = 24 * 1024 * 1024;
+    let quota = Arc::new((Mutex::new(3 * reservation), Condvar::new()));
+    let (tx, rx) = bounded(3);
+    let mut replies = Vec::new();
+    for seq in 0..3 {
+        let (reply, result) = bounded(1);
+        tx.send(Pending {
+            command: WriteCommand::StageChunk {
+                run_id: 2,
+                dir_id: 1,
+                seq,
+                files: vec![],
+                dirs: vec![],
+            },
+            reply,
+            _permit: BytePermit {
+                quota: quota.clone(),
+                bytes: reservation,
+            },
+        })
+        .unwrap();
+        replies.push(result);
+    }
+    drop(tx);
+    let timings = Arc::new(Mutex::new(WriterTimings::default()));
+    let (alive, _) = bounded(0);
+    work(conn, rx, timings.clone(), alive, None);
+    for reply in replies {
+        reply.recv().unwrap().unwrap();
+    }
+    assert_eq!(timings.lock().unwrap().transactions, 1);
+    assert_eq!(*quota.0.lock().unwrap(), 0);
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    assert_eq!(
+        db.query_row("SELECT state FROM scan_run WHERE id=1", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        "completed"
+    );
+}
+
+#[test]
 fn first_scan_pipeline_preserves_atomic_listings_other_roots_and_recovery() {
     fn observe(conn: &Connection, committed: bool) {
         let path = conn.path().unwrap();
@@ -316,6 +363,79 @@ fn depth_end_run() -> WriteCommand {
         run_id: 2,
         state: "completed".into(),
         finished_at_ns: 6,
+    }
+}
+
+#[test]
+fn flattening_ancestor_and_descendant_is_independent_of_listing_order() {
+    for reverse in [false, true] {
+        let (temp, conn) = depth_fixture();
+        let mut dirs = vec![observation("spine-1", 10, 0), observation("spine-2", 12, 0)];
+        if reverse {
+            dirs.reverse();
+        }
+        let (results, _) = depth_batch(
+            conn,
+            vec![depth_listing(600, vec![], dirs), depth_end_run()],
+        );
+        for result in results {
+            result.unwrap();
+        }
+        let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+        for id in [10, 11] {
+            assert_eq!(
+                db.query_row("SELECT parent_id FROM dir WHERE id=?1", [id], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                600
+            );
+        }
+        assert_eq!(
+            db.query_row("SELECT max(depth) FROM dir", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            511
+        );
+    }
+}
+
+#[test]
+fn aborted_ok_batch_reports_the_failure_to_every_caller() {
+    for flush in [false, true] {
+        let (temp, conn) = first_scan_fixture("full", false);
+        if flush {
+            conn.execute_batch("CREATE TRIGGER reject_dirty BEFORE UPDATE OF dirty_rev ON dir BEGIN SELECT RAISE(ABORT,'synthetic flush failure'); END;").unwrap();
+        } else {
+            conn.execute_batch("PRAGMA foreign_keys=ON;
+                CREATE TABLE fault_parent(id INTEGER PRIMARY KEY);
+                CREATE TABLE fault_child(id INTEGER REFERENCES fault_parent(id) DEFERRABLE INITIALLY DEFERRED);
+                CREATE TRIGGER reject_commit AFTER INSERT ON file BEGIN INSERT INTO fault_child VALUES(1); END;").unwrap();
+        }
+        let (results, _) = depth_batch(
+            conn,
+            vec![
+                depth_listing(1, vec![Observation::file("before", 10, Some(10))], vec![]),
+                depth_listing(1, vec![Observation::file("after", 20, Some(20))], vec![]),
+            ],
+        );
+        assert_eq!(results.len(), 2);
+        for result in results {
+            let error = result.unwrap_err();
+            assert!(
+                !matches!(error, Error::Closed),
+                "batch failure lost: {error:?}"
+            );
+            assert!(error.to_string().contains(if flush {
+                "synthetic flush failure"
+            } else {
+                "FOREIGN KEY"
+            }));
+        }
+        let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM file", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 }
 
@@ -1225,14 +1345,21 @@ fn v2_upgrade_preserves_bindings_membership_and_catalogue_instance() {
 fn confirmation_failure_closes_writer_and_recovery_retries() {
     let (temp, conn, command) = fixture();
     let before = bindings(temp.path());
+    let before_listing = old_listing(temp.path());
     conn.execute_batch("CREATE TRIGGER st.fail_confirmation BEFORE UPDATE ON object_ref BEGIN SELECT RAISE(ABORT,'test confirmation failure'); END").unwrap();
     let writer = Writer::start(conn).unwrap();
-    assert!(matches!(writer.call(command), Err(Error::Sql(_))));
+    assert!(matches!(
+        writer.call(command),
+        Ok(WriteReply::Listing { .. })
+    ));
     assert!(matches!(
         writer.send(WriteCommand::Barrier),
         Err(Error::Closed)
     ));
     drop(writer);
+    let committed = old_listing(temp.path());
+    assert_eq!(committed.0, before_listing.0 + 1);
+    assert!(committed.1.iter().any(|(_, name)| name == "link"));
     assert_eq!(bindings(temp.path()), before);
     assert_eq!(pending_count(temp.path()), 4);
     let st = Connection::open(temp.path().join("state.db")).unwrap();

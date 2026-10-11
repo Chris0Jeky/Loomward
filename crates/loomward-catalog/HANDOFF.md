@@ -1,3 +1,90 @@
+# Review follow-up sweep (#309 remainder and #333) - 2026-10-11
+
+Uncommitted on `fix/followups-309-333`, based on main `23440d1`. The driver commits.
+
+## Changed
+
+- Catalogue reparent heights are checked against the final listing topology, after all
+  entries apply, inside the same savepoint. Flattening an ancestor and descendant into
+  one destination succeeds in either order; overdeep trees still reject atomically.
+- A fully successful command batch that fails flush/COMMIT retains every receipt: the
+  first reports the original failure, later receipts report `BatchAborted` with that cause.
+  Mixed batches preserve their original command failures as before. Post-commit reference
+  confirmation or synchronous-mode restoration failure closes the writer without changing
+  committed replies. The pending publication witness remains the recovery path.
+- P4f has explicit coverage for another root's older run: it does not disqualify this
+  root's first full scan from payload-based batching.
+- `RepairSink` propagates stale errors. The pipeline already relists the specific
+  `listing_revision_changed` reason; reparenting still requests a full watch repair.
+  A refused `begin_run` accepts no run: its sink owns partial-begin cleanup, and the caller
+  must not finish it (a busy refusal can belong to another scan). This is documented on
+  the trait and pinned with a test; pipeline production code is unchanged.
+- A timely lab-space receipt is accepted even when scheduling after receipt crosses the
+  deadline. Timeout and disconnected-worker errors remain distinct and bounded.
+- The physics-drift regression asserts current volume observations and historical
+  `proposals.get`/`list` behavior directly, without a semantics-string assertion. A newer
+  volume observation alone keeps the scenario unstale; a catalogue revision still marks it stale.
+- `TierVolume.source_eligible` is required in the Rust DTO, schema, example and generated TS.
+  Engine physics/tier checks and service grant checks supply it. Tiers uses it to default,
+  preserve and enable choices; a saved ineligible source stays historical. Mock fixtures
+  and browser coverage use the same field. It is snapshot eligibility, never permission.
+
+## Verified
+
+Windows, final source restored after mutations. Required gates passed:
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo test --workspace` | PASS: 786 tests, no failures or ignored tests |
+| `cargo test -p loomward-catalog --all-features` | PASS: 133 tests |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | PASS |
+| `py -3 scripts/verify.py` | PASS: 227 Python tests, one symlink-privilege skip; JS syntax/boundary/parity; Rust format/tests/lint |
+| `npm.cmd --prefix app run check` | PASS: no errors or warnings |
+| `npm.cmd --prefix app run test` | PASS: 324 tests in 31 files |
+| `npm.cmd --prefix app run build` | PASS |
+| `py -3 scripts/test_app.py` | ALL PASS, including the new Tiers source choices regression |
+| `py -3 scripts/test_app.py --live-serve` | ALL PASS (live serve); no console/page errors |
+| `py -3 scripts/gen_contracts_ts.py --check` | Up to date |
+| `git diff --check` | PASS |
+
+Mutation proof: original catalogue writer fails `flattening_ancestor`, `aborted_ok_batch`
+(flush and commit cases), and `confirmation_failure`. Removing the P4f root predicate fails
+`first_scan_ignores_another_roots_prior_run`. Restoring blanket watch suppression fails
+`repair_reparent_does_not_hide`; finishing a refused begin fails `refused_scan_begin`.
+Forcing eligibility true fails `placement_model_source_eligibility` and
+`placement_unusable_volume_numbers`; allowing revoked sources fails
+`placement_revoked_only_volumes`. Restoring the post-receive deadline check fails
+`timely_space_receipt`; making newer physics observations mark staleness fails
+`placement_physics_drift_alone`. All 11 Rust mutations compile then fail assertions (exit 101).
+Four browser mutations (default, preserve, enable, saved-source restoration) each fail
+`check_tiers_source_eligibility` (exit 1). Restored source passes. Raw local logs and mutation
+scripts stay gitignored under `.loomward/sweep309/`; they are not publication artifacts.
+
+## Declined
+
+- Further `check_chains` optimisation/benchmark: proof reuse is already implemented; the
+  prior synthetic measurement below records its benefit. No new benchmark on the shared host.
+- Ignoring `traversal_error` in `OutsideScope`: entries arrive before their final outcome;
+  excusing them safely requires per-ticket buffering, outside this bounded repair.
+- Adding `finish_run` after a refused begin: violates the clarified sink contract and can
+  finish another active scan; documented and mutation-tested instead.
+
+## NOT verified
+
+No hosted CI, Tauri/native-shell acceptance, personal data, or fresh scale benchmark.
+No commit or push was made. The symlink-privilege test remains skipped by the Python gate.
+
+## Residual risk
+
+Eligibility may change after the model snapshot; placement calls still recheck it.
+Reference confirmation failure still closes the writer and needs reopen/recovery.
+Conservative hidden-descendant depth counting and OutsideScope repair refusal remain.
+
+Recommended commits: `fix(catalog): validate final topology and preserve receipt outcomes`;
+`fix(scan): propagate stale repair errors and pin begin ownership`;
+`fix(placement): accept timely space receipts and expose source eligibility`.
+
 # Catalogue reparent depth (#309) - 2026-10-11
 
 Uncommitted on `fix/catalog-reparent-depth-309`, based on main
