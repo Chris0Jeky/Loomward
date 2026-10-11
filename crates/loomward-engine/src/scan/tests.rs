@@ -197,6 +197,25 @@ fn duplicate_grant_returns_evidence(class: DatasetClass) {
         .unwrap();
     assert_eq!(report.groups, vec![vec![0, 1]]);
     assert!(!report.partial);
+    // Revocation requested while a job's reader runs on its own cancel flag: the final gate
+    // refuses the finished report in its entirety rather than return names from a revoked root.
+    let root_cancel = engine
+        .scan_root_gate(grant.key())
+        .lock()
+        .unwrap()
+        .duplicate_cancel
+        .clone();
+    root_cancel.store(true, Ordering::Release);
+    let refused = engine
+        .inspect_duplicates_cancel(
+            &grant,
+            &entries,
+            duplicate_budget(),
+            Some(Arc::new(AtomicBool::new(false))),
+        )
+        .unwrap_err();
+    assert_eq!(refused.to_body().message.as_str(), "cancelled");
+    root_cancel.store(false, Ordering::Release);
     conn.execute("UPDATE root_grant SET state='revoked'", [])
         .unwrap();
     let err = engine
