@@ -115,6 +115,8 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let temp = tempfile::tempdir()?;
     let cleanup_path = temp.path().to_path_buf();
     let c = Catalog::open(temp.path(), "synthetic")?;
+    // As the service does: a first full scan builds in bulk and publishes at EndRun (#148).
+    c.writer().set_bulk_first_scan(true);
     let WriteReply::Root {
         grant_id, dir_id, ..
     } = c
@@ -166,27 +168,31 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         errors: 0,
     })?;
     let db = Connection::open(temp.path().join("catalog.db"))?;
-    for line in include_str!("../src/catalog.sql").lines().filter(|line| {
-        line.starts_with("CREATE INDEX ") || line.starts_with("CREATE UNIQUE INDEX ")
-    }) {
-        let name = line
-            .split_once(" ON ")
-            .unwrap()
-            .0
-            .split_whitespace()
-            .next_back()
-            .unwrap();
-        assert!(
-            db.query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='index' AND name=?1)",
-                [name],
-                |r| r.get::<_, bool>(0)
-            )?,
-            "missing index {name}"
-        );
-    }
+    let all_indexes = |db: &Connection| -> rusqlite::Result<()> {
+        for line in include_str!("../src/catalog.sql").lines().filter(|line| {
+            line.starts_with("CREATE INDEX ") || line.starts_with("CREATE UNIQUE INDEX ")
+        }) {
+            let name = line
+                .split_once(" ON ")
+                .unwrap()
+                .0
+                .split_whitespace()
+                .next_back()
+                .unwrap();
+            assert!(
+                db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='index' AND name=?1)",
+                    [name],
+                    |r| r.get::<_, bool>(0)
+                )?,
+                "missing index {name}"
+            );
+        }
+        Ok(())
+    };
+    all_indexes(&db)?;
     let ids = {
-        let mut s = db.prepare("SELECT id FROM dir WHERE parent_id=?1 ORDER BY name")?;
+        let mut s = db.prepare("SELECT id,name FROM dir WHERE parent_id=?1 UNION ALL SELECT id,name FROM bulk_dir WHERE parent_id=?1 ORDER BY name")?;
         let v = s
             .query_map([dir_id], |r| r.get::<_, i64>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -257,6 +263,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         finished_at_ns: 1,
     })?;
     let finalise_s = finalise.elapsed().as_secs_f64();
+    all_indexes(&db)?;
     let final_writer_timings = c.writer().timings();
     let finalise_memory = peak_memory()?;
     let (got_files, got_logical, got_allocated, got_unknown): (i64, i64, i64, i64) = db.query_row(
@@ -352,16 +359,17 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     )?;
     let catalog_bytes = std::fs::metadata(temp.path().join("catalog.db"))?.len();
     let entries = rows + directories + 1;
-    let mut receipt = json!({"schema_version":SCHEMA_VERSION,"dataset_class":"synthetic","platform":std::env::consts::OS,"scope":"in-process generated metadata only; no enumeration, no HTTP, no personal data","files":rows,"directories":directories+1,"insert_includes_generation_and_queue_backpressure":true,"all_schema_indexes_present":true,"oracle":{"logical_bytes":expected_logical.to_string(),"allocated_known_bytes":expected_allocated.to_string(),"allocation_unknown_files":expected_unknown,"matched":true},"P4":{"insert_seconds":insert_s,"rows_per_second":entries as f64/insert_s,"target_rows_per_second":250000,"met":entries as f64/insert_s>=250000.0},"writer_timings":writer_timings,"finalise_seconds":finalise_s,"P6":{"timing":summary(slice_ms),"nodes":slice_nodes,"payload_bytes":payload_bytes,"target_ms":60,"target_payload_bytes":1500000,"target_dataset_rows":10000000,"dataset_scale_met":false,"http_round_trip":"unverified"},"P7":{"timing":summary(page_ms),"limit":200,"target_ms":20},"P8":{"timing":summary(search_ms),"work_budget_sqlite_ops":2000000,"budget_hits":budget_hits,"target_ms":300},"P14":{"catalog_bytes":catalog_bytes,"bytes_per_entry":catalog_bytes as f64/entries as f64,"target_bytes_per_entry":200,"target_dataset_rows":10000000,"dataset_scale_met":false},"limitations":["single warm run on this Windows host; no cold-cache claim","P6 and P14 at 1M, not the 10M target; HTTP and process-memory measurement belong to integration"]});
+    let mut receipt = json!({"schema_version":SCHEMA_VERSION,"dataset_class":"synthetic","platform":std::env::consts::OS,"scope":"in-process generated metadata only; no enumeration, no HTTP, no personal data","files":rows,"directories":directories+1,"insert_includes_generation_and_queue_backpressure":true,"all_schema_indexes_present":true,"oracle":{"logical_bytes":expected_logical.to_string(),"allocated_known_bytes":expected_allocated.to_string(),"allocation_unknown_files":expected_unknown,"matched":true},"P4":{"insert_seconds":insert_s,"rows_per_second":entries as f64/insert_s,"target_rows_per_second":250000,"met":entries as f64/insert_s>=250000.0,"through_end_run_rows_per_second":entries as f64/(insert_s+finalise_s)},"writer_timings":writer_timings,"finalise_seconds":finalise_s,"P6":{"timing":summary(slice_ms),"nodes":slice_nodes,"payload_bytes":payload_bytes,"target_ms":60,"target_payload_bytes":1500000,"target_dataset_rows":10000000,"dataset_scale_met":false,"http_round_trip":"unverified"},"P7":{"timing":summary(page_ms),"limit":200,"target_ms":20},"P8":{"timing":summary(search_ms),"work_budget_sqlite_ops":2000000,"budget_hits":budget_hits,"target_ms":300},"P14":{"catalog_bytes":catalog_bytes,"bytes_per_entry":catalog_bytes as f64/entries as f64,"target_bytes_per_entry":200,"target_dataset_rows":10000000,"dataset_scale_met":false},"limitations":["single warm run on this Windows host; no cold-cache claim","P6 and P14 at 1M, not the 10M target; HTTP and process-memory measurement belong to integration"]});
     temp.close()?;
     assert!(!cleanup_path.exists());
-    receipt["publication_path"] =
-        json!("StageChunk + ListingDone; byte reservation before file generation");
+    receipt["publication_path"] = json!(
+        "StageChunk + ListingDone into the first-scan bulk build; byte reservation before file generation"
+    );
     receipt["final_writer_timings"] = json!(final_writer_timings);
     receipt["P7"]["allocated_timing"] = summary(allocated_page_ms);
     receipt["index_probe"] = index_probe;
     receipt["index_maintenance"] =
-        json!("inline in file_insert_seconds; not separately timed by SQLite");
+        json!("first-scan bulk build: file indexes built once inside EndRun (finalise_seconds); compare P4.through_end_run_rows_per_second across variants");
     receipt["temporary_directory_removed"] = json!(true);
     receipt["memory"] = memory;
     receipt["host_load"] = json!("shared-host; concurrent lanes; warm synthetic workload");
