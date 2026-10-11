@@ -139,6 +139,30 @@ fn followup_stored_grant_version_errors_fail_closed() {
 
 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+/// #390: SQLite opens `state.db` by its plain drive path, never `\\?\` (which its Windows VFS takes
+/// for UNC and then leaks shared WAL read locks), while the grant guards keep comparing the
+/// canonical state directory.
+#[test]
+fn state_store_opens_by_plain_path_and_guards_keep_the_canonical_one() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    assert_eq!(svc.inner.state_dir, tmp.path().canonicalize().unwrap());
+    let db = svc.inner.db();
+    for schema in ["main", "st"] {
+        let file: String = db
+            .query_row(
+                "SELECT file FROM pragma_database_list WHERE name=?1",
+                [schema],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            !file.is_empty() && !file.starts_with(r"\\"),
+            "{schema}: {file}"
+        );
+    }
+}
+
 #[test]
 fn health_job_list_failure_is_an_error_not_idle() {
     let tmp = temp_root();

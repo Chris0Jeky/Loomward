@@ -839,3 +839,97 @@ mod hardening_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod wal_reader_tests {
+    use crate::Catalog;
+    use rusqlite::Connection;
+    use std::sync::{Arc, Barrier};
+
+    /// #390: readers that end their transactions together must not pin `state.db`'s WAL. Through a
+    /// `\\?\` path SQLite's Windows VFS shared one lock handle per process and leaked a read lock
+    /// when two readers ended at once, so `wal_checkpoint(TRUNCATE)` stayed busy for good.
+    #[test]
+    fn concurrent_readers_never_pin_the_state_wal() {
+        let temp = tempfile::tempdir().unwrap();
+        // Canonical, as the service opens it: on Windows this is the `\\?\C:\...` form.
+        let dir = temp.path().canonicalize().unwrap();
+        let catalog = Catalog::open(&dir, "synthetic").unwrap();
+        let state = Connection::open(temp.path().join("state.db")).unwrap();
+        state.busy_timeout(std::time::Duration::ZERO).unwrap();
+        state
+            .execute_batch("CREATE TABLE wal_probe(x INTEGER)")
+            .unwrap();
+        let (threads, rounds) = (8, 60);
+        let barrier = Arc::new(Barrier::new(threads + 1));
+        let workers: Vec<_> = (0..threads)
+            .map(|_| {
+                let mut reader = catalog.reader().unwrap();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..rounds {
+                        barrier.wait();
+                        reader
+                            .read(|c| {
+                                let n: i64 =
+                                    c.query_row("SELECT count(*) FROM st.wal_probe", [], |r| {
+                                        r.get(0)
+                                    })?;
+                                barrier.wait();
+                                Ok(n)
+                            })
+                            .unwrap();
+                        barrier.wait();
+                    }
+                })
+            })
+            .collect();
+        for round in 0..rounds {
+            // A fresh frame each round, so every reader snapshot uses a WAL read slot.
+            state
+                .execute("INSERT INTO wal_probe VALUES(?1)", [round as i64])
+                .unwrap();
+            barrier.wait(); // readers open their snapshots
+            barrier.wait(); // every reader is inside its transaction
+            barrier.wait(); // every reader has committed
+            let (busy, log, done): (i64, i64, i64) = state
+                .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                })
+                .unwrap();
+            assert_eq!(
+                busy, 0,
+                "round {round}: a finished reader still pins the WAL ({done} of {log} frames)"
+            );
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn sqlite_dir_drops_only_the_verbatim_drive_prefix() {
+        use crate::sqlite_dir;
+        use std::path::{Path, PathBuf};
+        assert_eq!(
+            sqlite_dir(Path::new(r"\\?\C:\x\state")),
+            PathBuf::from(r"C:\x\state")
+        );
+        assert_eq!(
+            sqlite_dir(Path::new(r"C:\x\state")),
+            PathBuf::from(r"C:\x\state")
+        );
+        // Not a drive path: unchanged (the open guards refuse these separately).
+        for kept in [
+            r"\\?\UNC\server\share\s",
+            r"\\?\Volume{0}\s",
+            r"\\?\C:state",
+            r"\\server\share\s",
+        ] {
+            assert_eq!(sqlite_dir(Path::new(kept)), PathBuf::from(kept));
+        }
+        // Past MAX_PATH the verbatim form is the only one that opens.
+        let long = format!(r"\\?\C:\{}", "a".repeat(240));
+        assert_eq!(sqlite_dir(Path::new(&long)), PathBuf::from(&long));
+    }
+}

@@ -64,7 +64,7 @@ fn forget_backups(dir: &std::path::Path, path: &str) {
         }
         let file = entry.path();
         let clean = name.starts_with("state.before-v")
-            && scrub_copy(&file, &dir.join("state.db")).is_ok()
+            && scrub_copy(&file, &loomward_catalog::sqlite_dir(dir).join("state.db")).is_ok()
             && !holds(&file, path);
         if !clean && (name.starts_with("state.start-") || name.starts_with("state.before-v")) {
             let _ = std::fs::remove_file(&file);

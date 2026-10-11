@@ -72,6 +72,7 @@ fn fingerprint(request: &FeedbackRequest) -> String {
 impl Store {
     /// Opens only Loomward's recovered stores; no user file is opened.
     pub fn open(dir: &Path) -> EngineResult<Arc<Self>> {
+        let dir = &loomward_catalog::sqlite_dir(dir);
         let db = Connection::open(dir.join("catalog.db")).map_err(internal)?;
         db.busy_timeout(std::time::Duration::from_secs(5))
             .map_err(internal)?;
@@ -531,6 +532,22 @@ mod tests {
             INSERT INTO st.human_feedback(event_id,client_event_id,content_digest,object_ref_id,revision,label,retracted,taxonomy_version,features_json,recorded_at_ns) VALUES('fe_fixture','ce_fixture','fixture',1,1,'Documents',0,1,'{\"name\":\"fixture.txt\",\"extension\":\"txt\",\"context\":\"fixture\",\"size_bytes\":1}',0)").unwrap();
         engine.install_learning(store);
         (dir, engine)
+    }
+    /// #390: the store opens SQLite by the plain drive path, never `\\?\` (see `sqlite_dir`).
+    #[test]
+    fn learning_store_opens_by_plain_path() {
+        let (dir, _engine) = fixture();
+        let store = Store::open(&dir.path().canonicalize().unwrap()).unwrap();
+        let db = store.db.lock().unwrap();
+        let files: Vec<String> = db
+            .prepare("SELECT file FROM pragma_database_list WHERE name IN ('main','st')")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(files.len(), 2);
+        assert!(files.iter().all(|f| !f.starts_with(r"\\")), "{files:?}");
     }
     #[test]
     fn learning_refit_status_failure_does_not_fail_committed_candidate() {

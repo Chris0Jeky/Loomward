@@ -103,7 +103,7 @@ Enumeration worker time is summed across eight workers and includes callback/bac
 Sink time is measured inside staging/publication calls. These phases **overlap**; subtracting either
 from wall time is invalid. The sink does no SQLite I/O or per-file identity indexing, so these are not
 persistent-catalogue throughput numbers. Cache is warm/uncontrolled, including the slower first trials;
-no cold-cache, HDD, CPU-time or RSS qualification was performed.
+no cold-cache, slow local volume, CPU-time or RSS qualification was performed.
 
 ## NOT verified
 

@@ -330,7 +330,7 @@
     },
     {
       "id": "warm",
-      "name": "Project SSD",
+      "name": "Project fast volume",
       "capacity_bytes": 1099511627776,
       "free_bytes": 332859965440,
       "reserve_bytes": 107374182400,
@@ -340,7 +340,7 @@
     },
     {
       "id": "archive",
-      "name": "Archive HDD",
+      "name": "Archive slow volume",
       "capacity_bytes": 2199023255552,
       "free_bytes": 944892805120,
       "reserve_bytes": 214748364800,
@@ -367,7 +367,7 @@
       },
       {
         "id": "warm",
-        "name": "Project SSD",
+        "name": "Project fast volume",
         "capacity_bytes": 1099511627776,
         "free_bytes": 332859965440,
         "reserve_bytes": 107374182400,
@@ -377,7 +377,7 @@
       },
       {
         "id": "archive",
-        "name": "Archive HDD",
+        "name": "Archive slow volume",
         "capacity_bytes": 2199023255552,
         "free_bytes": 944892805120,
         "reserve_bytes": 214748364800,
