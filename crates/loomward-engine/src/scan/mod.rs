@@ -64,7 +64,7 @@ pub struct GrantedRoot {
     key: RootKey,
     path: PathBuf,
     dataset_class: DatasetClass,
-    expected: Option<source::OpenedIdentity>,
+    pub(crate) expected: Option<source::OpenedIdentity>,
 }
 impl GrantedRoot {
     // Minted by `Engine::granted_root` from a durable grant row, and by fixtures.
@@ -167,7 +167,17 @@ impl Engine {
         entries: &[loomward_windows::duplicate_reader::Entry],
         budget: loomward_windows::duplicate_reader::Budget,
     ) -> EngineResult<loomward_windows::duplicate_reader::Report> {
-        let cancel = self.duplicate_read_admission(root)?;
+        self.inspect_duplicates_cancel(root, entries, budget, None)
+    }
+    pub(crate) fn inspect_duplicates_cancel(
+        &self,
+        root: &GrantedRoot,
+        entries: &[loomward_windows::duplicate_reader::Entry],
+        budget: loomward_windows::duplicate_reader::Budget,
+        job_cancel: Option<Arc<AtomicBool>>,
+    ) -> EngineResult<loomward_windows::duplicate_reader::Report> {
+        let root_cancel = self.duplicate_read_admission(root)?;
+        let cancel = job_cancel.unwrap_or_else(|| root_cancel.clone());
         let report = loomward_windows::duplicate_reader::inspect(
             &root.path,
             root.expected.as_ref().unwrap(),
@@ -183,14 +193,17 @@ impl Engine {
         let revoked = gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if revoked.revoked || cancel.load(Ordering::Acquire) {
+        if revoked.revoked || root_cancel.load(Ordering::Acquire) {
             return Err(EngineError::PermissionDenied {
                 message: "cancelled".into(),
             });
         }
         Ok(report)
     }
-    fn duplicate_read_admission(&self, root: &GrantedRoot) -> EngineResult<Arc<AtomicBool>> {
+    pub(crate) fn duplicate_read_admission(
+        &self,
+        root: &GrantedRoot,
+    ) -> EngineResult<Arc<AtomicBool>> {
         use rusqlite::OpenFlags;
         let denied = |message: &str| EngineError::PermissionDenied {
             message: message.into(),
@@ -593,7 +606,7 @@ impl Engine {
             .aliases
             .iter()
             .flat_map(|id| self.jobs.root_jobs(id))
-            .map(|id| self.job_cancel(&id))
+            .map(|id| self.jobs.cancel_revoked(&id, &self.events))
             .collect();
         #[cfg(windows)]
         {

@@ -77,7 +77,7 @@
   li { padding: 2px 0; overflow-wrap: anywhere; }
   .open { font: inherit; color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
   .inspect { font: inherit; font-size: 0.78rem; color: var(--muted); background: none; border: 1px solid var(--control-line); border-radius: 999px; padding: 0 8px; margin-left: 6px; cursor: pointer; }
-  .inspect:hover { color: var(--text); border-color: var(--line-strong); }
+  .inspect:hover { color: var(--text); }
   .size { color: var(--muted); margin-left: 8px; }
   .notes { display: block; color: var(--faint); font-size: 0.8rem; }
   .rest { color: var(--faint); list-style: none; }

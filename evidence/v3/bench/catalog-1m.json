@@ -4275,7 +4275,7 @@
                 }
               },
               "verification": {
-                "platform": "Windows 11; Intel i5-13600K; rustc 1.97.1",
+                "platform": "Windows 11; host hardware withheld; rustc 1.97.1",
                 "commands": {
                   "cargo fmt --all --check": "pass",
                   "cargo test --workspace": "pass: 316 tests, zero failed/ignored",

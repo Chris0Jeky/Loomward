@@ -118,6 +118,8 @@ impl Inner {
                 Ok(out(json!({"volumes": self.volumes(None)?}), Some(revs)))
             }
             VolumesDeclareTier => self.declare_tier(req.decode_payload()?, req.expected_state_rev),
+            DuplicatesInspect => self.duplicates_inspect(req),
+            DuplicatesCancel => self.duplicates_cancel(req.decode_payload()?),
             ScanStart => self.scan_start(req.decode_payload()?),
             ScanCancel => engine(
                 self.engine
@@ -516,17 +518,19 @@ impl Inner {
                 None,
             ));
         };
-        // Nested or overlapping roots are refused like a repeated grant.
-        let existing: Vec<std::path::PathBuf> = db::roots(&self.db(), None)
-            .map_err(sql_error)?
-            .iter()
-            .filter(|r| r.grant_state == "active")
-            .filter_map(|r| std::path::Path::new(&r.display_path).canonicalize().ok())
-            .collect();
-        let path = match paths::check_root(&picked, Some(&self.state_dir), &existing, true) {
+        // Nested or overlapping roots are refused like a repeated grant. A stored grant that no
+        // longer resolves still counts (one rule with `--static`, #224).
+        let path = match paths::check_root(&picked, Some(&self.state_dir), &[], true) {
             Ok(p) => p,
             Err(r) => return refused(r),
         };
+        if db::active_root_paths(&self.db())
+            .map_err(sql_error)?
+            .iter()
+            .any(|stored| paths::overlaps_stored(&path, stored))
+        {
+            return refused(RootGrantResultRefusal::AlreadyGranted);
+        }
         let (root, fresh) = match self.grant(&path, "desktop_picker") {
             Ok(g) => g,
             Err(crate::Refused::Rule(r)) => return refused(r),

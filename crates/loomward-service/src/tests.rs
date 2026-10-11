@@ -2615,6 +2615,44 @@ fn followup_picker_refusal_reaches_the_user() {
     assert_eq!(result["refusal"], "protected_profile_or_store");
 }
 
+/// #224: the picker refuses a folder that contains a stored active grant whose path no longer
+/// resolves, exactly as `--static` does (one shared rule), instead of skipping the stale grant.
+#[test]
+fn a_stale_stored_grant_still_blocks_a_picked_parent() {
+    struct Pick(std::path::PathBuf);
+    impl NativeDialogs for Pick {
+        fn pick_folder(&self) -> Option<std::path::PathBuf> {
+            Some(self.0.clone())
+        }
+        fn confirm_disclosure(&self, _: &DisclosureSummary) -> bool {
+            false
+        }
+    }
+    let tmp = temp_root();
+    let parent = tmp.path().join("ws");
+    std::fs::create_dir_all(&parent).unwrap();
+    let parent = parent.canonicalize().unwrap();
+    let svc = open(&tmp.path().join("state"), DatasetClass::Personal);
+    let gone = parent.join("gone-grant");
+    svc.inner.db().execute("INSERT INTO st.root_grant(volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns) VALUES('fixture',zeroblob(16),?1,'fixture','fixture','active',0)", [gone.to_str().unwrap()]).unwrap();
+    let ctx = CallContext::tauri(Arc::new(Pick(parent)));
+    let (result, _) = ok(
+        "roots.request_grant",
+        svc.call(
+            request("roots.request_grant", json!({"purpose":"metadata_scan"})),
+            &ctx,
+        ),
+    );
+    assert_eq!(result["outcome"], "refused");
+    #[cfg(windows)]
+    if loomward_windows::enumerate::running_elevated() {
+        // Native identity refuses elevation (invariant 2, #217) before any overlap check runs.
+        assert_eq!(result["refusal"], "identity_unavailable");
+        return;
+    }
+    assert_eq!(result["refusal"], "already_granted");
+}
+
 #[test]
 fn followup_inspect_uses_the_roots_actual_grant() {
     let tmp = temp_root();
@@ -2633,3 +2671,6 @@ fn followup_inspect_uses_the_roots_actual_grant() {
     assert_eq!(result["root_id"], svc.inner.root_id(root));
     assert_eq!(result["display_path"]["text"], "Synthetic root");
 }
+
+#[path = "duplicates_tests.rs"]
+mod duplicates_tests;

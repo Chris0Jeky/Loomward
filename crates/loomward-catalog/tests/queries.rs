@@ -1,6 +1,129 @@
 use loomward_catalog::*;
 use rusqlite::Connection;
 
+#[test]
+fn duplicates_select_exact_sizes_visible_names_and_scan_identity_with_a_cap() {
+    let (tmp, catalog, _, dir, _) = setup();
+    let db = Connection::open(tmp.path().join("catalog.db")).unwrap();
+    let root: i64 = db
+        .query_row("SELECT root_id FROM dir WHERE id=?1", [dir], |r| r.get(0))
+        .unwrap();
+    db.execute_batch("UPDATE file SET logical=0;").unwrap();
+    for (name, size, id, flags) in [
+        ("a", 4, 1, 0),
+        ("alias", 4, 1, 0),
+        ("b", 4, 2, 0),
+        ("c", 8, 3, 0),
+        ("d", 8, 4, 0),
+        ("singleton", 9, 5, 0),
+        ("excluded", 4, 6, 8),
+        ("sensitive", 4, 7, 1),
+    ] {
+        db.execute("INSERT INTO file(dir_id,name,file_id,logical,attrs,flags,created_ft,modified_ft,changed_ft,born_run,seen_run) VALUES(?1,?2,?3,?4,32,?5,11,12,13,1,1)", rusqlite::params![dir,name,vec![id as u8;16],size,flags]).unwrap();
+    }
+    // A formerly listed subtree is still stored, but is shielded by an excluded ancestor.
+    db.execute("INSERT INTO dir(root_id,parent_id,name,id_quality,id_basis,depth,attrs,flags,listing_state,born_run,seen_run) VALUES(?1,?2,'hidden','path_observation','none',1,16,0,'excluded',1,1)", rusqlite::params![root,dir]).unwrap();
+    let hidden = db.last_insert_rowid();
+    db.execute("INSERT INTO file(dir_id,name,logical,attrs,flags,born_run,seen_run) VALUES(?1,'shielded',4,0,0,1,1)",[hidden]).unwrap();
+    let mut reader = catalog.reader().unwrap();
+    let all = reader.duplicate_candidates(root, 1, 200).unwrap();
+    assert!(!all.truncated);
+    assert!(
+        !all.partial,
+        "policy exclusions alone leave the report complete"
+    );
+    assert_eq!(
+        all.entries
+            .iter()
+            .map(|e| e.relative.as_str())
+            .collect::<Vec<_>>(),
+        vec!["a", "alias", "b", "c", "d"]
+    );
+    assert_eq!(all.entries[0].file_id, all.entries[1].file_id);
+    assert_eq!(
+        (
+            all.entries[0].created,
+            all.entries[0].modified,
+            all.entries[0].changed,
+            all.entries[0].attributes
+        ),
+        (Some(11), Some(12), Some(13), 32)
+    );
+    reader.set_deadline(std::time::Instant::now());
+    assert!(matches!(
+        reader.duplicate_candidates(root, 1, 200),
+        Err(Error::Cancelled)
+    ));
+    let mut reader = catalog.reader().unwrap();
+    let capped = reader.duplicate_candidates(root, 0, 4).unwrap();
+    assert!(capped.truncated);
+    assert_eq!(capped.entries.len(), 3); // cap split the trailing size group: singleton dropped
+                                         // A same-sized name the scan could not represent (lossy) or read (denied) is an unknown.
+    for (name, flags) in [("lossy", 1 << 9), ("denied", 1 << 6)] {
+        db.execute("INSERT INTO file(dir_id,name,file_id,logical,attrs,flags,born_run,seen_run) VALUES(?1,?2,?3,16,32,?4,1,1)", rusqlite::params![dir, name, vec![9u8; 16], flags]).unwrap();
+        let mut reader = catalog.reader().unwrap();
+        let unknown = reader.duplicate_candidates(root, 1, 200).unwrap();
+        assert!(
+            unknown.partial,
+            "{name} names are filtered but must leave the report partial"
+        );
+        db.execute("DELETE FROM file WHERE name=?1", [name])
+            .unwrap();
+    }
+    let mut reader = catalog.reader().unwrap();
+    let floor = reader.duplicate_candidates(root, 8, 200).unwrap();
+    assert_eq!(
+        floor.entries.iter().map(|e| e.logical).collect::<Vec<_>>(),
+        vec![8, 8]
+    );
+    db.execute(
+        "UPDATE dir SET listing_state='absent_pending' WHERE id=?1",
+        [hidden],
+    )
+    .unwrap();
+    assert_eq!(
+        reader
+            .duplicate_candidates(root, 1, 200)
+            .unwrap()
+            .entries
+            .len(),
+        5
+    );
+    let mut parent = dir;
+    for depth in 1..=8 {
+        db.execute("INSERT INTO dir(root_id,parent_id,name,id_quality,id_basis,depth,attrs,flags,listing_state,born_run,seen_run) VALUES(?1,?2,?3,'path_observation','none',?4,16,0,'complete',1,1)", rusqlite::params![root,parent,"x".repeat(200),depth]).unwrap();
+        parent = db.last_insert_rowid();
+    }
+    for i in 0..50 {
+        db.execute("INSERT INTO file(dir_id,name,logical,attrs,flags,born_run,seen_run) VALUES(?1,?2,16,32,0,1,1)",rusqlite::params![parent,format!("synthetic-{i}")]).unwrap();
+    }
+    let bounded = reader.duplicate_candidates(root, 1, 200).unwrap();
+    assert!(
+        bounded.truncated,
+        "encoded paths have a separate report-size bound"
+    );
+    assert!(bounded.entries.len() > 5 && bounded.entries.len() < 55);
+    assert!(
+        bounded
+            .entries
+            .iter()
+            .map(|e| serde_json::to_string(&e.relative).unwrap().len())
+            .sum::<usize>()
+            <= 64 * 1024
+    );
+    catalog
+        .writer()
+        .call(WriteCommand::RevokeGrant {
+            grant_id: root,
+            revoked_at_ns: 1,
+        })
+        .unwrap();
+    assert!(matches!(
+        reader.duplicate_candidates(root, 1, 200),
+        Err(Error::NotFound)
+    ));
+}
+
 fn setup() -> (tempfile::TempDir, Catalog, i64, i64, i64) {
     let tmp = tempfile::tempdir().unwrap();
     let c = Catalog::open(tmp.path(), "synthetic").unwrap();

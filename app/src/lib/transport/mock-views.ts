@@ -254,12 +254,15 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
     private_desc: (r) => num(r.private_commit_bytes), working_set_desc: (r) => num(r.working_set_bytes), cpu_desc: (r) => r.cpu_fraction ?? -1,
     io_desc: (r) => (r.io_read_bytes_per_s ?? -1) + (r.io_write_bytes_per_s ?? -1), gpu_desc: (r) => num(r.gpu_dedicated_bytes),
   };
+  const refreshProcesses = () => {
+    const leased = [...subscriptions.values()].some((s) => s.expiresAt > now().getTime() && s.channels.includes('processes'));
+    if (leased && now().getTime() - processObservedAt >= 15000) { ROWS = processRows(true); processObservedAt = now().getTime(); }
+  };
   const processes = (p: Record<string, unknown>): ProcessList => {
     const limit = Number.isInteger(p.limit) && (p.limit as number) >= 1 && (p.limit as number) <= 200 ? (p.limit as number) : fail('invalid_request', 'limit must be 1..200');
     const sort = typeof p.sort === 'string' && (p.sort === 'name_asc' || p.sort in SORT) ? p.sort : fail('invalid_request', 'unknown sort');
     // Synthetic enumeration is retained for 15 s too; re-reading never makes old rows fresh.
-    const leased = [...subscriptions.values()].some((s) => s.expiresAt > now().getTime() && s.channels.includes('processes'));
-    if (leased && now().getTime() - processObservedAt >= 15000) { ROWS = processRows(true); processObservedAt = now().getTime(); }
+    refreshProcesses();
     const sorted = [...ROWS].sort(sort === 'name_asc' ? (a, b) => a.name.localeCompare(b.name) : (a, b) => SORT[sort]!(b) - SORT[sort]!(a) || a.pid - b.pid);
     return {
       sample_seq: sampleSeq, observed_at: ROWS[0]!.observed_at, rows: sorted.slice(0, limit), observed_count: ROWS.length, denied_count: ROWS.filter((r) => r.access === 'denied').length,
@@ -288,6 +291,7 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
 
   const telemetry = (): TelemetrySample => {
     sampleSeq++;
+    refreshProcesses();
     const wobble = Math.sin(sampleSeq / 3);
     const pools: PoolUse[] = [
       { pool: 'scan_enumerate', max_workers: 4, busy_workers: 0, queue_depth: 0, queue_capacity: 1024 },

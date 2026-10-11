@@ -153,24 +153,21 @@ impl Telemetry {
                     .iter()
                     .all(|channel| request.channels.contains(channel))
         });
-        let (generation, next_event) = if let Some(lease) = unchanged {
-            (
-                lease.generation,
-                if lease.interval == request.interval_ms {
-                    lease.next_event
-                } else {
-                    now
-                },
-            )
-        } else {
-            state.next_generation = state.next_generation.checked_add(1).ok_or_else(|| {
-                EngineError::ResourceBudget {
-                    message: "telemetry lease generations exhausted".into(),
+        let same_channels = unchanged.is_some();
+        let (generation, next_event) =
+            if let Some(lease) = unchanged.filter(|lease| lease.interval == request.interval_ms) {
+                (lease.generation, lease.next_event)
+            } else {
+                state.next_generation = state.next_generation.checked_add(1).ok_or_else(|| {
+                    EngineError::ResourceBudget {
+                        message: "telemetry lease generations exhausted".into(),
+                    }
+                })?;
+                if !same_channels {
+                    state.events.retain(|event| event.subscription_id != id);
                 }
-            })?;
-            state.events.retain(|event| event.subscription_id != id);
-            (state.next_generation, now)
-        };
+                (state.next_generation, now)
+            };
         state.leases.insert(
             id.clone(),
             Lease {
@@ -381,6 +378,7 @@ fn run(shared: Arc<Shared>) {
         let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
         state.costs.add(sampler.phase_costs());
         state.costs.engine_mapping_ms += mapping_ms;
+        let publication_started = Instant::now();
         let finished = Instant::now();
         state.busy = false;
         state.expire(finished);
@@ -407,6 +405,7 @@ fn run(shared: Arc<Shared>) {
             }
             state.latest = Some(Latest { raw, own, sequence });
         }
+        state.costs.engine_publication_ms += publication_started.elapsed().as_secs_f64() * 1000.0;
         previous_sample = Some((started, finished));
         next_sample = (started + interval).max(finished);
         // A sampler slower than its lease interval must not turn into a tight loop.
@@ -452,13 +451,16 @@ impl Engine {
         let mut state = lock(&self.telemetry.shared.state)?;
         let busy = state.busy;
         let latest = state.latest()?;
-        mapping::sample(
+        let started = Instant::now();
+        let sample = mapping::sample(
             &latest.raw,
             latest.own.as_ref(),
             latest.sequence,
             &request.channels,
             busy,
-        )
+        );
+        state.costs.engine_snapshot_mapping_ms += started.elapsed().as_secs_f64() * 1000.0;
+        sample
     }
 
     /// Drains up to 1,024 pending lease samples for the service's event bus.

@@ -289,9 +289,13 @@ pub struct SamplingCosts {
     pub wildcard_expansion_ms: f64,
     pub wildcard_expansions: u64,
     pub pdh_decode_ms: f64,
+    /// GPU array decoding/aggregation, excluding expansion; a subset of pdh_decode_ms.
+    pub gpu_instances_ms: f64,
     pub native_other_ms: f64,
     pub rates_and_projection_ms: f64,
     pub engine_mapping_ms: f64,
+    pub engine_snapshot_mapping_ms: f64,
+    pub engine_publication_ms: f64,
     pub mapping_errors: u64,
 }
 
@@ -308,9 +312,12 @@ impl SamplingCosts {
         self.wildcard_expansion_ms += other.wildcard_expansion_ms;
         self.wildcard_expansions += other.wildcard_expansions;
         self.pdh_decode_ms += other.pdh_decode_ms;
+        self.gpu_instances_ms += other.gpu_instances_ms;
         self.native_other_ms += other.native_other_ms;
         self.rates_and_projection_ms += other.rates_and_projection_ms;
         self.engine_mapping_ms += other.engine_mapping_ms;
+        self.engine_snapshot_mapping_ms += other.engine_snapshot_mapping_ms;
+        self.engine_publication_ms += other.engine_publication_ms;
         self.mapping_errors += other.mapping_errors;
     }
 }
@@ -767,6 +774,16 @@ mod tests {
             .processes
             .iter()
             .all(|p| p.rates.cpu_fraction.is_none()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn process_observation_time_is_the_enumerating_sample_start() {
+        let sample = Sampler::default().sample(MAX_PROCESS_ROWS);
+        assert_eq!(
+            sample.processes_observed_at_unix_ms,
+            Some(sample.captured_at_unix_ms)
+        );
     }
 
     #[test]

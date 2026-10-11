@@ -57,7 +57,7 @@ All PDH paths below are English paths added with `PdhAddEnglishCounterW`.
 |---|---|---|---|
 | Root `schema_version`, `status`, `platform`, `display_truncated` | version 2 / coverage / OS / boolean | sampler | unsupported on non-Windows; partial coverage stays visible |
 | `captured_at_unix_ms` | ms since Unix epoch | sample start wall clock | collection is sequential, not an atomic snapshot |
-| `processes_observed_at_unix_ms` | ms since Unix epoch | process enumeration start | null without an enumeration; leased rows retain this time between enumerations (minimum fifteen seconds, extended by coarser lease ticks); standalone sampling remains fresh every call |
+| `processes_observed_at_unix_ms` | ms since Unix epoch | start of the sample that enumerated processes (a conservative timestamp before enumeration) | null without an enumeration; leased rows retain this time between enumerations (minimum fifteen seconds, extended by coarser lease ticks); standalone sampling remains fresh every call |
 | `sampled_channels` | booleans | requested native channels | false means not sampled under this lease, distinct from failed or unavailable hardware |
 | `snapshot_cost_ms` | ms | monotonic collection + rates + retained copy + projection | excludes JSON, output, startup and build |
 | `sample_interval_seconds` | seconds | monotonic sample-start difference | null first sample |

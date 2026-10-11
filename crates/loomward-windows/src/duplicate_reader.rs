@@ -117,6 +117,27 @@ pub fn inspect(
         Err(Reason::Unsupported)
     }
 }
+/// Metadata-only hydration through the same pinned, non-reparse root-relative handles.
+/// Engine callers must first admit the durable synthetic grant.
+#[cfg(feature = "content-read")]
+#[doc(hidden)]
+pub fn observe_candidate(
+    root: &Path,
+    expected_root: &OpenedIdentity,
+    relative: &Path,
+    budget: Budget,
+    cancel: Arc<AtomicBool>,
+) -> Result<ObservedIdentity, Reason> {
+    #[cfg(windows)]
+    {
+        native::observe_candidate(root, expected_root, relative, budget, cancel)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (root, expected_root, relative, budget, cancel);
+        Err(Reason::Unsupported)
+    }
+}
 #[cfg(all(windows, test))]
 fn inspect_with_hook(
     root: &Path,

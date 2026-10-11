@@ -919,42 +919,88 @@ fn retained_process_rows_keep_their_older_observation_time() {
 
 #[test]
 fn renewal_during_mapping_discards_the_old_shape() {
-    let telemetry = Telemetry::default();
-    let (mapped_tx, mapped_rx) = std::sync::mpsc::channel();
-    let (resume_tx, resume_rx) = std::sync::mpsc::channel();
-    {
-        let mut state = lock(&telemetry.shared.state).unwrap();
-        state.sample_override = Some(raw());
-        state.mapping_pause = Some((mapped_tx, resume_rx));
-    }
-    let request: TelemetrySubscribeRequest = serde_json::from_value(
-        json!({"subscription_id":null,"channels":["system"],"interval_ms":10000}),
-    )
-    .unwrap();
-    let lease = telemetry.lease(&request).unwrap();
-    mapped_rx.recv_timeout(Duration::from_secs(10)).unwrap();
-    telemetry
-        .lease(&TelemetrySubscribeRequest {
-            subscription_id: Some(lease.subscription_id.clone()),
-            channels: vec![TelemetryChannel::Gpu].try_into().unwrap(),
-            ..request
-        })
-        .unwrap();
-    resume_tx.send(()).unwrap();
-    let until = Instant::now() + Duration::from_secs(10);
-    loop {
-        let state = lock(&telemetry.shared.state).unwrap();
-        if state.sequence > 0 {
-            assert!(state.events.is_empty());
-            break;
+    for interval_only in [false, true] {
+        let telemetry = Telemetry::default();
+        let (mapped_tx, mapped_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        {
+            let mut state = lock(&telemetry.shared.state).unwrap();
+            state.sample_override = Some(raw());
+            state.mapping_pause = Some((mapped_tx, resume_rx));
         }
-        drop(state);
-        assert!(Instant::now() < until);
-        thread::sleep(Duration::from_millis(10));
-    }
-    telemetry
-        .release(&SubscriptionRefRequest {
-            subscription_id: lease.subscription_id,
-        })
+        let request: TelemetrySubscribeRequest = serde_json::from_value(
+            json!({"subscription_id":null,"channels":["system"],"interval_ms":10000}),
+        )
         .unwrap();
+        let lease = telemetry.lease(&request).unwrap();
+        mapped_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        telemetry
+            .lease(&TelemetrySubscribeRequest {
+                subscription_id: Some(lease.subscription_id.clone()),
+                channels: if interval_only {
+                    request.channels.clone()
+                } else {
+                    vec![TelemetryChannel::Gpu].try_into().unwrap()
+                },
+                interval_ms: TelemetryInterval::FiveSeconds,
+            })
+            .unwrap();
+        resume_tx.send(()).unwrap();
+        let until = Instant::now() + Duration::from_secs(10);
+        loop {
+            let state = lock(&telemetry.shared.state).unwrap();
+            if state.sequence > 0 {
+                assert!(state.events.is_empty());
+                break;
+            }
+            drop(state);
+            assert!(Instant::now() < until);
+            thread::sleep(Duration::from_millis(10));
+        }
+        telemetry
+            .release(&SubscriptionRefRequest {
+                subscription_id: lease.subscription_id,
+            })
+            .unwrap();
+    }
+}
+
+#[test]
+fn bounded_summary_matches_full_mapping_with_unknowns_and_ties() {
+    let mut snapshot = raw();
+    snapshot.processes = (1..=64)
+        .rev()
+        .map(|pid| Process {
+            pid,
+            working_set_bytes: (pid % 3 != 0).then_some(u64::from(pid % 5)),
+            rates: Rates {
+                cpu_fraction: match pid % 5 {
+                    0 => None,
+                    1 => Some(f64::NAN),
+                    2 => Some(2.0),
+                    _ => Some(0.5),
+                },
+                ..Rates::default()
+            },
+            ..Process::default()
+        })
+        .collect();
+    for sort in [
+        ProcessListRequestSort::CpuDesc,
+        ProcessListRequestSort::WorkingSetDesc,
+    ] {
+        if sort == ProcessListRequestSort::WorkingSetDesc {
+            for process in &mut snapshot.processes {
+                process.rates.cpu_fraction = None;
+            }
+        }
+        let expected = mapping::sorted_rows(&snapshot, 1, sort).unwrap();
+        mapping::MAPPED_PROCESS_ROWS.with(|count| count.set(0));
+        let sample = mapping::sample(&snapshot, None, 1, CHANNELS, false).unwrap();
+        mapping::MAPPED_PROCESS_ROWS.with(|count| assert_eq!(count.get(), 20));
+        assert_eq!(
+            serde_json::to_value(&sample.processes.unwrap().top).unwrap(),
+            serde_json::to_value(&expected[..20]).unwrap()
+        );
+    }
 }

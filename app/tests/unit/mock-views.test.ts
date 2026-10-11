@@ -72,6 +72,26 @@ describe('mock tiers and placement', () => {
 });
 
 describe('mock companion', () => {
+  it('refreshes leased process timestamps on samples, retaining them between enumerations', async () => {
+    let clock = new Date('2026-10-01T00:00:00Z');
+    const c = new Client(createMockTransport({ now: () => clock }));
+    const list = async () => (await c.call('processes.list', { sort: 'name_asc', limit: 200 })).result;
+    const first = await list();
+    const lease = (await c.call('telemetry.subscribe', { subscription_id: null, channels: ['processes'], interval_ms: 1000 })).result;
+    clock = new Date('2026-10-01T00:00:10Z');
+    await c.call('telemetry.snapshot', { channels: ['processes'] });
+    expect((await list()).observed_at).toBe(first.observed_at);
+    clock = new Date('2026-10-01T00:00:15Z');
+    await c.call('telemetry.snapshot', { channels: ['processes'] });
+    const explanation = (await c.call('processes.explain', { process_ref: first.rows[0]!.process_ref })).result;
+    expect(explanation.observed_at).toBe(clock.toISOString());
+    const refreshed = await list();
+    expect(refreshed.rows.every((row) => row.observed_at === clock.toISOString())).toBe(true);
+    await c.call('telemetry.unsubscribe', { subscription_id: lease.subscription_id });
+    clock = new Date('2026-10-01T00:01:00Z');
+    await c.call('telemetry.snapshot', { channels: ['system'] });
+    expect((await list()).observed_at).toBe(refreshed.observed_at);
+  });
   it('never reuses subscription IDs or lets a stale unsubscribe stop another lease', async () => {
     const c = client();
     const subscribe = () => c.call('telemetry.subscribe', { subscription_id: null, channels: ['system'], interval_ms: 1000 });
