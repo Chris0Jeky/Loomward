@@ -196,35 +196,7 @@ impl Inner {
                 "the root's grant is not active",
             ));
         }
-        let (origin, message, reason) = match self.dataset {
-            DatasetClass::Synthetic => (
-                "lab_generated",
-                "a synthetic session scans registered lab roots only",
-                "synthetic_session_requires_lab_root",
-            ),
-            DatasetClass::Personal => (
-                "owner_granted",
-                "a personal session scans the folders you granted only",
-                "personal_session_requires_owner_grant",
-            ),
-        };
-        if root.origin != origin {
-            return Err(with_reason(
-                fail(ErrorCode::PermissionDenied, message),
-                reason,
-            ));
-        }
-        if self.dataset == DatasetClass::Personal {
-            self.stored_grant_fence(&root).map_err(|r| {
-                with_reason(
-                    fail(
-                        ErrorCode::PermissionDenied,
-                        "the granted folder is not eligible under the current rules",
-                    ),
-                    &refusal_name(r),
-                )
-            })?;
-        }
+        self.session_root_gate(&root)?;
         let dir = root
             .dir
             .ok_or_else(|| fail(ErrorCode::InternalError, "root has no directory row"))?;
@@ -249,6 +221,42 @@ impl Inner {
             ScanStartRequestMode::Refresh => self.engine.scan_refresh(&granted, r.budget),
         }?;
         Ok(out(encode(&JobResult { job })?, None))
+    }
+
+    /// The root a session may scan or read (scan.start, duplicates.inspect): a synthetic session
+    /// its registered lab roots, a personal session its own owner grants that still pass today's
+    /// fences. Runs before any engine call or filesystem access.
+    pub(crate) fn session_root_gate(&self, root: &db::RootRow) -> Result<(), ErrorBody> {
+        let (origin, message, reason) = match self.dataset {
+            DatasetClass::Synthetic => (
+                "lab_generated",
+                "a synthetic session scans registered lab roots only",
+                "synthetic_session_requires_lab_root",
+            ),
+            DatasetClass::Personal => (
+                "owner_granted",
+                "a personal session scans the folders you granted only",
+                "personal_session_requires_owner_grant",
+            ),
+        };
+        if root.origin != origin {
+            return Err(with_reason(
+                fail(ErrorCode::PermissionDenied, message),
+                reason,
+            ));
+        }
+        if self.dataset == DatasetClass::Personal {
+            self.stored_grant_fence(root).map_err(|r| {
+                with_reason(
+                    fail(
+                        ErrorCode::PermissionDenied,
+                        "the granted folder is not eligible under the current rules",
+                    ),
+                    &refusal_name(r),
+                )
+            })?;
+        }
+        Ok(())
     }
 
     /// #312: a stored grant may predate today's fences (#253, #284, #286), so the path rules run
@@ -497,6 +505,8 @@ impl Inner {
                 .engine
                 .scan_writer_fence(&loomward_engine::scan::RootKey::Grant(grant), &id);
         }
+        // Durable already; a failed sweep is repeated at the next refit and at startup.
+        let _ = self.engine.learning_redact_revoked();
         let revs = self.revisions()?;
         if let Ok(list) = self.root_list(None) {
             self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));
@@ -526,6 +536,7 @@ impl Inner {
         let _ = self
             .engine
             .scan_writer_fence(&loomward_engine::scan::RootKey::Grant(grant), id);
+        let _ = self.engine.learning_redact_revoked();
         if let (Ok(revs), Ok(list)) = (self.revisions(), self.root_list(None)) {
             self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));
         }

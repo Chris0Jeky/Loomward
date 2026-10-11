@@ -75,41 +75,80 @@ fn granted_root_rejects_foreign_catalogue_identities_before_opening_a_path() {
     }
 }
 
+/// q-10: personal content reads are open, but only where the grant, the engine and the durable
+/// store all name the same dataset class; a session never reads the other class's roots.
 #[test]
-fn duplicate_content_is_gated_for_personal_grants() {
-    let mut grant = root();
-    grant.dataset_class = DatasetClass::Personal;
-    let engine =
-        Arc::new(Engine::open(EngineConfig::new("unused".into(), DatasetClass::Personal)).unwrap());
-    let err = engine
-        .inspect_duplicates(
-            &grant,
-            &[],
-            loomward_windows::duplicate_reader::Budget {
-                bytes: 100,
-                time: std::time::Duration::from_secs(1),
-            },
-        )
-        .unwrap_err();
-    assert_eq!(err.to_body().message.as_str(), "content_read_gated");
-    let budget = serde_json::from_value(
-        serde_json::json!({"max_candidates":200,"max_bytes":"100","max_ms":1000}),
-    )
-    .unwrap();
-    assert_eq!(
-        engine
-            .duplicates_start(grant, Default::default(), budget)
-            .unwrap_err()
-            .to_body()
-            .message
-            .as_str(),
-        "content_read_gated"
-    );
+fn duplicate_admission_binds_grant_engine_and_store_to_one_class() {
+    use DatasetClass::{Personal, Synthetic};
+    for (engine_class, grant_class, store_class, refused) in [
+        (Personal, Personal, "personal", None),
+        (Synthetic, Synthetic, "synthetic", None),
+        (
+            Personal,
+            Synthetic,
+            "synthetic",
+            Some("dataset_class_mismatch"),
+        ),
+        (
+            Synthetic,
+            Personal,
+            "personal",
+            Some("dataset_class_mismatch"),
+        ),
+        (
+            Personal,
+            Personal,
+            "synthetic",
+            Some("dataset_class_mismatch"),
+        ),
+        (
+            Synthetic,
+            Synthetic,
+            "personal",
+            Some("dataset_class_mismatch"),
+        ),
+    ] {
+        let state = tempfile::tempdir().unwrap();
+        let mut grant = root();
+        grant.dataset_class = grant_class;
+        let _conn = duplicate_grant_store_as(state.path(), &grant, store_class);
+        let engine = Arc::new(
+            Engine::open(EngineConfig::new(state.path().to_owned(), engine_class)).unwrap(),
+        );
+        let admitted = engine.duplicate_read_admission(&grant);
+        match refused {
+            None => assert!(admitted.is_ok(), "{engine_class:?}: {admitted:?}"),
+            Some(message) => {
+                assert_eq!(admitted.unwrap_err().to_body().message.as_str(), message);
+                let budget = serde_json::from_value(
+                    serde_json::json!({"max_candidates":200,"max_bytes":"100","max_ms":1000}),
+                )
+                .unwrap();
+                assert_eq!(
+                    engine
+                        .duplicates_start(grant, Default::default(), budget)
+                        .unwrap_err()
+                        .to_body()
+                        .message
+                        .as_str(),
+                    message
+                );
+            }
+        }
+    }
 }
 
 #[cfg(windows)]
 #[test]
-fn duplicate_synthetic_grant_returns_evidence() {
+fn duplicate_grant_returns_evidence_for_its_own_class() {
+    // q-10: a personal owner grant reads like a synthetic lab grant, through the same reader.
+    for class in [DatasetClass::Synthetic, DatasetClass::Personal] {
+        duplicate_grant_returns_evidence(class);
+    }
+}
+
+#[cfg(windows)]
+fn duplicate_grant_returns_evidence(class: DatasetClass) {
     use loomward_windows::{
         duplicate_reader::{Budget, Entry},
         enumerate::{DirSource, NativeSource},
@@ -132,7 +171,7 @@ fn duplicate_synthetic_grant_returns_evidence() {
     let grant = GrantedRoot::new(
         RootId::new("rt_duplicate_fixture").unwrap(),
         temp.path().to_owned(),
-        DatasetClass::Synthetic,
+        class,
         expected,
     );
     let entries = ["a", "b"].map(|name| Entry {
@@ -140,12 +179,12 @@ fn duplicate_synthetic_grant_returns_evidence() {
         expected: identity::observe(&temp.path().join(name)).unwrap(),
     });
     let state = canonical_tempdir();
-    let conn = duplicate_grant_store(state.path(), &grant);
-    let engine = Engine::open(EngineConfig::new(
-        state.path().to_owned(),
-        DatasetClass::Synthetic,
-    ))
-    .unwrap();
+    let store_class = match class {
+        DatasetClass::Synthetic => "synthetic",
+        DatasetClass::Personal => "personal",
+    };
+    let conn = duplicate_grant_store_as(state.path(), &grant, store_class);
+    let engine = Engine::open(EngineConfig::new(state.path().to_owned(), class)).unwrap();
     let report = engine
         .inspect_duplicates(
             &grant,
@@ -158,6 +197,25 @@ fn duplicate_synthetic_grant_returns_evidence() {
         .unwrap();
     assert_eq!(report.groups, vec![vec![0, 1]]);
     assert!(!report.partial);
+    // Revocation requested while a job's reader runs on its own cancel flag: the final gate
+    // refuses the finished report in its entirety rather than return names from a revoked root.
+    let root_cancel = engine
+        .scan_root_gate(grant.key())
+        .lock()
+        .unwrap()
+        .duplicate_cancel
+        .clone();
+    root_cancel.store(true, Ordering::Release);
+    let refused = engine
+        .inspect_duplicates_cancel(
+            &grant,
+            &entries,
+            duplicate_budget(),
+            Some(Arc::new(AtomicBool::new(false))),
+        )
+        .unwrap_err();
+    assert_eq!(refused.to_body().message.as_str(), "cancelled");
+    root_cancel.store(false, Ordering::Release);
     conn.execute("UPDATE root_grant SET state='revoked'", [])
         .unwrap();
     let err = engine
@@ -174,10 +232,19 @@ fn duplicate_budget() -> loomward_windows::duplicate_reader::Budget {
 }
 
 fn duplicate_grant_store(state: &std::path::Path, root: &GrantedRoot) -> rusqlite::Connection {
+    duplicate_grant_store_as(state, root, "synthetic")
+}
+
+fn duplicate_grant_store_as(
+    state: &std::path::Path,
+    root: &GrantedRoot,
+    class: &str,
+) -> rusqlite::Connection {
     let conn = rusqlite::Connection::open(state.join("state.db")).unwrap();
     conn.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);
-        INSERT INTO meta VALUES('dataset_class','synthetic');
         CREATE TABLE root_grant(id INTEGER PRIMARY KEY,display_path TEXT,volume_key TEXT,root_file_id BLOB,state TEXT,identity_mode TEXT NOT NULL DEFAULT 'verified');").unwrap();
+    conn.execute("INSERT INTO meta VALUES('dataset_class',?1)", [class])
+        .unwrap();
     let expected = root.expected.unwrap();
     let id = match expected.id.unwrap() {
         FileIdObs::Id128(id) => id.to_vec(),
@@ -400,17 +467,11 @@ fn duplicate_admission_rechecks_durable_class_identity_and_ambiguity() {
             .as_str(),
         "grant_not_active"
     );
+    // A revoked row beside one active grant for the same folder is history, not ambiguity: the
+    // folder was revoked and granted again, and reads follow the one active grant (review on #376).
     conn.execute("UPDATE root_grant SET state='revoked' WHERE id=1", [])
         .unwrap();
-    assert_eq!(
-        engine
-            .duplicate_read_admission(&grant.clone())
-            .unwrap_err()
-            .to_body()
-            .message
-            .as_str(),
-        "grant_not_active"
-    );
+    assert!(engine.duplicate_read_admission(&grant.clone()).is_ok());
 }
 
 #[test]

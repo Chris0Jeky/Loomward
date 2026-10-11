@@ -8,7 +8,6 @@ export class Duplicates {
   book = $state<Record<string, Job>>({});
   pending = $state(false);
   problem = $state('');
-  gated = $state(false);
   private epoch: string | null = null;
 
   apply(job: Job): void {
@@ -36,16 +35,13 @@ export class Duplicates {
   }
   async start(rootId: string): Promise<void> {
     if (!session.client || this.pending) return;
-    this.pending = true; this.problem = ''; this.gated = false;
+    this.pending = true; this.problem = '';
     try {
       this.apply((await session.client.call('duplicates.inspect', { root_id: rootId, budget: { max_candidates: 200, max_bytes: '67108864', max_ms: 10000 } })).result.job);
     } catch (e) {
-      if (e instanceof LoomwardError && e.detail?.reason === 'content_read_gated') this.gated = true;
-      else {
-        this.problem = session.handle(e);
-        if (e instanceof LoomwardError && e.code === 'busy' && typeof e.detail?.job_id === 'string') {
-          this.apply((await session.client.call('jobs.get', { job_id: e.detail.job_id })).result.job);
-        }
+      this.problem = session.handle(e);
+      if (e instanceof LoomwardError && e.code === 'busy' && typeof e.detail?.job_id === 'string') {
+        this.apply((await session.client.call('jobs.get', { job_id: e.detail.job_id })).result.job);
       }
     } finally { this.pending = false; }
   }
