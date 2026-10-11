@@ -1895,3 +1895,104 @@ Queue accounting stays conservative, but the transaction charge is neither a
 process-memory cap nor a WAL bound. Existing unbounded MEMORY temp storage and
 indexed publication/full-volume multilink costs remain. The open #148 retains
 the gap to 250k; whole-generation publication remains a separate design.
+
+# First-scan bulk load (#148, owner decision q-13): design - 2026-10-11
+
+Owner decision q-13: the KPI is end-to-end files/s through the service on the lab and real
+trees (250k rows/s stays a stretch note); a first-scan bulk path builds with secondary indexes
+deferred and publishes atomically under the existing fence. This replaces the generation-file
+proposal above for the first-scan case: one catalogue file, one writer, no reader routing.
+
+**Go/no-go profile (shared host, diagnostic only).** The 100k lab tier through `loomward-serve`
+with frozen main (`6e6682d`): three interleaved pairs against the same binary on a seed whose four
+`file` secondary indexes were replaced by one `file(dir_id)` index. Scan elapsed median 4.449 s
+(main) against 1.589 s (no deferred indexes); writer COMMIT 2.709/1.620/2.859 s against
+0.382/0.414/0.951 s over the same 2,008 transactions. Dropping only `file_identity` gave
+2.253/1.701 s against main 5.929/3.755 s. Index maintenance, mostly the randomly ordered
+little-endian identity key rewriting about one leaf page per row per listing commit, is the
+dominant writer cost on this KPI, so the gain can be real. Raw receipts: ignored
+`.loomward/bulk148/diag-*.json`.
+
+**Eligibility.** Opt-in per writer (`Writer::set_bulk_first_scan`, set by the service and the
+P4 bench), decided once at `BeginRun`: mode `full`, no earlier `scan_run` for the root (the P4f
+detection) and no live rows under the root besides its root directory. The run is recorded in
+the writer context; every later command of that run uses the bulk tables. Any other run,
+including the second scan of the same root and any scan after a discarded build, takes the
+ordinary incremental path.
+
+**Staging structures.** `bulk_dir` and `bulk_file` live in `catalog.db`, created at open from the
+live `dir`/`file` DDL (same columns, CHECKs and foreign keys, pointing at `bulk_dir`). `bulk_dir`
+mirrors the four small `dir` indexes; `bulk_file` has one `(dir_id)` index for relist matching and
+incomplete-listing sums. The four live `file` secondary indexes are not maintained during the
+build. `BeginRun` copies the root directory row into `bulk_dir`. The existing publication code
+runs unchanged against the bulk tables (`publish`, staged chunks, relist matching, reparenting,
+depth bounds, dirty marking, `DirFinal`): only the table names change, so the rows are identical
+by construction. Row IDs come from the live AUTOINCREMENT sequences: before and after each bulk
+command the `dir`/`bulk_dir` and `file`/`bulk_file` sequence pairs are raised to their common
+maximum, so other roots' inserts during the build never collide with bulk IDs and a single-root
+build gets exactly the IDs the ordinary path would. Revisions advance per command exactly as on
+the ordinary path. The service's child-row lookup also reads `bulk_dir`.
+
+**Build indexes once, then swap.** `EndRun` (completed or cancelled) swaps inside its own
+savepoint, before the ordinary EndRun work: delete the live root-directory row (it has no live
+children), insert the root's `bulk_dir` rows, then its `bulk_file` rows in ID order, then delete
+the bulk rows. When the live `file` table holds no more rows than the build, its secondary
+indexes are dropped before the insert and recreated afterwards from their stored DDL, inside the
+same transaction (indexes built once); otherwise rows are inserted in ID order into the indexed
+table in one transaction. Then the ordinary EndRun runs on the live tables: full-traversal
+absence, multilink, rollup, run and root state, checkpoint. Publication fence, savepoints,
+revision rules, FULL sync for intent-bearing publications and receipt-after-COMMIT are unchanged.
+
+**Readers.** No reader query reads `bulk_*`. Until the EndRun transaction commits, readers see the
+root as before the scan (root directory unlisted, no rows); a WAL snapshot taken before the commit
+keeps that view, and any snapshot after it sees the complete swapped state. Extension vocabulary
+rows (`ext`) are written eagerly as today; they are reachable only through `file` rows.
+
+**Crash safety.** Bulk rows are ordinary committed rows in tables no reader uses. A crash before
+the EndRun commit leaves live tables untouched; the next open already fails running runs and
+clears `stage_entry`, and now drops and recreates the bulk tables. A crash after the commit
+reopens the swapped state. Raised sequence values survive a crash as harmless ID gaps.
+
+**Interactions.** Revocation or identity change of the grant discards the root's bulk rows in its
+catalogue transaction (the run is cancelled as today). EndRun `failed` discards the build: the
+root shows no rows, partial, never complete. EndRun `cancelled` swaps the partial build
+atomically, matching the ordinary path's final state for a cancelled run. Producer cancellation,
+queue/transaction byte quotas, the 250 ms batch limit, P4f charging, listing entry limits and
+staged-chunk fences apply unchanged because the same commands flow through the same loop.
+Pending reference intents cannot target unpublished rows, so reference retirement is skipped for
+bulk listings. Watch repairs (`Repair`) touch only live rows and cannot expose the build; refresh
+and targeted runs are never bulk. Unbounded `temp_store=MEMORY` and full-volume multilink remain
+as before.
+
+# First-scan bulk load (#148): receipt - 2026-10-11
+
+## Changed
+
+Branch `perf/first-scan-bulk-load-148` from main `6e6682d`. Built as designed above; the
+evidence is [first-scan-bulk-load-148](../../evidence/v3/first-scan-bulk-load-148.md).
+
+- `src/db.rs`: `bulk_tables` derives `bulk_dir`/`bulk_file` from the live DDL at every open (also
+  the crash cleanup) and recreates `bulk_file` after a lone swap.
+- `src/writer.rs`: `Writer::set_bulk_first_scan`; a `Tables` pair threaded through `publish`,
+  `stage`, `old_files`, `insert_files`, `active_run`, `DirFinal` and dirty marking; eligibility at
+  `BeginRun`; `share_sequences`; `swap_bulk` at EndRun completed or cancelled; discard on EndRun
+  failed and on revocation; reference retirement skipped for bulk listings.
+- `src/writer/bulk_tests.rs`: six tests (equivalence, atomicity, crash, commit failure,
+  revocation, failed run and incremental second scan).
+- `examples/bench.rs`: the P4 bench drives the bulk path and adds
+  `P4.through_end_run_rows_per_second`; insert-only P4 now excludes the swap, so compare the
+  through-EndRun figure across variants.
+- Service: the flag is on; the sink's child lookup reads `bulk_dir`.
+
+No public reply, command, protocol, dependency or schema-version change. Readers no longer see a
+root's first full scan grow listing by listing: the root stays empty until EndRun (owner q-13).
+
+## Verified, NOT verified, residual risk
+
+See the evidence file for tests, the fourteen killed mutations and the gates. NOT verified:
+power loss or IOERR during the swap (only a COMMIT fault and a kill after the last build commit),
+10M rows, peak memory of a large swap, cold cache, Linux, hosted CI, real-folder KPI.
+Residual risk: a swap rewrites the whole build in one EndRun transaction, so the final COMMIT and
+checkpoint carry it at once; the root shows no rows during a long first scan; ctx bookkeeping for
+a build is not rolled back if a revocation's catalogue savepoint itself fails (orphaned bulk rows
+then wait for the next open).
