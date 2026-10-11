@@ -119,7 +119,8 @@ npm.cmd --prefix app run dev
 
 Open the address Vite prints and add `?transport=mock` to it. Without that parameter and with no
 engine the shell shows "unavailable" by design (`app/src/lib/transport/select.ts`); the mock
-answers from synthetic data and reports every engine figure as unknown.
+answers from invented, contract-shaped synthetic data, including catalogue and resource figures;
+values the mock does not supply remain explicitly unknown. These are not engine observations.
 
 ### Prototype
 
