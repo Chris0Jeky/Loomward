@@ -409,7 +409,8 @@
       "#381",
       "#383",
       "#387",
-      "#388"
+      "#388",
+      "#382"
     ],
     "rust_tests_by_crate_at_b00c564": {
       "apps": 24,
@@ -429,12 +430,13 @@
     "rust_tests_at_b00c564": 917,
     "app_vitest": 383,
     "python_tests": 227,
-    "wired_commands": "contract 53 commands (backups.list, backups.import, backups.forget added in #383); state schema v6",
+    "wired_commands": "contract 54 commands after #382 (roots.forget; backups.list, backups.import, backups.forget from #383); state schema v7; counts above measured before #382 (its lane: 936 workspace tests at 39b372e)",
     "p4": "first full scans build in bulk tables and publish atomically (#387); 250k not reached; quiet-host A/B unverified (#148)",
     "p14": "regressed 155 to 230 bytes/entry at 1M under the bulk path; freed build pages stay on the freelist (#386)",
     "crash_recovery": "a host shutdown zeroed the primary .git/config and six manifests in one worktree; config rebuilt, manifests restored from Git, every checkout scanned",
-    "in_review": "#382 Forget (q-9, schema v7, 54 commands); #390 long-lived state.db reader delays the WAL cut",
-    "effects": "none: duplicates, placement, collections and backups observe, simulate or record only"
+    "in_review": "#390 long-lived state.db reader delays the WAL cut",
+    "effects": "none: duplicates, placement, collections and backups observe, simulate or record only",
+    "forget": "roots.forget (#382): purges a revoked root's name, catalogue, labels and references (shared hard-linked objects kept), scrubs start-up and migration copies of state.db, VACUUMs state and cuts the logs; anonymised audit entry kept; residual: #390, #391"
   },
   "owner_decisions_2026_10_11": {
     "source": "HUMAN_TODO.md q-5, q-9 to q-19 (recorded in #360)",
@@ -442,7 +444,6 @@
     "decided_not_yet_implemented": [
       "q-14 backups stages 2 and 3 (guarded restic observer, then restore-drill executor; stage 1 landed in #383)",
       "q-15 diagnostics bundle via native save dialog",
-      "q-9 Forget a revoked root (#382 in review)",
       "q-17 first unsigned preview pre-release (workflow #362 and prerequisites #379 merged; nothing published)",
       "q-18 hardware scrub: docs and mocks done (#365); raw evidence/v3 receipts and old Python fixtures still carry processor counts and media models"
     ],
@@ -452,7 +453,8 @@
       "q-11 personal learning on the owner's labels (#368; real granted NTFS folder leg in 9fa5159 after #372)",
       "q-10 personal duplicate content reads (#376)",
       "q-13 first-scan bulk load (#387; KPI end-to-end files/s; quiet-host A/B unverified; P14 155 to 230 bytes/entry, #386)",
-      "q-14 stage 1 backup evidence import (#383; state v6; never verified recovery)"
+      "q-14 stage 1 backup evidence import (#383; state v6; never verified recovery)",
+      "q-9 Forget a revoked root (#382; state v7; 54 commands)"
     ]
   }
 }

@@ -136,6 +136,7 @@ the expiry default (option (a) on 2026-10-18) no longer applies: the owner answe
   - Source: agent-hq `decisions/loomward-revoked-root-retention.json` (the owner inbox; not a file in this repository)
   - **Owner, in chat 2026-10-11, selected (a): "Keep, plus a 'Forget' button".** Implementation (the Forget command and button) is tracked as
     Loomward#288; this item records the decision, not the implementation.
+  - Implemented: the Forget command and button landed in #382 (2026-10-11), closing #288. Residual items are #390 and #391.
 
 ## Owner decisions of 2026-10-11 (interactive choices in chat)
 
