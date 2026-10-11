@@ -97,6 +97,19 @@ pub(crate) struct Inner {
     pub(crate) hooks: tests::Hooks,
 }
 
+/// Detached workers (reads, mutations, a telemetry sampling turn) hold the shared state, hence
+/// every catalogue connection, until their closure ends, which is after the caller has its reply.
+/// Dropping the service therefore waits for them: on return its files are closed and removable.
+/// Bounded, so a worker stuck in a blocking native call cannot hang the owner's shutdown.
+impl Drop for Service {
+    fn drop(&mut self) {
+        let give_up = Instant::now() + Duration::from_secs(10);
+        while Arc::strong_count(&self.inner) > 1 && Instant::now() < give_up {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+}
+
 impl Service {
     /// Opens the stores and the engine, then grants `config.grant_roots` under the session's
     /// provenance policy. Errors name the rule, never a path.
@@ -519,6 +532,9 @@ impl ViewService for Service {
                         started,
                         Some(&worker_work),
                     ));
+                    // The reply is out but this worker still holds the service (see `Drop for Service`).
+                    #[cfg(test)]
+                    inner.hooks.gate(command, "worker_exit");
                 });
             if spawned.is_err() {
                 return ResponseEnvelope::error(
@@ -666,6 +682,10 @@ impl Service {
                                 started,
                                 (command == Command::PlacementSimulate).then_some(&work),
                             ));
+                            drop(settle);
+                            // The outcome is out but this worker still holds the service.
+                            #[cfg(test)]
+                            inner.hooks.gate(command, "worker_exit");
                         })
                 };
                 if spawned.is_err() {
