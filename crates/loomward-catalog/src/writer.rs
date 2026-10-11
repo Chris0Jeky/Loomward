@@ -640,7 +640,9 @@ fn serve(
         });
         let mut results = Vec::with_capacity(batch.len());
         let mut failed = false;
-        let stages = stages_references(&batch[0].command);
+        // A batch led by any listing command may grow with listings that stage nothing, trusting
+        // the no-resolved-reference check below: the fence proves no reference bound since (#389).
+        let stages = stages_references(&batch[0].command) || listing_command(&batch[0].command);
         let mut batchable = false;
         let mut prepared = None;
         let mut full = false;
