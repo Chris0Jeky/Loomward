@@ -207,6 +207,16 @@ impl Engine {
         if revision > 1_000_000_000 {
             return Err(invalid("feedback revision exhausted"));
         }
+        // Refit reads at most 10,000 events: refuse the next one rather than make refit impossible
+        // (Codex P1 on #328; a bounded training window is tracked separately).
+        let events: i64 = tx
+            .query_row("SELECT count(*) FROM st.human_feedback", [], |r| r.get(0))
+            .map_err(internal)?;
+        if events >= 10_000 {
+            return Err(EngineError::ResourceBudget {
+                message: "human event budget is 10000; refit reads at most 10000 events".into(),
+            });
+        }
         let event = crate::events::random_id("fe_");
         tx.execute("INSERT INTO st.human_feedback(event_id,client_event_id,content_digest,object_ref_id,revision,label,retracted,taxonomy_version,features_json,recorded_at_ns) VALUES(?1,?2,?3,?4,?5,?6,?7,1,?8,?9)",params![event,r.client_event_id.as_str(),fingerprint(r),object_ref,revision,label,r.retract,features.to_string(),now_ns()]).map_err(internal)?;
         tx.execute("UPDATE st.revision SET state_rev=state_rev+1", [])
