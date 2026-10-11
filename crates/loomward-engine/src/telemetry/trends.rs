@@ -304,11 +304,13 @@ impl History {
             }
         }
         // The cap cuts the tail, so machine candidates go first, then disks, then the many processes.
-        candidates.sort_by_key(|c| match series[c.series_index.get() as usize].metric.channel() {
-            TelemetryChannel::System => 0,
-            TelemetryChannel::Disks => 1,
-            _ => 2,
-        });
+        candidates.sort_by_key(
+            |c| match series[c.series_index.get() as usize].metric.channel() {
+                TelemetryChannel::System => 0,
+                TelemetryChannel::Disks => 1,
+                _ => 2,
+            },
+        );
         let candidates_truncated = candidates.len() > 64;
         candidates.truncate(64);
         TelemetryTrends {
@@ -412,7 +414,10 @@ fn segment(s: &TrendSeries) -> Option<&[TrendPoint]> {
 }
 
 fn values<'a>(points: impl IntoIterator<Item = &'a TrendPoint>) -> Vec<&'a TrendValue> {
-    points.into_iter().filter_map(|p| p.value.as_ref()).collect()
+    points
+        .into_iter()
+        .filter_map(|p| p.value.as_ref())
+        .collect()
 }
 
 fn candidate(

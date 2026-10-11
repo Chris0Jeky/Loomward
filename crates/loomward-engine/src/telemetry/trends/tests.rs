@@ -730,7 +730,11 @@ fn the_candidate_cap_keeps_machine_candidates_before_many_growing_processes() {
     assert!(kinds.contains(&TrendCandidateKind::MemoryPressure));
     assert!(kinds.contains(&TrendCandidateKind::CpuSaturation));
     // machine first, then disks, then processes; the cut falls on processes
-    let channel = |c: &TrendCandidate| report.series[c.series_index.get() as usize].metric.channel();
+    let channel = |c: &TrendCandidate| {
+        report.series[c.series_index.get() as usize]
+            .metric
+            .channel()
+    };
     let order: Vec<_> = report.candidates.iter().map(channel).collect();
     assert!(order.windows(2).all(|w| {
         let rank = |c: &TelemetryChannel| match c {
@@ -746,7 +750,10 @@ fn the_candidate_cap_keeps_machine_candidates_before_many_growing_processes() {
             .iter()
             .filter(|c| c.kind == TrendCandidateKind::Growth)
             .count(),
-        64 - kinds.iter().filter(|k| **k != TrendCandidateKind::Growth).count()
+        64 - kinds
+            .iter()
+            .filter(|k| **k != TrendCandidateKind::Growth)
+            .count()
     );
 }
 
@@ -760,10 +767,31 @@ fn a_missing_value_only_ends_the_run_behind_it() {
     assert_eq!(c[0].window_ms.get(), 45_000);
     assert_eq!(c[0].start_value, TrendValue::Bytes(0u64.into()));
     // a null after the run, or too few points behind it, is still no candidate
-    assert!(growth(&series(&[Some(0), Some(1 << 20), Some(2 << 20), Some(3 << 20), None])).is_empty());
-    assert!(growth(&series(&[Some(0), Some(1 << 20), None, Some(2 << 20), Some(3 << 20)])).is_empty());
+    assert!(growth(&series(&[
+        Some(0),
+        Some(1 << 20),
+        Some(2 << 20),
+        Some(3 << 20),
+        None
+    ]))
+    .is_empty());
+    assert!(growth(&series(&[
+        Some(0),
+        Some(1 << 20),
+        None,
+        Some(2 << 20),
+        Some(3 << 20)
+    ]))
+    .is_empty());
     // a run never reaches back across the null for its fourth point
-    let c = growth(&series(&[Some(0), None, Some(1 << 20), Some(2 << 20), Some(3 << 20), Some(4 << 20)]));
+    let c = growth(&series(&[
+        Some(0),
+        None,
+        Some(1 << 20),
+        Some(2 << 20),
+        Some(3 << 20),
+        Some(4 << 20),
+    ]));
     assert_eq!(c.len(), 1);
     assert_eq!(c[0].sample_count.get(), 4);
 }
