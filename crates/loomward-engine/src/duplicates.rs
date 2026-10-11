@@ -157,15 +157,15 @@ fn duplicate_report(
             .collect::<Vec<_>>()
     };
     let links = groups(&report.links, 200);
-    // Catalogue refusals have no entry index, so the singular stop must preserve them.
-    let stop = candidates
-        .skipped
-        .first()
-        .copied()
-        .or(report.stop.map(|s| s.as_str()))
+    // semantics.md: budget and cancellation stops take precedence; a catalogue path refusal is the
+    // fallback, and partial stays true either way.
+    let stop = report
+        .stop
+        .map(|s| s.as_str())
         .or(hydration_stop)
         .or(candidates.truncated.then_some("entry_budget"))
-        .or(bounded.then_some("report_budget"));
+        .or(bounded.then_some("report_budget"))
+        .or(candidates.skipped.first().copied());
     let partial = candidates.partial || report.partial || !skips.is_empty() || stop.is_some();
     serde_json::from_value(serde_json::json!({
             "entries": candidates.entries.iter().map(|e| serde_json::json!({"relative_path":e.relative,"logical_bytes":e.logical.to_string()})).collect::<Vec<_>>(),
@@ -238,7 +238,8 @@ fn duplicate_candidate_budget_refuses_before_root_io() {
 
 #[cfg(test)]
 #[test]
-fn duplicate_catalogue_refusal_survives_reader_stop() {
+fn duplicate_budget_stop_takes_precedence_over_a_path_refusal() {
+    // Codex P2 on #358: contracts/v3/semantics.md gives budget and cancellation stops precedence.
     let candidates = DuplicateCandidates {
         partial: true,
         skipped: vec!["path_depth"],
@@ -251,7 +252,7 @@ fn duplicate_catalogue_refusal_survives_reader_stop() {
     };
     let wire = duplicate_report(&candidates, &report, &[], &Default::default(), None).unwrap();
     assert!(wire.partial);
-    assert_eq!(wire.stop.unwrap().as_str(), "path_depth");
+    assert_eq!(wire.stop.unwrap().as_str(), "byte_budget");
 }
 
 #[cfg(test)]
