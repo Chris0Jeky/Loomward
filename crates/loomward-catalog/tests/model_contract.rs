@@ -191,23 +191,23 @@ fn unknown_family_is_refused_as_invalid_observation() {
 }
 
 #[test]
-fn flag_bit_10_is_refused_as_invalid_observation() {
+fn flag_bit_11_is_refused_as_invalid_observation() {
     let (temp, c, _, root, run) = setup();
     let mut bad = observation_named("flagged");
-    bad.flags = 1 << 10;
+    bad.flags = 1 << 11;
     let result = c.writer().call(listing(run, root, vec![bad], vec![]));
     let refused = matches!(&result, Err(Error::Invalid("invalid observation")));
-    assert!(refused, "flag bit 10 must be refused, got: {result:?}");
+    assert!(refused, "flag bit 11 must be refused, got: {result:?}");
     assert_eq!(file_count(&temp), 0);
 }
 
 #[test]
-fn all_ten_known_flag_bits_are_accepted_but_hardlink_suspected_is_derived_not_stored() {
+fn all_eleven_known_flag_bits_are_accepted_but_hardlink_suspected_is_derived_not_stored() {
     // HARDLINK_SUSPECTED (bit 2) is derived from the multilink table at finalisation, so an
-    // observation cannot assert it; the writer strips it on insert. The other nine bits persist.
+    // observation cannot assert it; the writer strips it on insert. The other ten bits persist.
     let (temp, c, _, root, run) = setup();
     let mut ok = observation_named("all-flags");
-    ok.flags = (1u32 << 10) - 1;
+    ok.flags = (1u32 << 11) - 1;
     c.writer()
         .call(listing(run, root, vec![ok], vec![]))
         .unwrap();
@@ -216,7 +216,7 @@ fn all_ten_known_flag_bits_are_accepted_but_hardlink_suspected_is_derived_not_st
             .unwrap()
             .query_row("SELECT flags FROM file", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        (1023 & !HARDLINK_SUSPECTED) as i64
+        (2047 & !HARDLINK_SUSPECTED) as i64
     );
 }
 
