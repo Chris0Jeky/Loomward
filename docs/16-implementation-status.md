@@ -235,7 +235,13 @@ Recorded in HUMAN_TODO q-5 and q-9 to q-19 (#360). The repository is **T2 (daily
 findings now weigh lower and new evidence no longer withholds host hardware; secrets and real file names, paths or
 inventories in this public repository stay forbidden. Decided, not yet implemented (each lands in its own PR, which
 updates this file when it opens a gate): personal duplicate content reads (q-10), personal learning on the owner's labels
-(q-11), FAT/exFAT identity-unverified listing (q-12), the P4 KPI retarget and a bulk-load lane (q-13), backups as
+(q-11), the P4 KPI retarget and a bulk-load lane (q-13), backups as
 evidence import then a guarded restic observer then a restore-drill executor (q-14), a native-save diagnostics bundle
 (q-15), Forget a revoked root (q-9), an unsigned preview pre-release (q-17) and the hardware scrub (q-18). The teacher
 stays synthetic until the broker passes its canaries; then names only, previewed per request (q-5).
+
+**FAT/exFAT listing (q-12, #372).** Fixed-disk FAT, exFAT and unknown filesystems list as identity-unverified:
+metadata only, every row flagged `identity_unverified`, never watched, never a placement, duplicate or durable-reference
+input; a personal root needs an explicit native confirmation (desktop) or `--allow-identity-unverified` (CLI). Every
+grant now records its volume's real filesystem, so durable references (collections, learning) work on real NTFS folders.
+State schema v5. No real FAT volume was available: that leg is unverified.
