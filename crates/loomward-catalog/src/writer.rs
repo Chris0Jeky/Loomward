@@ -451,8 +451,15 @@ impl PublicationWindow {
         }
         state.1 = true;
         self.changed.notify_all();
-        while state.0 {
-            state = self.changed.wait(state).expect("window lock");
+        // Bounded, so a test that fails while the writer is paused ends instead of hanging the
+        // binary when the writer's drop joins this thread.
+        let give_up = Instant::now() + Duration::from_secs(60);
+        while state.0 && Instant::now() < give_up {
+            state = self
+                .changed
+                .wait_timeout(state, Duration::from_millis(50))
+                .expect("window lock")
+                .0;
         }
     }
 }
