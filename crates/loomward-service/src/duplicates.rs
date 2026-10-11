@@ -19,13 +19,20 @@ impl Inner {
         }
         self.session_root_gate(&root)?;
         let granted = self.engine.granted_root(
-            request.root_id,
+            request.root_id.clone(),
             root.grant,
             &CatalogRootIdentity {
                 row,
                 instance: self.instance.clone(),
             },
-        )?;
+        );
+        // A replaced folder ends its grant here exactly as at scan start (#378).
+        if matches!(&granted, Err(loomward_engine::EngineError::PermissionDenied { message })
+            if message == "root_identity_changed")
+        {
+            self.identity_changed(root.grant, &request.root_id, true);
+        }
+        let granted = granted?;
         let mut reader = self.catalog.reader().map_err(crate::catalog_error)?;
         reader.set_deadline(
             Instant::now()
