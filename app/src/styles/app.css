@@ -140,9 +140,13 @@ table.tbl { width: 100%; border-collapse: collapse; }
 dl.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 17rem), 1fr)); gap: var(--sp-2); margin: var(--sp-3) 0; }
 dl.cards > div { padding: var(--sp-2) var(--sp-3); border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); }
 dl.cards dt { color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
-dl.cards dd { margin: var(--sp-1) 0 0; overflow-wrap: anywhere; color: var(--muted); }
+dl.cards dd { margin: var(--sp-1) 0 0; overflow-wrap: anywhere; }
+dl.cards small { display: block; margin-top: var(--sp-1); color: var(--muted); font-size: var(--fs-xs); overflow-wrap: anywhere; }
 
-@media (max-width: 600px) { .panel { padding: var(--sp-3); } }
+@media (max-width: 600px) {
+  .panel { padding: var(--sp-3); }
+  .tbl td:first-child, .tbl th[scope='row'] { min-width: 7rem; }
+}
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }

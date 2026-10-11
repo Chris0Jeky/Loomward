@@ -231,7 +231,7 @@
 </script>
 
 <h1>Explorer</h1>
-<p class="muted">
+<p class="lede">
   A paged table over the {session.datasetClass ?? 'unknown'} dataset: the text equivalent of the maps. Names are plain text and hidden characters
   are shown as badges; an unknown size stays <span class="unknown">unknown</span>.
 </p>
