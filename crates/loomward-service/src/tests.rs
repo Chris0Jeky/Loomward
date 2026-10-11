@@ -3538,11 +3538,11 @@ fn followup_all_catalogue_reads_observe_deadlines() {
         let cmd = Command::from_name(command).unwrap();
         let control = svc
             .inner
-            .handle(&req, cmd, &CallContext::http(), Some(&active));
+            .handle(&req, cmd, &CallContext::http(), Some(&active), None);
         assert!(control.is_ok(), "{command} control: {:?}", control.err());
         assert_eq!(
             svc.inner
-                .handle(&req, cmd, &CallContext::http(), Some(&expired))
+                .handle(&req, cmd, &CallContext::http(), Some(&expired), None)
                 .err()
                 .expect(command)
                 .code,

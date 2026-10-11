@@ -7,7 +7,10 @@ use loomward_protocol::{
     Command, DatasetClass, ErrorBody, ErrorCode, MetadataPageRequest, RequestEnvelope,
 };
 use serde_json::{json, Value};
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
 pub(crate) trait Provider: Send + Sync {
     fn dataset(&self) -> DatasetClass;
@@ -88,12 +91,45 @@ pub(crate) fn check(deadline: Instant) -> Result<(), ErrorBody> {
     }
 }
 
+pub(crate) const SNAPSHOT_BYTES: usize = 4 * 1024 * 1024;
+
+pub(crate) fn snapshot_budget() -> ErrorBody {
+    with_reason(
+        fail(
+            ErrorCode::ResourceBudget,
+            "metadata snapshot exceeds the bounded output budget",
+        ),
+        "metadata_snapshot_budget",
+    )
+}
+
+// Count encoded bytes without allocating an encoded copy, and stop serialization at the bound.
+pub(crate) fn encoded_size(value: &impl serde::Serialize) -> Result<usize, ErrorBody> {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > SNAPSHOT_BYTES.saturating_sub(self.0) {
+                return Err(std::io::Error::other("metadata snapshot budget"));
+            }
+            self.0 += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter(0);
+    serde_json::to_writer(&mut counter, value).map_err(|_| snapshot_budget())?;
+    Ok(counter.0)
+}
+
 impl Inner {
     pub(crate) fn metadata_page(
         &self,
         req: &RequestEnvelope,
         command: Command,
         work: Option<&ReadWork>,
+        pending_cursor: Option<&Mutex<Option<Position>>>,
     ) -> Result<Out, ErrorBody> {
         let r: MetadataPageRequest = req.decode_payload()?;
         let deadline = work.expect("metadata commands use read admission").deadline;
@@ -126,17 +162,7 @@ impl Inner {
                 }
                 let value = self.metadata.read(command, deadline)?;
                 check(deadline)?;
-                let bytes = serde_json::to_vec(&value)
-                    .map_err(|_| fail(ErrorCode::InternalError, "encode metadata"))?;
-                if bytes.len() > 4 * 1024 * 1024 {
-                    return Err(with_reason(
-                        fail(
-                            ErrorCode::ResourceBudget,
-                            "metadata snapshot exceeds the bounded output budget",
-                        ),
-                        "metadata_snapshot_budget",
-                    ));
-                }
+                encoded_size(&value)?;
                 (Arc::new(value), 0)
             }
         };
@@ -161,20 +187,19 @@ impl Inner {
             ));
         }
         let end = (offset + r.limit.get() as usize).min(rows.len());
-        let next = (end < rows.len()).then(|| {
-            self.metadata_cursors.issue(
-                command,
-                "".into(),
-                Position::Metadata {
-                    snapshot: snapshot.clone(),
-                    offset: end,
-                },
-                None,
-            )
-        });
+        // The receiver issues the handle; a timed-out worker must not evict a live cursor.
+        if end < rows.len() {
+            *pending_cursor
+                .expect("metadata read receiver")
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(Position::Metadata {
+                snapshot: snapshot.clone(),
+                offset: end,
+            });
+        }
         let mut result = (*snapshot).clone();
         result[key] = json!(&rows[offset..end]);
-        result["next_cursor"] = json!(next);
+        result["next_cursor"] = Value::Null;
         Ok(Out {
             result,
             catalog_rev: None,

@@ -42,6 +42,8 @@ pub(crate) fn project(
     inventories: Vec<apps::ProviderInventory>,
     deadline: Instant,
 ) -> Result<Value, ErrorBody> {
+    let mut result = json!({"observed_at": now(), "providers": [], "applications": [], "next_cursor": null, "budget_hit": false});
+    let mut bytes = crate::inventory::encoded_size(&result)?;
     let mut providers = Vec::new();
     let mut applications = Vec::new();
     for p in inventories {
@@ -53,7 +55,9 @@ pub(crate) fn project(
             ProviderState::Unavailable => "unavailable",
             ProviderState::Partial => "partial",
         };
-        providers.push(json!({"provider": name, "state": state, "reason": p.reason}));
+        let row = json!({"provider": name, "state": state, "reason": p.reason});
+        charge(&mut bytes, &row)?;
+        providers.push(row);
         for app in p.applications {
             check(deadline)?;
             let (size, reason) = match app.estimated_size_bytes {
@@ -61,13 +65,24 @@ pub(crate) fn project(
                 Evidence::Missing => (None, Some("provider field absent".to_string())),
                 Evidence::Unknown { reason } => (None, Some(reason)),
             };
-            applications.push(json!({"provider": name, "scope": match app.scope { Scope::PerMachine => "per_machine", Scope::PerUser => "per_user", Scope::Portable => "portable", Scope::Unknown => "unknown" },
-                "registry_key": app.registry_key, "name": text(&app.display_name), "version": text(&app.display_version), "publisher": text(&app.publisher), "install_location": text(&app.install_location), "estimated_size_bytes": size, "size_reason": reason}));
+            let row = json!({"provider": name, "scope": match app.scope { Scope::PerMachine => "per_machine", Scope::PerUser => "per_user", Scope::Portable => "portable", Scope::Unknown => "unknown" },
+                "registry_key": app.registry_key, "name": text(&app.display_name), "version": text(&app.display_version), "publisher": text(&app.publisher), "install_location": text(&app.install_location), "estimated_size_bytes": size, "size_reason": reason});
+            charge(&mut bytes, &row)?;
+            applications.push(row);
         }
     }
-    Ok(
-        json!({"observed_at": now(), "providers": providers, "applications": applications, "next_cursor": null, "budget_hit": false}),
-    )
+    result["providers"] = Value::Array(providers);
+    result["applications"] = Value::Array(applications);
+    Ok(result)
+}
+
+#[cfg(any(windows, test))]
+fn charge(bytes: &mut usize, row: &Value) -> Result<(), ErrorBody> {
+    *bytes += crate::inventory::encoded_size(row)? + 1;
+    if *bytes > crate::inventory::SNAPSHOT_BYTES {
+        return Err(crate::inventory::snapshot_budget());
+    }
+    Ok(())
 }
 
 pub(crate) fn personal(deadline: Instant) -> Result<Value, ErrorBody> {

@@ -303,7 +303,7 @@ fn receive_space<T>(
     deadline: Instant,
     receive: impl FnOnce(Duration) -> Result<T, std::sync::mpsc::RecvTimeoutError>,
 ) -> EngineResult<T> {
-    // recv_timeout owns the deadline decision; scheduling after receipt cannot revoke the answer.
+    // Keep an accepted receipt, including one already queued when the remaining wait is zero.
     receive(deadline.saturating_duration_since(Instant::now())).map_err(|e| match e {
         std::sync::mpsc::RecvTimeoutError::Timeout => EngineError::DeadlineExceeded {
             message: "lab volume observation deadline expired".into(),
@@ -901,7 +901,7 @@ mod followup_tests {
     use super::*;
 
     #[test]
-    fn timely_space_receipt_survives_post_receive_deadline_crossing() {
+    fn accepted_space_receipt_survives_post_receive_deadline_crossing() {
         let (tx, rx) = std::sync::mpsc::channel();
         tx.send(Some((
             loomward_windows::volumes::Space {

@@ -1038,6 +1038,10 @@ export interface PlacementCandidates {
   source_volume_id: VolumeId;
   root_generations: RootGeneration[];
   groups: CandidateGroup[];
+  excluded_volumes: ({
+    volume_id: VolumeId;
+    reason: "tier_unknown" | "capacity_unknown" | "offline" | "no_active_grant" | "physics_unusable";
+  })[];
   note: string;
 }
 
@@ -1106,7 +1110,7 @@ export interface PlacementPlan {
   })[];
   excluded_volumes: ({
     volume_id: VolumeId;
-    reason: "tier_unknown" | "capacity_unknown" | "offline" | "no_active_grant";
+    reason: "tier_unknown" | "capacity_unknown" | "offline" | "no_active_grant" | "physics_unusable";
   })[];
   relief_policy: "verified_only" | "entry_allocation_whatif";
   projected_free_bytes: { [key: string]: ByteCount };

@@ -70,22 +70,22 @@
         "reason": null
       },
       "version": {
-        "state": "missing",
+        "state": "unknown",
         "value": null,
         "expandable": null,
-        "reason": "provider field absent"
+        "reason": "synthetic version malformed"
       },
       "publisher": {
-        "state": "known",
-        "value": "Fixture publisher",
-        "expandable": false,
-        "reason": null
-      },
-      "install_location": {
-        "state": "missing",
+        "state": "unknown",
         "value": null,
         "expandable": null,
-        "reason": "provider field absent"
+        "reason": "synthetic publisher unreadable"
+      },
+      "install_location": {
+        "state": "unknown",
+        "value": null,
+        "expandable": null,
+        "reason": "synthetic location unavailable"
       },
       "estimated_size_bytes": null,
       "size_reason": "provider field absent"
