@@ -772,6 +772,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn deletion_proof_needs_every_indicator_absent() {
+        let absent = json!({"mapping_key": "absent", "packages_folder_exists": false, "folder_lookup_hresult": "0x80070002"});
+        assert!(profile_absent(&absent));
+        for (key, value) in [
+            ("mapping_key", json!("present")),
+            ("mapping_key", json!({"error_code": 5})),
+            ("packages_folder_exists", json!(true)),
+            ("folder_lookup_hresult", json!("0x00000000")),
+        ] {
+            let mut state = absent.clone();
+            state[key] = value;
+            assert!(!profile_absent(&state), "{key}");
+        }
+    }
+
+    #[test]
     fn native_capability_builder_sets_only_the_explicit_sid() {
         let empty = security_capabilities(null_mut(), None);
         assert_eq!(empty.CapabilityCount, 0);
