@@ -112,15 +112,31 @@ pub fn validate_profile_root(root: &Path, profile: &Path) -> Result<(), String> 
     Ok(())
 }
 
+/// #286: the OS profiles directory itself, any folder directly inside it (every profile, however
+/// its folder is named) and any root containing it are refused. Both paths are canonical. The
+/// explicit native volume-root exception remains, as in `validate_profile_root`.
+pub fn validate_profiles_dir(root: &Path, profiles: &Path) -> Result<(), String> {
+    let folded = |p: &Path| {
+        p.to_string_lossy()
+            .replace('/', "\\")
+            .to_lowercase()
+            .trim_end_matches('\\')
+            .to_string()
+    };
+    let (r, d) = (folded(root), folded(profiles));
+    let inside = root.parent().is_some_and(|parent| folded(parent) == d);
+    let contains = root.parent().is_some() && d.starts_with(&(r.clone() + "\\"));
+    if r == d || inside || contains {
+        return Err("whole profiles are not eligible".into());
+    }
+    Ok(())
+}
+
 /// The OS profile folder; on Windows never the environment. Elsewhere (the Linux CI leg only) `HOME`.
 fn os_profile() -> Option<PathBuf> {
     #[cfg(windows)]
     {
-        use loomward_shell::known_folders::{Folder, FolderProvider, Location, WindowsFolders};
-        match WindowsFolders.location(Folder::Profile) {
-            Location::FileSystem { current, .. } => Some(current),
-            _ => None,
-        }
+        windows_folder(loomward_shell::known_folders::Folder::Profile)
     }
     #[cfg(not(windows))]
     {
@@ -128,11 +144,45 @@ fn os_profile() -> Option<PathBuf> {
     }
 }
 
+/// The OS profiles directory (`FOLDERID_UserProfiles`); elsewhere the parent of `HOME`.
+fn os_profiles_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        windows_folder(loomward_shell::known_folders::Folder::UserProfiles)
+    }
+    #[cfg(not(windows))]
+    {
+        os_profile().and_then(|p| p.parent().map(Path::to_path_buf))
+    }
+}
+
+#[cfg(windows)]
+fn windows_folder(folder: loomward_shell::known_folders::Folder) -> Option<PathBuf> {
+    use loomward_shell::known_folders::{FolderProvider, Location, WindowsFolders};
+    match WindowsFolders.location(folder) {
+        Location::FileSystem { current, .. } => Some(current),
+        _ => None,
+    }
+}
+
 fn check_profile(root: &Path) -> Result<(), Refusal> {
-    let profile = os_profile()
-        .and_then(|p| p.canonicalize().ok())
-        .ok_or(Refusal::ProtectedProfileOrStore)?;
-    validate_profile_root(root, &profile).map_err(|_| Refusal::ProtectedProfileOrStore)
+    check_profile_with(root, os_profile(), os_profiles_dir())
+}
+
+/// Fails closed: an unresolvable profile or profiles directory refuses every root.
+fn check_profile_with(
+    root: &Path,
+    profile: Option<PathBuf>,
+    profiles: Option<PathBuf>,
+) -> Result<(), Refusal> {
+    let resolve = |p: Option<PathBuf>| {
+        p.and_then(|p| p.canonicalize().ok())
+            .ok_or(Refusal::ProtectedProfileOrStore)
+    };
+    let (profile, profiles) = (resolve(profile)?, resolve(profiles)?);
+    validate_profiles_dir(root, &profiles)
+        .and_then(|()| validate_profile_root(root, &profile))
+        .map_err(|_| Refusal::ProtectedProfileOrStore)
 }
 
 pub(crate) fn check_new_root(root: &Path, state: &Path) -> Result<PathBuf, String> {
@@ -311,7 +361,10 @@ mod tests {
             } else {
                 child.env_remove("USERPROFILE");
             }
-            passed &= child.status().unwrap().success();
+            // `--exact` matching nothing also exits 0: require the child to have run (#286 LOW).
+            let output = child.output().unwrap();
+            passed &= output.status.success()
+                && String::from_utf8_lossy(&output.stdout).contains("1 passed");
         }
         assert!(passed, "OS profile protection depended on the environment");
     }
@@ -352,6 +405,74 @@ mod tests {
             &tmp.path().join("redirected/fixture")
         )
         .is_ok());
+    }
+
+    /// #286 MEDIUM: the profiles directory comes from the OS, not from its folder's name. A
+    /// sibling profile under a redirected, differently named profiles folder is refused; a
+    /// non-profile sibling of a redirected profile stays eligible (#253).
+    #[test]
+    fn profiles_directory_is_resolved_from_the_os_not_by_name() {
+        let tmp = crate::tests::temp_root();
+        let base = tmp.path().canonicalize().unwrap();
+        let (home, work, os) = (
+            base.join("Home"),
+            base.join("Work"),
+            base.join("ProfileStore"),
+        );
+        for d in [
+            home.join("me"),
+            home.join("me.OLDPC").join("Documents"),
+            work.join("me"),
+            work.join("project"),
+            os.join("other"),
+        ] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let refused = Err(Refusal::ProtectedProfileOrStore);
+        // Profiles directory `Home` (not a recognised name): its children are profiles.
+        let with_home =
+            |root: &Path| check_profile_with(root, Some(home.join("me")), Some(home.clone()));
+        let sibling = home.join("me.OLDPC");
+        // The name rule alone accepts the sibling profile: this is the gap #286 names.
+        assert!(validate_profile_root(&sibling, &home.join("me")).is_ok());
+        assert_eq!(with_home(&sibling), refused);
+        assert_eq!(with_home(&home), refused);
+        assert_eq!(
+            with_home(&base),
+            refused,
+            "a root containing the profiles directory"
+        );
+        assert!(with_home(&sibling.join("Documents")).is_ok());
+        assert!(with_home(&work.join("project")).is_ok());
+        // #253: a redirected profile `Work\me`, OS profiles directory elsewhere.
+        let redirected =
+            |root: &Path| check_profile_with(root, Some(work.join("me")), Some(os.clone()));
+        assert!(redirected(&work.join("project")).is_ok());
+        assert_eq!(redirected(&work.join("me")), refused);
+        assert_eq!(redirected(&os.join("other")), refused);
+        // Unless `Work` is itself the OS profiles directory.
+        assert_eq!(
+            check_profile_with(
+                &work.join("project"),
+                Some(work.join("me")),
+                Some(work.clone())
+            ),
+            refused
+        );
+        // Fail closed when either folder cannot be resolved.
+        let project = work.join("project");
+        assert_eq!(
+            check_profile_with(&project, Some(work.join("me")), None),
+            refused
+        );
+        assert_eq!(
+            check_profile_with(&project, None, Some(os.clone())),
+            refused
+        );
+        assert_eq!(
+            check_profile_with(&project, Some(work.join("me")), Some(base.join("missing"))),
+            refused
+        );
     }
 
     #[test]
