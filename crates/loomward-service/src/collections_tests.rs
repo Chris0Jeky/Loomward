@@ -643,7 +643,11 @@ fn collections_hydration_stops_at_page_deadline_and_releases_slot() {
             .unwrap()
             .contains(&(Command::CollectionsMembers, "hydrate"))
     });
-    assert_eq!(*svc.inner.reads.lock().unwrap(), 1, "the page holds its slot");
+    assert_eq!(
+        *svc.inner.reads.lock().unwrap(),
+        1,
+        "the page holds its slot"
+    );
     *svc.inner.hooks.skew.lock().unwrap() = Duration::from_secs(31);
     svc.inner.hooks.open(Command::CollectionsMembers, "hydrate");
     assert_eq!(err(read.join().unwrap()).code, ErrorCode::DeadlineExceeded);
