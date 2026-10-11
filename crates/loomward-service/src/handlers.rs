@@ -327,9 +327,21 @@ impl Inner {
                 .map(|m| m.len().to_string())
         };
         let (files, dirs) = db::counts(&self.db()).map_err(sql_error)?;
-        let running = self
-            .engine
-            .job_list(&decode_exact(json!({"limit": 50}))?)
+        let jobs = self.engine.job_list(&decode_exact(json!({"limit": 50}))?);
+        #[cfg(test)]
+        let jobs = if self
+            .hooks
+            .fail_job_list
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            Err(loomward_engine::EngineError::Internal {
+                message: "synthetic job list failure".into(),
+                detail: None,
+            })
+        } else {
+            jobs
+        };
+        let running = jobs
             .map(|l| {
                 l.jobs
                     .iter()
@@ -341,7 +353,7 @@ impl Inner {
                     })
                     .count()
             })
-            .unwrap_or(0);
+            .map_err(ErrorBody::from)?;
         let revs = self.revisions()?;
         Ok(out(
             json!({
@@ -386,8 +398,8 @@ impl Inner {
         let totals = match (reader, r.dir, active && r.state != "never_scanned") {
             (Some(reader), Some(dir), true) => reader
                 .inspect(NodeKey::Dir(dir))
-                .ok()
-                .and_then(|d| d.subtree)
+                .map_err(catalog_error)?
+                .subtree
                 .map(|s| encode(&s))
                 .transpose()?,
             _ => None,
