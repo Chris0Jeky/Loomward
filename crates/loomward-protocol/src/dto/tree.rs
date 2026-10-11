@@ -11,6 +11,9 @@ pub enum MeaningThreadState {
     None,
     Pending,
     Unknown,
+    NoModel,
+    Abstained,
+    NotEligible,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -33,6 +36,13 @@ pub struct MeaningThread {
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub source: Option<MeaningThreadSource>,
     pub collection_ids: BoundedVec<CollectionId, 0, 8>,
+    /// Present only for lazy student threads; scores are relative, never authority.
+    #[serde(
+        default,
+        deserialize_with = "crate::types::optional_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub suggestion: Option<Suggestion>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

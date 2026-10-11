@@ -4,7 +4,7 @@ use loomward_catalog::{NodeKey, Reader, WriteCommand, WriteReply};
 use loomward_protocol::*;
 use serde_json::{json, Value};
 
-fn features(reader: &mut Reader, key: NodeKey) -> Result<(EntryRow, Value), ErrorBody> {
+pub(super) fn features(reader: &mut Reader, key: NodeKey) -> Result<(EntryRow, Value), ErrorBody> {
     let detail = reader.inspect(key).map_err(catalog_error)?;
     let path = reader.path(key).map_err(catalog_error)?;
     let context = path
@@ -26,7 +26,7 @@ fn features(reader: &mut Reader, key: NodeKey) -> Result<(EntryRow, Value), Erro
 }
 
 impl Inner {
-    fn learning_gate(&self) -> Result<(), ErrorBody> {
+    pub(super) fn learning_gate(&self) -> Result<(), ErrorBody> {
         if self.dataset == DatasetClass::Personal {
             return Err(with_reason(
                 fail(

@@ -706,11 +706,12 @@
       "additionalProperties": false,
       "required": ["state", "label", "share", "source", "collection_ids"],
       "properties": {
-        "state": { "enum": ["labelled", "suggested", "mixed", "none", "pending", "unknown"] },
+        "state": { "enum": ["labelled", "suggested", "mixed", "none", "pending", "unknown", "no_model", "abstained", "not_eligible"] },
         "label": { "anyOf": [{ "$ref": "#/$defs/Label" }, { "type": "null" }] },
         "share": { "$ref": "#/$defs/NullableFraction" },
         "source": { "enum": [null, "human", "student", "teacher"] },
-        "collection_ids": { "type": "array", "maxItems": 8, "items": { "$ref": "#/$defs/CollectionId" } }
+        "collection_ids": { "type": "array", "maxItems": 8, "items": { "$ref": "#/$defs/CollectionId" } },
+        "suggestion": { "$ref": "#/$defs/Suggestion", "$comment": "Optional on tree projections; lazy student threads carry ranked relative scores, abstention and reasons. Never a probability or action approval." }
       },
       "$comment": "What the owner or a model thinks this is. A suggestion is not an approval (invariant 3)."
     },

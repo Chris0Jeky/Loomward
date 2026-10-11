@@ -22,11 +22,11 @@ fn learning_node(svc: &Service) -> String {
     )
 }
 
-fn feedback(node: &str, key: &str, label: Option<&str>, retract: bool) -> Value {
+pub(super) fn feedback(node: &str, key: &str, label: Option<&str>, retract: bool) -> Value {
     json!({"node_id":node,"client_event_id":key,"label":label,"retract":retract})
 }
 
-fn finish_refit(svc: &Service) -> Payload {
+pub(super) fn finish_refit(svc: &Service) -> Payload {
     let (job, _) = ok("learning.refit", call(svc, "learning.refit", json!({})));
     let id: JobId = serde_json::from_value(job["job"]["job_id"].clone()).unwrap();
     let until = Instant::now() + Duration::from_secs(5);

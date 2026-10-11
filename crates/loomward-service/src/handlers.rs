@@ -143,6 +143,7 @@ impl Inner {
             LearningStatus => self.learning_status(),
             LearningQueue => self.learning_queue(req.decode_payload()?, work),
             LearningRefit => self.learning_refit(),
+            ThreadsMeaning => self.meaning(req.decode_payload()?, work),
             TreeSlice => self.tree_slice(req, work),
             TreeChildren => self.tree_children(req, work),
             TreePath => self.node_read(req, work, |reader, key| {
