@@ -4,7 +4,7 @@
   "python": "3.14.3",
   "measured_at_utc": "2026-10-09T23:20:12Z",
   "token_elevated": false,
-  "logical_processors": 20,
+  "logical_processors": "withheld (q-18)",
   "source_base": "3bf9ed9f90c53d88343758d47d47a88d75de0b90",
   "source_sha256": {
     "crates/loomward-lab/src/lib.rs": "92d01c2dd94e17160f4b4d158e70ac8b76facd5b4f8473535d608857608e6925",
@@ -16,7 +16,7 @@
   "roots": [
     {
       "label": "real-A",
-      "storage": "NVMe",
+      "storage": "fast local volume",
       "passes": [
         {
           "agreement": true,
@@ -501,7 +501,7 @@
     },
     {
       "label": "real-B",
-      "storage": "NVMe",
+      "storage": "fast local volume",
       "passes": [
         {
           "agreement": true,
@@ -982,7 +982,7 @@
     },
     {
       "label": "real-C",
-      "storage": "NVMe",
+      "storage": "fast local volume",
       "passes": [
         {
           "agreement": true,
@@ -1463,7 +1463,7 @@
     },
     {
       "label": "real-D",
-      "storage": "HDD",
+      "storage": "slow local volume",
       "passes": [
         {
           "agreement": true,
@@ -1945,7 +1945,7 @@
   ],
   "synthetic": [
     {
-      "storage": "NVMe",
+      "storage": "fast local volume",
       "root": "G:\\loomward-lab\\scale\\mixed-1000000",
       "generated": false,
       "manifest": {
@@ -2508,7 +2508,7 @@
       ]
     },
     {
-      "storage": "HDD",
+      "storage": "slow local volume",
       "root": "E:\\loomward-lab\\scale\\mixed-1000000",
       "generated": true,
       "manifest": {
@@ -3183,7 +3183,7 @@
           "pass": 3
         }
       ],
-      "replacement_reason": "Third HDD sweep overlapped the metadata-only live-growth probe's second traversal. Preserve all four original results, replace the sweep once after the probe and original batch finished. No other timed sweep overlapped an active probe traversal.",
+      "replacement_reason": "Third slow-local-volume sweep overlapped the metadata-only live-growth probe's second traversal. Preserve all four original results, replace the sweep once after the probe and original batch finished. No other timed sweep overlapped an active probe traversal.",
       "replacement_complete": true
     }
   ],
@@ -3307,9 +3307,9 @@
     }
   },
   "storage_verified": {
-    "C": "PNY CS3030 2TB SSD, NVMe, NTFS",
-    "G": "Sabrent Rocket Q, NVMe, NTFS",
-    "E": "ST2000DM006-2DM164, SATA HDD, NTFS"
+    "C": "fast local volume, NTFS",
+    "G": "fast local volume, NTFS",
+    "E": "slow local volume, NTFS"
   },
   "live_growth_diagnosis": {
     "label": "real-A",
