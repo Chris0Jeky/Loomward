@@ -16,8 +16,11 @@
   import type { ScanView } from '../../lib/scan/model';
   import type { Grant } from '../../lib/derived';
 
-  /** A revocation the owner has asked for and not yet confirmed. */
-  type Pending = { kind: 'root'; id: string; label: string } | { kind: 'grant'; id: string; label: string };
+  /** A revocation (or forgetting) the owner has asked for and not yet confirmed. */
+  type Pending = { kind: 'root'; id: string; label: string } | { kind: 'grant'; id: string; label: string } | { kind: 'forget'; id: string; label: string };
+
+  /** The last folder of a display path, for the confirmation's question. */
+  const leaf = (path: string) => path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || path;
 
   const OBSERVATION: Record<string, string> = {
     metadata_scan: 'Metadata scan', process_observation: 'Process observation', gpu_observation: 'GPU observation',
@@ -105,6 +108,10 @@
       if (p.kind === 'root') {
         const { result } = await c.call('roots.revoke', { root_id: p.id, purge_catalog: purge });
         done = `Revoked ${escapedName(p.label)} at ${formatTime(result.revoked_at)}. ${result.purged ? "Loomward's own catalogue rows for it were deleted." : 'Its catalogue rows were kept.'} No scanned file was touched.`;
+      } else if (p.kind === 'forget') {
+        const { result } = await c.call('roots.forget', { root_id: p.id });
+        // the result does not repeat the name it just removed
+        done = `Forgotten at ${formatTime(result.forgotten_at)}. Its name and catalogue were removed from Loomward's database and its own backup copies; traces may remain in unused disk space until it is overwritten. No scanned file was touched.`;
       } else {
         const { result } = await c.call('grants.revoke', { grant_id: p.id });
         done = `Revoked ${escapedName(p.label)} at ${formatTime(result.revoked_at)}.`;
@@ -182,16 +189,18 @@
 
 {#if pending}
   <section class="panel confirm" role="group" aria-labelledby="h-confirm" bind:this={confirmEl} tabindex="-1">
-    <h2 id="h-confirm">Revoke {pending.kind === 'root' ? 'root access' : 'grant'}?</h2>
+    <h2 id="h-confirm">{#if pending.kind === 'forget'}Forget {escapedName(leaf(pending.label))}?{:else}Revoke {pending.kind === 'root' ? 'root access' : 'grant'}?{/if}</h2>
     <p><VisibleName name={pending.label} /></p>
-    {#if pending.kind === 'root'}
+    {#if pending.kind === 'forget'}
+      <p class="muted">Loomward removes its name and catalogue from its database and its own backup copies, and discards the start-up backup copies (they hold every root's state); traces may remain in unused disk space until it is overwritten. Your files are not touched. A dated record that a root was granted, revoked and forgotten stays in the grants list, without the name.</p>
+    {:else if pending.kind === 'root'}
       <p class="muted">Loomward stops reading this root. The files on disk are never touched.</p>
       <label class="chk"><input type="checkbox" bind:checked={purge} /> Also delete Loomward's own catalogue rows for this root (the scanned files stay as they are)</label>
     {:else}
       <p class="muted">The grant stops authorising anything further. Anything already sent under it cannot be recalled.</p>
     {/if}
     <div class="row">
-      <button class="btn danger" type="button" disabled={working} onclick={() => void confirm()}>{working ? 'Revoking' : 'Revoke'}</button>
+      <button class="btn danger" type="button" disabled={working} onclick={() => void confirm()}>{pending.kind === 'forget' ? (working ? 'Forgetting' : 'Forget') : working ? 'Revoking' : 'Revoke'}</button>
       <button class="btn" type="button" disabled={working} onclick={() => void cancel()}>Keep it</button>
     </div>
   </section>
@@ -263,7 +272,10 @@
               <td class="r num">{formatCount(r.totals?.files)}</td>
               <td class="r num">{formatBytes(r.totals?.logical_bytes)}</td>
               <td class="r num">{formatBytes(r.totals?.allocated_bytes)}</td>
-              <td><button class="btn" type="button" disabled={!rootActive(r)} aria-label={`Revoke… ${escapedName(r.display_path.text)}`} onclick={() => void ask({ kind: 'root', id: r.root_id, label: r.display_path.text })}>Revoke…</button></td>
+              <td><button class="btn" type="button" disabled={!rootActive(r)} aria-label={`Revoke… ${escapedName(r.display_path.text)}`} onclick={() => void ask({ kind: 'root', id: r.root_id, label: r.display_path.text })}>Revoke…</button>
+                {#if r.grant_state === 'revoked'}
+                  <button class="btn small" type="button" aria-label={`Forget… ${escapedName(r.display_path.text)}`} onclick={() => void ask({ kind: 'forget', id: r.root_id, label: r.display_path.text })}>Forget…</button>
+                {/if}</td>
             </tr>
           {:else}
             <tr><td colspan="9" class="muted">No roots granted.</td></tr>
@@ -314,12 +326,12 @@
       {#each grants.grants as g (g.grant_id)}
         <li>
           {#if g.kind === 'metadata_root'}
-            <strong>Metadata root</strong> <VisibleName name={rootLabel(g.root_id)} /> via {g.granted_via.replaceAll('_', ' ')}, granted {formatTime(g.granted_at)}
+            <strong>Metadata root</strong> {#if g.forgotten_at}<span class="muted">(name forgotten)</span>{:else}<VisibleName name={rootLabel(g.root_id)} />{/if} via {g.granted_via.replaceAll('_', ' ')}, granted {formatTime(g.granted_at)}
             {#if grantActive(g)}<span class="muted small"> · ends with the root's revocation above</span>{/if}
           {:else}
             <strong>Teacher disclosure</strong> to <code>{g.recipient}</code>: {g.item_count} items, fields {g.fields.join(', ')}; {g.used ? 'used' : 'unused'}, confirmed by {g.confirmed_via.replaceAll('_', ' ')}, expires {formatTime(g.expires_at)}
           {/if}
-          <span class="tag" class:warn={!grantActive(g)}>{g.revoked_at ? `revoked ${formatTime(g.revoked_at)}` : 'active'}</span>
+          <span class="tag" class:warn={!grantActive(g)}>{g.revoked_at ? `revoked ${formatTime(g.revoked_at)}` : 'active'}{g.kind === 'metadata_root' && g.forgotten_at ? ` · forgotten ${formatTime(g.forgotten_at)}` : ''}</span>
           {#if g.kind === 'teacher_disclosure' && grantActive(g)}
             <button class="btn small" type="button" aria-label={`Revoke… teacher disclosure to ${escapedName(g.recipient)}`} onclick={() => void ask({ kind: 'grant', id: g.grant_id, label: `Teacher disclosure to ${g.recipient}` })}>Revoke…</button>
           {/if}

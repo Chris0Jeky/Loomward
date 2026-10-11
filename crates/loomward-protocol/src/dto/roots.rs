@@ -164,3 +164,17 @@ pub struct RootRevokeResult {
     pub revoked_at: Timestamp,
     pub purged: bool,
 }
+
+/// Loomward's own state only: the scanned files are never touched. Applies to a revoked root; an active one is refused.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RootForgetRequest {
+    pub root_id: RootId,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RootForgetResult {
+    pub root_id: RootId,
+    pub forgotten_at: Timestamp,
+}

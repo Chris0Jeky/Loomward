@@ -35,7 +35,7 @@ pub struct RequestEnvelope {
     )]
     pub expected_generation: Option<Generation>,
     /// Revision precondition for owner-state mutations (`volumes.declare_tier`,
-    /// `collections.update_members`); a mismatch is `stale_generation`.
+    /// `collections.update_members`, `roots.forget`); a mismatch is `stale_generation`.
     #[serde(
         default,
         deserialize_with = "optional_present",
@@ -66,7 +66,7 @@ impl RequestEnvelope {
         command.validate_request(&self.payload)?;
         let takes_precondition = matches!(
             command,
-            Command::VolumesDeclareTier | Command::CollectionsUpdateMembers
+            Command::VolumesDeclareTier | Command::CollectionsUpdateMembers | Command::RootsForget
         );
         if self.expected_state_rev.is_some() && !takes_precondition {
             return Err(ErrorBody::invalid_request(

@@ -497,13 +497,46 @@ def live_personal_scan(browser, exe: Path) -> None:
         expect(page.get_by_text('Your labels train a local student on this machine.', exact=False)).to_be_visible()
         expect(page.get_by_role('button', name='Refit from human labels')).to_be_enabled()
         teacher_refusals(page, token, 'personal')
+        # Forget (owner decision q-9): revoke in the app, then forget the revoked root. The folder's name leaves every
+        # file of the state directory (databases, WALs and the start-up backups), a dated record stays, no user file moves.
+        def holders(needle: str) -> list[str]:
+            # state.db, its WAL and the start-up backups: what precious state keeps. catalog.db is derived and may hold
+            # freed pages from before the forget (see the PR), so it is checked through the API instead.
+            files = [p for p in Path(state.name).glob('state*') if p.is_file()]
+            return [p.name for p in files if needle.encode() in p.read_bytes() or needle.encode('utf-16-le') in p.read_bytes()]
+        stored = lambda needle: bool(holders(needle))
+        check(stored('owner-folder'), 'forget: the granted folder is named in state.db or its WAL before it is forgotten')
+        root_id = live_call(page, token, 'roots.list', {})['result']['roots'][0]['root_id']
+        active = live_call(page, token, 'roots.forget', {'root_id': root_id})
+        check(not active['ok'] and active['error']['code'] == 'invalid_request' and active['error']['detail']['reason'] == 'root_active', f"forget: an active root is refused with a reason: {active.get('error')}")
+        page.evaluate("location.hash = '#/health'")
+        expect(page.get_by_role('heading', name='Grants & health', level=1)).to_be_visible()
+        row = page.locator('main section[aria-labelledby="h-roots"] table tbody tr').first
+        row.get_by_role('button', name=re.compile('^Revoke…')).click()
+        page.get_by_role('group', name=re.compile('Revoke root access')).get_by_role('button', name='Revoke', exact=True).click()
+        expect(row.get_by_role('button', name=re.compile('^Forget…'))).to_be_visible()
         # Revoking the root redacts its duplicates report (#318): the job outcome stays, its names do not.
-        revoked = live_call(page, token, 'roots.revoke', {'root_id': root['root_id'], 'purge_catalog': False})
-        check(revoked['ok'], f'personal: the root is revoked: {revoked}')
         after = live_call(page, token, 'jobs.get', {'job_id': dup_jobs[0]['job_id']})['result']['job']
         check(after['state'] == 'completed' and after.get('duplicates') is None, f"personal: a revoked root's report is redacted: {after}")
-        page.context.close()
-        print('PASS personal: a granted folder scans to the fixture totals and its duplicate pair is confirmed; revocation redacts')
+        row.get_by_role('button', name=re.compile('^Forget…')).click()
+        ask = page.get_by_role('group', name='Forget owner-folder?')
+        expect(ask).to_contain_text('Your files are not touched')
+        ask.get_by_role('button', name='Forget', exact=True).click()
+        expect(page.get_by_role('status').filter(has_text='Forgotten')).to_contain_text('No scanned file was touched')
+        expect(page.locator('main section[aria-labelledby="h-roots"] table tbody')).to_contain_text('No roots granted')
+        grants = live_call(page, token, 'grants.list', {})['result']['grants']
+        record = [g for g in grants if g['kind'] == 'metadata_root']
+        check(len(record) == 1 and record[0]['revoked_at'] and record[0]['forgotten_at'] and 'owner-folder' not in json.dumps(grants), f'forget: grants.list keeps a dated record without the name: {record}')
+        check(live_call(page, token, 'roots.list', {})['result']['roots'] == [], 'forget: roots.list no longer lists the root')
+        gone = live_call(page, token, 'scan.start', {'root_id': root_id, 'mode': 'full'})
+        check(not gone['ok'] and gone['error']['code'] == 'not_found', f"forget: the forgotten root can no longer be scanned: {gone.get('error')}")
+        page.context.close()  # no page request can still be reading while the log is cut
+        until = time.time() + 15  # the WAL is cut as soon as no reader holds an older snapshot
+        while stored('owner-folder') and time.time() < until:
+            time.sleep(0.25)
+        check(not stored('owner-folder'), f"forget: the folder name is in no state.db, WAL or start-up backup: {holders('owner-folder')}")
+        check(snapshot() == before, 'forget: no file of the granted folder changed (contents and modification times are identical)')
+        print('PASS personal: a granted folder scans to the fixture totals and its duplicate pair is confirmed; revocation redacts; forget removes the name')
     finally:
         if proc.poll() is None:
             proc.kill()

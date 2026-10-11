@@ -2,7 +2,7 @@ import type { ByteCount, ErrorCode, Timestamp } from '../contracts.gen';
 import type {
   CandidateGroup, GroupOverride, HeatBasis, OwnBudgets, PlacementCandidates, PlacementPlan, PlacementProposal,
   PlacementSimulateRequest, ProposalDetail, PoolName, PoolUse, ProcessExplanation, ProcessList, ProcessRow,
-  RootRevokeResult, GrantRevokeResult, TelemetryChannel, TelemetrySample, TelemetrySubscription, TierModel, Volume, VolumeList,
+  RootRevokeResult, RootForgetResult, GrantRevokeResult, TelemetryChannel, TelemetrySample, TelemetrySubscription, TierModel, Volume, VolumeList,
 } from '../contracts.gen';
 import type { PreRejectReason, RejectReason } from '../derived';
 import { formatBytes } from '../format/bytes';
@@ -50,6 +50,8 @@ export interface ViewMock {
   /** root_id / grant_id -> revoked_at, read by the roots.list and grants.list handlers in mock.ts. */
   revokedRoots: Map<string, Timestamp>;
   revokedGrants: Map<string, Timestamp>;
+  /** root_id -> forgotten_at: the root is gone from roots.list and only the anonymised grant record remains. */
+  forgottenRoots: Map<string, Timestamp>;
   /** state.db revision: starts at 1 and moves only when a revocation actually changes owner data. */
   stateRev(): string;
   /** catalog.db revision: starts at 1 and moves only when a first purge deletes catalogue rows (semantics.md section 5). */
@@ -63,6 +65,7 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
   const revokedRoots = new Map<string, Timestamp>();
   const revokedGrants = new Map<string, Timestamp>();
   const purgedRoots = new Set<string>();
+  const forgottenRoots = new Map<string, Timestamp>();
   let catalogRev = 1;
   const subscriptions = new Map<string, { channels: TelemetryChannel[]; expiresAt: number }>();
   let subscriptionSeq = 0;
@@ -373,6 +376,16 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
       }
       return { root_id: id, revoked_at: at, purged: p.purge_catalog };
     },
+    'roots.forget': (p): RootForgetResult => {
+      const id = typeof p.root_id === 'string' ? p.root_id : fail('invalid_request', 'root_id');
+      if (!/^rt_mock_\d+$/.test(id) || forgottenRoots.has(id)) fail('not_found', 'no such root');
+      if (!revokedRoots.has(id)) fail('invalid_request', 'only a revoked root can be forgotten; revoke it first');
+      const at = iso();
+      forgottenRoots.set(id, at);
+      stateRev++;
+      catalogRev++; // the catalogue rows go in the same command
+      return { root_id: id, forgotten_at: at };
+    },
     'grants.revoke': (p): GrantRevokeResult => {
       const id = typeof p.grant_id === 'string' ? p.grant_id : fail('invalid_request', 'grant_id');
       if (!/^gr_mock_/.test(id)) fail('not_found', 'no such grant');
@@ -382,5 +395,5 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
       return { grant_id: id, revoked_at: at };
     },
   };
-  return { handlers, revokedRoots, revokedGrants, stateRev: () => String(stateRev), catalogRev: () => String(catalogRev) };
+  return { handlers, revokedRoots, revokedGrants, forgottenRoots, stateRev: () => String(stateRev), catalogRev: () => String(catalogRev) };
 }

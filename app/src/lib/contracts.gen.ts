@@ -313,6 +313,16 @@ export interface RootRevokeRequest {
   purge_catalog: boolean;
 }
 
+/** Loomward's own state only: the scanned files are never touched. Applies to a revoked root; an active one is refused. */
+export interface RootForgetRequest {
+  root_id: RootId;
+}
+
+export interface RootForgetResult {
+  root_id: RootId;
+  forgotten_at: Timestamp;
+}
+
 export interface RootRevokeResult {
   root_id: RootId;
   revoked_at: Timestamp;
@@ -931,6 +941,8 @@ export interface RootGrantRecord {
   granted_at: Timestamp;
   granted_via: "desktop_picker" | "cli_flag" | "fixture";
   revoked_at: NullableTimestamp;
+  /** Set once the owner forgot the revoked root: only this anonymised record remains. */
+  forgotten_at: NullableTimestamp;
 }
 
 export interface GrantList {
@@ -1694,6 +1706,7 @@ export interface CommandMap {
   "roots.list": { request: EmptyRequest; result: RootList };
   "roots.request_grant": { request: RootGrantRequest; result: RootGrantResult };
   "roots.revoke": { request: RootRevokeRequest; result: RootRevokeResult };
+  "roots.forget": { request: RootForgetRequest; result: RootForgetResult };
   "volumes.list": { request: EmptyRequest; result: VolumeList };
   "volumes.declare_tier": { request: DeclareTierRequest; result: DeclareTierResult };
   "scan.start": { request: ScanStartRequest; result: JobResult };
@@ -1753,6 +1766,7 @@ export const COMMANDS = {
   "roots.list": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "roots.request_grant": { adapters: ["tauri"], wave: 2, events: [] },
   "roots.revoke": { adapters: ["tauri", "http"], wave: 2, events: [] },
+  "roots.forget": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "volumes.list": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "volumes.declare_tier": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "scan.start": { adapters: ["tauri", "http"], wave: 2, events: ["job.state", "scan.progress", "tree.invalidated"] },

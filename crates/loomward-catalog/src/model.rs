@@ -234,6 +234,13 @@ pub enum WriteCommand {
         grant_id: i64,
         revoked_at_ns: i64,
     },
+    /// Forget a revoked grant (#288): state.db first (labels, references, the display path), then
+    /// the catalogue rows. Idempotent. `expected_state_rev` is the owner-state precondition.
+    ForgetGrant {
+        grant_id: i64,
+        forgotten_at_ns: i64,
+        expected_state_rev: Option<i64>,
+    },
     /// The granted root no longer has the grant's native identity (docs/41 section 7 step 1):
     /// the grant ends `identity_changed` and its root's run is cancelled, as a revocation does.
     GrantIdentityChanged {

@@ -199,6 +199,35 @@ describe('mock revocation', () => {
     expect((await kids((await kids(null)).result.next_cursor)).result.items.length).toBeGreaterThan(0); // a fresh cursor works
   });
 
+  it('forgets only a revoked root: it leaves roots.list and keeps an anonymised grant record (q-9)', async () => {
+    const c = client();
+    const roots = (await c.call('roots.list', {})).result.roots;
+    const id = roots[0]!.root_id;
+    // an active root is refused and nothing changes
+    await expect(c.call('roots.forget', { root_id: id })).rejects.toMatchObject({ code: 'invalid_request' });
+    expect((await c.call('roots.list', {})).result.roots).toHaveLength(roots.length);
+    await c.call('roots.revoke', { root_id: id, purge_catalog: false });
+    // a stale precondition writes nothing
+    await expect(c.call('roots.forget', { root_id: id }, { expectedStateRev: '0' })).rejects.toMatchObject({ code: 'stale_generation', detail: { reason: 'state_rev_changed' } });
+    expect((await c.call('roots.list', {})).result.roots).toHaveLength(roots.length);
+    const before = (await c.call('grants.list', {})).meta;
+    const done = await c.call('roots.forget', { root_id: id }, { expectedStateRev: before.state_rev! });
+    expect(done.result.root_id).toBe(id);
+    expect(done.meta.state_rev).not.toBe(before.state_rev);
+    const after = (await c.call('roots.list', {})).result.roots;
+    expect(after.map((r) => r.root_id)).toEqual(roots.slice(1).map((r) => r.root_id));
+    const grants = (await c.call('grants.list', {})).result.grants;
+    const record = grants.find((g) => g.kind === 'metadata_root' && g.root_id === id)!;
+    expect(record.kind === 'metadata_root' && record.forgotten_at).toBe(done.result.forgotten_at);
+    expect(record.revoked_at).not.toBeNull();
+    // the other grants say they were not forgotten, and the record carries no path
+    expect(grants.filter((g) => g.kind === 'metadata_root' && g.forgotten_at === null)).toHaveLength(roots.length - 1);
+    expect(JSON.stringify(record)).not.toContain('[mock]');
+    // forgetting again, or something that never existed, is not_found
+    await expect(c.call('roots.forget', { root_id: id })).rejects.toMatchObject({ code: 'not_found' });
+    await expect(c.call('roots.forget', { root_id: 'rt_nope' })).rejects.toMatchObject({ code: 'not_found' });
+  });
+
   it('shows a revoked root grant in grants.list and in roots.list, whichever call revoked it', async () => {
     const c = client();
     await c.call('grants.revoke', { grant_id: 'gr_mock_root_0' });
