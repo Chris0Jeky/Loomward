@@ -1800,8 +1800,9 @@ fn crash_after_a_window_restage_recovers_like_any_publication() {
 
 /// #389: a batch led by `StageChunk` stages no references, yet a queued `ListingDone` may join it
 /// when no resolved reference exists. A reference bound after that check but before the batch's
-/// transaction (here: by an IMMEDIATE transaction over both files that commits while the writer
-/// waits for main's lock) must still be retired with the row the publication removes.
+/// transaction (here: an IMMEDIATE transaction over both files, still uncommitted when the writer
+/// checks and committed while it is paused in the window) must still be retired with the row the
+/// publication removes. Before the fix the batch never paused, so `wait_paused` fails the test.
 #[test]
 fn a_reference_bound_before_a_stage_chunk_led_batch_is_restaged_before_the_joined_listing() {
     let (temp, conn, done) = fixture();
@@ -1849,14 +1850,26 @@ fn a_reference_bound_before_a_stage_chunk_led_batch_is_restaged_before_the_joine
     drop(tx);
     let timings = Arc::new(Mutex::new(WriterTimings::default()));
     let measured = timings.clone();
+    let window = Arc::new(PublicationWindow::default());
+    window.arm();
+    let paused = window.clone();
     let writer = std::thread::spawn(move || {
         super::hold_batch_window_open();
         let (alive, _) = bounded(0);
-        work(conn, rx, measured, alive, None);
+        serve(
+            conn,
+            rx,
+            measured,
+            alive,
+            Arc::default(),
+            None,
+            Some(paused),
+        );
     });
-    // Ordering only: the binding is uncommitted, so the writer's checks cannot see it either way.
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    // The writer has taken its mark and decided batching with the binding still uncommitted.
+    window.wait_paused();
     bind.commit().unwrap();
+    window.release();
     writer.join().unwrap();
     for reply in replies {
         reply.recv().unwrap().unwrap();
