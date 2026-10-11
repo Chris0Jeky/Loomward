@@ -157,6 +157,8 @@ pub trait ScanSink: Send + Sync {
     /// Recover durable running jobs to failed/repairing before any root serves slices.
     fn recover_interrupted(&self) -> EngineResult<()>;
     /// Begin one active root run; record its reconciliation scope.
+    /// An error accepts no run; the sink owns cleanup of any partial begin. Callers must not
+    /// finish a refused begin, which could belong to another active scan.
     fn begin_run(&self, root: &RootId, run: u64, scope: &RunScope) -> EngineResult<()>;
     /// Resolve a directory and reserve a listing revision. Executed on the writer thread.
     fn prepare_listing(
