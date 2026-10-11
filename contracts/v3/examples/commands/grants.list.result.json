@@ -6,7 +6,8 @@
       "root_id": "rt_synth1",
       "granted_at": "2026-10-09T11:58:30Z",
       "granted_via": "fixture",
-      "revoked_at": null
+      "revoked_at": null,
+      "forgotten_at": null
     },
     {
       "grant_id": "gr_0002",

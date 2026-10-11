@@ -77,6 +77,7 @@ commands! {
     RootsList = "roots.list", EmptyRequest, RootList, [Tauri, Http], 2, [];
     RootsRequestGrant = "roots.request_grant", RootGrantRequest, RootGrantResult, [Tauri], 2, [];
     RootsRevoke = "roots.revoke", RootRevokeRequest, RootRevokeResult, [Tauri, Http], 2, [];
+    RootsForget = "roots.forget", RootForgetRequest, RootForgetResult, [Tauri, Http], 2, [];
     VolumesList = "volumes.list", EmptyRequest, VolumeList, [Tauri, Http], 2, [];
     VolumesDeclareTier = "volumes.declare_tier", DeclareTierRequest, DeclareTierResult, [Tauri, Http], 2, [];
     ScanStart = "scan.start", ScanStartRequest, JobResult, [Tauri, Http], 2, [JobState, ScanProgress, TreeInvalidated];
