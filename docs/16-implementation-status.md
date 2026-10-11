@@ -181,3 +181,19 @@ Process note: from this wave, the driver updates this file and `handoff/CHECKPOI
 Not established: personal scans through the product (one gate in review, then an explicit opening step);
 P4 at 250k (#148); P12 at or under 1% (#160); service, contract and UI wiring for duplicates, applications and
 desktop contexts; the desktop shell in hosted CI (#276). No file or process effect exists.
+
+## Personal scans opened (11 October 2026)
+
+The sections above are kept as history. All four personal-scan safety gates are closed: #184 (audit, #274),
+#206 (#225), #240 (#252) and #269 (containment re-proved before every relist, #278). #284 hardened the
+profile and store fences and keyed scan gates on the durable grant, and #286's profiles-directory fence now
+resolves the directory from the OS rather than by its folder name.
+
+| Area | State | Evidence |
+|---|---|---|
+| Personal scans | open: a personal session scans its own active owner grants (desktop picker or `--grant-root`), metadata only, explicit roots, never elevated; a revoked grant, a lab root and an unknown root are refused (`personal_session_requires_owner_grant` for a root that is not an owner grant). The `personal_scan_gated_184` refusal is gone | `evidence/v3/personal-scan-opening.md` |
+| Unchanged | a synthetic session scans registered lab roots only; content reads for duplicates stay gated (`content_read_gated`); no file or process effect; no new endpoint | service tests |
+
+Not established: personal scans on FAT, exFAT or RAM-disk volumes (#285 item 2); P4 at 250k (#148); P12 at or
+under 1% (#160); service, contract and UI wiring for duplicates, applications and desktop contexts; the desktop
+shell in hosted CI (#276). No file or process effect exists.
