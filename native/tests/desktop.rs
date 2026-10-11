@@ -933,8 +933,11 @@ impl NativeDialogs for Picker {
     fn pick_folder(&self) -> Option<std::path::PathBuf> {
         Some(self.0.clone())
     }
-    fn confirm_disclosure(&self, _: &DisclosureSummary) -> bool {
-        false
+    fn confirm_disclosure(
+        &self,
+        _: &DisclosureSummary,
+    ) -> Result<bool, loomward_protocol::ErrorBody> {
+        Ok(false)
     }
 }
 
