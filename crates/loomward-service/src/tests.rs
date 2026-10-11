@@ -3840,3 +3840,86 @@ fn picker_confirms_identity_unverified_volumes_explicitly() {
         .unwrap();
     assert_eq!(modes, ["unverified", "verified"]);
 }
+
+/// #219: the root's own open decides the run's identity mode: every row an unverified run
+/// publishes is flagged and stored without a file ID, while a verified run keeps its IDs.
+#[test]
+fn an_unverified_run_flags_every_published_row() {
+    use loomward_engine::scan::source::{FileIdObs, IdBasis, ListOutcome, OpenedIdentity};
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (root, grant) = register(&svc, 21);
+    let dir = crate::db::active_root_dir(&svc.inner.db(), root)
+        .unwrap()
+        .unwrap();
+    let id = RootId::new(svc.inner.root_id(root)).unwrap();
+    let sink = &svc.inner.scan;
+    sink.bind(&id, grant, dir);
+    for (run, basis, name) in [
+        (61, IdBasis::PostOpen, "synthetic-verified"),
+        (62, IdBasis::Unverified, "synthetic-unverified"),
+    ] {
+        sink.begin_run(&id, run, &RunScope::FullRoot).unwrap();
+        let identity = OpenedIdentity {
+            id: None,
+            basis,
+            volume_serial: None,
+            attributes: 0x10,
+            reparse_tag: None,
+        };
+        let ticket = sink.prepare_listing(&id, run, None, &[], identity).unwrap();
+        let entry = loomward_engine::scan::Entry {
+            name: name.encode_utf16().collect(),
+            file_id: Some(FileIdObs::Id128([run as u8; 16])),
+            identity_eligible: true,
+            attributes: 0,
+            reparse_tag: None,
+            logical: 1,
+            allocated: Some(1),
+            creation: None,
+            last_write: None,
+            change: None,
+            last_access: None,
+            excluded: false,
+            traversal_error: None,
+        };
+        sink.consume(
+            &id,
+            ScanMessage::DirListing {
+                run,
+                ticket,
+                entries: vec![entry],
+            },
+        )
+        .unwrap();
+        sink.consume(
+            &id,
+            ScanMessage::ListingDone {
+                run,
+                ticket,
+                outcome: ListOutcome::Incomplete(
+                    loomward_engine::scan::source::IncompleteReason::Cancelled,
+                ),
+            },
+        )
+        .unwrap();
+        sink.finish_run(&id, run, &RunScope::FullRoot, false)
+            .unwrap();
+        let (flags, file_id): (u32, Option<Vec<u8>>) = svc
+            .inner
+            .db()
+            .query_row(
+                "SELECT flags,file_id FROM main.file WHERE name=?1",
+                [name],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        let unverified = basis == IdBasis::Unverified;
+        assert_eq!(
+            flags & loomward_catalog::IDENTITY_UNVERIFIED != 0,
+            unverified,
+            "{name}"
+        );
+        assert_eq!(file_id.is_none(), unverified, "{name}");
+    }
+}
