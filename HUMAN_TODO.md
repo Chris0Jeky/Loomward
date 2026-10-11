@@ -154,7 +154,7 @@ deleted; bounded by the job's byte and time budgets. Retires `content_read_gated
 Selected: "Open locally, your labels only". The local student trains on the owner's labels plus metadata features of
 granted roots, on this machine; suggestions stay advice with relative scores; the teacher stays synthetic until q-5's
 conditions hold. Retires `learning_personal_gated`.
-- [x] Implemented and merged: #368.
+- [x] Implemented and merged: #368, with #372's filesystem record. #368's 9fa5159 labels a file in a real granted NTFS folder.
 
 ### q-12 — FAT and exFAT volumes (#219) — ANSWERED: list them, marked identity-unverified
 
@@ -198,7 +198,10 @@ Selected: "Unsigned preview pre-release": a GitHub pre-release of the Tauri desk
 
 Selected: "Scrub to generic labels". Media and core counts become generic labels; the mock volume capacities become
 generic round numbers. Git history keeps the old text.
-- [x] Scrub merged: #365.
+- [ ] Scrub merged. #365 scrubbed the docs and mocks. Still open: the raw receipts under `evidence/v3/` (for example
+  `enumeration-spike.json`, `real-folder-stress.json`) keep processor counts and media models. The old Python reference
+  fixtures (`fixtures/demo.json`, `fixtures/tier-scenario.json`, `scripts/make_demo.py`, `ui/demo-data.js`, `preview.html`)
+  still say 'Project SSD' and 'Archive HDD'.
 
 ### q-19 — Dependabot alert #182 (glib, Linux-only) — OWNER ACTION: dismiss as not reachable
 

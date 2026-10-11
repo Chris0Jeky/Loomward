@@ -443,16 +443,16 @@
       "q-14 backups stages 2 and 3 (guarded restic observer, then restore-drill executor; stage 1 landed in #383)",
       "q-15 diagnostics bundle via native save dialog",
       "q-9 Forget a revoked root (#382 in review)",
-      "q-17 first unsigned preview pre-release (workflow #362 and prerequisites #379 merged; nothing published)"
+      "q-17 first unsigned preview pre-release (workflow #362 and prerequisites #379 merged; nothing published)",
+      "q-18 hardware scrub: docs and mocks done (#365); raw evidence/v3 receipts and old Python fixtures still carry processor counts and media models"
     ],
     "owner_action": "q-19 dismiss Dependabot alert 1",
     "implemented": [
       "q-12 FAT/exFAT identity-unverified listing (#372; state v5; every grant records its filesystem; real FAT volume leg unverified)",
-      "q-11 personal learning on the owner's labels (#368)",
+      "q-11 personal learning on the owner's labels (#368; real granted NTFS folder leg in 9fa5159 after #372)",
       "q-10 personal duplicate content reads (#376)",
       "q-13 first-scan bulk load (#387; KPI end-to-end files/s; quiet-host A/B unverified; P14 155 to 230 bytes/entry, #386)",
-      "q-14 stage 1 backup evidence import (#383; state v6; never verified recovery)",
-      "q-18 hardware scrub to generic labels (#365)"
+      "q-14 stage 1 backup evidence import (#383; state v6; never verified recovery)"
     ]
   }
 }

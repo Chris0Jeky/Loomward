@@ -101,9 +101,13 @@ the review queue require NTFS or ReFS. On a real scanned root the queue is there
 learning surfaces here are proven on SQL fixture roots, as L14's were. Opening q-11 for real
 folders needs the grant path to record the volume's filesystem; that is outside this slice.
 
+**Resolved after #372 (still within #368).** #372 made every grant record its volume's real filesystem. #368's
+commit 9fa5159 then added a service test in which a personal session labels a file in a real granted NTFS folder.
+That test is in `crates/loomward-service/src/tests.rs`.
+
 ## NOT verified
 
-Learning on a real scanned folder (blocked by the finding above); Tauri/WebView2 native UI;
+Learning on a real owner-picked folder through the desktop picker (the NTFS leg is a service test since 9fa5159); Tauri/WebView2 native UI;
 hosted or elevated CI; real-user accuracy, calibration or promotion; manual screen-reader
 testing; redaction of events whose reference awaits a pending rebind or whose catalogue instance
 was rebuilt (the sweep maps through the reference's bound row; see residual risk).
