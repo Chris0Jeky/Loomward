@@ -346,6 +346,24 @@ fn core_final_failed_representative_reverifies_survivors() {
     assert_eq!(report.skipped.len(), 1);
     assert_eq!(report.stop, None);
 }
+/// A row without a verified 128-bit file identity is never read (q-10, q-12): no hash, no byte.
+#[test]
+fn core_unverified_identity_is_never_read() {
+    let entries = [1, 2].map(|id| {
+        let mut e = synthetic_entry(id, "1", 4);
+        e.expected.object.quality = crate::identity::IdentityQuality::Legacy64 {
+            reason: "fixture".into(),
+        };
+        e
+    });
+    let report = group(&entries, &mut Collision, &mut Meter::new(Budget::test()));
+    assert!(report.groups.is_empty() && report.partial);
+    assert_eq!(report.bytes_read, 0);
+    assert_eq!(
+        report.skipped.iter().map(|s| s.reason).collect::<Vec<_>>(),
+        [Reason::Unsupported, Reason::Unsupported]
+    );
+}
 #[test]
 fn core_identity_is_volume_scoped_and_empty_files_claim_nothing() {
     let entries = [
