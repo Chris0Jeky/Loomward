@@ -209,7 +209,7 @@ fn inspect_identity_pins_available_and_unavailable_durable_quality() {
         {
             let mut o = sized_flagged("synthetic-durable", 100, 0);
             o.file_id = Some(vec![7u8; 16]);
-            o.created_ft = Some(133_0000_0000_0000_000);
+            o.created_ft = Some(133_000_000_000_000_000);
             o
         },
         sized_flagged("synthetic-noid", 90, 0),
