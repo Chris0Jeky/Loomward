@@ -323,7 +323,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
       const scope = REVS[req.command] ?? '';
       // Read after the handler, so a mutation reports the revision it committed.
       const meta = {
-        served_at: now().toISOString(), elapsed_ms: 0, dataset_class: DATASET, budget_hit: false,
+        served_at: now().toISOString(), elapsed_ms: 0, dataset_class: DATASET, budget_hit: result.budget_hit === true,
         catalog_rev: scope.includes('c') ? views.catalogRev() : null, state_rev: scope.includes('s') ? collections.stateRev() : null,
       };
       return { ...base, ok: true, result, meta };

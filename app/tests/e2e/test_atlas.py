@@ -226,6 +226,7 @@ def run(ctx) -> dict:
     drawn = drawn_texts(page)
     check(drew_prefix_of(drawn, 'scanU+200B ZWSPU+200D ZWJresults.bin'), 'canvas label source: the zero-width file is drawn as its escaped form (fitted)')
     check(not any(h in t for t in drawn for h in HIDDEN), 'canvas never draws a raw hidden character (inside the folder)')
+    canvas.scroll_into_view_if_needed()
     box = canvas.bounding_box()
     page.mouse.move(box['x'] + box['width'] * 0.5, box['y'] + box['height'] * 0.5)
     expect(page.locator('main .tip .ctl').first).to_be_visible()

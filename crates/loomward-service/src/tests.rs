@@ -23,6 +23,7 @@ pub(crate) struct Hooks {
     pub runs: Mutex<HashMap<Command, usize>>,
     pub order: Mutex<Vec<Command>>,
     pub fail_spawn: std::sync::atomic::AtomicBool,
+    pub fail_job_list: std::sync::atomic::AtomicBool,
     pub closed: Mutex<Vec<(Command, &'static str)>>,
     pub arrived: Mutex<Vec<(Command, &'static str)>>,
     pub opened: std::sync::Condvar,
@@ -130,6 +131,52 @@ fn followup_stored_grant_version_errors_fail_closed() {
 }
 
 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+#[test]
+fn health_job_list_failure_is_an_error_not_idle() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (health, _) = ok("health.get", call(&svc, "health.get", json!({})));
+    assert_eq!(health["jobs_running"], 0);
+    svc.inner
+        .hooks
+        .fail_job_list
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let error = err(call(&svc, "health.get", json!({})));
+    assert_eq!(error.code, ErrorCode::InternalError);
+    assert_eq!(error.message.as_str(), "synthetic job list failure");
+}
+
+#[test]
+fn roots_list_keeps_a_root_mid_scan_with_unknown_totals() {
+    // Every scan dirties its root's aggregates; the list must stay available with an
+    // honest unknown for that root, not fail for every root (review of #358).
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (root, grant) = fixture(&svc, 2);
+    let (roots, _) = ok("roots.list", call(&svc, "roots.list", json!({})));
+    assert!(!roots["roots"][0]["totals"].is_null());
+    svc.inner
+        .catalog
+        .writer()
+        .call(WriteCommand::BeginRun {
+            grant_id: grant,
+            mode: "full".into(),
+            strategy: "fixture".into(),
+            started_at_ns: 0,
+        })
+        .unwrap();
+    svc.inner
+        .db()
+        .execute(
+            "UPDATE main.dir SET dirty_rev=agg_valid_rev+1 WHERE root_id=?1 AND parent_id IS NULL",
+            [root],
+        )
+        .unwrap();
+    let (roots, _) = ok("roots.list", call(&svc, "roots.list", json!({})));
+    assert!(roots["roots"][0]["totals"].is_null());
+    assert_eq!(roots["roots"][0]["grant_state"], "active");
+}
 
 fn placement_fixture(svc: &Service) -> (i64, i64, String) {
     let (root, grant) = fixture(svc, 3);
@@ -1256,8 +1303,11 @@ fn hardening_picker_cooldown_survives_cancellation_and_new_ids() {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             None
         }
-        fn confirm_disclosure(&self, _: &DisclosureSummary) -> bool {
-            false
+        fn confirm_disclosure(
+            &self,
+            _: &DisclosureSummary,
+        ) -> Result<bool, loomward_protocol::ErrorBody> {
+            Ok(false)
         }
     }
     let tmp = temp_root();
@@ -3634,8 +3684,11 @@ fn followup_picker_refusal_reaches_the_user() {
         fn pick_folder(&self) -> Option<std::path::PathBuf> {
             Some(self.0.clone())
         }
-        fn confirm_disclosure(&self, _: &DisclosureSummary) -> bool {
-            false
+        fn confirm_disclosure(
+            &self,
+            _: &DisclosureSummary,
+        ) -> Result<bool, loomward_protocol::ErrorBody> {
+            Ok(false)
         }
     }
     let tmp = temp_root();
@@ -3663,8 +3716,11 @@ fn a_stale_stored_grant_still_blocks_a_picked_parent() {
         fn pick_folder(&self) -> Option<std::path::PathBuf> {
             Some(self.0.clone())
         }
-        fn confirm_disclosure(&self, _: &DisclosureSummary) -> bool {
-            false
+        fn confirm_disclosure(
+            &self,
+            _: &DisclosureSummary,
+        ) -> Result<bool, loomward_protocol::ErrorBody> {
+            Ok(false)
         }
     }
     let tmp = temp_root();

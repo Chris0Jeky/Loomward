@@ -821,3 +821,33 @@ fn collections_add_inside_the_publication_window_follows_the_publication() {
     assert_eq!(page["items"][0]["entry"]["name"], "report-001.txt");
     assert_eq!(page["items"][1]["status"], "unresolved");
 }
+
+#[test]
+fn collections_list_resolves_references_once_for_all_collections() {
+    let (_dir, svc, _) = setup(DatasetClass::Synthetic);
+    // 256 collections over 30,000 invented references: evaluating the reference CTE per collection took
+    // longer than the 2 s read deadline (measured 2026-10-11, debug build); once it takes ~0.1 s.
+    svc.inner.db().execute_batch("UPDATE main.dir SET file_id=CAST(printf('%016d',id) AS BLOB),created_ft=123 WHERE id=1; WITH RECURSIVE n(i) AS (VALUES(10) UNION ALL SELECT i+1 FROM n WHERE i<30009) INSERT INTO main.file(id,dir_id,name,file_id,logical,allocated,created_ft,attrs,born_run,seen_run) SELECT i,1,'entry'||i,CAST(printf('%016d',i) AS BLOB),1,1,123,0,1,1 FROM n;
+      WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<256) INSERT INTO st.collection(name,kind,created_at_ns) SELECT 'C'||i,'human',0 FROM n;
+      INSERT INTO st.object_ref(volume_key,file_id,creation_ft,kind,state,last_resolved_ns,incarnation,catalog_instance,row_id,born_run) SELECT 'fixture',f.file_id,f.created_ft,'file','resolved',0,1,(SELECT value FROM main.meta WHERE key='instance_id'),f.id,f.born_run FROM main.file f WHERE f.id>=10;
+      INSERT INTO st.collection_member SELECT ((o.id-1)%256)+1,o.id,0 FROM st.object_ref o;").unwrap();
+    let (list, _) = ok(
+        "collections.list",
+        call(&svc, "collections.list", json!({})),
+    );
+    let all = list["collections"].as_array().unwrap();
+    assert_eq!(all.len(), 256);
+    assert_eq!(
+        all.iter()
+            .map(|c| c["member_count"].as_i64().unwrap())
+            .sum::<i64>(),
+        30000
+    );
+    for (i, c) in all.iter().enumerate() {
+        assert_eq!(c["collection_id"], format!("co_{}", i + 1));
+        assert_eq!(
+            c["logical_bytes"],
+            c["member_count"].as_i64().unwrap().to_string()
+        );
+    }
+}
