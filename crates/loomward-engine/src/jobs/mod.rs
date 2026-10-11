@@ -467,10 +467,10 @@ impl Engine {
     }
     /// Retained state of a job, including terminal outcomes inside the idempotency window.
     pub fn job_status(&self, id: &JobId) -> EngineResult<Job> {
-        self.jobs
-            .records
-            .lock()
-            .unwrap()
+        // Retention holds for jobs.get too: an expired report is never served (Codex P2 on #318).
+        let mut records = self.jobs.records.lock().unwrap();
+        Registry::prune(&mut records, &self.events)?;
+        records
             .get(id)
             .map(|r| r.job.clone())
             .ok_or_else(|| EngineError::NotFound {
@@ -742,8 +742,10 @@ mod tests {
         Registry::prune(&mut records, &e.events).unwrap();
         assert!(records.contains_key(&job.job_id));
         records.get_mut(&job.job_id).unwrap().terminal = Some(Instant::now() - TERMINAL_RETENTION);
-        Registry::prune(&mut records, &e.events).unwrap();
-        assert!(!records.contains_key(&job.job_id));
+        drop(records);
+        // jobs.get alone expires the record; no later submission or listing is needed.
+        assert!(e.job_status(&job.job_id).is_err());
+        assert!(!e.jobs.records.lock().unwrap().contains_key(&job.job_id));
     }
     fn drain(stream: &mut Box<dyn loomward_protocol::EventStream>) {
         while let loomward_protocol::RecvOutcome::Event(_) = stream.recv_timeout(Duration::ZERO) {}
