@@ -330,7 +330,9 @@ the sampled lease union return `partial_coverage` (not sampled), distinct from h
 
 ## Duplicate inspection (LW-012 / LW-013)
 
-`duplicates.inspect` starts a retained `duplicates` job for one active registered synthetic lab root.
+`duplicates.inspect` starts a retained `duplicates` job for one active root of the session's own dataset
+class: a registered lab root in a synthetic session, an owner-granted folder in a personal session
+(owner decision q-10).
 It is a mutation of the job registry: request_id is idempotent per session for ten minutes, like
 scan.start; a timed-out submission has an unknown outcome and is recovered with the same request_id
 or jobs.list (kinds=["duplicates"]). One active inspection per root returns busy with detail.job_id.
@@ -365,9 +367,22 @@ links_not_compared is the number of listed names in those link sets. skipped giv
 bytes_read, partial, truncated and nullable stop preserve negative and incomplete evidence.
 No result authorises deleting, moving, renaming or creating links. No reclaim estimate is supplied.
 
-Personal sessions are refused before resolving or opening a root, with capability_unavailable and
-detail.reason=content_read_gated. The engine repeats the synthetic-grant admission before metadata
-and content I/O. Scan file identity, size, attributes and creation/write/change ticks must match
+Personal content reads are open, local and read-only. Before resolving catalogue candidates or
+opening anything, the service applies the scan's root gate: an inactive grant is permission_denied;
+a personal session reads only its own owner grants (a lab root is permission_denied with
+detail.reason=personal_session_requires_owner_grant) that still pass today's profile, profiles-directory
+and store fences (detail.reason names the refusal, e.g. protected_profile_or_store); a synthetic
+session reads only registered lab roots (synthetic_session_requires_lab_root). The engine repeats the
+admission before metadata and content I/O: the grant, the engine and the durable state store must
+name the same dataset class (dataset_class_mismatch otherwise), so neither session reads the other's
+roots. The candidate cap is enforced before any metadata or content is opened. Every read goes
+through pinned, revalidated, non-elevated handles opened without recall: cloud placeholders and
+offline files are skipped (placeholder, offline) and never hydrated or downloaded, reparse points are
+never followed, and a row without a 128-bit native file identity is never read (unsupported).
+Nothing leaves the machine, no file is written, moved or deleted, and the job's byte and time budgets
+bound all of it. `Capabilities.effects.content_read` stays false, as it already was for synthetic
+inspection: no command returns file content; inspection returns equality evidence, never bytes.
+Scan file identity, size, attributes and creation/write/change ticks must match
 fresh root-relative metadata before the existing handle reader compares content. Root revocation
 uses the existing root cancellation fence and refuses the report: after revocation `jobs.get` and
 `jobs.list` carry no report, including evidence from an already-terminal job: no report survives revocation. Retained `job.state` events are redacted, and `duplicates.cancel` and `jobs.cancel` receipts never contain a report. Removing terminal evidence increments rev and
@@ -377,7 +392,7 @@ job's permission error is published only with its terminal state; pending eviden
 shows cancel_requested until the worker drains. Cancelled jobs may retain verified partial evidence
 with stop=cancelled when no earlier reader stop exists; a permission refusal instead carries error
 and no duplicates report. seq and rev
-have the same ordering semantics as scan jobs. Personal scan gating is unchanged.
+have the same ordering semantics as scan jobs.
 
 ## Collections (local preferences)
 
