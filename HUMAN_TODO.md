@@ -75,7 +75,7 @@ allow re-measuring". Recorded scope now:
   needs it, and must always delete it afterwards and prove deletion (Loomward#291 did this once).
 - Unchanged guards: never copy or reuse an existing Codex credential; a new sign-in for the broker is
   a separate owner approval; no firewall rule (q-6 stays the owner's); no other ACL or Windows
-  security change; q-5 personal-data disclosure stays open.
+  security change; q-5 personal-data disclosure was answered on 2026-10-11 (names only, after the canaries).
 - The "No AppContainer profile registration" line below is superseded by this paragraph for the
   named test profile only.
 
@@ -108,7 +108,8 @@ broker is already integrated or qualified.
   Codex credentials or silently fall back to a paid API. New authentication is a separate approval.
 - No AppContainer profile registration, ACL edits, firewall changes, or other Windows security
   changes are authorised by this choice. q-6 remains separate.
-- q-5 personal-data disclosure and provider-connected tier review remain open. No claim of
+- q-5 personal-data disclosure was answered on 2026-10-11 (names only, per-request preview, after the broker's
+  canaries; the repo is T2 and gains sensitive_data then). No claim of
   OS-enforced endpoint isolation follows from validating requests in application code.
 - Read-only diagnosis of the separate Kraspyon CLI/model and sandbox startup problems was also
   approved. Machine access must be available and authorised before diagnosis; this does not
