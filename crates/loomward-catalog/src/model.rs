@@ -6,7 +6,12 @@ pub const HARDLINK_SUSPECTED: u32 = 1 << 2;
 /// but deliberately did not follow. It stays visible (listing state `excluded` for a directory)
 /// and is never counted in totals.
 pub const EXCLUDED_FLAGS: u32 = (1 << 3) | (1 << 4) | (1 << 5);
-pub const FLAG_NAMES: [&str; 10] = [
+/// `identity_unavailable`: the row carries no usable native file ID.
+pub const IDENTITY_UNAVAILABLE: u32 = 1 << 8;
+/// `identity_unverified` (#219): listed on a FAT, exFAT or unknown filesystem. Metadata only:
+/// never a placement candidate, duplicate content-read input or durable reference.
+pub const IDENTITY_UNVERIFIED: u32 = 1 << 10;
+pub const FLAG_NAMES: [&str; 11] = [
     "sensitive_name",
     "protected_context",
     "hardlink_suspected",
@@ -17,6 +22,7 @@ pub const FLAG_NAMES: [&str; 10] = [
     "enumeration_error",
     "identity_unavailable",
     "name_lossy",
+    "identity_unverified",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -123,7 +129,9 @@ impl Observation {
                 .name_utf16
                 .as_ref()
                 .is_some_and(|s| s.len() > 520 || s.len() % 2 != 0)
-            || self.flags >> 10 != 0
+            || self.flags >> FLAG_NAMES.len() != 0
+            // #219: an identity-unverified row never stores a (recyclable) file ID.
+            || (self.flags & IDENTITY_UNVERIFIED != 0 && self.file_id.is_some())
         {
             return Err(Error::Invalid("invalid observation"));
         }

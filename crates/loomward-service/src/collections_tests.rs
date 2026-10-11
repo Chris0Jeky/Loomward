@@ -632,7 +632,9 @@ fn collections_hydration_stops_at_page_deadline_and_releases_slot() {
             "collections.members",
             json!({"collection_id":id,"limit":200,"cursor":null}),
         );
-        req.deadline_ms = Some(Int::new(200).unwrap());
+        // Far longer than any loaded host needs to reach the gate; the deadline is passed below
+        // by moving the page clock, not by waiting for it.
+        req.deadline_ms = Some(Int::new(30_000).unwrap());
         worker.call(req, &CallContext::http())
     });
     svc.inner.hooks.until("hydrate", |h| {
@@ -641,8 +643,14 @@ fn collections_hydration_stops_at_page_deadline_and_releases_slot() {
             .unwrap()
             .contains(&(Command::CollectionsMembers, "hydrate"))
     });
-    assert_eq!(err(read.join().unwrap()).code, ErrorCode::DeadlineExceeded);
+    assert_eq!(
+        *svc.inner.reads.lock().unwrap(),
+        1,
+        "the page holds its slot"
+    );
+    *svc.inner.hooks.skew.lock().unwrap() = Duration::from_secs(31);
     svc.inner.hooks.open(Command::CollectionsMembers, "hydrate");
+    assert_eq!(err(read.join().unwrap()).code, ErrorCode::DeadlineExceeded);
     svc.inner.hooks.until("read slot released", |_| {
         *svc.inner.reads.lock().unwrap() == 0
     });

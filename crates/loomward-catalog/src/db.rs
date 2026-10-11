@@ -130,8 +130,12 @@ fn migrate(path: &Path, schema: &str, version: i64, dataset: &str, precious: boo
         if precious && version < 3 {
             tx.execute_batch(include_str!("reference-publication.sql"))?;
         }
+        if precious && !tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('root_grant') WHERE name='identity_mode')", [], |r| r.get::<_, bool>(0))? {
+            // v5 (#219): existing grants were all observed on identity-verifying volumes.
+            tx.execute_batch("ALTER TABLE root_grant ADD COLUMN identity_mode TEXT NOT NULL DEFAULT 'verified' CHECK (identity_mode IN ('verified','unverified'))")?;
+        }
         if precious && version < 6 {
-            // v6 skips v5 on purpose: #372 (FAT/exFAT identity_mode) holds v5.
+            // v6 (backups stage 1): normalised evidence only; v5 above is #372.
             tx.execute_batch(include_str!("backup-evidence.sql"))?;
         }
         if !precious && !tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('dir') WHERE name='listing_outcome')", [], |r| r.get::<_, bool>(0))? {
@@ -185,10 +189,10 @@ pub(crate) fn derive_root(
     grant: i64,
     observation: Option<&crate::RootObservation>,
 ) -> Result<(i64, i64)> {
-    let (key, id, path, state): (String, Vec<u8>, String, String) = conn.query_row(
-        "SELECT volume_key,root_file_id,display_path,state FROM st.root_grant WHERE id=?1",
+    let (key, id, path, state, mode): (String, Vec<u8>, String, String, String) = conn.query_row(
+        "SELECT volume_key,root_file_id,display_path,state,identity_mode FROM st.root_grant WHERE id=?1",
         [grant],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
     )?;
     if state != "active" {
         return Err(Error::NotFound);
@@ -214,7 +218,12 @@ pub(crate) fn derive_root(
     let dir = if let Some(dir) = dir {
         dir
     } else {
-        conn.execute("INSERT INTO dir(root_id,parent_id,name,file_id,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run) VALUES(?1,NULL,?2,?3,?4,'post_open',0,0,'unlisted',0,0)",rusqlite::params![root,name,id,if id.len()==16{"native_file_id_128"}else{"native_file_id_64"}])?;
+        if mode == "unverified" {
+            // #219: the grant's weak root ID binds the grant only; the row carries no identity.
+            conn.execute("INSERT INTO dir(root_id,parent_id,name,id_quality,id_basis,depth,attrs,flags,listing_state,born_run,seen_run) VALUES(?1,NULL,?2,'path_observation','none',0,0,?3,'unlisted',0,0)",rusqlite::params![root,name,crate::IDENTITY_UNVERIFIED|crate::IDENTITY_UNAVAILABLE])?;
+        } else {
+            conn.execute("INSERT INTO dir(root_id,parent_id,name,file_id,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run) VALUES(?1,NULL,?2,?3,?4,'post_open',0,0,'unlisted',0,0)",rusqlite::params![root,name,id,if id.len()==16{"native_file_id_128"}else{"native_file_id_64"}])?;
+        }
         conn.last_insert_rowid()
     };
     Ok((root, dir))

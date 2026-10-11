@@ -25,7 +25,7 @@ export class ObservatoryFeed {
   async read(lens: ProcessLens) {
     await this.lease.ensure();
     if (this.closed) throw new Error('Observatory closed');
-    const telemetry = await this.client.call('telemetry.snapshot', { channels: ['system', 'gpu', 'disks'] });
+    const telemetry = await this.client.call('telemetry.snapshot', { channels: this.processesAvailable ? ['system', 'gpu', 'disks', 'processes'] : ['system', 'gpu', 'disks'] });
     let processes: ProcessReading | null = null;
     if (!this.closed && this.processesAvailable && (this.now() >= this.dueAt || this.sort !== lens)) {
       this.dueAt = this.now() + PROCESS_REFRESH_MS;

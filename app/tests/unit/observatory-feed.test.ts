@@ -26,6 +26,7 @@ describe('Observatory shared telemetry feed', () => {
     const { feed, calls, count, advance } = setup();
     await feed.read('cpu_desc');
     expect(calls[0]!.payload).toEqual({ subscription_id: null, channels: ['system', 'gpu', 'disks', 'processes'], interval_ms: 1000 });
+    expect(calls.find(c => c.command === 'telemetry.snapshot')!.payload?.channels).toEqual(['system', 'gpu', 'disks', 'processes']);
     expect(calls.find((c) => c.command === 'processes.list')!.payload).toEqual({ sort: 'cpu_desc', limit: 5 });
     for (let i = 0; i < 14; i++) { advance(1000); expect((await feed.read('cpu_desc')).processes).toBeNull(); }
     expect(count('processes.list')).toBe(1);
@@ -67,6 +68,7 @@ describe('Observatory shared telemetry feed', () => {
     const feed = new ObservatoryFeed(client, false);
     expect((await feed.read('cpu_desc')).processes).toBeNull();
     expect(calls[0]!.payload?.channels).toEqual(['system', 'gpu', 'disks']);
+    expect(calls.find(c => c.command === 'telemetry.snapshot')!.payload?.channels).toEqual(['system', 'gpu', 'disks']);
     expect(count('processes.list')).toBe(0);
     feed.close();
   });

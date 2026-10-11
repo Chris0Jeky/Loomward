@@ -22,6 +22,12 @@ pub trait NativeDialogs: Send + Sync {
     /// Native modal listing recipient, model, fields and every item of the summary. `true` only on
     /// explicit accept. A display-budget refusal is an error, not an owner decline.
     fn confirm_disclosure(&self, summary: &DisclosureSummary) -> Result<bool, crate::ErrorBody>;
+    /// #219: one-line native confirmation that a picked folder's volume cannot verify file
+    /// identity and will be listed read-only, never acted on. `true` only on explicit accept;
+    /// an adapter without it refuses.
+    fn confirm_identity_unverified(&self) -> bool {
+        false
+    }
 }
 
 /// Per-call facts the adapter knows and the payload cannot claim.

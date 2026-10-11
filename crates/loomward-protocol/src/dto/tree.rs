@@ -262,7 +262,7 @@ pub struct EntryRow {
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub modified_at: Option<Timestamp>,
     pub attributes: UniqueVec<FileAttribute, 0, 16>,
-    pub flags: UniqueVec<EntryFlag, 0, 12>,
+    pub flags: UniqueVec<EntryFlag, 0, 13>,
     pub coverage: CoverageState,
     /// Search and collection results only: the parent's display path.
     #[serde(deserialize_with = "crate::types::required_nullable")]
@@ -345,7 +345,7 @@ pub struct NodePath {
     pub truncated: bool,
 }
 
-/// Width is preserved: a 64-bit ID is never padded and reported as 128-bit.
+/// Width is preserved: a 64-bit ID is never padded and reported as 128-bit. unverified: listed on a FAT, exFAT or unknown filesystem under an identity-unverified grant; metadata only, never an effect, placement or content-read input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IdentityObservationQuality {
@@ -355,6 +355,7 @@ pub enum IdentityObservationQuality {
     NativeFileId64,
     PathObservation,
     Unavailable,
+    Unverified,
 }
 
 /// Whether labels and collection membership may bind to this object (docs/41 section 6.3). Without it, feedback.record returns capability_unavailable.
