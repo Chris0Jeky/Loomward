@@ -222,9 +222,9 @@ describe('what the view says', () => {
 describe('refusals in plain language', () => {
   const words = (code: ErrorCode, reason: string | null, message = 'service text') => refusalText(code, reason ? { reason } : null, message);
 
-  it('explains that real-disk scans wait for the safety gates in a personal session', () => {
-    const t = words('capability_unavailable', 'personal_scan_gated_184');
-    expect(t).toContain('Real-disk scans arrive after the safety gates');
+  it("explains a personal session's granted-folder rule", () => {
+    const t = words('permission_denied', 'personal_session_requires_owner_grant');
+    expect(t).toContain('only folders you granted');
     expect(t).not.toContain('service text');
   });
 
