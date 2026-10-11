@@ -851,3 +851,299 @@ fn native_disclosure_box_defaults_to_cancel_and_maps_both_buttons() {
         assert_eq!(accepted, want, "button {button}");
     }
 }
+
+// ----------------------------------------------------------------------------------------------
+// The engine service the window hosts by default (launch.rs).
+// ----------------------------------------------------------------------------------------------
+
+use loomward_desktop::launch::{self, bundled_examples_dir, default_state_dir, Launch};
+
+fn launch_args(args: &[&str]) -> Result<Launch, String> {
+    Launch::parse(args.iter().map(|s| s.to_string()))
+}
+
+/// A picker stand-in that always returns one disposable folder.
+struct Picker(std::path::PathBuf);
+impl NativeDialogs for Picker {
+    fn pick_folder(&self) -> Option<std::path::PathBuf> {
+        Some(self.0.clone())
+    }
+    fn confirm_disclosure(&self, _: &DisclosureSummary) -> bool {
+        false
+    }
+}
+
+/// A fresh `request_id` per call: the engine retains mutation outcomes by id.
+fn request(command: &str, payload: Value) -> Value {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let mut r = envelope(command, payload);
+    r["request_id"] = json!(format!("r_engine_{}", NEXT.fetch_add(1, Ordering::SeqCst)));
+    r
+}
+
+fn engine_desktop(launch: &Launch, base: &Path, picked: &Path) -> Desktop {
+    let service = launch::open(launch, Some(base.as_os_str().to_owned())).unwrap();
+    Desktop::new(
+        service,
+        launch.dataset,
+        Arc::new(Picker(picked.to_path_buf())),
+    )
+}
+
+fn ok(desktop: &Desktop, command: &str, payload: Value) -> serde_json::Map<String, Value> {
+    match desktop.call(&request(command, payload)).unwrap() {
+        ResponseEnvelope::Ok(ok) => {
+            ok.validate_for(Command::from_name(command).unwrap())
+                .unwrap();
+            ok.result
+        }
+        ResponseEnvelope::Err(e) => panic!("{command}: {:?}", e.error),
+    }
+}
+
+#[test]
+fn bundled_examples_are_found_only_when_installed_beside_the_exe() {
+    let exe_dir = tempfile::tempdir().expect("temp dir");
+    assert_eq!(bundled_examples_dir(exe_dir.path()), None);
+    let commands = exe_dir.path().join("contracts/v3/examples/commands");
+    std::fs::create_dir_all(&commands).expect("create");
+    assert_eq!(
+        bundled_examples_dir(exe_dir.path()),
+        Some(exe_dir.path().join("contracts/v3/examples"))
+    );
+}
+
+#[test]
+fn launch_defaults_to_a_personal_engine_session_and_takes_no_root_argument() {
+    let default = launch_args(&[]).unwrap();
+    assert_eq!(default.dataset, DatasetClass::Personal);
+    assert!(!default.fixtures && !default.self_test && default.state_dir.is_none());
+    let synthetic = launch_args(&["--dataset", "synthetic", "--state-dir", "s"]).unwrap();
+    assert_eq!(synthetic.dataset, DatasetClass::Synthetic);
+    assert_eq!(synthetic.state_dir, Some("s".into()));
+    assert_eq!(
+        launch_args(&["--fixtures"]).unwrap().dataset,
+        DatasetClass::Synthetic
+    );
+    for (args, want) in [
+        (
+            &["--fixtures", "--dataset", "personal"][..],
+            "--fixtures serves synthetic contract examples only",
+        ),
+        (
+            &["--dataset", "personal", "--fixtures"][..],
+            "--fixtures serves synthetic contract examples only",
+        ),
+        (
+            &["--fixtures", "--state-dir", "s"][..],
+            "--fixtures keeps no state; drop --state-dir",
+        ),
+        (
+            &["--dataset", "Personal"][..],
+            "--dataset is synthetic or personal",
+        ),
+        (&["--state-dir"][..], "--state-dir needs a value"),
+        // Roots come only from the owner's native picker.
+        (
+            &["--grant-root", "C:\\"][..],
+            "unknown argument --grant-root",
+        ),
+        (
+            &["--allow-personal"][..],
+            "unknown argument --allow-personal",
+        ),
+    ] {
+        assert_eq!(launch_args(args).unwrap_err(), want, "{args:?}");
+    }
+}
+
+#[test]
+fn default_state_dir_is_per_user_and_per_dataset_class() {
+    let base = std::env::temp_dir().join("fixture-local-app-data");
+    let personal = default_state_dir(Some(base.clone().into()), DatasetClass::Personal).unwrap();
+    let synthetic = default_state_dir(Some(base.clone().into()), DatasetClass::Synthetic).unwrap();
+    assert_eq!(personal, base.join("Loomward").join("v3").join("personal"));
+    assert_eq!(
+        synthetic,
+        base.join("Loomward").join("v3").join("synthetic")
+    );
+    assert!(!personal.starts_with(&synthetic) && !synthetic.starts_with(&personal));
+    for missing in [None, Some("relative\\appdata".into()), Some("".into())] {
+        assert!(default_state_dir(missing, DatasetClass::Personal).is_err());
+    }
+}
+
+#[test]
+fn the_default_launch_opens_the_engine_service_in_the_injected_state_dir() {
+    let base = tempfile::tempdir().unwrap();
+    let launch = launch_args(&[]).unwrap();
+    let desktop = engine_desktop(&launch, base.path(), base.path());
+    let hello = ok(&desktop, "session.hello", json!({}));
+    assert!(
+        hello["engine_version"]
+            .as_str()
+            .unwrap()
+            .starts_with("loomward-service/"),
+        "{hello:?}"
+    );
+    assert_eq!(hello["adapter"], "tauri");
+    assert_eq!(hello["dataset_class"], "personal");
+    assert_eq!(hello["features"]["grant_picker"], true);
+    assert_eq!(hello["features"]["disclosure_dialog"], false);
+    let state = base.path().join("Loomward/v3/personal");
+    assert!(state.join("state.db").is_file() && state.join("catalog.db").is_file());
+    // The adapter's wall holds in front of the engine too: no disclosure dialog in a personal session.
+    let refused = ok(
+        &desktop,
+        "grants.create_disclosure",
+        selftest::example_payload(Command::GrantsCreateDisclosure),
+    );
+    assert_eq!(refused["refusal"], "confinement_not_enforced");
+}
+
+#[test]
+fn a_synthetic_session_cannot_read_personal_state() {
+    let base = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir_in(".").unwrap();
+    std::fs::write(folder.path().join("fixture.txt"), b"synthetic").unwrap();
+    let personal = engine_desktop(&launch_args(&[]).unwrap(), base.path(), folder.path());
+    let granted = ok(
+        &personal,
+        "roots.request_grant",
+        json!({ "purpose": "metadata_scan" }),
+    );
+    if identity_refused(folder.path()) {
+        assert_eq!(granted["refusal"], "identity_unavailable");
+    } else {
+        assert_eq!(granted["outcome"], "granted", "{granted:?}");
+        let roots = ok(&personal, "roots.list", json!({}));
+        assert_eq!(roots["roots"].as_array().unwrap().len(), 1);
+    }
+    // The default synthetic session opens its own store beside it and sees no personal root.
+    let synthetic = engine_desktop(
+        &launch_args(&["--dataset", "synthetic"]).unwrap(),
+        base.path(),
+        folder.path(),
+    );
+    assert_eq!(ok(&synthetic, "roots.list", json!({}))["roots"], json!([]));
+    let r = ok(
+        &synthetic,
+        "roots.request_grant",
+        json!({ "purpose": "metadata_scan" }),
+    );
+    assert_eq!(r["refusal"], "synthetic_session_requires_lab_root");
+    // Pointed at the personal store, a synthetic session refuses to open at all.
+    let wrong = Launch {
+        state_dir: Some(base.path().join("Loomward/v3/personal")),
+        ..launch_args(&["--dataset", "synthetic"]).unwrap()
+    };
+    let refused = launch::open(&wrong, None)
+        .err()
+        .expect("synthetic opened personal state");
+    assert!(refused.starts_with("state store:"), "{refused}");
+}
+
+#[test]
+fn engine_events_revocation_cancellation_and_budgets_flow_through_the_adapter() {
+    use loomward_protocol::{EventEnvelope, EventName};
+    let base = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir_in(".").unwrap();
+    for i in 0..3 {
+        std::fs::write(folder.path().join(format!("fixture-{i}.txt")), b"synthetic").unwrap();
+    }
+    let desktop = engine_desktop(&launch_args(&[]).unwrap(), base.path(), folder.path());
+    let (tx, rx) = selftest::sink();
+    desktop.open_stream("main", None, None, tx).unwrap();
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(2)).unwrap().event,
+        EventName::StreamHello
+    );
+    let next = |want: &dyn Fn(&EventEnvelope) -> bool| loop {
+        let e = rx.recv_timeout(Duration::from_secs(10)).expect("event");
+        if want(&e) {
+            return e;
+        }
+    };
+    // Budgets travel as ordinary calls.
+    let budgets = ok(
+        &desktop,
+        "budgets.set",
+        json!({ "pool": "scan_enumerate", "max_workers": 2 }),
+    );
+    assert!(
+        budgets["pools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["pool"] == "scan_enumerate"
+                && p["current_workers"].as_u64().is_some_and(|n| n <= 2)),
+        "{budgets:?}"
+    );
+    let granted = ok(
+        &desktop,
+        "roots.request_grant",
+        json!({ "purpose": "metadata_scan" }),
+    );
+    if identity_refused(folder.path()) {
+        // Hosted CI runs elevated: native identity opens are refused, so no root, no scan.
+        assert_eq!(granted["refusal"], "identity_unavailable");
+        desktop.close_webview("main");
+        return;
+    }
+    assert_eq!(granted["outcome"], "granted", "{granted:?}");
+    assert_eq!(granted["root"]["granted_via"], "desktop_picker");
+    let root_id = granted["root"]["root_id"].clone();
+    next(&|e| e.event == EventName::RootsChanged);
+
+    let job = ok(
+        &desktop,
+        "scan.start",
+        json!({ "root_id": root_id, "mode": "full", "budget": { "max_entries": 1000, "threads": 1 } }),
+    );
+    let job_id = job["job"]["job_id"].clone();
+    let done = next(&|e| {
+        e.event == EventName::JobState
+            && e.data["job"]["job_id"] == job_id
+            && e.data["job"]["state"] == "completed"
+    });
+    assert_eq!(done.data["job"]["root_id"], root_id);
+    let status = ok(&desktop, "jobs.get", json!({ "job_id": job_id }));
+    assert!(
+        status["job"]["progress"]["indexed_files"].as_u64().unwrap() >= 3,
+        "{status:?}"
+    );
+    // Cancelling a finished scan is answered through the same adapter and changes nothing.
+    for command in ["scan.cancel", "jobs.cancel"] {
+        let r = desktop
+            .call(&request(command, json!({ "job_id": job_id })))
+            .unwrap();
+        if let ResponseEnvelope::Ok(ok) = &r {
+            ok.validate_for(Command::from_name(command).unwrap())
+                .unwrap();
+            assert_eq!(ok.result["job"]["state"], "completed", "{command}");
+        }
+    }
+
+    ok(
+        &desktop,
+        "roots.revoke",
+        json!({ "root_id": root_id, "purge_catalog": false }),
+    );
+    let revoked = next(&|e| e.event == EventName::RootsChanged);
+    assert_eq!(
+        revoked.data["roots"][0]["grant_state"], "revoked",
+        "{:?}",
+        revoked.data
+    );
+    let r = desktop
+        .call(&request(
+            "scan.start",
+            json!({ "root_id": root_id, "mode": "full" }),
+        ))
+        .unwrap();
+    assert!(
+        matches!(&r, ResponseEnvelope::Err(_)),
+        "a revoked root scanned: {r:?}"
+    );
+    desktop.close_webview("main");
+}
