@@ -30,17 +30,15 @@
     finally { busy = false; }
   }
 </script>
-<div class="bar">
-  <label>Add to collection <select bind:value={selected} disabled={busy || !collections.length}>
+<div class="controls">
+  <label class="ctl"><span class="lbl">Add to collection</span> <select bind:value={selected} disabled={busy || !collections.length}>
     {#each collections as c (c.collection_id)}<option value={c.collection_id}>{escapedName(c.name)}</option>{/each}
   </select></label>
-  <button class="btn" type="button" disabled={!selected} aria-disabled={busy} onclick={() => void add()}>Add to collection</button>
+  <button class="btn primary" type="button" disabled={!selected} aria-disabled={busy} onclick={() => void add()}>Add to collection</button>
 </div>
-{#if !collections.length && !error}<p class="muted">Create a collection in the <a href="#/collections">Collections view</a> first.</p>{/if}
-<p class="live muted" role="status" aria-label="Membership result">{result.text}</p>
-<p class="live bad" role="alert">{error}</p>
+{#if !collections.length && !error}<p class="empty">Create a collection in the <a href="#/collections">Collections view</a> first.</p>{/if}
+<p class="live muted" class:has={!!result.text} role="status" aria-label="Membership result">{result.text}</p>
+<p class="live bad" class:has={!!error} role="alert">{error}</p>
 <style>
-  .bar, label { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   select { max-width: 100%; }
-  .bad { color: var(--danger); }
 </style>
