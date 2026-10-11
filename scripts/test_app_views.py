@@ -1227,6 +1227,12 @@ def check_add_folder(page: Page, engine: FakeEngine) -> None:
     expect(card.get_by_role('button', name=re.compile('^Scan ')).first).to_be_visible()
     expect(card).to_contain_text('just added')
     ok(error.inner_text() == '', 'a granted folder shows no error')
+    page.evaluate("location.hash = '#/explorer'")
+    expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
+    page.evaluate("location.hash = '#/health'")
+    expect(page.get_by_role('heading', name='Grants & health', level=1)).to_be_visible()
+    expect(table).to_contain_text('Picked Folder')
+    ok(status.inner_text() == '' and cards.filter(has_text='just added').count() == 0, 'leaving Health and coming back does not repeat "Added" or the just-added tag')
 
     # cancelled: quiet and neutral, no root
     engine.grant_mode, engine.grant_delay = 'cancelled', 0.0
@@ -1243,11 +1249,11 @@ def check_add_folder(page: Page, engine: FakeEngine) -> None:
     expect(status).to_contain_text('could not verify that folder')
     expect(table).to_contain_text('No roots granted')
 
-    # busy: the service's own words
+    # busy: a dialog is still open elsewhere, which is not a failure
     engine.grant_mode = 'busy'
     fresh()
     add.click()
-    expect(status).to_have_text('a native dialog is already open')
+    expect(status).to_have_text('A Windows folder dialog is still open. Choose a folder there and it will appear below.')
     expect(add).to_be_focused()
 
     # deadline, the grant landed: the roots are read again and the new one is reported; the dialog is not reopened
@@ -1263,6 +1269,7 @@ def check_add_folder(page: Page, engine: FakeEngine) -> None:
     add.click()
     expect(status).to_contain_text('No folder was added yet')
     expect(table).to_contain_text('Picked After The Deadline', timeout=5000)
+    expect(status).to_contain_text('Added E:\\Picked After The Deadline')  # the late grant is worded as added, not left at the deadline text
     ok(len(engine.grant_calls) == 1, 'a grant that lands after the deadline shows up from roots.changed without a second request')
 
     # no picker: the button is gone and the page says where folders are added

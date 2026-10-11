@@ -277,17 +277,33 @@ describe('Observatory shared telemetry feed', () => {
       feed.close();
     });
 
-    it('a refused snapshot clears the carried process trends and the next good poll asks for them again', async () => {
+    it('a refused snapshot drops the carried process trends, and the next good poll asks for them again', async () => {
       const t = trendSetup(engine(2));
       const feed = new ObservatoryFeed(t.client, true, t.now);
       await feed.read('cpu_desc');
+      expect((feed as unknown as { processTrends: unknown }).processTrends).not.toBeNull();
       t.advance(1000);
       t.refuse();
       await expect(feed.read('cpu_desc')).rejects.toMatchObject({ code: 'internal_error' });
+      expect((feed as unknown as { processTrends: unknown }).processTrends).toBeNull();
       t.advance(1000);
       const next = await feed.read('cpu_desc');
       expect(t.asked.at(-1)).toContain('processes');
       expect(hasProcessSeries(next)).toBe(true);
+      feed.close();
+    });
+
+    it('keeps a report-level unknown that only a non-due poll carries, beside the carried process unknowns', async () => {
+      const MACHINE = 'Machine-level gap that is not about processes.';
+      const base = engine(2);
+      const t = trendSetup((ch) => { const r = base(ch); return ch.includes('processes') ? r : { ...r, unknowns: [MACHINE] }; }); // the machine gap shows on non-due polls only
+      const feed = new ObservatoryFeed(t.client, true, t.now);
+      await feed.read('cpu_desc');
+      t.advance(1000);
+      const carried = await feed.read('cpu_desc');
+      expect(t.asked.at(-1)).not.toContain('processes');
+      expect(carried.result.trends.unknowns.filter((u) => u === MACHINE)).toHaveLength(1);
+      expect(carried.result.trends.unknowns).toContain('Process coverage is truncated; unobserved processes and shared memory remain unknown.');
       feed.close();
     });
 

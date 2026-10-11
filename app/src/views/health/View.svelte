@@ -3,7 +3,7 @@
 </script>
 
 <script lang="ts">
-  import { tick, untrack } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import { formatBytes } from '../../lib/format/bytes';
   import { escapedName } from '../../lib/format/names';
   import { formatCount, formatDuration, formatTime } from '../../lib/format/time';
@@ -57,6 +57,9 @@
       if (mine === ticket) error = session.handle(e);
     }
   }
+
+  onMount(() => picker.dismiss()); // the picker store outlives this view: an old "Added" or refusal is not repeated
+  $effect(() => { const r = roots?.roots; if (r) untrack(() => picker.sync(r)); }); // only a new roots read speaks, never a change of the picker's own state
 
   // `scans.settled` moves when a scan ends: the roots are read again for their totals and coverage.
   $effect(() => {
@@ -145,8 +148,8 @@
    * pulled away from wherever the owner moved it.
    */
   async function addFolder() {
-    if (picker.phase === 'waiting') return;
-    await picker.ask(roots?.roots.map((r) => r.root_id) ?? []);
+    if (picker.phase === 'waiting' || !roots) return;
+    await picker.ask(roots.roots.map((r) => r.root_id));
     await load();
     await tick();
     const a = document.activeElement;
@@ -248,7 +251,7 @@
   <h2 id="h-roots">Roots</h2>
   {#if canPick}
     <div class="add">
-      <button class="btn primary" type="button" bind:this={addBtn} aria-disabled={picker.phase === 'waiting' ? 'true' : undefined} onclick={() => void addFolder()}>Add a folder…</button>
+      <button class="btn primary" type="button" bind:this={addBtn} aria-disabled={picker.phase === 'waiting' || !roots ? 'true' : undefined} onclick={() => void addFolder()}>Add a folder…</button>
       <p class="live" class:has={!!picker.text} role="status">{picker.text}</p>
     </div>
   {:else if pickNote}<p class="note">{pickNote}</p>{/if}
