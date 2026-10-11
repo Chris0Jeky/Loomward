@@ -63,8 +63,11 @@ assets ignore `?transport=mock`; mock UI checks require a development build. The
 live events older than five seconds into one `stream.lagged` resync notice, discarding stale
 backlog until fresh events arrive. On a same-epoch resume, events through the first hello's
 `last_seq` are retained replay and bypass this age check; the resume tracker still deduplicates
-them. Later heartbeats cannot widen that exemption. Channel delivery remains fire-and-forget, not an acknowledged
-or bounded renderer queue.
+them. Later heartbeats cannot widen that exemption.
+The replay window is bounded by `oldest_replayable_seq` and the hello envelope's sequence. Negative,
+non-integer or unsafe watermarks are ignored; future watermarks are clamped to the envelope's
+sequence, including in the shared reconnect cursor tracker. Channel delivery remains fire-and-forget,
+not an acknowledged or bounded renderer queue.
 The WebView2 probe gives each run a private test profile under ignored `.loomward/webview2-profiles/`, so debug
 options do not share the application's normal profile or another run's environment.
 
