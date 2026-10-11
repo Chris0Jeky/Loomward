@@ -71,3 +71,4 @@ CREATE TABLE revision(id INTEGER PRIMARY KEY CHECK(id=1),state_rev INTEGER NOT N
 INSERT INTO revision VALUES(1,0);
 
 CREATE UNIQUE INDEX object_ref_binding ON object_ref(catalog_instance,kind,row_id,born_run) WHERE state='resolved';
+-- backup_evidence (v6) lives in backup-evidence.sql; it is applied on creation and on migration.

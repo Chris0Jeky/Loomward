@@ -384,3 +384,47 @@ fn startup_keeps_seven_owned_backups_and_preserves_migration_backup() {
     assert_eq!(count, 7);
     assert!(temp.path().join("state.before-v0.db").exists());
 }
+
+/// Backups stage 1: a v4 state store gains `backup_evidence` (v6; v5 belongs to #372), keeping
+/// its rows, and the table refuses anything but a JSON evidence document.
+#[test]
+fn v4_state_store_gains_backup_evidence_at_v6() {
+    let temp = tempfile::tempdir().unwrap();
+    drop(Catalog::open(temp.path(), "synthetic").unwrap());
+    let st = Connection::open(temp.path().join("state.db")).unwrap();
+    st.execute_batch(
+        "DROP TABLE backup_evidence;
+         INSERT INTO collection(name,kind,created_at_ns) VALUES('kept','human',0);
+         PRAGMA user_version=4;",
+    )
+    .unwrap();
+    drop(st);
+    drop(Catalog::open(temp.path(), "synthetic").unwrap());
+    let st = Connection::open(temp.path().join("state.db")).unwrap();
+    let (version, kept): (i64, i64) = st
+        .query_row(
+            "SELECT (SELECT user_version FROM pragma_user_version),(SELECT count(*) FROM collection WHERE name='kept')",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((version, kept), (SCHEMA_VERSION, 1));
+    assert_eq!(SCHEMA_VERSION, 6);
+    st.execute(
+        "INSERT INTO backup_evidence(repository_label,evidence_json,snapshot_observed_ns,imported_at_ns) VALUES('synthetic-repo','{}',0,0)",
+        [],
+    )
+    .unwrap();
+    assert!(st
+        .execute(
+            "INSERT INTO backup_evidence(repository_label,evidence_json,snapshot_observed_ns,imported_at_ns) VALUES('other','raw bytes',0,0)",
+            [],
+        )
+        .is_err());
+    assert!(st
+        .execute(
+            "INSERT INTO backup_evidence(repository_label,evidence_json,snapshot_observed_ns,imported_at_ns) VALUES('synthetic-repo','{}',0,0)",
+            [],
+        )
+        .is_err());
+}
