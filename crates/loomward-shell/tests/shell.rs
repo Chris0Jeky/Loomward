@@ -365,6 +365,23 @@ fn unicode_link_info_paths_volume_and_network_offsets() {
     assert_eq!(n.share.as_str(), Some("\\\\server.invalid\\共享"));
     assert_eq!(n.device.unwrap().as_str(), Some("Z:"));
 }
+#[test]
+fn volume_drive_type_above_six_is_refused_at_parse() {
+    let mut info = local_info();
+    put32(&mut info, 32, 6);
+    let mut b = header(2);
+    b.extend(info);
+    let s = parse(&finish(b)).unwrap();
+    assert_eq!(s.link_info.unwrap().volume.unwrap().drive_type, 6);
+    let mut info = local_info();
+    put32(&mut info, 32, 7);
+    let mut b = header(2);
+    b.extend(info);
+    assert_eq!(
+        parse(&finish(b)).unwrap_err().0,
+        "invalid volume drive type"
+    );
+}
 
 #[test]
 fn hostile_extra_blocks_utf16_and_counts_are_bounded() {
