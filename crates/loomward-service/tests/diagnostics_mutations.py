@@ -44,7 +44,7 @@ MUTANTS = [
     ('leak-a-root-path', SERVICE, '                engine_version: info.engine_version,',
      '                engine_version: Text::truncated(&db::roots(&self.db(), None).ok().and_then(|r| r.first().map(|r| r.display_path.clone())).unwrap_or_default()),',
      SVC, T + 'a_scanned_hostile_lab_root_never_reaches_the_bundle'),
-    ('native-save-retitled', 'native/src/dialogs.rs', '.set_title(title)\n                    .set_file_name(default_name)',
+    ('native-save-retitled', 'native/src/dialogs.rs', '.set_title(title)\n                .set_file_name(default_name)',
      '.set_file_name(default_name)', NATIVE_LIB, 'dialogs::tests::save_dialog_opens_in_every_session_retitled_and_one_at_a_time'),
     ('native-save-one-at-a-time', 'native/src/dialogs.rs', '        let _active = self.active.try_lock().ok()?;\n        let picker = self.picker.lock().ok()?.clone()?;\n        save(',
      '        let picker = self.picker.lock().ok()?.clone()?;\n        save(', NATIVE_LIB,

@@ -308,6 +308,14 @@
     "rule": "a personal session scans its own active owner grants (desktop picker or --grant-root); revoked, lab and unknown roots are refused; metadata only; no new effect, endpoint or elevation (duplicate content reads opened later: personal_duplicates)",
     "evidence": "evidence/v3/personal-scan-opening.md"
   },
+  "diagnostics_bundle": {
+    "state": "open",
+    "opened": "2026-10-12",
+    "decision": "HUMAN_TODO q-15 (native save dialog), q-16 (host hardware allowed in new evidence)",
+    "rule": "Loomward's first file write: diagnostics.preview builds a redacted allowlist bundle (typed fields only; no path, name, volume label or key, process, label, collection name, receipt or message; unread values are explicit unknowns) and holds its exact bytes; diagnostics.save (desktop only, every session) writes exactly those bytes, only for the matching digest, to a file the owner picks in a Rust save dialog; the path never crosses IPC; relative, network, device, verbatim, device-name, stream, link, reparse and non-regular targets refused; temporary file renamed over the target; overwrite confirmed by the native dialog; no upload; commands.json effects owner_picked_export for this command only",
+    "not_yet": "the real save dialog (overwrite prompt, parenting) is exercised only by the manual WebView2 probe leg, not by automated tests",
+    "evidence": "evidence/v3/diagnostics-bundle-q15.md"
+  },
   "personal_duplicates": {
     "state": "open",
     "opened": "2026-10-11",
