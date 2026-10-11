@@ -139,4 +139,25 @@ describe('mock revocation', () => {
     expect((await c.call('grants.list', {})).result.grants.find((x) => x.grant_id === 'gr_mock_teacher_0')!.revoked_at).not.toBeNull();
     await expect(c.call('roots.revoke', { root_id: 'rt_nope', purge_catalog: false })).rejects.toMatchObject({ code: 'not_found' });
   });
+
+  it('moves catalog_rev on a first purge only, as a committed catalogue transaction (semantics 5)', async () => {
+    const c = client();
+    const revoke = (purge: boolean, root = 'rt_mock_1') => c.call('roots.revoke', { root_id: root, purge_catalog: purge });
+    expect((await revoke(false)).meta.catalog_rev).toBe('1'); // keeping the rows changes nothing in catalog.db
+    expect((await revoke(true)).meta.catalog_rev).toBe('2');
+    expect((await revoke(true)).meta.catalog_rev).toBe('2'); // nothing left to delete
+    expect((await revoke(true, 'rt_mock_9')).meta.catalog_rev).toBe('3');
+    expect((await c.call('tree.children', { node_id: 'nd_1', sort: 'size_desc', basis: 'logical', limit: 1, cursor: null })).meta.catalog_rev).toBe('3');
+  });
+
+  it('shows a revoked root grant in grants.list and in roots.list, whichever call revoked it', async () => {
+    const c = client();
+    await c.call('grants.revoke', { grant_id: 'gr_mock_root_0' });
+    const grants = (await c.call('grants.list', {})).result.grants;
+    const g = grants.find((x) => x.grant_id === 'gr_mock_root_0')!;
+    expect(g.revoked_at).not.toBeNull();
+    const roots = (await c.call('roots.list', {})).result.roots;
+    expect(roots.find((r) => g.kind === 'metadata_root' && r.root_id === g.root_id)!.grant_state).toBe('revoked');
+    expect(grants.find((x) => x.grant_id === 'gr_mock_root_1')!.revoked_at).toBeNull();
+  });
 });

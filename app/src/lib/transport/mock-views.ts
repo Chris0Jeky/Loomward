@@ -52,12 +52,16 @@ export interface ViewMock {
   revokedGrants: Map<string, Timestamp>;
   /** state.db revision: starts at 1 and moves only when a revocation actually changes owner data. */
   stateRev(): string;
+  /** catalog.db revision: starts at 1 and moves only when a first purge deletes catalogue rows (semantics.md section 5). */
+  catalogRev(): string;
 }
 
 export function createViewMock(now: () => Date, fail: Fail): ViewMock {
   const iso = () => now().toISOString();
   const revokedRoots = new Map<string, Timestamp>();
   const revokedGrants = new Map<string, Timestamp>();
+  const purgedRoots = new Set<string>();
+  let catalogRev = 1;
   const subscriptions = new Map<string, { channels: TelemetryChannel[]; expiresAt: number }>();
   let subscriptionSeq = 0;
   let stateRev = 1;
@@ -334,6 +338,10 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
       if (!revokedRoots.has(id)) stateRev++; // revoking a revoked grant returns the original revoked_at, no commit
       const at = revokedRoots.get(id) ?? iso();
       revokedRoots.set(id, at);
+      if (p.purge_catalog && !purgedRoots.has(id)) {
+        purgedRoots.add(id);
+        catalogRev++; // a purge is a committed catalogue transaction; purging again deletes nothing more
+      }
       return { root_id: id, revoked_at: at, purged: p.purge_catalog };
     },
     'grants.revoke': (p): GrantRevokeResult => {
@@ -345,5 +353,5 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
       return { grant_id: id, revoked_at: at };
     },
   };
-  return { handlers, revokedRoots, revokedGrants, stateRev: () => String(stateRev) };
+  return { handlers, revokedRoots, revokedGrants, stateRev: () => String(stateRev), catalogRev: () => String(catalogRev) };
 }
