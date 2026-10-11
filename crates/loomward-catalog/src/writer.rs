@@ -314,20 +314,40 @@ impl Context {
         self.parents.insert(id, parent);
         Ok(parent)
     }
-    /// Bounds each chain this command seeded, so a deep reparented subtree (whose stored depth
-    /// is stale until rollup) rejects only this command's savepoint, never the shared flush.
-    // ponytail: walks every new seed to the root; memoise chain lengths if deep trees cost throughput.
-    fn check_chains(&mut self, conn: &Connection, from: usize) -> Result<()> {
-        for i in from..self.dirty.len() {
-            let mut current = Some(self.dirty[i].0);
-            let mut count = 0;
-            while let Some(id) = current {
-                count += 1;
-                if count > 512 {
-                    return Err(Error::Invalid("tree depth limit"));
-                }
-                current = self.parent(conn, id)?;
+    fn chain_length(
+        &mut self,
+        conn: &Connection,
+        start: i64,
+        proven: &mut HashMap<i64, usize>,
+    ) -> Result<usize> {
+        let mut current = Some(start);
+        let mut path = Vec::new();
+        let mut length = 0;
+        while let Some(id) = current {
+            if let Some(known) = proven.get(&id) {
+                length = *known;
+                break;
             }
+            path.push(id);
+            if path.len() > 512 {
+                return Err(Error::Invalid("tree depth limit"));
+            }
+            current = self.parent(conn, id)?;
+        }
+        if path.len() + length > 512 {
+            return Err(Error::Invalid("tree depth limit"));
+        }
+        for id in path.into_iter().rev() {
+            length += 1;
+            proven.insert(id, length);
+        }
+        Ok(length)
+    }
+    /// Parent links are authoritative until rollup refreshes stored depths.
+    fn check_chains(&mut self, conn: &Connection, from: usize) -> Result<()> {
+        let mut proven = HashMap::new();
+        for i in from..self.dirty.len() {
+            self.chain_length(conn, self.dirty[i].0, &mut proven)?;
         }
         Ok(())
     }
@@ -1327,9 +1347,6 @@ fn publish(
         file_seconds += insert;
         seen_seconds += seen;
         for o in dirs {
-            if depth >= 511 {
-                return Err(Error::Invalid("tree depth limit"));
-            }
             let identity = native_id(o, fs.as_deref());
             let excluded = o.flags & EXCLUDED_FLAGS != 0;
             let mut old_dir: Option<DirectoryMatch> = if let Some(id) = identity {
@@ -1362,6 +1379,14 @@ fn publish(
                     let cycle:bool=conn.query_row("WITH RECURSIVE a(id) AS (SELECT ?1 UNION ALL SELECT d.parent_id FROM dir d JOIN a ON d.id=a.id WHERE d.parent_id IS NOT NULL) SELECT EXISTS(SELECT 1 FROM a WHERE id=?2)",params![dir,id],|r|r.get(0))?;
                     if cycle {
                         return Err(Error::Invalid("directory identity cycle"));
+                    }
+                    let destination = ctx.chain_length(conn, dir, &mut HashMap::new())?;
+                    // EXISTS stops at the first descendant that would exceed 512 directories.
+                    let too_deep: bool = conn.prepare_cached(
+                        "WITH RECURSIVE subtree(id,height) AS (SELECT ?1,0 UNION ALL SELECT d.id,s.height+1 FROM dir d JOIN subtree s ON d.parent_id=s.id WHERE s.height<?2) SELECT EXISTS(SELECT 1 FROM subtree WHERE height=?2)",
+                    )?.query_row(params![id, 512 - destination as i64], |r| r.get(0))?;
+                    if too_deep {
+                        return Err(Error::Invalid("tree depth limit"));
                     }
                     ctx.dirty(parent, run);
                     ctx.parents.insert(id, Some(dir));
@@ -1830,7 +1855,7 @@ mod tests {
         .unwrap();
         conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
         // Two 300-deep chains under the root (ids 2..=301 and 302..=601) and two leaves.
-        // Stored depths are accurate until the batch moves chain B under the bottom of A.
+        // Simulate an overdeep tree left by the legacy reparent bug; publication now rejects it.
         conn.execute_batch(
             "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<300)
              INSERT INTO dir(id,root_id,parent_id,name,file_id,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run)
@@ -1845,6 +1870,8 @@ mod tests {
                    (603,1,1,'d','path_observation','none',1,0,'complete',1,1);",
         )
         .unwrap();
+        conn.execute("UPDATE dir SET parent_id=301 WHERE id=302", [])
+            .unwrap();
         let (tx, rx) = bounded(64);
         let quota = Arc::new((Mutex::new(0), Condvar::new()));
         let enqueue = |command| {
@@ -1871,12 +1898,10 @@ mod tests {
                 errors: 0,
             })
         };
-        let mut b1 = Observation::file("b1", 0, None);
-        b1.file_id = Some([vec![0; 15], vec![2]].concat());
         let item = || vec![Observation::file("item", 7, Some(7))];
         // All four listings are queued before work starts, so they share one transaction.
         let before = enqueue(listing(602, item(), vec![]));
-        let reparent = enqueue(listing(301, vec![], vec![b1]));
+        let shallow = enqueue(listing(301, vec![], vec![]));
         // b300 still stores depth 300, but its chain is now 601 directories long.
         let deep = enqueue(listing(601, item(), vec![]));
         let after = enqueue(listing(603, item(), vec![]));
@@ -1886,7 +1911,7 @@ mod tests {
         let (alive, _) = bounded(0);
         work(conn, rx, timings.clone(), alive, None);
         before.recv().unwrap().unwrap();
-        reparent.recv().unwrap().unwrap();
+        shallow.recv().unwrap().unwrap();
         assert!(matches!(
             deep.recv().unwrap(),
             Err(Error::Invalid("tree depth limit"))

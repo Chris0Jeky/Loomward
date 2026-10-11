@@ -1,3 +1,49 @@
+# Catalogue reparent depth (#309) - 2026-10-11
+
+Uncommitted on `fix/catalog-reparent-depth-309`, based on main
+`0b488d875afd6ba8ae098f9875bbdd4aed1b4d1f` (includes #306). The driver commits.
+
+- A reparent measures the destination's live parent chain and uses a bounded recursive
+  descendant query to reject any resulting chain longer than 512 directories. Rejection
+  rolls back only the listing savepoint; earlier/later listings and EndRun still succeed.
+  A move landing at depth 511 is accepted. The existing child indexes serve this query.
+- Removed the stale stored-depth precheck. Parent links, shared through `chain_length`,
+  are the validation source of truth; rollup still refreshes stored depths.
+- `check_chains` reuses lengths proven earlier in the same command, including ancestor
+  suffixes, and counts the unproven prefix against the bound. No proof survives a command.
+- Added a rollback-cache regression: a rejected command first changes a cached parent;
+  the next seed must still reject through `check_chains` using SQLite's restored parent.
+  The existing cache-clear behavior required no production change.
+- The #306 regression now injects the legacy overdeep tree directly in its synthetic
+  fixture, retaining its later-chain rejection and shared-batch assertions. Such a tree
+  can no longer be created by a successful reparent command. The new subtree regression
+  separately pins rejection at the move, exact-bound acceptance and successful rollup.
+
+Four new regression tests in `src/writer/publication_tests.rs` are mutation-proven:
+removing the subtree guard, restoring the stored-depth guard, removing proven-length
+reuse, ignoring the cached suffix bound, or retaining a rejected command's parent cache
+each produces an executed test failure (exit 101). Restored source passes.
+
+**Shared host, warm synthetic measurements:** one main and one branch P4 run, both
+`cargo run -p loomward-catalog --release --example bench -- --rows 1000000`, both with
+accounting oracle, all indexes and temporary-database cleanup passing. Main: 17.491 s,
+57,231 rows/s; branch: 15.168 s, 65,994 rows/s. Single runs do not establish a causal
+speedup; the 250k rows/s target remains unmet. Own measurements were sequential.
+
+Before selecting the query, a 100,301-directory SQLite probe compared a full height
+walk, bounded breadth-first EXISTS and bounded depth-first EXISTS. The bounded query
+avoids stale-depth deltas and was faster than depth-first on this fixture. Native
+rusqlite release measurements of the chosen query: 0.086 ms at an early rejecting
+level 200, 12.032 ms at rejecting level 301, 39.708 ms for acceptance at level 512.
+An accepted large subtree still requires a full descendant walk. The 5,000 repeated
+512-directory seed probe measured 38.167 ms before and 0.070 ms after proof reuse.
+These are synthetic microbenchmarks, not real-scan or controlled-host claims.
+
+The appended `catalog_reparent_depth_309` entry in
+[benchmark evidence](../../evidence/v3/bench/catalog-1m.json) preserves every earlier
+receipt and contains commands, source hashes, query/proof measurements and gate outputs.
+No schema, dependency, public API, cache policy or `fail_batch` change.
+
 # Catalogue hidden multilink rows (#254) - 2026-10-10
 
 ## Changed
