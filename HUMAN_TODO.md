@@ -37,7 +37,7 @@ Each agent-picked root is recorded in the gitignored `.loomward/` state before i
 every real scan still has an explicit, recorded root; public evidence uses anonymised labels and
 aggregate counts (AGENTS.md invariant 2 now carries this grant).
 
-## q-5 — Teacher on real metadata: disclosure scope and tier — OPEN (sandbox authorised)
+## q-5 — Teacher on real metadata: disclosure scope and tier — ANSWERED 2026-10-11 (scoped; waits on the broker's canaries)
 
 The owner chose GPT-6.1 Sol (medium) through the local Codex CLI as the learning teacher, a connected
 cloud provider and so a tier re-review trigger. The confinement spike (#116) showed the CLI cannot be
@@ -45,6 +45,10 @@ fully confined by flags (one collaboration tool stayed callable). **Owner, in ch
 authorise the OS-enforced sandbox work (LW-111, lane L15b).** Until its enforcement canaries pass,
 the teacher sees synthetic metadata only. Still open for the owner, after the canaries pass: may real
 names and paths leave the machine, in what scope, and does the tier stay T1 or gain `sensitive_data`?
+
+**Owner, in chat 2026-10-11 (interactive choice), selected: "Scoped: names only, per-request preview"** — after the broker passes
+its enforcement canaries: file and folder names only (no full paths, no contents), shown in a preview for every request,
+and the repo gains the `sensitive_data` overlay at that point. Until the canaries pass the teacher stays synthetic-only.
 
 ## q-6 — One-time elevated firewall rule for the teacher sandbox — NOT YET NEEDED
 
@@ -113,13 +117,13 @@ broker is already integrated or qualified.
   when checked. This section is the durable repository record; no external decision inbox
   has been marked complete by this change.
 
-## q-9 — Revoked personal roots: keep the names until you forget them, or purge on revoke — OPEN (default (a) on 2026-10-18)
+## q-9 — Revoked personal roots: keep the names until you forget them, or purge on revoke — ANSWERED 2026-10-11 (a)
 
 Personal scans are open. Revoking a personal root stops access but keeps its display path and catalogue rows in
 Loomward's local state (Loomward#288). Nothing leaves the machine. Posed through the agent-hq inbox on 2026-10-11;
 if unanswered by 2026-10-18, option (a) applies as a recorded default (reversible), not as your answer.
 
-- [ ] **loomward-revoked-root-retention: When you revoke a personal scan root in Loomward, should its name and catalogue stay on your machine until you choose to forget it, or be purged automatically?**
+- [x] **loomward-revoked-root-retention: When you revoke a personal scan root in Loomward, should its name and catalogue stay on your machine until you choose to forget it, or be purged automatically?**
   - (a) Keep the audit trail; add a 'Forget this root' action (recommended): Revoke keeps today's behaviour. Agents add an explicit, user-initiated 'Forget this revoked root' command and button that purges the display path and catalogue rows and keeps an anonymised audit entry (that a root was granted, revoked and forgotten, with dates, no name).
     + You keep a record of what you revoked until you decide otherwise; + Forgetting is a deliberate act you can see; - Names of revoked roots stay on disk until you press Forget
   - (b) Purge automatically on revoke: Revoking a personal root also purges its display path and catalogue rows at once, keeping only the anonymised audit entry.
@@ -129,3 +133,76 @@ if unanswered by 2026-10-18, option (a) applies as a recorded default (reversibl
   - Why: It keeps a visible audit trail by default and gives you a deliberate, explicit way to remove names, without surprising data loss on a mistaken revoke.
   - Why an agent may not decide: It sets how long Loomward keeps the names of your personal folders after you revoke them: a personal-data retention choice that is yours to make.
   - Source: agent-hq `decisions/loomward-revoked-root-retention.json` (the owner inbox; not a file in this repository)
+  - **Owner, in chat 2026-10-11, selected (a): "Keep, plus a 'Forget' button".** Implementation (the Forget command and button) is tracked as
+    Loomward#288; this item records the decision, not the implementation.
+
+## Owner decisions of 2026-10-11 (interactive choices in chat)
+
+Recorded from the owner's selections; each option's text was shown with its trade-offs. Implementation items stay open
+until their PR lands; an agent checks one off only when the change is merged and proven.
+
+### q-10 — Duplicates on personal roots: content reads — ANSWERED: open, local read-only hashing
+
+Selected: "Open: local, read-only hashing". Staged size, partial hash, full hash and byte comparison through pinned,
+revalidated, non-elevated handles with no-recall opens; cloud placeholders skipped; nothing leaves the machine; nothing is
+deleted; bounded by the job's byte and time budgets. Retires `content_read_gated` for owner-granted personal roots.
+- [ ] Implemented and merged (gate-opening PR updates AGENTS.md invariants, docs/16 and CHECKPOINT).
+
+### q-11 — Learning on personal roots — ANSWERED: open locally, the owner's labels only
+
+Selected: "Open locally, your labels only". The local student trains on the owner's labels plus metadata features of
+granted roots, on this machine; suggestions stay advice with relative scores; the teacher stays synthetic until q-5's
+conditions hold. Retires `learning_personal_gated`.
+- [ ] Implemented and merged (gate-opening PR).
+
+### q-12 — FAT and exFAT volumes (#219) — ANSWERED: list them, marked identity-unverified
+
+Selected: "List them, marked unverified". Metadata only, identity quality `unverified`; such rows never back a proposal or
+effect; relists recheck containment by path; a personal root on such a volume is confirmed explicitly at grant time.
+- [ ] Implemented and merged.
+
+### q-13 — Catalogue write speed (#148) — ANSWERED: both retarget and push
+
+Owner, verbatim: "a mix of the first two options": the KPI becomes end-to-end files/s on lab and real trees (250k rows/s
+stays a stretch note), and an Opus high lane designs a first-scan bulk-load path (fresh table, deferred indexes, atomic swap
+under the publication fence), A/B measured on a quiet host.
+- [ ] KPI retargeted in evidence; bulk-load path landed or parked with evidence.
+
+### q-14 — Backups next step (LW-084) — ANSWERED: the driver chooses the best-engineered path
+
+Owner, verbatim: "I'm not sure about the best way forward about this, I'm happy with the best engineered solution you can
+think of, even if it requires additional scope and work". The driver's plan is recorded in docs when the lane starts.
+
+### q-15 — Diagnostic bundles (LW-055) — ANSWERED: native save dialog
+
+Selected: "Native save dialog (desktop app)". The desktop app writes the redacted bundle to a file the owner picks in a
+Rust-side save dialog; this is Loomward's first file write and lands with its own small safety gate (path never crosses
+IPC; only the previewed bytes; new file or owner-confirmed overwrite).
+- [ ] Implemented and merged.
+
+### q-16 — Tier and posture — ANSWERED: T2, with lower weight on privacy and security
+
+Owner, verbatim: "T2 but from now forward give less importance to the "privacy" and "security" aspect of all of this ,
+I don't have high sensitivy info or data, so the risks aren't as great". Declared T2 in `.agent-harness/tier.json`.
+Driver's reading, reversible by the owner: privacy and security findings weigh lower and get no extra lenses; hardware is
+no longer withheld from new evidence; secrets in Git and real file names, paths or inventories in this public repository stay
+forbidden because they are irreversible.
+
+### q-17 — Releases (LW-057) — ANSWERED: unsigned preview pre-release
+
+Selected: "Unsigned preview pre-release": a GitHub pre-release of the Tauri desktop app, unsigned, marked preview, after T2.
+- [ ] Release workflow and first preview pre-release published.
+
+### q-18 — Older hardware mentions (#283) — ANSWERED: scrub to generic labels
+
+Selected: "Scrub to generic labels". Media and core counts become generic labels; the mock volume capacities become
+generic round numbers. Git history keeps the old text.
+- [ ] Scrub merged.
+
+### q-19 — Dependabot alert #182 (glib, Linux-only) — OWNER ACTION: dismiss as not reachable
+
+Selected: "Dismiss as not reachable". Agents never change security alerts. Steps:
+1. Open https://github.com/Chris0Jeky/Loomward/security/dependabot/1
+2. Click "Dismiss alert", choose "Vulnerable code is not actually used", and add the comment: "Linux GTK path; Loomward
+   ships Windows only (Tauri on WebView2). Re-check on each Tauri upgrade."
+- [ ] Dismissed (verify: `gh api repos/Chris0Jeky/Loomward/dependabot/alerts/1 --jq .state` prints `dismissed`).
