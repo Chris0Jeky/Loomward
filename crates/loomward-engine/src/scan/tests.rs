@@ -75,41 +75,80 @@ fn granted_root_rejects_foreign_catalogue_identities_before_opening_a_path() {
     }
 }
 
+/// q-10: personal content reads are open, but only where the grant, the engine and the durable
+/// store all name the same dataset class; a session never reads the other class's roots.
 #[test]
-fn duplicate_content_is_gated_for_personal_grants() {
-    let mut grant = root();
-    grant.dataset_class = DatasetClass::Personal;
-    let engine =
-        Arc::new(Engine::open(EngineConfig::new("unused".into(), DatasetClass::Personal)).unwrap());
-    let err = engine
-        .inspect_duplicates(
-            &grant,
-            &[],
-            loomward_windows::duplicate_reader::Budget {
-                bytes: 100,
-                time: std::time::Duration::from_secs(1),
-            },
-        )
-        .unwrap_err();
-    assert_eq!(err.to_body().message.as_str(), "content_read_gated");
-    let budget = serde_json::from_value(
-        serde_json::json!({"max_candidates":200,"max_bytes":"100","max_ms":1000}),
-    )
-    .unwrap();
-    assert_eq!(
-        engine
-            .duplicates_start(grant, Default::default(), budget)
-            .unwrap_err()
-            .to_body()
-            .message
-            .as_str(),
-        "content_read_gated"
-    );
+fn duplicate_admission_binds_grant_engine_and_store_to_one_class() {
+    use DatasetClass::{Personal, Synthetic};
+    for (engine_class, grant_class, store_class, refused) in [
+        (Personal, Personal, "personal", None),
+        (Synthetic, Synthetic, "synthetic", None),
+        (
+            Personal,
+            Synthetic,
+            "synthetic",
+            Some("dataset_class_mismatch"),
+        ),
+        (
+            Synthetic,
+            Personal,
+            "personal",
+            Some("dataset_class_mismatch"),
+        ),
+        (
+            Personal,
+            Personal,
+            "synthetic",
+            Some("dataset_class_mismatch"),
+        ),
+        (
+            Synthetic,
+            Synthetic,
+            "personal",
+            Some("dataset_class_mismatch"),
+        ),
+    ] {
+        let state = tempfile::tempdir().unwrap();
+        let mut grant = root();
+        grant.dataset_class = grant_class;
+        let _conn = duplicate_grant_store_as(state.path(), &grant, store_class);
+        let engine = Arc::new(
+            Engine::open(EngineConfig::new(state.path().to_owned(), engine_class)).unwrap(),
+        );
+        let admitted = engine.duplicate_read_admission(&grant);
+        match refused {
+            None => assert!(admitted.is_ok(), "{engine_class:?}: {admitted:?}"),
+            Some(message) => {
+                assert_eq!(admitted.unwrap_err().to_body().message.as_str(), message);
+                let budget = serde_json::from_value(
+                    serde_json::json!({"max_candidates":200,"max_bytes":"100","max_ms":1000}),
+                )
+                .unwrap();
+                assert_eq!(
+                    engine
+                        .duplicates_start(grant, Default::default(), budget)
+                        .unwrap_err()
+                        .to_body()
+                        .message
+                        .as_str(),
+                    message
+                );
+            }
+        }
+    }
 }
 
 #[cfg(windows)]
 #[test]
-fn duplicate_synthetic_grant_returns_evidence() {
+fn duplicate_grant_returns_evidence_for_its_own_class() {
+    // q-10: a personal owner grant reads like a synthetic lab grant, through the same reader.
+    for class in [DatasetClass::Synthetic, DatasetClass::Personal] {
+        duplicate_grant_returns_evidence(class);
+    }
+}
+
+#[cfg(windows)]
+fn duplicate_grant_returns_evidence(class: DatasetClass) {
     use loomward_windows::{
         duplicate_reader::{Budget, Entry},
         enumerate::{DirSource, NativeSource},
@@ -132,7 +171,7 @@ fn duplicate_synthetic_grant_returns_evidence() {
     let grant = GrantedRoot::new(
         RootId::new("rt_duplicate_fixture").unwrap(),
         temp.path().to_owned(),
-        DatasetClass::Synthetic,
+        class,
         expected,
     );
     let entries = ["a", "b"].map(|name| Entry {
@@ -140,12 +179,12 @@ fn duplicate_synthetic_grant_returns_evidence() {
         expected: identity::observe(&temp.path().join(name)).unwrap(),
     });
     let state = canonical_tempdir();
-    let conn = duplicate_grant_store(state.path(), &grant);
-    let engine = Engine::open(EngineConfig::new(
-        state.path().to_owned(),
-        DatasetClass::Synthetic,
-    ))
-    .unwrap();
+    let store_class = match class {
+        DatasetClass::Synthetic => "synthetic",
+        DatasetClass::Personal => "personal",
+    };
+    let conn = duplicate_grant_store_as(state.path(), &grant, store_class);
+    let engine = Engine::open(EngineConfig::new(state.path().to_owned(), class)).unwrap();
     let report = engine
         .inspect_duplicates(
             &grant,
@@ -158,6 +197,25 @@ fn duplicate_synthetic_grant_returns_evidence() {
         .unwrap();
     assert_eq!(report.groups, vec![vec![0, 1]]);
     assert!(!report.partial);
+    // Revocation requested while a job's reader runs on its own cancel flag: the final gate
+    // refuses the finished report in its entirety rather than return names from a revoked root.
+    let root_cancel = engine
+        .scan_root_gate(grant.key())
+        .lock()
+        .unwrap()
+        .duplicate_cancel
+        .clone();
+    root_cancel.store(true, Ordering::Release);
+    let refused = engine
+        .inspect_duplicates_cancel(
+            &grant,
+            &entries,
+            duplicate_budget(),
+            Some(Arc::new(AtomicBool::new(false))),
+        )
+        .unwrap_err();
+    assert_eq!(refused.to_body().message.as_str(), "cancelled");
+    root_cancel.store(false, Ordering::Release);
     conn.execute("UPDATE root_grant SET state='revoked'", [])
         .unwrap();
     let err = engine
@@ -174,17 +232,26 @@ fn duplicate_budget() -> loomward_windows::duplicate_reader::Budget {
 }
 
 fn duplicate_grant_store(state: &std::path::Path, root: &GrantedRoot) -> rusqlite::Connection {
+    duplicate_grant_store_as(state, root, "synthetic")
+}
+
+fn duplicate_grant_store_as(
+    state: &std::path::Path,
+    root: &GrantedRoot,
+    class: &str,
+) -> rusqlite::Connection {
     let conn = rusqlite::Connection::open(state.join("state.db")).unwrap();
     conn.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);
-        INSERT INTO meta VALUES('dataset_class','synthetic');
-        CREATE TABLE root_grant(id INTEGER PRIMARY KEY,display_path TEXT,volume_key TEXT,root_file_id BLOB,state TEXT);").unwrap();
+        CREATE TABLE root_grant(id INTEGER PRIMARY KEY,display_path TEXT,volume_key TEXT,root_file_id BLOB,state TEXT,identity_mode TEXT NOT NULL DEFAULT 'verified');").unwrap();
+    conn.execute("INSERT INTO meta VALUES('dataset_class',?1)", [class])
+        .unwrap();
     let expected = root.expected.unwrap();
     let id = match expected.id.unwrap() {
         FileIdObs::Id128(id) => id.to_vec(),
         FileIdObs::Id64(id) => id.to_le_bytes().to_vec(),
     };
     conn.execute(
-        "INSERT INTO root_grant VALUES(1,?1,?2,?3,'active')",
+        "INSERT INTO root_grant(id,display_path,volume_key,root_file_id,state) VALUES(1,?1,?2,?3,'active')",
         rusqlite::params![
             root.path.to_str().unwrap(),
             format!("vsn_{}", expected.volume_serial.unwrap()),
@@ -193,6 +260,100 @@ fn duplicate_grant_store(state: &std::path::Path, root: &GrantedRoot) -> rusqlit
     )
     .unwrap();
     conn
+}
+
+/// #219: a scan's native source lists identity-unverified only for a root allowed to: a
+/// synthetic fixture root, or a granted root whose grant record says so; personal otherwise not.
+#[cfg(windows)]
+#[test]
+fn scan_source_allows_identity_unverified_only_when_the_root_does() {
+    use loomward_windows::enumerate::NativeSource;
+    let temp = canonical_tempdir();
+    if skip_elevated() {
+        return;
+    }
+    let (_, id) = NativeSource::default().open_root(temp.path()).unwrap();
+    for (class, allowed) in [
+        (DatasetClass::Synthetic, true),
+        (DatasetClass::Personal, false),
+    ] {
+        let root = GrantedRoot::new(
+            RootId::new("rt_unverified_fixture").unwrap(),
+            temp.path().into(),
+            class,
+            id,
+        );
+        assert_eq!(root.allows_identity_unverified(), allowed);
+        let opened = super::native_source(&root, Default::default())
+            .with_filesystem("exFAT")
+            .open_root(temp.path());
+        assert_eq!(
+            opened.map(|(_, id)| id.basis).ok(),
+            allowed.then_some(IdBasis::Unverified),
+            "{class:?}"
+        );
+    }
+}
+
+/// #219: an identity-unverified root is scanned unwatched (the watch reopens by file ID); a
+/// verified root on the same watch-capable sink is watched.
+#[cfg(windows)]
+#[test]
+fn identity_unverified_roots_are_never_watched() {
+    use loomward_windows::enumerate::NativeSource;
+    let temp = canonical_tempdir();
+    if skip_elevated() {
+        return;
+    }
+    let (_, id) = NativeSource::default().open_root(temp.path()).unwrap();
+    for (name, basis, watched) in [
+        ("rt_watch_verified", IdBasis::PostOpen, true),
+        ("rt_watch_unverified", IdBasis::Unverified, false),
+    ] {
+        let root = GrantedRoot::new(
+            RootId::new(name).unwrap(),
+            temp.path().into(),
+            DatasetClass::Synthetic,
+            OpenedIdentity { basis, ..id },
+        );
+        let e = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Synthetic)).unwrap();
+        e.set_scan_sink(Arc::new(MemorySink::default())).unwrap();
+        let job = e.scan_start(&root, None).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while e.job_status(&job.job_id).unwrap().state != loomward_protocol::JobState::Completed {
+            assert!(std::time::Instant::now() < deadline, "{name}");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let watch = e.scan_watches.lock().unwrap().remove(root.root_id());
+        assert_eq!(watch.is_some(), watched, "{name}");
+        if let Some(watch) = watch {
+            watch.stop();
+        }
+    }
+}
+
+/// #219: an identity-unverified root is refused at content-read admission, before the grant
+/// store is even consulted.
+#[test]
+fn duplicate_admission_refuses_an_identity_unverified_root() {
+    let state = tempfile::tempdir().unwrap();
+    let mut grant = root();
+    let _conn = duplicate_grant_store(state.path(), &grant);
+    let engine = Engine::open(EngineConfig::new(
+        state.path().to_owned(),
+        DatasetClass::Synthetic,
+    ))
+    .unwrap();
+    assert!(engine.duplicate_read_admission(&grant).is_ok());
+    grant.expected.as_mut().unwrap().basis = IdBasis::Unverified;
+    for err in [
+        engine.duplicate_read_admission(&grant).unwrap_err(),
+        engine
+            .inspect_duplicates(&grant, &[], duplicate_budget())
+            .unwrap_err(),
+    ] {
+        assert_eq!(err.to_body().message.as_str(), "identity_unverified");
+    }
 }
 
 #[test]
@@ -296,7 +457,7 @@ fn duplicate_admission_rechecks_durable_class_identity_and_ambiguity() {
             "grant_not_active"
         );
     }
-    conn.execute("INSERT INTO root_grant SELECT 2,display_path,volume_key,root_file_id,'active' FROM root_grant WHERE id=1", []).unwrap();
+    conn.execute("INSERT INTO root_grant(id,display_path,volume_key,root_file_id,state) SELECT 2,display_path,volume_key,root_file_id,'active' FROM root_grant WHERE id=1", []).unwrap();
     assert_eq!(
         engine
             .duplicate_read_admission(&grant)
@@ -306,17 +467,11 @@ fn duplicate_admission_rechecks_durable_class_identity_and_ambiguity() {
             .as_str(),
         "grant_not_active"
     );
+    // A revoked row beside one active grant for the same folder is history, not ambiguity: the
+    // folder was revoked and granted again, and reads follow the one active grant (review on #376).
     conn.execute("UPDATE root_grant SET state='revoked' WHERE id=1", [])
         .unwrap();
-    assert_eq!(
-        engine
-            .duplicate_read_admission(&grant.clone())
-            .unwrap_err()
-            .to_body()
-            .message
-            .as_str(),
-        "grant_not_active"
-    );
+    assert!(engine.duplicate_read_admission(&grant.clone()).is_ok());
 }
 
 #[test]
@@ -1831,13 +1986,13 @@ fn granted_root_comes_only_from_an_active_durable_grant() {
     conn.execute_batch(
         "CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);
          INSERT INTO meta VALUES('dataset_class','synthetic');
-         CREATE TABLE root_grant(id INTEGER PRIMARY KEY,display_path TEXT,volume_key TEXT,root_file_id BLOB,state TEXT);",
+         CREATE TABLE root_grant(id INTEGER PRIMARY KEY,display_path TEXT,volume_key TEXT,root_file_id BLOB,state TEXT,identity_mode TEXT NOT NULL DEFAULT 'verified');",
     )
     .unwrap();
     let path = root_dir.path().to_string_lossy().into_owned();
     let insert = |id: i64, file_id: &[u8], state: &str| {
         conn.execute(
-            "INSERT INTO root_grant VALUES(?1,?2,?3,?4,?5)",
+            "INSERT INTO root_grant(id,display_path,volume_key,root_file_id,state) VALUES(?1,?2,?3,?4,?5)",
             rusqlite::params![id, path, volume, file_id, state],
         )
         .unwrap();
@@ -1871,6 +2026,22 @@ fn granted_root_comes_only_from_an_active_durable_grant() {
     assert_eq!(root.root_id(), &rt(1));
     assert_eq!(root.path(), root_dir.path());
     assert_eq!(root.dataset_class(), DatasetClass::Synthetic);
+    // #219: only the grant record allows identity-unverified listing, and on NTFS the root
+    // keeps its verified identity even then.
+    assert!(!root.allows_identity_unverified());
+    conn.execute(
+        "UPDATE root_grant SET identity_mode='unverified' WHERE id=1",
+        [],
+    )
+    .unwrap();
+    let unverified = engine.granted_root(rt(1), 1, &catalog_root(1)).unwrap();
+    assert!(unverified.allows_identity_unverified());
+    assert_eq!(unverified.expected.unwrap().basis, IdBasis::PostOpen);
+    conn.execute(
+        "UPDATE root_grant SET identity_mode='verified' WHERE id=1",
+        [],
+    )
+    .unwrap();
     assert_eq!(
         message(engine.granted_root(rt(2), 2, &catalog_root(2))),
         "grant_not_active"

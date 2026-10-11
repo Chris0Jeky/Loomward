@@ -64,6 +64,8 @@ struct Root {
     run: Option<(u64, i64)>,
     dirs: HashMap<u64, Listing>,
     last_event: Option<Instant>,
+    /// #219: this run's root opened identity-unverified, so every row it publishes is flagged.
+    unverified: bool,
 }
 
 /// The listing a directory's current ticket reserves.
@@ -151,9 +153,13 @@ fn name(raw: &[u16]) -> (String, Option<Vec<u8>>) {
 }
 
 /// One listed entry as a catalogue observation, excluded entries included (docs/41 section 3).
-fn observation(e: &Entry) -> Observation {
+/// An identity-unverified root's rows (#219) are flagged and never carry a file ID.
+fn observation(e: &Entry, unverified: bool) -> Observation {
     let (text, raw) = name(&e.name);
-    let file_id = e.file_id.filter(|_| e.identity_eligible).and_then(id_bytes);
+    let file_id = e
+        .file_id
+        .filter(|_| e.identity_eligible && !unverified)
+        .and_then(id_bytes);
     let directory = e.attributes & 0x10 != 0;
     let extension = (!directory)
         .then(|| text.rsplit_once('.'))
@@ -179,6 +185,9 @@ fn observation(e: &Entry) -> Observation {
     }
     if file_id.is_none() {
         flags |= IDENTITY_UNAVAILABLE;
+    }
+    if unverified {
+        flags |= loomward_catalog::IDENTITY_UNVERIFIED;
     }
     match e.traversal_error {
         Some(loomward_engine::scan::source::SourceError::AccessDenied) => flags |= ACCESS_DENIED,
@@ -227,6 +236,35 @@ fn outcome(o: ListOutcome) -> ListingOutcome {
 
 #[cfg(test)]
 #[test]
+fn identity_unverified_rows_are_flagged_and_never_carry_a_file_id() {
+    let entry = Entry {
+        name: "synthetic".encode_utf16().collect(),
+        file_id: Some(FileIdObs::Id128([7; 16])),
+        identity_eligible: true,
+        attributes: 0,
+        reparse_tag: None,
+        logical: 1,
+        allocated: Some(1),
+        creation: None,
+        last_write: None,
+        change: None,
+        last_access: None,
+        excluded: false,
+        traversal_error: None,
+    };
+    let verified = observation(&entry, false);
+    assert!(verified.file_id.is_some());
+    assert_eq!(verified.flags & loomward_catalog::IDENTITY_UNVERIFIED, 0);
+    let unverified = observation(&entry, true);
+    assert_eq!(unverified.file_id, None);
+    assert_eq!(
+        unverified.flags & (loomward_catalog::IDENTITY_UNVERIFIED | IDENTITY_UNAVAILABLE),
+        loomward_catalog::IDENTITY_UNVERIFIED | IDENTITY_UNAVAILABLE
+    );
+}
+
+#[cfg(test)]
+#[test]
 fn containment_failures_are_partial_not_targeted_stale() {
     for reason in [
         IncompleteReason::Io(50),
@@ -265,6 +303,7 @@ impl CatalogScanSink {
             run: None,
             dirs: HashMap::new(),
             last_event: None,
+            unverified: false,
         });
         r.grant = grant;
         r.root_dir = root_dir;
@@ -303,7 +342,8 @@ impl CatalogScanSink {
     }
 
     /// The child row the parent's publication committed: by native identity first, else by exact
-    /// name among identity-less children. Hidden tombstones never match.
+    /// name among identity-less children. Hidden tombstones never match. A root's first full scan
+    /// commits its rows to the writer's bulk build, which only this lookup reads before EndRun.
     fn child_row(
         &self,
         root_dir: i64,
@@ -317,6 +357,8 @@ impl CatalogScanSink {
             let row = conn
                 .query_row(
                     "SELECT id FROM main.dir WHERE root_id=(SELECT root_id FROM main.dir WHERE id=?1)
+                     AND file_id=?2 AND parent_id=?3 AND listing_state!='absent_pending'
+                     UNION ALL SELECT id FROM main.bulk_dir WHERE root_id=(SELECT root_id FROM main.dir WHERE id=?1)
                      AND file_id=?2 AND parent_id=?3 AND listing_state!='absent_pending'",
                     params![root_dir, id, parent],
                     |r| r.get(0),
@@ -330,6 +372,8 @@ impl CatalogScanSink {
         let (text, raw) = self::name(name);
         conn.query_row(
             "SELECT id FROM main.dir WHERE parent_id=?1 AND name=?2 AND name_utf16 IS ?3
+             AND file_id IS NULL AND listing_state!='absent_pending'
+             UNION ALL SELECT id FROM main.bulk_dir WHERE parent_id=?1 AND name=?2 AND name_utf16 IS ?3
              AND file_id IS NULL AND listing_state!='absent_pending'",
             params![parent, text, raw],
             |r| r.get(0),
@@ -473,6 +517,10 @@ impl ScanSink for CatalogScanSink {
         s.next_revision += 1;
         let revision = s.next_revision;
         let r = Self::active(&mut s, root, run)?;
+        if parent.is_none() {
+            // The root's own open decides the whole run: one volume, one identity mode.
+            r.unverified = identity.basis == IdBasis::Unverified;
+        }
         r.dirs.insert(
             dir,
             Listing {
@@ -538,19 +586,20 @@ impl ScanSink for CatalogScanSink {
                 ticket,
                 entries,
             } => {
-                let (catalog_run, seq) = {
+                let (catalog_run, seq, unverified) = {
                     let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
                     let r = Self::active(&mut s, root, run)?;
                     let catalog_run = r.run.unwrap().1;
+                    let unverified = r.unverified;
                     let listing = Self::current(r, ticket)?;
                     for e in &entries {
                         listing.skipped += u64::from(e.excluded);
                         listing.errors += u64::from(e.traversal_error.is_some());
                     }
-                    (catalog_run, listing.seq)
+                    (catalog_run, listing.seq, unverified)
                 };
                 let (mut files, mut dirs) = (Vec::new(), Vec::new());
-                for o in entries.iter().map(observation) {
+                for o in entries.iter().map(|e| observation(e, unverified)) {
                     if o.attrs & 0x10 != 0 {
                         dirs.push(o);
                     } else {

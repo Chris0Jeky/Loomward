@@ -51,7 +51,7 @@
     },
     "ExtFamily": { "enum": ["document", "spreadsheet", "presentation", "image", "video", "audio", "archive", "code", "data", "model", "executable", "system", "font", "other", "none"] },
     "FileAttribute": { "enum": ["readonly", "hidden", "system", "archive", "compressed", "sparse", "encrypted", "offline", "not_content_indexed", "reparse_point", "recall_on_open", "recall_on_data_access", "pinned", "unpinned", "temporary"] },
-    "EntryFlag": { "enum": ["sensitive_name", "protected_context", "hardlink_suspected", "cloud_placeholder", "reparse_not_followed", "excluded_state_dir", "access_denied", "enumeration_error", "identity_unavailable", "name_lossy", "on_disk_only_listing", "listing_incomplete"] },
+    "EntryFlag": { "enum": ["sensitive_name", "protected_context", "hardlink_suspected", "cloud_placeholder", "reparse_not_followed", "excluded_state_dir", "access_denied", "enumeration_error", "identity_unavailable", "name_lossy", "on_disk_only_listing", "listing_incomplete", "identity_unverified"] },
     "DisplayPath": {
       "type": "object",
       "additionalProperties": false,
@@ -872,7 +872,7 @@
         "dirs": { "$ref": "#/$defs/NullableCount" },
         "modified_at": { "$ref": "#/$defs/NullableTimestamp" },
         "attributes": { "type": "array", "maxItems": 16, "uniqueItems": true, "items": { "$ref": "#/$defs/FileAttribute" } },
-        "flags": { "type": "array", "maxItems": 12, "uniqueItems": true, "items": { "$ref": "#/$defs/EntryFlag" } },
+        "flags": { "type": "array", "maxItems": 13, "uniqueItems": true, "items": { "$ref": "#/$defs/EntryFlag" } },
         "coverage": { "$ref": "#/$defs/CoverageState" },
         "location_hint": { "anyOf": [{ "$ref": "#/$defs/DisplayPath" }, { "type": "null" }], "$comment": "Search and collection results only: the parent's display path." }
       }
@@ -936,7 +936,7 @@
       "additionalProperties": false,
       "required": ["quality", "volume_key", "file_id_hex", "observed_generation", "durable_reference", "authorises_effects"],
       "properties": {
-        "quality": { "enum": ["native_file_id_128", "native_file_id_64", "path_observation", "unavailable"], "$comment": "Width is preserved: a 64-bit ID is never padded and reported as 128-bit." },
+        "quality": { "enum": ["native_file_id_128", "native_file_id_64", "path_observation", "unavailable", "unverified"], "$comment": "Width is preserved: a 64-bit ID is never padded and reported as 128-bit. unverified: listed on a FAT, exFAT or unknown filesystem under an identity-unverified grant; metadata only, never an effect, placement or content-read input." },
         "durable_reference": { "enum": ["available", "unavailable_identity_quality", "unavailable_filesystem"], "$comment": "Whether labels and collection membership may bind to this object (docs/41 section 6.3). Without it, feedback.record returns capability_unavailable." },
         "volume_key": { "type": ["string", "null"], "maxLength": 80 },
         "file_id_hex": { "type": ["string", "null"], "pattern": "^[0-9a-f]{16,32}$" },
@@ -1120,7 +1120,7 @@
       "additionalProperties": false,
       "required": ["model_id", "algorithm", "taxonomy_version", "training_count", "human_events", "teacher_labels", "human_support", "fitted_at", "dataset_class", "calibrated", "autonomy_allowed", "gate", "unresolved_human_events"],
       "properties": {
-        "gate": { "type": ["string", "null"], "minLength": 1, "maxLength": 64, "description": "learning_personal_gated for personal sessions; null for synthetic sessions." },
+        "gate": { "type": ["string", "null"], "minLength": 1, "maxLength": 64, "description": "A learning gate in force, or null. Null in both dataset classes since q-11 opened local personal learning; the teacher's personal refusal is the separate teacher_personal_gated." },
         "unresolved_human_events": { "$ref": "#/$defs/Count" },
         "model_id": { "anyOf": [{ "$ref": "#/$defs/ModelId" }, { "type": "null" }] },
         "algorithm": { "const": "weighted_multinomial_nb_v1" },
@@ -2343,73 +2343,288 @@
       ]
     },
     "TrendCandidate": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "kind",
-        "series_index",
-        "unit",
-        "start_at",
-        "end_at",
-        "window_ms",
-        "sample_count",
-        "start_value",
-        "end_value",
-        "slope_per_s",
-        "facts",
-        "unknowns"
-      ],
-      "properties": {
-        "kind": {
-          "$ref": "#/$defs/TrendCandidateKind"
-        },
-        "series_index": {
-          "$ref": "#/$defs/Count"
-        },
-        "unit": {
-          "$ref": "#/$defs/TrendUnit"
-        },
-        "start_at": {
-          "$ref": "#/$defs/Timestamp"
-        },
-        "end_at": {
-          "$ref": "#/$defs/Timestamp"
-        },
-        "window_ms": {
-          "$ref": "#/$defs/Count"
-        },
-        "sample_count": {
-          "$ref": "#/$defs/Count"
-        },
-        "start_value": {
-          "$ref": "#/$defs/TrendValue"
-        },
-        "end_value": {
-          "$ref": "#/$defs/TrendValue"
-        },
-        "slope_per_s": {
-          "type": "string",
-          "maxLength": 64
-        },
-        "facts": {
-          "type": "array",
-          "minItems": 1,
-          "maxItems": 8,
-          "items": {
-            "type": "string",
-            "maxLength": 256
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "series_index",
+            "unit",
+            "start_at",
+            "end_at",
+            "window_ms",
+            "sample_count",
+            "start_value",
+            "end_value",
+            "slope_per_s",
+            "facts",
+            "unknowns"
+          ],
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/TrendCandidateKind"
+            },
+            "series_index": {
+              "$ref": "#/$defs/Count"
+            },
+            "unit": {
+              "const": "bytes"
+            },
+            "start_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "end_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "window_ms": {
+              "$ref": "#/$defs/Count"
+            },
+            "sample_count": {
+              "$ref": "#/$defs/Count"
+            },
+            "start_value": {
+              "$ref": "#/$defs/ByteCount"
+            },
+            "end_value": {
+              "$ref": "#/$defs/ByteCount"
+            },
+            "slope_per_s": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "facts": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 256
+              }
+            },
+            "unknowns": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 256
+              }
+            }
           }
         },
-        "unknowns": {
-          "type": "array",
-          "minItems": 1,
-          "maxItems": 8,
-          "items": {
-            "type": "string",
-            "maxLength": 256
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "series_index",
+            "unit",
+            "start_at",
+            "end_at",
+            "window_ms",
+            "sample_count",
+            "start_value",
+            "end_value",
+            "slope_per_s",
+            "facts",
+            "unknowns"
+          ],
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/TrendCandidateKind"
+            },
+            "series_index": {
+              "$ref": "#/$defs/Count"
+            },
+            "unit": {
+              "const": "fraction"
+            },
+            "start_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "end_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "window_ms": {
+              "$ref": "#/$defs/Count"
+            },
+            "sample_count": {
+              "$ref": "#/$defs/Count"
+            },
+            "start_value": {
+              "$ref": "#/$defs/Fraction"
+            },
+            "end_value": {
+              "$ref": "#/$defs/Fraction"
+            },
+            "slope_per_s": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "facts": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 256
+              }
+            },
+            "unknowns": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 256
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "series_index",
+            "unit",
+            "start_at",
+            "end_at",
+            "window_ms",
+            "sample_count",
+            "start_value",
+            "end_value",
+            "slope_per_s",
+            "facts",
+            "unknowns"
+          ],
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/TrendCandidateKind"
+            },
+            "series_index": {
+              "$ref": "#/$defs/Count"
+            },
+            "unit": {
+              "const": "queue"
+            },
+            "start_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "end_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "window_ms": {
+              "$ref": "#/$defs/Count"
+            },
+            "sample_count": {
+              "$ref": "#/$defs/Count"
+            },
+            "start_value": {
+              "type": "number",
+              "minimum": 0
+            },
+            "end_value": {
+              "type": "number",
+              "minimum": 0
+            },
+            "slope_per_s": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "facts": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 256
+              }
+            },
+            "unknowns": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 256
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "series_index",
+            "unit",
+            "start_at",
+            "end_at",
+            "window_ms",
+            "sample_count",
+            "start_value",
+            "end_value",
+            "slope_per_s",
+            "facts",
+            "unknowns"
+          ],
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/TrendCandidateKind"
+            },
+            "series_index": {
+              "$ref": "#/$defs/Count"
+            },
+            "unit": {
+              "const": "bytes_per_s"
+            },
+            "start_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "end_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "window_ms": {
+              "$ref": "#/$defs/Count"
+            },
+            "sample_count": {
+              "$ref": "#/$defs/Count"
+            },
+            "start_value": {
+              "type": "number",
+              "minimum": 0
+            },
+            "end_value": {
+              "type": "number",
+              "minimum": 0
+            },
+            "slope_per_s": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "facts": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 256
+              }
+            },
+            "unknowns": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 256
+              }
+            }
           }
         }
-      }
+      ]
     },
     "TelemetryTrends": {
       "type": "object",
@@ -2631,6 +2846,25 @@
     "DesktopContext": {"type": "object", "additionalProperties": false, "required": ["folder", "ownership", "location", "current_path", "default_path", "redirected", "reason"], "properties": {"folder": {"$ref": "#/$defs/DesktopFolder"}, "ownership": {"$ref": "#/$defs/DesktopOwnership"}, "location": {"$ref": "#/$defs/DesktopLocation"}, "current_path": {"anyOf": [{"$ref": "#/$defs/DisplayPath"}, {"type": "null"}]}, "default_path": {"anyOf": [{"$ref": "#/$defs/DisplayPath"}, {"type": "null"}]}, "redirected": {"anyOf": [{"type": "boolean"}, {"type": "null"}]}, "reason": {"anyOf": [{"type": "string", "maxLength": 1024}, {"type": "null"}]}}},
     "ShortcutHealth": {"enum": ["present", "missing", "volume_unavailable", "network_unreachable_unknown", "ambiguous", "unknown"]},
     "DesktopShortcut": {"type": "object", "additionalProperties": false, "required": ["desktop", "name", "health", "reason", "target", "arguments", "working_directory"], "properties": {"desktop": {"enum": ["desktop", "public_desktop"]}, "name": {"type": "string", "minLength": 1, "maxLength": 4096}, "health": {"$ref": "#/$defs/ShortcutHealth"}, "reason": {"anyOf": [{"type": "string", "maxLength": 1024}, {"type": "null"}]}, "target": {"$ref": "#/$defs/InventoryText"}, "arguments": {"$ref": "#/$defs/InventoryText"}, "working_directory": {"$ref": "#/$defs/InventoryText"}}},
-    "DesktopPage": {"type": "object", "additionalProperties": false, "required": ["observed_at", "contexts", "providers", "shortcuts", "next_cursor", "budget_hit"], "properties": {"observed_at": {"$ref": "#/$defs/Timestamp"}, "contexts": {"type": "array", "items": {"$ref": "#/$defs/DesktopContext"}, "maxItems": 5}, "providers": {"type": "array", "items": {"$ref": "#/$defs/InventoryProvider"}, "maxItems": 2}, "shortcuts": {"type": "array", "items": {"$ref": "#/$defs/DesktopShortcut"}, "maxItems": 200}, "next_cursor": {"anyOf": [{"$ref": "#/$defs/Cursor"}, {"type": "null"}]}, "budget_hit": {"type": "boolean"}}}
+    "DesktopPage": {"type": "object", "additionalProperties": false, "required": ["observed_at", "contexts", "providers", "shortcuts", "next_cursor", "budget_hit"], "properties": {"observed_at": {"$ref": "#/$defs/Timestamp"}, "contexts": {"type": "array", "items": {"$ref": "#/$defs/DesktopContext"}, "maxItems": 5}, "providers": {"type": "array", "items": {"$ref": "#/$defs/InventoryProvider"}, "maxItems": 2}, "shortcuts": {"type": "array", "items": {"$ref": "#/$defs/DesktopShortcut"}, "maxItems": 200}, "next_cursor": {"anyOf": [{"$ref": "#/$defs/Cursor"}, {"type": "null"}]}, "budget_hit": {"type": "boolean"}}},
+    "BackupEvidenceId": {"type": "string", "pattern": "^be_[A-Za-z0-9_-]{1,64}$"},
+    "BackupLabel": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,64}$", "$comment": "Owner-chosen repository label. The charset keeps a URL, path or credential from ever being stored or echoed as one."},
+    "SnapshotId": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "RequiredVersion": {"type": "object", "additionalProperties": false, "required": ["relative_name", "version"], "properties": {"relative_name": {"type": "string", "minLength": 1, "maxLength": 1024, "$comment": "A scope-projected manifest name, compared lexically and refused when it is absolute, traverses, uses a backslash or is Windows-ambiguous. Never resolved, opened or joined to a root."}, "version": {"$ref": "#/$defs/Digest"}}},
+    "BackupTopology": {"enum": ["independent_target", "same_volume", "same_physical_device", "unknown"]},
+    "BackupTopologyBasis": {"enum": ["same_volume_identity", "different_volumes_device_unknown", "undeclared"], "$comment": "From volumes.list identity, never from text. Different volumes stay topology unknown until a physical device identity exists."},
+    "BackupRefusal": {"enum": ["snapshot_missing", "version_not_covered", "target_not_independent", "credentials_unavailable", "integrity_not_checked", "restore_not_succeeded", "partial_restore", "unsupported_metadata", "stale_observation", "invalid_observation_time"]},
+    "BackupMetadataClass": {"enum": ["acl", "alternate_streams", "hard_links", "timestamps", "sparse", "compression", "efs"]},
+    "RestoreDrillProof": {"enum": ["repository_and_snapshot_binding", "independent_content_sha256", "required_metadata_comparison", "complete_manifest", "fresh_observation"]},
+    "RestoreDrillTarget": {"enum": ["new_disposable_target"]},
+    "ProposedRestoreDrill": {"type": "object", "additionalProperties": false, "required": ["files", "target", "compare_metadata", "proofs", "executable"], "properties": {"files": {"type": "array", "items": {"$ref": "#/$defs/RequiredVersion"}, "minItems": 1, "maxItems": 64}, "target": {"$ref": "#/$defs/RestoreDrillTarget"}, "compare_metadata": {"type": "array", "items": {"$ref": "#/$defs/BackupMetadataClass"}, "maxItems": 7}, "proofs": {"type": "array", "items": {"$ref": "#/$defs/RestoreDrillProof"}, "maxItems": 5}, "executable": {"const": false}}, "$comment": "A restore drill as data only. Nothing creates, opens, writes or restores its target; no command executes it."},
+    "BackupEvidence": {"type": "object", "additionalProperties": false, "required": ["evidence_id", "repository_label", "snapshot_id", "snapshot_time", "imported_at", "snapshot_observed_at", "integrity_observed_at", "snapshot_taken", "integrity_checked", "integrity_read_all_data", "restore_drill_succeeded", "required_versions", "restore_coverage", "topology", "topology_basis", "snapshot_age_seconds", "integrity_age_seconds", "max_age_seconds", "reported_recovery_evidence", "refusals", "proposed_drill"], "properties": {"evidence_id": {"$ref": "#/$defs/BackupEvidenceId"}, "repository_label": {"$ref": "#/$defs/BackupLabel"}, "snapshot_id": {"$ref": "#/$defs/SnapshotId"}, "snapshot_time": {"anyOf": [{"type": "string", "maxLength": 64}, {"type": "null"}], "$comment": "The provider's own time text, uninterpreted; never the age oracle."}, "imported_at": {"$ref": "#/$defs/Timestamp"}, "snapshot_observed_at": {"$ref": "#/$defs/Timestamp"}, "integrity_observed_at": {"$ref": "#/$defs/NullableTimestamp"}, "snapshot_taken": {"type": "boolean"}, "integrity_checked": {"type": "boolean"}, "integrity_read_all_data": {"type": "boolean"}, "restore_drill_succeeded": {"type": "boolean"}, "required_versions": {"type": "array", "items": {"$ref": "#/$defs/RequiredVersion"}, "minItems": 1, "maxItems": 64}, "restore_coverage": {"type": "array", "items": {"$ref": "#/$defs/RequiredVersion"}, "maxItems": 64}, "topology": {"$ref": "#/$defs/BackupTopology"}, "topology_basis": {"$ref": "#/$defs/BackupTopologyBasis"}, "snapshot_age_seconds": {"$ref": "#/$defs/NullableCount"}, "integrity_age_seconds": {"$ref": "#/$defs/NullableCount"}, "max_age_seconds": {"$ref": "#/$defs/Count"}, "reported_recovery_evidence": {"type": "boolean", "$comment": "Every predicate holds on the supplied, scoped evidence. Caller-reported self-consistency: never native proof, permission or a source-retirement gate."}, "refusals": {"type": "array", "items": {"$ref": "#/$defs/BackupRefusal"}, "maxItems": 10}, "proposed_drill": {"$ref": "#/$defs/ProposedRestoreDrill"}}, "$comment": "Normalised restic receipt evidence. Snapshot, integrity and restore drill are separate observations; a green backup job is not verified recovery."},
+    "BackupEvidenceList": {"type": "object", "additionalProperties": false, "required": ["evidence"], "properties": {"evidence": {"type": "array", "items": {"$ref": "#/$defs/BackupEvidence"}, "maxItems": 64}}},
+    "BackupImportRequest": {"type": "object", "additionalProperties": false, "required": ["repository_label", "snapshot_id", "source_volume_id", "target_volume_id", "required", "integrity_check"], "properties": {"repository_label": {"$ref": "#/$defs/BackupLabel"}, "snapshot_id": {"$ref": "#/$defs/SnapshotId"}, "source_volume_id": {"anyOf": [{"$ref": "#/$defs/VolumeId"}, {"type": "null"}]}, "target_volume_id": {"anyOf": [{"$ref": "#/$defs/VolumeId"}, {"type": "null"}]}, "required": {"type": "array", "items": {"$ref": "#/$defs/RequiredVersion"}, "minItems": 1, "maxItems": 64}, "integrity_check": {"type": "boolean", "$comment": "Also open the dialog a second time for a restic check --json output."}}, "$comment": "Tauri adapter only. Rust opens the native open-file dialog and reads at most 256 KiB; the webview never supplies a path."},
+    "BackupImportOutcome": {"enum": ["imported", "cancelled_by_user", "refused"]},
+    "BackupImportRefusal": {"enum": ["synthetic_session", "not_a_regular_file", "unreadable", "too_large", "invalid_json", "invalid_receipt", "invalid_source", "repository_limit"]},
+    "BackupImportResult": {"type": "object", "additionalProperties": false, "required": ["outcome", "evidence", "refusal"], "properties": {"outcome": {"$ref": "#/$defs/BackupImportOutcome"}, "evidence": {"anyOf": [{"$ref": "#/$defs/BackupEvidence"}, {"type": "null"}]}, "refusal": {"anyOf": [{"$ref": "#/$defs/BackupImportRefusal"}, {"type": "null"}]}}},
+    "BackupForgetRequest": {"type": "object", "additionalProperties": false, "required": ["evidence_id"], "properties": {"evidence_id": {"$ref": "#/$defs/BackupEvidenceId"}}},
+    "BackupForgetResult": {"type": "object", "additionalProperties": false, "required": ["evidence_id", "forgotten_at"], "properties": {"evidence_id": {"$ref": "#/$defs/BackupEvidenceId"}, "forgotten_at": {"$ref": "#/$defs/Timestamp"}}, "$comment": "Removes Loomward's own record only; never touches a backup or a file."}
   }
 }

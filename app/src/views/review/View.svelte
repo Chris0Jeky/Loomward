@@ -22,6 +22,7 @@
   let generation = 0;
   let alive = true;
   const gated = $derived(status?.gate !== null && status?.gate !== undefined);
+  const personal = $derived(status?.dataset_class === 'personal');
   const active = $derived(job !== null && ['queued', 'running', 'cancel_requested'].includes(job.state));
 
   async function load(cursor: string | null = null): Promise<void> {
@@ -89,13 +90,14 @@
   {#if status}
     <div class="panel status-panel">
       {#if gated}
-        <p class="note gated">Personal learning is gated. Recording labels and refitting await a separate owner decision.</p>
+        <p class="note gated">Learning is gated ({status.gate}). Recording labels and refitting are unavailable.</p>
       {:else}
         <p class="counts"><strong class="num">{status.human_events}</strong> human events · <strong class="num">{status.training_count}</strong> fitted examples · {status.unresolved_human_events} unresolved events excluded</p>
         {#if status.model_id && status.human_events > status.training_count}
           <p class="note warn">Human history exceeds fitted examples. The candidate may be stale after label changes or withdrawals; refit to refresh advice.</p>
         {/if}
-        <p class="muted">{status.model_id ? 'Synthetic candidate fitted; promotion has not run.' : 'No fitted model yet. Suggestions abstain until human evidence supports them.'} Relative scores, not probabilities.</p>
+        {#if personal}<p class="note">Your labels train a local student on this machine. The teacher never sees personal data.</p>{/if}
+        <p class="muted">{status.model_id ? `${personal ? 'Personal' : 'Synthetic'} candidate fitted; promotion has not run.` : 'No fitted model yet. Suggestions abstain until human evidence supports them.'} Relative scores, not probabilities.</p>
       {/if}
       <div class="controls">
         <button class="btn primary" disabled={working || active || gated} onclick={() => void refit()}>Refit from human labels</button>
@@ -141,7 +143,7 @@
         </div>
       {/if}
       {#if queue.next_cursor}<div class="controls"><button class="btn" disabled={working} onclick={() => void load(queue?.next_cursor ?? null)}>Next review page</button></div>{/if}
-      <p class="muted small limits">Synthetic smoke only. Limits: 10,000 eligible files and the latest labels for at most 10,000 resolved objects per refit. No teacher labels are trained here.</p>
+      <p class="muted small limits">{personal ? 'Advice only, never an approval.' : 'Synthetic smoke only.'} Limits: 10,000 eligible files and the latest labels for at most 10,000 resolved objects per refit. No teacher labels are trained here.</p>
     </div>
   {/if}
 </section>

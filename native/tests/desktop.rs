@@ -1279,3 +1279,108 @@ fn engine_events_revocation_cancellation_and_budgets_flow_through_the_adapter() 
     );
     desktop.close_webview("main");
 }
+
+// ----------------------------------------------------------------------------------------------
+// Backups stage 1: the open-file dialog mirrors the folder picker's walls.
+// ----------------------------------------------------------------------------------------------
+
+fn import_payload() -> Value {
+    selftest::example_payload(Command::BackupsImport)
+}
+
+#[test]
+fn synthetic_backup_import_never_reaches_the_service() {
+    let service = Arc::new(Granting::default());
+    let (dialogs, _) = recording(DatasetClass::Synthetic, true);
+    let desktop = Desktop::new(service.clone(), DatasetClass::Synthetic, Arc::new(dialogs));
+    let r = desktop
+        .call(&envelope("backups.import", import_payload()))
+        .unwrap();
+    let ResponseEnvelope::Ok(ok) = &r else {
+        panic!("{r:?}")
+    };
+    ok.validate_for(Command::BackupsImport).unwrap();
+    assert_eq!(ok.result["refusal"], json!("synthetic_session"));
+    assert_eq!(ok.result["evidence"], Value::Null);
+    assert_eq!(service.0.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn the_file_picker_never_opens_in_a_synthetic_session() {
+    // Would block on a real dialog if it opened.
+    assert_eq!(
+        DesktopDialogs::new(DatasetClass::Synthetic).pick_file("Loomward: synthetic"),
+        None
+    );
+}
+
+/// A file-picker stand-in that answers with one synthetic receipt and records each title.
+struct FilePicker(std::path::PathBuf, Mutex<Vec<String>>);
+impl NativeDialogs for FilePicker {
+    fn pick_folder(&self) -> Option<std::path::PathBuf> {
+        panic!("backups.import opened the folder picker")
+    }
+    fn pick_file(&self, title: &str) -> Option<std::path::PathBuf> {
+        self.1.lock().unwrap().push(title.to_owned());
+        Some(self.0.clone())
+    }
+    fn confirm_disclosure(
+        &self,
+        _: &DisclosureSummary,
+    ) -> Result<bool, loomward_protocol::ErrorBody> {
+        Ok(false)
+    }
+}
+
+/// The picked path is used by the service in-process and never crosses IPC: neither the import
+/// answer nor the list carries the path, the file name or anything the receipt held beyond
+/// normalised evidence. The webview has no dialog permission of its own (`plugin:dialog|open`
+/// is refused in `the_webview_may_invoke_exactly_lw_call_and_lw_events`).
+#[test]
+fn the_picked_receipt_path_stays_in_rust() {
+    let base = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir_in(".").unwrap();
+    let receipt = folder.path().join("synthetic-receipt-marker.json");
+    let snapshot = import_payload()["snapshot_id"].clone();
+    std::fs::write(
+        &receipt,
+        json!([{ "id": snapshot, "time": "2026-10-09T21:00:00Z", "paths": ["/synthetic-root-marker"],
+            "hostname": "synthetic-host-marker" }])
+        .to_string(),
+    )
+    .unwrap();
+    let launch = launch_args(&[]).unwrap();
+    let service = launch::open(&launch, Some(base.path().as_os_str().to_owned())).unwrap();
+    let picker = Arc::new(FilePicker(receipt.clone(), Mutex::default()));
+    let desktop = Desktop::new(service, launch.dataset, picker.clone());
+    let mut payload = import_payload();
+    payload["source_volume_id"] = Value::Null;
+    payload["target_volume_id"] = Value::Null;
+    payload["integrity_check"] = json!(false);
+    let mut call = request("backups.import", payload);
+    call["deadline_ms"] = json!(60_000);
+    let r = desktop.call(&call).unwrap();
+    let ResponseEnvelope::Ok(answer) = &r else {
+        panic!("{r:?}")
+    };
+    answer.validate_for(Command::BackupsImport).unwrap();
+    assert_eq!(answer.result["outcome"], "imported", "{r:?}");
+    assert_eq!(picker.1.lock().unwrap().len(), 1, "one dialog");
+    let listed = ok(&desktop, "backups.list", json!({}));
+    assert_eq!(listed["evidence"].as_array().unwrap().len(), 1);
+    let wire = format!(
+        "{}{}",
+        serde_json::to_string(&r).unwrap(),
+        Value::Object(listed)
+    );
+    let folder_text = folder.path().canonicalize().unwrap();
+    for leak in [
+        "synthetic-receipt-marker",
+        "synthetic-root-marker",
+        "synthetic-host-marker",
+        &folder.path().file_name().unwrap().to_string_lossy(),
+        &folder_text.to_string_lossy().replace('\\', "\\\\"),
+    ] {
+        assert!(!wire.contains(leak), "{leak} crossed IPC");
+    }
+}

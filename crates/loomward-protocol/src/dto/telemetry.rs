@@ -400,17 +400,23 @@ struct TrendSeriesWire {
     unknowns: BoundedVec<Text<256>, 0, 8>,
 }
 
+/// A value that cannot be in `unit`: bytes only in bytes, numbers never in bytes, fractions at most 1.
+fn value_disagrees(unit: TrendUnit, v: &TrendValue) -> bool {
+    match v {
+        TrendValue::Bytes(_) => unit != TrendUnit::Bytes,
+        TrendValue::Number(n) => {
+            unit == TrendUnit::Bytes || (unit == TrendUnit::Fraction && n.get() > 1.0)
+        }
+    }
+}
+
 impl TryFrom<TrendSeriesWire> for TrendSeries {
     type Error = &'static str;
     fn try_from(v: TrendSeriesWire) -> Result<Self, Self::Error> {
         if v.unit != v.metric.unit()
-            || v.points.iter().any(|p| match &p.value {
-                None => false,
-                Some(TrendValue::Bytes(_)) => v.unit != TrendUnit::Bytes,
-                Some(TrendValue::Number(n)) => {
-                    v.unit == TrendUnit::Bytes || (v.unit == TrendUnit::Fraction && n.get() > 1.0)
-                }
-            })
+            || v.points
+                .iter()
+                .any(|p| p.value.as_ref().is_some_and(|x| value_disagrees(v.unit, x)))
         {
             return Err("trend metric/value units disagree");
         }
@@ -435,7 +441,7 @@ pub enum TrendCandidateKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, try_from = "TrendCandidateWire")]
 pub struct TrendCandidate {
     pub kind: TrendCandidateKind,
     pub series_index: Count,
@@ -450,6 +456,46 @@ pub struct TrendCandidate {
     pub slope_per_s: Text<64>,
     pub facts: BoundedVec<Text<256>, 1, 8>,
     pub unknowns: BoundedVec<Text<256>, 1, 8>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TrendCandidateWire {
+    kind: TrendCandidateKind,
+    series_index: Count,
+    unit: TrendUnit,
+    start_at: Timestamp,
+    end_at: Timestamp,
+    window_ms: Count,
+    sample_count: Count,
+    start_value: TrendValue,
+    end_value: TrendValue,
+    slope_per_s: Text<64>,
+    facts: BoundedVec<Text<256>, 1, 8>,
+    unknowns: BoundedVec<Text<256>, 1, 8>,
+}
+
+impl TryFrom<TrendCandidateWire> for TrendCandidate {
+    type Error = &'static str;
+    fn try_from(v: TrendCandidateWire) -> Result<Self, Self::Error> {
+        if value_disagrees(v.unit, &v.start_value) || value_disagrees(v.unit, &v.end_value) {
+            return Err("trend candidate unit and values disagree");
+        }
+        Ok(Self {
+            kind: v.kind,
+            series_index: v.series_index,
+            unit: v.unit,
+            start_at: v.start_at,
+            end_at: v.end_at,
+            window_ms: v.window_ms,
+            sample_count: v.sample_count,
+            start_value: v.start_value,
+            end_value: v.end_value,
+            slope_per_s: v.slope_per_s,
+            facts: v.facts,
+            unknowns: v.unknowns,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

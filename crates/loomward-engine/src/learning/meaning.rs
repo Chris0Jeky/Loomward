@@ -16,7 +16,6 @@ impl Engine {
         deadline: Instant,
         budget_hit: bool,
     ) -> EngineResult<MeaningResult> {
-        self.learning_gate()?;
         if candidates.len() > WORK_BUDGET {
             return Err(EngineError::ResourceBudget {
                 message: "meaning work budget is 1000".into(),

@@ -104,6 +104,32 @@ alike. The listing is incomplete with `IdentityUnverified`, so the run stays par
 establish absence. List-time reparse, offline and recall revalidation reports `Refused`, consistently
 with opens. Native metadata and directory opens all require a non-elevated token.
 
+**Addendum: identity-unverified volumes (#219; owner decision HUMAN_TODO q-12, 2026-10-11).**
+Context: the absent-ID rule above left a FAT, FAT32 or exFAT root (or an unknown third-party
+filesystem) listing as root-partial with zero rows. Decision: only NTFS and ReFS verify file identity
+(`verifies_identity`). Any other filesystem opens only under a grant that allows identity-unverified
+listing, decided from the filesystem name the opened handle reports, never from which query failed,
+so an NTFS or ReFS identity failure stays refused exactly as above. A synthetic or lab root may list
+unverified freely; a personal root needs the owner's explicit confirmation at grant time (the desktop
+picker's one-line native confirmation, or `--allow-identity-unverified` beside `--grant-root`), and the
+grant record carries `identity_mode = 'unverified'` (state schema v5; existing grants migrate
+`verified`). Every grant now records its volume's observed filesystem. Such a root lists metadata only
+(names, sizes, dates): every listed or post-open ID is dropped, directories report `IdBasis::Unverified`
+and are never released for reopening by ID, and the scan is never watched. Find binds its pins to
+the original handle by path alone, which holds because the pins deny rename and delete while the
+original handle is re-read at the pinned path. Each relist rechecks containment by normalised path
+under the granted root; a failed recheck leaves that listing partial and refreshes none of its rows.
+Every row carries the `identity_unverified` flag and quality `unverified`, can never store a file ID,
+and has no durable reference. Limits: such rows never back a placement proposal (simulation included,
+refused `identity_unverified`), a duplicate content read (excluded as unknowns, so coverage is
+partial, and engine and reader both refuse `identity_unverified`), a label, a collection membership
+or any future effect. The grant root keeps the volume's weak, recyclable ID only to bind the grant;
+absence across runs is name-based, so a renamed or recreated folder reads as a new one. Removable
+volumes stay refused, as do volume roots from the CLI, whole profiles, credential stores and every
+elevated open. Unproven on real FAT or exFAT hardware: the mode is exercised by an injected
+filesystem name on NTFS fixtures (`evidence/v3/fat-exfat-unverified-219.md`). Reversibility: two-way;
+revoking the grant hides its rows.
+
 ## ADR-V3-06: SQLite catalogue, single writer thread, per-directory transactions, integer storage
 
 **Context.** 10M rows, live UI reads during scans, readers must never see half a directory (doc 25).
@@ -425,3 +451,34 @@ derived data cannot create or revive consent. Bad: slower `state.db` commits (sm
 catalogue keeps `NORMAL` for scan throughput.
 **Alternatives.** One file with `FULL` everywhere: rejected, it slows 10M-row publication for no benefit.
 **Reversibility.** Two-way.
+
+## ADR-V3-23: Backups arrive in three gated stages; stage 1 imports evidence only (new)
+
+**Context.** The owner left the backups design to the driver (HUMAN_TODO q-14). LW-084 (#347) added a pure
+restic receipt normaliser (`loomward-backup`) with no wiring; #349 listed its wiring follow-ups. The risk is a
+green backup job being read as recovery, and any backup surface growing a silent reach or an effect.
+**Decision.** Three stages, each behind its own gate. (1) **Evidence import**: the owner runs restic, saves
+`snapshots --json` (and optionally `check --json`), and picks the files in a Rust-owned native open-file dialog
+(`backups.import`, desktop only, personal sessions only, the same one-dialog lock and cooldown as the folder
+picker; ADR-V3-08's rule that a path never comes from the webview applies unchanged). The service refuses
+network, device and verbatim namespaces, device names, links, reparse points and cloud placeholders before
+opening anything, reads at most 256 KiB read-only, normalises, and stores only the normalised evidence in
+`state.db` (`backup_evidence`, state schema v6), one record per owner label; `backups.list` recomputes ages and
+staleness on each read and `backups.forget` drops Loomward's record. (2) **A guarded restic observer**: runs the
+owner's configured restic read-only commands itself, so check arguments, exit codes and snapshot manifests
+become observed rather than declared. (3) **A restore-drill executor**: restores the proposed versions to a new
+disposable target and measures content and metadata, under LW-036's native fidelity gate.
+**Stage 1 limits.** It never runs restic, opens a repository or reads its configuration or credentials. It
+cannot see check arguments (so `integrity_read_all_data` is false and a clean check still refuses
+`integrity_not_checked`), exit codes (a strictly parsed clean summary stands in), a snapshot manifest, credential
+validity or any restore, so `reported_recovery_evidence` is never true in stage 1 and the view says "A green
+backup job is not verified recovery." Topology comes from `volumes.list` identity only: the same volume is
+`same_volume`; different volumes stay `unknown` until a physical device identity exists. Observation times are
+the picked files' modification times. The proposed drill is data (`executable: false`).
+**Consequences.** Good: the owner sees honest, separate snapshot, integrity and drill evidence today, with no new
+reach or effect. Bad: stage 1 evidence is owner-declared binding (label, snapshot ID, files) and can only ever
+refuse recovery. Neutral: the DTO keeps the three observations separate, so stages 2 and 3 fill fields rather
+than change their meaning.
+**Alternatives.** Run restic from the service now: rejected, it is a process effect and a credential reach
+without a gate. Accept receipt text over IPC: rejected, the webview would choose what the service reads.
+**Reversibility.** Two-way: dropping the table and three commands removes stage 1.

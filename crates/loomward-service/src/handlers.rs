@@ -97,6 +97,9 @@ impl Inner {
             AppsList | DesktopContexts => self.metadata_page(req, command, work, metadata_cursor),
             RootsList => self.roots_list(work),
             RootsRequestGrant => self.request_grant(ctx),
+            BackupsList => self.backups_list(),
+            BackupsImport => self.backups_import(req, ctx),
+            BackupsForget => self.backups_forget(req),
             RootsRevoke => {
                 let r: RootRevokeRequest = req.decode_payload()?;
                 let grant = self.grant_of_root(self.root_row(&r.root_id)?)?;
@@ -193,35 +196,7 @@ impl Inner {
                 "the root's grant is not active",
             ));
         }
-        let (origin, message, reason) = match self.dataset {
-            DatasetClass::Synthetic => (
-                "lab_generated",
-                "a synthetic session scans registered lab roots only",
-                "synthetic_session_requires_lab_root",
-            ),
-            DatasetClass::Personal => (
-                "owner_granted",
-                "a personal session scans the folders you granted only",
-                "personal_session_requires_owner_grant",
-            ),
-        };
-        if root.origin != origin {
-            return Err(with_reason(
-                fail(ErrorCode::PermissionDenied, message),
-                reason,
-            ));
-        }
-        if self.dataset == DatasetClass::Personal {
-            self.stored_grant_fence(&root).map_err(|r| {
-                with_reason(
-                    fail(
-                        ErrorCode::PermissionDenied,
-                        "the granted folder is not eligible under the current rules",
-                    ),
-                    &refusal_name(r),
-                )
-            })?;
-        }
+        self.session_root_gate(&root)?;
         let dir = root
             .dir
             .ok_or_else(|| fail(ErrorCode::InternalError, "root has no directory row"))?;
@@ -246,6 +221,42 @@ impl Inner {
             ScanStartRequestMode::Refresh => self.engine.scan_refresh(&granted, r.budget),
         }?;
         Ok(out(encode(&JobResult { job })?, None))
+    }
+
+    /// The root a session may scan or read (scan.start, duplicates.inspect): a synthetic session
+    /// its registered lab roots, a personal session its own owner grants that still pass today's
+    /// fences. Runs before any engine call or filesystem access.
+    pub(crate) fn session_root_gate(&self, root: &db::RootRow) -> Result<(), ErrorBody> {
+        let (origin, message, reason) = match self.dataset {
+            DatasetClass::Synthetic => (
+                "lab_generated",
+                "a synthetic session scans registered lab roots only",
+                "synthetic_session_requires_lab_root",
+            ),
+            DatasetClass::Personal => (
+                "owner_granted",
+                "a personal session scans the folders you granted only",
+                "personal_session_requires_owner_grant",
+            ),
+        };
+        if root.origin != origin {
+            return Err(with_reason(
+                fail(ErrorCode::PermissionDenied, message),
+                reason,
+            ));
+        }
+        if self.dataset == DatasetClass::Personal {
+            self.stored_grant_fence(root).map_err(|r| {
+                with_reason(
+                    fail(
+                        ErrorCode::PermissionDenied,
+                        "the granted folder is not eligible under the current rules",
+                    ),
+                    &refusal_name(r),
+                )
+            })?;
+        }
+        Ok(())
     }
 
     /// #312: a stored grant may predate today's fences (#253, #284, #286), so the path rules run
@@ -494,6 +505,8 @@ impl Inner {
                 .engine
                 .scan_writer_fence(&loomward_engine::scan::RootKey::Grant(grant), &id);
         }
+        // Durable already; a failed sweep is repeated at the next refit and at startup.
+        let _ = self.engine.learning_redact_revoked();
         let revs = self.revisions()?;
         if let Ok(list) = self.root_list(None) {
             self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));
@@ -523,6 +536,7 @@ impl Inner {
         let _ = self
             .engine
             .scan_writer_fence(&loomward_engine::scan::RootKey::Grant(grant), id);
+        let _ = self.engine.learning_redact_revoked();
         if let (Ok(revs), Ok(list)) = (self.revisions(), self.root_list(None)) {
             self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));
         }
@@ -547,6 +561,23 @@ impl Inner {
         Ok(out(json!({"grants": grants}), Some(revs)))
     }
 
+    /// One native dialog at a time (#167), and a 2 s cooldown between pickers, shared by the folder
+    /// and file pickers: a second request is `busy`, never a stacked dialog.
+    pub(crate) fn dialog_turn(&self) -> Result<std::sync::MutexGuard<'_, ()>, ErrorBody> {
+        let Ok(turn) = self.dialog.try_lock() else {
+            return Err(fail(ErrorCode::Busy, "a native dialog is already open"));
+        };
+        let mut last = self.picker_last.lock().unwrap_or_else(|e| e.into_inner());
+        if last.is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(2)) {
+            return Err(fail(
+                ErrorCode::Busy,
+                "native picker cooldown; retry shortly",
+            ));
+        }
+        *last = Some(std::time::Instant::now());
+        Ok(turn)
+    }
+
     /// Desktop only. Personal sessions only (a synthetic session refuses before any dialog). The
     /// folder comes from the native picker, is checked exactly like a grant root (#167), and is
     /// granted under the same provenance rules. One dialog at a time.
@@ -566,18 +597,7 @@ impl Inner {
                 "no native dialogs on this adapter",
             )
         })?;
-        let Ok(_dialog) = self.dialog.try_lock() else {
-            return Err(fail(ErrorCode::Busy, "a native dialog is already open"));
-        };
-        let mut last = self.picker_last.lock().unwrap_or_else(|e| e.into_inner());
-        if last.is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(2)) {
-            return Err(fail(
-                ErrorCode::Busy,
-                "native picker cooldown; retry shortly",
-            ));
-        }
-        *last = Some(std::time::Instant::now());
-        drop(last);
+        let _dialog = self.dialog_turn()?;
         let Some(picked) = dialogs.pick_folder() else {
             return Ok(out(
                 json!({"outcome": "cancelled_by_user", "root": null, "refusal": null}),
@@ -597,9 +617,28 @@ impl Inner {
         {
             return refused(RootGrantResultRefusal::AlreadyGranted);
         }
-        let (root, fresh) = match self.grant(&path, "desktop_picker") {
+        // #219: a volume that cannot verify file identity is granted only after the owner's
+        // explicit native confirmation; declining is a cancellation, not a refusal.
+        let unverified = match self.root_filesystem(&path) {
+            Ok(fs) => !loomward_windows::enumerate::verifies_identity(&fs),
+            Err(r) => return refused(r),
+        };
+        if unverified && !dialogs.confirm_identity_unverified() {
+            return Ok(out(
+                json!({"outcome": "cancelled_by_user", "root": null, "refusal": null}),
+                None,
+            ));
+        }
+        let (root, fresh) = match self.grant(&path, "desktop_picker", unverified) {
             Ok(g) => g,
             Err(crate::Refused::Rule(r)) => return refused(r),
+            // Unreachable after confirmation; fail closed all the same.
+            Err(crate::Refused::IdentityUnverified) => {
+                return Ok(out(
+                    json!({"outcome": "cancelled_by_user", "root": null, "refusal": null}),
+                    None,
+                ))
+            }
             Err(crate::Refused::RootLimit) => {
                 return Err(with_reason(
                     fail(

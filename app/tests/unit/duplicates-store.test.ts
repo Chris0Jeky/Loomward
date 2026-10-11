@@ -73,12 +73,13 @@ describe('duplicates jobs', () => {
       expect((await client.call('jobs.list', { kinds: ['duplicates'], limit: 50 })).result.jobs[0]?.duplicates).toBeUndefined();
     }
   });
-  it('uses the content refusal as a gated state without inventing a result', async () => {
-    session.client = new Client({ call: async (r: { request_id: string }) => ({ protocol: 'loomward/3', request_id: r.request_id, ok: false, error: { code: 'capability_unavailable', message: 'gated', retryable: false, detail: { reason: 'content_read_gated' } } }) } as unknown as Transport);
+  it('shows a root refusal as a problem without inventing a result', async () => {
+    // q-10: personal reads are open, so no refusal is a special gated state any more.
+    session.client = new Client({ call: async (r: { request_id: string }) => ({ protocol: 'loomward/3', request_id: r.request_id, ok: false, error: { code: 'permission_denied', message: 'a personal session scans the folders you granted only', retryable: false, detail: { reason: 'personal_session_requires_owner_grant' } } }) } as unknown as Transport);
     const store = new Duplicates();
     await store.start('rt_fixture');
-    expect(store.gated).toBe(true);
-    expect(store.problem).toBe('');
+    expect(store.problem).toBe('a personal session scans the folders you granted only');
     expect(store.book).toEqual({});
+    expect('gated' in store).toBe(false);
   });
 });

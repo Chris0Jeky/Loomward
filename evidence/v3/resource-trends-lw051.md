@@ -2,7 +2,7 @@
 
 2026-10-11. Windows 11, shared host. Python 3.14.3, cargo/rustc 1.97.1,
 Node 24.13.1, npm 11.8.0. Source baseline: `c030528d9db1eacd5511966be455b590d1ca5b1b`.
-Committed by the driver from a Sol lane. No external action was taken.
+Committed by the driver from a Sol lane; candidate windows and caps were refined in #377 follow-ups (newest contiguous known run; machine candidates first). No external action was taken.
 
 ## Changed
 

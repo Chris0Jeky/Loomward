@@ -22,8 +22,10 @@ fn terminal(svc: &Service, id: &JobId) -> Job {
     }
 }
 
+/// q-10: personal inspection is open, so an unknown root is simply `not_found`; the refusal
+/// replays without a second execution and starts no job.
 #[test]
-fn duplicates_personal_refusal_precedes_any_root_or_content_access_and_replays() {
+fn duplicates_personal_unknown_root_is_refused_before_any_job_and_replays() {
     let tmp = tempfile::tempdir().unwrap();
     let svc = open(tmp.path(), DatasetClass::Personal);
     let req = request(
@@ -32,8 +34,7 @@ fn duplicates_personal_refusal_precedes_any_root_or_content_access_and_replays()
     );
     let refused = svc.call(req.clone(), &CallContext::http());
     let error = err(refused.clone());
-    assert_eq!(error.code, ErrorCode::CapabilityUnavailable);
-    assert_eq!(reason(&error), Some("content_read_gated"));
+    assert_eq!(error.code, ErrorCode::NotFound, "{error:?}");
     assert_eq!(svc.call(req, &CallContext::http()), refused);
     assert_eq!(
         svc.inner.hooks.runs.lock().unwrap()[&Command::DuplicatesInspect],
@@ -46,6 +47,174 @@ fn duplicates_personal_refusal_precedes_any_root_or_content_access_and_replays()
         .unwrap()
         .jobs
         .is_empty());
+}
+
+/// Review on #376: a folder revoked and then granted again leaves a revoked row beside the new
+/// active one; inspection must follow the active grant instead of refusing forever.
+#[cfg(windows)]
+#[test]
+fn duplicates_follow_a_fresh_grant_after_the_same_folder_was_revoked() {
+    let tmp = crate::tests::temp_root();
+    let root = tmp.path().join("regranted-folder");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("a.txt"), b"same").unwrap();
+    std::fs::write(root.join("b.txt"), b"same").unwrap();
+    let root = root.canonicalize().unwrap();
+    let open = || {
+        Service::open(Config {
+            state_dir: tmp.path().join("state"),
+            dataset: DatasetClass::Personal,
+            allow_personal: true,
+            allow_identity_unverified: false,
+            grant_roots: vec![root.clone()],
+        })
+    };
+    let first = open();
+    if loomward_windows::enumerate::running_elevated() {
+        let e = first.err().expect("an elevated grant is refused");
+        assert!(e.contains("identity_unavailable"), "{e}");
+        return;
+    }
+    let svc = first.unwrap();
+    let (roots, _) = ok("roots.list", call(&svc, "roots.list", json!({})));
+    let old = roots["roots"][0]["root_id"].as_str().unwrap().to_owned();
+    ok(
+        "roots.revoke",
+        call(
+            &svc,
+            "roots.revoke",
+            json!({"root_id": old, "purge_catalog": false}),
+        ),
+    );
+    drop(svc);
+    let svc = open().unwrap();
+    let (roots, _) = ok("roots.list", call(&svc, "roots.list", json!({})));
+    let active = roots["roots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["grant_state"] == "active")
+        .expect("the fresh grant is active")["root_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (scan, _) = ok(
+        "scan.start",
+        call(&svc, "scan.start", json!({"root_id":active,"mode":"full"})),
+    );
+    let scan: JobResult = serde_json::from_value(json!(scan)).unwrap();
+    assert_eq!(terminal(&svc, &scan.job.job_id).state, JobState::Completed);
+    let (start, _) = ok(
+        "duplicates.inspect",
+        call(&svc, "duplicates.inspect", duplicate_request(&active, 1024)),
+    );
+    let start: JobResult = serde_json::from_value(json!(start)).unwrap();
+    let job = terminal(&svc, &start.job.job_id);
+    assert_eq!(job.state, JobState::Completed, "{:?}", job.error);
+    assert_eq!(job.duplicates.unwrap().groups.len(), 1);
+}
+
+/// q-10 end to end: a personal session confirms duplicates in its own owner-granted folder
+/// (synthetic files in a disposable root), reads no byte it does not need, changes nothing, and a
+/// revoked root's report is redacted.
+#[cfg(windows)]
+#[test]
+fn duplicates_personal_session_confirms_owner_duplicates_and_revocation_redacts() {
+    let tmp = crate::tests::temp_root();
+    let root = tmp.path().join("owner-folder");
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    let files: [(&str, &[u8]); 4] = [
+        ("a.txt", b"same"),
+        (r"sub\copy.txt", b"same"),
+        ("different.txt", b"else"),
+        ("lonely.txt", b"unique size"),
+    ];
+    for (name, bytes) in files {
+        std::fs::write(root.join(name), bytes).unwrap();
+    }
+    let root = root.canonicalize().unwrap();
+    let snapshot = || {
+        files
+            .iter()
+            .map(|(name, _)| {
+                let f = root.join(name);
+                (
+                    std::fs::read(&f).unwrap(),
+                    f.metadata().unwrap().modified().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = snapshot();
+    let opened = Service::open(Config {
+        state_dir: tmp.path().join("state"),
+        dataset: DatasetClass::Personal,
+        allow_personal: true,
+        allow_identity_unverified: false,
+        grant_roots: vec![root.clone()],
+    });
+    if loomward_windows::enumerate::running_elevated() {
+        let e = opened.err().expect("an elevated grant is refused");
+        assert!(e.contains("identity_unavailable"), "{e}");
+        return;
+    }
+    let svc = opened.unwrap();
+    let (roots, _) = ok("roots.list", call(&svc, "roots.list", json!({})));
+    assert_eq!(roots["roots"][0]["origin"], "owner_granted");
+    let root_id = roots["roots"][0]["root_id"].as_str().unwrap().to_owned();
+    let (scan, _) = ok(
+        "scan.start",
+        call(&svc, "scan.start", json!({"root_id":root_id,"mode":"full"})),
+    );
+    let scan: JobResult = serde_json::from_value(json!(scan)).unwrap();
+    assert_eq!(terminal(&svc, &scan.job.job_id).state, JobState::Completed);
+    let (start, _) = ok(
+        "duplicates.inspect",
+        call(
+            &svc,
+            "duplicates.inspect",
+            duplicate_request(&root_id, 1024),
+        ),
+    );
+    let start: JobResult = serde_json::from_value(json!(start)).unwrap();
+    let job = terminal(&svc, &start.job.job_id);
+    assert_eq!(job.state, JobState::Completed, "{:?}", job.error);
+    let report = job.duplicates.unwrap();
+    let mut equal = report.groups[0]
+        .iter()
+        .map(|i| report.entries[i.get() as usize].relative_path.as_str())
+        .collect::<Vec<_>>();
+    equal.sort();
+    assert_eq!(report.groups.len(), 1);
+    assert_eq!(equal, vec!["a.txt", r"sub\copy.txt"]);
+    assert!(report.skipped.is_empty() && report.stop.is_none());
+    // Three same-size names across the stages, never the lone size; well under the budget.
+    assert!(report.bytes_read.get() > 0 && report.bytes_read.get() <= 3 * 4 * 3);
+    assert_eq!(snapshot(), before, "inspection reads; it never writes");
+    ok(
+        "roots.revoke",
+        call(
+            &svc,
+            "roots.revoke",
+            json!({"root_id":root_id,"purge_catalog":false}),
+        ),
+    );
+    let (revoked, _) = ok(
+        "jobs.get",
+        call(&svc, "jobs.get", json!({"job_id":start.job.job_id})),
+    );
+    assert_eq!(revoked["job"]["state"], "completed");
+    assert!(
+        revoked["job"].get("duplicates").is_none_or(Value::is_null),
+        "a revoked root's report is redacted: {revoked:?}"
+    );
+    let refused = err(call(
+        &svc,
+        "duplicates.inspect",
+        duplicate_request(&root_id, 1024),
+    ));
+    assert_eq!(refused.code, ErrorCode::PermissionDenied);
+    assert_eq!(snapshot(), before);
 }
 
 #[cfg(windows)]
@@ -82,6 +251,7 @@ fn duplicates_native_service_job_reads_synthetic_content_and_never_counts_links_
         state_dir: state,
         dataset: DatasetClass::Synthetic,
         allow_personal: false,
+        allow_identity_unverified: false,
         grant_roots: vec![root.clone()],
     })
     .unwrap();

@@ -99,7 +99,7 @@ export type ExtFamily = "document" | "spreadsheet" | "presentation" | "image" | 
 
 export type FileAttribute = "readonly" | "hidden" | "system" | "archive" | "compressed" | "sparse" | "encrypted" | "offline" | "not_content_indexed" | "reparse_point" | "recall_on_open" | "recall_on_data_access" | "pinned" | "unpinned" | "temporary";
 
-export type EntryFlag = "sensitive_name" | "protected_context" | "hardlink_suspected" | "cloud_placeholder" | "reparse_not_followed" | "excluded_state_dir" | "access_denied" | "enumeration_error" | "identity_unavailable" | "name_lossy" | "on_disk_only_listing" | "listing_incomplete";
+export type EntryFlag = "sensitive_name" | "protected_context" | "hardlink_suspected" | "cloud_placeholder" | "reparse_not_followed" | "excluded_state_dir" | "access_denied" | "enumeration_error" | "identity_unavailable" | "name_lossy" | "on_disk_only_listing" | "listing_incomplete" | "identity_unverified";
 
 /** Display only. Never accepted back as input; no command takes a path string. */
 export interface DisplayPath {
@@ -633,8 +633,8 @@ export interface NodePath {
 }
 
 export interface IdentityObservation {
-  /** Width is preserved: a 64-bit ID is never padded and reported as 128-bit. */
-  quality: "native_file_id_128" | "native_file_id_64" | "path_observation" | "unavailable";
+  /** Width is preserved: a 64-bit ID is never padded and reported as 128-bit. unverified: listed on a FAT, exFAT or unknown filesystem under an identity-unverified grant; metadata only, never an effect, placement or content-read input. */
+  quality: "native_file_id_128" | "native_file_id_64" | "path_observation" | "unavailable" | "unverified";
   /** Whether labels and collection membership may bind to this object (docs/41 section 6.3). Without it, feedback.record returns capability_unavailable. */
   durable_reference: "available" | "unavailable_identity_quality" | "unavailable_filesystem";
   volume_key: string | null;
@@ -1337,20 +1337,59 @@ export type TrendSeries = {
 
 export type TrendCandidateKind = "growth" | "cpu_saturation" | "memory_pressure" | "disk_queue";
 
-export interface TrendCandidate {
+export type TrendCandidate = {
   kind: TrendCandidateKind;
   series_index: Count;
-  unit: TrendUnit;
+  unit: "bytes";
   start_at: Timestamp;
   end_at: Timestamp;
   window_ms: Count;
   sample_count: Count;
-  start_value: TrendValue;
-  end_value: TrendValue;
+  start_value: ByteCount;
+  end_value: ByteCount;
   slope_per_s: string;
   facts: string[];
   unknowns: string[];
-}
+} | {
+  kind: TrendCandidateKind;
+  series_index: Count;
+  unit: "fraction";
+  start_at: Timestamp;
+  end_at: Timestamp;
+  window_ms: Count;
+  sample_count: Count;
+  start_value: Fraction;
+  end_value: Fraction;
+  slope_per_s: string;
+  facts: string[];
+  unknowns: string[];
+} | {
+  kind: TrendCandidateKind;
+  series_index: Count;
+  unit: "queue";
+  start_at: Timestamp;
+  end_at: Timestamp;
+  window_ms: Count;
+  sample_count: Count;
+  start_value: number;
+  end_value: number;
+  slope_per_s: string;
+  facts: string[];
+  unknowns: string[];
+} | {
+  kind: TrendCandidateKind;
+  series_index: Count;
+  unit: "bytes_per_s";
+  start_at: Timestamp;
+  end_at: Timestamp;
+  window_ms: Count;
+  sample_count: Count;
+  start_value: number;
+  end_value: number;
+  slope_per_s: string;
+  facts: string[];
+  unknowns: string[];
+};
 
 export interface TelemetryTrends {
   series: TrendSeries[];
@@ -1548,6 +1587,103 @@ export interface DesktopPage {
   budget_hit: boolean;
 }
 
+export type BackupEvidenceId = string;
+
+/** Owner-chosen repository label. The charset keeps a URL, path or credential from ever being stored or echoed as one. */
+export type BackupLabel = string;
+
+export type SnapshotId = string;
+
+export interface RequiredVersion {
+  /** A scope-projected manifest name, compared lexically and refused when it is absolute, traverses, uses a backslash or is Windows-ambiguous. Never resolved, opened or joined to a root. */
+  relative_name: string;
+  version: Digest;
+}
+
+export type BackupTopology = "independent_target" | "same_volume" | "same_physical_device" | "unknown";
+
+/** From volumes.list identity, never from text. Different volumes stay topology unknown until a physical device identity exists. */
+export type BackupTopologyBasis = "same_volume_identity" | "different_volumes_device_unknown" | "undeclared";
+
+export type BackupRefusal = "snapshot_missing" | "version_not_covered" | "target_not_independent" | "credentials_unavailable" | "integrity_not_checked" | "restore_not_succeeded" | "partial_restore" | "unsupported_metadata" | "stale_observation" | "invalid_observation_time";
+
+export type BackupMetadataClass = "acl" | "alternate_streams" | "hard_links" | "timestamps" | "sparse" | "compression" | "efs";
+
+export type RestoreDrillProof = "repository_and_snapshot_binding" | "independent_content_sha256" | "required_metadata_comparison" | "complete_manifest" | "fresh_observation";
+
+export type RestoreDrillTarget = "new_disposable_target";
+
+/** A restore drill as data only. Nothing creates, opens, writes or restores its target; no command executes it. */
+export interface ProposedRestoreDrill {
+  files: RequiredVersion[];
+  target: RestoreDrillTarget;
+  compare_metadata: BackupMetadataClass[];
+  proofs: RestoreDrillProof[];
+  executable: false;
+}
+
+/** Normalised restic receipt evidence. Snapshot, integrity and restore drill are separate observations; a green backup job is not verified recovery. */
+export interface BackupEvidence {
+  evidence_id: BackupEvidenceId;
+  repository_label: BackupLabel;
+  snapshot_id: SnapshotId;
+  /** The provider's own time text, uninterpreted; never the age oracle. */
+  snapshot_time: string | null;
+  imported_at: Timestamp;
+  snapshot_observed_at: Timestamp;
+  integrity_observed_at: NullableTimestamp;
+  snapshot_taken: boolean;
+  integrity_checked: boolean;
+  integrity_read_all_data: boolean;
+  restore_drill_succeeded: boolean;
+  required_versions: RequiredVersion[];
+  restore_coverage: RequiredVersion[];
+  topology: BackupTopology;
+  topology_basis: BackupTopologyBasis;
+  snapshot_age_seconds: NullableCount;
+  integrity_age_seconds: NullableCount;
+  max_age_seconds: Count;
+  /** Every predicate holds on the supplied, scoped evidence. Caller-reported self-consistency: never native proof, permission or a source-retirement gate. */
+  reported_recovery_evidence: boolean;
+  refusals: BackupRefusal[];
+  proposed_drill: ProposedRestoreDrill;
+}
+
+export interface BackupEvidenceList {
+  evidence: BackupEvidence[];
+}
+
+/** Tauri adapter only. Rust opens the native open-file dialog and reads at most 256 KiB; the webview never supplies a path. */
+export interface BackupImportRequest {
+  repository_label: BackupLabel;
+  snapshot_id: SnapshotId;
+  source_volume_id: VolumeId | null;
+  target_volume_id: VolumeId | null;
+  required: RequiredVersion[];
+  /** Also open the dialog a second time for a restic check --json output. */
+  integrity_check: boolean;
+}
+
+export type BackupImportOutcome = "imported" | "cancelled_by_user" | "refused";
+
+export type BackupImportRefusal = "synthetic_session" | "not_a_regular_file" | "unreadable" | "too_large" | "invalid_json" | "invalid_receipt" | "invalid_source" | "repository_limit";
+
+export interface BackupImportResult {
+  outcome: BackupImportOutcome;
+  evidence: BackupEvidence | null;
+  refusal: BackupImportRefusal | null;
+}
+
+export interface BackupForgetRequest {
+  evidence_id: BackupEvidenceId;
+}
+
+/** Removes Loomward's own record only; never touches a backup or a file. */
+export interface BackupForgetResult {
+  evidence_id: BackupEvidenceId;
+  forgotten_at: Timestamp;
+}
+
 // ---- commands (commands.json)
 
 export interface CommandMap {
@@ -1601,6 +1737,9 @@ export interface CommandMap {
   "processes.explain": { request: ProcessRefRequest; result: ProcessExplanation };
   "budgets.get": { request: EmptyRequest; result: OwnBudgets };
   "budgets.set": { request: BudgetSetRequest; result: OwnBudgets };
+  "backups.list": { request: EmptyRequest; result: BackupEvidenceList };
+  "backups.import": { request: BackupImportRequest; result: BackupImportResult };
+  "backups.forget": { request: BackupForgetRequest; result: BackupForgetResult };
 }
 
 export type CommandKey = keyof CommandMap;
@@ -1657,6 +1796,9 @@ export const COMMANDS = {
   "processes.explain": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "budgets.get": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "budgets.set": { adapters: ["tauri", "http"], wave: 2, events: [] },
+  "backups.list": { adapters: ["tauri", "http"], wave: 3, events: [] },
+  "backups.import": { adapters: ["tauri"], wave: 3, events: [] },
+  "backups.forget": { adapters: ["tauri", "http"], wave: 3, events: [] },
 } as const satisfies Record<CommandKey, {
   adapters: readonly ("tauri" | "http")[];
   wave: number;

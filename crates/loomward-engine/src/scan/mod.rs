@@ -65,6 +65,9 @@ pub struct GrantedRoot {
     path: PathBuf,
     dataset_class: DatasetClass,
     pub(crate) expected: Option<source::OpenedIdentity>,
+    /// #219: may list identity-unverified on FAT, exFAT or unknown filesystems. Synthetic and
+    /// lab roots may; a personal root only when its grant record says so.
+    allow_identity_unverified: bool,
 }
 impl GrantedRoot {
     // Minted by `Engine::granted_root` from a durable grant row, and by fixtures.
@@ -79,6 +82,7 @@ impl GrantedRoot {
             key: RootKey::Fixture(root_id.clone()),
             root_id,
             path,
+            allow_identity_unverified: dataset_class == DatasetClass::Synthetic,
             dataset_class,
             expected: Some(expected),
         }
@@ -156,10 +160,28 @@ impl GrantedRoot {
     pub fn dataset_class(&self) -> DatasetClass {
         self.dataset_class
     }
+    /// Whether this root may list identity-unverified (#219); NTFS and ReFS never do.
+    pub fn allows_identity_unverified(&self) -> bool {
+        self.allow_identity_unverified
+    }
+}
+/// The native source for a granted root, identity-unverified only when its grant allows it.
+#[cfg(windows)]
+fn native_source(
+    root: &GrantedRoot,
+    io: loomward_windows::enumerate::IoCancellation,
+) -> loomward_windows::enumerate::NativeSource {
+    let source = loomward_windows::enumerate::NativeSource::new(io);
+    if root.allow_identity_unverified {
+        source.with_identity_unverified()
+    } else {
+        source
+    }
 }
 impl Engine {
-    /// Content equality evidence under a freshly checked active synthetic grant.
-    /// Personal grants remain metadata-only; root revocation requests content-read cancellation.
+    /// Content equality evidence under a freshly checked active grant of this engine's dataset
+    /// class (personal reads opened by owner decision q-10); a session never reads the other
+    /// class's roots. Root revocation requests content-read cancellation.
     /// Revocation can return before I/O drains; the final gate refuses a revoked report.
     pub fn inspect_duplicates(
         &self,
@@ -225,10 +247,8 @@ impl Engine {
         let denied = |message: &str| EngineError::PermissionDenied {
             message: message.into(),
         };
+        // The grant, the engine and (below) the durable store must all name one dataset class.
         self.check_root(root)?;
-        if root.dataset_class != DatasetClass::Synthetic {
-            return Err(denied("content_read_gated"));
-        }
         let gate = self.scan_root_gate(root.key());
         let revoked = if wait {
             // Workers wait for the brief start/revocation fence; callers keep immediate busy.
@@ -253,6 +273,10 @@ impl Engine {
             .expected
             .as_ref()
             .ok_or_else(|| denied("unsupported"))?;
+        // #219: rows of an identity-unverified root are never content-read inputs.
+        if expected.basis == source::IdBasis::Unverified {
+            return Err(denied("identity_unverified"));
+        }
         let id = match expected.id {
             Some(source::FileIdObs::Id128(id)) => id.to_vec(),
             Some(source::FileIdObs::Id64(id)) => id.to_le_bytes().to_vec(),
@@ -266,10 +290,11 @@ impl Engine {
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .map_err(|_| denied("grant store unavailable"))?;
-        // GrantedRoot carries native identity, not a durable row id: ambiguous matches fail closed.
-        let (count, active, class): (i64, i64, String) = conn
+        // GrantedRoot carries native identity, not a durable row id: ambiguous active matches fail
+        // closed. Revoked rows for the same folder (a revoke, then a fresh grant) do not count.
+        let (active, class): (i64, String) = conn
             .query_row(
-                "SELECT count(*),count(CASE WHEN state='active' THEN 1 END),
+                "SELECT count(CASE WHEN state='active' THEN 1 END),
                     (SELECT value FROM meta WHERE key='dataset_class')
              FROM root_grant WHERE display_path=?1 AND volume_key=?2 AND root_file_id=?3",
                 rusqlite::params![
@@ -277,13 +302,17 @@ impl Engine {
                     format!("vsn_{volume}"),
                     id
                 ],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .map_err(|_| denied("grant store unavailable"))?;
-        if class != "synthetic" {
+        let expected_class = match root.dataset_class {
+            DatasetClass::Synthetic => "synthetic",
+            DatasetClass::Personal => "personal",
+        };
+        if class != expected_class {
             return Err(denied("dataset_class_mismatch"));
         }
-        if count != 1 || active != 1 {
+        if active != 1 {
             return Err(denied("grant_not_active"));
         }
         Ok(revoked.duplicate_cancel.clone())
@@ -307,17 +336,20 @@ impl Engine {
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .map_err(|_| denied("grant store unavailable"))?;
-        let row: Option<(String, String, Vec<u8>, String)> = conn
+        let row: Option<(String, String, Vec<u8>, String, String)> = conn
             .query_row(
                 "SELECT g.display_path,g.volume_key,g.root_file_id,
-                        (SELECT value FROM meta WHERE key='dataset_class')
+                        (SELECT value FROM meta WHERE key='dataset_class'),g.identity_mode
                  FROM root_grant g WHERE g.id=?1 AND g.state='active'",
                 [grant_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .optional()
             .map_err(|_| denied("grant store unavailable"))?;
-        let (path, volume_key, file_id, class) = row.ok_or_else(|| denied("grant_not_active"))?;
+        let (path, volume_key, file_id, class, identity_mode) =
+            row.ok_or_else(|| denied("grant_not_active"))?;
+        // #219: only the grant record allows identity-unverified listing, never the caller.
+        let unverified = identity_mode == "unverified";
         // Wire IDs are opaque here; the authenticated identity must name this grant's root.
         let paired = rusqlite::Connection::open_with_flags(
             self.config.state_dir.join("catalog.db"),
@@ -346,7 +378,13 @@ impl Engine {
         {
             use source::{DirSource, FileIdObs};
             let path = PathBuf::from(path);
-            let (_, identity) = loomward_windows::enumerate::NativeSource::default()
+            let source = loomward_windows::enumerate::NativeSource::default();
+            let source = if unverified {
+                source.with_identity_unverified()
+            } else {
+                source
+            };
+            let (_, identity) = source
                 .open_root(&path)
                 .map_err(|_| denied("root open refused"))?;
             let same_id = match identity.id {
@@ -359,6 +397,7 @@ impl Engine {
             }
             let mut root = GrantedRoot::new(root_id, path, dataset_class, identity);
             root.key = RootKey::Grant(grant_id);
+            root.allow_identity_unverified = unverified;
             self.scan_root_gate(root.key())
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -368,7 +407,14 @@ impl Engine {
         }
         #[cfg(not(windows))]
         {
-            let _ = (root_id, path, volume_key, file_id, dataset_class);
+            let _ = (
+                root_id,
+                path,
+                volume_key,
+                file_id,
+                dataset_class,
+                unverified,
+            );
             Err(EngineError::unavailable(Component::Scan))
         }
     }
@@ -497,12 +543,16 @@ impl Engine {
         let run = NEXT_RUN.fetch_add(1, Ordering::Relaxed);
         // A sink that refuses watch hints (the trait default) is never watched: its scans are
         // plain full passes, and no watch pins outlive them (#184 MEDIUM-2).
+        // An identity-unverified root (#219) is never watched: the watch reopens by file ID.
         #[cfg(windows)]
-        let watched = match sink.watch_dirty(root.root_id()) {
-            Ok(()) => true,
-            Err(EngineError::Unavailable { .. }) => false,
-            Err(e) => return Err(e),
-        };
+        let watched = root
+            .expected
+            .is_none_or(|e| e.basis != source::IdBasis::Unverified)
+            && match sink.watch_dirty(root.root_id()) {
+                Ok(()) => true,
+                Err(EngineError::Unavailable { .. }) => false,
+                Err(e) => return Err(e),
+            };
         #[cfg(windows)]
         if !watched {
             let io = source::native_cancel();
@@ -515,7 +565,7 @@ impl Engine {
                     .unwrap()
                     .take()
                     .expect("scan runner executes once");
-                let source = loomward_windows::enumerate::NativeSource::new(io.clone());
+                let source = native_source(&root, io.clone());
                 let report = run_scan(
                     &source,
                     &root,
@@ -577,7 +627,7 @@ impl Engine {
                     .unwrap()
                     .take()
                     .expect("scan runner executes once");
-                let source = loomward_windows::enumerate::NativeSource::new(io.clone());
+                let source = native_source(&root, io.clone());
                 let report = watch::run_watched(
                     &source,
                     &root,

@@ -192,6 +192,9 @@ pub fn open(
         // empty here and arrive only through the owner's native picker.
         allow_personal: launch.dataset == DatasetClass::Personal,
         grant_roots: Vec::new(),
+        // Unverified (FAT/exFAT) volumes are confirmed per root in the native picker (#219); the
+        // startup flag only covers CLI-supplied roots, and the desktop takes none.
+        allow_identity_unverified: false,
     })?;
     Ok(Arc::new(Locked {
         service,

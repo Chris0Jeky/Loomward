@@ -68,6 +68,8 @@ re-send as stated.
 | `collections.update_members` | Yes | `request_id`, 10 min | `collections.members` | Re-send adds and removes only with `expected_state_rev` from that read; set operations are not idempotent against intervening changes |
 | `roots.revoke`, `grants.revoke` | Yes | Revocation is monotone: revoking a revoked grant returns the original `revoked_at` | `roots.list`, `grants.list` | Re-send is safe |
 | `roots.request_grant` | Yes, if the owner already picked a folder | `request_id`, 10 min | `roots.list` | Never reopen the picker automatically |
+| `backups.import` | Yes, if the owner already picked a receipt | `request_id`, 10 min | `backups.list` | Never reopen the dialog automatically; a repeat import of the same label replaces its record |
+| `backups.forget` | Yes | `request_id`, 10 min | `backups.list` | Re-send is safe: an absent record is `not_found` and nothing else changes |
 | `grants.create_disclosure` | Yes | `preview_id`: a preview yields at most one grant, returned again | `grants.list` | Re-send with the same `preview_id` is safe |
 | `teacher.run` | Yes, and disclosure may already have happened | `grant_id`: returns the existing job, never a second request | `teacher.results`, `jobs.list` | MUST NOT create a new preview or grant to retry |
 | `scan.start` | Yes | One active scan per root: a second start is `busy` with `detail.job_id` | `jobs.list` for the root | Re-send is safe |
@@ -79,10 +81,24 @@ re-send as stated.
 | `budgets.set` | Yes | `request_id`, 10 min | `budgets.get` | Loomward's own pools reset at restart. After cache expiry set a value only if the owner confirms it against the value read |
 | `telemetry.subscribe`, `telemetry.unsubscribe` | Yes | `subscription_id` | Unknown or expired IDs are `not_found` | Re-subscribe with a fresh lease |
 
-L14 learning is synthetic-only. Personal sessions refuse `feedback.record` and `learning.refit`
-with `capability_unavailable` and `detail.reason: learning_personal_gated`; `learning.status.gate`
-reports that same rule, and `learning.queue` is empty. Opening personal learning requires a separate
-owner decision. A label is not a preference or an operation grant.
+Learning is local and human-only in both dataset classes. Personal sessions opened it under
+HUMAN_TODO q-11: `feedback.record`, `learning.queue`, `learning.refit` and `threads.meaning` work on
+nodes of the session's active owner grants, with features read from those roots on this machine;
+`learning.status.gate` is null. Each `state.db` records its dataset class, and a session refuses a
+store of the other class, so personal and synthetic (lab or fixture) labels never train together.
+Training reads human events only; teacher labels and preferences are separate classes and never
+train the student. A label is not a preference or an operation grant, and a suggestion is advice
+with relative scores, never an approval.
+
+Revoking a root (or its grant ending `identity_changed`) redacts the stored features of every
+human event on its nodes to empty values, withdraws those events from training and deletes every
+stored model, since a model carries name tokens; the sweep repeats at startup and before each refit.
+A revoked root's nodes cannot be labelled (`not_found`); withdrawal of an earlier label stays possible.
+
+Every teacher entry point (`teacher.preview`, `grants.create_disclosure`, `teacher.run`,
+`teacher.results`) refuses a personal session with `capability_unavailable` and
+`detail.reason: teacher_personal_gated` once the envelope validates, before any handler work:
+q-11 opens the local student only, and the teacher's personal conditions (q-5) are unmet.
 
 `feedback.record` binds new labels only to a resolved durable native reference. Retractions use the prior human event and remain available after exclusion, loss of resolution or root revocation. `label` is null exactly when
 `retract` is true; a retraction with no prior human label is `invalid_request`. It stores the
@@ -195,7 +211,7 @@ report `personal_metadata_unsupported`. There is no synthetic fallback for perso
 | root `generation` | One granted root | A scan run of that root reaches `completed` (the run's ID) | `RootScanState.generation`, `RootGeneration` |
 | `listing_rev` | One directory's direct membership and names | That directory's completed listing changed its members | Inside cursors |
 | `subtree_rev` | One directory's subtree | Any committed change at or below it, including sizes (set to `catalog_rev` along the ancestor chain in the same transaction) | Inside cursors |
-| `state_rev` | One `state.db` instance | Every committed `state.db` transaction that changes owner data: feedback, collections and members, tier declarations, grants (monotonic, never reused) | `ResponseMeta.state_rev`, `EventEnvelope.state_rev`, request precondition `expected_state_rev` |
+| `state_rev` | One `state.db` instance | Every committed `state.db` transaction that changes owner data: feedback, collections and members, tier declarations, grants, backup evidence (monotonic, never reused) | `ResponseMeta.state_rev`, `EventEnvelope.state_rev`, request precondition `expected_state_rev` |
 
 Rules:
 
@@ -311,8 +327,9 @@ disclosure remains gated.
 - The grant is consumed, and the teacher request row created, in one `state.db` transaction with
   `synchronous=FULL` **before** the process starts. A crash after consumption leaves a consumed grant and a
   request in state `interrupted`; it is never retried.
-- Personal-dataset grants are refused with `confinement_not_enforced` until the confinement profile in
-  `docs/41-v03-architecture.md` section 9.2 is demonstrated by enforcement tests.
+- Personal sessions are refused at every teacher entry point with `teacher_personal_gated` (section 3);
+  behind that gate, personal-dataset grants are refused with `confinement_not_enforced` until the
+  confinement profile in `docs/41-v03-architecture.md` section 9.2 is demonstrated by enforcement tests.
 
 ## 12. Telemetry leases
 
@@ -329,6 +346,9 @@ An engine thread count not observed on the current tick is null. Requests for ch
 the sampled lease union return `partial_coverage` (not sampled), distinct from hardware unavailable.
 
 `TelemetrySample.trends` (LW-051) is read-only and projects the same requested channels.
+`trends` is a required field of every v3 `TelemetrySample`: a v3 reader may rely on it, and a
+sample without it is invalid. This was added in v3 before the contract shipped, so it is a
+compatibility note for any consumer built against an earlier draft, not a version bump.
 The shared lease union retains at most eight points per series, no older than ten minutes:
 the twelve byte-valued memory ledger fields, machine CPU fraction, disk busy fraction and
 queue length (at most sixteen disk rows), and the seven quantities in each sampled process
@@ -355,7 +375,7 @@ subtract byte integers before approximate slope conversion; charts likewise subt
 byte integers before scaling. `slope_per_s` is a signed decimal string in the series
 unit per second, the end-minus-start secant slope, not a score or probability.
 
-Candidates use complete contiguous windows with at least four samples. Process private
+Candidates use the newest contiguous run of known points, at least four samples: a null, a repeated or backward timestamp or a gap wider than twice the interval ends the run behind it, so one earlier bad point never hides a later window and no window crosses one. Process private
 commit or private resident growth requires at least thirty seconds, no decreases,
 at least three increases and at least 1 MiB net growth. Machine contention windows span
 at least three seconds: CPU is at least 0.90 of logical capacity throughout; disk queue
@@ -364,7 +384,7 @@ throughout, with standby declining or modified bytes rising over the aligned win
 These conservative thresholds name candidates, never leaks, unnecessary processes or
 an instruction to act. Facts, exact start/end values, sample counts, windows and uncertainty
 travel with each candidate. `series_index` refers to this response's channel-projected
-series list. At most 64 candidates are returned; truncation remains explicit. No candidate
+series list. At most 64 candidates are returned, machine (system) candidates first, then disks, then processes, so the cap cuts process candidates first; truncation remains explicit. A candidate's unit must agree with its `start_value` and `end_value`, like a series' points; schema and Rust reject a mismatch. No candidate
 is not proof of no problem. No process or file effects are added.
 
 Telemetry event retention keeps the existing 1,024-event count ceiling and adds a
@@ -379,7 +399,9 @@ is also included in event mapping wall time; parent/child timers must not be sum
 
 ## Duplicate inspection (LW-012 / LW-013)
 
-`duplicates.inspect` starts a retained `duplicates` job for one active registered synthetic lab root.
+`duplicates.inspect` starts a retained `duplicates` job for one active root of the session's own dataset
+class: a registered lab root in a synthetic session, an owner-granted folder in a personal session
+(owner decision q-10).
 It is a mutation of the job registry: request_id is idempotent per session for ten minutes, like
 scan.start; a timed-out submission has an unknown outcome and is recovered with the same request_id
 or jobs.list (kinds=["duplicates"]). One active inspection per root returns busy with detail.job_id.
@@ -414,9 +436,22 @@ links_not_compared is the number of listed names in those link sets. skipped giv
 bytes_read, partial, truncated and nullable stop preserve negative and incomplete evidence.
 No result authorises deleting, moving, renaming or creating links. No reclaim estimate is supplied.
 
-Personal sessions are refused before resolving or opening a root, with capability_unavailable and
-detail.reason=content_read_gated. The engine repeats the synthetic-grant admission before metadata
-and content I/O. Scan file identity, size, attributes and creation/write/change ticks must match
+Personal content reads are open, local and read-only. Before resolving catalogue candidates or
+opening anything, the service applies the scan's root gate: an inactive grant is permission_denied;
+a personal session reads only its own owner grants (a lab root is permission_denied with
+detail.reason=personal_session_requires_owner_grant) that still pass today's profile, profiles-directory
+and store fences (detail.reason names the refusal, e.g. protected_profile_or_store); a synthetic
+session reads only registered lab roots (synthetic_session_requires_lab_root). The engine repeats the
+admission before metadata and content I/O: the grant, the engine and the durable state store must
+name the same dataset class (dataset_class_mismatch otherwise), so neither session reads the other's
+roots. The candidate cap is enforced before any metadata or content is opened. Every read goes
+through pinned, revalidated, non-elevated handles opened without recall: cloud placeholders and
+offline files are skipped (placeholder, offline) and never hydrated or downloaded, reparse points are
+never followed, and a row without a 128-bit native file identity is never read (unsupported).
+Nothing leaves the machine, no file is written, moved or deleted, and the job's byte and time budgets
+bound all of it. `Capabilities.effects.content_read` stays false, as it already was for synthetic
+inspection: no command returns file content; inspection returns equality evidence, never bytes.
+Scan file identity, size, attributes and creation/write/change ticks must match
 fresh root-relative metadata before the existing handle reader compares content. Root revocation
 uses the existing root cancellation fence and refuses the report: after revocation `jobs.get` and
 `jobs.list` carry no report, including evidence from an already-terminal job: no report survives revocation. Retained `job.state` events are redacted, and `duplicates.cancel` and `jobs.cancel` receipts never contain a report. Removing terminal evidence increments rev and
@@ -426,7 +461,22 @@ job's permission error is published only with its terminal state; pending eviden
 shows cancel_requested until the worker drains. Cancelled jobs may retain verified partial evidence
 with stop=cancelled when no earlier reader stop exists; a permission refusal instead carries error
 and no duplicates report. seq and rev
-have the same ordering semantics as scan jobs. Personal scan gating is unchanged.
+have the same ordering semantics as scan jobs.
+
+## Identity-unverified volumes (#219)
+
+Only NTFS and ReFS verify file identity. A root on a FAT, FAT32, exFAT or unknown filesystem is
+granted identity-unverified: a personal one only after the owner confirms it (the desktop picker's
+one-line native confirmation, or `--allow-identity-unverified` beside `--grant-root`; declining the
+confirmation is `cancelled_by_user`). A synthetic or lab root needs no confirmation. Without such a
+grant the root opens refused, as before. Such a root lists metadata only (names, sizes, dates); every
+row carries `identity.quality` `unverified` and the `identity_unverified` entry flag, no
+`file_id_hex`, and `durable_reference` `unavailable_filesystem`. Each relist rechecks containment
+by normalised path under the granted root; a failed recheck leaves that listing partial and never
+refreshes its rows. Unverified rows are never placement candidates (`placement.simulate` refuses
+`identity_unverified`), never duplicate content-read inputs (they count as unknowns, so candidate
+coverage is partial, and the engine refuses content reads with `identity_unverified`), and never a
+durable reference. NTFS and ReFS never fall back to this mode.
 
 ## Collections (local preferences)
 
@@ -458,6 +508,46 @@ Pages order by durable member ID and cursors bind the collection, session, catal
 Member hydration shares the page deadline and its interrupt handle; expiry stops further rows
 and interrupts an ongoing catalogue inspection rather than retaining a read slot for the page.
 
+## Backups (stage 1: evidence import)
+
+`backups.import` exists on the desktop adapter only and runs only in a personal session: a synthetic
+session answers `refused` / `synthetic_session` before any dialog, HTTP answers `capability_unavailable`.
+Rust opens the native open-file dialog for a restic `snapshots --json` file and, with `integrity_check`,
+a second time for a `check --json` output. The path never crosses IPC. Each pick is refused by name
+before it is opened when it is a network, device or verbatim namespace, a Windows device name, a link,
+a reparse point or a cloud placeholder (`not_a_regular_file`), so no network, device or download I/O
+starts. A regular local file is opened read-only, at most 262,144 bytes are read (`too_large` past
+that), and the handle closes before parsing. Cancelling either dialog answers `cancelled_by_user` and
+stores nothing. The folder and file pickers share one dialog at a time and one 2 s cooldown (`busy`).
+Volume IDs are checked before any dialog opens (`not_found`). Send `deadline_ms` up to 60,000: the
+call waits on the owner.
+
+The snapshot list needs a unique 64-digit ID on every entry; only the snapshot named by
+`snapshot_id` is validated strictly, so exporting just that one (`restic snapshots <id> --json`) is
+enough. A check output may carry status or error lines before the summary; the service passes its
+last non-empty line to the strict parser. An empty, plain-text or non-summary check document is not
+an error: the evidence keeps the snapshot and refuses `integrity_not_checked`. Malformed or duplicate
+JSON is `invalid_json`, a wrong shape `invalid_receipt`, and a bad manifest name or label
+`invalid_source`.
+
+Only the normalised evidence is stored, one record per `repository_label`, in `state.db`
+(`backup_evidence`, state schema v6): never receipt bytes, a path, a file name, a host or user name,
+or a credential. At most 64 labels are kept (`repository_limit`); importing an existing label
+replaces its record and keeps its `evidence_id`. `backups.forget` removes Loomward's record only.
+
+Observation times are the picked files' modification times, not the import time. Ages,
+`stale_observation` (older than `max_age_seconds`, 604,800 s) and `invalid_observation_time`
+(a future time, age null) are recomputed on every read, and `reported_recovery_evidence` with them.
+Stage 1 cannot see check arguments, so `integrity_read_all_data` is always false and a clean check
+still refuses `integrity_not_checked`; it has no snapshot manifest, credential observation or restore
+observation, so `version_not_covered`, `credentials_unavailable`, `restore_not_succeeded`,
+`partial_restore` and `unsupported_metadata` always hold and `reported_recovery_evidence` is never
+true. Topology comes from `volumes.list` identity, never from text: the same declared volume for
+source and target is `same_volume`; different volumes are `unknown` with basis
+`different_volumes_device_unknown` until a physical device identity exists; an undeclared side is
+`unknown` / `undeclared`. `proposed_drill` is data with `executable: false`; no command executes it.
+No command runs restic, opens a backup repository or reads its configuration.
+
 ## Lazy meaning threads
 
 | Command | Revisions | Retry | Effects |
@@ -473,9 +563,8 @@ catalogue work and is checked between feature reads and predictions; expiration 
 change returns `stale_generation`. Unknown or stale IDs in the processed prefix refuse
 the request. A suffix beyond the work cap is not resolved or authorised.
 
-Personal sessions refuse with `capability_unavailable`, `detail.reason=learning_personal_gated`,
-before resolving IDs or features. This is the same gate named in `learning.status.gate`;
-status remains readable, and no personal candidate is used.
+Personal sessions read meaning like synthetic ones (q-11): features come only from nodes of the
+session's active grants, and the candidate is the session's own, fitted from the owner's labels.
 
 Only non-excluded files with an available durable native identity are eligible. Folders,
 virtual/folded nodes and files lacking identity are `not_eligible`, with null label/share/source.

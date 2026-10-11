@@ -1,5 +1,5 @@
-//! [`NativeDialogs`] for the desktop: the folder picker and the disclosure confirmation, owned
-//! by Rust (docs/41 sections 5.3 and 12). The webview cannot open either: the capability file
+//! [`NativeDialogs`] for the desktop: the folder picker, the backup-receipt file picker and the
+//! disclosure confirmation, owned by Rust (docs/41 sections 5.3 and 12). The webview cannot open either: the capability file
 //! grants no dialog permission, no dialog plugin is registered, and the only way in is a service
 //! call that passes the [`CallContext`]. The chosen path never crosses IPC.
 
@@ -76,6 +76,21 @@ impl DesktopDialogs {
         let folder = pick(picker)?;
         (self.ask)(GRANT_TITLE, &grant_text(&folder)).then_some(folder)
     }
+
+    /// The same parented dialog, retitled for one receipt file and filtered to JSON and text.
+    pub fn pick_file_with(
+        &self,
+        title: &str,
+        pick: impl FnOnce(rfd::FileDialog) -> Option<PathBuf>,
+    ) -> Option<PathBuf> {
+        self.pick_folder_with(|picker| {
+            pick(
+                picker
+                    .set_title(title)
+                    .add_filter("restic JSON output", &["json", "txt"]),
+            )
+        })
+    }
 }
 
 pub const PICKER_TITLE: &str = "Loomward: choose a folder to observe (metadata only)";
@@ -112,6 +127,10 @@ pub fn grant_text(folder: &Path) -> String {
 }
 
 pub const DISCLOSURE_TITLE: &str = "Loomward: send these items to the teacher?";
+/// #219: the one-line confirmation for a folder on a FAT, exFAT or unknown filesystem.
+pub const UNVERIFIED_TITLE: &str = "Loomward: list this folder without file identity?";
+pub const UNVERIFIED_TEXT: &str =
+    "This volume cannot verify file identity; Loomward will list it read-only and never act on it";
 /// Conservative temporary MessageBox budget; personal use needs LW-111's scrolling dialog.
 pub const MAX_DISCLOSURE_CHARS: usize = 2048;
 pub const MAX_DISCLOSURE_ITEMS: usize = 4;
@@ -123,6 +142,23 @@ impl NativeDialogs for DesktopDialogs {
     /// (`synthetic_session_requires_lab_root`, docs/41 section 12).
     fn pick_folder(&self) -> Option<PathBuf> {
         self.pick_folder_with(|picker| picker.pick_folder())
+    }
+
+    /// Never opens in a synthetic session either: an owner-picked receipt is personal data. The
+    /// path goes to the service in-process and never crosses IPC.
+    fn pick_file(&self, title: &str) -> Option<PathBuf> {
+        self.pick_file_with(title, |picker| picker.pick_file())
+    }
+
+    /// Personal sessions only (the picker never opens in a synthetic one); Cancel is the default.
+    fn confirm_identity_unverified(&self) -> bool {
+        if self.dataset != DatasetClass::Personal {
+            return false;
+        }
+        let Ok(_active) = self.active.try_lock() else {
+            return false;
+        };
+        (self.ask)(UNVERIFIED_TITLE, UNVERIFIED_TEXT)
     }
 
     /// Refuses a summary of another dataset class without asking.
@@ -300,6 +336,67 @@ mod tests {
         let synthetic = DesktopDialogs::new(DatasetClass::Synthetic);
         assert_eq!(
             synthetic.pick_folder_with(|_| panic!("synthetic picker opened")),
+            None
+        );
+    }
+
+    /// #219: the owner sees exactly the one-line text, and only an explicit accept grants.
+    #[test]
+    fn identity_unverified_confirmation_is_explicit_and_personal_only() {
+        for (class, accept, expected) in [
+            (DatasetClass::Personal, true, true),
+            (DatasetClass::Personal, false, false),
+            (DatasetClass::Synthetic, true, false),
+        ] {
+            let asked = Arc::new(Mutex::new(Vec::new()));
+            let seen = asked.clone();
+            let dialogs = DesktopDialogs::with_prompt(class, move |title, text| {
+                seen.lock()
+                    .unwrap()
+                    .push((title.to_owned(), text.to_owned()));
+                accept
+            });
+            assert_eq!(dialogs.confirm_identity_unverified(), expected, "{class:?}");
+            let asked = asked.lock().unwrap();
+            if class == DatasetClass::Personal {
+                assert_eq!(
+                    *asked,
+                    [(UNVERIFIED_TITLE.to_owned(), UNVERIFIED_TEXT.to_owned())]
+                );
+                assert!(!UNVERIFIED_TEXT.contains('\n'));
+            } else {
+                assert!(asked.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn file_picker_is_personal_only_and_retitled() {
+        let dialogs = DesktopDialogs::new(DatasetClass::Personal);
+        *dialogs.picker.lock().unwrap() = Some(rfd::FileDialog::new());
+        let picked = PathBuf::from("C:/synthetic/receipt.json");
+        let title = "Loomward: choose a synthetic receipt";
+        assert_eq!(
+            dialogs.pick_file_with(title, |d| {
+                let configured = format!("{d:?}");
+                assert!(configured.contains(title), "{configured}");
+                assert!(configured.contains("json"), "{configured}");
+                Some(picked.clone())
+            }),
+            Some(picked)
+        );
+        assert_eq!(dialogs.pick_file_with(title, |_| None), None);
+        // A second dialog while one is open is refused, never stacked.
+        let active = dialogs.active.lock().unwrap();
+        assert_eq!(
+            dialogs.pick_file_with(title, |_| panic!("stacked dialog")),
+            None
+        );
+        drop(active);
+        let synthetic = DesktopDialogs::new(DatasetClass::Synthetic);
+        *synthetic.picker.lock().unwrap() = Some(rfd::FileDialog::new());
+        assert_eq!(
+            synthetic.pick_file_with(title, |_| panic!("synthetic file picker opened")),
             None
         );
     }

@@ -129,8 +129,9 @@ pub struct RecoveryEvidence {
     pub observation_age_seconds: Option<u64>,
     pub integrity_age_seconds: Option<u64>,
     pub restore_age_seconds: Option<u64>,
-    /// Scoped reported recovery evidence only, never authorisation or native proof.
-    pub verified_recovery: bool,
+    /// Every predicate holds on the supplied, scoped evidence. Caller-reported self-consistency,
+    /// never native proof, authorisation or a source-retirement gate (invariant 9, #349).
+    pub reported_recovery_evidence: bool,
     pub refusals: Vec<Refusal>,
     pub proposed_drill: ProposedRestoreDrill,
 }
@@ -143,54 +144,43 @@ pub fn normalise_backup_receipt(
 ) -> Result<RecoveryEvidence, ReceiptError> {
     validate_source(source)?;
     let value = parse_strict(raw)?;
+    // The byte budget bounds the entry count. Every entry needs a unique digest ID; only the bound
+    // snapshot is validated strictly, so one odd unrelated snapshot cannot hide it (#349).
     let items = value.as_array().ok_or(ReceiptError::InvalidReceipt)?;
-    if items.len() > MAX_RECORDS {
-        return Err(ReceiptError::InvalidReceipt);
-    }
     let mut ids = HashSet::new();
     let mut snapshot_time = None;
     for value in items {
-        if !value.is_object() {
+        let id = value.get("id").and_then(Value::as_str).unwrap_or("");
+        if !digest(id) || !ids.insert(id) {
             return Err(ReceiptError::InvalidReceipt);
+        }
+        if id != source.snapshot_id {
+            continue;
         }
         let snapshot: Snapshot =
             serde_json::from_value(value.clone()).map_err(|_| ReceiptError::InvalidReceipt)?;
-        if !digest(&snapshot.id)
-            || !ids.insert(snapshot.id.clone())
-            || snapshot.time.is_empty()
-            || snapshot.time.len() > 64
-            || snapshot.time.chars().any(char::is_control)
+        if !display_label(&snapshot.time)
             || snapshot.paths.is_empty()
             || snapshot.paths.len() > MAX_RECORDS
             || snapshot.paths.iter().any(|p| !provider_path(p))
         {
             return Err(ReceiptError::InvalidReceipt);
         }
-        if snapshot.id == source.snapshot_id {
-            snapshot_time = Some(snapshot.time);
-        }
+        snapshot_time = Some(snapshot.time);
     }
     let snapshot_taken = snapshot_time.is_some();
-    let integrity_checked = match &source.integrity {
-        Some(check) => {
-            let value = parse_strict(&check.raw)?;
-            if !value.is_object() {
-                return Err(ReceiptError::InvalidReceipt);
-            }
-            let summary: CheckSummary =
-                serde_json::from_value(value).map_err(|_| ReceiptError::InvalidReceipt)?;
-            if summary.message_type != "summary" || summary.num_errors < 0 {
-                return Err(ReceiptError::InvalidReceipt);
-            }
+    // An empty, plain-text (restic fatal error) or non-summary check document keeps the snapshot
+    // evidence and refuses as IntegrityNotChecked rather than failing the whole receipt (#349).
+    let integrity_checked = source.integrity.as_ref().is_some_and(|check| {
+        check_summary(&check.raw).is_some_and(|summary| {
             snapshot_taken
                 && bound(&check.observation, source)
                 && summary.num_errors == 0
                 && summary.broken_packs.as_ref().is_none_or(Vec::is_empty)
                 && !summary.suggest_repair_index
                 && !summary.suggest_prune
-        }
-        None => false,
-    };
+        })
+    });
     let integrity_read_all_data =
         integrity_checked && source.integrity.as_ref().is_some_and(|c| c.read_all_data);
     let restore_bound = snapshot_taken
@@ -318,7 +308,7 @@ pub fn normalise_backup_receipt(
         observation_age_seconds,
         integrity_age_seconds,
         restore_age_seconds,
-        verified_recovery: refusals.is_empty(),
+        reported_recovery_evidence: refusals.is_empty(),
         refusals,
         proposed_drill: ProposedRestoreDrill {
             files: source.required.clone(),
@@ -337,7 +327,6 @@ pub fn normalise_backup_receipt(
 
 #[derive(Deserialize)]
 struct Snapshot {
-    id: String,
     time: String,
     paths: Vec<String>,
 }
@@ -353,6 +342,29 @@ struct CheckSummary {
     suggest_repair_index: bool,
     #[serde(default)]
     suggest_prune: bool,
+}
+
+fn check_summary(raw: &[u8]) -> Option<CheckSummary> {
+    let value = parse_strict(raw).ok().filter(Value::is_object)?;
+    serde_json::from_value::<CheckSummary>(value)
+        .ok()
+        .filter(|s| s.message_type == "summary" && s.num_errors >= 0)
+}
+
+/// A repository label: 1-64 of `[A-Za-z0-9._-]`, so a URL, path or credential is never echoed (#349).
+pub fn repository_label(value: &str) -> bool {
+    (1..=64).contains(&value.len())
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+}
+
+/// The provider's uninterpreted snapshot-time text: 1-64 of `[0-9A-Za-z:.+-]` (#349).
+fn display_label(value: &str) -> bool {
+    (1..=64).contains(&value.len())
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b":.+-".contains(&b))
 }
 
 fn bound(observation: &Observation, source: &BackupSource) -> bool {
@@ -373,7 +385,9 @@ fn relative_path(path: &str) -> bool {
         && path.len() <= 1024
         && !path.contains('\\')
         && path.split('/').all(|part| {
-            let stem = part.split('.').next().unwrap_or("").to_ascii_uppercase();
+            // Windows ignores trailing spaces before the extension: `CON .txt` is `CON` (#349).
+            let stem = part.split('.').next().unwrap_or("").trim_end_matches(' ');
+            let stem = stem.to_ascii_uppercase();
             !part.is_empty()
                 && part != "."
                 && part != ".."
@@ -411,13 +425,9 @@ fn valid_files<'a>(files: impl Iterator<Item = &'a FileVersion>, length: usize) 
 fn validate_source(source: &BackupSource) -> Result<(), ReceiptError> {
     const MAX_TIME: u64 = 253_402_300_799;
     let valid_observation = |o: &Observation| {
-        o.observed_at <= MAX_TIME
-            && !o.repository_id.is_empty()
-            && o.repository_id.len() <= 128
-            && digest(&o.snapshot_id)
+        o.observed_at <= MAX_TIME && repository_label(&o.repository_id) && digest(&o.snapshot_id)
     };
-    if source.repository_id.is_empty()
-        || source.repository_id.len() > 128
+    if !repository_label(&source.repository_id)
         || !digest(&source.snapshot_id)
         || source.observed_at > MAX_TIME
         || source.now > MAX_TIME

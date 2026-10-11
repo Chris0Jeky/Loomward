@@ -1,20 +1,12 @@
-use crate::{db, fail, sql_error, with_reason, Inner, Out};
+use crate::{db, fail, sql_error, Inner, Out};
 use loomward_engine::scan::CatalogRootIdentity;
 use loomward_protocol::*;
 use std::time::{Duration, Instant};
 
 impl Inner {
     pub(crate) fn duplicates_inspect(&self, req: &RequestEnvelope) -> Result<Out, ErrorBody> {
-        // Refuse before resolving a root, opening metadata or querying the catalogue.
-        if self.dataset != DatasetClass::Synthetic {
-            return Err(with_reason(
-                fail(
-                    ErrorCode::CapabilityUnavailable,
-                    "Personal content inspection is gated; no content was opened.",
-                ),
-                "content_read_gated",
-            ));
-        }
+        // Personal content reads are open for owner grants (q-10); the session's root gate (origin,
+        // today's fences) runs before any engine call, metadata open or catalogue query.
         let request: DuplicatesInspectRequest = req.decode_payload()?;
         let row = self.root_row(&request.root_id)?;
         let root = db::roots(&self.db(), Some(row))
@@ -25,23 +17,22 @@ impl Inner {
         if root.grant_state != "active" {
             return Err(fail(ErrorCode::PermissionDenied, "grant_not_active"));
         }
-        if root.origin != "lab_generated" {
-            return Err(with_reason(
-                fail(
-                    ErrorCode::PermissionDenied,
-                    "Synthetic inspection requires a registered lab root.",
-                ),
-                "synthetic_session_requires_lab_root",
-            ));
-        }
+        self.session_root_gate(&root)?;
         let granted = self.engine.granted_root(
-            request.root_id,
+            request.root_id.clone(),
             root.grant,
             &CatalogRootIdentity {
                 row,
                 instance: self.instance.clone(),
             },
-        )?;
+        );
+        // A replaced folder ends its grant here exactly as at scan start (#378).
+        if matches!(&granted, Err(loomward_engine::EngineError::PermissionDenied { message })
+            if message == "root_identity_changed")
+        {
+            self.identity_changed(root.grant, &request.root_id, true);
+        }
+        let granted = granted?;
         let mut reader = self.catalog.reader().map_err(crate::catalog_error)?;
         reader.set_deadline(
             Instant::now()

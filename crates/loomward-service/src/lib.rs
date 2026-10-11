@@ -16,6 +16,7 @@
 #![forbid(unsafe_code)]
 
 mod apps;
+mod backups;
 mod collections;
 mod cursors;
 mod db;
@@ -58,6 +59,9 @@ pub struct Config {
     pub allow_personal: bool,
     /// Roots already checked by [`paths::validate_roots`]; consumed exactly (#146).
     pub grant_roots: Vec<PathBuf>,
+    /// #219: the owner's explicit `--allow-identity-unverified`: a personal `grant_roots` entry on
+    /// a FAT, exFAT or unknown filesystem is granted identity-unverified instead of refused.
+    pub allow_identity_unverified: bool,
 }
 
 /// The engine service. Cheap to share; `call` may run on any thread.
@@ -204,6 +208,8 @@ impl Service {
             .map_err(|_| "cannot resolve the state directory".to_string())?;
         let catalog = Catalog::open(&state_dir, class_name(config.dataset))
             .map_err(|e| format!("catalogue refused to open: {e}"))?;
+        // A root's first full scan publishes once, atomically, with its file indexes built once (#148).
+        catalog.writer().set_bulk_first_scan(true);
         let engine = Engine::open(EngineConfig::new(state_dir.clone(), config.dataset))
             .map_err(|e| format!("engine refused to open: {e}"))?;
         let conn = db::open(&state_dir).map_err(|e| format!("state store: {e}"))?;
@@ -250,10 +256,16 @@ impl Service {
                 .map_err(|e| format!("engine refused the scan writer: {e}"))?;
         }
         for (i, root) in config.grant_roots.iter().enumerate() {
-            inner.grant(root, "cli_flag").map_err(|r| {
+            inner
+                .grant(root, "cli_flag", config.allow_identity_unverified)
+                .map_err(|r| {
                 let rule = match r {
                     Refused::Rule(r) => refusal_name(r),
                     Refused::RootLimit => "root_limit_reached".into(),
+                    Refused::IdentityUnverified => {
+                        "identity_unverified (pass --allow-identity-unverified to list it read-only)"
+                            .into()
+                    }
                 };
                 format!("grant root #{} refused: {rule}", i + 1)
             })?;
@@ -287,6 +299,8 @@ pub(crate) fn refusal_name(r: Refusal) -> String {
 pub(crate) enum Refused {
     Rule(Refusal),
     RootLimit,
+    /// #219: a personal root on a FAT, exFAT or unknown filesystem the owner has not confirmed.
+    IdentityUnverified,
 }
 
 impl From<Refusal> for Refused {
@@ -321,6 +335,8 @@ pub(crate) fn is_mutation(c: Command) -> bool {
             | TelemetrySubscribe
             | TelemetryUnsubscribe
             | BudgetsSet
+            | BackupsImport
+            | BackupsForget
     )
 }
 
@@ -380,9 +396,9 @@ fn is_revocation(c: Command) -> bool {
 }
 
 /// Revocation must never wait behind other mutations (its state change is serialised by
-/// `Inner::mutation`), and the folder picker waits on the owner: neither takes a ticket.
+/// `Inner::mutation`), and the native pickers wait on the owner: none of them takes a ticket.
 fn is_ticketed(c: Command) -> bool {
-    !is_revocation(c) && c != Command::RootsRequestGrant
+    !is_revocation(c) && !matches!(c, Command::RootsRequestGrant | Command::BackupsImport)
 }
 
 /// `semantics.md` section 2 defaults.
@@ -470,6 +486,25 @@ impl ViewService for Service {
             );
             return ResponseEnvelope::error(Some(id), e, None);
         }
+        // q-11 opens local learning only: no teacher path ever sees personal data (q-5 unmet).
+        if self.inner.dataset == DatasetClass::Personal
+            && matches!(
+                command,
+                Command::TeacherPreview
+                    | Command::TeacherRun
+                    | Command::TeacherResults
+                    | Command::GrantsCreateDisclosure
+            )
+        {
+            let e = with_reason(
+                fail(
+                    ErrorCode::CapabilityUnavailable,
+                    "The teacher never receives personal data.",
+                ),
+                "teacher_personal_gated",
+            );
+            return ResponseEnvelope::error(Some(id), e, None);
+        }
         if command.wave() >= 3
             && !matches!(
                 command,
@@ -482,6 +517,9 @@ impl ViewService for Service {
                     | Command::CollectionsCreate
                     | Command::CollectionsUpdateMembers
                     | Command::CollectionsMembers
+                    | Command::BackupsList
+                    | Command::BackupsImport
+                    | Command::BackupsForget
             )
         {
             let e = fail(
@@ -880,11 +918,52 @@ impl Inner {
         }
     }
 
+    /// #219: the root volume's filesystem name (NTFS, ReFS, FAT32, exFAT, or whatever the volume
+    /// reports; `unknown` when it reports none), observed through the same guarded, non-elevated
+    /// open a scan uses. Fails closed.
+    pub(crate) fn root_filesystem(&self, root: &Path) -> Result<String, Refusal> {
+        #[cfg(windows)]
+        {
+            use loomward_engine::scan::source::DirSource;
+            let source = loomward_windows::enumerate::NativeSource::default();
+            #[cfg(test)]
+            let source = match *self.hooks.filesystem.lock().unwrap() {
+                Some(name) => source.with_filesystem(name),
+                None => source,
+            };
+            let (dir, _) = source
+                .with_identity_unverified()
+                .open_root(root)
+                .map_err(|_| Refusal::IdentityUnavailable)?;
+            Ok(match dir.filesystem() {
+                "" => "unknown".into(),
+                name => name.chars().take(32).collect(),
+            })
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = root;
+            Err(Refusal::IdentityUnavailable)
+        }
+    }
+
     /// Grants one already path-checked root under the session's provenance policy. A synthetic
     /// session accepts only a registered lab root whose native identity matches the registry; a
     /// personal session accepts an owner folder. Re-granting an active root returns it.
-    pub(crate) fn grant(&self, root: &Path, via: &str) -> Result<(i64, bool), Refused> {
+    pub(crate) fn grant(
+        &self,
+        root: &Path,
+        via: &str,
+        confirmed_unverified: bool,
+    ) -> Result<(i64, bool), Refused> {
         let (volume_key, file_id) = lab::identity(root)?;
+        // #219: a personal root on a volume that cannot verify identity needs the owner's
+        // explicit confirmation; a synthetic lab root may list unverified freely.
+        let filesystem = self.root_filesystem(root)?;
+        let unverified = !loomward_windows::enumerate::verifies_identity(&filesystem);
+        if unverified && self.dataset == DatasetClass::Personal && !confirmed_unverified {
+            return Err(Refused::IdentityUnverified);
+        }
         let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
         let conn = self.db();
         let origin = match self.dataset {
@@ -929,7 +1008,9 @@ impl Inner {
                 display_name: display_name.chars().take(260).collect(),
                 display_path,
                 root_file_id: Some(file_id),
-                filesystem: None,
+                // The volume's real filesystem: NTFS/ReFS keep durable references; the writer marks
+                // any other filesystem's grant identity-unverified.
+                filesystem: Some(filesystem),
                 origin: origin.into(),
                 granted_via: via.into(),
                 observed_at_ns: now_ns(),
