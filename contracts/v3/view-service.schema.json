@@ -2343,73 +2343,288 @@
       ]
     },
     "TrendCandidate": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "kind",
-        "series_index",
-        "unit",
-        "start_at",
-        "end_at",
-        "window_ms",
-        "sample_count",
-        "start_value",
-        "end_value",
-        "slope_per_s",
-        "facts",
-        "unknowns"
-      ],
-      "properties": {
-        "kind": {
-          "$ref": "#/$defs/TrendCandidateKind"
-        },
-        "series_index": {
-          "$ref": "#/$defs/Count"
-        },
-        "unit": {
-          "$ref": "#/$defs/TrendUnit"
-        },
-        "start_at": {
-          "$ref": "#/$defs/Timestamp"
-        },
-        "end_at": {
-          "$ref": "#/$defs/Timestamp"
-        },
-        "window_ms": {
-          "$ref": "#/$defs/Count"
-        },
-        "sample_count": {
-          "$ref": "#/$defs/Count"
-        },
-        "start_value": {
-          "$ref": "#/$defs/TrendValue"
-        },
-        "end_value": {
-          "$ref": "#/$defs/TrendValue"
-        },
-        "slope_per_s": {
-          "type": "string",
-          "maxLength": 64
-        },
-        "facts": {
-          "type": "array",
-          "minItems": 1,
-          "maxItems": 8,
-          "items": {
-            "type": "string",
-            "maxLength": 256
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "series_index",
+            "unit",
+            "start_at",
+            "end_at",
+            "window_ms",
+            "sample_count",
+            "start_value",
+            "end_value",
+            "slope_per_s",
+            "facts",
+            "unknowns"
+          ],
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/TrendCandidateKind"
+            },
+            "series_index": {
+              "$ref": "#/$defs/Count"
+            },
+            "unit": {
+              "const": "bytes"
+            },
+            "start_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "end_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "window_ms": {
+              "$ref": "#/$defs/Count"
+            },
+            "sample_count": {
+              "$ref": "#/$defs/Count"
+            },
+            "start_value": {
+              "$ref": "#/$defs/ByteCount"
+            },
+            "end_value": {
+              "$ref": "#/$defs/ByteCount"
+            },
+            "slope_per_s": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "facts": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 256
+              }
+            },
+            "unknowns": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 256
+              }
+            }
           }
         },
-        "unknowns": {
-          "type": "array",
-          "minItems": 1,
-          "maxItems": 8,
-          "items": {
-            "type": "string",
-            "maxLength": 256
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "series_index",
+            "unit",
+            "start_at",
+            "end_at",
+            "window_ms",
+            "sample_count",
+            "start_value",
+            "end_value",
+            "slope_per_s",
+            "facts",
+            "unknowns"
+          ],
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/TrendCandidateKind"
+            },
+            "series_index": {
+              "$ref": "#/$defs/Count"
+            },
+            "unit": {
+              "const": "fraction"
+            },
+            "start_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "end_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "window_ms": {
+              "$ref": "#/$defs/Count"
+            },
+            "sample_count": {
+              "$ref": "#/$defs/Count"
+            },
+            "start_value": {
+              "$ref": "#/$defs/Fraction"
+            },
+            "end_value": {
+              "$ref": "#/$defs/Fraction"
+            },
+            "slope_per_s": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "facts": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 256
+              }
+            },
+            "unknowns": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 256
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "series_index",
+            "unit",
+            "start_at",
+            "end_at",
+            "window_ms",
+            "sample_count",
+            "start_value",
+            "end_value",
+            "slope_per_s",
+            "facts",
+            "unknowns"
+          ],
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/TrendCandidateKind"
+            },
+            "series_index": {
+              "$ref": "#/$defs/Count"
+            },
+            "unit": {
+              "const": "queue"
+            },
+            "start_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "end_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "window_ms": {
+              "$ref": "#/$defs/Count"
+            },
+            "sample_count": {
+              "$ref": "#/$defs/Count"
+            },
+            "start_value": {
+              "type": "number",
+              "minimum": 0
+            },
+            "end_value": {
+              "type": "number",
+              "minimum": 0
+            },
+            "slope_per_s": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "facts": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 256
+              }
+            },
+            "unknowns": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 256
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "series_index",
+            "unit",
+            "start_at",
+            "end_at",
+            "window_ms",
+            "sample_count",
+            "start_value",
+            "end_value",
+            "slope_per_s",
+            "facts",
+            "unknowns"
+          ],
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/TrendCandidateKind"
+            },
+            "series_index": {
+              "$ref": "#/$defs/Count"
+            },
+            "unit": {
+              "const": "bytes_per_s"
+            },
+            "start_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "end_at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "window_ms": {
+              "$ref": "#/$defs/Count"
+            },
+            "sample_count": {
+              "$ref": "#/$defs/Count"
+            },
+            "start_value": {
+              "type": "number",
+              "minimum": 0
+            },
+            "end_value": {
+              "type": "number",
+              "minimum": 0
+            },
+            "slope_per_s": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "facts": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 256
+              }
+            },
+            "unknowns": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 256
+              }
+            }
           }
         }
-      }
+      ]
     },
     "TelemetryTrends": {
       "type": "object",

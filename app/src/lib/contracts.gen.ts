@@ -1337,20 +1337,59 @@ export type TrendSeries = {
 
 export type TrendCandidateKind = "growth" | "cpu_saturation" | "memory_pressure" | "disk_queue";
 
-export interface TrendCandidate {
+export type TrendCandidate = {
   kind: TrendCandidateKind;
   series_index: Count;
-  unit: TrendUnit;
+  unit: "bytes";
   start_at: Timestamp;
   end_at: Timestamp;
   window_ms: Count;
   sample_count: Count;
-  start_value: TrendValue;
-  end_value: TrendValue;
+  start_value: ByteCount;
+  end_value: ByteCount;
   slope_per_s: string;
   facts: string[];
   unknowns: string[];
-}
+} | {
+  kind: TrendCandidateKind;
+  series_index: Count;
+  unit: "fraction";
+  start_at: Timestamp;
+  end_at: Timestamp;
+  window_ms: Count;
+  sample_count: Count;
+  start_value: Fraction;
+  end_value: Fraction;
+  slope_per_s: string;
+  facts: string[];
+  unknowns: string[];
+} | {
+  kind: TrendCandidateKind;
+  series_index: Count;
+  unit: "queue";
+  start_at: Timestamp;
+  end_at: Timestamp;
+  window_ms: Count;
+  sample_count: Count;
+  start_value: number;
+  end_value: number;
+  slope_per_s: string;
+  facts: string[];
+  unknowns: string[];
+} | {
+  kind: TrendCandidateKind;
+  series_index: Count;
+  unit: "bytes_per_s";
+  start_at: Timestamp;
+  end_at: Timestamp;
+  window_ms: Count;
+  sample_count: Count;
+  start_value: number;
+  end_value: number;
+  slope_per_s: string;
+  facts: string[];
+  unknowns: string[];
+};
 
 export interface TelemetryTrends {
   series: TrendSeries[];

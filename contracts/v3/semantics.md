@@ -329,6 +329,9 @@ An engine thread count not observed on the current tick is null. Requests for ch
 the sampled lease union return `partial_coverage` (not sampled), distinct from hardware unavailable.
 
 `TelemetrySample.trends` (LW-051) is read-only and projects the same requested channels.
+`trends` is a required field of every v3 `TelemetrySample`: a v3 reader may rely on it, and a
+sample without it is invalid. This was added in v3 before the contract shipped, so it is a
+compatibility note for any consumer built against an earlier draft, not a version bump.
 The shared lease union retains at most eight points per series, no older than ten minutes:
 the twelve byte-valued memory ledger fields, machine CPU fraction, disk busy fraction and
 queue length (at most sixteen disk rows), and the seven quantities in each sampled process
@@ -355,7 +358,7 @@ subtract byte integers before approximate slope conversion; charts likewise subt
 byte integers before scaling. `slope_per_s` is a signed decimal string in the series
 unit per second, the end-minus-start secant slope, not a score or probability.
 
-Candidates use complete contiguous windows with at least four samples. Process private
+Candidates use the newest contiguous run of known points, at least four samples: a null, a repeated or backward timestamp or a gap wider than twice the interval ends the run behind it, so one earlier bad point never hides a later window and no window crosses one. Process private
 commit or private resident growth requires at least thirty seconds, no decreases,
 at least three increases and at least 1 MiB net growth. Machine contention windows span
 at least three seconds: CPU is at least 0.90 of logical capacity throughout; disk queue
@@ -364,7 +367,7 @@ throughout, with standby declining or modified bytes rising over the aligned win
 These conservative thresholds name candidates, never leaks, unnecessary processes or
 an instruction to act. Facts, exact start/end values, sample counts, windows and uncertainty
 travel with each candidate. `series_index` refers to this response's channel-projected
-series list. At most 64 candidates are returned; truncation remains explicit. No candidate
+series list. At most 64 candidates are returned, machine (system) candidates first, then disks, then processes, so the cap cuts process candidates first; truncation remains explicit. A candidate's unit must agree with its `start_value` and `end_value`, like a series' points; schema and Rust reject a mismatch. No candidate
 is not proof of no problem. No process or file effects are added.
 
 Telemetry event retention keeps the existing 1,024-event count ceiling and adds a
