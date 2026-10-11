@@ -1672,3 +1672,139 @@ the remainder must pay generation/decode, existing-root snapshot costs,
 validation, rollup/multilink, durable activation and provisional-view handling.
 Whether the whole path reaches 250k remains unverified; the proposal preserves
 these invariants by paying the explicit design costs above, not by dropping them.
+
+# Catalogue P4f (#148): first-scan receipt batching - 2026-10-11
+
+## Changed
+
+On `perf/catalog-p4f-148` (PR #332), measured against main
+`98bd4be25e56a0b6feb329f312d029e2c1fd7eb0`. Owned changes:
+`src/writer.rs`, `src/writer/publication_tests.rs`, this handoff and
+[benchmark evidence](../../evidence/v3/bench/catalog-1m.json). Prior receipts are
+preserved; the new `P4f` object contains the six observations, source/binary
+hashes, metric medians/ranges, mutations and gates. Host hardware is withheld.
+
+KEEP the bounded receipt-batching step. Producer reservations can exceed the
+existing validated payload/scratch estimate: the bench reserves 4 MiB before
+generating each 1,000-file chunk. A first full scan now charges matching staged
+commands by that validated estimate, capped at their held reservation, instead
+of charging unused reservation to the transaction budget. The producer quota
+still holds and releases the entire reservation. Commands from another run,
+direct listings, refresh/targeted runs and any run with an earlier scan retain
+reservation accounting. Failed eligibility lookup defaults to the ordinary path;
+failed size validation retains the reservation charge.
+
+The existing 64 MiB transaction limit, 250 ms work limit, nonwaiting receive,
+savepoints, revision fences, single listing publication, depth bounds, resolved
+reference batching refusal, pending-reference ordering and `fail_batch` remain.
+No schema, index, durability, writer API, dependency or memory-policy change.
+The estimate is recomputed with the existing validator; no payload-size field or
+extra cache was added. `max_transaction_bytes` reports the charged estimate on
+the eligible path, not retained queue memory or WAL size.
+
+Declined, unmeasured: whole-file index-once generations require reader routing,
+provisional identities and durable activation/reference recovery beyond this
+bounded writer step. The previous P4b/P4c and six rejected P4e experiments stay
+negative evidence. Additional benchmark receipt pipelining was declined because
+the current child-listing bench already pipelines. Shrinking producer
+reservations or adding another retained payload field was also declined: the
+existing quota/caller shape is sufficient. No new measured attempt was dropped.
+
+## Verified
+
+**Windows, shared host, synthetic metadata only.** Frozen main and candidate
+executables of the existing bench ran **A1/B1/A2/B2/A3/B3**, three runs each,
+with `--rows 1000000`. They were built with
+`cargo build -p loomward-catalog --release --example bench`; the canonical
+invocation is `cargo run -p loomward-catalog --release --example bench -- --rows 1000000`.
+Own benchmark runs never overlapped each other or own builds/tests. Other lanes
+shared the host. All six runs passed the independent accounting oracle, all live
+index assertions and explicit temporary-database cleanup.
+
+| Phase (seconds; median [min-max]) | Main after #310 | P4f |
+| --- | ---: | ---: |
+| P4 wall | 10.436219 [9.803486-10.716739] | 9.150938 [8.928730-9.281987] |
+| Staging | 0.419471 [0.393773-0.440272] | 0.407978 [0.402889-0.424860] |
+| State preparation | 0.001954 [0.001871-0.008314] | 0.001824 [0.001763-0.022077] |
+| Listing publication | 5.648744 [5.608251-6.352098] | 5.539595 [5.491409-5.652384] |
+| Indexed file INSERT (inside publication) | 4.091341 [4.071281-4.735355] | 3.992244 [3.948512-4.114968] |
+| Name validation (inside publication) | 0.344888 [0.342416-0.349073] | 0.346980 [0.344307-0.349898] |
+| COMMIT including dirty flush | 3.178900 [3.164058-3.870630] | 2.483471 [2.356961-2.508380] |
+| Queue probes | 0.000970 [0.000970-0.001383] | 0.000851 [0.000761-0.000936] |
+| Transactions through P4 (count) | 71 [71-71] | 42 [42-42] |
+| EndRun rollup (outside P4) | 0.002732 [0.002690-0.002736] | 0.002804 [0.002690-0.002916] |
+| EndRun multilink (outside P4) | 0.970428 [0.869265-1.109983] | 0.863386 [0.839784-0.872597] |
+| EndRun checkpoint (outside P4) | 0.007852 [0.007852-0.011602] | 0.008146 [0.007889-0.008323] |
+
+Writer timings are cumulative and include setup; P4 starts after BeginRun and
+includes generation and producer backpressure. Nested timings and independent
+medians are not additive. The re-baseline shows indexed INSERT and COMMIT still
+dominate; the #310 idle receive is gone. The isolated index probe remains a
+diagnostic outside P4, not a measured generation-publication implementation.
+
+| Gate (median [min-max]) | Main | P4f |
+| --- | ---: | ---: |
+| P4 rows/s | 95,916 [93,405-102,107] | 109,388 [107,843-112,110] |
+| P6 p50 ms | 28.266 [27.704-28.661] | 28.075 [27.684-28.254] |
+| P7 logical p50 ms | 0.556 [0.551-0.612] | 0.552 [0.537-0.559] |
+| P8 p50 ms | 11.874 [11.835-11.917] | 11.855 [11.848-11.859] |
+
+Observed median throughput improves **1.140x (+14.0%)**; each paired candidate
+is faster. COMMIT median falls about 22%; transaction count falls about 41%.
+This is shared-host evidence, not a causal or controlled-host guarantee.
+**250k remains unmet in every run.** Query medians show no observed regression
+in this sample; 10M query gates and universal non-regression are not qualified.
+
+| Required gate | Result |
+| --- | --- |
+| `cargo fmt --all --check` | exit 0 |
+| `cargo test --workspace` | exit 0; 740 passed, 0 failed, 0 ignored |
+| `cargo test -p loomward-catalog --all-features` | exit 0; 130 passed, 0 failed, 0 ignored |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | exit 0 |
+| `git diff --check` | exit 0 |
+
+All existing catalogue tests, including the random-tree brute-force rollup
+oracle, #117 errata, #218/#309 depths, reference/crash recovery and auto-rollback
+checks stay green. No existing assertion was changed or weakened.
+
+Three new tests pin the charge clamp, run isolation, ordinary accounting for
+refresh/targeted/repeated scans and failed eligibility lookup, quota release,
+staged invisibility, atomic listing commit,
+cancellation before publication, interrupted reopen cleanup and another root's
+unchanged file/own totals. A separate SQLite reader sees zero files before the
+listing transaction commits and all three afterwards. Crash boundaries exercise
+the existing before/after catalogue-commit hooks; recovery discards unfinished
+staging or retains the complete committed listing. Root coverage is still
+incremental across listings; this is not whole-root generation activation.
+
+The initial batching test failed on main (2 transactions instead of 1).
+Disabling the charge fix makes **all three new tests fail at executed assertions**
+(exit 101), then restored code passes (exit 0). Nine mutations are killed:
+disable the fix; omit the first-run option guard; charge another run; remove the
+reservation clamp; replace validation-error fallback with zero; admit refresh;
+admit a repeated scan; enable the path after a failed eligibility lookup;
+publish during StageChunk before the final chunk.
+Source bytes were restored after every mutation, then the full gates passed.
+Raw task-owned logs/scripts/frozen executables remain ignored in `.loomward/p4f/`.
+
+Scope of the gain: the bench reserves 4 MiB per chunk through `reserve_bytes`/`send_reserved`, so
+the validated-bytes charge lets more chunks share a transaction there. The production service sink
+calls `StageChunk` synchronously and reserves exactly `validate()` bytes, so its charge already
+equals its reservation and this change does not speed up user scans as they stand (review of #332).
+
+## NOT verified
+
+250k staged P4; whole-root index-once generation activation; controlled/cold-host
+or 10M performance; large existing catalogue/run-history overhead; native
+enumeration, HTTP/UI integration; Linux/hosted CI; physical power loss or
+IOERR/NOMEM injection. No commit, push or external publication.
+
+## Residual risk
+
+The eligible path repeats validation and checks scan history per transaction.
+The gain depends on oversized producer reservations and queued work; synchronous
+callers and exact-size reservations should not be assigned the measured gain.
+Queue accounting stays conservative, but the transaction charge is neither a
+process-memory cap nor a WAL bound. Existing unbounded MEMORY temp storage and
+indexed publication/full-volume multilink costs remain. The open #148 retains
+the gap to 250k; whole-generation publication remains a separate design.

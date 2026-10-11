@@ -1,5 +1,254 @@
 use super::*;
 
+#[test]
+fn first_scan_byte_charge_is_bounded_and_run_local() {
+    let (reply, _) = bounded(1);
+    let mut p = Pending {
+        command: WriteCommand::StageChunk {
+            run_id: 7,
+            dir_id: 1,
+            seq: 0,
+            files: vec![],
+            dirs: vec![],
+        },
+        reply,
+        _permit: BytePermit {
+            quota: Arc::new((Mutex::new(4096), Condvar::new())),
+            bytes: 4096,
+        },
+    };
+    assert_eq!(transaction_bytes(&p, Some(7)), 1024);
+    assert_eq!(transaction_bytes(&p, Some(8)), 4096);
+    assert_eq!(transaction_bytes(&p, None), 4096);
+    p.command = WriteCommand::Barrier;
+    assert_eq!(transaction_bytes(&p, None), 4096);
+    p.command = WriteCommand::StageChunk {
+        run_id: 7,
+        dir_id: 1,
+        seq: 0,
+        files: vec![],
+        dirs: vec![],
+    };
+    p._permit.bytes = 512;
+    assert_eq!(transaction_bytes(&p, Some(7)), 512);
+    p._permit.bytes = 4096;
+    p.command = WriteCommand::StageChunk {
+        run_id: 7,
+        dir_id: 1,
+        seq: -1,
+        files: vec![],
+        dirs: vec![],
+    };
+    assert_eq!(transaction_bytes(&p, Some(7)), 4096);
+}
+
+fn first_scan_fixture(mode: &str, prior: bool) -> (tempfile::TempDir, Connection) {
+    let temp = tempfile::tempdir().unwrap();
+    let conn = crate::db::open_pair(temp.path(), "synthetic").unwrap();
+    conn.execute_batch("INSERT INTO volume(id,volume_key,display_name,identity_json,capabilities_json,device_json,online,observed_at_ns) VALUES(1,'fixture','Fixture','{}','{}','{}',1,0);
+            INSERT INTO st.root_grant(id,volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns) VALUES(1,'fixture',zeroblob(16),'Synthetic root','fixture','fixture','active',0);
+            INSERT INTO root(id,grant_id,volume_id,root_file_id,active_run,state) VALUES(1,1,1,zeroblob(16),2,'scanning');
+            INSERT INTO dir(id,root_id,parent_id,name,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run) VALUES(1,1,NULL,'Synthetic root','path_observation','none',0,0,'unlisted',0,0);").unwrap();
+    if prior {
+        conn.execute("INSERT INTO scan_run(id,root_id,mode,strategy,state,started_at_ns,counters_json,budget_json) VALUES(1,1,'full','fixture','cancelled',0,'{}','{}')", []).unwrap();
+    }
+    conn.execute("INSERT INTO scan_run(id,root_id,mode,strategy,state,started_at_ns,counters_json,budget_json) VALUES(2,1,?1,'fixture','running',0,'{}','{}')", [mode]).unwrap();
+    (temp, conn)
+}
+
+#[test]
+fn first_scan_batches_staged_payloads_without_charging_unused_reservations() {
+    for (mode, prior, run_id, expected) in [
+        ("full", false, 2, 1),
+        ("refresh", false, 2, 2),
+        ("targeted", false, 2, 2),
+        ("full", true, 2, 2),
+        ("full", false, 999, 2),
+    ] {
+        let (temp, conn) = first_scan_fixture(mode, prior);
+        let reservation = 24 * 1024 * 1024;
+        let quota = Arc::new((Mutex::new(3 * reservation), Condvar::new()));
+        let (tx, rx) = bounded(4);
+        let mut replies = Vec::new();
+        for seq in 0..3 {
+            let (reply, result) = bounded(1);
+            tx.send(Pending {
+                command: WriteCommand::StageChunk {
+                    run_id,
+                    dir_id: 1,
+                    seq,
+                    files: vec![],
+                    dirs: vec![],
+                },
+                reply,
+                _permit: BytePermit {
+                    quota: quota.clone(),
+                    bytes: reservation,
+                },
+            })
+            .unwrap();
+            replies.push(result);
+        }
+        drop(tx);
+        let timings = Arc::new(Mutex::new(WriterTimings::default()));
+        let (alive, _) = bounded(0);
+        work(conn, rx, timings.clone(), alive, None);
+        for reply in replies {
+            let result = reply.recv().unwrap();
+            if run_id == 999 {
+                assert!(result.is_err());
+            } else {
+                result.unwrap();
+            }
+        }
+        assert_eq!(
+            timings.lock().unwrap().transactions,
+            expected,
+            "mode={mode}, prior={prior}"
+        );
+        assert_eq!(*quota.0.lock().unwrap(), 0);
+        let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM stage_entry", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            if run_id == 999 { 0 } else { 3 }
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM file", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        drop(db);
+        let reopened = crate::db::open_pair(temp.path(), "synthetic").unwrap();
+        assert_eq!(
+            reopened
+                .query_row("SELECT count(*) FROM stage_entry", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+}
+
+#[test]
+fn first_scan_pipeline_preserves_atomic_listings_other_roots_and_recovery() {
+    fn observe(conn: &Connection, committed: bool) {
+        let path = conn.path().unwrap();
+        let reader = Connection::open(path).unwrap();
+        let count: i64 = reader
+            .query_row("SELECT count(*) FROM file WHERE dir_id=1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, if committed { 3 } else { 0 });
+    }
+    for (crash, cancel) in [
+        (Some(PublicationCrash::BeforeCatalog), false),
+        (Some(PublicationCrash::AfterCatalog), false),
+        (Some(PublicationCrash::Observe(observe)), false),
+        (None, true),
+    ] {
+        let (temp, conn) = first_scan_fixture("full", false);
+        conn.execute_batch("INSERT INTO st.root_grant(id,volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns) VALUES(2,'fixture',zeroblob(16),'Other synthetic root','fixture','fixture','active',0);
+            INSERT INTO root(id,grant_id,volume_id,root_file_id,state) VALUES(2,2,1,zeroblob(16),'complete');
+            INSERT INTO dir(id,root_id,parent_id,name,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run,own_files,own_logical) VALUES(100,2,NULL,'Other synthetic root','path_observation','none',0,0,'complete',0,0,1,99);
+            INSERT INTO file(id,dir_id,name,logical,attrs,born_run,seen_run) VALUES(100,100,'untouched',99,0,0,0);").unwrap();
+        let mut commands: Vec<_> = (0..3)
+            .map(|seq| WriteCommand::StageChunk {
+                run_id: 2,
+                dir_id: 1,
+                seq,
+                files: vec![Observation::file(format!("item-{seq}"), 10, Some(10))],
+                dirs: vec![],
+            })
+            .collect();
+        if cancel {
+            commands.push(WriteCommand::EndRun {
+                run_id: 2,
+                state: "cancelled".into(),
+                finished_at_ns: 1,
+            });
+        } else {
+            commands.push(WriteCommand::ListingDone {
+                run_id: 2,
+                dir_id: 1,
+                outcome: ListingOutcome::Complete,
+                skipped: 0,
+                errors: 0,
+            });
+        }
+        let (tx, rx) = bounded(commands.len());
+        let quota = Arc::new((
+            Mutex::new(commands.len() * 24 * 1024 * 1024),
+            Condvar::new(),
+        ));
+        let mut replies = Vec::new();
+        for command in commands {
+            let (reply, result) = bounded(1);
+            tx.send(Pending {
+                command,
+                reply,
+                _permit: BytePermit {
+                    quota: quota.clone(),
+                    bytes: 24 * 1024 * 1024,
+                },
+            })
+            .unwrap();
+            replies.push(result);
+        }
+        drop(tx);
+        let timings = Arc::new(Mutex::new(WriterTimings::default()));
+        let (alive, _) = bounded(0);
+        work(conn, rx, timings.clone(), alive, crash);
+        let before = matches!(crash, Some(PublicationCrash::BeforeCatalog));
+        if !before {
+            assert_eq!(
+                timings.lock().unwrap().transactions,
+                if cancel { 2 } else { 1 }
+            );
+        }
+        for reply in replies {
+            if matches!(
+                crash,
+                Some(PublicationCrash::BeforeCatalog | PublicationCrash::AfterCatalog)
+            ) {
+                assert!(reply.recv().is_err());
+            } else {
+                reply.recv().unwrap().unwrap();
+            }
+        }
+        assert_eq!(*quota.0.lock().unwrap(), 0);
+        let reopened = crate::db::open_pair(temp.path(), "synthetic").unwrap();
+        let count: i64 = reopened
+            .query_row("SELECT count(*) FROM file WHERE dir_id=1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, if before || cancel { 0 } else { 3 });
+        assert_eq!(
+            reopened
+                .query_row("SELECT logical FROM file WHERE id=100", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            99
+        );
+        assert_eq!(
+            reopened
+                .query_row(
+                    "SELECT own_files,own_logical FROM dir WHERE id=100",
+                    [],
+                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+                )
+                .unwrap(),
+            (1, 99)
+        );
+        assert_eq!(
+            reopened
+                .query_row("SELECT count(*) FROM stage_entry", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+}
+
 fn depth_fixture() -> (tempfile::TempDir, Connection) {
     let (temp, conn, _) = fixture();
     conn.execute_batch(
