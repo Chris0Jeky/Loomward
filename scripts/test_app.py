@@ -11,8 +11,8 @@ Run `npm.cmd --prefix app run build` first.
 `--a11y` runs only the WCAG 2.2 AA leg (scripts/test_app_a11y.py, lane L18): names, focus, announcements,
 zoom reflow, control-edge contrast, canvas keyboard and forced-colours states, on the mock transport.
 
-`--live-serve` replaces the Python servers with the real `loomward-serve --static app/dist` binary
-(lane L6) over the engine service (lane L8) on a fresh synthetic state directory: the static files
+`--live-serve` rebuilds app/dist first (the same build script, production mode), then replaces the Python
+servers with the real `loomward-serve --static app/dist` binary (lane L6) over the engine service (lane L8) on a fresh synthetic state directory: the static files
 under the server's own CSP header, the fragment-token handshake, calls and the SSE stream through
 the real security boundary, and "unavailable" once the process is gone. A personal session granted one
 small folder on the command line scans it when Scan is pressed, and its totals match the fixture.
@@ -490,6 +490,14 @@ def live_personal_scan(browser, exe: Path) -> None:
         fixture.cleanup()
 
 
+def build_app(out: Path | None, development: bool) -> None:
+    """The app's `build` script, the one build both modes run: into app/dist when out is None, else into out."""
+    args = ['npm.cmd' if os.name == 'nt' else 'npm', '--prefix', 'app', 'run', 'build']
+    if out is not None:
+        args += ['--', '--outDir', str(out)]
+    subprocess.run(args, cwd=ROOT, env=dict(os.environ, NODE_ENV='development') if development else None, check=True)
+
+
 def run_live_serve(browser_path: str | None) -> None:
     """The app's http transport against the real loomward-serve binary (lane L6) and engine service (L8)."""
     subprocess.run(['cargo', 'build', '-q', '-p', 'loomward-http', '--bin', 'loomward-serve'], cwd=ROOT, check=True)
@@ -569,6 +577,10 @@ def main() -> None:
     ap.add_argument('--a11y', action='store_true', help='run only the WCAG 2.2 AA leg (scripts/test_app_a11y.py, lane L18)')
     ap.add_argument('--live-serve', action='store_true', help='run the http leg against the real loomward-serve binary')
     a = ap.parse_args()
+    if a.live_serve:
+        # The live legs serve app/dist, which is gitignored and goes stale (e.g. after a merge): rebuild it first.
+        print('live serve: rebuilding app/dist before the live legs', flush=True)
+        build_app(None, development=False)
     if not (DIST / 'index.html').exists():
         sys.exit('app/dist is missing: run `npm.cmd --prefix app run build` first')
     subprocess.run([sys.executable, str(ROOT / 'scripts/test_app_timing.py')], check=True)
@@ -576,11 +588,7 @@ def main() -> None:
         return run_live_serve(a.browser)
 
     DIST = ROOT / '.loomward/app-e2e'
-    subprocess.run(
-        ['npm.cmd' if os.name == 'nt' else 'npm', '--prefix', 'app', 'run', 'build', '--',
-         '--outDir', str(DIST)],
-        cwd=ROOT, env=dict(os.environ, NODE_ENV='development'), check=True,
-    )
+    build_app(DIST, development=True)
     assert (DIST / 'index.html').is_file(), 'development fixtures were not built'
 
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
