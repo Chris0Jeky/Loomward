@@ -583,6 +583,32 @@ fn known_folders_preserve_redirection_ownership_unicode_and_failures() {
         }
     );
 }
+#[cfg(not(windows))]
+#[test]
+fn non_windows_known_folders_are_unavailable_and_unprobed() {
+    let c = contexts(&WindowsFolders);
+    assert_eq!(c.len(), 5);
+    for c in c {
+        assert_eq!(
+            c.location,
+            Location::Unavailable {
+                reason: "Windows known folders unsupported".into()
+            }
+        );
+    }
+}
+#[cfg(not(windows))]
+#[test]
+fn non_windows_probe_and_reader_stubs_stay_unknown_and_unsupported() {
+    assert_eq!(WindowsProbe.volume('Q', Some(123)), VolumeState::Unknown);
+    assert_eq!(WindowsProbe.volume('Q', None), VolumeState::Unknown);
+    assert_eq!(
+        WindowsProbe.metadata("Q:\\fixture\\doc.txt"),
+        MetadataState::Unknown
+    );
+    let err = read(std::path::Path::new("Q:\\fixture\\doc.txt")).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
+}
 #[test]
 fn source_has_no_execution_com_initialisation_or_library_loading() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
