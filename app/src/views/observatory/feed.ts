@@ -10,13 +10,17 @@ const CANDIDATE_CAP = 64; // the engine's report cap
 /** The series the engine files under the `processes` channel (`TrendMetric::channel`). */
 const PROCESS_METRICS = new Set<TrendMetric>(['private_commit_bytes', 'private_working_set_bytes', 'working_set_bytes', 'cpu_fraction', 'io_read_bytes_per_s', 'io_write_bytes_per_s', 'gpu_dedicated_bytes']);
 
-/** One trend report split into its process part and the rest, candidate indexes following their series. */
+/**
+ * One trend report split into its process part and the rest, candidate indexes following their series. The report-level
+ * unknowns go to both parts, so one the engine files outside the `processes` channel is never lost on a non-due poll;
+ * `joinTrends` shows each once.
+ */
 function splitTrends(t: TelemetryTrends) {
   const part = (keep: boolean): TelemetryTrends => {
     const at = new Map<number, number>();
     const series = t.series.filter((s, i) => PROCESS_METRICS.has(s.metric) === keep && (at.set(i, at.size), true));
     const candidates = t.candidates.flatMap((c) => { const n = at.get(c.series_index); return n === undefined ? [] : [{ ...c, series_index: n }]; });
-    return { series, candidates, candidates_truncated: t.candidates_truncated, unknowns: keep ? t.unknowns : [] };
+    return { series, candidates, candidates_truncated: t.candidates_truncated, unknowns: t.unknowns };
   };
   return { rest: part(false), processes: part(true) };
 }
@@ -29,7 +33,7 @@ function joinTrends(rest: TelemetryTrends, p: TelemetryTrends): TelemetryTrends 
     series: [...rest.series, ...p.series],
     candidates: [...rest.candidates, ...carried.slice(0, room)],
     candidates_truncated: rest.candidates_truncated || p.candidates_truncated || carried.length > room,
-    unknowns: [...rest.unknowns, ...p.unknowns],
+    unknowns: [...new Set([...rest.unknowns, ...p.unknowns])],
   };
 }
 
@@ -53,7 +57,8 @@ export class ObservatoryFeed {
 
   async read(lens: ProcessLens) {
     try { return await this.poll(lens); } catch (e) {
-      this.dueAt = 0; // the next good poll asks for the process part again and replaces the carried one
+      this.dueAt = 0; // the next good poll asks for the process part again ...
+      this.processTrends = null; // ... and the carried one is not shown in the meantime
       throw e;
     }
   }
