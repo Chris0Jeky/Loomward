@@ -91,6 +91,9 @@
       <p class="gate">Personal learning is gated. Recording labels and refitting await a separate owner decision.</p>
     {:else}
       <p><strong>{status.human_events}</strong> human events · <strong>{status.training_count}</strong> fitted examples · {status.unresolved_human_events} unresolved events excluded</p>
+      {#if status.model_id && status.human_events > status.training_count}
+        <p class="gate">Human history exceeds fitted examples. The candidate may be stale after label changes or withdrawals; refit to refresh advice.</p>
+      {/if}
       <p class="muted">{status.model_id ? 'Synthetic candidate fitted; promotion has not run.' : 'No fitted model yet. Suggestions abstain until human evidence supports them.'} Relative scores, not probabilities.</p>
     {/if}
     <div class="actions">
@@ -128,7 +131,7 @@
       </div>
     {/if}
     {#if queue.next_cursor}<button class="btn" disabled={working} onclick={() => void load(queue?.next_cursor ?? null)}>Next review page</button>{/if}
-    <p class="muted limits">Synthetic smoke only. Limits: 10,000 eligible files and 10,000 human events per refit. No teacher labels are trained here.</p>
+    <p class="muted limits">Synthetic smoke only. Limits: 10,000 eligible files and the latest labels for at most 10,000 resolved objects per refit. No teacher labels are trained here.</p>
   {/if}
 </section>
 

@@ -371,8 +371,81 @@ fn learning_refit_is_human_only_candidate_and_retraction_withdraws() {
 }
 
 #[test]
-fn learning_feedback_stops_at_the_refit_event_budget() {
-    // Codex P1 on #328: event 10,001 must be refused, so refit never becomes permanently impossible.
+fn learning_retracts_without_current_node_access_and_beyond_history_budget() {
+    for mode in ["excluded", "unresolved", "revoked", "missing", "legacy"] {
+        let tmp = temp_root();
+        let svc = open(tmp.path(), DatasetClass::Synthetic);
+        let node = learning_node(&svc);
+        ok(
+            "feedback.record",
+            call(
+                &svc,
+                "feedback.record",
+                feedback(&node, "ce_first", Some("Documents"), false),
+            ),
+        );
+        assert_eq!(finish_refit(&svc)["training_count"], 1);
+        match mode {
+            "excluded" => {
+                svc.inner
+                    .db()
+                    .execute("UPDATE main.file SET flags=1", [])
+                    .unwrap();
+            }
+            "unresolved" => {
+                svc.inner
+                    .db()
+                    .execute("UPDATE st.object_ref SET state='unresolved',retired=1", [])
+                    .unwrap();
+            }
+            "revoked" => {
+                svc.inner
+                    .db()
+                    .execute(
+                        "UPDATE st.root_grant SET state='revoked',revoked_at_ns=1",
+                        [],
+                    )
+                    .unwrap();
+            }
+            "missing" => {
+                svc.inner
+                    .db()
+                    .execute("UPDATE st.object_ref SET row_id=NULL,born_run=NULL,state='unresolved',retired=1", [])
+                    .unwrap();
+            }
+            "legacy" => {
+                svc.inner
+                    .db()
+                    .execute("DELETE FROM st.learning_node", [])
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        ok(
+            "feedback.record",
+            call(
+                &svc,
+                "feedback.record",
+                feedback(&node, "ce_withdraw", None, true),
+            ),
+        );
+        assert_eq!(finish_refit(&svc)["training_count"], 0, "{mode}");
+        assert_eq!(
+            svc.inner
+                .db()
+                .query_row(
+                    "SELECT count(*) FROM st.human_feedback WHERE retracted=1",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+    }
+}
+
+#[test]
+fn learning_latest_label_window_does_not_cap_history_or_withdrawal() {
     let tmp = temp_root();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     let node = learning_node(&svc);
@@ -389,13 +462,26 @@ fn learning_feedback_stops_at_the_refit_event_budget() {
          INSERT INTO st.human_feedback(event_id,client_event_id,content_digest,object_ref_id,revision,label,retracted,taxonomy_version,features_json,recorded_at_ns)
          SELECT 'fe_bulk'||i,'ce_bulk'||i,h.content_digest,h.object_ref_id,h.revision+i,h.label,0,h.taxonomy_version,h.features_json,h.recorded_at_ns FROM n, st.human_feedback h WHERE h.client_event_id='ce_first'",
     ).unwrap();
-    let refused = err(call(
-        &svc,
+    assert_eq!(finish_refit(&svc)["training_count"], 1);
+    ok(
         "feedback.record",
-        feedback(&node, "ce_over_budget", Some("Finance"), false),
-    ));
-    assert_eq!(refused.code, ErrorCode::ResourceBudget, "{refused:?}");
-    let (status, _) = ok("learning.status", call(&svc, "learning.status", json!({})));
-    assert_eq!(status["human_events"], 10_000, "{status:?}");
-    finish_refit(&svc);
+        call(
+            &svc,
+            "feedback.record",
+            feedback(&node, "ce_over_budget", Some("Finance"), false),
+        ),
+    );
+    let status = finish_refit(&svc);
+    assert_eq!(status["human_events"], 10_001);
+    assert_eq!(status["human_support"]["Finance"], 1);
+    assert_eq!(status["human_support"]["Documents"], 0);
+    ok(
+        "feedback.record",
+        call(
+            &svc,
+            "feedback.record",
+            feedback(&node, "ce_withdraw", None, true),
+        ),
+    );
+    assert_eq!(finish_refit(&svc)["training_count"], 0);
 }
