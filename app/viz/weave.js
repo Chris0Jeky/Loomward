@@ -79,7 +79,8 @@ export function weaveTile(dpr, warp, weft, o) {
       const wc = warpColour(i);
       const broken = warpBreak(warp.pattern, i, j);
       if (weftHere && solidWeft && wTop) { g.fillStyle = shade(/** @type {string} */ (weft.colour), -0.62); g.fillRect(x, y, p, p); }
-      if (showWarp && (!wTop || !solidWeft)) { g.fillStyle = shade(wc, -0.66); g.fillRect(x + p * 0.18, y, p * 0.64, p); }
+      // a broken crossing leaves no meaning thread at all: neither the top nor the under strand
+      if (showWarp && !broken && (!wTop || !solidWeft)) { g.fillStyle = shade(wc, -0.66); g.fillRect(x + p * 0.18, y, p * 0.64, p); }
       if (wTop && !broken) {
         const k = jit(i, 1);
         const gr = g.createLinearGradient(x, 0, x + p, 0);
