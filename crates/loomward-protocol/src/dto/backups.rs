@@ -1,5 +1,5 @@
 //! Backups stage 1: imported, normalised restic receipts. Mirrors `contracts/v3/view-service.schema.json`.
-//! Evidence is never permission, a restore, or a source-retirement gate (docs/42 ADR-V3-24).
+//! Evidence is never permission, a restore, or a source-retirement gate (docs/42 ADR-V3-23).
 
 use super::*;
 

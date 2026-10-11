@@ -1,4 +1,4 @@
-//! Backups stage 1 (docs/42 ADR-V3-24): the owner picks a restic receipt in a Rust-side open-file
+//! Backups stage 1 (docs/42 ADR-V3-23): the owner picks a restic receipt in a Rust-side open-file
 //! dialog; the service reads at most 256 KiB of it read-only, normalises it with `loomward-backup`
 //! and stores only the normalised evidence in `state.db`. It never runs a backup tool, never reads a
 //! backup repository or its configuration, and never stores receipt bytes, a path or a file name.
