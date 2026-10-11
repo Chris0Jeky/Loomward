@@ -150,6 +150,20 @@ describe('mock revocation', () => {
     expect((await c.call('tree.children', { node_id: 'nd_1', sort: 'size_desc', basis: 'logical', limit: 1, cursor: null })).meta.catalog_rev).toBe('3');
   });
 
+  it('binds paging cursors to catalog_rev: a cursor from before a purge is stale_generation (semantics 5)', async () => {
+    const c = client();
+    const kids = (cursor: string | null) => c.call('tree.children', { node_id: 'nd_1', sort: 'size_desc', basis: 'logical', limit: 2, cursor });
+    const hits = (cursor: string | null) => c.call('search.query', { root_id: null, text: 'a', extension: null, min_bytes: null, kind: 'any', limit: 2, cursor });
+    const k = (await kids(null)).result.next_cursor!;
+    const s = (await hits(null)).result.next_cursor!;
+    expect((await kids(k)).result.items.length).toBeGreaterThan(0); // same revision: fine
+    await c.call('roots.revoke', { root_id: 'rt_mock_1', purge_catalog: true });
+    await expect(kids(k)).rejects.toMatchObject({ code: 'stale_generation' });
+    await expect(hits(s)).rejects.toMatchObject({ code: 'stale_generation' });
+    await expect(kids('forged!')).rejects.toMatchObject({ code: 'invalid_request' });
+    expect((await kids((await kids(null)).result.next_cursor)).result.items.length).toBeGreaterThan(0); // a fresh cursor works
+  });
+
   it('shows a revoked root grant in grants.list and in roots.list, whichever call revoked it', async () => {
     const c = client();
     await c.call('grants.revoke', { grant_id: 'gr_mock_root_0' });

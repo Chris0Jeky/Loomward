@@ -81,7 +81,7 @@
     const restart = (why: string) => {
       notice = why;
       gone = null;
-      return show(false, true);
+      return show(false, true, lost);
     };
     try {
       const { result: page } = await fetchPage(append ? next : null, ctl.signal);
@@ -90,6 +90,8 @@
         return await restart('The listing changed while you were paging, so it starts again from the top.');
       }
       if (!append) pageGen = page.generation;
+      // The fallback's notice is true only once the ancestor has listed: a failed one shows just its error.
+      if (lost && here) gone = { lost, now: here.name };
       rows = append ? [...rows, ...page.items] : page.items;
       total = page.total;
       next = page.next_cursor;
@@ -122,8 +124,6 @@
         busy = false;
         if (step.keep.length) {
           trail = step.keep;
-          // Set before the reload: the restarted show() leaves it alone, and any newer action clears it.
-          gone = { lost: step.lost, now: step.keep[step.keep.length - 1]!.name };
           return await show(false, true, step.lost);
         }
         trail = [];

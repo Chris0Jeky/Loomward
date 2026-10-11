@@ -62,6 +62,7 @@ class FakeEngine:
         self.stale_once = False
         self.nested = False  # tree.children lists one sub-folder (nd_dir_N+1, down to nd_dir_3) beside a file
         self.gone: set[str] = set()  # node ids the engine no longer knows: tree.children answers not_found
+        self.broken: dict[str, str] = {}  # node id -> error code tree.children answers instead of rows (e.g. an ancestor that fails)
         self.plan_mode = 'executable'  # 'executable' or 'malformed': how placement.simulate misbehaves
         self.slice_queue: list[tuple[float, str]] = []  # (delay, root name) per tree.slice call, then the default
         self.events: queue.Queue[dict] = queue.Queue()
@@ -126,6 +127,8 @@ class FakeEngine:
         if cmd == 'tree.children':
             if p['node_id'] in self.gone:
                 return ('not_found', 'fake engine: no such node')
+            if p['node_id'] in self.broken:
+                return (self.broken[p['node_id']], 'fake engine: ancestor failed')
             if self.nested:
                 depth = int(p['node_id'].removeprefix('nd_dir_')) if p['node_id'].startswith('nd_dir_') else 0
                 sub = [{**row(f'dir-{depth + 1}', 0), 'node_id': f'nd_dir_{depth + 1}', 'kind': 'dir', 'extension': None, 'ext_family': None}] if depth < 3 else []
@@ -356,6 +359,20 @@ def check_explorer_fallback(page: Page, engine: FakeEngine) -> None:
     engine.gone = set()
     page.locator('main table.tbl').get_by_role('button', name='dir-2', exact=True).click()
     expect(notice).to_have_text('')
+    page.locator('main table.tbl').get_by_role('button', name='dir-3', exact=True).click()
+    expect(crumbs).to_contain_text('dir-3')
+    expect(page.locator('main .tbl-wrap')).to_have_attribute('aria-busy', 'false')
+    # the ancestor it climbs to fails too: the error shows, with no rows and no claim that the view moved
+    engine.gone = {'nd_dir_3'}
+    engine.broken = {'nd_dir_2': 'internal_error'}
+    engine.invalidate()
+    expect(page.get_by_role('alert').filter(has_text='ancestor failed')).to_be_visible()
+    ok(notice.text_content() == '', f'a failed ancestor listing publishes no "moved up" notice: {notice.text_content()!r}')
+    ok(page.get_by_text('leaf.txt').count() == 0, 'a failed ancestor listing leaves no rows on screen')
+    engine.gone = set()
+    engine.broken = {}
+    engine.invalidate()
+    expect(rows(page)).to_have_count(2)
     page.locator('main table.tbl').get_by_role('button', name='dir-3', exact=True).click()
     expect(crumbs).to_contain_text('dir-3')
     expect(page.locator('main .tbl-wrap')).to_have_attribute('aria-busy', 'false')

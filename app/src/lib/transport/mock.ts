@@ -107,11 +107,13 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     location_hint: hint ? { text: pathOf(tree.nodes[n.parent]!), truncated: false } : null,
   });
 
-  const cursorOf = (offset: number) => `c_${offset}`;
+  // A cursor binds catalog_rev (semantics 5): one issued before a catalogue commit is stale_generation.
+  const cursorOf = (offset: number) => `c_${views.catalogRev()}_${offset}`;
   const offsetOf = (cursor: unknown): number => {
     if (cursor === null || cursor === undefined) return 0;
-    const m = typeof cursor === 'string' ? /^c_(\d{1,7})$/.exec(cursor) : null;
-    return m ? Number(m[1]) : fail('invalid_request', 'cursor is not valid for this request');
+    const m = typeof cursor === 'string' ? /^c_(\d{1,9})_(\d{1,7})$/.exec(cursor) : null;
+    if (!m) return fail('invalid_request', 'cursor is not valid for this request');
+    return m[1] === views.catalogRev() ? Number(m[2]) : fail('stale_generation', 'the catalogue changed since this cursor was issued');
   };
   const page = (anchor: string | null, all: SynthNode[], offset: number, limit: number, hint: boolean): EntryPage => {
     const items = all.slice(offset, offset + limit).map((n) => entryRow(n, hint));
