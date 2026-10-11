@@ -199,7 +199,7 @@ Selected: "Unsigned preview pre-release": a GitHub pre-release of the Tauri desk
 
 Selected: "Scrub to generic labels". Media and core counts become generic labels; the mock volume capacities become
 generic round numbers. Git history keeps the old text.
-- [ ] Scrub merged. #365 scrubbed the docs and mocks. Still open: the raw receipts under `evidence/v3/` (for example
+- [x] Scrub merged: #365 (docs and mocks) and #394 (raw receipts and old Python fixtures; PNG screenshots under `evidence/v3/` not inspected). #365 scrubbed the docs and mocks. Still open: the raw receipts under `evidence/v3/` (for example
   `enumeration-spike.json`, `real-folder-stress.json`) keep processor counts and media models. The old Python reference
   fixtures (`fixtures/demo.json`, `fixtures/tier-scenario.json`, `scripts/make_demo.py`, `ui/demo-data.js`, `preview.html`)
   still say 'Project SSD' and 'Archive HDD'.
@@ -211,3 +211,42 @@ Selected: "Dismiss as not reachable". Agents never change security alerts. Steps
 2. Click "Dismiss alert", choose "Vulnerable code is not actually used", and add the comment: "Linux GTK path; Loomward
    ships Windows only (Tauri on WebView2). Re-check on each Tauri upgrade."
 - [ ] Dismissed (verify: `gh api repos/Chris0Jeky/Loomward/dependabot/alerts/1 --jq .state` prints `dismissed`).
+
+## Owner decisions of 2026-10-12 (guided walkthrough in chat)
+
+Interactive rounds with context, options and a recommendation each (decision map `map:v1:48e85b120e305470cd8c1778231a34b73efb2628b284fd70b8565a7e08c71970`
+for round 1). The owner selected the recommended option in each.
+
+### q-20 — Licensing route — ANSWERED: copyleft plus paid exceptions
+
+Selected: "Copyleft + paid exceptions". Open-source copyleft for everyone; the owner keeps the right to sell proprietary
+licences (dual licensing). Owner's framing: "I don't want MIT for this project, I don't just want it to be used by anyone for
+free, I want it to be at least gplv3 or something similar". Code published before the relicensing commit stays MIT for anyone
+who received it.
+- [ ] Relicensing merged (Loomward#396).
+
+### q-21 — Licence text — ANSWERED: AGPL-3.0-only
+
+Selected: "AGPL-3.0-only": GPLv3 plus the network clause; moves to later versions only by the owner's choice.
+
+### q-22 — Outside contributions — ANSWERED: a CLA checked by a bot
+
+Selected: "CLA via a PR bot". `CLA.md` (adapted Apache ICLA, with an explicit relicensing right) lands in #396. The Actions-based
+CLA bot is archived, so the hosted CLA Assistant is used; connecting it is an OAuth grant, the owner's action. Steps:
+1. Sign in at https://cla-assistant.io with GitHub as @Chris0Jeky and authorise the app.
+2. Choose "Configure CLA" and pick `Chris0Jeky/Loomward`.
+3. As the CLA source, paste the text of `CLA.md` into a new GitHub gist and select that gist.
+4. Exclude `Chris0Jeky` and bots (`*[bot]`, for example `dependabot[bot]`).
+5. Ask for name and GitHub login only.
+6. After the bot first reports on a PR, an agent can add `license/cla` as a required check on `main` when you say so.
+- [ ] Owner read `CLA.md` before the first outside contribution.
+- [ ] CLA Assistant connected (verify: the `license/cla` status appears on the next PR).
+
+### q-23 — The name — ANSWERED: clear it and add a fork policy
+
+Selected: "Clear it + fork policy". `TRADEMARKS.md` (modified forks must rename) lands in #396. Clearance search of 2026-10-12:
+AMBER, nothing blocking found. `loomward.com` is held by an unrelated shop. A GitHub organisation `Loomward` exists, created
+2026-08-06, empty, owner unknown. `.app`, `.dev`, `.org` and `.io` appeared unregistered. crates.io, npm, PyPI, Chocolatey and
+Scoop Main are free. The trademark registers (USPTO, EUIPO, UKIPO, WIPO) could not be searched by an agent (JavaScript-only
+search pages); "Loom" (Atlassian) is the nearest mark, judged low-to-moderate risk.
+- [ ] Owner hand-search of the four registers for LOOMWARD in classes 9 and 42 (about 15 minutes).

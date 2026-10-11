@@ -31,8 +31,9 @@ You accept and agree to the following terms for Your present and future Contribu
    AGPL-3.0-only unless the Maintainer decides otherwise.
 
 3. **Patent licence.** You grant the Maintainer, and recipients of software distributed by the
-   Maintainer, a perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable (except
-   as stated in this clause) patent licence to make, have made, use, offer to sell, sell, import and
+   Maintainer or by anyone the Maintainer licenses, directly or through further tiers, a perpetual,
+   worldwide, non-exclusive, no-charge, royalty-free, irrevocable (except as stated in this clause)
+   patent licence, which the Maintainer may sublicense together with the licence in clause 2, to make, have made, use, offer to sell, sell, import and
    otherwise transfer the Contribution, where such licence applies only to those patent claims
    licensable by You that are necessarily infringed by Your Contribution alone or by combination of
    Your Contribution with the work to which it was submitted. If any entity brings patent litigation

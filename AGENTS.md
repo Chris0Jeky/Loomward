@@ -123,7 +123,8 @@ names, paths or inventories in this public repository. Owner decisions of that d
 
 - `LW-*` IDs are the local backlog (`backlog/issues.json`, the source of truth), not GitHub numbers;
   they are mirrored as issues #4-#105 and #120-#131 (`backlog/github-issues.json` maps them). New IDs mint there first.
-- Taskdeck is proprietary: never copy its code into this MIT repository.
+- Taskdeck is proprietary: never copy its code into this repository (AGPL-3.0-only, also licensable
+  commercially by the owner; HUMAN_TODO q-20 to q-23).
 - Public repo: synthetic fixtures only; no real filenames, inventories or training exports.
   Personal diagnostics and `.loomward/` state or database files never enter Git.
 - The UI is not frozen. The owner wants a signature, elegant interface that grows with the
