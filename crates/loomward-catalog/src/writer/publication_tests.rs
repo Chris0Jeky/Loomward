@@ -945,6 +945,8 @@ fn resolved_references_keep_two_queued_publications_in_singleton_transactions() 
 
 #[test]
 fn auto_rollback_never_commits_a_failed_receipt_or_acknowledges_lost_rows() {
+    // The three listings must share one transaction even on a loaded host (`work` runs here).
+    super::hold_batch_window_open();
     for full in [true, false] {
         let (temp, conn, _) = fixture();
         conn.execute_batch(
@@ -1794,4 +1796,98 @@ fn crash_after_a_window_restage_recovers_like_any_publication() {
     let after = bindings(temp.path());
     assert_eq!(after[2], (5, "resolved".into(), false, 2, 1));
     assert_eq!(after[3], (6, "unresolved".into(), true, 3, 1));
+}
+
+/// #389: a batch led by `StageChunk` stages no references, yet a queued `ListingDone` may join it
+/// when no resolved reference exists. A reference bound after that check but before the batch's
+/// transaction (here: an IMMEDIATE transaction over both files, still uncommitted when the writer
+/// checks and committed while it is paused in the window) must still be retired with the row the
+/// publication removes. Before the fix the batch never paused, so `wait_paused` fails the test.
+#[test]
+fn a_reference_bound_before_a_stage_chunk_led_batch_is_restaged_before_the_joined_listing() {
+    let (temp, conn, done) = fixture();
+    conn.execute_batch("DELETE FROM st.collection_member; DELETE FROM st.object_ref")
+        .unwrap();
+    let chunk = WriteCommand::StageChunk {
+        run_id: 2,
+        dir_id: 1,
+        seq: 1,
+        files: vec![observation("fresh", 9, 42)],
+        dirs: vec![],
+    };
+    let mut other = Connection::open(temp.path().join("catalog.db")).unwrap();
+    other
+        .execute(
+            "ATTACH DATABASE ?1 AS st",
+            [temp.path().join("state.db").to_string_lossy().as_ref()],
+        )
+        .unwrap();
+    let bind = other
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    bind.execute_batch(
+        "INSERT INTO st.object_ref(volume_key,file_id,creation_ft,kind,state,last_resolved_ns,catalog_instance,row_id,born_run)
+            SELECT 'fixture',file_id,created_ft,'file','resolved',0,(SELECT value FROM main.meta WHERE key='instance_id'),id,born_run
+            FROM main.file WHERE id IN (1,3) ORDER BY id;
+        INSERT INTO st.collection_member SELECT 1,id,1 FROM st.object_ref;",
+    )
+    .unwrap();
+    let (tx, rx) = bounded(2);
+    let mut replies = Vec::new();
+    for command in [chunk, done] {
+        let (reply, result) = bounded(1);
+        tx.send(Pending {
+            command,
+            reply,
+            _permit: BytePermit {
+                quota: Arc::new((Mutex::new(0), Condvar::new())),
+                bytes: 0,
+            },
+        })
+        .unwrap();
+        replies.push(result);
+    }
+    drop(tx);
+    let timings = Arc::new(Mutex::new(WriterTimings::default()));
+    let measured = timings.clone();
+    let window = Arc::new(PublicationWindow::default());
+    window.arm();
+    let paused = window.clone();
+    let writer = std::thread::spawn(move || {
+        super::hold_batch_window_open();
+        let (alive, _) = bounded(0);
+        serve(
+            conn,
+            rx,
+            measured,
+            alive,
+            Arc::default(),
+            None,
+            Some(paused),
+        );
+    });
+    // The writer has taken its mark and decided batching with the binding still uncommitted.
+    window.wait_paused();
+    bind.commit().unwrap();
+    window.release();
+    writer.join().unwrap();
+    for reply in replies {
+        reply.recv().unwrap().unwrap();
+    }
+    // Rows 1 ("a") and 3 ("omitted") are gone.
+    assert_eq!(
+        old_listing(temp.path()).1,
+        vec![
+            (2, "link".into()),
+            (4, "nested".into()),
+            (5, "fresh".into())
+        ]
+    );
+    assert_eq!(pending_count(temp.path()), 0);
+    let after = bindings(temp.path());
+    // "a" follows its identity to the surviving hard link; "omitted" is retired with its row.
+    assert_eq!(after[0], (5, "resolved".into(), false, 2, 1));
+    assert_eq!(after[1], (6, "unresolved".into(), true, 3, 1));
+    // The fence failed, so the re-staged chunk no longer let the listing join it.
+    assert_eq!(timings.lock().unwrap().transactions, 2);
 }

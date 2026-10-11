@@ -54,6 +54,25 @@ impl From<std::io::Error> for Error {
         Self::Io(e)
     }
 }
+/// The form of a local directory to hand SQLite (#390): `\\?\C:\x` becomes `C:\x`. SQLite's
+/// Windows VFS treats any path starting `\\` as UNC and then shares one `-shm` lock handle among a
+/// process's connections; its in-process accounting races when two readers end together, leaking a
+/// WAL read lock until every connection to the file closes, so the log can never be cut. Paths used
+/// for comparisons (grants, `--static`) keep their canonical form; only SQLite opens use this.
+// ponytail: a plain path past MAX_PATH would fail to open, so such a path stays verbatim.
+pub fn sqlite_dir(dir: &Path) -> std::path::PathBuf {
+    let text = dir.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest)
+            if rest.len() < 200
+                && rest.as_bytes()[0].is_ascii_alphabetic()
+                && rest.get(1..3) == Some(r":\") =>
+        {
+            rest.into()
+        }
+        _ => dir.into(),
+    }
+}
 pub struct Catalog {
     dir: std::path::PathBuf,
     writer: std::sync::Arc<Writer>,
@@ -74,7 +93,7 @@ impl Catalog {
             return Err(Error::Invalid("dataset class"));
         }
         std::fs::create_dir_all(dir)?;
-        let dir = dir.canonicalize()?;
+        let dir = sqlite_dir(&dir.canonicalize()?);
         db::local_path(&dir)?;
         let connection = db::open_pair(&dir, dataset)?;
         let writer = std::sync::Arc::new(Writer::start(connection)?);

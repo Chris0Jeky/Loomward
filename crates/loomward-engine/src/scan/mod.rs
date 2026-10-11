@@ -286,7 +286,7 @@ impl Engine {
             .volume_serial
             .ok_or_else(|| denied("unsupported"))?;
         let conn = rusqlite::Connection::open_with_flags(
-            self.config.state_dir.join("state.db"),
+            loomward_catalog::sqlite_dir(&self.config.state_dir).join("state.db"),
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .map_err(|_| denied("grant store unavailable"))?;
@@ -332,7 +332,7 @@ impl Engine {
             message: message.into(),
         };
         let conn = rusqlite::Connection::open_with_flags(
-            self.config.state_dir.join("state.db"),
+            loomward_catalog::sqlite_dir(&self.config.state_dir).join("state.db"),
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .map_err(|_| denied("grant store unavailable"))?;
@@ -352,7 +352,7 @@ impl Engine {
         let unverified = identity_mode == "unverified";
         // Wire IDs are opaque here; the authenticated identity must name this grant's root.
         let paired = rusqlite::Connection::open_with_flags(
-            self.config.state_dir.join("catalog.db"),
+            loomward_catalog::sqlite_dir(&self.config.state_dir).join("catalog.db"),
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .and_then(|c| {

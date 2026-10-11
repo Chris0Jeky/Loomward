@@ -36,8 +36,8 @@ inv={'schema_version':1,'mode':'demo','root':'Demo workspace','root_key':'synthe
  'skipped_count':0,'error_count':0,'errors':[],'skipped':[],'max_entries':50000,'max_depth':64},
  'capabilities':{'metadata_scan':False,'content_hash_requires_consent':True,'file_mutation':False,'process_mutation':False}}
 volumes=[{'id':'fast','name':'Primary workspace','capacity_bytes':512*GiB,'free_bytes':44*GiB,'reserve_bytes':50*GiB,'tier':0,'online':True,'writable':True},
- {'id':'warm','name':'Project SSD','capacity_bytes':1024*GiB,'free_bytes':310*GiB,'reserve_bytes':100*GiB,'tier':1,'online':True,'writable':True},
- {'id':'archive','name':'Archive HDD','capacity_bytes':2048*GiB,'free_bytes':880*GiB,'reserve_bytes':200*GiB,'tier':2,'online':True,'writable':True}]
+ {'id':'warm','name':'Project fast volume','capacity_bytes':1024*GiB,'free_bytes':310*GiB,'reserve_bytes':100*GiB,'tier':1,'online':True,'writable':True},
+ {'id':'archive','name':'Archive slow volume','capacity_bytes':2048*GiB,'free_bytes':880*GiB,'reserve_bytes':200*GiB,'tier':2,'online':True,'writable':True}]
 groups=[]
 for ident,source,dest,heat,pinned,active in [('completed-project',36,36,.03,False,False),('previous-model',14,14,.1,False,False),('current-model',10,10,.8,True,True),('working-film',50,50,.9,False,True)]:
  groups.append({'id':ident,'volume_id':'fast','source_bytes':source*GiB,'destination_bytes':dest*GiB,
