@@ -28,6 +28,8 @@ pub const SCHEMA_VERSION: i64 = 4;
 #[derive(Debug)]
 pub enum Error {
     Sql(rusqlite::Error),
+    /// An otherwise successful command was rolled back with its transaction.
+    BatchAborted(String),
     Io(std::io::Error),
     Invalid(&'static str),
     ForeignDatabase,

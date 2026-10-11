@@ -16,7 +16,8 @@
       "free_bytes": "412316860416",
       "reserve_bytes": "53687091200",
       "free_fraction": 0.41,
-      "pressure": "ok"
+      "pressure": "ok",
+      "source_eligible": true
     }
   ],
   "policy": {

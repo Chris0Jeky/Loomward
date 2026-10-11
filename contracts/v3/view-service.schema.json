@@ -1524,7 +1524,7 @@
     "TierVolume": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["volume_id", "display_name", "tier", "online", "writable", "capacity_bytes", "free_bytes", "reserve_bytes", "free_fraction", "pressure"],
+      "required": ["volume_id", "display_name", "tier", "online", "writable", "capacity_bytes", "free_bytes", "reserve_bytes", "free_fraction", "pressure", "source_eligible"],
       "properties": {
         "volume_id": { "$ref": "#/$defs/VolumeId" },
         "display_name": { "type": "string", "maxLength": 64 },
@@ -1535,7 +1535,8 @@
         "free_bytes": { "$ref": "#/$defs/NullableBytes" },
         "reserve_bytes": { "$ref": "#/$defs/ByteCount" },
         "free_fraction": { "$ref": "#/$defs/NullableFraction" },
-        "pressure": { "enum": ["ok", "watch", "pressure", "unknown"] }
+        "pressure": { "enum": ["ok", "watch", "pressure", "unknown"] },
+        "source_eligible": { "type": "boolean" }
       }
     },
     "TierModel": {

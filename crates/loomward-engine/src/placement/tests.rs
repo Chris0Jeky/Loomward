@@ -1021,5 +1021,41 @@ fn placement_unusable_volume_numbers_stay_unknown_in_tier_view() {
             .find(|v| v.volume_id.as_str() == "vo_bad")
             .unwrap();
         assert_eq!(view.pressure, TierVolumePressure::Unknown, "mode {mode}");
+        assert!(!view.source_eligible, "mode {mode}");
+    }
+}
+
+#[test]
+fn placement_model_source_eligibility_matches_source_refusals() {
+    for mode in 0..8 {
+        let mut inp = input();
+        let source = &mut inp.snapshot.volumes[0].volume;
+        match mode {
+            0 => (),
+            // A read-only source is accepted; its groups are rejected by the planner policy.
+            1 => source.read_only = Some(true),
+            2 => source.online = false,
+            3 => {
+                source.tier.declared_tier = None;
+                source.tier.hint_tier = None;
+                source.device.basis = DeviceHintBasis::Unavailable;
+            }
+            4 => source.capacity_bytes = None,
+            5 => source.free_bytes = None,
+            6 => source.capacity_bytes = Some(Bytes(MAX_SAFE_INTEGER + 1)),
+            _ => source.free_bytes = Some(Bytes(MAX_SAFE_INTEGER + 1)),
+        }
+        let model = engine().placement_model(&inp, deadline()).unwrap();
+        assert_eq!(model.volumes[0].source_eligible, mode < 2, "mode {mode}");
+        let req: PlacementCandidatesRequest = from_value(json!({
+            "source_volume_id":"vo_source", "basis":"largest_dirs", "max_groups":50, "min_bytes":"0",
+        })).unwrap();
+        assert_eq!(
+            engine()
+                .placement_candidates(&inp, &req, deadline())
+                .is_ok(),
+            mode < 2,
+            "mode {mode}"
+        );
     }
 }
