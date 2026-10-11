@@ -340,7 +340,7 @@
   }
   .seg { display: inline-flex; padding: 2px; border: 1px solid var(--control-line); border-radius: 999px; }
   .seg button { font: inherit; font-size: 0.85rem; border: 0; background: none; color: var(--muted); padding: 4px 12px; border-radius: 999px; cursor: pointer; }
-  .seg button[aria-checked='true'] { background: var(--raised); color: var(--text); box-shadow: inset 0 0 0 1px var(--line-strong); }
+  .seg button[aria-checked='true'] { background: var(--raised); color: var(--text); box-shadow: inset 0 0 0 1px var(--control-line); }
   .warn { color: var(--warn); }
   .stage { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 380px); gap: 24px; margin-top: 12px; }
   .orbit { min-width: 0; }
