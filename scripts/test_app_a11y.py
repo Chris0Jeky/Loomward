@@ -299,6 +299,9 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     page.get_by_role('button', name=re.compile('^Show')).nth(2).click()
     expect(page.get_by_role('status').filter(has_text='proposed moves')).to_be_attached()
     check(active(page).startswith('BUTTON|Show'), f'2.4.3 focus stays on the Show button that was pressed ({active(page)})')
+    expect(page.get_by_role('table', name='Proposed placements').locator('tbody tr').first).to_be_visible()
+    heads = page.evaluate("[...document.querySelectorAll('main table tbody tr')].filter((tr) => tr.children.length > 2 && !tr.firstElementChild.matches('th[scope=row]')).length")
+    check(heads == 0, f'tiers with proposals shown: every data row starts with th[scope=row]; {heads} rows lack it')
 
     goto(page, base, 'health', 'Grants & health')
     revoke_live = page.locator('p.ok.live').element_handle()
