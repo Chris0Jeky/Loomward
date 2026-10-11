@@ -5,6 +5,7 @@
 
 use std::fmt;
 
+pub mod evaluation;
 pub mod features;
 pub mod student;
 

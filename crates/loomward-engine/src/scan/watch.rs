@@ -487,9 +487,8 @@ fn reconcile<S: DirSource>(
             pass_options,
         )?;
         valid = *repair.valid.lock().unwrap() && !next.limit_hit;
-        // A targeted pass is partial by construction (outside-scope directories); only a full
-        // pass reports whether the tree settled.
-        settled = !full || next.complete;
+        // Targeted coverage is partial by construction, but duplicate evidence still needs repair.
+        settled = (!full || next.complete) && next.duplicate_identity == 0;
         attempted += next.enumeration_attempts;
         report.examined = next.examined;
         report.duplicate_identity = next.duplicate_identity;
@@ -735,6 +734,7 @@ mod tests {
         moving: super::super::tests::MovingTree,
         passes: std::sync::atomic::AtomicUsize,
         settles: bool,
+        moves_on_repair: bool,
     }
     impl DirSource for SettlingMove {
         type Dir = u64;
@@ -753,8 +753,11 @@ mod tests {
             self.moving.open_child(parent, e)
         }
         fn list(&self, dir: &u64, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
-            // The first pass sees x move from a to b; later passes see only b/x.
-            if *dir == 2 && self.settles && self.passes.load(Ordering::Relaxed) > 1 {
+            // Suppress one sighting for a clean baseline or a settled repair.
+            let pass = self.passes.load(Ordering::Relaxed);
+            if (*dir == 2 && self.settles && pass > 1)
+                || (*dir == 3 && self.moves_on_repair && pass == 1)
+            {
                 ListOutcome::Complete
             } else {
                 self.moving.list(dir, sink)
@@ -770,6 +773,7 @@ mod tests {
             },
             passes: Default::default(),
             settles,
+            moves_on_repair: false,
         };
         let sink = Arc::new(RecordingSink::default());
         let dirty = Mutex::new(Dirty::default());
@@ -830,6 +834,63 @@ mod tests {
         } else {
             assert!(sink.memory.is_repairing(root.root_id()));
         }
+    }
+    #[test]
+    fn targeted_watch_duplicate_identity_never_completes() {
+        let root = super::super::tests::root();
+        let source = SettlingMove {
+            moving: super::super::tests::MovingTree {
+                x_listings: Default::default(),
+                unique: true,
+            },
+            passes: Default::default(),
+            settles: false,
+            moves_on_repair: true,
+        };
+        let sink = Arc::new(RecordingSink::default());
+        let dirty = Mutex::new(Dirty::default());
+        let checkpoints = std::sync::atomic::AtomicUsize::new(0);
+        let report = reconcile(
+            &source,
+            &root,
+            1,
+            sink.clone(),
+            Arc::new(ByteBudget::new(crate::budgets::SCAN_BYTES)),
+            Arc::new(AtomicBool::new(false)),
+            ScanOptions {
+                workers: 1,
+                ..Default::default()
+            },
+            &dirty,
+            || {
+                if checkpoints.fetch_add(1, Ordering::Relaxed) == 1 {
+                    dirty.lock().unwrap().record(vec![
+                        Change::Name {
+                            action: 3,
+                            name: vec![2, 92, 5],
+                        },
+                        Change::Name {
+                            action: 3,
+                            name: vec![3, 92, 5],
+                        },
+                    ]);
+                }
+                true
+            },
+        )
+        .unwrap();
+        assert!(sink
+            .scopes
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|scope| matches!(scope, RunScope::Targeted(ids) if ids.len() == 2)));
+        assert!(report.duplicate_identity > 0);
+        assert!(
+            !report.complete,
+            "duplicate evidence cannot settle a targeted pass"
+        );
+        assert!(!sink.memory.sweep_allowed(root.root_id()));
     }
     #[test]
     fn unsettled_full_pass_with_clean_watcher_repeats_full_before_complete() {

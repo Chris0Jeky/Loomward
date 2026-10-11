@@ -841,26 +841,30 @@ mod native {
         let entries = ["a", "b", "c", "d"].map(|name| entry(temp.path(), name));
         for reason in [Reason::Cancelled, Reason::TimeBudget] {
             let cancel = Arc::new(AtomicBool::new(false));
-            let report = inspect_with_cancel_hook(
+            let mut meter = Meter::new(Budget {
+                bytes: 100,
+                time: Duration::from_millis(100),
+            });
+            // Stop at the chosen comparison, independent of host scheduling and disk latency.
+            let clock = std::rc::Rc::new(std::cell::Cell::new(Instant::now()));
+            meter.deadline = clock.get() + Duration::from_millis(100);
+            meter.clock = Some(clock.clone());
+            meter.cancel = Some(cancel.clone());
+            let mut reader = crate::duplicate_reader::native::Reader::new(
                 temp.path(),
                 &root_id(temp.path()),
-                &entries,
-                Budget {
-                    bytes: 100,
-                    time: Duration::from_millis(100),
-                },
-                cancel.clone(),
                 |event, index| {
                     if event == Event::Compare && index == 3 {
                         if reason == Reason::Cancelled {
                             cancel.store(true, Ordering::Release);
                         } else {
-                            std::thread::sleep(Duration::from_millis(110));
+                            clock.set(clock.get() + Duration::from_millis(100));
                         }
                     }
                 },
             )
             .unwrap();
+            let report = group(&entries, &mut reader, &mut meter);
             assert_eq!(report.groups, vec![vec![0, 1]]);
             assert!(report.partial);
             assert_eq!(report.stop, Some(reason));

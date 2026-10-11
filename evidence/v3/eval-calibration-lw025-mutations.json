@@ -1,0 +1,66 @@
+{
+    "scope":  "synthetic smoke, not real-user accuracy",
+    "source_restored":  true,
+    "results":  [
+                    {
+                        "test":  "linked_groups_are_transitive_and_temporal_traps_are_refused",
+                        "mutation":  "allow a group to span temporal cutoffs",
+                        "exit_code":  101,
+                        "result":  "KILLED: runtime assertion failed"
+                    },
+                    {
+                        "test":  "supplied_leaking_manifest_is_rejected_before_fit_or_report",
+                        "mutation":  "accept a leaking supplied manifest",
+                        "exit_code":  101,
+                        "result":  "KILLED: runtime assertion failed"
+                    },
+                    {
+                        "test":  "provenance_is_explicit_and_teacher_never_becomes_holdout_truth",
+                        "mutation":  "count teacher rows as human truth",
+                        "exit_code":  101,
+                        "result":  "KILLED: runtime assertion failed"
+                    },
+                    {
+                        "test":  "macro_metrics_match_a_worked_confusion_matrix_and_unknowns_stay_null",
+                        "mutation":  "break the F1 numerator",
+                        "exit_code":  101,
+                        "result":  "KILLED: runtime assertion failed"
+                    },
+                    {
+                        "test":  "report_preserves_abstention_thresholds_and_missing_correction_observations",
+                        "mutation":  "break score threshold coverage",
+                        "exit_code":  101,
+                        "result":  "KILLED: runtime assertion failed"
+                    },
+                    {
+                        "test":  "calibration_fit_refuses_evaluation_and_train_and_is_independent_of_evaluation_labels",
+                        "mutation":  "permit calibration fitting on evaluation",
+                        "exit_code":  101,
+                        "result":  "KILLED: runtime assertion failed"
+                    },
+                    {
+                        "test":  "calibration_fit_refuses_evaluation_and_train_and_is_independent_of_evaluation_labels",
+                        "mutation":  "remove isotonic tie and decreasing-block pooling",
+                        "exit_code":  101,
+                        "result":  "KILLED: runtime assertion failed"
+                    },
+                    {
+                        "test":  "raw_diagnostics_have_deterministic_group_bootstrap_intervals",
+                        "mutation":  "bootstrap rows instead of linked groups",
+                        "exit_code":  101,
+                        "result":  "KILLED: runtime assertion failed"
+                    },
+                    {
+                        "test":  "corpus_boundary_rejects_invalid_and_non_synthetic_records",
+                        "mutation":  "accept non-synthetic input",
+                        "exit_code":  101,
+                        "result":  "KILLED: runtime assertion failed"
+                    },
+                    {
+                        "test":  "evaluation::tests::calibration_matches_hand_computed_brier_ece_and_bin_edges",
+                        "mutation":  "zero the ECE calculation",
+                        "exit_code":  101,
+                        "result":  "KILLED: runtime assertion failed"
+                    }
+                ]
+}

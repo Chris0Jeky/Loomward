@@ -178,6 +178,8 @@ struct Meter {
     read: u64,
     deadline: Instant,
     cancel: Option<Arc<AtomicBool>>,
+    #[cfg(test)]
+    clock: Option<std::rc::Rc<std::cell::Cell<Instant>>>,
 }
 #[cfg(any(windows, test))]
 impl Meter {
@@ -186,6 +188,8 @@ impl Meter {
             remaining: budget.bytes,
             read: 0,
             cancel: None,
+            #[cfg(test)]
+            clock: None,
             deadline: Instant::now()
                 .checked_add(budget.time)
                 .unwrap_or_else(Instant::now),
@@ -198,11 +202,18 @@ impl Meter {
             .is_some_and(|c| c.load(Ordering::Acquire))
         {
             Err(Reason::Cancelled)
-        } else if Instant::now() >= self.deadline {
+        } else if self.now() >= self.deadline {
             Err(Reason::TimeBudget)
         } else {
             Ok(())
         }
+    }
+    fn now(&self) -> Instant {
+        #[cfg(test)]
+        if let Some(clock) = &self.clock {
+            return clock.get();
+        }
+        Instant::now()
     }
     fn reserve(&self, bytes: u64) -> Result<(), Reason> {
         self.check()?;

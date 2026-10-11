@@ -1,0 +1,93 @@
+{
+  "scope": "synthetic smoke, not real-user accuracy",
+  "platform": "Windows, shared host",
+  "base_commit": "697b6176735042f956e2612541d8de7f044fce55",
+  "branch": "feat/eval-calibration-lw025",
+  "cargo": "1.97.1",
+  "rustc": "1.97.1",
+  "committed": false,
+  "pushed": false,
+  "commands": [
+    {
+      "command": "cargo test -p loomward-learn (baseline)",
+      "status": "PASS",
+      "exit_code": 0,
+      "passed": 8
+    },
+    {
+      "command": "cargo test -p loomward-learn (restored final source)",
+      "status": "PASS",
+      "exit_code": 0,
+      "passed": 17
+    },
+    {
+      "command": "cargo run -p loomward-learn --example evaluate -- evidence/v3/eval-calibration-lw025.json",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File experiments/evaluation/check-mutations.ps1",
+      "status": "PASS",
+      "exit_code": 0,
+      "mutants_caught": 10,
+      "new_tests_proven_red": 9,
+      "source_bytes_restored": true
+    },
+    {
+      "command": "cargo fmt --all --check",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "command": "cargo test --workspace",
+      "status": "PASS",
+      "exit_code": 0,
+      "passed": 651,
+      "failed": 0,
+      "ignored": 1,
+      "ignored_test": "verbatim_device_namespace_state_paths_are_refused",
+      "ignored_reason": "Pre-existing device namespace defect tracked in #246"
+    },
+    {
+      "command": "cargo clippy --workspace --all-targets --all-features -- -D warnings",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "command": "git diff --check",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "command": "git -c core.safecrlf=false diff --no-index --check -- /dev/null <each new lane file>",
+      "status": "PASS",
+      "diagnostics": "none; no-index exit 1 denotes added content, not whitespace errors; per-command core.safecrlf avoids line-ending conversion warnings"
+    },
+    {
+      "command": "py -3 scripts/verify.py",
+      "status": "NOT RUN",
+      "reason": "Python reference unchanged; existing Rust/Python parity fixture tests passed through Cargo"
+    }
+  ],
+  "not_verified": [
+    "Personal data and real-user accuracy (q-5 open)",
+    "Teacher runner and broker (LW-111)",
+    "Calibration acceptance gate, map application and promotion (LW-027)",
+    "Correction rate and interruption cost",
+    "UI and desktop runtime; no UI or contract fields changed",
+    "Hosted CI"
+  ],
+  "residual_risk": "Only declared relations and honest provenance/time can be protected. Tiny synthetic group bootstrap intervals do not establish model quality; candidate remains ungated.",
+  "source_and_artifact_sha256": {
+    "crates/loomward-learn/src/lib.rs": "4c301a150fe6bdc21a2f44723a1fd67cef79d2df7197efcff4a226f102264ddd",
+    "crates/loomward-learn/src/evaluation.rs": "41416aa76ccccc9f210516d4dbdcbff97271efa2d62767723f55556b244c540e",
+    "crates/loomward-learn/tests/evaluation.rs": "a755b1d37e402369b6a2e06b224da7b753eccc244710d895e2228dccb255f460",
+    "crates/loomward-learn/examples/evaluate.rs": "46cf2b9c922b2ece1fcdd4ccd0877795463a4ac325d56637f65410845778790c",
+    "fixtures/evaluation/synthetic.json": "fd01458fb29a9666b188325bc541bda138cd442eeea6a095267fefb18c01d055",
+    "experiments/evaluation/check-mutations.ps1": "c0c592678d3fe5ec259fb9403501bbd5484efe14727c14a7658c72423655f1fb",
+    "experiments/evaluation/README.md": "3c6199647c0a866d5b6938f169c7d83999ac584e8ead4867f8d41c8fa4308c9d",
+    "evidence/v3/eval-calibration-lw025.md": "c8a19065ec5011d430ab16352011cd606b0639367873234df008361f6e21e6dc",
+    "evidence/v3/eval-calibration-lw025.json": "c4f519045153f1f646ed12d402863235748fd06a2c83e24e86eb6a058c8a7947",
+    "evidence/v3/eval-calibration-lw025-mutations.json": "02a95cf235c349a47381645ac2ef72fc53043af6387429518daeaf33387d4884"
+  }
+}

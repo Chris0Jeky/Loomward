@@ -1,6 +1,17 @@
 use std::{io, mem::size_of, os::windows::ffi::OsStrExt, path::Path, ptr};
 use windows_sys::Win32::{Foundation::*, Storage::FileSystem::*};
 
+#[cfg(test)]
+#[test]
+fn metadata_open_refuses_forced_elevation() {
+    let temp = tempfile::tempdir().unwrap();
+    let _reset = crate::enumerate::force_elevation_for_test();
+    assert!(
+        matches!(open(temp.path(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE),
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied && error.to_string() == "non-elevated access required")
+    );
+}
+
 pub(crate) struct Handle(pub HANDLE);
 impl Drop for Handle {
     fn drop(&mut self) {

@@ -250,7 +250,7 @@ impl<F: FnMut(Event, usize)> Reader<F> {
             if let Err(reason) = meter.check() {
                 break Some(reason);
             }
-            let remaining = meter.deadline.saturating_duration_since(Instant::now());
+            let remaining = meter.deadline.saturating_duration_since(meter.now());
             let millis = remaining.as_millis().min(10) as u32;
             match unsafe { WaitForSingleObject(event.0, millis) } {
                 WAIT_OBJECT_0 => break None,
