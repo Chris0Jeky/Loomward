@@ -1154,7 +1154,7 @@ def check_add_folder(page: Page, engine: FakeEngine) -> None:
     add.click()
     expect(status).to_contain_text('No folder was added yet')
     expect(table).to_contain_text('Picked After The Deadline', timeout=5000)
-    expect(status).to_contain_text('Added E:\Picked After The Deadline')  # the late grant is worded as added, not left at the deadline text
+    expect(status).to_contain_text('Added E:\\Picked After The Deadline')  # the late grant is worded as added, not left at the deadline text
     ok(len(engine.grant_calls) == 1, 'a grant that lands after the deadline shows up from roots.changed without a second request')
 
     # no picker: the button is gone and the page says where folders are added
