@@ -482,6 +482,25 @@ id_newtype!(
 id_newtype!(
     /// Placement candidate group id.
     GroupId, "cg_");
+id_newtype!(
+    /// Stored backup evidence record id.
+    BackupEvidenceId, "be_");
+
+string_newtype!(
+    /// An owner-chosen backup repository label: 1-64 of `[A-Za-z0-9._-]`, so a URL, path or
+    /// credential can never be stored or echoed as one.
+    BackupLabel,
+    "1-64 characters of [A-Za-z0-9._-]",
+    |s| (1..=64).contains(&s.len())
+        && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+);
+
+string_newtype!(
+    /// A provider snapshot ID: 64 lowercase hex digits.
+    SnapshotId,
+    "64 lowercase hex digits",
+    |s| s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+);
 
 string_newtype!(
     /// Caller-chosen request correlation id.

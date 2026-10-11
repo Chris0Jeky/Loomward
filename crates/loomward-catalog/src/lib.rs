@@ -23,7 +23,7 @@ pub use writer::{
 };
 
 pub const APPLICATION_ID: i64 = 0x4c4d5752;
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 7;
 
 #[derive(Debug)]
 pub enum Error {

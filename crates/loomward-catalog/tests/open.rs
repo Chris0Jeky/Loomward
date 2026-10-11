@@ -414,3 +414,71 @@ fn v4_state_store_grants_migrate_as_identity_verified() {
         .execute("UPDATE root_grant SET identity_mode='maybe'", [])
         .is_err());
 }
+
+/// Backups stage 1: a v5 store (after #372) and a v4 store (before it) both reach v6 with
+/// `backup_evidence`, keeping their rows, and the table refuses anything but a JSON document.
+#[test]
+fn v6_v5_and_v4_state_stores_reach_v7_with_backup_evidence_and_the_forget_record() {
+    assert_eq!(SCHEMA_VERSION, 7);
+    for (from, downgrade) in [
+        // v6 (backups applied): only forget's step runs, and the evidence already there stays.
+        (
+            6,
+            "DROP TABLE root_forgotten;
+             INSERT INTO backup_evidence(repository_label,evidence_json,snapshot_observed_ns,imported_at_ns) VALUES('kept-repo','{}',0,0);",
+        ),
+        (5, "DROP TABLE root_forgotten; DROP TABLE backup_evidence;"),
+        (
+            4,
+            "DROP TABLE root_forgotten; DROP TABLE backup_evidence; ALTER TABLE root_grant DROP COLUMN identity_mode;",
+        ),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        drop(Catalog::open(temp.path(), "synthetic").unwrap());
+        let st = Connection::open(temp.path().join("state.db")).unwrap();
+        st.execute_batch(&format!(
+            "{downgrade}
+             INSERT INTO collection(name,kind,created_at_ns) VALUES('kept','human',0);
+             PRAGMA user_version={from};"
+        ))
+        .unwrap();
+        drop(st);
+        drop(Catalog::open(temp.path(), "synthetic").unwrap());
+        assert!(
+            temp.path().join(format!("state.before-v{from}.db")).exists(),
+            "from v{from}: the migration copy"
+        );
+        let st = Connection::open(temp.path().join("state.db")).unwrap();
+        let (version, kept, mode, tables, evidence): (i64, i64, i64, i64, i64) = st
+            .query_row(
+                "SELECT (SELECT user_version FROM pragma_user_version),(SELECT count(*) FROM collection WHERE name='kept'),
+                        (SELECT count(*) FROM pragma_table_info('root_grant') WHERE name='identity_mode'),
+                        (SELECT count(*) FROM sqlite_schema WHERE type='table' AND name IN ('backup_evidence','root_forgotten')),
+                        (SELECT count(*) FROM backup_evidence WHERE repository_label='kept-repo')",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (version, kept, mode, tables, evidence),
+            (SCHEMA_VERSION, 1, 1, 2, i64::from(from == 6)),
+            "from v{from}"
+        );
+        let insert = |label: &str, json: &str| {
+            st.execute(
+                "INSERT INTO backup_evidence(repository_label,evidence_json,snapshot_observed_ns,imported_at_ns) VALUES(?1,?2,0,0)",
+                [label, json],
+            )
+        };
+        st.execute("DELETE FROM backup_evidence", []).unwrap();
+        insert("synthetic-repo", "{}").unwrap();
+        assert!(
+            insert("other", "raw bytes").is_err(),
+            "only a JSON document"
+        );
+        assert!(
+            insert("synthetic-repo", "{}").is_err(),
+            "one record per label"
+        );
+    }
+}

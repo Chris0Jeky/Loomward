@@ -124,7 +124,7 @@ fn rows(conn: &Connection, only: Option<i64>, limit: i64) -> Sql<Vec<RootRow>> {
                 (SELECT max(finished_at_ns) FROM main.scan_run WHERE root_id=r.id AND state='completed'),
                 coalesce((SELECT sub_complete FROM main.dir WHERE root_id=r.id AND parent_id IS NULL),0)
          FROM main.root r JOIN st.root_grant g ON g.id=r.grant_id
-         WHERE ?1 IS NULL OR r.id=?1 ORDER BY g.state='active' DESC,r.id DESC LIMIT ?2",
+         WHERE (?1 IS NULL OR r.id=?1) AND g.id NOT IN (SELECT grant_id FROM st.root_forgotten) ORDER BY g.state='active' DESC,r.id DESC LIMIT ?2",
     )?;
     let rows = stmt
         .query_map(rusqlite::params![only, limit], |r| {
@@ -150,6 +150,34 @@ fn rows(conn: &Connection, only: Option<i64>, limit: i64) -> Sql<Vec<RootRow>> {
         r.sort_by_key(|r| r.root);
         r
     })
+}
+
+pub struct ForgottenGrant {
+    pub grant: i64,
+    pub root: i64,
+    pub granted_via: String,
+    pub granted_at_ns: i64,
+    pub revoked_at_ns: Option<i64>,
+    pub forgotten_at_ns: i64,
+}
+
+/// The anonymised records of forgotten roots (#288), newest first.
+pub fn forgotten_grants(conn: &Connection, limit: i64) -> Sql<Vec<ForgottenGrant>> {
+    conn.prepare_cached(
+        "SELECT g.id,f.root_number,g.granted_via,g.granted_at_ns,g.revoked_at_ns,f.forgotten_at_ns
+         FROM st.root_forgotten f JOIN st.root_grant g ON g.id=f.grant_id ORDER BY g.id DESC LIMIT ?1",
+    )?
+    .query_map([limit.max(0)], |r| {
+        Ok(ForgottenGrant {
+            grant: r.get(0)?,
+            root: r.get(1)?,
+            granted_via: r.get(2)?,
+            granted_at_ns: r.get(3)?,
+            revoked_at_ns: r.get(4)?,
+            forgotten_at_ns: r.get(5)?,
+        })
+    })?
+    .collect()
 }
 
 pub const MAX_ACTIVE_ROOTS: i64 = 64;

@@ -1,0 +1,72 @@
+{
+  "evidence": [
+    {
+      "evidence_id": "be_1",
+      "repository_label": "synthetic-nas",
+      "snapshot_id": "1111111111111111111111111111111111111111111111111111111111111111",
+      "snapshot_time": "2026-10-09T21:00:00.123456789+01:00",
+      "imported_at": "2026-10-10T08:00:00.000Z",
+      "snapshot_observed_at": "2026-10-09T20:05:00.000Z",
+      "integrity_observed_at": "2026-10-09T22:30:00.000Z",
+      "snapshot_taken": true,
+      "integrity_checked": true,
+      "integrity_read_all_data": false,
+      "restore_drill_succeeded": false,
+      "required_versions": [
+        { "relative_name": "fixture/ledger.ods", "version": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+        { "relative_name": "fixture/reports‮txt.exe", "version": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }
+      ],
+      "restore_coverage": [],
+      "topology": "unknown",
+      "topology_basis": "different_volumes_device_unknown",
+      "snapshot_age_seconds": 57300,
+      "integrity_age_seconds": 48000,
+      "max_age_seconds": 604800,
+      "reported_recovery_evidence": false,
+      "refusals": ["version_not_covered", "target_not_independent", "credentials_unavailable", "integrity_not_checked", "restore_not_succeeded", "partial_restore", "unsupported_metadata"],
+      "proposed_drill": {
+        "files": [
+          { "relative_name": "fixture/ledger.ods", "version": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+          { "relative_name": "fixture/reports‮txt.exe", "version": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }
+        ],
+        "target": "new_disposable_target",
+        "compare_metadata": ["acl", "timestamps"],
+        "proofs": ["repository_and_snapshot_binding", "independent_content_sha256", "required_metadata_comparison", "complete_manifest", "fresh_observation"],
+        "executable": false
+      }
+    },
+    {
+      "evidence_id": "be_2",
+      "repository_label": "synthetic-usb",
+      "snapshot_id": "2222222222222222222222222222222222222222222222222222222222222222",
+      "snapshot_time": "2026-09-20T09:00:00Z",
+      "imported_at": "2026-10-10T08:05:00.000Z",
+      "snapshot_observed_at": "2026-09-20T09:10:00.000Z",
+      "integrity_observed_at": null,
+      "snapshot_taken": true,
+      "integrity_checked": false,
+      "integrity_read_all_data": false,
+      "restore_drill_succeeded": false,
+      "required_versions": [
+        { "relative_name": "fixture/photos/2026.zip", "version": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" }
+      ],
+      "restore_coverage": [],
+      "topology": "same_volume",
+      "topology_basis": "same_volume_identity",
+      "snapshot_age_seconds": 1810500,
+      "integrity_age_seconds": null,
+      "max_age_seconds": 604800,
+      "reported_recovery_evidence": false,
+      "refusals": ["version_not_covered", "target_not_independent", "credentials_unavailable", "integrity_not_checked", "restore_not_succeeded", "partial_restore", "unsupported_metadata", "stale_observation"],
+      "proposed_drill": {
+        "files": [
+          { "relative_name": "fixture/photos/2026.zip", "version": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" }
+        ],
+        "target": "new_disposable_target",
+        "compare_metadata": ["acl", "timestamps"],
+        "proofs": ["repository_and_snapshot_binding", "independent_content_sha256", "required_metadata_comparison", "complete_manifest", "fresh_observation"],
+        "executable": false
+      }
+    }
+  ]
+}

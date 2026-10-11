@@ -1,0 +1,12 @@
+{
+  "def": "BackupImportRequest",
+  "reason": "a repository label cannot carry a URL, path or credential",
+  "value": {
+    "repository_label": "s3:https://synthetic.invalid/bucket",
+    "snapshot_id": "1111111111111111111111111111111111111111111111111111111111111111",
+    "source_volume_id": null,
+    "target_volume_id": null,
+    "required": [{ "relative_name": "fixture/ledger.ods", "version": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }],
+    "integrity_check": false
+  }
+}

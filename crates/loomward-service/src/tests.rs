@@ -1537,12 +1537,15 @@ fn relist(svc: &Service, grant: i64, dir: i64, files: u64) {
         errors: 0,
     }))
     .unwrap();
+    // A first full scan builds in bulk until EndRun; the sink resolves children the same way.
     let sub_id: i64 = svc
         .inner
         .db()
-        .query_row("SELECT id FROM main.dir WHERE parent_id=?1", [dir], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT id FROM main.dir WHERE parent_id=?1 UNION ALL SELECT id FROM main.bulk_dir WHERE parent_id=?1",
+            [dir],
+            |r| r.get(0),
+        )
         .unwrap();
     w.call(WriteCommand::DirListing(DirListing {
         run_id: run,
@@ -1656,6 +1659,9 @@ fn every_command_answers_a_complete_envelope_and_core_reads_serve_the_catalogue(
                     | Command::CollectionsCreate
                     | Command::CollectionsUpdateMembers
                     | Command::CollectionsMembers
+                    | Command::BackupsList
+                    | Command::BackupsImport
+                    | Command::BackupsForget
             ))
             || command == Command::RootsRequestGrant
         {
@@ -3568,13 +3574,18 @@ fn obsolete_listing_revisions_are_refused_and_never_complete() {
         outcome: ListOutcome::Complete,
     };
     assert!(sink.consume(&id, done(old)).is_err());
-    let files = || -> Vec<String> {
+    // A first full scan commits into the writer's bulk build until EndRun publishes it (#148).
+    let rows = |table: &str| -> Vec<String> {
         let conn = svc.inner.db();
         let mut s = conn
-            .prepare("SELECT name FROM main.file ORDER BY name")
+            .prepare(&format!("SELECT name FROM main.{table} ORDER BY name"))
             .unwrap();
         let names = s.query_map([], |r| r.get(0)).unwrap();
         names.map(Result::unwrap).collect()
+    };
+    let files = || {
+        assert!(rows("file").is_empty(), "nothing is visible before EndRun");
+        rows("bulk_file")
     };
     // The refresh published the obsolete stage upsert-only.
     assert_eq!(files(), vec!["stale.bin".to_string()]);
@@ -3582,6 +3593,8 @@ fn obsolete_listing_revisions_are_refused_and_never_complete() {
     sink.consume(&id, done(new)).unwrap();
     assert_eq!(files(), vec!["kept.bin".to_string()]);
     sink.finish_run(&id, 41, &RunScope::FullRoot, true).unwrap();
+    assert_eq!(rows("file"), vec!["kept.bin".to_string()]);
+    assert!(rows("bulk_file").is_empty());
     assert_eq!(
         sink.consume(&id, listing(new, &["after.bin"]))
             .unwrap_err()
@@ -3898,6 +3911,8 @@ fn followup_inspect_uses_the_roots_actual_grant() {
 
 #[path = "duplicates_tests.rs"]
 mod duplicates_tests;
+#[path = "forget_tests.rs"]
+mod forget_tests;
 #[path = "learning_tests.rs"]
 mod learning_tests;
 
@@ -4238,3 +4253,7 @@ fn a_live_scanned_ntfs_grant_can_be_labelled_and_collected() {
     let root = roots["roots"][0]["root_id"].as_str().unwrap().to_owned();
     label_and_collect_live(&svc, &root, "synthetic-note.txt");
 }
+
+#[cfg(test)]
+#[path = "backups_tests.rs"]
+mod backups_tests;

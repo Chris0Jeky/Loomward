@@ -332,7 +332,7 @@ pub fn validate_roots(roots: &[PathBuf], state_dir: Option<&Path>) -> Result<Vec
 /// UNC (`\\server\share`, `\\?\UNC\...`), device (`\\.\`, `\??\`) and every other verbatim
 /// namespace (`\\?\GLOBALROOT\...` shadow copies and raw devices, `\\?\Volume{..}`): no silent
 /// network or device I/O (invariant 2, #146, #185). Only the verbatim drive form `\\?\C:\` is local.
-fn network_path(path: &Path) -> bool {
+pub(crate) fn network_path(path: &Path) -> bool {
     let text = path.to_string_lossy().replace('/', "\\");
     if let Some(rest) = text.strip_prefix("\\\\?\\") {
         let b = rest.as_bytes();
@@ -346,7 +346,7 @@ fn network_path(path: &Path) -> bool {
 }
 
 #[cfg(windows)]
-fn unsafe_attributes(meta: &std::fs::Metadata) -> bool {
+pub(crate) fn unsafe_attributes(meta: &std::fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
     const REPARSE_POINT: u32 = 0x400;
     const OFFLINE: u32 = 0x1000;
@@ -356,7 +356,7 @@ fn unsafe_attributes(meta: &std::fs::Metadata) -> bool {
 }
 
 #[cfg(not(windows))]
-fn unsafe_attributes(_: &std::fs::Metadata) -> bool {
+pub(crate) fn unsafe_attributes(_: &std::fs::Metadata) -> bool {
     false
 }
 

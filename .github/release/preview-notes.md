@@ -22,9 +22,10 @@ early testers, built from commit `{{SHA}}`.
   this build. Nothing is sent anywhere: no cloud, no teacher model, no network requests, no model
   downloads.
 - **Read-only, simulation-only.** Loomward never moves, deletes, renames or writes your files, and
-  never kills, suspends, reprioritises or trims your processes. The only files it writes are its own: its state under `%LOCALAPPDATA%\Loomward\v3\` and the WebView2
+  never kills, suspends, reprioritises or trims your processes. The only files it writes are its own: its state under `%LOCALAPPDATA%\Loomward Data\v3\` and the WebView2
   browser data under `%LOCALAPPDATA%\dev.loomward.desktop\`. Uninstalling leaves the state folder;
-  delete it to remove the app's state.
+  delete it to remove the app's state. One Loomward window runs at a time: a second start says so
+  and exits.
 - **Per-user install.** No administrator rights are needed. The installer fetches nothing from the
   network unless Microsoft's WebView2 runtime is missing from your PC.
 

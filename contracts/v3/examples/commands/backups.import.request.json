@@ -1,0 +1,10 @@
+{
+  "repository_label": "synthetic-nas",
+  "snapshot_id": "1111111111111111111111111111111111111111111111111111111111111111",
+  "source_volume_id": "vo_lab1",
+  "target_volume_id": "vo_lab2",
+  "required": [
+    { "relative_name": "fixture/ledger.ods", "version": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+  ],
+  "integrity_check": true
+}

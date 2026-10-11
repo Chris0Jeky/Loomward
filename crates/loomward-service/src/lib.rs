@@ -16,6 +16,7 @@
 #![forbid(unsafe_code)]
 
 mod apps;
+mod backups;
 mod collections;
 mod cursors;
 mod db;
@@ -207,6 +208,8 @@ impl Service {
             .map_err(|_| "cannot resolve the state directory".to_string())?;
         let catalog = Catalog::open(&state_dir, class_name(config.dataset))
             .map_err(|e| format!("catalogue refused to open: {e}"))?;
+        // A root's first full scan publishes once, atomically, with its file indexes built once (#148).
+        catalog.writer().set_bulk_first_scan(true);
         let engine = Engine::open(EngineConfig::new(state_dir.clone(), config.dataset))
             .map_err(|e| format!("engine refused to open: {e}"))?;
         let conn = db::open(&state_dir).map_err(|e| format!("state store: {e}"))?;
@@ -314,6 +317,7 @@ pub(crate) fn is_mutation(c: Command) -> bool {
         c,
         RootsRequestGrant
             | RootsRevoke
+            | RootsForget
             | VolumesDeclareTier
             | ScanStart
             | ScanCancel
@@ -332,6 +336,8 @@ pub(crate) fn is_mutation(c: Command) -> bool {
             | TelemetrySubscribe
             | TelemetryUnsubscribe
             | BudgetsSet
+            | BackupsImport
+            | BackupsForget
     )
 }
 
@@ -391,9 +397,9 @@ fn is_revocation(c: Command) -> bool {
 }
 
 /// Revocation must never wait behind other mutations (its state change is serialised by
-/// `Inner::mutation`), and the folder picker waits on the owner: neither takes a ticket.
+/// `Inner::mutation`), and the native pickers wait on the owner: none of them takes a ticket.
 fn is_ticketed(c: Command) -> bool {
-    !is_revocation(c) && c != Command::RootsRequestGrant
+    !is_revocation(c) && !matches!(c, Command::RootsRequestGrant | Command::BackupsImport)
 }
 
 /// `semantics.md` section 2 defaults.
@@ -512,6 +518,9 @@ impl ViewService for Service {
                     | Command::CollectionsCreate
                     | Command::CollectionsUpdateMembers
                     | Command::CollectionsMembers
+                    | Command::BackupsList
+                    | Command::BackupsImport
+                    | Command::BackupsForget
             )
         {
             let e = fail(

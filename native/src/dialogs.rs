@@ -1,5 +1,5 @@
-//! [`NativeDialogs`] for the desktop: the folder picker and the disclosure confirmation, owned
-//! by Rust (docs/41 sections 5.3 and 12). The webview cannot open either: the capability file
+//! [`NativeDialogs`] for the desktop: the folder picker, the backup-receipt file picker and the
+//! disclosure confirmation, owned by Rust (docs/41 sections 5.3 and 12). The webview cannot open either: the capability file
 //! grants no dialog permission, no dialog plugin is registered, and the only way in is a service
 //! call that passes the [`CallContext`]. The chosen path never crosses IPC.
 
@@ -41,11 +41,13 @@ impl DesktopDialogs {
         #[cfg(windows)]
         self.owner
             .store(window.hwnd()?.0 as isize, Ordering::SeqCst);
-        *self.picker.lock().unwrap_or_else(|e| e.into_inner()) = Some(
+        // No start folder, no picker: Windows would reopen the last folder picked (#373).
+        *self.picker.lock().unwrap_or_else(|e| e.into_inner()) = start_directory().map(|start| {
             rfd::FileDialog::new()
-                .set_title("Loomward: choose a folder to observe (metadata only)")
-                .set_parent(window),
-        );
+                .set_title(PICKER_TITLE)
+                .set_directory(start)
+                .set_parent(window)
+        });
         Ok(())
     }
 
@@ -61,18 +63,73 @@ impl DesktopDialogs {
             picker: Mutex::new(None),
         }
     }
-    fn pick_folder_with(
-        &self,
-        pick: impl FnOnce(rfd::FileDialog) -> Option<PathBuf>,
-    ) -> Option<PathBuf> {
+    /// Personal sessions only, one dialog at a time, from the profile start folder (#373).
+    fn pick_with(&self, pick: impl FnOnce(rfd::FileDialog) -> Option<PathBuf>) -> Option<PathBuf> {
         if self.dataset != DatasetClass::Personal {
             return None;
         }
         let _active = self.active.try_lock().ok()?;
         let picker = self.picker.lock().ok()?.clone()?;
-        // The service reports typed refusals; None means the owner cancelled the dialog.
         pick(picker)
     }
+
+    fn pick_folder_with(
+        &self,
+        pick: impl FnOnce(rfd::FileDialog) -> Option<PathBuf>,
+    ) -> Option<PathBuf> {
+        // The service reports typed refusals; None means the owner cancelled either dialog.
+        let folder = self.pick_with(pick)?;
+        (self.ask)(GRANT_TITLE, &grant_text(&folder)).then_some(folder)
+    }
+
+    /// The same parented dialog, retitled for one receipt file and filtered to JSON and text. A
+    /// receipt is read once and grants nothing, so the folder confirmation does not apply.
+    pub fn pick_file_with(
+        &self,
+        title: &str,
+        pick: impl FnOnce(rfd::FileDialog) -> Option<PathBuf>,
+    ) -> Option<PathBuf> {
+        self.pick_with(|picker| {
+            pick(
+                picker
+                    .set_title(title)
+                    .add_filter("restic JSON output", &["json", "txt"]),
+            )
+        })
+    }
+}
+
+pub const PICKER_TITLE: &str = "Loomward: choose a folder to observe (metadata only)";
+pub const GRANT_TITLE: &str = "Loomward: read this folder?";
+
+/// The picker's starting view: the user's profile folder, with nothing selected. A stray Enter
+/// there picks the whole profile, which the grant rules refuse (`protected_profile_or_store`), and
+/// the confirmation after it defaults to Cancel. None (no usable profile) keeps the picker shut.
+pub fn start_directory() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute() && p.is_dir())
+}
+
+/// The one-line confirmation after a pick. Letters of any script stay readable; everything else
+/// outside printable ASCII (controls, bidi overrides, zero-width marks) is written as `\u{..}`.
+pub fn grant_text(folder: &Path) -> String {
+    let shown: String = folder
+        .to_string_lossy()
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, ' '..='~') {
+                c.to_string()
+            } else {
+                format!("\\u{{{:04X}}}", c as u32)
+            }
+        })
+        .collect();
+    format!(
+        "Let Loomward read the names, sizes and dates in {shown}?\n\n\
+         It never changes your files, and reads no file contents unless you ask it to find \
+         duplicates. Cancel (the default) grants nothing."
+    )
 }
 
 pub const DISCLOSURE_TITLE: &str = "Loomward: send these items to the teacher?";
@@ -91,6 +148,12 @@ impl NativeDialogs for DesktopDialogs {
     /// (`synthetic_session_requires_lab_root`, docs/41 section 12).
     fn pick_folder(&self) -> Option<PathBuf> {
         self.pick_folder_with(|picker| picker.pick_folder())
+    }
+
+    /// Never opens in a synthetic session either: an owner-picked receipt is personal data. The
+    /// path goes to the service in-process and never crosses IPC.
+    fn pick_file(&self, title: &str) -> Option<PathBuf> {
+        self.pick_file_with(title, |picker| picker.pick_file())
     }
 
     /// Personal sessions only (the picker never opens in a synthetic one); Cancel is the default.
@@ -228,8 +291,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_pick_grants_nothing_until_the_owner_confirms_that_folder() {
+        let shown = Arc::new(Mutex::new(Vec::new()));
+        let log = shown.clone();
+        let answer = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reply = answer.clone();
+        let dialogs = DesktopDialogs::with_prompt(DatasetClass::Personal, move |title, text| {
+            log.lock()
+                .unwrap()
+                .push((title.to_string(), text.to_string()));
+            reply.load(Ordering::SeqCst)
+        });
+        *dialogs.picker.lock().unwrap() = Some(rfd::FileDialog::new());
+        let picked = PathBuf::from("C:/synthetic/caf\u{E9}-\u{202E}gpj.exe");
+        // Declined (Cancel is the default button): the service reports cancelled_by_user.
+        assert_eq!(dialogs.pick_folder_with(|_| Some(picked.clone())), None);
+        answer.store(true, Ordering::SeqCst);
+        assert_eq!(
+            dialogs.pick_folder_with(|_| Some(picked.clone())),
+            Some(picked.clone())
+        );
+        // A cancelled picker asks nothing.
+        assert_eq!(dialogs.pick_folder_with(|_| None), None);
+        let shown = shown.lock().unwrap();
+        assert_eq!(shown.len(), 2);
+        assert_eq!(shown[0].0, GRANT_TITLE);
+        assert!(
+            shown[0].1.starts_with(
+                "Let Loomward read the names, sizes and dates in C:/synthetic/caf\u{E9}-\\u{202E}gpj.exe?"
+            ),
+            "{}",
+            shown[0].1
+        );
+        // With no owner window the real box is never shown and the pick declines.
+        let unowned = DesktopDialogs::new(DatasetClass::Personal);
+        *unowned.picker.lock().unwrap() = Some(rfd::FileDialog::new());
+        assert_eq!(unowned.pick_folder_with(|_| Some(picked.clone())), None);
+    }
+
+    #[test]
     fn followup_picker_preserves_refused_selection() {
-        let dialogs = DesktopDialogs::new(DatasetClass::Personal);
+        let dialogs = DesktopDialogs::with_prompt(DatasetClass::Personal, |_, _| true);
         *dialogs.picker.lock().unwrap() = Some(rfd::FileDialog::new());
         let picked = PathBuf::from("C:/synthetic/Users/fixture/.ssh");
         assert_eq!(
@@ -275,6 +377,37 @@ mod tests {
     }
 
     #[test]
+    fn file_picker_is_personal_only_and_retitled() {
+        let dialogs = DesktopDialogs::new(DatasetClass::Personal);
+        *dialogs.picker.lock().unwrap() = Some(rfd::FileDialog::new());
+        let picked = PathBuf::from("C:/synthetic/receipt.json");
+        let title = "Loomward: choose a synthetic receipt";
+        assert_eq!(
+            dialogs.pick_file_with(title, |d| {
+                let configured = format!("{d:?}");
+                assert!(configured.contains(title), "{configured}");
+                assert!(configured.contains("json"), "{configured}");
+                Some(picked.clone())
+            }),
+            Some(picked)
+        );
+        assert_eq!(dialogs.pick_file_with(title, |_| None), None);
+        // A second dialog while one is open is refused, never stacked.
+        let active = dialogs.active.lock().unwrap();
+        assert_eq!(
+            dialogs.pick_file_with(title, |_| panic!("stacked dialog")),
+            None
+        );
+        drop(active);
+        let synthetic = DesktopDialogs::new(DatasetClass::Synthetic);
+        *synthetic.picker.lock().unwrap() = Some(rfd::FileDialog::new());
+        assert_eq!(
+            synthetic.pick_file_with(title, |_| panic!("synthetic file picker opened")),
+            None
+        );
+    }
+
+    #[test]
     fn picker_keeps_the_main_window_handle() {
         let mut context = tauri::generate_context!();
         context.config_mut().app.windows.clear();
@@ -292,8 +425,37 @@ mod tests {
             configured.contains(&format!("hwnd: {}", dialogs.owner.load(Ordering::SeqCst))),
             "{configured}"
         );
+        // It opens on the profile folder, never on whatever folder Windows remembers.
+        let start = start_directory().expect("USERPROFILE");
+        assert!(
+            configured.contains(&format!("starting_directory: Some({start:?})")),
+            "{configured}"
+        );
     }
 }
+
+/// The error box shown when the app cannot start and has no console to print to. It has no owner
+/// window because none exists yet.
+#[cfg(windows)]
+pub fn error_box(title: &str, text: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND,
+    };
+    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    let (title, text) = (wide(title), wide(text));
+    // SAFETY: both strings are NUL-terminated UTF-16 buffers that outlive the call.
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONERROR | MB_SETFOREGROUND,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+pub fn error_box(_title: &str, _text: &str) {}
 
 /// An app-owned warning box whose default button is Cancel, so Enter declines.
 // shortcut: MessageBoxW cannot scroll; keep personal disclosure disabled until LW-111.

@@ -51,6 +51,84 @@ fn grant_number(id: &str) -> Result<i64, ErrorBody> {
         .ok_or_else(|| fail(ErrorCode::NotFound, "unknown grant"))
 }
 
+/// After a forget (#288) no file of the state directory may still hold the root's name. The rolling
+/// `state.start-*.db` copies are dropped (the next open makes a fresh one). The one-off
+/// `state.before-v*.db` migration copies are the owner's way back to an older build, so each is
+/// scrubbed in place instead; a copy that still holds `path` afterwards (a shape the scrub does not
+/// know, or a failed scrub) is removed.
+fn forget_backups(dir: &std::path::Path, path: &str) {
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.ends_with(".db") {
+            continue;
+        }
+        let file = entry.path();
+        let clean = name.starts_with("state.before-v")
+            && scrub_copy(&file, &dir.join("state.db")).is_ok()
+            && !holds(&file, path);
+        if !clean && (name.starts_with("state.start-") || name.starts_with("state.before-v")) {
+            let _ = std::fs::remove_file(&file);
+        }
+    }
+}
+
+/// Removes from an older-schema copy what the forget removed from `state.db`: every reference
+/// `state.db` no longer has (only a forget deletes references) with the rows keyed to it, and the
+/// path and identity of every forgotten grant. Freed pages are zeroed and VACUUM rewrites the file.
+fn scrub_copy(copy: &std::path::Path, state: &std::path::Path) -> rusqlite::Result<()> {
+    let conn = rusqlite::Connection::open(copy)?;
+    // A busy live file must not read as "cannot scrub": that would discard the copy.
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    conn.execute(
+        "ATTACH DATABASE ?1 AS live",
+        [state.to_string_lossy().as_ref()],
+    )?;
+    conn.execute_batch("PRAGMA main.secure_delete=ON")?;
+    let has = |table: &str, column: &str| {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1,'main') WHERE name=?2)",
+            [table, column],
+            |r| r.get::<_, bool>(0),
+        )
+    };
+    let tx = conn.unchecked_transaction()?;
+    if has("object_ref", "id")? {
+        tx.execute_batch("CREATE TEMP TABLE gone AS SELECT id FROM main.object_ref WHERE id NOT IN (SELECT id FROM live.object_ref)")?;
+        if has("learning_receipt", "client_event_id")? && has("human_feedback", "client_event_id")?
+        {
+            tx.execute_batch("DELETE FROM main.learning_receipt WHERE client_event_id IN (SELECT client_event_id FROM main.human_feedback WHERE object_ref_id IN (SELECT id FROM gone))")?;
+        }
+        let keyed: Vec<String> = tx
+            .prepare("SELECT m.name FROM main.sqlite_schema m WHERE m.type='table' AND EXISTS(SELECT 1 FROM pragma_table_info(m.name,'main') WHERE name='object_ref_id')")?
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        for table in keyed {
+            tx.execute_batch(&format!(
+                "DELETE FROM main.\"{table}\" WHERE object_ref_id IN (SELECT id FROM gone)"
+            ))?;
+        }
+        tx.execute_batch(
+            "DELETE FROM main.object_ref WHERE id IN (SELECT id FROM gone); DROP TABLE gone",
+        )?;
+    }
+    if has("root_grant", "display_path")? {
+        tx.execute_batch("UPDATE main.root_grant SET display_path='forgotten',volume_key='forgotten',root_file_id=zeroblob(8) WHERE id IN (SELECT grant_id FROM live.root_forgotten)")?;
+    }
+    tx.commit()?;
+    conn.execute_batch("DETACH DATABASE live; VACUUM")
+}
+
+/// Whether `file` holds `needle` as UTF-8 or UTF-16LE.
+fn holds(file: &std::path::Path, needle: &str) -> bool {
+    let Ok(bytes) = std::fs::read(file) else {
+        return true;
+    };
+    let utf16: Vec<u8> = needle.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    [needle.as_bytes(), utf16.as_slice()]
+        .iter()
+        .any(|n| !n.is_empty() && bytes.windows(n.len()).any(|w| w == *n))
+}
+
 fn encode<T: Serialize>(v: &T) -> Result<Value, ErrorBody> {
     serde_json::to_value(v).map_err(|_| fail(ErrorCode::InternalError, "encode"))
 }
@@ -97,6 +175,9 @@ impl Inner {
             AppsList | DesktopContexts => self.metadata_page(req, command, work, metadata_cursor),
             RootsList => self.roots_list(work),
             RootsRequestGrant => self.request_grant(ctx),
+            BackupsList => self.backups_list(),
+            BackupsImport => self.backups_import(req, ctx),
+            BackupsForget => self.backups_forget(req),
             RootsRevoke => {
                 let r: RootRevokeRequest = req.decode_payload()?;
                 let grant = self.grant_of_root(self.root_row(&r.root_id)?)?;
@@ -106,6 +187,7 @@ impl Inner {
                     Some(revs),
                 ))
             }
+            RootsForget => self.roots_forget(req),
             GrantsRevoke => {
                 let r: GrantRevokeRequest = req.decode_payload()?;
                 let (at, revs) = self.revoke(grant_number(&r.grant_id)?)?;
@@ -511,6 +593,58 @@ impl Inner {
         Ok((ts_ns(at), revs))
     }
 
+    /// Owner decision q-9: a deliberate, user-initiated purge of one revoked root from Loomward's
+    /// own state, never from disk. Active roots are refused; the writer does the work (state half
+    /// first, then the catalogue half) and keeps an anonymised grant record. A mismatch of the
+    /// optional `expected_state_rev` writes nothing.
+    fn roots_forget(&self, req: &RequestEnvelope) -> Handled {
+        let r: RootForgetRequest = req.decode_payload()?;
+        let root = self.root_row(&r.root_id)?;
+        let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
+        let (grant, grant_state, path) = db::roots(&self.db(), Some(root))
+            .map_err(sql_error)?
+            .first()
+            .map(|r| (r.grant, r.grant_state.clone(), r.display_path.clone()))
+            .ok_or_else(|| fail(ErrorCode::NotFound, "unknown root"))?;
+        if grant_state != "revoked" {
+            return Err(with_reason(
+                fail(
+                    ErrorCode::InvalidRequest,
+                    "only a revoked root can be forgotten; revoke it first",
+                ),
+                if grant_state == "active" {
+                    "root_active"
+                } else {
+                    "root_not_revoked"
+                },
+            ));
+        }
+        let at = now_ns();
+        self.catalog
+            .writer()
+            .call(WriteCommand::ForgetGrant {
+                grant_id: grant,
+                forgotten_at_ns: at,
+                expected_state_rev: req.expected_state_rev.map(|g| g.get() as i64),
+            })
+            .map_err(|e| match e {
+                loomward_catalog::Error::StaleGeneration => stale(
+                    "state.db changed since your read; re-read and ask the owner again",
+                    "state_rev_changed",
+                ),
+                e => catalog_error(e),
+            })?;
+        forget_backups(&self.state_dir, &path);
+        let revs = self.revisions()?;
+        if let Ok(list) = self.root_list(None) {
+            self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));
+        }
+        Ok(out(
+            json!({"root_id": r.root_id, "forgotten_at": ts_ns(at)}),
+            Some(revs),
+        ))
+    }
+
     /// The granted folder no longer has the grant's identity (docs/41 section 7 step 1): the
     /// grant ends `identity_changed`, committed in `state.db` first as a revocation is; then the
     /// root's jobs are cancelled and its writer fenced, and `roots.changed` stops the UI from
@@ -552,10 +686,45 @@ impl Inner {
                     "granted_at": ts_ns(r.granted_at_ns),
                     "granted_via": r.granted_via,
                     "revoked_at": r.revoked_at_ns.map(ts_ns),
+                    "forgotten_at": null,
                 })
             })
             .collect();
-        Ok(out(json!({"grants": grants}), Some(revs)))
+        // What is left of a forgotten root: dates and an ID, no path, name or volume.
+        let forgotten =
+            db::forgotten_grants(&self.db(), 256 - rows.len() as i64).map_err(sql_error)?;
+        let grants = grants.into_iter().chain(forgotten.iter().map(|f| {
+            json!({
+                "grant_id": format!("gr_{}", f.grant),
+                "kind": "metadata_root",
+                "root_id": self.root_id(f.root),
+                "granted_at": ts_ns(f.granted_at_ns),
+                "granted_via": f.granted_via,
+                "revoked_at": f.revoked_at_ns.map(ts_ns),
+                "forgotten_at": ts_ns(f.forgotten_at_ns),
+            })
+        }));
+        Ok(out(
+            json!({"grants": grants.collect::<Vec<_>>()}),
+            Some(revs),
+        ))
+    }
+
+    /// One native dialog at a time (#167), and a 2 s cooldown between pickers, shared by the folder
+    /// and file pickers: a second request is `busy`, never a stacked dialog.
+    pub(crate) fn dialog_turn(&self) -> Result<std::sync::MutexGuard<'_, ()>, ErrorBody> {
+        let Ok(turn) = self.dialog.try_lock() else {
+            return Err(fail(ErrorCode::Busy, "a native dialog is already open"));
+        };
+        let mut last = self.picker_last.lock().unwrap_or_else(|e| e.into_inner());
+        if last.is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(2)) {
+            return Err(fail(
+                ErrorCode::Busy,
+                "native picker cooldown; retry shortly",
+            ));
+        }
+        *last = Some(std::time::Instant::now());
+        Ok(turn)
     }
 
     /// Desktop only. Personal sessions only (a synthetic session refuses before any dialog). The
@@ -577,18 +746,7 @@ impl Inner {
                 "no native dialogs on this adapter",
             )
         })?;
-        let Ok(_dialog) = self.dialog.try_lock() else {
-            return Err(fail(ErrorCode::Busy, "a native dialog is already open"));
-        };
-        let mut last = self.picker_last.lock().unwrap_or_else(|e| e.into_inner());
-        if last.is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(2)) {
-            return Err(fail(
-                ErrorCode::Busy,
-                "native picker cooldown; retry shortly",
-            ));
-        }
-        *last = Some(std::time::Instant::now());
-        drop(last);
+        let _dialog = self.dialog_turn()?;
         let Some(picked) = dialogs.pick_folder() else {
             return Ok(out(
                 json!({"outcome": "cancelled_by_user", "root": null, "refusal": null}),

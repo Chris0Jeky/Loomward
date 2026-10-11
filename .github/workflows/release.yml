@@ -82,7 +82,7 @@ jobs:
           [ "$(ls *-setup.exe | wc -l)" = 1 ] || { echo "::error::expected exactly one installer"; ls; exit 1; }
           sha256sum *-setup.exe > SHA256SUMS.txt
           cat SHA256SUMS.txt
-      - name: Smoke-test a silent per-user install
+      - name: Smoke-test a silent per-user install and uninstall
         shell: pwsh
         run: |
           $setup = Get-ChildItem release-assets -Filter '*-setup.exe' | Select-Object -First 1
@@ -99,12 +99,26 @@ jobs:
           Remove-Item -Recurse -Force contracts/v3/examples
           $t = Start-Process -FilePath $exe.FullName -ArgumentList '--self-test' -Wait -PassThru -NoNewWindow
           if ($t.ExitCode -ne 0) { throw "installed self-test failed with code $($t.ExitCode)" }
-          # The default start: the engine service in a personal session, state under LOCALAPPDATA.
+          # The default start: the engine service in a personal session, its state in
+          # %LOCALAPPDATA%\Loomward Data\v3, beside (not inside) the install directory.
+          $state = Join-Path $env:LOCALAPPDATA 'Loomward Data\v3\personal'
+          if (Test-Path (Join-Path $dir 'v3')) { throw 'state found inside the install directory' }
           $p = Start-Process -FilePath $exe.FullName -PassThru
           Start-Sleep -Seconds 10
           if ($p.HasExited) { throw "installed app exited early with code $($p.ExitCode)" }
+          # A failed start shows an error box and stays up, so staying up alone proves nothing:
+          # the store must exist too.
+          if (-not (Test-Path (Join-Path $state 'state.db'))) { throw "no state.db in $state after the default start" }
           Stop-Process -Id $p.Id -Force
-          "installed self-test passed; installed app stayed up for 10 s ($($examples.Count) bundled examples)"
+          $p.WaitForExit()
+          # Uninstall silently. The NSIS uninstaller re-runs itself from TEMP and returns at once,
+          # so wait for the installed exe to disappear.
+          Start-Process -FilePath $uninstall.FullName -ArgumentList '/S' -Wait
+          $deadline = (Get-Date).AddSeconds(120)
+          while ((Test-Path $exe.FullName) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+          if (Test-Path $exe.FullName) { throw 'the uninstaller left the app exe in place' }
+          if (-not (Test-Path (Join-Path $state 'state.db'))) { throw "uninstalling removed the state in $state" }
+          "installed self-test passed; installed app stayed up for 10 s with its store ($($examples.Count) bundled examples); state survived a silent uninstall"
       - name: Create the pre-release
         env:
           GH_TOKEN: ${{ github.token }}

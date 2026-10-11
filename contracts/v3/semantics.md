@@ -67,7 +67,10 @@ re-send as stated.
 | `collections.create` | Yes | `request_id`, 10 min | `collections.list`; a duplicate name is `invalid_request` with `detail.existing_id` | Not needed: the name is the key |
 | `collections.update_members` | Yes | `request_id`, 10 min | `collections.members` | Re-send adds and removes only with `expected_state_rev` from that read; set operations are not idempotent against intervening changes |
 | `roots.revoke`, `grants.revoke` | Yes | Revocation is monotone: revoking a revoked grant returns the original `revoked_at` | `roots.list`, `grants.list` | Re-send is safe |
+| `roots.forget` | Yes | `request_id`, 10 min. A root already forgotten is `not_found` under a new `request_id`: read `grants.list`, where the anonymised record (`forgotten_at` set) shows it was forgotten | `roots.list`, `grants.list` | Re-send with the same `request_id` returns the original result. After cache expiry read first; re-send only with `expected_state_rev` from that read |
 | `roots.request_grant` | Yes, if the owner already picked a folder | `request_id`, 10 min | `roots.list` | Never reopen the picker automatically |
+| `backups.import` | Yes, if the owner already picked a receipt | `request_id`, 10 min | `backups.list` | Never reopen the dialog automatically; a repeat import of the same label replaces its record |
+| `backups.forget` | Yes | `request_id`, 10 min | `backups.list` | Re-send is safe: an absent record is `not_found` and nothing else changes |
 | `grants.create_disclosure` | Yes | `preview_id`: a preview yields at most one grant, returned again | `grants.list` | Re-send with the same `preview_id` is safe |
 | `teacher.run` | Yes, and disclosure may already have happened | `grant_id`: returns the existing job, never a second request | `teacher.results`, `jobs.list` | MUST NOT create a new preview or grant to retry |
 | `scan.start` | Yes | One active scan per root: a second start is `busy` with `detail.job_id` | `jobs.list` for the root | Re-send is safe |
@@ -209,14 +212,14 @@ report `personal_metadata_unsupported`. There is no synthetic fallback for perso
 | root `generation` | One granted root | A scan run of that root reaches `completed` (the run's ID) | `RootScanState.generation`, `RootGeneration` |
 | `listing_rev` | One directory's direct membership and names | That directory's completed listing changed its members | Inside cursors |
 | `subtree_rev` | One directory's subtree | Any committed change at or below it, including sizes (set to `catalog_rev` along the ancestor chain in the same transaction) | Inside cursors |
-| `state_rev` | One `state.db` instance | Every committed `state.db` transaction that changes owner data: feedback, collections and members, tier declarations, grants (monotonic, never reused) | `ResponseMeta.state_rev`, `EventEnvelope.state_rev`, request precondition `expected_state_rev` |
+| `state_rev` | One `state.db` instance | Every committed `state.db` transaction that changes owner data: feedback, collections and members, tier declarations, grants, backup evidence (monotonic, never reused) | `ResponseMeta.state_rev`, `EventEnvelope.state_rev`, request precondition `expected_state_rev` |
 
 Rules:
 
 - `expected_generation` is accepted only for commands anchored in exactly one root (`tree.*`, `node.inspect`,
   `stats.breakdown` on a root or node anchor). Elsewhere it is `invalid_request`. If the root's current
   generation differs, the response is `stale_generation`.
-- `expected_state_rev` is accepted only by `volumes.declare_tier` and `collections.update_members`; elsewhere it
+- `expected_state_rev` is accepted only by `volumes.declare_tier`, `collections.update_members` and `roots.forget`; elsewhere it
   is `invalid_request`. A mismatch is `stale_generation` with `detail.reason = "state_rev_changed"` and nothing
   is written (section 3, step 3).
 - A cursor binds the command, the complete filter set, the sort, the basis, the tie-breaker (row ID), the
@@ -505,6 +508,46 @@ Pages order by durable member ID and cursors bind the collection, session, catal
 `catalog_rev` and `state_rev`. Changed limits may reuse a cursor; changed bindings may not.
 Member hydration shares the page deadline and its interrupt handle; expiry stops further rows
 and interrupts an ongoing catalogue inspection rather than retaining a read slot for the page.
+
+## Backups (stage 1: evidence import)
+
+`backups.import` exists on the desktop adapter only and runs only in a personal session: a synthetic
+session answers `refused` / `synthetic_session` before any dialog, HTTP answers `capability_unavailable`.
+Rust opens the native open-file dialog for a restic `snapshots --json` file and, with `integrity_check`,
+a second time for a `check --json` output. The path never crosses IPC. Each pick is refused by name
+before it is opened when it is a network, device or verbatim namespace, a Windows device name, a link,
+a reparse point or a cloud placeholder (`not_a_regular_file`), so no network, device or download I/O
+starts. A regular local file is opened read-only, at most 262,144 bytes are read (`too_large` past
+that), and the handle closes before parsing. Cancelling either dialog answers `cancelled_by_user` and
+stores nothing. The folder and file pickers share one dialog at a time and one 2 s cooldown (`busy`).
+Volume IDs are checked before any dialog opens (`not_found`). Send `deadline_ms` up to 60,000: the
+call waits on the owner.
+
+The snapshot list needs a unique 64-digit ID on every entry; only the snapshot named by
+`snapshot_id` is validated strictly, so exporting just that one (`restic snapshots <id> --json`) is
+enough. A check output may carry status or error lines before the summary; the service passes its
+last non-empty line to the strict parser. An empty, plain-text or non-summary check document is not
+an error: the evidence keeps the snapshot and refuses `integrity_not_checked`. Malformed or duplicate
+JSON is `invalid_json`, a wrong shape `invalid_receipt`, and a bad manifest name or label
+`invalid_source`.
+
+Only the normalised evidence is stored, one record per `repository_label`, in `state.db`
+(`backup_evidence`, state schema v6): never receipt bytes, a path, a file name, a host or user name,
+or a credential. At most 64 labels are kept (`repository_limit`); importing an existing label
+replaces its record and keeps its `evidence_id`. `backups.forget` removes Loomward's record only.
+
+Observation times are the picked files' modification times, not the import time. Ages,
+`stale_observation` (older than `max_age_seconds`, 604,800 s) and `invalid_observation_time`
+(a future time, age null) are recomputed on every read, and `reported_recovery_evidence` with them.
+Stage 1 cannot see check arguments, so `integrity_read_all_data` is always false and a clean check
+still refuses `integrity_not_checked`; it has no snapshot manifest, credential observation or restore
+observation, so `version_not_covered`, `credentials_unavailable`, `restore_not_succeeded`,
+`partial_restore` and `unsupported_metadata` always hold and `reported_recovery_evidence` is never
+true. Topology comes from `volumes.list` identity, never from text: the same declared volume for
+source and target is `same_volume`; different volumes are `unknown` with basis
+`different_volumes_device_unknown` until a physical device identity exists; an undeclared side is
+`unknown` / `undeclared`. `proposed_drill` is data with `executable: false`; no command executes it.
+No command runs restic, opens a backup repository or reads its configuration.
 
 ## Lazy meaning threads
 
