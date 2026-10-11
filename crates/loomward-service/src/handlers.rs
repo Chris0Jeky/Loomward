@@ -506,6 +506,8 @@ impl Inner {
                 .engine
                 .scan_writer_fence(&loomward_engine::scan::RootKey::Grant(grant), &id);
         }
+        // Durable already; a failed sweep is repeated at the next refit and at startup.
+        let _ = self.engine.learning_redact_revoked();
         let revs = self.revisions()?;
         if let Ok(list) = self.root_list(None) {
             self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));
@@ -587,6 +589,7 @@ impl Inner {
         let _ = self
             .engine
             .scan_writer_fence(&loomward_engine::scan::RootKey::Grant(grant), id);
+        let _ = self.engine.learning_redact_revoked();
         if let (Ok(revs), Ok(list)) = (self.revisions(), self.root_list(None)) {
             self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));
         }

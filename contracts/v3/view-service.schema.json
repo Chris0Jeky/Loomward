@@ -1133,7 +1133,7 @@
       "additionalProperties": false,
       "required": ["model_id", "algorithm", "taxonomy_version", "training_count", "human_events", "teacher_labels", "human_support", "fitted_at", "dataset_class", "calibrated", "autonomy_allowed", "gate", "unresolved_human_events"],
       "properties": {
-        "gate": { "type": ["string", "null"], "minLength": 1, "maxLength": 64, "description": "learning_personal_gated for personal sessions; null for synthetic sessions." },
+        "gate": { "type": ["string", "null"], "minLength": 1, "maxLength": 64, "description": "A learning gate in force, or null. Null in both dataset classes since q-11 opened local personal learning; the teacher's personal refusal is the separate teacher_personal_gated." },
         "unresolved_human_events": { "$ref": "#/$defs/Count" },
         "model_id": { "anyOf": [{ "$ref": "#/$defs/ModelId" }, { "type": "null" }] },
         "algorithm": { "const": "weighted_multinomial_nb_v1" },
