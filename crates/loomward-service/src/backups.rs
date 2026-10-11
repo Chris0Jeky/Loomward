@@ -33,28 +33,13 @@ fn out(result: Value, revs: Option<(i64, i64)>) -> Out {
     }
 }
 
-/// Windows device names open a device, not a file, whatever the folder (`CON`, `COM1 .txt`).
-fn reserved_device(path: &Path) -> bool {
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy())
-        .unwrap_or_default();
-    let stem = name.split('.').next().unwrap_or("").trim_end_matches(' ');
-    let stem = stem.to_ascii_uppercase();
-    ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"].contains(&stem.as_str())
-        || ["COM", "LPT"].iter().any(|p| {
-            stem.strip_prefix(p)
-                .is_some_and(|n| n.len() == 1 && n.as_bytes()[0].is_ascii_digit())
-        })
-}
-
 /// At most [`lb::MAX_INPUT_BYTES`] of an owner-picked regular local file, read-only. Refuses
 /// network, device and verbatim namespaces, reserved device names, links, reparse points and cloud
 /// placeholders before opening anything (opening a placeholder would download it). The handle is
 /// dropped before this returns, so nothing holds the file while parsing. Returns the bytes and the
 /// file's modification time in Unix seconds (when the provider wrote it, not when Loomward read it).
 pub(crate) fn read_receipt(path: &Path) -> Result<(Vec<u8>, u64), Why> {
-    if paths::network_path(path) || reserved_device(path) {
+    if paths::network_path(path) || paths::reserved_device(path) {
         return Err(Why::NotARegularFile);
     }
     let meta = std::fs::symlink_metadata(path).map_err(|_| Why::Unreadable)?;
