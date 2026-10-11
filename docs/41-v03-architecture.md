@@ -289,7 +289,7 @@ All 45 commands have `effects: none`. Bold rows exist only on the desktop adapte
 | Roots | `roots.list` | `EmptyRequest` | `RootList` | |
 | | **`roots.request_grant`** | `RootGrantRequest` | `RootGrantResult` | Personal sessions only; synthetic sessions refuse with `synthetic_session_requires_lab_root` |
 | | `roots.revoke` | `RootRevokeRequest` | `RootRevokeResult` | Cancels observation of the root first; `purge_catalog` deletes Loomward's rows only |
-| | `roots.forget` | `RootForgetRequest` | `RootForgetResult` | Revoked roots only (owner decision q-9): purges the display path, catalogue rows and the learning and collection rows that belong only to the root; keeps an anonymised grant record (dates, no name) |
+| | `roots.forget` | `RootForgetRequest` | `RootForgetResult` | Revoked roots only (owner decision q-9): purges the display path, catalogue rows and the learning and collection rows that belong only to the root, from `state.db` and its backup copies alike (start-up copies are dropped, migration copies scrubbed in place or removed when they cannot be); keeps an anonymised grant record (dates, no name) |
 | Volumes | `volumes.list` | `EmptyRequest` | `VolumeList` | Device hints are hints, not speeds |
 | | `volumes.declare_tier` | `DeclareTierRequest` | `DeclareTierResult` | Human preference (append-only) |
 | Scan | `scan.start` | `ScanStartRequest` | `JobResult` | `full` or `refresh`; optional budget |

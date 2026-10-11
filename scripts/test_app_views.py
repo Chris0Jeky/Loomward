@@ -923,7 +923,7 @@ def check_health(page: Page, base: str, shoot) -> None:
     forget.click()
     ask = page.get_by_role('group', name=re.compile('^Forget '))
     expect(ask).to_be_focused()
-    expect(ask).to_contain_text('removes its name and catalogue from this machine; your files are not touched')
+    expect(ask).to_contain_text('removes its name and catalogue from this machine, its own backup copies included; your files are not touched')
     ask.get_by_role('button', name='Keep it').click()
     expect(ask).to_have_count(0)
     expect(forget).to_be_focused()  # a cancelled question hands focus back to the button that asked it

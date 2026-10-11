@@ -51,15 +51,82 @@ fn grant_number(id: &str) -> Result<i64, ErrorBody> {
         .ok_or_else(|| fail(ErrorCode::NotFound, "unknown grant"))
 }
 
-/// The rolling `state.start-*.db` copies made on every open still hold what was forgotten. They
-/// are recreated clean at the next open; the one-off `state.before-v*.db` migration copies stay.
-fn drop_start_backups(dir: &std::path::Path) {
+/// After a forget (#288) no file of the state directory may still hold the root's name. The rolling
+/// `state.start-*.db` copies are dropped (the next open makes a fresh one). The one-off
+/// `state.before-v*.db` migration copies are the owner's way back to an older build, so each is
+/// scrubbed in place instead; a copy that still holds `path` afterwards (a shape the scrub does not
+/// know, or a failed scrub) is removed.
+fn forget_backups(dir: &std::path::Path, path: &str) {
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with("state.start-") && name.ends_with(".db") {
-            let _ = std::fs::remove_file(entry.path());
+        if !name.ends_with(".db") {
+            continue;
+        }
+        let file = entry.path();
+        let clean = name.starts_with("state.before-v")
+            && scrub_copy(&file, &dir.join("state.db")).is_ok()
+            && !holds(&file, path);
+        if !clean && (name.starts_with("state.start-") || name.starts_with("state.before-v")) {
+            let _ = std::fs::remove_file(&file);
         }
     }
+}
+
+/// Removes from an older-schema copy what the forget removed from `state.db`: every reference
+/// `state.db` no longer has (only a forget deletes references) with the rows keyed to it, and the
+/// path and identity of every forgotten grant. Freed pages are zeroed and VACUUM rewrites the file.
+fn scrub_copy(copy: &std::path::Path, state: &std::path::Path) -> rusqlite::Result<()> {
+    let conn = rusqlite::Connection::open(copy)?;
+    // A busy live file must not read as "cannot scrub": that would discard the copy.
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    conn.execute(
+        "ATTACH DATABASE ?1 AS live",
+        [state.to_string_lossy().as_ref()],
+    )?;
+    conn.execute_batch("PRAGMA main.secure_delete=ON")?;
+    let has = |table: &str, column: &str| {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1,'main') WHERE name=?2)",
+            [table, column],
+            |r| r.get::<_, bool>(0),
+        )
+    };
+    let tx = conn.unchecked_transaction()?;
+    if has("object_ref", "id")? {
+        tx.execute_batch("CREATE TEMP TABLE gone AS SELECT id FROM main.object_ref WHERE id NOT IN (SELECT id FROM live.object_ref)")?;
+        if has("learning_receipt", "client_event_id")? && has("human_feedback", "client_event_id")?
+        {
+            tx.execute_batch("DELETE FROM main.learning_receipt WHERE client_event_id IN (SELECT client_event_id FROM main.human_feedback WHERE object_ref_id IN (SELECT id FROM gone))")?;
+        }
+        let keyed: Vec<String> = tx
+            .prepare("SELECT m.name FROM main.sqlite_schema m WHERE m.type='table' AND EXISTS(SELECT 1 FROM pragma_table_info(m.name,'main') WHERE name='object_ref_id')")?
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        for table in keyed {
+            tx.execute_batch(&format!(
+                "DELETE FROM main.\"{table}\" WHERE object_ref_id IN (SELECT id FROM gone)"
+            ))?;
+        }
+        tx.execute_batch(
+            "DELETE FROM main.object_ref WHERE id IN (SELECT id FROM gone); DROP TABLE gone",
+        )?;
+    }
+    if has("root_grant", "display_path")? {
+        tx.execute_batch("UPDATE main.root_grant SET display_path='forgotten',volume_key='forgotten',root_file_id=zeroblob(8) WHERE id IN (SELECT grant_id FROM live.root_forgotten)")?;
+    }
+    tx.commit()?;
+    conn.execute_batch("DETACH DATABASE live; VACUUM")
+}
+
+/// Whether `file` holds `needle` as UTF-8 or UTF-16LE.
+fn holds(file: &std::path::Path, needle: &str) -> bool {
+    let Ok(bytes) = std::fs::read(file) else {
+        return true;
+    };
+    let utf16: Vec<u8> = needle.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    [needle.as_bytes(), utf16.as_slice()]
+        .iter()
+        .any(|n| !n.is_empty() && bytes.windows(n.len()).any(|w| w == *n))
 }
 
 fn encode<T: Serialize>(v: &T) -> Result<Value, ErrorBody> {
@@ -523,10 +590,10 @@ impl Inner {
         let r: RootForgetRequest = req.decode_payload()?;
         let root = self.root_row(&r.root_id)?;
         let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
-        let (grant, grant_state) = db::roots(&self.db(), Some(root))
+        let (grant, grant_state, path) = db::roots(&self.db(), Some(root))
             .map_err(sql_error)?
             .first()
-            .map(|r| (r.grant, r.grant_state.clone()))
+            .map(|r| (r.grant, r.grant_state.clone(), r.display_path.clone()))
             .ok_or_else(|| fail(ErrorCode::NotFound, "unknown root"))?;
         if grant_state != "revoked" {
             return Err(with_reason(
@@ -556,7 +623,7 @@ impl Inner {
                 ),
                 e => catalog_error(e),
             })?;
-        drop_start_backups(&self.state_dir);
+        forget_backups(&self.state_dir, &path);
         let revs = self.revisions()?;
         if let Ok(list) = self.root_list(None) {
             self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));

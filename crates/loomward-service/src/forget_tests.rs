@@ -288,3 +288,91 @@ fn a_forgotten_root_stays_forgotten_across_a_restart() {
         0
     );
 }
+
+/// Every file in the state directory that holds `needle`, as UTF-8 or UTF-16LE.
+fn holders(dir: &Path, needle: &str) -> Vec<String> {
+    let utf16: Vec<u8> = needle.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    std::fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.path().is_file())
+        .filter(|e| {
+            let bytes = std::fs::read(e.path()).unwrap_or_default();
+            [needle.as_bytes(), utf16.as_slice()]
+                .iter()
+                .any(|n| bytes.windows(n.len()).any(|w| w == *n))
+        })
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect()
+}
+
+#[test]
+fn forgetting_scrubs_the_migration_copies_so_no_file_keeps_the_name() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (a, _) = named(&svc, 1, NAME_A, PATH_A);
+    named(&svc, 2, "KeepServiceFolderBeta", PATH_B);
+    svc.inner
+        .db()
+        .execute_batch("UPDATE main.file SET file_id=cast(printf('%016d',id) AS BLOB),created_ft=1")
+        .unwrap();
+    let node_a = first_node(&svc, a);
+    ok(
+        "feedback.record",
+        call(
+            &svc,
+            "feedback.record",
+            json!({"node_id": node_a, "client_event_id": "ce_copy_forget", "label": "Documents", "retract": false}),
+        ),
+    );
+    // The copy a v5 install's upgrade leaves (an older schema: no root_forgotten table), and a copy
+    // in a shape the scrub does not know that still names the root.
+    let before_v5 = dir.path().join("state.before-v5.db");
+    svc.inner
+        .db()
+        .execute("VACUUM st INTO ?1", [before_v5.to_string_lossy().as_ref()])
+        .unwrap();
+    rusqlite::Connection::open(&before_v5)
+        .unwrap()
+        .execute_batch("DROP TABLE root_forgotten")
+        .unwrap();
+    let unknown = dir.path().join("state.before-v1.db");
+    let legacy = rusqlite::Connection::open(&unknown).unwrap();
+    legacy
+        .execute_batch("CREATE TABLE legacy_root(path TEXT)")
+        .unwrap();
+    legacy
+        .execute("INSERT INTO legacy_root VALUES(?1)", [PATH_A])
+        .unwrap();
+    drop(legacy);
+    assert!(holders(dir.path(), PATH_A).contains(&"state.before-v5.db".to_owned()));
+    assert!(holders(dir.path(), PATH_A).contains(&"state.before-v1.db".to_owned()));
+
+    ok(
+        "roots.revoke",
+        call(
+            &svc,
+            "roots.revoke",
+            json!({"root_id": svc.inner.root_id(a), "purge_catalog": false}),
+        ),
+    );
+    ok("roots.forget", forget(&svc, a, None));
+    drop(svc);
+    let left = holders(dir.path(), PATH_A);
+    assert!(left.is_empty(), "the root's path survived in {left:?}");
+    // The known copy is scrubbed, not discarded: the other root and the owner's rows stay in it.
+    assert!(holders(dir.path(), PATH_B).contains(&"state.before-v5.db".to_owned()));
+    let copy = rusqlite::Connection::open(&before_v5).unwrap();
+    let kept: (i64, i64) = copy
+        .query_row(
+            "SELECT (SELECT count(*) FROM root_grant),(SELECT count(*) FROM human_feedback)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(kept, (2, 0));
+    assert!(
+        !unknown.exists(),
+        "a copy the scrub cannot clear is removed"
+    );
+}

@@ -168,7 +168,7 @@
     <h2 id="h-confirm">{#if pending.kind === 'forget'}Forget {escapedName(leaf(pending.label))}?{:else}Revoke {pending.kind === 'root' ? 'root access' : 'grant'}?{/if}</h2>
     <p><VisibleName name={pending.label} /></p>
     {#if pending.kind === 'forget'}
-      <p class="muted">Loomward removes its name and catalogue from this machine; your files are not touched. A dated record that a root was granted, revoked and forgotten stays in the grants list, without the name.</p>
+      <p class="muted">Loomward removes its name and catalogue from this machine, its own backup copies included; your files are not touched. A dated record that a root was granted, revoked and forgotten stays in the grants list, without the name.</p>
     {:else if pending.kind === 'root'}
       <p class="muted">Loomward stops reading this root. The files on disk are never touched.</p>
       <label class="chk"><input type="checkbox" bind:checked={purge} /> Also delete Loomward's own catalogue rows for this root (the scanned files stay as they are)</label>
