@@ -813,7 +813,7 @@ fn every_command_answers_a_complete_envelope_and_core_reads_serve_the_catalogue(
         .unwrap()
         .values()
         .all(|v| v == false));
-    // Synthetic sessions scan registered lab roots on Windows (personal scans wait for #184).
+    // Synthetic sessions scan registered lab roots on Windows; personal sessions their own owner grants.
     assert_eq!(
         hello["capabilities"]["observation"]["metadata_scan"],
         cfg!(windows)
@@ -2264,7 +2264,7 @@ fn scan_cancel_is_acknowledged_and_never_publishes_a_complete_generation() {
     );
 }
 
-/// Scans are offered to synthetic lab roots only: a personal session waits for #184's gates,
+/// A synthetic session scans registered lab roots only (personal sessions have their own tests),
 /// and a synthetic fixture root (no path, no lab registration) is refused.
 #[test]
 fn scan_start_is_refused_outside_registered_lab_roots() {

@@ -49,9 +49,9 @@
       "loomward-learn": "student model port with exact Python parity (#113)",
       "loomward-protocol": "v3 envelopes, complete per-command validation, duplicate-key refusal, ViewService trait (#133)",
       "loomward-engine": "C2 skeleton (#140) + L7 scan pipeline (#162), L12 placement (#158), L11b telemetry (#161); per-root scan gate and cancel ordering (#212, #233); Engine::inspect_duplicates (#244)",
-      "loomward-http": "loomward-serve: loopback HTTP + SSE adapter over loomward-service; token/Host/Origin checks; explicit fixture mode retained; product scans limited to synthetic lab roots (#179, #195, #205)",
+      "loomward-http": "loomward-serve: loopback HTTP + SSE adapter over loomward-service; token/Host/Origin checks; explicit fixture mode retained; synthetic sessions scan registered lab roots, personal sessions their own active owner grants (#179, #195, #205; personal scans opened 2026-10-11)",
       "loomward-catalog": "durable SQLite catalogue: revision 2 + errata, pending-reference retirement, FULL sync for intents (#173); P4 ~53k rows/s (#187); auto-rollback guard (#208); P4d (#216); excluded entries visible and shielded (#225, #252)",
-      "loomward-service": "the ViewService over engine and catalogue (#179, #197); catalogue-backed scan writer and scan.start for synthetic lab roots (#205)",
+      "loomward-service": "the ViewService over engine and catalogue (#179, #197); catalogue-backed scan writer; scan.start for synthetic lab roots (#205) and, since the opening, for a personal session's own active owner grants",
       "loomward-apps": "read-only application inventory from the Uninstall registry views, scopes, provenance and honest provider states (#229, #249)",
       "loomward-shell": "known-folder desktop contexts and a pure, bounded .lnk parser with target health; no COM, no execution (#245)"
     },
@@ -94,7 +94,7 @@
     "windows_performance_claim": false
   },
   "next_local_issues": [
-    "#269 / PR #278 (re-prove containment before relists), then the explicit personal-scan opening step",
+    "#312 (re-check stored grants against current fences at scan start), #310 (product scan throughput)",
     "#268, #275, #276, #277 (follow-ups in flight)",
     "#148 (P4 toward 250k: receipt pipelining)",
     "#160 (P12 to at or under 1%)",

@@ -24,7 +24,7 @@ refused, and an unresolvable profiles directory refuses every root.
 | `personal_session_scans_a_granted_folder_metadata_only` (service) | a folder granted through the CLI path scans to completion with complete coverage; totals match an independent walk and the fixture (4 files, 3 folders, 135 bytes); file contents and modification times are identical before and after. On an elevated host it asserts the `identity_unavailable` grant refusal instead |
 | `personal_scan_start_refuses_unknown_lab_and_revoked_roots` (service) | unknown, lab and revoked roots refused as above |
 | `profiles_directory_is_resolved_from_the_os_not_by_name` (service) | a sibling profile under a profiles folder with an unrecognised name is refused, as are the folder itself and a root containing it; #253's non-profile sibling of a redirected profile stays eligible; missing or unresolvable folders fail closed |
-| Mutation: restore the gate | both personal tests fail |
+| Mutation: restore the gate | both personal tests fail (on a non-elevated host; on an elevated host such as hosted CI the scan test asserts the `identity_unavailable` refusal instead) |
 | Mutation: allow a lab root in a personal session | the refusal test fails |
 | Mutation: skip the OS profiles-directory check | the #286 test fails |
 | `scripts/test_app.py --live-serve` | a personal `loomward-serve` granted one small folder on the command line; pressing Scan in the app reaches "Finished, complete coverage"; `roots.list` totals match the fixture; no file changed; an unknown root is `not_found`; only the pressed Scan created a job |
@@ -33,7 +33,7 @@ refused, and an unresolvable profiles directory refuses every root.
 
 `real-A (owner-authorised, agent-picked)`, the same root as `real-A` in
 [real-folder-stress](../../docs/research/real-folder-stress.md). Its path was appended to the
-primary checkout's gitignored `scan-roots.log` before each scan. The release `loomward-serve
+primary checkout's gitignored `.loomward/scan-roots.log` before each scan. The release `loomward-serve
 --dataset personal --allow-personal --grant-root <root>` ran with a fresh state directory under
 the gitignored `.loomward/`; `scan.start` (full) was called over HTTP and `jobs.get` polled to the
 end; the server was stopped afterwards. Aggregates only; no names, paths or per-file data.

@@ -191,7 +191,7 @@ resolves the directory from the OS rather than by its folder name.
 
 | Area | State | Evidence |
 |---|---|---|
-| Personal scans | open: a personal session scans its own active owner grants (desktop picker or `--grant-root`), metadata only, explicit roots, never elevated; a revoked grant, a lab root and an unknown root are refused (`personal_session_requires_owner_grant` for a root that is not an owner grant). The `personal_scan_gated_184` refusal is gone | `evidence/v3/personal-scan-opening.md` |
+| Personal scans | open: a personal session scans its own active owner grants (desktop picker or `--grant-root`), metadata only, explicit roots, never elevated; refused before any filesystem access: an unknown root is `not_found`, a revoked grant `permission_denied` (the grant is not active), and a lab root `permission_denied` with `personal_session_requires_owner_grant`. The `personal_scan_gated_184` refusal is gone | `evidence/v3/personal-scan-opening.md` |
 | Unchanged | a synthetic session scans registered lab roots only; content reads for duplicates stay gated (`content_read_gated`); no file or process effect; no new endpoint | service tests |
 
 Not established: personal scans on FAT, exFAT or RAM-disk volumes (#285 item 2); P4 at 250k (#148); P12 at or
