@@ -7,9 +7,9 @@
   let { nodeId, meaning, parent }: { nodeId: string; meaning?: Thread; parent?: Meaning } = $props();
   const own = new Meaning();
   $effect(() => {
-    const id = nodeId, supplied = meaning, client = session.client, asked = parent?.settled;
+    const id = nodeId, supplied = meaning, client = session.client, covered = parent?.covers(id);
     void session.epoch;
-    if (!supplied && !asked && client) untrack(() => void own.load(client, [id]));
+    if (!supplied && !covered && client) untrack(() => void own.load(client, [id]));
     return () => own.clear();
   });
 </script>

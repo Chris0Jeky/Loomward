@@ -24,8 +24,10 @@ and the NSIS installer, self-tests the release binary, silently installs the ins
 installed app with the checkout's contract examples removed (it reads its bundled copy and opens the
 engine service in a scratch state directory), starts the installed app with its default personal
 engine session, then creates the pre-release. The runner is elevated, so this start grants nothing:
-native identity opens are refused there. A failure before the last step leaves no release and no
-tag, so fix and re-dispatch.
+native identity opens are refused there. A dispatch that fails before the last step leaves no
+release and no tag, so fix and re-dispatch. A run started by pushing a tag leaves that tag behind, and
+an interrupted `gh release create` can leave a partial release; clean both up as in *Roll back* before
+re-running the same version.
 
 ## What the pre-release holds
 
@@ -55,11 +57,16 @@ provenance is the commit named in the release body.
 
 ## Roll back
 
-Delete the release and its tag together, then re-dispatch with a fresh number if needed:
+Delete the release (if one exists) and its tag, then re-dispatch, with a fresh number if the old
+one was ever public:
 
 ```sh
 gh release delete v0.3.0-preview.1 --repo Chris0Jeky/Loomward --cleanup-tag --yes
+git push --delete origin v0.3.0-preview.1
 ```
+
+The second command is needed when no release exists (a failed tag-push run); it fails harmlessly
+when `--cleanup-tag` already removed the tag.
 
 The workflow refuses to reuse a version whose tag or release still exists. Do not move or re-push an
 existing tag.

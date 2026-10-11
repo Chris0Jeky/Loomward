@@ -6,7 +6,7 @@
   import type { Basis, MeaningThread } from '../../lib/contracts.gen';
   import type { NodeInfo, Palette } from '../../../viz/types.js';
   import { drawSwatch, zeroCounts } from '../../../viz/woven-treemap.js';
-  import { formatApprox } from './shared.svelte';
+  import { formatApprox, sizeUnknown } from './shared.svelte';
   import type { Meaning } from '../../lib/stores/meaning.svelte';
   import NodeMeaning from '../../lib/ui/NodeMeaning.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
@@ -38,6 +38,9 @@
 
   const z = $derived(node ? zeroCounts(node) : { denied: 0, unmeasured: 0, empty: 0 });
   const src = $derived(node?.src ?? null);
+  // With some allocation unknown, the catalogue leaves allocated_bytes null but an allocated-basis
+  // slice still carries the known subtotal in size_bytes: a lower bound, not nothing.
+  const allocated = $derived(src ? src.allocated_bytes ?? (basis === 'allocated' ? src.size_bytes : null) : null);
   const denied = $derived(src?.coverage === 'denied' || src?.threads.permission.state === 'denied');
   const unknowns = $derived.by(() => {
     const out: string[] = [];
@@ -74,8 +77,8 @@
     {#if src}
       <dl class="facts">
         <div><dt>Kind</dt><dd>{src.kind}{#if src.ext_family} · {src.ext_family}{/if}</dd></div>
-        <div><dt>Logical</dt><dd class="num">{#if denied && src.logical_bytes === '0'}<span class="unknown">unknown</span>{:else}{formatBytes(src.logical_bytes)}{/if}</dd></div>
-        <div><dt>Allocated</dt><dd class="num">{#if src.allocated_bytes === null}<span class="unknown">unknown</span>{:else}{formatBytes(src.allocated_bytes)}{/if}</dd></div>
+        <div><dt>Logical</dt><dd class="num">{#if sizeUnknown({ ...src, size_bytes: src.logical_bytes }, false)}<span class="unknown">unknown</span>{:else}{formatBytes(src.logical_bytes)}{/if}</dd></div>
+        <div><dt>Allocated</dt><dd class="num">{#if sizeUnknown({ ...src, size_bytes: allocated ?? '' }, true)}<span class="unknown">unknown</span>{:else}{src.size_unknown_files > 0 ? 'at least ' : ''}{formatBytes(allocated)}{/if}</dd></div>
         {#if src.kind !== 'file'}
           <div><dt>Contents</dt><dd class="num">{#if denied}<span class="unknown">access denied: unknown</span>{:else}{src.coverage === 'complete' ? '' : 'at least '}{formatCount(src.files)} files · {formatCount(src.dirs)} folders{/if}</dd></div>
         {/if}

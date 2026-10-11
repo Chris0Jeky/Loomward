@@ -65,11 +65,11 @@
  * @property {string} shuttle
  * @property {string} track        sunburst ring track
  * @property {string} scale        sunburst outer scale
- * @property {string[]} dyes       warp: meaning dyes (at least 2)
- * @property {string} undyed       warp: no meaning
+ * @property {string[]} dyes       meaning (authored warp): dyes, at least 2
+ * @property {string} undyed       meaning (authored warp): no dye
  * @property {string} neutral      a thread whose channel is switched off
- * @property {[string, string, string]} metals  weft: residency tiers hot, warm, cold
- * @property {string} hollow       weft: cloud placeholder (nothing resident)
+ * @property {[string, string, string]} metals  residency (authored weft): tiers hot, warm, cold
+ * @property {string} hollow       residency (authored weft): cloud placeholder (nothing resident)
  * @property {string} permission   selvedge
  * @property {string} unknown      unknown marks (dotted stitch, missing weft)
  * @property {string} fontDisplay

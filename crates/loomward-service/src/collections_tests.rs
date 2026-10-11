@@ -774,3 +774,80 @@ fn collections_remove_members_validation_and_noop() {
         assert_eq!(svc.inner.revisions().unwrap(), before);
     }
 }
+
+/// #356: an add that lands between the writer's precious staging and its catalogue publication
+/// creates a reference the staging never saw. It must still follow the publication: the hard
+/// link's identity to its surviving row, the dropped file to retirement.
+#[test]
+fn collections_add_inside_the_publication_window_follows_the_publication() {
+    let (_dir, svc, ids) = setup(DatasetClass::Synthetic);
+    let id = create(&svc, "Projects");
+    let svc = Arc::new(svc);
+    let scan = rescan_paused_in_publication_window(&svc);
+    let rev = svc.inner.revisions().unwrap().1;
+    ok(
+        "collections.update_members",
+        update(&svc, &id, &[ids[0].clone(), ids[2].clone()], &[], rev),
+    );
+    svc.inner.catalog.writer().publication_window().release();
+    scan.join().unwrap();
+    let bindings = {
+        let conn = svc.inner.db();
+        let mut s = conn
+            .prepare("SELECT id,state,retired,row_id FROM st.object_ref ORDER BY id")
+            .unwrap();
+        s.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, bool>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+    };
+    assert_eq!(
+        bindings,
+        vec![
+            (1, "resolved".into(), false, 2),
+            (2, "unresolved".into(), true, 3)
+        ]
+    );
+    let (page, _) = ok("collections.members", members(&svc, &id, 200, Value::Null));
+    assert_eq!(page["total"], 2);
+    assert_eq!(page["items"][0]["status"], "resolved");
+    assert_eq!(page["items"][0]["entry"]["name"], "report-001.txt");
+    assert_eq!(page["items"][1]["status"], "unresolved");
+}
+
+#[test]
+fn collections_list_resolves_references_once_for_all_collections() {
+    let (_dir, svc, _) = setup(DatasetClass::Synthetic);
+    // 256 collections over 30,000 invented references: evaluating the reference CTE per collection took
+    // longer than the 2 s read deadline (measured 2026-10-11, debug build); once it takes ~0.1 s.
+    svc.inner.db().execute_batch("UPDATE main.dir SET file_id=CAST(printf('%016d',id) AS BLOB),created_ft=123 WHERE id=1; WITH RECURSIVE n(i) AS (VALUES(10) UNION ALL SELECT i+1 FROM n WHERE i<30009) INSERT INTO main.file(id,dir_id,name,file_id,logical,allocated,created_ft,attrs,born_run,seen_run) SELECT i,1,'entry'||i,CAST(printf('%016d',i) AS BLOB),1,1,123,0,1,1 FROM n;
+      WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<256) INSERT INTO st.collection(name,kind,created_at_ns) SELECT 'C'||i,'human',0 FROM n;
+      INSERT INTO st.object_ref(volume_key,file_id,creation_ft,kind,state,last_resolved_ns,incarnation,catalog_instance,row_id,born_run) SELECT 'fixture',f.file_id,f.created_ft,'file','resolved',0,1,(SELECT value FROM main.meta WHERE key='instance_id'),f.id,f.born_run FROM main.file f WHERE f.id>=10;
+      INSERT INTO st.collection_member SELECT ((o.id-1)%256)+1,o.id,0 FROM st.object_ref o;").unwrap();
+    let (list, _) = ok(
+        "collections.list",
+        call(&svc, "collections.list", json!({})),
+    );
+    let all = list["collections"].as_array().unwrap();
+    assert_eq!(all.len(), 256);
+    assert_eq!(
+        all.iter()
+            .map(|c| c["member_count"].as_i64().unwrap())
+            .sum::<i64>(),
+        30000
+    );
+    for (i, c) in all.iter().enumerate() {
+        assert_eq!(c["collection_id"], format!("co_{}", i + 1));
+        assert_eq!(
+            c["logical_bytes"],
+            c["member_count"].as_i64().unwrap().to_string()
+        );
+    }
+}

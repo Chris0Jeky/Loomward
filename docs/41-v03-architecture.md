@@ -48,7 +48,7 @@ flowchart LR
   owner([Owner])
   agents([Lab and CI agents])
   lw[Loomward v0.3<br/>desktop + engine]
-  fs[(Windows filesystems<br/>C: NVMe, G: NVMe, E: HDD)]
+  fs[(Windows filesystems<br/>C: fast local volume, G: fast local volume, E: slow local volume)]
   os[Windows kernel APIs<br/>volumes, processes, PDH]
   codex[Codex CLI native binary<br/>pinned hash and version]
   openai[(OpenAI GPT-6.1 Sol<br/>cloud)]
@@ -933,7 +933,7 @@ separately; state on G: unless stated.
 |---|---|---|---|
 | P1 | Full scan of the M tier (1M entries) on G:, warm, to published generation | 8 s total; enumeration and persistence reported separately | `loomward-lab bench scan --tier M --runs 20` |
 | P2 | Full scan, L tier (10M) on G:, warm | 100 s; peak private commit 400 MB | Same; `PeakPagefileUsage` (true high-water) and `PeakWorkingSetSize` at exit; 2M-entry run extrapolated and labelled until Q3 |
-| P3 | Enumeration only, warm NVMe, 8 threads | 400k entries/s; E: HDD reported without a target | LW-101 spike harness |
+| P3 | Enumeration only, warm fast local volume, 8 threads | 400k entries/s; E: slow local volume reported without a target | LW-101 spike harness |
 | P4 | Catalogue publication throughput | 250k rows/s sustained with all indexes, through staging | Catalogue bench, in-process rows |
 | P5 | Refresh with no changes, M tier | Enumeration within 1.1x P1's enumeration time; persistence 2 s | Bench `--mode refresh`, phases reported separately |
 | P6 | `tree.slice` 2,500 nodes on the 10M-row SQL catalogue | Server p95 60 ms; payload 1.5 MB | Catalogue bench on the generated 10M-row catalogue plus HTTP round trip |

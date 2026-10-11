@@ -160,14 +160,21 @@ fn junction_inside_static_root_pointing_outside_is_refused() {
 // --- MEDIUM: a declared length above the drain limit is refused without reading the body -------
 
 #[test]
-fn declared_length_above_drain_limit_is_refused_without_waiting_for_the_body() {
-    let h = start();
+fn declared_length_above_drain_limit_preserves_the_refusal_after_a_bounded_timeout() {
+    let h = start_with(
+        FixtureService::new(DatasetClass::Synthetic).unwrap(),
+        Options {
+            read_timeout: Duration::from_millis(100),
+            ..Default::default()
+        },
+    )
+    .0;
     let declared = DRAIN_LIMIT + 1;
-    // No body follows; a correct server answers from the headers alone, well inside the read
-    // timeout (10 s). A server that drains first would wait out that timeout.
+    // A stalled large body gets the same refusal after the bounded drain times out.
     let started = Instant::now();
     let r = send(h.addr(), &call_head(&h, declared, ""), b"");
     assert_eq!(r.status, 413);
+    assert!(started.elapsed() >= Duration::from_millis(50));
     assert_eq!(
         r.header("content-type").as_deref(),
         Some(JSON_TYPE),

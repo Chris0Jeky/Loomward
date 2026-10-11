@@ -132,6 +132,64 @@ fn summary(dataset: &str, items: Option<Vec<Value>>) -> DisclosureSummary {
 }
 
 #[test]
+fn disclosure_pages_ask_for_every_item_and_cancel_the_whole_summary() {
+    for count in [5usize, 25] {
+        let items = (0..count)
+            .map(|i| {
+                json!({"handle":format!("i{i:02}"),
+            "name":format!("item-{i}"),"extension":"txt","context":"Lab","size_bucket":0})
+            })
+            .collect();
+        let s = summary("synthetic", Some(items));
+        let (dialogs, shown) = recording(DatasetClass::Synthetic, true);
+        assert!(dialogs.confirm_disclosure(&s).unwrap());
+        let shown = shown.lock().unwrap();
+        assert_eq!(shown.len(), count.div_ceil(4));
+        let all = shown.join("\n");
+        for i in 0..count {
+            assert_eq!(all.matches(&format!("item-{i}  ")).count(), 1);
+        }
+        for page in shown.iter() {
+            assert!(page.chars().count() <= loomward_desktop::dialogs::MAX_DISCLOSURE_CHARS);
+            assert!(
+                page.lines()
+                    .map(|line| line.chars().count().div_ceil(80).max(1))
+                    .sum::<usize>()
+                    <= loomward_desktop::dialogs::MAX_DISCLOSURE_LINES
+            );
+            assert!(page.matches("size bucket").count() <= 4);
+            assert!(page.contains(s.payload_digest.as_str()));
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        let dialogs = DesktopDialogs::with_prompt(DatasetClass::Synthetic, move |_, _| {
+            seen.fetch_add(1, Ordering::SeqCst) == 0
+        });
+        assert!(!dialogs.confirm_disclosure(&s).unwrap());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+}
+
+#[test]
+fn disclosure_over_display_budget_returns_an_explicit_error() {
+    for count in [5, 25] {
+        let items = (0..count)
+            .map(|i| {
+                json!({"handle":format!("i{i:02}"),
+            "name":"n".repeat(256),"extension":"txt","context":"c".repeat(512),"size_bucket":0})
+            })
+            .collect();
+        let (dialogs, shown) = recording(DatasetClass::Synthetic, true);
+        let error = dialogs
+            .confirm_disclosure(&summary("synthetic", Some(items)))
+            .unwrap_err();
+        assert_eq!(error.code, loomward_protocol::ErrorCode::ResourceBudget);
+        assert!(error.message.as_str().contains("no items were sent"));
+        assert!(shown.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
 fn disclosure_dialog_accept_and_decline_paths() {
     for (dataset, wire, other) in [
         (DatasetClass::Synthetic, "synthetic", "personal"),
@@ -141,7 +199,7 @@ fn disclosure_dialog_accept_and_decline_paths() {
         for answer in [true, false] {
             let (dialogs, shown) = recording(dataset, answer);
             assert_eq!(
-                dialogs.confirm_disclosure(&s),
+                dialogs.confirm_disclosure(&s).unwrap(),
                 answer && dataset == DatasetClass::Synthetic
             );
             assert_eq!(
@@ -151,7 +209,7 @@ fn disclosure_dialog_accept_and_decline_paths() {
         }
         // A summary of the other class is declined without asking.
         let (dialogs, shown) = recording(dataset, true);
-        assert!(!dialogs.confirm_disclosure(&summary(other, None)));
+        assert!(!dialogs.confirm_disclosure(&summary(other, None)).unwrap());
         assert!(shown.lock().unwrap().is_empty());
     }
 }
@@ -298,9 +356,11 @@ fn disclosure_length_budget_declines_without_truncating() {
     let long = summary("synthetic", Some(items));
     assert!(disclosure_text(&long).len() > MAX_DISCLOSURE_CHARS);
     let (dialogs, shown) = recording(DatasetClass::Synthetic, true);
-    assert!(!dialogs.confirm_disclosure(&long));
+    assert!(dialogs.confirm_disclosure(&long).is_err());
     assert!(shown.lock().unwrap().is_empty());
-    assert!(dialogs.confirm_disclosure(&summary("synthetic", None)));
+    assert!(dialogs
+        .confirm_disclosure(&summary("synthetic", None))
+        .unwrap());
     let mut items: Vec<_> = (0..3)
         .map(|i| {
             json!({ "handle": format!("i{i:02}"),
@@ -318,12 +378,14 @@ fn disclosure_length_budget_declines_without_truncating() {
     let exact = summary("synthetic", Some(items.clone()));
     assert_eq!(disclosure_text(&exact).len(), MAX_DISCLOSURE_CHARS);
     assert!(
-        !dialogs.confirm_disclosure(&exact),
+        dialogs.confirm_disclosure(&exact).is_err(),
         "wrapping also consumes the height budget"
     );
     let last = items.last_mut().unwrap();
     last["context"] = json!(format!("{}c", last["context"].as_str().unwrap()));
-    assert!(!dialogs.confirm_disclosure(&summary("synthetic", Some(items))));
+    assert!(dialogs
+        .confirm_disclosure(&summary("synthetic", Some(items)))
+        .is_err());
 }
 
 #[test]
@@ -344,9 +406,12 @@ fn concurrent_disclosure_is_declined() {
         },
     ));
     let d = dialogs.clone();
-    let first = std::thread::spawn(move || d.confirm_disclosure(&summary("synthetic", None)));
+    let first =
+        std::thread::spawn(move || d.confirm_disclosure(&summary("synthetic", None)).unwrap());
     rx.recv_timeout(Duration::from_secs(3)).unwrap();
-    let second = dialogs.confirm_disclosure(&summary("synthetic", None));
+    let second = dialogs
+        .confirm_disclosure(&summary("synthetic", None))
+        .unwrap();
     release.send(()).unwrap();
     assert!(first.join().unwrap());
     assert!(!second, "a second dialog was admitted");
@@ -378,21 +443,21 @@ fn visible_escapes_all_non_ascii_including_every_reported_invisible() {
 }
 
 #[test]
-fn disclosure_height_budget_declines_short_many_items_and_wrapped_lines() {
-    for (count, context) in [(25, "c".to_string()), (3, "c".repeat(400))] {
-        let items = (0..count)
-            .map(|i| {
-                json!({ "handle": format!("i{i:02}"),
-            "name": "n", "extension": "txt", "context": context, "size_bucket": 0 })
-            })
-            .collect();
-        let s = summary("synthetic", Some(items));
-        assert!(disclosure_text(&s).len() < loomward_desktop::dialogs::MAX_DISCLOSURE_CHARS);
-        let (dialogs, shown) = recording(DatasetClass::Synthetic, true);
-        assert!(!dialogs.confirm_disclosure(&s));
-        assert!(shown.lock().unwrap().is_empty());
-        assert!(dialogs.confirm_disclosure(&summary("synthetic", None)));
-    }
+fn disclosure_height_budget_declines_wrapped_lines() {
+    let items = (0..3)
+        .map(|i| {
+            json!({ "handle": format!("i{i:02}"),
+            "name": "n", "extension": "txt", "context": "c".repeat(400), "size_bucket": 0 })
+        })
+        .collect();
+    let s = summary("synthetic", Some(items));
+    assert!(disclosure_text(&s).len() < loomward_desktop::dialogs::MAX_DISCLOSURE_CHARS);
+    let (dialogs, shown) = recording(DatasetClass::Synthetic, true);
+    assert!(dialogs.confirm_disclosure(&s).is_err());
+    assert!(shown.lock().unwrap().is_empty());
+    assert!(dialogs
+        .confirm_disclosure(&summary("synthetic", None))
+        .unwrap());
 }
 
 #[test]

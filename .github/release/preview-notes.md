@@ -21,9 +21,8 @@ early testers, built from commit `{{SHA}}`.
   would read file contents, and learning from your feedback are gated off in personal sessions in
   this build. Nothing is sent anywhere: no cloud, no teacher model, no network requests, no model
   downloads.
-- **Read-only, simulation-only.** No file or process effect exists in this build: nothing moves,
-  deletes, renames, writes, kills, suspends, reprioritises or trims anything on your machine. The
-  only files it writes are its own: its state under `%LOCALAPPDATA%\Loomward\v3\` and the WebView2
+- **Read-only, simulation-only.** Loomward never moves, deletes, renames or writes your files, and
+  never kills, suspends, reprioritises or trims your processes. The only files it writes are its own: its state under `%LOCALAPPDATA%\Loomward\v3\` and the WebView2
   browser data under `%LOCALAPPDATA%\dev.loomward.desktop\`. Uninstalling leaves the state folder;
   delete it to remove the app's state.
 - **Per-user install.** No administrator rights are needed. The installer fetches nothing from the

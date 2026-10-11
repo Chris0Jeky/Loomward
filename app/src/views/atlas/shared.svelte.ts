@@ -5,6 +5,7 @@ import { escapedName } from '../../lib/format/names';
 import { session } from '../../lib/stores/session.svelte';
 import type { Anchor, Basis, TreeSlice } from '../../lib/contracts.gen';
 import type { NodeInfo, Palette, SliceLike, SliceNodeLike } from '../../../viz/types.js';
+import { validateSlice } from '../../../viz/layout.js';
 
 /** Read the viz palette from the CSS tokens of the current theme (styles/tokens.css is the only source). */
 export function readPalette(): Palette {
@@ -178,6 +179,7 @@ export class SliceNav {
         anchor: here.anchor, depth: this.opts.depth, max_nodes: this.opts.maxNodes, min_share: this.opts.minShare, basis, include_files: true,
       });
       if (mine !== this.ticket) return false;
+      validateSlice(result, this.opts.maxNodes);
       this.trail = trail;
       this.basis = basis;
       this.slice = result;

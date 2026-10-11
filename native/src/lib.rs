@@ -37,10 +37,18 @@ impl Drop for CallPermit {
     }
 }
 
-struct SlotGuard(Arc<Slot>);
+type Streams = Arc<Mutex<HashMap<String, Vec<Arc<Slot>>>>>;
+struct SlotGuard(Arc<Slot>, Streams, String);
 impl Drop for SlotGuard {
     fn drop(&mut self) {
         self.0.done.store(true, Ordering::SeqCst);
+        let mut streams = self.1.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(open) = streams.get_mut(&self.2) {
+            open.retain(|slot| !Arc::ptr_eq(slot, &self.0));
+            if open.is_empty() {
+                streams.remove(&self.2);
+            }
+        }
     }
 }
 struct Pump {
@@ -69,7 +77,7 @@ pub struct Desktop {
     dataset: DatasetClass,
     dialogs: Arc<dyn NativeDialogs>,
     /// Open streams by webview label.
-    streams: Mutex<HashMap<String, Vec<Arc<Slot>>>>,
+    streams: Streams,
     calls: Arc<AtomicUsize>,
 }
 
@@ -83,7 +91,7 @@ impl Desktop {
             service,
             dataset,
             dialogs,
-            streams: Mutex::new(HashMap::new()),
+            streams: Arc::new(Mutex::new(HashMap::new())),
             calls: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -184,7 +192,7 @@ impl Desktop {
             open.push(slot.clone());
         }
         // Own both resources before calling the service/sink; unwinding releases the slot too.
-        let guard = SlotGuard(slot);
+        let guard = SlotGuard(slot, self.streams.clone(), webview.to_string());
         let mut pump = Pump {
             slot: guard,
             stream: self.service.subscribe(resume(last_epoch, last_seq)),
@@ -280,6 +288,30 @@ pub fn resume(last_epoch: Option<String>, last_seq: Option<u64>) -> Option<(Stri
             Some((epoch, seq.unwrap_or(0)))
         }
     }
+}
+
+#[cfg(test)]
+#[test]
+fn failed_stream_open_releases_the_webview_entry_immediately() {
+    let (service, desktop) = selftest::fixture_desktop(Duration::from_millis(30)).unwrap();
+    for i in 0..8 {
+        assert!(desktop
+            .open_stream(&format!("fixture-{i}"), None, None, |_| false)
+            .is_err());
+        assert_eq!(service.open_streams(), 0);
+        assert!(
+            desktop.lock().is_empty(),
+            "dead webview retained after failed open"
+        );
+    }
+    desktop
+        .open_stream("control", None, None, |_| true)
+        .unwrap();
+    assert_eq!(desktop.open_streams("control"), 1);
+    desktop.close_webview("control");
+    assert!(selftest::wait_until(Duration::from_secs(3), || desktop
+        .lock()
+        .is_empty()));
 }
 
 /// UTC now with milliseconds and a literal `Z` (`semantics.md` section 9).
