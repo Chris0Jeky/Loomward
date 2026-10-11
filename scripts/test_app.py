@@ -36,6 +36,7 @@ from urllib.parse import urlsplit
 
 from playwright.sync_api import Page, expect, sync_playwright
 
+from test_app_collections import run_collections, run_live_collections
 from test_app_a11y import run_a11y
 from test_app_views import run_views, wait_until
 
@@ -336,12 +337,13 @@ def run_live_serve(browser_path: str | None) -> None:
             page.wait_for_timeout(1500)  # the SSE stream stays open: still connected
             expect(status).to_contain_text('Connected')
             print('PASS http transport connected through loomward-serve')
+            run_live_collections(page, token, Path(state.name), check)
             live_scan_refusals(browser, exe)
             live_personal_scan(browser, exe)
 
             proc.terminate()
             proc.wait(timeout=10)
-            expect(page.get_by_role('alert')).to_contain_text('Unavailable', timeout=15000)
+            expect(page.get_by_role('alert').filter(has_text='Unavailable')).to_contain_text('Unavailable', timeout=15000)
             expect(status).to_contain_text('Dataset unknown')
             print('PASS a stopped server flips the shell to unavailable')
 
@@ -584,7 +586,7 @@ def main() -> None:
         print('PASS a reload of the tab keeps the session without the fragment')
 
         engine.down = True
-        expect(page.get_by_role('alert')).to_contain_text('Unavailable', timeout=10000)
+        expect(page.get_by_role('alert').filter(has_text='Unavailable')).to_contain_text('Unavailable', timeout=10000)
         expect(page.get_by_role('status', name='Session status')).to_contain_text('Dataset unknown')
         check(page.locator('main h1', has_text='Explorer').count() == 0, 'the view is gone while the engine is down')
         engine.down = False
@@ -595,6 +597,7 @@ def main() -> None:
         check_resume(page)
 
         # --- product views (lane L13): Explorer, Tiers, Companion, Grants & health ------------------
+        run_collections(page, base)
         run_views(page, base, a.view_shots)
 
         # --- hygiene -------------------------------------------------------------------------------

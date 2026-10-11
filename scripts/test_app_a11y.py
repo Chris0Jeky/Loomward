@@ -189,7 +189,7 @@ def run_a11y(browser: Browser, base: str, check) -> None:
         pinned = m['h'] / m['vh'] if m['p'] in ('sticky', 'fixed') else 0.0
         check(pinned < 0.30, f"1.4.10 masthead pins {pinned:.0%} of the viewport at {w}x{h} ({label}); position {m['p']}, height {m['h']:.0f}px")
         check(m['rail'] not in ('sticky', 'fixed'), f"1.4.10 the rail does not pin at {w}x{h}")
-        for view, heading in (('explorer', 'Explorer'), ('atlas', 'Atlas'), ('observatory', 'Observatory'), ('companion', 'Companion'), ('health', 'Grants & health')):
+        for view, heading in (('explorer', 'Explorer'), ('collections', 'Collections'), ('atlas', 'Atlas'), ('observatory', 'Observatory'), ('companion', 'Companion'), ('health', 'Grants & health')):
             goto(page, base, view, heading)
             expect(page.locator('main canvas, main table').first).to_be_visible()
             if view in ('atlas', 'observatory'):
@@ -221,7 +221,7 @@ def run_a11y(browser: Browser, base: str, check) -> None:
 
     # --- unique names, row headers, dangling references (2.4.6, 4.1.2, 1.3.1) ---------------------------------------
     page = new_page()
-    for view, heading in (('explorer', 'Explorer'), ('atlas', 'Atlas'), ('observatory', 'Observatory'), ('tiers', 'Tiers'), ('companion', 'Companion'), ('health', 'Grants & health')):
+    for view, heading in (('explorer', 'Explorer'), ('collections', 'Collections'), ('atlas', 'Atlas'), ('observatory', 'Observatory'), ('tiers', 'Tiers'), ('companion', 'Companion'), ('health', 'Grants & health')):
         goto(page, base, view, heading)
         expect(page.locator('main canvas, main table, main .vols').first).to_be_visible()
         if view in ('atlas', 'observatory'):
@@ -379,7 +379,7 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     check('hidden character' not in page.locator('main .ctl').first.inner_text(), 'badge: the visible text is still only the code')
 
     # --- 2.5.8: target size ---------------------------------------------------------------------------------------------
-    for view, heading in (('explorer', 'Explorer'), ('atlas', 'Atlas'), ('observatory', 'Observatory'), ('tiers', 'Tiers'), ('companion', 'Companion'), ('health', 'Grants & health')):
+    for view, heading in (('explorer', 'Explorer'), ('collections', 'Collections'), ('atlas', 'Atlas'), ('observatory', 'Observatory'), ('tiers', 'Tiers'), ('companion', 'Companion'), ('health', 'Grants & health')):
         goto(page, base, view, heading)
         page.wait_for_timeout(300)
         small = page.evaluate("""() => [...document.querySelectorAll('button, a[href], select, input')].filter((el) => !el.closest('.skip') && !el.classList.contains('skip')).flatMap((el) => {

@@ -5,13 +5,14 @@
 <script lang="ts">
   import { tick, untrack } from 'svelte';
   import { formatBytes } from '../../lib/format/bytes';
-  import { hasHiddenCharacters } from '../../lib/format/names';
+  import { hasHiddenCharacters, escapedName } from '../../lib/format/names';
   import { formatCount, formatTime } from '../../lib/format/time';
   import { LoomwardError } from '../../lib/transport/client';
   import { FALLBACK_NOTICE, onRefetchError } from './refetch';
   import { session } from '../../lib/stores/session.svelte';
+  import AddToCollection from '../../lib/ui/AddToCollection.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
-  import type { Basis, EntryPage, EntryRow, NodeId } from '../../lib/contracts.gen';
+  import type { Basis, EntryPage, EntryRow, NodeId, NodeDetail } from '../../lib/contracts.gen';
 
   type Sort = 'size_desc' | 'name_asc' | 'modified_desc';
   interface Crumb { id: NodeId; name: string }
@@ -19,6 +20,20 @@
   const PAGE = 50;
   const SIZES: [string, string][] = [['Any size', ''], ['1 MiB or more', '1048576'], ['100 MiB or more', '104857600'], ['1 GiB or more', '1073741824']];
 
+  let detail = $state<NodeDetail | null>(null);
+  let inspectError = $state('');
+  let inspector = $state<HTMLElement>();
+  let inspection = 0;
+  async function inspect(row: EntryRow): Promise<void> {
+    const mine = ++inspection;
+    detail = null; inspectError = '';
+    try {
+      const { result } = await session.client!.call('node.inspect', { node_id: row.node_id });
+      if (mine !== inspection) return;
+      detail = result;
+      await tick(); inspector?.focus();
+    } catch (e) { if (mine === inspection) inspectError = session.handle(e); }
+  }
   let starts = $state<Crumb[]>([]);
   let trail = $state<Crumb[]>([]);
   let rows = $state<EntryRow[]>([]);
@@ -263,7 +278,7 @@
           <th scope="col">Name</th><th scope="col">Kind</th>
           <th scope="col" class="r" class:basis={basis === 'logical'}>Logical</th>
           <th scope="col" class="r" class:basis={basis === 'allocated'}>Allocated</th>
-          <th scope="col" class="r">Files</th><th scope="col">Modified</th><th scope="col">Notes</th>
+          <th scope="col" class="r">Files</th><th scope="col">Modified</th><th scope="col">Notes</th><th scope="col">Inspect</th>
         </tr>
       </thead>
       <tbody>
@@ -287,9 +302,10 @@
               {#if r.coverage !== 'complete'}<span class="tag warn">{r.coverage}</span>{/if}
               {#each r.flags as f (f)}<span class="tag">{f.replaceAll('_', ' ')}</span>{/each}
             </td>
+            <td><button class="btn" type="button" aria-label={`Inspect ${escapedName(r.name)}`} onclick={() => void inspect(r)}>Inspect</button></td>
           </tr>
         {:else}
-          <tr><td colspan="7" class="muted">{busy ? 'Loading' : error ? 'Nothing is shown because the last request failed.' : 'Nothing to show.'}</td></tr>
+          <tr><td colspan="8" class="muted">{busy ? 'Loading' : error ? 'Nothing is shown because the last request failed.' : 'Nothing to show.'}</td></tr>
         {/each}
       </tbody>
     </table>
@@ -300,6 +316,17 @@
     {#if next}<button class="btn" type="button" aria-disabled={busy} bind:this={moreEl} onclick={() => { if (!busy) void show(true); }}>Load more</button>{/if}
   </div>
 </section>
+
+<p class="live bad" role="alert">{inspectError}</p>
+{#if detail}
+  <section class="panel" aria-label="Node inspector">
+    <h2 tabindex="-1" bind:this={inspector}><VisibleName name={detail.row.name} /></h2>
+    <p class="muted">Logical size {formatBytes(detail.row.logical_bytes)} ? {detail.row.kind}</p>
+    {#if detail.identity.durable_reference === 'available'}
+      {#key detail.row.node_id}<AddToCollection nodeId={detail.row.node_id} />{/key}
+    {:else}<p class="muted">This node has no durable identity, so it cannot join a collection.</p>{/if}
+  </section>
+{/if}
 
 <style>
   .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
