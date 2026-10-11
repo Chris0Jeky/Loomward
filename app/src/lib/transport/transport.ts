@@ -46,9 +46,10 @@ export class ResumeTracker {
   accept(ev: EventEnvelope): boolean {
     if (ev.event === 'stream.hello') {
       const d = ev.data as { epoch?: unknown; last_seq?: unknown };
-      if (typeof d.epoch === 'string' && Number.isSafeInteger(d.last_seq)) {
-        this.helloLast = d.last_seq as number;
-        if (this.point?.epoch !== d.epoch) this.point = { epoch: d.epoch, seq: d.last_seq as number };
+      this.helloLast = null;
+      if (d.epoch === ev.epoch && Number.isSafeInteger(d.last_seq) && (d.last_seq as number) >= 0) {
+        this.helloLast = Math.min(ev.seq, d.last_seq as number);
+        if (this.point?.epoch !== ev.epoch) this.point = { epoch: ev.epoch, seq: this.helloLast };
       }
       return true;
     }

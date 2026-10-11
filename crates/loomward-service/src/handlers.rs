@@ -113,11 +113,10 @@ impl Inner {
                 ))
             }
             GrantsList => self.grants_list(),
-            VolumesList => {
-                let revs = self.revisions()?;
-                Ok(out(json!({"volumes": self.volumes(None)?}), Some(revs)))
-            }
+            VolumesList => self.placement_command(req, command, work),
             VolumesDeclareTier => self.declare_tier(req.decode_payload()?, req.expected_state_rev),
+            DuplicatesInspect => self.duplicates_inspect(req),
+            DuplicatesCancel => self.duplicates_cancel(req.decode_payload()?),
             ScanStart => self.scan_start(req.decode_payload()?),
             ScanCancel => engine(
                 self.engine
@@ -150,7 +149,7 @@ impl Inner {
             SearchQuery => self.search(req, work),
             StatsBreakdown => self.breakdown(req, work),
             TiersModel | PlacementCandidates | PlacementSimulate | ProposalsList | ProposalsGet => {
-                unavailable("placement is not wired to the catalogue yet")
+                self.placement_command(req, command, work)
             }
             TelemetrySubscribe => engine(self.engine.telemetry_lease(&req.decode_payload()?)),
             TelemetryUnsubscribe => engine(self.engine.telemetry_release(&req.decode_payload()?)),
@@ -167,18 +166,11 @@ impl Inner {
     }
 
     /// `scan.start` (docs/41 section 7): a synthetic session scans its registered lab roots
-    /// only. The engine mints the root from the active grant row and checks its identity; the
+    /// only; a personal session scans only the folders its owner granted (picker or CLI), never
+    /// a lab root. Metadata only: personal scans opened once gates #184, #206, #240 and #269
+    /// closed. The engine mints the root from the active grant row and checks its identity; the
     /// job's events (`job.state`, final `scan.progress`, `tree.invalidated`) follow the commits.
     fn scan_start(&self, r: ScanStartRequest) -> Handled {
-        if self.dataset == DatasetClass::Personal {
-            return Err(with_reason(
-                fail(
-                    ErrorCode::CapabilityUnavailable,
-                    "personal scanning is not available yet: folder watching must first never block renames and must notice attribute changes",
-                ),
-                "personal_scan_gated_184",
-            ));
-        }
         let row = self.root_row(&r.root_id)?;
         let root = db::roots(&self.db(), Some(row))
             .map_err(sql_error)?
@@ -191,14 +183,34 @@ impl Inner {
                 "the root's grant is not active",
             ));
         }
-        if root.origin != "lab_generated" {
-            return Err(with_reason(
-                fail(
-                    ErrorCode::PermissionDenied,
-                    "a synthetic session scans registered lab roots only",
-                ),
+        let (origin, message, reason) = match self.dataset {
+            DatasetClass::Synthetic => (
+                "lab_generated",
+                "a synthetic session scans registered lab roots only",
                 "synthetic_session_requires_lab_root",
+            ),
+            DatasetClass::Personal => (
+                "owner_granted",
+                "a personal session scans the folders you granted only",
+                "personal_session_requires_owner_grant",
+            ),
+        };
+        if root.origin != origin {
+            return Err(with_reason(
+                fail(ErrorCode::PermissionDenied, message),
+                reason,
             ));
+        }
+        if self.dataset == DatasetClass::Personal {
+            self.stored_grant_fence(&root).map_err(|r| {
+                with_reason(
+                    fail(
+                        ErrorCode::PermissionDenied,
+                        "the granted folder is not eligible under the current rules",
+                    ),
+                    &refusal_name(r),
+                )
+            })?;
         }
         let dir = root
             .dir
@@ -226,6 +238,28 @@ impl Inner {
         Ok(out(encode(&JobResult { job })?, None))
     }
 
+    /// #312: a stored grant may predate today's fences (#253, #284, #286), so the path rules run
+    /// again before any engine call: the profile, profiles-directory and store fence, the
+    /// state-directory overlap, and a volume root only from the native picker. Fails closed.
+    /// The engine's identity check still binds the scan to the grant's folder after this.
+    fn stored_grant_fence(&self, root: &db::RootRow) -> Result<(), RootGrantResultRefusal> {
+        let profile = |p: &std::path::Path| {
+            #[cfg(test)]
+            if let Some((profile, profiles)) = self.hooks.profile.lock().unwrap().clone() {
+                return paths::check_profile_with(p, Some(profile), Some(profiles));
+            }
+            paths::check_profile(p)
+        };
+        paths::check_root_with(
+            std::path::Path::new(&root.display_path),
+            Some(&self.state_dir),
+            &[],
+            root.granted_via == "desktop_picker",
+            profile,
+        )
+        .map(drop)
+    }
+
     fn hello(&self, ctx: &CallContext) -> Handled {
         let personal = self.dataset == DatasetClass::Personal;
         let f = false;
@@ -239,10 +273,10 @@ impl Inner {
                 "enumeration_strategy": "file_id_extd_directory_info",
                 "capabilities": {
                     "observation": {
-                        // Honest: scans run for synthetic lab roots on Windows only (personal
-                        // scans wait for #184); telemetry observes personal hosts only; the
-                        // teacher stays disabled (confinement_not_enforced).
-                        "metadata_scan": !personal && cfg!(windows),
+                        // Honest: metadata scans run on Windows only (lab roots in a synthetic
+                        // session, granted folders in a personal one); telemetry observes
+                        // personal hosts only; the teacher stays disabled (confinement_not_enforced).
+                        "metadata_scan": cfg!(windows),
                         "process_observation": personal,
                         "gpu_observation": f,
                         "disk_io_observation": personal,
@@ -525,17 +559,19 @@ impl Inner {
                 None,
             ));
         };
-        // Nested or overlapping roots are refused like a repeated grant.
-        let existing: Vec<std::path::PathBuf> = db::roots(&self.db(), None)
-            .map_err(sql_error)?
-            .iter()
-            .filter(|r| r.grant_state == "active")
-            .filter_map(|r| std::path::Path::new(&r.display_path).canonicalize().ok())
-            .collect();
-        let path = match paths::check_root(&picked, Some(&self.state_dir), &existing, true) {
+        // Nested or overlapping roots are refused like a repeated grant. A stored grant that no
+        // longer resolves still counts (one rule with `--static`, #224).
+        let path = match paths::check_root(&picked, Some(&self.state_dir), &[], true) {
             Ok(p) => p,
             Err(r) => return refused(r),
         };
+        if db::active_root_paths(&self.db())
+            .map_err(sql_error)?
+            .iter()
+            .any(|stored| paths::overlaps_stored(&path, stored))
+        {
+            return refused(RootGrantResultRefusal::AlreadyGranted);
+        }
         let (root, fresh) = match self.grant(&path, "desktop_picker") {
             Ok(g) => g,
             Err(crate::Refused::Rule(r)) => return refused(r),
@@ -569,8 +605,10 @@ impl Inner {
 
     fn volumes(&self, only: Option<i64>) -> Result<Vec<Value>, ErrorBody> {
         let rows = db::volumes(&self.db(), only).map_err(sql_error)?;
+        // db::volumes reads one row past the bound so volumes.list can refuse; a change notice keeps 64.
         Ok(rows
             .iter()
+            .take(64)
             .map(|v| {
                 let declared = v.declared.flatten();
                 json!({

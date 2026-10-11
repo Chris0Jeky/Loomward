@@ -40,8 +40,9 @@ Research prototype, not a file manager or system optimiser.
 
 - **Scanning through the product.** `loomward-serve` runs the L8 view service over the engine and
   catalogue (#179). Since #205, `scan.start` runs for synthetic lab roots registered with the
-  service. Personal sessions answer `capability_unavailable` with reason
-  `personal_scan_gated_184` until the scan-writer and change-tracking gates (#206, #184) land. `loomward-serve --fixtures`
+  service. Since the four personal-scan safety gates closed (#184, #206, #240, #269), a personal
+  session scans the folders its owner granted (desktop picker or `--grant-root`): metadata only,
+  explicit roots, never elevated; a revoked grant, a lab root or an unknown root is refused. `loomward-serve --fixtures`
   and the desktop shell answer every command, `scan.start` included, from the contract's example fixtures; those
   are not scans. Native enumeration has
   been measured only on synthetic lab trees and on four owner-authorised real folders, read-only,

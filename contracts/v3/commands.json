@@ -24,6 +24,8 @@
     "volumes.list":               { "request": "EmptyRequest",              "result": "VolumeList",            "adapters": ["tauri", "http"], "wave": 2, "effects": "none" },
     "volumes.declare_tier":       { "request": "DeclareTierRequest",        "result": "DeclareTierResult",     "adapters": ["tauri", "http"], "wave": 2, "effects": "none", "note": "Recovery after an unknown outcome never resends blindly: same request_id while retained, else read volumes.list and replay only with expected_state_rev (semantics.md section 3)." },
     "scan.start":                 { "request": "ScanStartRequest",          "result": "JobResult",             "adapters": ["tauri", "http"], "wave": 2, "effects": "none", "events": ["job.state", "scan.progress", "tree.invalidated"] },
+    "duplicates.inspect":         { "request": "DuplicatesInspectRequest", "result": "JobResult", "adapters": ["tauri", "http"], "wave": 2, "effects": "none", "events": ["job.state"] },
+    "duplicates.cancel":          { "request": "JobRefRequest", "result": "JobResult", "adapters": ["tauri", "http"], "wave": 2, "effects": "none", "events": ["job.state"] },
     "scan.cancel":                { "request": "JobRefRequest",             "result": "JobResult",             "adapters": ["tauri", "http"], "wave": 2, "effects": "none", "events": ["job.state"] },
     "jobs.get":                   { "request": "JobRefRequest",             "result": "JobResult",             "adapters": ["tauri", "http"], "wave": 2, "effects": "none" },
     "jobs.list":                  { "request": "JobListRequest",            "result": "JobList",               "adapters": ["tauri", "http"], "wave": 2, "effects": "none" },

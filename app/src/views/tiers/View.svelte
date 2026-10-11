@@ -11,7 +11,7 @@
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import { Say } from '../../lib/ui/say.svelte';
   import { firstTrusted, isSound, type Outcome } from './plan';
-  import type { CandidateGroup, GroupOverride, PlacementCandidates, PlacementPlan, TierInfo, TierModel, TierVolume } from '../../lib/contracts.gen';
+  import type { CandidateGroup, GroupOverride, PlacementCandidates, PlacementPlan, ProposalDetail, ProposalSummary, TierInfo, TierModel, TierVolume } from '../../lib/contracts.gen';
   import type { HeatPolicy, PreRejectReason, RejectReason, ReliefPolicy } from '../../lib/derived';
 
   interface Assumption { heat: '' | '0.1' | '0.5' | '0.9'; free: boolean }
@@ -53,6 +53,10 @@
   let shown = $state<'none' | HeatPolicy>('unknown_is_ineligible');
   let simulating = $state(false);
   let formError = $state('');
+  let declaring = $state(false);
+  let save = $state(false);
+  let saved = $state<ProposalSummary[]>([]);
+  let savedDetail = $state<ProposalDetail | null>(null);
   const say = new Say(); // result announcements; the Simulate button keeps focus
   let modelTicket = 0;
   let candTicket = 0;
@@ -72,6 +76,9 @@
     const c = session.client;
     const v = src;
     outcomes = null;
+    savedDetail = null;
+    simTicket++;
+    simulating = false;
     cands = null;
     if (!c || !v) return;
     const mine = ++candTicket;
@@ -96,11 +103,44 @@
       const keep = result.volumes.find((v) => v.volume_id === source && v.tier.tier !== null);
       source = (keep ?? result.volumes.find((v) => v.pressure === 'pressure' && v.tier.tier !== null) ?? result.volumes.find((v) => v.tier.tier !== null))?.volume_id ?? '';
       await loadCandidates();
+      await loadProposals();
     } catch (e) {
       if (mine === modelTicket) { model = null; error = session.handle(e); }
     } finally {
       if (mine === modelTicket) loading = false;
     }
+  }
+
+  async function declareTier(id: string, value: string) {
+    if (!session.client || declaring) return;
+    declaring = true;
+    try {
+      await session.client.call('volumes.declare_tier', { volume_id: id, tier: value === '' ? null : Number(value) });
+      await loadModel();
+      say.say('Tier preference recorded. Nothing is moved.');
+    } catch (e) { error = session.handle(e); }
+    finally { declaring = false; }
+  }
+
+  async function loadProposals() {
+    if (!session.client) return;
+    const { result } = await session.client.call('proposals.list', {});
+    saved = result.proposals;
+  }
+
+  async function loadSaved(id: string) {
+    const c = session.client;
+    if (!c) return;
+    const mine = ++modelTicket;
+    try {
+      const { result } = await c.call('proposals.get', { proposal_id: id });
+      if (mine !== modelTicket) return;
+      source = result.summary.source_volume_id;
+      await loadCandidates();
+      if (mine !== modelTicket) return;
+      savedDetail = result;
+      say.say(`Saved scenario shown. ${result.summary.status === 'stale' ? 'Its inputs have changed; this is historical.' : 'Simulation only.'}`);
+    } catch (e) { if (mine === modelTicket) error = session.handle(e); }
   }
 
   function choose(id: string) {
@@ -138,16 +178,18 @@
     const mine = ++simTicket;
     simulating = true;
     say.say('Simulating.');
-    const base = { source_volume_id: src.volume_id, target_free_bytes: target.toString(), max_transfer_bytes: cap_.toString(), relief_policy: relief, candidate_basis: 'largest_dirs' as const, max_groups: 50, overrides: overrides(), node_budget: 100000, save: false };
-    const settled = await Promise.allSettled(HEAT.map((h) => c.call('placement.simulate', { ...base, heat_policy: h.id })));
+    const base = { source_volume_id: src.volume_id, target_free_bytes: target.toString(), max_transfer_bytes: cap_.toString(), relief_policy: relief, candidate_basis: 'largest_dirs' as const, max_groups: 50, overrides: overrides(), node_budget: 100000, save };
+    const settled = await Promise.allSettled(HEAT.map((h) => c.call('placement.simulate', { ...base, heat_policy: h.id }, { deadlineMs: 10000 })));
     if (mine !== simTicket) return;
     simulating = false;
+    savedDetail = null;
     outcomes = Object.fromEntries(HEAT.map((h, i) => {
       const s = settled[i]!;
       return [h.id, s.status === 'fulfilled' ? { plan: s.value.result } : { error: session.handle(s.reason) }];
     })) as Record<HeatPolicy, Outcome>;
     shown = 'unknown_is_ineligible';
     say.say(`Simulation finished. ${summary()}`);
+    try { await loadProposals(); } catch (e) { error = session.handle(e); }
   }
 
   /** One sentence about the plan on show, for the live region (the tables hold the detail). */
@@ -163,11 +205,12 @@
 
   function show(id: 'none' | HeatPolicy) {
     shown = id;
+    savedDetail = null;
     say.say(summary());
   }
 
   const detail = $derived(outcomes && shown !== 'none' ? outcomes[shown] : null);
-  const detailPlan = $derived(detail && 'plan' in detail ? detail.plan : null);
+  const detailPlan = $derived(savedDetail?.plan ?? (detail && 'plan' in detail ? detail.plan : null));
   const firstPlan = $derived(firstTrusted(outcomes));
   const baseline = $derived(firstPlan ? BigInt(firstPlan.baseline_shortfall_bytes) : null);
 </script>
@@ -196,6 +239,12 @@
           </div>
           <p class="num">{formatBytes(v.free_bytes)} free of {formatBytes(v.capacity_bytes)} · {percent(v.free_fraction)} <span class={`tag pr-${v.pressure}`}>{PRESSURE[v.pressure]}</span></p>
           <p class="muted small">{v.tier.note}</p>
+          <label class="field">Declared tier
+            <select aria-label={`Declared tier for ${escapedName(v.display_name)}`} value={v.tier.declared_tier ?? ''} disabled={declaring} onchange={(e) => void declareTier(v.volume_id, e.currentTarget.value)}>
+              <option value="">Unknown / use device hint</option>
+              {#each Array.from({ length: 10 }, (_, i) => i) as tier (tier)}<option value={tier}>Tier {tier}</option>{/each}
+            </select>
+          </label>
           <button class="btn" type="button" aria-pressed={v.volume_id === source} disabled={v.tier.tier === null || !v.online} onclick={() => choose(v.volume_id)}>
             {v.volume_id === source ? 'Source volume' : 'Use as source'}<span class="sr-only">: {escapedName(v.display_name)}</span>
           </button>
@@ -266,6 +315,7 @@
         <option value="entry_allocation_whatif">Entry allocation (what-if)</option>
       </select>
     </label>
+    <label class="chk"><input type="checkbox" bind:checked={save} /> Keep these scenarios</label>
     <button class="btn primary" type="submit" disabled={!cands || !cands.groups.length} aria-disabled={simulating}>{simulating ? 'Simulating' : 'Simulate'}</button>
   </form>
   <p class="bad live" class:has={!!formError} role="alert">{formError}</p>
@@ -308,6 +358,16 @@
   {/if}
 </section>
 
+<section class="panel" aria-labelledby="h-saved">
+  <h2 id="h-saved">Saved scenarios</h2>
+  <p class="muted small">Stored simulations only. Changed inputs are marked stale; nothing can be executed here.</p>
+  <ul class="list">
+    {#each saved as scenario (scenario.proposal_id)}
+      <li><button class="btn" type="button" onclick={() => void loadSaved(scenario.proposal_id)}>Show saved scenario {formatTime(scenario.created_at)}</button> <span class="tag">{scenario.status === 'stale' ? 'Stale' : 'Simulation only'}</span></li>
+    {:else}<li class="muted">No saved scenarios.</li>{/each}
+  </ul>
+</section>
+
 {#if outcomes && shown === 'none'}
   <section class="panel" aria-labelledby="h-none">
     <h2 id="h-none">Do nothing</h2>
@@ -326,6 +386,7 @@
   {@const p = detailPlan}
   <section class="panel" aria-labelledby="h-plan">
     <h2 id="h-plan">Placement plan</h2>
+    {#if savedDetail?.summary.status === 'stale'}<p class="tag warn" role="note">Historical scenario: its inputs have changed. These figures describe the saved simulation.</p>{/if}
     <p class="simlabel">Simulation · executable: {String(p.proposals.some((x) => x.executable))} · filesystem_changed: {String(p.filesystem_changed)}</p>
     <dl class="kv">
       <dt>Target free</dt><dd class="num">{formatBytes(p.target_free_bytes)} on {src ? vname(src.volume_id) : 'the source'}</dd>
@@ -353,7 +414,7 @@
           <tbody>
             {#each p.proposals as x (x.group_id)}
               <tr>
-                <td><VisibleName name={group(x.group_id)?.name ?? x.group_id} /></td>
+                <th scope="row"><VisibleName name={group(x.group_id)?.name ?? x.group_id} /></th>
                 <td><VisibleName name={vname(x.source_id)} /></td><td><VisibleName name={vname(x.target_id)} /></td>
                 <td class="r num">{formatBytes(x.source_bytes_relieved)}</td><td class="r num">{formatBytes(x.destination_bytes_required)}</td><td class="r num">{formatBytes(x.transfer_bytes)}</td>
                 <td><span class="tag">consent required</span> <span class="tag">not executable</span></td>

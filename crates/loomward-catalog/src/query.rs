@@ -17,7 +17,7 @@ pub struct Reader {
     pub(crate) writer: Option<Arc<Writer>>,
     pub live_clamp_count: u64,
     breakdowns: HashMap<(i64, String, Basis, usize, String), Breakdown>,
-    deadline: Option<std::time::Instant>,
+    pub(crate) deadline: Option<std::time::Instant>,
 }
 pub(crate) const DIR_COLUMNS:&str="d.id,0 kind,d.name,d.sub_logical logical,d.sub_allocated allocated,d.sub_alloc_unknown unknown,d.sub_files files,d.sub_dirs dirs,d.modified_ft,d.attrs,d.flags,NULL extension,NULL family,coalesce(d.listing_outcome,CASE d.listing_state WHEN 'unlisted' THEN 'unscanned' WHEN 'incomplete' THEN 'partial' ELSE d.listing_state END),d.sub_complete complete,d.parent_id,d.root_id,d.file_id,d.created_ft,d.changed_ft,NULL accessed_ft,d.born_run,d.agg_valid_rev>=d.dirty_rev valid";
 pub(crate) const FILE_COLUMNS:&str="f.id,1 kind,f.name,f.logical,coalesce(f.allocated,0) allocated,(f.allocated IS NULL) unknown,1 files,0 dirs,f.modified_ft,f.attrs,f.flags,e.ext extension,e.family,CASE WHEN d.listing_state='incomplete' AND f.seen_run!=d.seen_run THEN 'stale' ELSE coalesce(d.listing_outcome,CASE d.listing_state WHEN 'unlisted' THEN 'unscanned' WHEN 'incomplete' THEN 'partial' ELSE d.listing_state END) END,1 complete,f.dir_id parent_id,d.root_id,f.file_id,f.created_ft,f.changed_ft,f.accessed_ft,f.born_run,1 valid";
@@ -285,12 +285,12 @@ pub(crate) fn direct(
     Ok(rows)
 }
 // Every early return removes the progress handler.
-struct WorkGuard<'a> {
+pub(crate) struct WorkGuard<'a> {
     conn: &'a Connection,
     hit: Arc<std::sync::atomic::AtomicBool>,
 }
 impl<'a> WorkGuard<'a> {
-    fn new(
+    pub(crate) fn new(
         conn: &'a Connection,
         budget: u64,
         deadline: Option<std::time::Instant>,
@@ -640,7 +640,7 @@ if c.catalog_rev!=catalog_rev||c.catalog_instance!=catalog_instance{return Err(E
         Ok(breakdown)
     }
 }
-fn node_path(conn: &Connection, key: NodeKey) -> Result<NodePath> {
+pub(crate) fn node_path(conn: &Connection, key: NodeKey) -> Result<NodePath> {
     let row = get(conn, key)?;
     let mut parts = vec![PathPart {
         node_id: key.reference(),

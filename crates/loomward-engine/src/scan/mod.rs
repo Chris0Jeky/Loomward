@@ -64,7 +64,7 @@ pub struct GrantedRoot {
     key: RootKey,
     path: PathBuf,
     dataset_class: DatasetClass,
-    expected: Option<source::OpenedIdentity>,
+    pub(crate) expected: Option<source::OpenedIdentity>,
 }
 impl GrantedRoot {
     // Minted by `Engine::granted_root` from a durable grant row, and by fixtures.
@@ -167,7 +167,21 @@ impl Engine {
         entries: &[loomward_windows::duplicate_reader::Entry],
         budget: loomward_windows::duplicate_reader::Budget,
     ) -> EngineResult<loomward_windows::duplicate_reader::Report> {
-        let cancel = self.duplicate_read_admission(root)?;
+        self.inspect_duplicates_cancel(root, entries, budget, None)
+    }
+    pub(crate) fn inspect_duplicates_cancel(
+        &self,
+        root: &GrantedRoot,
+        entries: &[loomward_windows::duplicate_reader::Entry],
+        budget: loomward_windows::duplicate_reader::Budget,
+        job_cancel: Option<Arc<AtomicBool>>,
+    ) -> EngineResult<loomward_windows::duplicate_reader::Report> {
+        let root_cancel = if job_cancel.is_some() {
+            self.duplicate_read_admission_worker(root)?
+        } else {
+            self.duplicate_read_admission(root)?
+        };
+        let cancel = job_cancel.unwrap_or_else(|| root_cancel.clone());
         let report = loomward_windows::duplicate_reader::inspect(
             &root.path,
             root.expected.as_ref().unwrap(),
@@ -183,14 +197,30 @@ impl Engine {
         let revoked = gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if revoked.revoked || cancel.load(Ordering::Acquire) {
+        if revoked.revoked || root_cancel.load(Ordering::Acquire) {
             return Err(EngineError::PermissionDenied {
                 message: "cancelled".into(),
             });
         }
         Ok(report)
     }
-    fn duplicate_read_admission(&self, root: &GrantedRoot) -> EngineResult<Arc<AtomicBool>> {
+    pub(crate) fn duplicate_read_admission(
+        &self,
+        root: &GrantedRoot,
+    ) -> EngineResult<Arc<AtomicBool>> {
+        self.duplicate_read_admission_inner(root, false)
+    }
+    pub(crate) fn duplicate_read_admission_worker(
+        &self,
+        root: &GrantedRoot,
+    ) -> EngineResult<Arc<AtomicBool>> {
+        self.duplicate_read_admission_inner(root, true)
+    }
+    fn duplicate_read_admission_inner(
+        &self,
+        root: &GrantedRoot,
+        wait: bool,
+    ) -> EngineResult<Arc<AtomicBool>> {
         use rusqlite::OpenFlags;
         let denied = |message: &str| EngineError::PermissionDenied {
             message: message.into(),
@@ -200,14 +230,20 @@ impl Engine {
             return Err(denied("content_read_gated"));
         }
         let gate = self.scan_root_gate(root.key());
-        let revoked = match gate.try_lock() {
-            Ok(guard) => guard,
-            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-            Err(std::sync::TryLockError::WouldBlock) => {
-                return Err(EngineError::Busy {
-                    message: "root already starting or revoking".into(),
-                    detail: None,
-                })
+        let revoked = if wait {
+            // Workers wait for the brief start/revocation fence; callers keep immediate busy.
+            gate.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        } else {
+            match gate.try_lock() {
+                Ok(guard) => guard,
+                Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    return Err(EngineError::Busy {
+                        message: "root already starting or revoking".into(),
+                        detail: None,
+                    })
+                }
             }
         };
         if revoked.revoked {
@@ -489,7 +525,7 @@ impl Engine {
                     ctx.cancel.clone(),
                     options.clone(),
                 )?;
-                ctx.set_scan_report(&report);
+                ctx.set_scan_report(&report)?;
                 Ok(if report.complete {
                     loomward_protocol::CoverageState::Complete
                 } else {
@@ -546,7 +582,7 @@ impl Engine {
                     options.clone(),
                     &watch,
                 )?;
-                ctx.set_scan_report(&report);
+                ctx.set_scan_report(&report)?;
                 Ok(if report.complete {
                     loomward_protocol::CoverageState::Complete
                 } else {
@@ -579,7 +615,7 @@ impl Engine {
         }
         self.job_cancel(id)
     }
-    /// Cancel all active scan jobs for a revoked root. Commit revocation before calling this.
+    /// Cancel active root jobs and redact retained duplicate evidence after durable revocation.
     pub fn scan_cancel_root(&self, root: &RootKey, wire_id: &RootId) -> EngineResult<Vec<Job>> {
         let gate = self.scan_root_gate(root);
         let mut revoked = gate
@@ -592,8 +628,8 @@ impl Engine {
         let cancelled = revoked
             .aliases
             .iter()
-            .flat_map(|id| self.jobs.root_jobs(id))
-            .map(|id| self.job_cancel(&id))
+            .flat_map(|id| self.jobs.root_jobs_for_revocation(id))
+            .map(|id| self.jobs.cancel_revoked(&id, &self.events))
             .collect();
         #[cfg(windows)]
         {

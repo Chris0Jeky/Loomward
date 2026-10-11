@@ -376,8 +376,42 @@ export interface DeclareTierResult {
   preference_recorded_at: Timestamp;
 }
 
+export interface DuplicateBudget {
+  max_candidates: number;
+  max_bytes: ByteCount;
+  max_ms: number;
+  min_bytes?: ByteCount;
+}
+
+export interface DuplicatesInspectRequest {
+  root_id: RootId;
+  budget: DuplicateBudget;
+}
+
+export interface DuplicateEntry {
+  relative_path: string;
+  logical_bytes: ByteCount;
+}
+
+export interface DuplicateSkip {
+  entry: number;
+  reason: string;
+}
+
+export interface DuplicateReport {
+  entries: DuplicateEntry[];
+  groups: number[][];
+  links: number[][];
+  links_not_compared: Count;
+  skipped: DuplicateSkip[];
+  bytes_read: ByteCount;
+  partial: boolean;
+  truncated: boolean;
+  stop: string | null;
+}
+
 /** placement.simulate is synchronous and bounded, never a job (semantics.md section 2). */
-export type JobKind = "scan" | "refit" | "teacher";
+export type JobKind = "scan" | "refit" | "teacher" | "duplicates";
 
 export type JobState = "queued" | "running" | "cancel_requested" | "cancelled" | "failed" | "completed";
 
@@ -423,6 +457,7 @@ export interface Job {
   progress: ScanProgress | null;
   coverage: CoverageState | null;
   error: ErrorBody | null;
+  duplicates?: DuplicateReport;
 }
 
 export interface JobRefRequest {
@@ -1337,6 +1372,8 @@ export interface CommandMap {
   "volumes.list": { request: EmptyRequest; result: VolumeList };
   "volumes.declare_tier": { request: DeclareTierRequest; result: DeclareTierResult };
   "scan.start": { request: ScanStartRequest; result: JobResult };
+  "duplicates.inspect": { request: DuplicatesInspectRequest; result: JobResult };
+  "duplicates.cancel": { request: JobRefRequest; result: JobResult };
   "scan.cancel": { request: JobRefRequest; result: JobResult };
   "jobs.get": { request: JobRefRequest; result: JobResult };
   "jobs.list": { request: JobListRequest; result: JobList };
@@ -1389,6 +1426,8 @@ export const COMMANDS = {
   "volumes.list": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "volumes.declare_tier": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "scan.start": { adapters: ["tauri", "http"], wave: 2, events: ["job.state", "scan.progress", "tree.invalidated"] },
+  "duplicates.inspect": { adapters: ["tauri", "http"], wave: 2, events: ["job.state"] },
+  "duplicates.cancel": { adapters: ["tauri", "http"], wave: 2, events: ["job.state"] },
   "scan.cancel": { adapters: ["tauri", "http"], wave: 2, events: ["job.state"] },
   "jobs.get": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "jobs.list": { adapters: ["tauri", "http"], wave: 2, events: [] },

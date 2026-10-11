@@ -53,7 +53,8 @@ fn granted_root_rejects_foreign_catalogue_identities_before_opening_a_path() {
 fn duplicate_content_is_gated_for_personal_grants() {
     let mut grant = root();
     grant.dataset_class = DatasetClass::Personal;
-    let engine = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Personal)).unwrap();
+    let engine =
+        Arc::new(Engine::open(EngineConfig::new("unused".into(), DatasetClass::Personal)).unwrap());
     let err = engine
         .inspect_duplicates(
             &grant,
@@ -65,6 +66,19 @@ fn duplicate_content_is_gated_for_personal_grants() {
         )
         .unwrap_err();
     assert_eq!(err.to_body().message.as_str(), "content_read_gated");
+    let budget = serde_json::from_value(
+        serde_json::json!({"max_candidates":200,"max_bytes":"100","max_ms":1000}),
+    )
+    .unwrap();
+    assert_eq!(
+        engine
+            .duplicates_start(grant, Default::default(), budget)
+            .unwrap_err()
+            .to_body()
+            .message
+            .as_str(),
+        "content_read_gated"
+    );
 }
 
 #[cfg(windows)]
@@ -277,6 +291,54 @@ fn duplicate_admission_rechecks_durable_class_identity_and_ambiguity() {
             .as_str(),
         "grant_not_active"
     );
+}
+
+#[test]
+fn duplicate_worker_admission_waits_for_same_root_gate() {
+    let state = tempfile::tempdir().unwrap();
+    let grant = root();
+    let _conn = duplicate_grant_store(state.path(), &grant);
+    let engine = Arc::new(
+        Engine::open(EngineConfig::new(
+            state.path().to_owned(),
+            DatasetClass::Synthetic,
+        ))
+        .unwrap(),
+    );
+    for revoke in [false, true] {
+        let gate = engine.scan_root_gate(grant.key());
+        let mut held = gate.lock().unwrap();
+        let (entered, started) = std::sync::mpsc::channel();
+        let (result, outcome) = std::sync::mpsc::channel();
+        let worker_engine = engine.clone();
+        let worker_grant = grant.clone();
+        let worker = std::thread::spawn(move || {
+            entered.send(()).unwrap();
+            result
+                .send(worker_engine.duplicate_read_admission_worker(&worker_grant))
+                .unwrap();
+        });
+        started
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let premature = outcome.recv_timeout(std::time::Duration::from_millis(50));
+        held.revoked = revoke;
+        drop(held);
+        worker.join().unwrap();
+        assert!(matches!(
+            premature,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        let admitted = outcome.recv().unwrap();
+        if revoke {
+            assert_eq!(
+                admitted.unwrap_err().to_body().message.as_str(),
+                "root revoked"
+            );
+        } else {
+            assert!(admitted.is_ok());
+        }
+    }
 }
 use source::*;
 use std::{

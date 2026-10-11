@@ -152,8 +152,8 @@ const reasonOf = (detail: Record<string, unknown> | null): string | null =>
 /** Plain-language refusal for a failed `scan.start`. The service decides; this only words it. */
 export function refusalText(code: ErrorCode, detail: Record<string, unknown> | null, message: string): string {
   switch (reasonOf(detail)) {
-    case 'personal_scan_gated_184':
-      return 'Real-disk scans arrive after the safety gates (issue 184). Until then this personal session does not scan, and nothing was read.';
+    case 'personal_session_requires_owner_grant':
+      return 'This personal session scans only folders you granted, and this root is not one. Nothing was read.';
     case 'synthetic_session_requires_lab_root':
       return 'This synthetic session scans registered lab roots only, and this root is not one. Nothing was read.';
   }

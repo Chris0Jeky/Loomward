@@ -1,11 +1,10 @@
 // Explorer stale-breadcrumb fallback decision (issue #198).
 // Node IDs are bound to the engine session and the catalogue instance: after an engine
 // restart, a catalogue rebuild or a resync, a saved breadcrumb ID answers `not_found`.
-// That case falls back to the starting points; a `not_found` for a node the user just
-// clicked (not a saved breadcrumb) keeps today's error behaviour.
+// That case falls back to the deepest ancestor that still lists (or the starting points when
+// none does) and says so; a `not_found` for a node the user just clicked (not a saved
+// breadcrumb) keeps today's error behaviour.
 import { LoomwardError } from '../../lib/transport/client';
-
-export const FALLBACK_NOTICE = 'The catalogue changed, so the view went back to the top level.';
 
 export type RefetchDecision = 'fallback' | 'error';
 
@@ -18,4 +17,16 @@ export type RefetchDecision = 'fallback' | 'error';
 export function onRefetchError(error: unknown, isSavedBreadcrumb: boolean): RefetchDecision {
   if (isSavedBreadcrumb && error instanceof LoomwardError && error.code === 'not_found') return 'fallback';
   return 'error';
+}
+
+export interface Fallback<C> {
+  /** The breadcrumb to try next: the failing one minus its last crumb. Empty means reload the starting points. */
+  keep: C[];
+  /** Name of the deepest folder that vanished; it stays the same while the walk climbs, so the notice names what the reader lost. */
+  lost: string;
+}
+
+/** One step up from a stale breadcrumb. `lost` carries the first (deepest) name through the steps. */
+export function fallbackStep<C extends { name: string }>(trail: C[], lost?: string): Fallback<C> {
+  return { keep: trail.slice(0, -1), lost: lost ?? trail[trail.length - 1]!.name };
 }

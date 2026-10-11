@@ -440,7 +440,178 @@
       }
     },
 
-    "JobKind": { "enum": ["scan", "refit", "teacher"], "$comment": "placement.simulate is synchronous and bounded, never a job (semantics.md section 2)." },
+    "DuplicateBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_candidates",
+        "max_bytes",
+        "max_ms"
+      ],
+      "properties": {
+        "max_candidates": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 200
+        },
+        "max_bytes": {
+          "$ref": "#/$defs/ByteCount"
+        },
+        "max_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60000
+        },
+        "min_bytes": {
+          "$ref": "#/$defs/ByteCount"
+        }
+      }
+    },
+    "DuplicatesInspectRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root_id",
+        "budget"
+      ],
+      "properties": {
+        "root_id": {
+          "$ref": "#/$defs/RootId"
+        },
+        "budget": {
+          "$ref": "#/$defs/DuplicateBudget"
+        }
+      }
+    },
+    "DuplicateEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relative_path",
+        "logical_bytes"
+      ],
+      "properties": {
+        "relative_path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32768
+        },
+        "logical_bytes": {
+          "$ref": "#/$defs/ByteCount"
+        }
+      }
+    },
+    "DuplicateSkip": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entry",
+        "reason"
+      ],
+      "properties": {
+        "entry": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 199
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "DuplicateReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entries",
+        "groups",
+        "links",
+        "links_not_compared",
+        "skipped",
+        "bytes_read",
+        "partial",
+        "truncated",
+        "stop"
+      ],
+      "properties": {
+        "entries": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 200,
+          "items": {
+            "$ref": "#/$defs/DuplicateEntry"
+          }
+        },
+        "groups": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 100,
+          "items": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 200,
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 199
+            },
+            "uniqueItems": true
+          }
+        },
+        "links": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 200,
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 200,
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 199
+            },
+            "uniqueItems": true
+          }
+        },
+        "links_not_compared": {
+          "$ref": "#/$defs/Count"
+        },
+        "skipped": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 200,
+          "items": {
+            "$ref": "#/$defs/DuplicateSkip"
+          }
+        },
+        "bytes_read": {
+          "$ref": "#/$defs/ByteCount"
+        },
+        "partial": {
+          "type": "boolean"
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "stop": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+
+    "JobKind": { "enum": ["scan", "refit", "teacher", "duplicates"], "$comment": "placement.simulate is synchronous and bounded, never a job (semantics.md section 2)." },
     "JobState": { "enum": ["queued", "running", "cancel_requested", "cancelled", "failed", "completed"] },
     "ScanBudget": {
       "type": "object",
@@ -498,7 +669,8 @@
         "finished_at": { "$ref": "#/$defs/NullableTimestamp" },
         "progress": { "anyOf": [{ "$ref": "#/$defs/ScanProgress" }, { "type": "null" }] },
         "coverage": { "anyOf": [{ "$ref": "#/$defs/CoverageState" }, { "type": "null" }] },
-        "error": { "anyOf": [{ "$ref": "#/$defs/ErrorBody" }, { "type": "null" }] }
+        "error": { "anyOf": [{ "$ref": "#/$defs/ErrorBody" }, { "type": "null" }] },
+        "duplicates": { "$ref": "#/$defs/DuplicateReport" }
       }
     },
     "JobRefRequest": {
@@ -518,7 +690,7 @@
       "additionalProperties": false,
       "required": ["limit"],
       "properties": {
-        "kinds": { "type": "array", "maxItems": 3, "uniqueItems": true, "items": { "$ref": "#/$defs/JobKind" } },
+        "kinds": { "type": "array", "maxItems": 4, "uniqueItems": true, "items": { "$ref": "#/$defs/JobKind" } },
         "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
       }
     },

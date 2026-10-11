@@ -13,7 +13,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Test seams inside the service: a delay before one command runs, a run counter, the order
-/// commands finished their delay in, a one-shot forced mutation-thread spawn failure, and named
+/// commands finished their delay in, a one-shot forced mutation-thread spawn failure, an injected
+/// profile resolver for the scan-time grant fence, and named
 /// gates a handler blocks at while the test holds them closed (`"locked"`: `volumes.declare_tier`
 /// holding `Inner::mutation`; `"after"`: any command after its handler returned, locks released).
 #[derive(Default)]
@@ -25,6 +26,8 @@ pub(crate) struct Hooks {
     pub closed: Mutex<Vec<(Command, &'static str)>>,
     pub arrived: Mutex<Vec<(Command, &'static str)>>,
     pub opened: std::sync::Condvar,
+    /// (profile, profiles directory) for the scan-time fence instead of the OS folders (#312).
+    pub profile: Mutex<Option<(std::path::PathBuf, std::path::PathBuf)>>,
 }
 
 impl Hooks {
@@ -127,6 +130,542 @@ fn followup_stored_grant_version_errors_fail_closed() {
 }
 
 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn placement_fixture(svc: &Service) -> (i64, i64, String) {
+    let (root, grant) = fixture(svc, 3);
+    svc.inner.db().execute("UPDATE main.volume SET capabilities_json=?1,bytes_per_cluster=4096", [json!({"space":{"capacity_bytes":"1048576","free_bytes":"65536","read_only":false}}).to_string()]).unwrap();
+    let volume = svc.inner.volume_id(
+        svc.inner
+            .db()
+            .query_row("SELECT volume_id FROM main.root WHERE id=?1", [root], |r| {
+                r.get(0)
+            })
+            .unwrap(),
+    );
+    ok(
+        "volumes.declare_tier",
+        call(
+            svc,
+            "volumes.declare_tier",
+            json!({"volume_id": volume, "tier": 0}),
+        ),
+    );
+    (root, grant, volume)
+}
+
+fn placement_request(volume: &str, save: bool) -> Value {
+    json!({"source_volume_id":volume,"target_free_bytes":"262144","max_transfer_bytes":"1048576","heat_policy":"unknown_is_ineligible","relief_policy":"verified_only","candidate_basis":"largest_dirs","max_groups":50,"overrides":[],"node_budget":1000,"save":save})
+}
+
+#[test]
+fn volume_inventory_past_its_bound_is_refused_not_truncated() {
+    // Codex P2 on #316: a 65th volume must surface as a resource bound, never vanish silently.
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    for i in 0..65 {
+        svc.inner.db().execute("INSERT INTO main.volume(volume_key,display_name,identity_json,capabilities_json,device_json,online,observed_at_ns) VALUES(?1,'Synthetic volume','{}','{}','{}',1,0)", [format!("vk{i}")]).unwrap();
+    }
+    for command in ["volumes.list", "tiers.model"] {
+        assert_eq!(
+            err(call(&svc, command, json!({}))).code,
+            ErrorCode::ResourceBudget,
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn placement_wire_preserves_unknowns_and_exclusions() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (_, _, volume) = placement_fixture(&svc);
+    svc.inner.db().execute("INSERT INTO main.volume(volume_key,display_name,identity_json,capabilities_json,device_json,online,observed_at_ns) VALUES('other','Unknown target','{}','{}','{}',1,0)", []).unwrap();
+    let (model, _) = ok("tiers.model", call(&svc, "tiers.model", json!({})));
+    assert_eq!(model["volumes"][0]["tier"]["tier"], 0);
+    assert_eq!(model["volumes"][0]["capacity_bytes"], "1048576");
+    assert_eq!(model["volumes"][1]["pressure"], "unknown");
+    let (candidates, _) = ok(
+        "placement.candidates",
+        call(
+            &svc,
+            "placement.candidates",
+            json!({"source_volume_id":volume,"basis":"largest_dirs","max_groups":50,"min_bytes":"0"}),
+        ),
+    );
+    assert_eq!(candidates["groups"].as_array().unwrap().len(), 1);
+    let g = &candidates["groups"][0];
+    assert!(g["estimated_relief_bytes"].is_null());
+    assert_eq!(g["relief_basis"], "unknown");
+    assert!(g["heat"].is_null() && g["pinned"].is_null());
+    let (plan, _) = ok(
+        "placement.simulate",
+        call(
+            &svc,
+            "placement.simulate",
+            placement_request(&volume, false),
+        ),
+    );
+    assert_eq!(plan["filesystem_changed"], false);
+    assert_eq!(plan["pre_rejected"][0]["reason"], "relief_unknown");
+    assert_eq!(plan["excluded_volumes"][0]["reason"], "tier_unknown");
+    assert!(plan["proposal_id"].is_null());
+    assert_eq!(
+        svc.inner
+            .db()
+            .query_row("SELECT count(*) FROM st.proposal", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn placement_saved_scenarios_survive_restart_and_hide_revoked_roots() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (root, grant, volume) = placement_fixture(&svc);
+    let (saved, _) = ok(
+        "placement.simulate",
+        call(&svc, "placement.simulate", placement_request(&volume, true)),
+    );
+    let old_id = saved["proposal_id"].clone();
+    let (again, _) = ok(
+        "placement.simulate",
+        call(&svc, "placement.simulate", placement_request(&volume, true)),
+    );
+    assert_eq!(again["proposal_id"], old_id);
+    let (detail, _) = ok(
+        "proposals.get",
+        call(&svc, "proposals.get", json!({"proposal_id":old_id})),
+    );
+    assert_eq!(detail["plan"], json!(saved));
+    assert_eq!(detail["summary"]["status"], "simulation_only");
+    let digest = detail["inputs_digest"].clone();
+    drop(svc);
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    assert_eq!(
+        err(call(&svc, "proposals.get", json!({"proposal_id":old_id}))).code,
+        ErrorCode::NotFound
+    );
+    let volume = svc.inner.volume_id(
+        svc.inner
+            .db()
+            .query_row("SELECT volume_id FROM main.root WHERE id=?1", [root], |r| {
+                r.get(0)
+            })
+            .unwrap(),
+    );
+    let (saved, _) = ok(
+        "placement.simulate",
+        call(&svc, "placement.simulate", placement_request(&volume, true)),
+    );
+    let (detail, _) = ok(
+        "proposals.get",
+        call(
+            &svc,
+            "proposals.get",
+            json!({"proposal_id":saved["proposal_id"]}),
+        ),
+    );
+    assert_eq!(detail["inputs_digest"], digest);
+    assert_eq!(
+        svc.inner
+            .db()
+            .query_row("SELECT count(*) FROM st.proposal", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    let dir = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT id FROM main.dir WHERE root_id=?1 AND parent_id IS NULL",
+            [root],
+            |r| r.get(0),
+        )
+        .unwrap();
+    relist(&svc, grant, dir, 4);
+    let (list, _) = ok("proposals.list", call(&svc, "proposals.list", json!({})));
+    assert_eq!(list["proposals"][0]["status"], "stale");
+    drop(svc);
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    assert_eq!(
+        err(call(&svc, "proposals.get", json!({"proposal_id":old_id}))).code,
+        ErrorCode::NotFound
+    );
+    let (list, _) = ok("proposals.list", call(&svc, "proposals.list", json!({})));
+    let id = list["proposals"][0]["proposal_id"].clone();
+    let (detail, _) = ok(
+        "proposals.get",
+        call(&svc, "proposals.get", json!({"proposal_id":id})),
+    );
+    assert_eq!(detail["summary"]["status"], "stale");
+    ok(
+        "roots.revoke",
+        call(
+            &svc,
+            "roots.revoke",
+            json!({"root_id":svc.inner.root_id(root),"purge_catalog":false}),
+        ),
+    );
+    let (list, _) = ok("proposals.list", call(&svc, "proposals.list", json!({})));
+    assert!(list["proposals"].as_array().unwrap().is_empty());
+    assert_eq!(
+        err(call(&svc, "proposals.get", json!({"proposal_id":id}))).code,
+        ErrorCode::NotFound
+    );
+}
+
+#[test]
+fn placement_reads_do_not_take_mutation_tickets_and_expired_save_writes_nothing() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (_, _, volume) = placement_fixture(&svc);
+    let mut req = request("placement.simulate", placement_request(&volume, false));
+    req.deadline_ms = Some(Int::new(1).unwrap());
+    *svc.inner.hooks.delay.lock().unwrap() =
+        Some((Command::PlacementSimulate, Duration::from_millis(30)));
+    let issued = svc.inner.turn.0.lock().unwrap().issued;
+    let read_error = err(svc.call(req, &CallContext::http()));
+    assert_eq!(read_error.code, ErrorCode::DeadlineExceeded);
+    assert!(read_error.retryable);
+    assert_eq!(svc.inner.turn.0.lock().unwrap().issued, issued);
+    let mut req = request("placement.simulate", placement_request(&volume, true));
+    req.deadline_ms = Some(Int::new(1).unwrap());
+    let save_error = err(svc.call(req, &CallContext::http()));
+    assert_eq!(save_error.code, ErrorCode::DeadlineExceeded);
+    assert!(!save_error.retryable);
+    svc.inner.hooks.until("expired save settled", |h| {
+        h.arrived
+            .lock()
+            .unwrap()
+            .contains(&(Command::PlacementSimulate, "after"))
+    });
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(
+        svc.inner
+            .db()
+            .query_row("SELECT count(*) FROM st.proposal", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    *svc.inner.hooks.delay.lock().unwrap() = None;
+    let req = request("placement.simulate", placement_request(&volume, true));
+    let saved = svc.call(req.clone(), &CallContext::http());
+    ok("placement.simulate", saved.clone());
+    assert_eq!(svc.call(req.clone(), &CallContext::http()), saved);
+    let mut conflict = req;
+    conflict.payload.insert("node_budget".into(), json!(999));
+    assert_eq!(
+        err(svc.call(conflict, &CallContext::http()))
+            .detail
+            .unwrap()["reason"],
+        "idempotency_conflict"
+    );
+}
+
+#[test]
+fn placement_personal_catalogue_scope_and_migrated_proposal_table() {
+    let tmp = temp_root();
+    v1_store(tmp.path());
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (_, _, volume) = placement_fixture(&svc);
+    ok(
+        "placement.simulate",
+        call(&svc, "placement.simulate", placement_request(&volume, true)),
+    );
+    assert_eq!(
+        svc.inner
+            .db()
+            .query_row(
+                "SELECT count(*) FROM st.proposal WHERE kind='placement_simulation'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+    let personal = temp_root();
+    let svc = open(personal.path(), DatasetClass::Personal);
+    let (root, _, volume) = placement_fixture(&svc);
+    let (plan, meta) = ok(
+        "placement.simulate",
+        call(
+            &svc,
+            "placement.simulate",
+            placement_request(&volume, false),
+        ),
+    );
+    assert_eq!(meta.dataset_class, DatasetClass::Personal);
+    assert_eq!(
+        plan["root_generations"][0]["root_id"],
+        svc.inner.root_id(root)
+    );
+    svc.inner
+        .db()
+        .execute("UPDATE main.volume SET capabilities_json='{}'", [])
+        .unwrap();
+    let e = err(call(
+        &svc,
+        "placement.simulate",
+        placement_request(&volume, false),
+    ));
+    assert_eq!(e.code, ErrorCode::CapabilityUnavailable);
+    assert_eq!(
+        e.detail.unwrap()["reason"],
+        "personal_placement_physics_unobserved"
+    );
+}
+
+#[test]
+fn placement_wire_discloses_unknown_clusters_hidden_descendants_and_bad_source() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (_, _, volume) = placement_fixture(&svc);
+    svc.inner
+        .db()
+        .execute(
+            "UPDATE main.dir SET sub_logical=1,sub_allocated=1 WHERE parent_id IS NOT NULL",
+            [],
+        )
+        .unwrap();
+    svc.inner.db().execute("INSERT INTO main.volume(volume_key,display_name,identity_json,capabilities_json,device_json,online,observed_at_ns) VALUES('target','Synthetic target','{}',?1,'{}',1,0)", [json!({"space":{"capacity_bytes":"1048576","free_bytes":"524288","read_only":false}}).to_string()]).unwrap();
+    let target = svc.inner.volume_id(svc.inner.db().last_insert_rowid());
+    ok(
+        "volumes.declare_tier",
+        call(
+            &svc,
+            "volumes.declare_tier",
+            json!({"volume_id":target,"tier":1}),
+        ),
+    );
+    let (plan, _) = ok(
+        "placement.simulate",
+        call(
+            &svc,
+            "placement.simulate",
+            placement_request(&volume, false),
+        ),
+    );
+    let assumptions = plan["assumptions"].as_array().unwrap();
+    assert!(assumptions
+        .iter()
+        .any(|a| a.as_str().unwrap().contains("unknown cluster size")));
+    assert!(assumptions
+        .iter()
+        .any(|a| a.as_str().unwrap().contains("descendant")));
+    let (candidates, _) = ok(
+        "placement.candidates",
+        call(
+            &svc,
+            "placement.candidates",
+            json!({"source_volume_id":volume,"basis":"largest_dirs","max_groups":50,"min_bytes":"0"}),
+        ),
+    );
+    let mut whatif = placement_request(&volume, false);
+    whatif["relief_policy"] = json!("entry_allocation_whatif");
+    whatif["heat_policy"] = json!("assumed_only");
+    whatif["overrides"] = json!([{"group_id":candidates["groups"][0]["group_id"],"heat":0.1,"pinned":false,"active":false,"protected":false,"days_since_move":400}]);
+    let (plan, _) = ok(
+        "placement.simulate",
+        call(&svc, "placement.simulate", whatif),
+    );
+    assert_eq!(plan["proposals"].as_array().unwrap().len(), 1);
+    assert_eq!(plan["proposals"][0]["transfer_bytes"], "3003");
+    assert_eq!(plan["proposals"][0]["executable"], false);
+    assert_eq!(plan["filesystem_changed"], false);
+    ok(
+        "volumes.declare_tier",
+        call(
+            &svc,
+            "volumes.declare_tier",
+            json!({"volume_id":volume,"tier":null}),
+        ),
+    );
+    let e = err(call(
+        &svc,
+        "placement.simulate",
+        placement_request(&volume, false),
+    ));
+    assert_eq!(e.code, ErrorCode::InvalidRequest);
+    assert_eq!(e.detail.unwrap()["reason"], "source_tier_unknown");
+}
+
+#[test]
+fn placement_save_refuses_same_generation_changes_and_unknown_overlap() {
+    let tmp = temp_root();
+    let svc = Arc::new(open(tmp.path(), DatasetClass::Synthetic));
+    let (_, _, volume) = placement_fixture(&svc);
+    svc.inner
+        .hooks
+        .closed
+        .lock()
+        .unwrap()
+        .push((Command::PlacementSimulate, "placement_read"));
+    let worker = svc.clone();
+    let req = placement_request(&volume, true);
+    let pending = std::thread::spawn(move || call(&worker, "placement.simulate", req));
+    svc.inner.hooks.until("placement snapshot", |h| {
+        h.arrived
+            .lock()
+            .unwrap()
+            .contains(&(Command::PlacementSimulate, "placement_read"))
+    });
+    svc.inner
+        .db()
+        .execute("UPDATE main.revision SET catalog_rev=catalog_rev+1", [])
+        .unwrap();
+    svc.inner
+        .hooks
+        .open(Command::PlacementSimulate, "placement_read");
+    assert_eq!(
+        err(pending.join().unwrap()).code,
+        ErrorCode::StaleGeneration
+    );
+    assert_eq!(
+        svc.inner
+            .db()
+            .query_row("SELECT count(*) FROM st.proposal", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    svc.inner.db().execute("INSERT INTO st.root_grant(volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns) VALUES('fixture',zeroblob(16),'Synthetic root\\unobserved-child','fixture','fixture','active',0)",[]).unwrap();
+    let grant = svc.inner.db().last_insert_rowid();
+    svc.inner
+        .db()
+        .execute(
+            "INSERT INTO main.root(grant_id,volume_id,state) VALUES(?1,1,'never_scanned')",
+            [grant],
+        )
+        .unwrap();
+    let e = err(call(
+        &svc,
+        "placement.simulate",
+        placement_request(&volume, false),
+    ));
+    assert_eq!(e.code, ErrorCode::PartialCoverage);
+    assert_eq!(e.message.as_str(), "overlapping_grant_ancestry_unknown");
+    svc.inner
+        .db()
+        .execute(
+            "UPDATE st.root_grant SET display_path='Synthetic second root' WHERE id=?1",
+            [grant],
+        )
+        .unwrap();
+    svc.inner
+        .hooks
+        .closed
+        .lock()
+        .unwrap()
+        .push((Command::PlacementSimulate, "placement_read"));
+    let worker = svc.clone();
+    let req = placement_request(&volume, true);
+    let pending = std::thread::spawn(move || call(&worker, "placement.simulate", req));
+    svc.inner.hooks.until("unscanned root snapshot", |h| {
+        h.arrived
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|g| **g == (Command::PlacementSimulate, "placement_read"))
+            .count()
+            >= 3
+    });
+    svc.inner
+        .db()
+        .execute(
+            "UPDATE st.root_grant SET state='revoked',revoked_at_ns=0 WHERE id=?1",
+            [grant],
+        )
+        .unwrap();
+    svc.inner
+        .hooks
+        .open(Command::PlacementSimulate, "placement_read");
+    assert_eq!(
+        err(pending.join().unwrap()).code,
+        ErrorCode::StaleGeneration
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn placement_registered_lab_simulation_preserves_every_file_and_mtime() {
+    if loomward_windows::enumerate::running_elevated() {
+        let tmp = temp_root();
+        let refusal = crate::lab::register(
+            &tmp.path().join("state"),
+            &tmp.path().join("lab"),
+            "synthetic",
+            "S",
+            &format!("sha256:{}", "0".repeat(64)),
+        )
+        .unwrap_err();
+        assert!(refusal.contains("identity_unavailable"));
+        return;
+    }
+    let lab = lab().unwrap();
+    assert_eq!(
+        settle(&lab.svc, &start(&lab.svc, &lab.root, "full"))["state"],
+        "completed"
+    );
+    fn contents(
+        root: &Path,
+    ) -> std::collections::BTreeMap<std::path::PathBuf, (Vec<u8>, std::time::SystemTime)> {
+        let mut files = std::collections::BTreeMap::new();
+        for entry in std::fs::read_dir(root).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                files.extend(contents(&path).into_iter().map(|(relative, value)| {
+                    (
+                        std::path::PathBuf::from(path.file_name().unwrap()).join(relative),
+                        value,
+                    )
+                }));
+            } else {
+                files.insert(
+                    std::path::PathBuf::from(path.file_name().unwrap()),
+                    (
+                        std::fs::read(&path).unwrap(),
+                        std::fs::metadata(path).unwrap().modified().unwrap(),
+                    ),
+                );
+            }
+        }
+        files
+    }
+    let before = contents(&lab.path);
+    let (volumes, _) = ok("volumes.list", call(&lab.svc, "volumes.list", json!({})));
+    let volume = volumes["volumes"][0]["volume_id"].as_str().unwrap();
+    ok(
+        "volumes.declare_tier",
+        call(
+            &lab.svc,
+            "volumes.declare_tier",
+            json!({"volume_id":volume,"tier":0}),
+        ),
+    );
+    let (model, _) = ok("tiers.model", call(&lab.svc, "tiers.model", json!({})));
+    assert!(!model["volumes"][0]["capacity_bytes"].is_null());
+    let (candidates, _) = ok(
+        "placement.candidates",
+        call(
+            &lab.svc,
+            "placement.candidates",
+            json!({"source_volume_id":volume,"basis":"root_children","max_groups":50,"min_bytes":"0"}),
+        ),
+    );
+    assert!(!candidates["groups"].as_array().unwrap().is_empty());
+    let mut req = placement_request(volume, true);
+    req["target_free_bytes"] = model["volumes"][0]["free_bytes"].clone();
+    let (plan, _) = ok(
+        "placement.simulate",
+        call(&lab.svc, "placement.simulate", req),
+    );
+    assert_eq!(plan["filesystem_changed"], false);
+    assert_eq!(before, contents(&lab.path));
+}
 
 #[test]
 fn review_empty_state_starts() {
@@ -665,8 +1204,18 @@ fn fixture(svc: &Service, files: u64) -> (i64, i64) {
             display_path: "Synthetic root".into(),
             root_file_id: Some(vec![1; 16]),
             filesystem: Some("NTFS".into()),
-            origin: "fixture".into(),
-            granted_via: "fixture".into(),
+            origin: if svc.dataset() == DatasetClass::Personal {
+                "owner_granted"
+            } else {
+                "fixture"
+            }
+            .into(),
+            granted_via: if svc.dataset() == DatasetClass::Personal {
+                "cli_flag"
+            } else {
+                "fixture"
+            }
+            .into(),
             observed_at_ns: 0,
         }))
         .unwrap()
@@ -822,7 +1371,7 @@ fn every_command_answers_a_complete_envelope_and_core_reads_serve_the_catalogue(
         .unwrap()
         .values()
         .all(|v| v == false));
-    // Synthetic sessions scan registered lab roots on Windows (personal scans wait for #184).
+    // Synthetic sessions scan registered lab roots on Windows; personal sessions their own owner grants.
     assert_eq!(
         hello["capabilities"]["observation"]["metadata_scan"],
         cfg!(windows)
@@ -1370,6 +1919,10 @@ fn revocation_commits_first_then_fences_then_emits_and_is_monotone() {
 
 /// A fixture root with its own identity, no listing.
 fn register(svc: &Service, file_id: u8) -> (i64, i64) {
+    register_as(svc, file_id, "fixture")
+}
+
+fn register_as(svc: &Service, file_id: u8, origin: &str) -> (i64, i64) {
     let WriteReply::Root {
         grant_id, root_id, ..
     } = svc
@@ -1382,7 +1935,7 @@ fn register(svc: &Service, file_id: u8) -> (i64, i64) {
             display_path: format!("Synthetic root {file_id}"),
             root_file_id: Some(vec![file_id; 16]),
             filesystem: Some("NTFS".into()),
-            origin: "fixture".into(),
+            origin: origin.into(),
             granted_via: "fixture".into(),
             observed_at_ns: 0,
         }))
@@ -2269,24 +2822,11 @@ fn scan_cancel_is_acknowledged_and_never_publishes_a_complete_generation() {
     );
 }
 
-/// Scans are offered to synthetic lab roots only: a personal session waits for #184's gates,
+/// A synthetic session scans registered lab roots only (personal sessions have their own tests),
 /// and a synthetic fixture root (no path, no lab registration) is refused.
 #[test]
 fn scan_start_is_refused_outside_registered_lab_roots() {
     let tmp = temp_root();
-    let personal = open(&tmp.path().join("personal"), DatasetClass::Personal);
-    let e = err(call(
-        &personal,
-        "scan.start",
-        json!({"root_id": "rt_x", "mode": "full"}),
-    ));
-    assert_eq!(e.code, ErrorCode::CapabilityUnavailable);
-    assert_eq!(reason(&e), Some("personal_scan_gated_184"));
-    assert!(
-        !e.message.contains("  ") && !e.message.contains("MEDIUM"),
-        "plain words on the wire: {}",
-        e.message.as_str()
-    );
     let synthetic = open(&tmp.path().join("synthetic"), DatasetClass::Synthetic);
     let (root, _) = fixture(&synthetic, 1);
     let e = err(call(
@@ -2296,6 +2836,207 @@ fn scan_start_is_refused_outside_registered_lab_roots() {
     ));
     assert_eq!(e.code, ErrorCode::PermissionDenied);
     assert_eq!(reason(&e), Some("synthetic_session_requires_lab_root"));
+}
+
+/// A personal session scans only its own active owner grants: an unknown root, a lab root and
+/// a revoked grant are refused before the engine sees them.
+#[test]
+fn personal_scan_start_refuses_unknown_lab_and_revoked_roots() {
+    let tmp = temp_root();
+    let personal = open(&tmp.path().join("personal"), DatasetClass::Personal);
+    // Every refusal leaves no job behind.
+    let scan = |root: &str| {
+        let e = err(call(
+            &personal,
+            "scan.start",
+            json!({"root_id": root, "mode": "full"}),
+        ));
+        let (list, _) = ok(
+            "jobs.list",
+            call(&personal, "jobs.list", json!({"limit": 50})),
+        );
+        assert_eq!(list["jobs"], json!([]), "{root}: no job started");
+        e
+    };
+    let e = scan("rt_x");
+    assert_eq!(e.code, ErrorCode::NotFound, "{e:?}");
+    // The catalogue never registers a lab root in a personal store; a row that says so anyway
+    // (a planted or corrupted catalogue) is still refused by the scan gate.
+    let lab_root = RootObservation {
+        volume_key: "fixture".into(),
+        display_name: "Lab".into(),
+        display_path: "Lab root".into(),
+        root_file_id: Some(vec![1; 16]),
+        filesystem: Some("NTFS".into()),
+        origin: "lab_generated".into(),
+        granted_via: "cli_flag".into(),
+        observed_at_ns: 0,
+    };
+    assert!(personal
+        .inner
+        .catalog
+        .writer()
+        .call(WriteCommand::RegisterRoot(lab_root))
+        .is_err());
+    let (lab, lab_grant) = register_as(&personal, 1, "owner_granted");
+    personal
+        .inner
+        .db()
+        .execute(
+            "UPDATE st.root_grant SET origin='lab_generated' WHERE id=?1",
+            [lab_grant],
+        )
+        .unwrap();
+    let e = scan(&personal.inner.root_id(lab));
+    assert_eq!(e.code, ErrorCode::PermissionDenied);
+    assert_eq!(reason(&e), Some("personal_session_requires_owner_grant"));
+    assert!(
+        !e.message.contains("  ") && !e.message.contains("#"),
+        "plain words on the wire: {}",
+        e.message.as_str()
+    );
+    let (owner, grant) = register_as(&personal, 2, "owner_granted");
+    personal.inner.revoke(grant).unwrap();
+    let e = scan(&personal.inner.root_id(owner));
+    assert_eq!(e.code, ErrorCode::PermissionDenied);
+    assert_eq!(e.message.as_str(), "the root's grant is not active");
+}
+
+/// Deep review LOW 3: a personal session advertises metadata scans exactly where they run
+/// (Windows), like a synthetic one.
+#[test]
+fn personal_hello_reports_metadata_scan_on_windows() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Personal);
+    let (hello, _) = ok("session.hello", call(&svc, "session.hello", json!({})));
+    assert_eq!(hello["dataset_class"], "personal");
+    assert_eq!(
+        hello["capabilities"]["observation"]["metadata_scan"],
+        cfg!(windows)
+    );
+}
+
+/// An active owner grant for `path` made without today's fences: through the grant itself where
+/// native identity opens (as an older build recorded it), else as a fixture row naming the path.
+fn unfenced_owner_grant(svc: &Service, path: &Path) -> i64 {
+    if let Ok((root, _)) = svc.inner.grant(path, "cli_flag") {
+        return root;
+    }
+    let (root, grant) = register_as(svc, 7, "owner_granted");
+    svc.inner
+        .db()
+        .execute(
+            "UPDATE st.root_grant SET display_path=?1, granted_via='cli_flag' WHERE id=?2",
+            rusqlite::params![path.to_str().unwrap(), grant],
+        )
+        .unwrap();
+    root
+}
+
+/// #312: a stored grant that today's fences refuse is refused at scan start, whatever fences
+/// held when it was made: no job, no catalogue row. (a) a sibling profile under a profiles
+/// directory with an unrecognised name (#286); (b) a deny-listed store (`.ollama`).
+#[test]
+fn personal_scan_start_refuses_a_stored_grant_todays_fences_refuse() {
+    let tmp = temp_root();
+    let base = tmp.path().canonicalize().unwrap();
+    let home = base.join("Home");
+    let sibling = home.join("me.OLDPC");
+    let store = base.join("fixture-profile").join(".ollama").join("models");
+    for d in [home.join("me"), sibling.clone(), store.clone()] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    for (path, profile) in [
+        (sibling, Some((home.join("me"), home.clone()))),
+        (store, None),
+    ] {
+        let svc = open(
+            &tmp.path().join(format!("state-{}", profile.is_some())),
+            DatasetClass::Personal,
+        );
+        *svc.inner.hooks.profile.lock().unwrap() = profile;
+        let root = unfenced_owner_grant(&svc, &path);
+        let rows = crate::db::counts(&svc.inner.db()).unwrap();
+        let e = err(call(
+            &svc,
+            "scan.start",
+            json!({"root_id": svc.inner.root_id(root), "mode": "full"}),
+        ));
+        assert_eq!(e.code, ErrorCode::PermissionDenied, "{e:?}");
+        assert_eq!(reason(&e), Some("protected_profile_or_store"));
+        assert!(
+            !e.message.contains(&*base.to_string_lossy()),
+            "no path on the wire"
+        );
+        let (list, _) = ok("jobs.list", call(&svc, "jobs.list", json!({"limit": 50})));
+        assert_eq!(list["jobs"], json!([]), "no job started");
+        assert_eq!(
+            crate::db::counts(&svc.inner.db()).unwrap(),
+            rows,
+            "no catalogue row"
+        );
+    }
+}
+
+/// Personal scans are open (#184, #206, #240, #269 closed): an owner folder granted through the
+/// CLI path scans to completion, metadata only. No file in the root is modified or rewritten.
+#[cfg(windows)]
+#[test]
+fn personal_session_scans_a_granted_folder_metadata_only() {
+    let tmp = temp_root();
+    let path = tmp.path().join("owner-folder");
+    std::fs::create_dir_all(path.join("a").join("deep")).unwrap();
+    std::fs::create_dir(path.join("b")).unwrap();
+    let files = [
+        ("top.bin", 100usize),
+        ("a/1.bin", 10),
+        ("a/2.bin", 20),
+        ("a/deep/x.bin", 5),
+    ];
+    for (i, (name, size)) in files.iter().enumerate() {
+        std::fs::write(path.join(name), vec![i as u8 + 1; *size]).unwrap();
+    }
+    let path = path.canonicalize().unwrap();
+    let snapshot = || -> Vec<(Vec<u8>, std::time::SystemTime)> {
+        files
+            .iter()
+            .map(|(name, _)| {
+                let f = path.join(name);
+                (
+                    std::fs::read(&f).unwrap(),
+                    f.metadata().unwrap().modified().unwrap(),
+                )
+            })
+            .collect()
+    };
+    let before = snapshot();
+    let opened = Service::open(Config {
+        state_dir: tmp.path().join("state"),
+        dataset: DatasetClass::Personal,
+        allow_personal: true,
+        grant_roots: vec![path.clone()],
+    });
+    if loomward_windows::enumerate::running_elevated() {
+        // Hosted CI: an elevated token cannot open native identity, so the grant is refused.
+        let e = opened.err().expect("an elevated grant is refused");
+        assert!(e.contains("identity_unavailable"), "{e}");
+        return;
+    }
+    let svc = opened.unwrap();
+    let (roots, _) = ok("roots.list", call(&svc, "roots.list", json!({})));
+    assert_eq!(roots["roots"][0]["origin"], "owner_granted");
+    let root = roots["roots"][0]["root_id"].as_str().unwrap().to_owned();
+    let done = settle(&svc, &start(&svc, &root, "full"));
+    assert_eq!(done["state"], "completed", "{done:?}");
+    assert_eq!(done["coverage"], "complete");
+    let slice = lab_slice(&svc, &root);
+    assert_eq!(slice_totals(&slice), walk(&path));
+    assert_eq!(slice_totals(&slice), (4, 3, 135));
+    assert_eq!(
+        snapshot(),
+        before,
+        "a metadata scan never writes the files it lists"
+    );
 }
 
 fn entry(name: &str, bytes: u64, dir: bool) -> loomward_engine::scan::Entry {
@@ -2624,6 +3365,44 @@ fn followup_picker_refusal_reaches_the_user() {
     assert_eq!(result["refusal"], "protected_profile_or_store");
 }
 
+/// #224: the picker refuses a folder that contains a stored active grant whose path no longer
+/// resolves, exactly as `--static` does (one shared rule), instead of skipping the stale grant.
+#[test]
+fn a_stale_stored_grant_still_blocks_a_picked_parent() {
+    struct Pick(std::path::PathBuf);
+    impl NativeDialogs for Pick {
+        fn pick_folder(&self) -> Option<std::path::PathBuf> {
+            Some(self.0.clone())
+        }
+        fn confirm_disclosure(&self, _: &DisclosureSummary) -> bool {
+            false
+        }
+    }
+    let tmp = temp_root();
+    let parent = tmp.path().join("ws");
+    std::fs::create_dir_all(&parent).unwrap();
+    let parent = parent.canonicalize().unwrap();
+    let svc = open(&tmp.path().join("state"), DatasetClass::Personal);
+    let gone = parent.join("gone-grant");
+    svc.inner.db().execute("INSERT INTO st.root_grant(volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns) VALUES('fixture',zeroblob(16),?1,'fixture','fixture','active',0)", [gone.to_str().unwrap()]).unwrap();
+    let ctx = CallContext::tauri(Arc::new(Pick(parent)));
+    let (result, _) = ok(
+        "roots.request_grant",
+        svc.call(
+            request("roots.request_grant", json!({"purpose":"metadata_scan"})),
+            &ctx,
+        ),
+    );
+    assert_eq!(result["outcome"], "refused");
+    #[cfg(windows)]
+    if loomward_windows::enumerate::running_elevated() {
+        // Native identity refuses elevation (invariant 2, #217) before any overlap check runs.
+        assert_eq!(result["refusal"], "identity_unavailable");
+        return;
+    }
+    assert_eq!(result["refusal"], "already_granted");
+}
+
 #[test]
 fn followup_inspect_uses_the_roots_actual_grant() {
     let tmp = temp_root();
@@ -2643,5 +3422,7 @@ fn followup_inspect_uses_the_roots_actual_grant() {
     assert_eq!(result["display_path"]["text"], "Synthetic root");
 }
 
+#[path = "duplicates_tests.rs"]
+mod duplicates_tests;
 #[path = "learning_tests.rs"]
 mod learning_tests;

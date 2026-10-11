@@ -306,6 +306,51 @@ impl Context {
     fn dirty(&mut self, start: i64, run: i64) {
         self.dirty.push((start, self.revision, run));
     }
+    fn parent(&mut self, conn: &Connection, id: i64) -> Result<Option<i64>> {
+        if let Some(parent) = self.parents.get(&id) {
+            return Ok(*parent);
+        }
+        let parent = conn.query_row("SELECT parent_id FROM dir WHERE id=?1", [id], |r| r.get(0))?;
+        self.parents.insert(id, parent);
+        Ok(parent)
+    }
+    fn chain_length(
+        &mut self,
+        conn: &Connection,
+        start: i64,
+        proven: &mut HashMap<i64, usize>,
+    ) -> Result<usize> {
+        let mut current = Some(start);
+        let mut path = Vec::new();
+        let mut length = 0;
+        while let Some(id) = current {
+            if let Some(known) = proven.get(&id) {
+                length = *known;
+                break;
+            }
+            path.push(id);
+            if path.len() > 512 {
+                return Err(Error::Invalid("tree depth limit"));
+            }
+            current = self.parent(conn, id)?;
+        }
+        if path.len() + length > 512 {
+            return Err(Error::Invalid("tree depth limit"));
+        }
+        for id in path.into_iter().rev() {
+            length += 1;
+            proven.insert(id, length);
+        }
+        Ok(length)
+    }
+    /// Parent links are authoritative until rollup refreshes stored depths.
+    fn check_chains(&mut self, conn: &Connection, from: usize) -> Result<()> {
+        let mut proven = HashMap::new();
+        for i in from..self.dirty.len() {
+            self.chain_length(conn, self.dirty[i].0, &mut proven)?;
+        }
+        Ok(())
+    }
     fn flush_dirty(&mut self, conn: &Connection) -> Result<()> {
         let started = Instant::now();
         let mut marked = HashSet::new();
@@ -313,7 +358,8 @@ impl Context {
             "UPDATE dir SET subtree_rev=?2,dirty_rev=?2,dirty_run=?3,sub_complete=0 WHERE id=?1",
         )?;
         // Newest seeds win: every ancestor retains its latest input revision, not the batch's first.
-        for &(start, revision, run) in self.dirty.iter().rev() {
+        // Taking the seeds empties them on error too; the failed commit clears them anyway.
+        for (start, revision, run) in std::mem::take(&mut self.dirty).into_iter().rev() {
             let mut current = Some(start);
             let mut count = 0;
             while let Some(id) = current {
@@ -322,23 +368,14 @@ impl Context {
                 }
                 update.execute(params![id, revision, run])?;
                 self.timings.lock().expect("timing lock").dirty_updates += 1;
-                current = if let Some(parent) = self.parents.get(&id) {
-                    *parent
-                } else {
-                    let parent =
-                        conn.query_row("SELECT parent_id FROM dir WHERE id=?1", [id], |r| {
-                            r.get(0)
-                        })?;
-                    self.parents.insert(id, parent);
-                    parent
-                };
+                current = self.parent(conn, id)?;
                 count += 1;
+                // Backstop only: check_chains already bounded every seed inside its savepoint.
                 if count > 512 {
                     return Err(Error::Invalid("directory identity cycle"));
                 }
             }
         }
-        self.dirty.clear();
         self.timings
             .lock()
             .expect("timing lock")
@@ -438,7 +475,11 @@ fn work(
                         context.revision =
                             save.query_row("SELECT catalog_rev FROM revision", [], |r| r.get(0))?;
                         let dirty_start = context.dirty.len();
-                        let result = apply(&save, &p.command, &mut context, prepared);
+                        let result = apply(&save, &p.command, &mut context, prepared)
+                            .and_then(|reply| {
+                                context.check_chains(&save, dirty_start)?;
+                                Ok(reply)
+                            });
                         // The witness commits atomically with the catalogue publication.
                         let result = result.and_then(|reply| {
                             save.execute("INSERT INTO meta(key,value) SELECT 'reference_publication',publication_token FROM st.pending_reference LIMIT 1 ON CONFLICT(key) DO UPDATE SET value=excluded.value", [])?;
@@ -1306,9 +1347,6 @@ fn publish(
         file_seconds += insert;
         seen_seconds += seen;
         for o in dirs {
-            if depth >= 511 {
-                return Err(Error::Invalid("tree depth limit"));
-            }
             let identity = native_id(o, fs.as_deref());
             let excluded = o.flags & EXCLUDED_FLAGS != 0;
             let mut old_dir: Option<DirectoryMatch> = if let Some(id) = identity {
@@ -1341,6 +1379,14 @@ fn publish(
                     let cycle:bool=conn.query_row("WITH RECURSIVE a(id) AS (SELECT ?1 UNION ALL SELECT d.parent_id FROM dir d JOIN a ON d.id=a.id WHERE d.parent_id IS NOT NULL) SELECT EXISTS(SELECT 1 FROM a WHERE id=?2)",params![dir,id],|r|r.get(0))?;
                     if cycle {
                         return Err(Error::Invalid("directory identity cycle"));
+                    }
+                    let destination = ctx.chain_length(conn, dir, &mut HashMap::new())?;
+                    // EXISTS stops at the first descendant that would exceed 512 directories.
+                    let too_deep: bool = conn.prepare_cached(
+                        "WITH RECURSIVE subtree(id,height) AS (SELECT ?1,0 UNION ALL SELECT d.id,s.height+1 FROM dir d JOIN subtree s ON d.parent_id=s.id WHERE s.height<?2) SELECT EXISTS(SELECT 1 FROM subtree WHERE height=?2)",
+                    )?.query_row(params![id, 512 - destination as i64], |r| r.get(0))?;
+                    if too_deep {
+                        return Err(Error::Invalid("tree depth limit"));
                     }
                     ctx.dirty(parent, run);
                     ctx.parents.insert(id, Some(dir));
@@ -1773,6 +1819,116 @@ mod tests {
             .unwrap(),
             (200, 200, true)
         );
+    }
+    #[test]
+    fn deep_reparented_chain_rejects_only_its_listing_in_a_shared_batch() {
+        let temp = tempfile::tempdir().unwrap();
+        let writer =
+            Writer::start(crate::db::open_pair(temp.path(), "synthetic").unwrap()).unwrap();
+        writer
+            .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_key: "fixture".into(),
+                display_name: "Fixture".into(),
+                display_path: "Fixture root".into(),
+                root_file_id: Some(vec![1; 16]),
+                filesystem: Some("NTFS".into()),
+                origin: "fixture".into(),
+                granted_via: "fixture".into(),
+                observed_at_ns: 0,
+            }))
+            .unwrap();
+        writer
+            .call(WriteCommand::BeginRun {
+                grant_id: 1,
+                mode: "full".into(),
+                strategy: "fixture".into(),
+                started_at_ns: 1,
+            })
+            .unwrap();
+        drop(writer);
+        // Reopen without open_pair, which would interrupt the running run.
+        let conn = Connection::open(temp.path().join("catalog.db")).unwrap();
+        conn.execute(
+            "ATTACH DATABASE ?1 AS st",
+            [temp.path().join("state.db").to_string_lossy().as_ref()],
+        )
+        .unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        // Two 300-deep chains under the root (ids 2..=301 and 302..=601) and two leaves.
+        // Simulate an overdeep tree left by the legacy reparent bug; publication now rejects it.
+        conn.execute_batch(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<300)
+             INSERT INTO dir(id,root_id,parent_id,name,file_id,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run)
+             SELECT i+1,1,i,'a'||i,NULL,'path_observation','none',i,0,'complete',1,1 FROM n
+             UNION ALL
+             SELECT i+301,1,CASE i WHEN 1 THEN 1 ELSE i+300 END,'b'||i,
+                    CASE i WHEN 1 THEN x'00000000000000000000000000000002' END,
+                    CASE i WHEN 1 THEN 'native_file_id_128' ELSE 'path_observation' END,
+                    CASE i WHEN 1 THEN 'listed' ELSE 'none' END,i,0,'complete',1,1 FROM n;
+             INSERT INTO dir(id,root_id,parent_id,name,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run)
+             VALUES(602,1,1,'c','path_observation','none',1,0,'complete',1,1),
+                   (603,1,1,'d','path_observation','none',1,0,'complete',1,1);",
+        )
+        .unwrap();
+        conn.execute("UPDATE dir SET parent_id=301 WHERE id=302", [])
+            .unwrap();
+        let (tx, rx) = bounded(64);
+        let quota = Arc::new((Mutex::new(0), Condvar::new()));
+        let enqueue = |command| {
+            let (reply, result) = bounded(1);
+            tx.send(Pending {
+                command,
+                reply,
+                _permit: BytePermit {
+                    quota: quota.clone(),
+                    bytes: 0,
+                },
+            })
+            .unwrap();
+            result
+        };
+        let listing = |dir_id, files, dirs| {
+            WriteCommand::DirListing(DirListing {
+                run_id: 1,
+                dir_id,
+                files,
+                dirs,
+                state: "complete".into(),
+                skipped: 0,
+                errors: 0,
+            })
+        };
+        let item = || vec![Observation::file("item", 7, Some(7))];
+        // All four listings are queued before work starts, so they share one transaction.
+        let before = enqueue(listing(602, item(), vec![]));
+        let shallow = enqueue(listing(301, vec![], vec![]));
+        // b300 still stores depth 300, but its chain is now 601 directories long.
+        let deep = enqueue(listing(601, item(), vec![]));
+        let after = enqueue(listing(603, item(), vec![]));
+        let barrier = enqueue(WriteCommand::Barrier);
+        drop(tx);
+        let timings = Arc::new(Mutex::new(WriterTimings::default()));
+        let (alive, _) = bounded(0);
+        work(conn, rx, timings.clone(), alive, None);
+        before.recv().unwrap().unwrap();
+        shallow.recv().unwrap().unwrap();
+        assert!(matches!(
+            deep.recv().unwrap(),
+            Err(Error::Invalid("tree depth limit"))
+        ));
+        after.recv().unwrap().unwrap();
+        // The writer stayed open: the next command is applied, not dropped.
+        barrier.recv().unwrap().unwrap();
+        assert_eq!(timings.lock().unwrap().max_transaction_commands, 4);
+        let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+        let state = |sql: &str| db.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(state("SELECT parent_id FROM dir WHERE id=302"), 301);
+        assert_eq!(
+            state("SELECT count(*) FROM file WHERE dir_id IN (602,603)"),
+            2
+        );
+        assert_eq!(state("SELECT count(*) FROM file"), 2);
+        assert_eq!(state("SELECT own_files FROM dir WHERE id=601"), 0);
     }
     #[test]
     fn failed_commit_closes_the_writer_and_wakes_producers() {

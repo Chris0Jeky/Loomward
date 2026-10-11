@@ -11,7 +11,7 @@
     "evidence/v3/ui-prototype/observatory-390.png",
     "evidence/v3/ui-prototype/observatory-zoomed-390.png"
   ],
-  "renderer": "ANGLE (AMD, AMD Radeon RX 9070 XT (0x00007550) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "renderer": "ANGLE (host hardware withheld, D3D11)",
   "treemap_benchmark_all_depths": {
     "mean": 7.899166666467985,
     "p95": 10,

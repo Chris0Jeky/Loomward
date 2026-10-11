@@ -99,12 +99,19 @@ impl Desktop {
 
     /// Acquire before spawning blocking work, so overload cannot queue unbounded workers.
     pub fn begin_call(&self) -> Result<CallPermit, String> {
-        self.calls
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                (n < MAX_CALLS).then_some(n + 1)
-            })
-            .map_err(|_| "busy: at most four calls in flight".to_string())?;
-        Ok(CallPermit(self.calls.clone()))
+        let mut n = self.calls.load(Ordering::SeqCst);
+        loop {
+            if n >= MAX_CALLS {
+                return Err("busy: at most four calls in flight".to_string());
+            }
+            match self
+                .calls
+                .compare_exchange_weak(n, n + 1, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) => return Ok(CallPermit(self.calls.clone())),
+                Err(current) => n = current,
+            }
+        }
     }
 
     pub fn dispatch_bytes(&self, bytes: &[u8]) -> Result<ResponseEnvelope, String> {
