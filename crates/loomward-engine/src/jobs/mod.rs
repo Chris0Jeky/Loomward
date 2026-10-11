@@ -97,13 +97,22 @@ impl JobContext {
         commit: impl FnOnce() -> EngineResult<()>,
     ) -> EngineResult<bool> {
         let registry = self.registry.upgrade().expect("live job registry");
-        let mut records = registry.records.lock().unwrap();
-        let record = records.get_mut(&self.job_id).expect("live job");
+        let gate = registry.records.lock().unwrap()[&self.job_id]
+            .commit_gate
+            .clone();
+        let _commit = gate.lock().unwrap();
         if self.is_cancelled() {
             return Ok(false);
         }
+        // Cancellation takes this job's gate; durable I/O never holds the shared registry.
         commit()?;
-        record.committed = true;
+        registry
+            .records
+            .lock()
+            .unwrap()
+            .get_mut(&self.job_id)
+            .expect("live job")
+            .committed = true;
         Ok(true)
     }
 }
@@ -117,6 +126,7 @@ struct Record {
     interrupt: Option<Arc<dyn Fn() + Send + Sync>>,
     revoked: bool,
     committed: bool,
+    commit_gate: Arc<Mutex<()>>,
 }
 #[derive(Default)]
 pub(crate) struct Registry {
@@ -293,6 +303,7 @@ impl Registry {
                     interrupt,
                     revoked: false,
                     committed: false,
+                    commit_gate: Arc::new(Mutex::new(())),
                 },
             );
             emit(&events, &job);
@@ -392,19 +403,52 @@ impl Registry {
     pub(crate) fn cancel_revoked(&self, id: &JobId, events: &Bus) -> EngineResult<Job> {
         self.cancel_inner(id, events, true)
     }
+    pub(crate) fn revoke_jobs(
+        &self,
+        ids: impl Iterator<Item = JobId>,
+        events: &Bus,
+    ) -> EngineResult<Vec<Job>> {
+        let mut jobs = Vec::new();
+        let mut error = None;
+        for id in ids {
+            match self.cancel_revoked(&id, events) {
+                Ok(job) => jobs.push(job),
+                Err(EngineError::NotFound { .. }) => {}
+                Err(e) => {
+                    error.get_or_insert(e);
+                }
+            }
+        }
+        match error {
+            Some(error) => Err(error),
+            None => Ok(jobs),
+        }
+    }
     fn cancel_inner(&self, id: &JobId, events: &Bus, revoked: bool) -> EngineResult<Job> {
+        if revoked {
+            events.redact_job(id);
+        }
+        let gate = self
+            .records
+            .lock()
+            .unwrap()
+            .get(id)
+            .ok_or_else(|| EngineError::NotFound {
+                message: "job not found".into(),
+            })?
+            .commit_gate
+            .clone();
+        let _commit = gate.lock().unwrap();
         let (job, interrupt) = {
             let mut records = self.records.lock().unwrap();
             let r = records.get_mut(id).ok_or_else(|| EngineError::NotFound {
                 message: "job not found".into(),
             })?;
             if revoked && r.job.kind == JobKind::Duplicates {
-                events.redact_job(id);
                 r.revoked = true;
                 r.duplicates = None;
-                if r.job.duplicates.is_some() {
+                if r.job.duplicates.take().is_some() {
                     revise(&mut r.job)?;
-                    r.job.duplicates = None;
                     emit(events, &r.job);
                 }
             }
@@ -417,6 +461,7 @@ impl Registry {
             emit(events, &r.job);
             (r.job.clone(), r.interrupt.clone())
         };
+        drop(_commit);
         if let Some(f) = interrupt {
             f();
         }
@@ -488,7 +533,7 @@ impl Engine {
             .ok_or_else(|| EngineError::unavailable(Component::Jobs))?;
         self.jobs.submit(spec, runner, self.events.clone(), None)
     }
-    /// Acknowledge cancellation immediately; synchronous I/O completion remains separate.
+    /// Acknowledge cancellation; an in-progress durable commit takes precedence.
     pub fn job_cancel(&self, id: &JobId) -> EngineResult<Job> {
         self.jobs.cancel(id, &self.events)
     }

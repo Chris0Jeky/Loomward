@@ -1,6 +1,140 @@
 use super::*;
 use loomward_protocol::{DatasetClass, RecvOutcome};
 
+#[test]
+fn durable_commit_releases_records_and_preserves_cancel_order() {
+    for fail_commit in [false, true] {
+        let e = engine();
+        let (entered, started) = std::sync::mpsc::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let wait = Mutex::new(wait);
+        let job = e
+            .jobs
+            .submit(
+                JobSpec::new(JobKind::Refit, None),
+                Arc::new(move |ctx, _| {
+                    ctx.commit_if_not_cancelled(|| {
+                        let registry = ctx.registry.upgrade().unwrap();
+                        entered.send(registry.records.try_lock().is_ok()).unwrap();
+                        wait.lock()
+                            .unwrap()
+                            .recv_timeout(Duration::from_secs(5))
+                            .unwrap();
+                        if fail_commit {
+                            Err(EngineError::Internal {
+                                message: "fixture commit failed".into(),
+                                detail: None,
+                            })
+                        } else {
+                            Ok(())
+                        }
+                    })?;
+                    Ok(CoverageState::Complete)
+                }),
+                e.events.clone(),
+                None,
+            )
+            .unwrap();
+        let unlocked = started.recv_timeout(Duration::from_secs(5)).unwrap();
+        let cancellation = if !fail_commit {
+            let registry = e.jobs.clone();
+            let events = e.events.clone();
+            let id = job.job_id.clone();
+            let (starting, ready) = std::sync::mpsc::channel();
+            let (cancelled, outcome) = std::sync::mpsc::channel();
+            let thread = std::thread::spawn(move || {
+                starting.send(()).unwrap();
+                cancelled.send(registry.cancel(&id, &events)).unwrap();
+            });
+            ready.recv_timeout(Duration::from_secs(5)).unwrap();
+            let early = outcome.recv_timeout(Duration::from_millis(100));
+            Some((thread, outcome, early))
+        } else {
+            None
+        };
+        release.send(()).unwrap();
+        if let Some((thread, outcome, early)) = cancellation {
+            let cancel = match early {
+                Ok(result) => result,
+                Err(_) => outcome.recv_timeout(Duration::from_secs(5)).unwrap(),
+            }
+            .unwrap();
+            thread.join().unwrap();
+            assert_ne!(cancel.state, JobState::CancelRequested);
+        }
+        let done = terminal(&e, &job.job_id);
+        assert!(unlocked, "durable I/O held the records lock");
+        assert_eq!(
+            done.state,
+            if fail_commit {
+                JobState::Failed
+            } else {
+                JobState::Completed
+            }
+        );
+        assert_eq!(
+            e.jobs.records.lock().unwrap()[&job.job_id].committed,
+            !fail_commit
+        );
+    }
+}
+
+#[test]
+fn root_revocation_visits_jobs_after_missing_and_failed_ids() {
+    for missing in [false, true] {
+        let e = engine();
+        let mut stream = e.subscribe_events(None).unwrap();
+        let root = RootId::new("rt_fixture").unwrap();
+        let mut ids = Vec::new();
+        for _ in 0..2 {
+            let job = e
+                .jobs
+                .submit(
+                    JobSpec::new(JobKind::Duplicates, Some(root.clone())),
+                    Arc::new(|ctx, _| {
+                        ctx.set_duplicates(report(None));
+                        Ok(CoverageState::Complete)
+                    }),
+                    e.events.clone(),
+                    None,
+                )
+                .unwrap();
+            terminal(&e, &job.job_id);
+            ids.push(job.job_id);
+        }
+        {
+            let mut records = e.jobs.records.lock().unwrap();
+            if missing {
+                records.remove(&ids[0]);
+            } else {
+                records.get_mut(&ids[0]).unwrap().job.rev =
+                    Count::new(loomward_protocol::MAX_SAFE_INTEGER).unwrap();
+            }
+        }
+        let result = e.jobs.revoke_jobs(ids.iter().cloned(), &e.events);
+        assert_eq!(result.is_ok(), missing);
+        assert!(e.job_status(&ids[1]).unwrap().duplicates.is_none());
+        if !missing {
+            assert!(e.job_status(&ids[0]).unwrap().duplicates.is_none());
+        }
+        if missing {
+            assert_eq!(result.unwrap().len(), 1);
+            let mut retained_jobs = 0;
+            while let RecvOutcome::Event(event) = stream.recv_timeout(Duration::ZERO) {
+                if event.event == EventName::JobState {
+                    retained_jobs += 1;
+                }
+                assert!(event
+                    .data
+                    .get("job")
+                    .and_then(|job| job.get("duplicates"))
+                    .is_none_or(serde_json::Value::is_null));
+            }
+            assert!(retained_jobs >= 6);
+        }
+    }
+}
+
 fn engine() -> Engine {
     Engine::open(crate::EngineConfig::new(
         "unused".into(),

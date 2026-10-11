@@ -294,12 +294,14 @@ def live_learning(page: Page, token: str, state: Path) -> None:
     page.get_by_role('button', name='Record human label').press('Space')
     expect(page.get_by_role('status').filter(has_text='Human feedback recorded, revision 2.')).to_be_visible()
     check(live_call(page, token, 'learning.status', {})['result']['human_events'] == 2, 'learning: review UI records real human feedback')
-    expect(page.get_by_text('Human history exceeds fitted examples.', exact=False)).to_be_visible()
+    expect(page.get_by_text('No fitted model yet.', exact=False)).to_be_visible()
     page.get_by_role('button', name='Review synthetic-report.txt').click()
     page.get_by_role('button', name='Withdraw human label').click()
     expect(page.get_by_role('status').filter(has_text='Human feedback recorded, revision 3.')).to_be_visible()
-    expect(page.get_by_text('Human history exceeds fitted examples.', exact=False)).to_be_visible()
-    check(True, 'learning: candidate freshness warning after newer feedback and withdrawal')
+    expect(page.get_by_text('No fitted model yet.', exact=False)).to_be_visible()
+    status = live_call(page, token, 'learning.status', {})
+    check(status['ok'] and status['result']['model_id'] is None and status['result']['human_support']['Documents'] == 0,
+          'learning: newer feedback and withdrawal retire candidate advice immediately')
     def unavailable_status(route):
         request = route.request.post_data_json
         if request['command'] == 'learning.status':
