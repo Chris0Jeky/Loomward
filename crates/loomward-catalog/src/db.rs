@@ -130,6 +130,10 @@ fn migrate(path: &Path, schema: &str, version: i64, dataset: &str, precious: boo
         if precious && version < 3 {
             tx.execute_batch(include_str!("reference-publication.sql"))?;
         }
+        if precious && version < 6 {
+            // v6 (#288): idempotent, so it composes with a v5 step in either merge order.
+            tx.execute_batch(include_str!("root-forgotten.sql"))?;
+        }
         if !precious && !tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('dir') WHERE name='listing_outcome')", [], |r| r.get::<_, bool>(0))? {
             tx.execute_batch("ALTER TABLE dir ADD COLUMN listing_outcome TEXT CHECK (listing_outcome IN ('complete','partial','denied','excluded','cancelled','unscanned','stale'))")?;
         }
@@ -329,6 +333,20 @@ pub(crate) fn open_pair(dir: &Path, dataset: &str) -> Result<Connection> {
     tx.execute("UPDATE revision SET catalog_rev=catalog_rev+1", [])?;
     tx.commit()?;
     grant_view(&conn)?;
+    // A forget committed its state half and stopped before the catalogue half: finish it.
+    let tx = conn.transaction()?;
+    let forgotten = {
+        let mut s = tx
+            .prepare("SELECT r.id FROM root r JOIN st.root_forgotten f ON f.grant_id=r.grant_id")?;
+        let rows = s
+            .query_map([], |r| r.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    for root in forgotten {
+        crate::writer::purge_root(&tx, root)?;
+    }
+    tx.commit()?;
     Ok(conn)
 }
 /// Only state.db is written; read the publication witness before recovery changes main.

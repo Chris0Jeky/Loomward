@@ -548,6 +548,7 @@ fn serve(
             break;
         };
         let checkpoint = matches!(first.command, WriteCommand::EndRun { .. });
+        let forget = matches!(first.command, WriteCommand::ForgetGrant { .. });
         let mut batch = vec![first];
         let first_run = staged_run(&batch[0].command).filter(|run| {
             conn.query_row("SELECT s.mode='full' AND NOT EXISTS(SELECT 1 FROM scan_run prior WHERE prior.root_id=s.root_id AND prior.id<s.id) FROM scan_run s WHERE s.id=?1", [run], |r| r.get::<_, bool>(0)).unwrap_or(false)
@@ -800,6 +801,12 @@ fn serve(
                 .expect("timing lock")
                 .checkpoint_seconds += seconds;
         }
+        if forget && results.iter().all(Result::is_ok) {
+            // Page images from before the purge sit in the WALs until they are folded in and cut.
+            let _ = conn.execute_batch(
+                "PRAGMA st.wal_checkpoint(TRUNCATE); PRAGMA main.wal_checkpoint(TRUNCATE)",
+            );
+        }
         for (p, result) in batch.into_iter().zip(results) {
             let Pending { reply, _permit, .. } = p;
             drop(_permit);
@@ -951,6 +958,14 @@ fn prepare_state(
             tx.commit()?;
             Ok(None)
         }
+        WriteCommand::ForgetGrant {
+            grant_id,
+            forgotten_at_ns,
+            expected_state_rev,
+        } => {
+            forget_state(conn, *grant_id, *forgotten_at_ns, *expected_state_rev)?;
+            Ok(None)
+        }
         WriteCommand::GrantIdentityChanged { grant_id } => {
             let tx = conn.transaction()?;
             if !tx.query_row(
@@ -1013,6 +1028,156 @@ fn prepare_state(
         }
         _ => Ok(None),
     }
+}
+/// The state half of a forget (#288), one FULL `state.db` transaction. Refuses anything but a
+/// revoked grant; a grant already forgotten is a no-op so the catalogue half can finish after a
+/// crash. Deletes every row that names or labels the root's objects, then scrubs the grant row to
+/// an anonymised audit record.
+fn forget_state(conn: &mut Connection, grant: i64, at: i64, expected: Option<i64>) -> Result<()> {
+    // Freed pages are zeroed, not just unlinked, so the removed name does not linger in the files.
+    // ponytail: stays on for the writer's life; per-command restore if scan deletes get slow.
+    conn.execute_batch("PRAGMA st.secure_delete=ON; PRAGMA main.secure_delete=ON")?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let (state, volume, done): (String, String, bool) = tx
+        .query_row(
+            "SELECT g.state,g.volume_key,EXISTS(SELECT 1 FROM st.root_forgotten f WHERE f.grant_id=g.id) FROM st.root_grant g WHERE g.id=?1",
+            [grant],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?
+        .ok_or(Error::NotFound)?;
+    if done {
+        return Ok(());
+    }
+    if state != "revoked" {
+        return Err(Error::Invalid("grant is not revoked"));
+    }
+    let current: i64 = tx.query_row("SELECT state_rev FROM st.revision", [], |r| r.get(0))?;
+    if expected.is_some_and(|e| e != current) {
+        return Err(Error::StaleGeneration);
+    }
+    let root: Option<i64> = tx
+        .query_row("SELECT id FROM main.root WHERE grant_id=?1", [grant], |r| {
+            r.get(0)
+        })
+        .optional()?;
+    if let Some(root) = root {
+        // The objects of this root: bound to its rows now, or (after a catalogue rebuild) matched
+        // by native identity, unless another root of the volume still observes the same object.
+        tx.execute_batch("CREATE TEMP TABLE forget_ref(id INTEGER PRIMARY KEY)")?;
+        tx.execute("INSERT OR IGNORE INTO forget_ref SELECT o.id FROM st.object_ref o WHERE o.volume_key=?2 AND (
+              (o.catalog_instance=(SELECT value FROM main.meta WHERE key='instance_id') AND (
+                (o.kind='dir' AND o.row_id IN (SELECT id FROM main.dir WHERE root_id=?1))
+                OR (o.kind='file' AND o.row_id IN (SELECT f.id FROM main.file f JOIN main.dir d ON d.id=f.dir_id WHERE d.root_id=?1))))
+              OR ((EXISTS(SELECT 1 FROM main.file f JOIN main.dir d ON d.id=f.dir_id WHERE f.file_id=o.file_id AND d.root_id=?1)
+                   OR EXISTS(SELECT 1 FROM main.dir d WHERE d.root_id=?1 AND d.file_id=o.file_id))
+                AND NOT EXISTS(SELECT 1 FROM main.file f JOIN main.dir d ON d.id=f.dir_id WHERE f.file_id=o.file_id AND d.root_id!=?1)
+                AND NOT EXISTS(SELECT 1 FROM main.dir d WHERE d.root_id!=?1 AND d.file_id=o.file_id)))", params![root, volume])?;
+        let has = |table: &str| {
+            tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM st.sqlite_schema WHERE type='table' AND name=?1)",
+                [table],
+                |r| r.get::<_, bool>(0),
+            )
+        };
+        if has("learning_receipt")? {
+            tx.execute_batch("DELETE FROM st.learning_receipt WHERE client_event_id IN (SELECT client_event_id FROM st.human_feedback WHERE object_ref_id IN (SELECT id FROM forget_ref))")?;
+        }
+        if has("learning_node")? {
+            tx.execute_batch(
+                "DELETE FROM st.learning_node WHERE object_ref_id IN (SELECT id FROM forget_ref)",
+            )?;
+        }
+        let labels = tx.execute(
+            "DELETE FROM st.human_feedback WHERE object_ref_id IN (SELECT id FROM forget_ref)",
+            [],
+        )? + tx.execute(
+            "DELETE FROM st.teacher_label WHERE object_ref_id IN (SELECT id FROM forget_ref)",
+            [],
+        )?;
+        if labels > 0 {
+            // A fitted candidate learned from those labels; the next refit starts from what is left.
+            tx.execute(
+                "UPDATE st.student_model SET status='retired' WHERE status='candidate'",
+                [],
+            )?;
+        }
+        tx.execute_batch(
+            "DELETE FROM st.collection_member WHERE object_ref_id IN (SELECT id FROM forget_ref);
+             DELETE FROM st.pending_reference WHERE object_ref_id IN (SELECT id FROM forget_ref);
+             DELETE FROM st.object_ref WHERE id IN (SELECT id FROM forget_ref);
+             DROP TABLE forget_ref",
+        )?;
+    }
+    tx.execute(
+        "UPDATE st.root_grant SET display_path='forgotten',volume_key='forgotten',root_file_id=zeroblob(8),lab_root_id=NULL WHERE id=?1",
+        [grant],
+    )?;
+    tx.execute(
+        "INSERT INTO st.root_forgotten(grant_id,root_number,forgotten_at_ns) VALUES (?1,?2,?3)",
+        params![grant, root.unwrap_or(0), at],
+    )?;
+    state_revision(&tx)?;
+    tx.commit()?;
+    Ok(())
+}
+/// Deletes a root's catalogue rows (#288): runs, staged listings, directories and files with their
+/// aggregates, then whatever only it kept alive (extension vocabulary, a volume with no other root,
+/// a volume name taken from its folder). The link counts of a volume that stays are recomputed.
+pub(crate) fn purge_root(conn: &Connection, root: i64) -> Result<()> {
+    let (volume, name): (Option<i64>, Option<String>) = conn.query_row(
+        "SELECT r.volume_id,(SELECT name FROM dir WHERE root_id=r.id AND parent_id IS NULL) FROM root r WHERE r.id=?1",
+        [root],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    conn.execute(
+        "DELETE FROM stage_entry WHERE run_id IN (SELECT id FROM scan_run WHERE root_id=?1)",
+        [root],
+    )?;
+    conn.execute(
+        "DELETE FROM file WHERE dir_id IN (SELECT id FROM dir WHERE root_id=?1)",
+        [root],
+    )?;
+    // A cascade through a parent_id chain is a trigger recursion, capped at 1000 levels: delete
+    // from the deepest level up so each statement cascades at most one level, then sweep the rest.
+    let deepest: i64 = conn.query_row(
+        "SELECT coalesce(max(depth),0) FROM dir WHERE root_id=?1",
+        [root],
+        |r| r.get(0),
+    )?;
+    let mut level = conn.prepare_cached("DELETE FROM dir WHERE root_id=?1 AND depth=?2")?;
+    for depth in (1..=deepest).rev() {
+        level.execute(params![root, depth])?;
+    }
+    drop(level);
+    conn.execute("DELETE FROM root WHERE id=?1", [root])?; // cascades to the remaining dir and scan_run rows
+    conn.execute(
+        "DELETE FROM ext WHERE NOT EXISTS(SELECT 1 FROM file WHERE ext_id=ext.id)",
+        [],
+    )?;
+    if let Some(volume) = volume {
+        let other: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM root WHERE volume_id=?1 LIMIT 1",
+                [volume],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match other {
+            Some(other) => {
+                rebuild_multilink(conn, other)?;
+                conn.execute(
+                    "UPDATE volume SET display_name=volume_key WHERE id=?1 AND display_name=?2",
+                    params![volume, name],
+                )?;
+            }
+            None => {
+                conn.execute("DELETE FROM multilink WHERE volume_id=?1", [volume])?;
+                conn.execute("DELETE FROM volume WHERE id=?1", [volume])?;
+            }
+        }
+    }
+    Ok(())
 }
 fn reference(conn: &mut Connection, node: NodeKey, reconcile: Option<i64>, at: i64) -> Result<i64> {
     let r = crate::query::get(conn, node)?;
@@ -1338,6 +1503,19 @@ fn apply(
             for root in roots {
                 rebuild_multilink(conn, root)?;
             }
+            Ok(WriteReply::Done)
+        }
+        WriteCommand::ForgetGrant { grant_id, .. } => {
+            let root: Option<i64> = conn
+                .query_row("SELECT id FROM root WHERE grant_id=?1", [grant_id], |r| {
+                    r.get(0)
+                })
+                .optional()?;
+            if let Some(root) = root {
+                purge_root(conn, root)?;
+            }
+            // Extension IDs are cached across batches; a deleted vocabulary row must not be reused.
+            ctx.extensions.clear();
             Ok(WriteReply::Done)
         }
         WriteCommand::Repair { root_id } => {
