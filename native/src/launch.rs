@@ -128,23 +128,25 @@ pub fn migrate_legacy_state(base: &Path) -> Result<(), String> {
 /// drops. It is an OS lock on an open handle, so a crashed instance leaves no stale lock behind.
 pub fn lock_state_dir(state_dir: &Path) -> Result<File, String> {
     let dir = loomward_service::paths::prospective_dir(state_dir)?;
-    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("cannot create {}: {e}", state_dir.display()))?;
     let file = File::options()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
         .open(dir.join("lock"))
-        .map_err(|e| format!("cannot open the state lock in {}: {e}", dir.display()))?;
+        .map_err(|e| format!("cannot open the state lock in {}: {e}", state_dir.display()))?;
     match file.try_lock() {
         Ok(()) => Ok(file),
         Err(TryLockError::WouldBlock) => Err(format!(
             "busy: Loomward is already open on {}. Switch to that window, or close it first.",
-            dir.display()
+            state_dir.display()
         )),
-        Err(TryLockError::Error(e)) => {
-            Err(format!("cannot lock the state in {}: {e}", dir.display()))
-        }
+        Err(TryLockError::Error(e)) => Err(format!(
+            "cannot lock the state in {}: {e}",
+            state_dir.display()
+        )),
     }
 }
 
