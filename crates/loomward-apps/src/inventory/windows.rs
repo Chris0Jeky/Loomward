@@ -78,22 +78,34 @@ fn partial(result: &mut RegistryRead, reason: String) {
     result.reason.get_or_insert(reason);
 }
 
-fn read_value(key: &Key, field: &str) -> Option<RegistryValue> {
+/// Seam over RegQueryValueExW: fills `data` and returns (status, kind, bytes required or written).
+trait ValueSource {
+    fn query(&self, name: &[u16], data: &mut [u8]) -> (u32, u32, u32);
+}
+
+impl ValueSource for Key {
+    fn query(&self, name: &[u16], data: &mut [u8]) -> (u32, u32, u32) {
+        let mut kind = 0;
+        let mut bytes = data.len() as u32;
+        // SAFETY: live key, terminated name, valid outputs and a buffer of bytes capacity.
+        let status = unsafe {
+            RegQueryValueExW(
+                self.0,
+                name.as_ptr(),
+                null(),
+                &mut kind,
+                data.as_mut_ptr(),
+                &mut bytes,
+            )
+        };
+        (status, kind, bytes)
+    }
+}
+
+fn read_value(source: &impl ValueSource, field: &str) -> Option<RegistryValue> {
     let name = wide(field);
-    let mut kind = 0;
     let mut data = vec![0u8; MAX_VALUE_BYTES];
-    let mut bytes = data.len() as u32;
-    // SAFETY: live key, terminated name, valid outputs and a buffer of bytes capacity.
-    let status = unsafe {
-        RegQueryValueExW(
-            key.0,
-            name.as_ptr(),
-            null(),
-            &mut kind,
-            data.as_mut_ptr(),
-            &mut bytes,
-        )
-    };
+    let (status, kind, bytes) = source.query(&name, &mut data);
     if status == ERROR_FILE_NOT_FOUND {
         return None;
     }
@@ -279,6 +291,7 @@ fn read_subkeys(reader: &impl SubkeyReader) -> RegistryRead {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+    use windows_sys::Win32::Foundation::ERROR_MORE_DATA;
 
     #[derive(Clone, Copy)]
     enum Mutation {
@@ -460,5 +473,74 @@ mod tests {
         let mut result = failure(ERROR_FILE_NOT_FOUND);
         partial(&mut result, "synthetic partial".into());
         assert_eq!(result.state, ProviderState::Partial);
+    }
+
+    struct FakeValue {
+        status: u32,
+        kind: u32,
+        bytes: u32,
+    }
+
+    impl ValueSource for FakeValue {
+        fn query(&self, _: &[u16], data: &mut [u8]) -> (u32, u32, u32) {
+            let written = (self.bytes as usize).min(data.len());
+            data[..written].fill(7);
+            (self.status, self.kind, self.bytes)
+        }
+    }
+
+    fn value_of(status: u32, kind: u32, bytes: u32) -> Option<RegistryValue> {
+        read_value(
+            &FakeValue {
+                status,
+                kind,
+                bytes,
+            },
+            "DisplayName",
+        )
+    }
+
+    #[test]
+    fn missing_registry_value_is_absent_not_unknown() {
+        assert!(value_of(ERROR_FILE_NOT_FOUND, 0, 0).is_none());
+    }
+
+    #[test]
+    fn registry_value_reads_exact_bytes_within_the_budget() {
+        match value_of(ERROR_SUCCESS, 1, 5) {
+            Some(RegistryValue::Bytes { kind, data }) => {
+                assert_eq!(kind, 1);
+                assert_eq!(data, vec![7; 5]);
+            }
+            other => panic!("expected bytes, got {other:?}"),
+        }
+        match value_of(ERROR_SUCCESS, 3, 0) {
+            Some(RegistryValue::Bytes { kind, data }) => {
+                assert_eq!(kind, 3);
+                assert!(data.is_empty());
+            }
+            other => panic!("expected empty bytes, got {other:?}"),
+        }
+        match value_of(ERROR_SUCCESS, 1, 4096) {
+            Some(RegistryValue::Bytes { data, .. }) => assert_eq!(data.len(), 4096),
+            other => panic!("expected bytes at the budget, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn registry_value_over_budget_or_unreadable_is_unknown() {
+        for (status, bytes) in [
+            (ERROR_SUCCESS, 4097),
+            (ERROR_MORE_DATA, 4097),
+            (ERROR_ACCESS_DENIED, 0),
+        ] {
+            assert!(
+                matches!(
+                    value_of(status, 1, bytes),
+                    Some(RegistryValue::Unknown { .. })
+                ),
+                "status {status} bytes {bytes}"
+            );
+        }
     }
 }
