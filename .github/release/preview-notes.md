@@ -8,9 +8,10 @@ early testers, built from commit `{{SHA}}`.
   SHA-256 below. Code signing is a later owner decision.
 - **Synthetic data only.** The desktop shell answers from the project's contract example fixtures. It
   does not scan your disk yet, and nothing you see is a measurement of your files.
-- **Read-only, simulation-only.** No file or process effect exists in this build: nothing moves,
-  deletes, renames, writes, kills, suspends, reprioritises or trims anything on your machine. It
-  makes no network requests and downloads no models.
+- **Read-only, simulation-only.** Loomward never moves, deletes, renames or writes your files, and
+  never kills, suspends, reprioritises or trims your processes. The installer writes the app's own
+  files under `%LOCALAPPDATA%`, and the WebView2 runtime keeps its own profile and cache there. The
+  app's code makes no network requests and downloads no models.
 - **Per-user install.** No administrator rights are needed. The installer fetches nothing from the
   network unless Microsoft's WebView2 runtime is missing from your PC.
 
