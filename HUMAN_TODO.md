@@ -58,7 +58,23 @@ Owner, in chat: whole volumes (`C:\`, `G:\`, `E:\`) may be personal scan roots w
 in the native grant dialog (ADR-V3-08); agents still never pick a volume root. The 10M-entry synthetic
 lab tier runs on `E:\loomward-lab\scale` only; `G:` stays capped at 2M (ADR-V3-17).
 
-## q-8 — Teacher sandbox path — ANSWERED 2026-10-10, BROKER-FIRST
+## q-8 — Teacher sandbox path — ANSWERED 2026-10-10 (b), SUPERSEDED 2026-10-10/11 BY (c) BOTH
+
+**Superseding answer.** In a later chat (agent-hq decision `loomward-teacher-sandbox-path`, recorded in
+agent-hq#356 at 22:46 UTC on 2026-10-10) the owner answered (c) "Both": build the broker, and allow
+the one-off profile registration purely to measure what an AppContainer enforces, deleting it
+afterwards. On 2026-10-11, shown that (b) and (c) disagreed, the owner chose, verbatim: "(c) and
+allow re-measuring". Recorded scope now:
+
+- The broker (b) remains the design. Agents build it with synthetic fixtures first.
+- Agents may register the one named test profile `Loomward.L15b.Measure` again when a measurement
+  needs it, and must always delete it afterwards and prove deletion (Loomward#291 did this once).
+- Unchanged guards: never copy or reuse an existing Codex credential; a new sign-in for the broker is
+  a separate owner approval; no firewall rule (q-6 stays the owner's); no other ACL or Windows
+  security change; q-5 personal-data disclosure stays open.
+- The "No AppContainer profile registration" line below is superseded by this paragraph for the
+  named test profile only.
+
 
 The L15b spike (#174) found that an AppContainer launch without a registered profile is refused by
 Windows before anything runs, so no enforcement could be measured. Owner chose option (b), inference broker first, in chat on 2026-10-10 at 18:51 UTC.

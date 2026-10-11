@@ -8,6 +8,8 @@ mod windows;
 #[derive(Debug, PartialEq)]
 enum Role {
     Run(PathBuf),
+    RunRegistered(PathBuf),
+    DeleteProfile,
     Probe(PathBuf),
     Child(PathBuf, bool),
 }
@@ -15,6 +17,8 @@ enum Role {
 fn role(args: &[String]) -> io::Result<Role> {
     match args {
         [flag, path] if flag == "--run" => Ok(Role::Run(path.into())),
+        [flag, path] if flag == "--run-registered" => Ok(Role::RunRegistered(path.into())),
+        [flag] if flag == "--delete-profile" => Ok(Role::DeleteProfile),
         [flag, path] if flag == "--probe" => Ok(Role::Probe(path.into())),
         [flag, path] if flag == "--child" => Ok(Role::Child(path.into(), false)),
         [flag, path, linger] if flag == "--child" && linger == "--linger" => {
@@ -22,7 +26,7 @@ fn role(args: &[String]) -> io::Result<Role> {
         }
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: teacher_sandbox --run <out.json> | --probe <private-config.json>",
+            "usage: teacher_sandbox --run <out.json> | --run-registered <out.json> | --delete-profile",
         )),
     }
 }
@@ -94,6 +98,15 @@ mod tests {
             role(&["--probe".into(), "lab.json".into()]).unwrap(),
             Role::Probe("lab.json".into())
         );
+        assert_eq!(
+            role(&["--run-registered".into(), "out.json".into()]).unwrap(),
+            Role::RunRegistered("out.json".into())
+        );
+        assert_eq!(
+            role(&["--delete-profile".into()]).unwrap(),
+            Role::DeleteProfile
+        );
+        assert!(role(&["--delete-profile".into(), "x".into()]).is_err());
         assert!(role(&[]).is_err());
         assert!(role(&["--run".into()]).is_err());
         assert!(role(&["--run".into(), "x".into(), "--internet".into()]).is_err());

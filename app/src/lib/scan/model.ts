@@ -55,7 +55,9 @@ function merge(cur: Job, job: Job): Job {
 
 /** Submission order within one engine lifetime, independent of clocks and random IDs. */
 function newerJob(job: Job, cur: Job): boolean {
-  return job.seq > cur.seq;
+  if (job.seq !== undefined && cur.seq !== undefined) return job.seq > cur.seq;
+  const a = Date.parse(job.created_at), b = Date.parse(cur.created_at);
+  return Number.isNaN(b) ? !Number.isNaN(a) : a > b; // an unreadable time never outranks a readable one
 }
 
 /** Applies snapshots by submission and revision; legacy jobs retain the state and null guards. */
@@ -67,7 +69,8 @@ export function applyJob(book: Book, job: Job): Book {
     if (cur.job_id === job.job_id) {
       if ((cur.rev === undefined || job.rev === undefined) &&
         (RANK[job.state] < RANK[cur.state] || (RANK[cur.state] === TERMINAL && job.state !== cur.state))) return book;
-      return { ...book, [root]: merge(cur, job) };
+      const next = merge(cur, job);
+      return next === cur ? book : { ...book, [root]: next };
     }
     if (!newerJob(job, cur)) return book;
   }

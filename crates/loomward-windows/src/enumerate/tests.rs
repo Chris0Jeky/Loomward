@@ -130,11 +130,10 @@ fn reopen_follows_identity_after_rename_and_rejects_changed_volume_or_root() {
             ListOutcome::Complete
         );
         let expected = expected.unwrap();
-        drop(parent);
         let moved = temp.path().join("moved");
         std::fs::rename(&child, &moved).unwrap();
         std::fs::create_dir(&child).unwrap();
-        let (dir, observed) = source.reopen(temp.path(), root_identity, expected).unwrap();
+        let (dir, observed) = source.reopen(&parent, root_identity, expected).unwrap();
         assert_eq!(observed.id, expected.id);
         let mut names = Vec::new();
         assert_eq!(
@@ -149,19 +148,19 @@ fn reopen_follows_identity_after_rename_and_rejects_changed_volume_or_root() {
         let mut wrong_volume = expected;
         wrong_volume.volume_serial = expected.volume_serial.map(|n| n.wrapping_add(1));
         assert!(matches!(
-            source.reopen(temp.path(), root_identity, wrong_volume),
+            source.reopen(&parent, root_identity, wrong_volume),
             Err(SourceError::IdentityChanged)
         ));
         let mut wrong_root = root_identity;
         wrong_root.volume_serial = wrong_volume.volume_serial;
         assert!(matches!(
-            source.reopen(temp.path(), wrong_root, expected),
+            source.reopen(&parent, wrong_root, expected),
             Err(SourceError::IdentityChanged)
         ));
         let mut name_only = expected;
         name_only.basis = IdBasis::NonUnique;
         assert!(matches!(
-            source.reopen(temp.path(), root_identity, name_only),
+            source.reopen(&parent, root_identity, name_only),
             Err(SourceError::IdentityUnverified)
         ));
         std::fs::remove_dir(&child).unwrap();
