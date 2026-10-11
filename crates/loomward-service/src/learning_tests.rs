@@ -368,6 +368,7 @@ fn learning_stores_never_cross_dataset_classes() {
             state_dir: tmp.path().to_path_buf(),
             dataset: other,
             allow_personal: true,
+            allow_identity_unverified: false,
             grant_roots: vec![],
         })
         .is_err());
