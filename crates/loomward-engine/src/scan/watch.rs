@@ -327,13 +327,8 @@ impl ScanSink for RepairSink {
         if matches!(&message, ScanMessage::InvalidateChains { .. }) {
             self.reparented.store(true, Ordering::Release);
         }
-        match self.inner.consume(root, message) {
-            // Reparenting invalidates tickets already in flight; discard them and relist the root.
-            Err(EngineError::StaleGeneration { .. }) if self.reparented.load(Ordering::Acquire) => {
-                Ok(())
-            }
-            result => result,
-        }
+        // The pipeline relists listing_revision_changed; other stale errors must still fail.
+        self.inner.consume(root, message)
     }
     fn finish_run(
         &self,
@@ -517,6 +512,72 @@ mod tests {
     use std::{collections::HashMap, path::PathBuf};
     type DirectoryRows = BTreeMap<Vec<u16>, (Option<FileIdObs>, u32, u64)>;
     type Rows = HashMap<FileIdObs, DirectoryRows>;
+    #[test]
+    fn repair_reparent_does_not_hide_an_obsolete_run_or_unrelated_ticket() {
+        use super::super::tests::{root, Tree};
+        let root = root();
+        let sink = Arc::new(MemorySink::default());
+        let repair = RepairSink {
+            inner: sink.clone(),
+            valid: Mutex::new(true),
+            reparented: AtomicBool::new(false),
+        };
+        repair
+            .begin_run(root.root_id(), 1, &RunScope::FullRoot)
+            .unwrap();
+        let identity = Tree.open_root(root.path()).unwrap().1;
+        let ticket = repair
+            .prepare_listing(root.root_id(), 1, None, &[], identity)
+            .unwrap();
+        repair
+            .consume(
+                root.root_id(),
+                ScanMessage::InvalidateChains {
+                    run: 1,
+                    old_parent: ticket.dir,
+                    new_parent: ticket.dir,
+                },
+            )
+            .unwrap();
+        assert!(repair.reparented.load(Ordering::Acquire));
+        for (run, ticket) in [
+            (2, ticket),
+            (
+                1,
+                ListingTicket {
+                    dir: u64::MAX,
+                    ..ticket
+                },
+            ),
+        ] {
+            assert!(matches!(
+                repair.consume(
+                    root.root_id(),
+                    ScanMessage::DirFinal {
+                        run,
+                        ticket,
+                        sums: Sums::ZERO,
+                        complete: true,
+                    }
+                ),
+                Err(EngineError::StaleGeneration { .. })
+            ));
+        }
+        let refreshed = repair.refresh_listing(root.root_id(), 1, ticket).unwrap();
+        repair
+            .consume(
+                root.root_id(),
+                ScanMessage::ListingDone {
+                    run: 1,
+                    ticket: refreshed,
+                    outcome: ListOutcome::Complete,
+                },
+            )
+            .unwrap();
+        repair
+            .finish_run(root.root_id(), 1, &RunScope::FullRoot, false)
+            .unwrap();
+    }
     #[test]
     fn watcher_reports_latest_counts_but_limits_all_enumeration_attempts() {
         use super::super::tests::{root, DirtyWriter, Tree};

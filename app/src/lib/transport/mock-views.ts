@@ -93,6 +93,7 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
         volume_id: v.id, display_name: v.name, tier: tierInfo(v), online: true, writable: true,
         capacity_bytes: str(v.capacity), free_bytes: str(free(v)), reserve_bytes: str(v.capacity / 50n), free_fraction: frac,
         pressure: frac < PRESSURE ? 'pressure' : frac < WATCH ? 'watch' : 'ok',
+        source_eligible: tierInfo(v).tier !== null,
       };
     }),
     policy: {

@@ -202,6 +202,14 @@ impl Engine {
                 None => TierVolumePressure::Unknown,
             };
             let tier = tier_info(&v);
+            let source_eligible = v.online
+                && tier.tier.is_some()
+                && !unusable
+                && v.capacity_bytes
+                    .is_some_and(|cap| cap.get() > 0 && cap.get() <= MAX_SAFE_INTEGER)
+                && v.free_bytes
+                    .is_some_and(|free| free.get() <= MAX_SAFE_INTEGER)
+                && reserve_bytes.get() <= MAX_SAFE_INTEGER;
             volumes.push(TierVolume {
                 volume_id: v.volume_id,
                 display_name: v.display_name,
@@ -213,6 +221,7 @@ impl Engine {
                 reserve_bytes,
                 free_fraction: fraction,
                 pressure,
+                source_eligible,
             });
         }
         Ok(TierModel {volumes: bounded(BoundedVec::new(volumes))?, policy: TierModelPolicy {
