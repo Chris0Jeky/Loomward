@@ -480,13 +480,11 @@ def live_personal_scan(browser, exe: Path) -> None:
         check(not inspected['ok'] and inspected['error']['detail']['reason'] == 'content_read_gated', 'personal: content inspection refused before any root access')
         jobs = live_call(page, token, 'jobs.list', {'kinds': ['scan'], 'limit': 50})
         check(jobs['ok'] and len(jobs['result']['jobs']) == 1, f"personal: only the pressed Scan created a job: {jobs.get('result')}")
-        # Learning stays synthetic-only (L14): the Review surface and the service both gate personal learning.
+        # q-11: the Review surface is open for personal sessions, and the teacher stays refused.
         page.evaluate("location.hash = '#/review'")
-        expect(page.get_by_text('Personal learning is gated.', exact=False)).to_be_visible()
-        expect(page.get_by_role('button', name='Refit from human labels')).to_be_disabled()
-        for command, payload in [('learning.refit', {}), ('threads.meaning', {'node_ids':['nd_unknown']}), ('feedback.record', {'node_id':'nd_unknown', 'label':'Documents', 'retract':False, 'client_event_id':'ce_personal_live'})]:
-            refused = live_call(page, token, command, payload)
-            check(not refused['ok'] and (refused['error']['detail'] or {}).get('reason') == 'learning_personal_gated', f'learning: personal {command} is gated')
+        expect(page.get_by_text('Your labels train a local student on this machine.', exact=False)).to_be_visible()
+        expect(page.get_by_role('button', name='Refit from human labels')).to_be_enabled()
+        teacher_refusals(page, token, 'personal')
         page.context.close()
         print('PASS personal: a granted folder scans through the app to the fixture totals, metadata only')
     finally:
@@ -495,6 +493,105 @@ def live_personal_scan(browser, exe: Path) -> None:
             proc.wait(timeout=10)
         state.cleanup()
         fixture.cleanup()
+
+
+def teacher_refusals(page: Page, token: str, what: str, node: str = 'nd_0020') -> None:
+    for command, payload in [('teacher.preview', {'node_ids': [node], 'recipient': 'codex_cli_gpt_6_1_sol'}),
+                             ('grants.create_disclosure', {'preview_id': 'tp_0001', 'payload_digest': 'sha256:' + '0' * 64}),
+                             ('teacher.run', {'grant_id': 'gr_0002'}), ('teacher.results', {'job_id': 'jb_0010'})]:
+        refused = live_call(page, token, command, payload)
+        check(not refused['ok'] and (refused['error']['detail'] or {}).get('reason') == 'teacher_personal_gated', f'{what}: {command} refuses with teacher_personal_gated')
+
+
+PERSONAL_LEARNING_FILES = ['top.bin', '1.bin', '2.bin', 'x.bin']
+
+
+def live_personal_learning_isolated(browser, exe: Path) -> None:
+    """q-11 end to end on a disposable personal-session fixture root: SQL rows planted in a fresh personal state
+    (origin owner_granted, synthetic names, no disk scan, no user path), driven through the real HTTP service and app."""
+    state = tempfile.TemporaryDirectory(prefix='lw-live-personal-learning-')
+    proc = subprocess.Popen([str(exe), '--state-dir', state.name, '--static', str(DIST), '--dataset', 'personal', '--allow-personal'],
+                            stdout=subprocess.PIPE, text=True)
+    try:
+        url = (proc.stdout.readline() if proc.stdout else '').strip()
+        check('/#token=' in url, 'a personal loomward-serve is up for the personal learning leg')
+        _, token = url.split('/#token=')
+        with closing(sqlite3.connect(Path(state.name) / 'state.db')) as db, db:
+            db.execute("INSERT INTO root_grant(id,volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns) VALUES(1,'learning_fixture',zeroblob(16),'Disposable personal fixture','owner_granted','cli_flag','active',0)")
+        rows = ''.join(f"INSERT INTO file(id,dir_id,name,file_id,logical,allocated,created_ft,attrs,born_run,seen_run) VALUES({i},1,'{n}',cast('{i:016d}' AS BLOB),{10 * i},{10 * i},1,0,1,1);"
+                       for i, n in enumerate(PERSONAL_LEARNING_FILES, 1))
+        with closing(sqlite3.connect(Path(state.name) / 'catalog.db')) as db, db:
+            db.executescript("""
+                INSERT INTO volume(id,volume_key,display_name,filesystem,identity_json,capabilities_json,device_json,online,observed_at_ns)
+                    VALUES(1,'learning_fixture','Personal fixture','NTFS','{}','{}','{}',1,0);
+                INSERT INTO root(id,grant_id,volume_id,generation,state) VALUES(1,1,1,1,'complete');
+                INSERT INTO scan_run(id,root_id,mode,strategy,state,started_at_ns,finished_at_ns,counters_json,budget_json)
+                    VALUES(1,1,'full','fixture','completed',0,0,'{}','{}');
+                INSERT INTO dir(id,root_id,name,file_id,id_quality,id_basis,depth,attrs,created_ft,listing_state,born_run,seen_run,sub_complete)
+                    VALUES(1,1,'Personal fixture',zeroblob(16),'native_file_id_128','listed',0,0,1,'complete',1,1,1);
+            """ + rows + "UPDATE revision SET catalog_rev=catalog_rev+1;")
+        page = browser.new_context(viewport={'width': 1360, 'height': 900}).new_page()
+        page.set_default_timeout(8000)
+        page.goto(url)
+        expect(page.get_by_role('status', name='Session status')).to_contain_text('Dataset personal')
+        live_personal_learning(page, token)
+        page.context.close()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=10)
+        state.cleanup()
+
+
+def live_personal_learning(page: Page, token: str) -> None:
+    """q-11: labels made in the app train the local student; the teacher stays refused; revoking the root redacts,
+    withdraws and blocks new labels while withdrawal stays possible."""
+    page.evaluate("location.hash = '#/review'")
+    expect(page.get_by_role('heading', name='Learning review', level=1)).to_be_visible()
+    expect(page.get_by_text('Your labels train a local student on this machine.', exact=False)).to_be_visible()
+    check(page.get_by_text('Learning is gated', exact=False).count() == 0, 'personal learning: the Review surface is not gated')
+    status = live_call(page, token, 'learning.status', {})
+    check(status['ok'] and status['result']['gate'] is None and status['result']['dataset_class'] == 'personal', f"personal learning: status is open: {status.get('result') or status.get('error')}")
+    queue = live_call(page, token, 'learning.queue', {'root_id': None, 'limit': 20, 'cursor': None})
+    items = {i['row']['name']: i['row']['node_id'] for i in (queue.get('result') or {}).get('items', [])}
+    check(queue['ok'] and set(items) == set(PERSONAL_LEARNING_FILES), f'personal learning: the queue lists the granted root files: {sorted(items)}')
+    page.get_by_role('button', name='Review top.bin').click()
+    page.get_by_label('Human label').select_option('Archive')
+    page.get_by_role('button', name='Record human label').click()
+    expect(page.get_by_role('status').filter(has_text='Human feedback recorded, revision 1.')).to_be_visible()
+    second = live_call(page, token, 'feedback.record', {'node_id': items['x.bin'], 'label': 'Media', 'retract': False, 'client_event_id': 'ce_personal_live_x'})
+    check(second['ok'] and second['result']['data_class'] == 'human', 'personal learning: a second human label is recorded through HTTP')
+    page.get_by_role('button', name='Refit from human labels').click()
+    expect(page.get_by_role('status').filter(has_text='Refit completed.')).to_be_visible(timeout=10000)
+    expect(page.get_by_text('Personal candidate fitted;', exact=False)).to_be_visible()
+    status = live_call(page, token, 'learning.status', {})['result']
+    check(status['training_count'] == 2 and status['teacher_labels'] == 0 and not status['calibrated'] and not status['autonomy_allowed'],
+          f'personal learning: the refit trains on the two human labels only, uncalibrated, no autonomy: {status}')
+    thread = live_call(page, token, 'threads.meaning', {'node_ids': [items['top.bin'], items['1.bin']]})
+    first = (thread.get('result') or {}).get('items', [{}])[0].get('meaning', {})
+    check(thread['ok'] and thread['result']['model_id'] == status['model_id'] and first.get('state') in ('suggested', 'abstained')
+          and first['suggestion']['teacher'] is None and not first['suggestion']['calibrated'],
+          f"personal learning: meaning threads read the local candidate: {thread.get('result') or thread.get('error')}")
+    teacher_refusals(page, token, 'personal learning', items['top.bin'])
+    root = live_call(page, token, 'roots.list', {})['result']['roots'][0]['root_id']
+    check(live_call(page, token, 'roots.revoke', {'root_id': root, 'purge_catalog': False})['ok'], 'personal learning: the root is revoked')
+    status = live_call(page, token, 'learning.status', {})['result']
+    check(status['model_id'] is None, 'personal learning: revocation deletes the candidate fitted from that root')
+    late = live_call(page, token, 'feedback.record', {'node_id': items['1.bin'], 'label': 'Archive', 'retract': False, 'client_event_id': 'ce_personal_live_late'})
+    check(not late['ok'] and late['error']['code'] == 'not_found', f"personal learning: a revoked root's node cannot be labelled: {late.get('error')}")
+    withdrawn = live_call(page, token, 'feedback.record', {'node_id': items['x.bin'], 'label': None, 'retract': True, 'client_event_id': 'ce_personal_live_withdraw'})
+    check(withdrawn['ok'] and withdrawn['result']['revision'] == 2, f"personal learning: withdrawal stays possible after revocation: {withdrawn.get('error')}")
+    refit = live_call(page, token, 'learning.refit', {})
+    check(refit['ok'], f"personal learning: refit after revocation starts: {refit.get('error')}")
+    job = refit['result']['job']
+    for _ in range(200):
+        job = live_call(page, token, 'jobs.get', {'job_id': job['job_id']})['result']['job']
+        if job['finished_at']:
+            break
+        page.wait_for_timeout(50)
+    status = live_call(page, token, 'learning.status', {})['result']
+    check(job['state'] == 'completed' and status['training_count'] == 0 and status['model_id'] is None,
+          f'personal learning: revocation withdraws every label of the root from training: {status}')
 
 
 def build_app(out: Path | None, development: bool) -> None:
@@ -556,6 +653,7 @@ def run_live_serve(browser_path: str | None) -> None:
             live_personal_scan(browser, exe)
             live_placement(browser, exe)
             live_learning_isolated(browser, exe)
+            live_personal_learning_isolated(browser, exe)
 
             proc.terminate()
             proc.wait(timeout=10)

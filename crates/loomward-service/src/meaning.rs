@@ -26,7 +26,6 @@ impl Inner {
         r: MeaningRequest,
         work: Option<&ReadWork>,
     ) -> Result<Out, ErrorBody> {
-        self.learning_gate()?;
         let revs = self.revisions()?;
         let deadline = work.map_or_else(|| Instant::now() + Duration::from_secs(2), |w| w.deadline);
         let mut reader = match work {

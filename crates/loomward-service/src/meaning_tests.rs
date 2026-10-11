@@ -106,14 +106,18 @@ fn meaning_is_bounded_read_only_advice_with_explicit_unknowns() {
         err(svc.call(req, &CallContext::http())).code,
         ErrorCode::DeadlineExceeded
     );
+    // q-11: personal sessions read meaning too; an unknown node is still refused.
     let personal_dir = temp_root();
     let personal = open(personal_dir.path(), DatasetClass::Personal);
-    let refused = err(call(
-        &personal,
-        "threads.meaning",
-        json!({"node_ids":["nd_unknown"]}),
-    ));
-    assert_eq!(refused.detail.unwrap()["reason"], "learning_personal_gated");
+    assert_eq!(
+        err(call(
+            &personal,
+            "threads.meaning",
+            json!({"node_ids":["nd_unknown"]}),
+        ))
+        .code,
+        ErrorCode::NotFound
+    );
 }
 
 #[test]
