@@ -242,7 +242,17 @@ grouped by exact logical size; only sizes with at least two names are candidates
 the cap sets truncated=true, partial=true and stop=entry_budget unless a later stop takes precedence.
 A cap can omit an entire trailing size group; truncated never means those names were absent.
 Catalogue selection also caps aggregate JSON-encoded relative names at 64 KiB, with the same
-truncated flag and stop, so retained reports remain bounded in jobs.list as well as jobs.get.
+truncated flag and stop. An unrepresentable candidate path is omitted, leaving partial=true and
+stop=path_depth or path_length unless a budget or cancellation stop takes precedence; other pairs
+remain inspectable. Reader groups and link sets exceeding the wire bounds are truncated into a
+partial report with stop=report_budget unless an earlier stop takes precedence.
+
+Terminal job status remains recoverable for ten minutes. Duplicate evidence is retained for at
+most ten minutes, 50 reports and 4 MiB of JSON-encoded reports per engine, whichever expires first.
+Newest reports are retained first; eviction removes job.duplicates, increments rev and publishes
+job.state without changing the terminal outcome. jobs.list returns at most 50 jobs; retained report
+bytes plus bounded job metadata fit below the HTTP client's 8 MiB response limit. Tauri carries the
+same envelope and imposes no separate response-byte limit.
 
 jobs.get/jobs.list and terminal job.state carry optional job.duplicates. Its entries are root-relative
 names and logical byte sizes; groups/links/skipped.entry refer to indices in entries. Groups are
@@ -256,8 +266,12 @@ Personal sessions are refused before resolving or opening a root, with capabilit
 detail.reason=content_read_gated. The engine repeats the synthetic-grant admission before metadata
 and content I/O. Scan file identity, size, attributes and creation/write/change ticks must match
 fresh root-relative metadata before the existing handle reader compares content. Root revocation
-uses the existing root cancellation fence and refuses the report; no report survives that refusal.
+uses the existing root cancellation fence and refuses the report; no report survives that refusal,
+including evidence from an already-terminal job. Removing terminal evidence increments rev and
+publishes job.state once, without changing its outcome. Repeated revocation is idempotent. A pending
+job's permission error is published only with its terminal state; pending evidence stays private.
 `duplicates.cancel` uses the existing non-joining job cancellation seam and is idempotent; jobs.get
 shows cancel_requested until the worker drains. Cancelled jobs may retain verified partial evidence
-with stop=cancelled; a permission refusal instead carries error and no duplicates report. seq and rev
+with stop=cancelled when no earlier reader stop exists; a permission refusal instead carries error
+and no duplicates report. seq and rev
 have the same ordering semantics as scan jobs. Personal scan gating is unchanged.

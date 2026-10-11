@@ -873,6 +873,35 @@ mod native {
         }
     }
     #[test]
+    fn native_public_inspect_stop_keeps_verified_group_and_marks_partial() {
+        let Some(temp) = fixture() else { return };
+        for (name, bytes) in [
+            ("a", b"same".as_slice()),
+            ("b", b"same"),
+            ("c", b"longer"),
+            ("d", b"longer"),
+        ] {
+            fs::write(temp.path().join(name), bytes).unwrap();
+        }
+        let entries = ["a", "b", "c", "d"].map(|name| entry(temp.path(), name));
+        let report = inspect(
+            temp.path(),
+            &root_id(temp.path()),
+            &entries,
+            Budget {
+                bytes: 48,
+                time: Duration::from_secs(30),
+            },
+            Default::default(),
+        )
+        .unwrap();
+        assert_eq!(report.groups, [vec![0, 1]]);
+        assert_eq!(report.stop, Some(Reason::ByteBudget));
+        assert!(report.partial);
+        assert_eq!(report.bytes_read, 48);
+        assert!(report.skipped.iter().all(|s| s.entry >= 2));
+    }
+    #[test]
     fn native_sharing_violation_visible() {
         use std::os::windows::fs::OpenOptionsExt;
         let Some(temp) = fixture() else { return };
