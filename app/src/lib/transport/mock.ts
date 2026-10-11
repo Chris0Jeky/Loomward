@@ -4,8 +4,10 @@ import type {
   TreeSliceRequest, Threads,
 } from '../contracts.gen';
 import type { TelemetrySample } from '../contracts.gen';
+import { createCollectionMock } from './mock-collections';
 import { createScanMock } from './mock-scan';
 import { createViewMock } from './mock-views';
+import { createInventoryMock } from './mock-inventory';
 import { generateTree, prng, type SynthNode } from './synth';
 import type { Transport } from './transport';
 
@@ -25,6 +27,8 @@ const GENERATION = '1';
 const EPOCH = 'e_mock_epoch';
 /** Which revision scopes (semantics.md section 5) a command's response is read at: catalogue, state.db, both, or neither. */
 const REVS: Partial<Record<string, 'c' | 's' | 'cs'>> = {
+  'collections.list': 'cs', 'collections.create': 'cs', 'collections.members': 'cs', 'collections.update_members': 'cs',
+  'node.inspect': 'cs',
   'health.get': 'c', 'tree.children': 'c', 'search.query': 'c',
   'roots.list': 'cs', 'tree.slice': 'cs', 'placement.candidates': 'cs', 'placement.simulate': 'cs',
   'proposals.list': 'cs', 'proposals.get': 'cs', 'volumes.declare_tier': 'cs',
@@ -267,10 +271,18 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
         { grant_id: 'gr_mock_teacher_0', kind: 'teacher_disclosure' as const, recipient: 'codex_cli_gpt_6_1_sol', dataset_class: DATASET, fields: ['name', 'extension'], item_count: 25, payload_digest: 'sha256:' + '0'.repeat(64), created_at: GRANTED_AT, expires_at: '2026-10-01T10:00:00Z', revoked_at: views.revokedGrants.get('gr_mock_teacher_0') ?? null, used: false, confirmed_via: 'synthetic_policy' as const },
       ],
     }),
+    'node.inspect': (p) => {
+      const n = nodeFor(p.node_id);
+      return { row: entryRow(n, true), root_id: rootId(topOf(n)[0]!), volume_id: null,
+        display_path: { text: pathOf(n), truncated: false }, identity: { quality: 'native_file_id_128', volume_key: 'synthetic', file_id_hex: '0'.repeat(32), observed_generation: '1', authorises_effects: false, durable_reference: 'available' },
+        timestamps: { created_at: null, modified_at: n.modified, accessed_at: null, changed_at: null }, subtree: null,
+        threads: threadsOf(n), exclusions: [], denied_capabilities: [], memberships: [], suggestion: null };
+    },
     'tree.slice': (p) => slice(p as unknown as TreeSliceRequest),
     'tree.children': (p) => children(p as unknown as TreeChildrenRequest),
     'search.query': (p) => search(p as unknown as SearchRequest),
     ...views.handlers,
+    ...createInventoryMock(now, fail),
     'grants.revoke': (p) => {
       const r = views.handlers['grants.revoke']!(p) as GrantRevokeResult;
       const g = rootGrants().find((x) => x.grant_id === r.grant_id);
@@ -281,19 +293,22 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     'telemetry.snapshot': telemetry, // after the spread: wraps the view mock's sample with gpu and disks
   };
 
+  const collections = createCollectionMock(now, failWith, nodeFor, entryRow,
+    (n) => topOf(n).some((a) => views.revokedRoots.has(rootId(a))), views.stateRev);
+  const retained = new Map<string, { binding: string; at: number; response: ResponseEnvelope }>();
   const respond = (req: RequestEnvelope): ResponseEnvelope => {
     const base = { protocol: 'loomward/3' as const, request_id: req.request_id };
     const err = (code: ErrorCode, message: string, detail: Record<string, unknown> | null = null): ResponseEnvelope => ({ ...base, ok: false, error: { code, message, retryable: code === 'busy', detail } });
     if (req.protocol !== 'loomward/3') return err('unsupported_protocol', 'expected loomward/3');
     const h = Object.hasOwn(handlers, req.command) ? handlers[req.command] : undefined;
-    if (!h) return err('capability_unavailable', `the mock transport does not implement ${req.command}`);
+    if (!h && !req.command.startsWith('collections.')) return err('capability_unavailable', `the mock transport does not implement ${req.command}`);
     try {
-      const result = h((req.payload ?? {}) as Record<string, unknown>) as Record<string, unknown>;
+      const result = (req.command.startsWith('collections.') ? collections.handle(req) : h!((req.payload ?? {}) as Record<string, unknown>)) as Record<string, unknown>;
       const scope = REVS[req.command] ?? '';
       // Read after the handler, so a mutation reports the revision it committed.
       const meta = {
         served_at: now().toISOString(), elapsed_ms: 0, dataset_class: DATASET, budget_hit: false,
-        catalog_rev: scope.includes('c') ? views.catalogRev() : null, state_rev: scope.includes('s') ? views.stateRev() : null,
+        catalog_rev: scope.includes('c') ? views.catalogRev() : null, state_rev: scope.includes('s') ? collections.stateRev() : null,
       };
       return { ...base, ok: true, result, meta };
     } catch (e) {
@@ -304,7 +319,19 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
 
   return {
     mode: 'mock',
-    call: async (req) => respond(req),
+    call: async (req) => {
+      if (req.command !== 'collections.create' && req.command !== 'collections.update_members') return respond(req);
+      const binding = JSON.stringify([req.command, req.payload, req.expected_state_rev]);
+      const saved = retained.get(req.request_id);
+      if (saved && now().getTime() - saved.at < 600_000) {
+        if (saved.binding === binding) return structuredClone(saved.response);
+        return { protocol: 'loomward/3', request_id: req.request_id, ok: false, error: { code: 'invalid_request', message: 'This request_id was used for a different request.', retryable: false, detail: { reason: 'idempotency_conflict' } } };
+      }
+      const response = respond(req);
+      if (retained.size >= 2048) retained.delete(retained.keys().next().value!);
+      retained.set(req.request_id, { binding, at: now().getTime(), response: structuredClone(response) });
+      return response;
+    },
     subscribe(onEvent, onState, resume) {
       let live = true;
       listeners.add(onEvent);

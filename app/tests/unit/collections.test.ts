@@ -1,0 +1,60 @@
+﻿import { describe, expect, it } from 'vitest';
+import { Client } from '../../src/lib/transport/client';
+import { createMockTransport } from '../../src/lib/transport/mock';
+import type { RequestEnvelope } from '../../src/lib/contracts.gen';
+const transport = () => createMockTransport({ now: () => new Date('2026-10-01T00:00:00Z') });
+const nodes = async (c: Client) => (await c.call('search.query', { root_id: null, text: '', extension: null, min_bytes: null, kind: 'file', limit: 10, cursor: null })).result.items;
+
+describe('collections', () => {
+  it('replays a create, refuses duplicate names and request-id conflicts', async () => {
+    const t = transport();
+    const req: RequestEnvelope = { protocol: 'loomward/3', request_id: 'collection_create', command: 'collections.create', payload: { name: 'Projects' } };
+    const first = await t.call(req);
+    expect(first.ok).toBe(true);
+    expect(await t.call(req)).toEqual(first);
+    const duplicate = await t.call({ ...req, request_id: 'duplicate' });
+    expect(duplicate).toMatchObject({ ok: false, error: { code: 'invalid_request', detail: { existing_id: 'co_1' } } });
+    expect(await t.call({ ...req, payload: { name: 'Other' } })).toMatchObject({ ok: false, error: { detail: { reason: 'idempotency_conflict' } } });
+    const c = new Client(t);
+    expect((await c.call('collections.list', {})).result.collections).toHaveLength(1);
+    await expect(c.call('collections.create', { name: '\n' })).rejects.toMatchObject({ code: 'invalid_request' });
+  });
+  it('requires the read revision, updates atomically, removes, and binds member cursors', async () => {
+    const c = new Client(transport());
+    const collection_id = (await c.call('collections.create', { name: 'Projects' })).result.collection_id;
+    const ids = (await nodes(c)).slice(0, 3).map((n) => n.node_id);
+    const read = () => c.call('collections.members', { collection_id, limit: 1, cursor: null });
+    const payload = { collection_id, add: ids, remove: [] };
+    await expect(c.call('collections.update_members', payload)).rejects.toMatchObject({ code: 'invalid_request' });
+    const rev = (await read()).meta.state_rev!;
+    await expect(c.call('collections.update_members', payload, { expectedStateRev: '0' })).rejects.toMatchObject({ code: 'stale_generation' });
+    await expect(c.call('collections.update_members', { ...payload, add: [ids[0]!, 'nd_forged'] }, { expectedStateRev: rev })).rejects.toMatchObject({ code: 'not_found' });
+    expect((await read()).result.total).toBe(0);
+    const added = await c.call('collections.update_members', payload, { expectedStateRev: rev });
+    expect(added.result.member_count).toBe(3);
+    expect((await c.call('collections.update_members', payload, { expectedStateRev: added.meta.state_rev! })).meta.state_rev).toBe(added.meta.state_rev);
+    const first = await read();
+    const second = await c.call('collections.members', { collection_id, limit: 2, cursor: first.result.next_cursor });
+    expect(second.result.items).toHaveLength(2);
+    expect(second.result.items[0]!.member_id).not.toBe(first.result.items[0]!.member_id);
+    await c.call('collections.update_members', { collection_id, add: [], remove: [ids[0]!] }, { expectedStateRev: first.meta.state_rev! });
+    await expect(c.call('collections.members', { collection_id, limit: 1, cursor: first.result.next_cursor })).rejects.toMatchObject({ code: 'stale_generation' });
+    expect((await read()).result.total).toBe(2);
+  });
+  it('retains revoked members without names or zero sizes, with no permission change', async () => {
+    const c = new Client(transport());
+    const collection_id = (await c.call('collections.create', { name: 'Projects' })).result.collection_id;
+    const node = (await nodes(c))[0]!;
+    const before = (await c.call('grants.list', {})).result;
+    const { meta } = await c.call('collections.members', { collection_id, limit: 1, cursor: null });
+    await c.call('collections.update_members', { collection_id, add: [node.node_id], remove: [] }, { expectedStateRev: meta.state_rev! });
+    expect((await c.call('grants.list', {})).result).toEqual(before);
+    const inspected = (await c.call('node.inspect', { node_id: node.node_id })).result;
+    expect(inspected.identity.authorises_effects).toBe(false);
+    await c.call('roots.revoke', { root_id: inspected.root_id, purge_catalog: false });
+    const page = (await c.call('collections.members', { collection_id, limit: 200, cursor: null })).result;
+    expect(page.total).toBe(1);
+    expect(page.items[0]).toMatchObject({ status: 'root_revoked', entry: null });
+    expect((await c.call('collections.list', {})).result.collections[0]!.logical_bytes).toBeNull();
+  });
+});

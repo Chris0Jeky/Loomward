@@ -72,6 +72,8 @@ macro_rules! commands {
 commands! {
     SessionHello = "session.hello", EmptyRequest, SessionInfo, [Tauri, Http], 1, [];
     HealthGet = "health.get", EmptyRequest, Health, [Tauri, Http], 2, [];
+    AppsList = "apps.list", MetadataPageRequest, ApplicationPage, [Tauri, Http], 2, [];
+    DesktopContexts = "desktop.contexts", MetadataPageRequest, DesktopPage, [Tauri, Http], 2, [];
     RootsList = "roots.list", EmptyRequest, RootList, [Tauri, Http], 2, [];
     RootsRequestGrant = "roots.request_grant", RootGrantRequest, RootGrantResult, [Tauri], 2, [];
     RootsRevoke = "roots.revoke", RootRevokeRequest, RootRevokeResult, [Tauri, Http], 2, [];
@@ -99,7 +101,7 @@ commands! {
     CollectionsList = "collections.list", EmptyRequest, CollectionList, [Tauri, Http], 3, [];
     CollectionsCreate = "collections.create", CollectionCreateRequest, Collection, [Tauri, Http], 3, [];
     CollectionsUpdateMembers = "collections.update_members", CollectionMembersUpdate, Collection, [Tauri, Http], 3, [];
-    CollectionsMembers = "collections.members", CollectionMembersRequest, EntryPage, [Tauri, Http], 3, [];
+    CollectionsMembers = "collections.members", CollectionMembersRequest, CollectionMemberPage, [Tauri, Http], 3, [];
     TeacherPreview = "teacher.preview", TeacherPreviewRequest, TeacherPreview, [Tauri, Http], 3, [];
     GrantsList = "grants.list", EmptyRequest, GrantList, [Tauri, Http], 2, [];
     GrantsCreateDisclosure = "grants.create_disclosure", DisclosureGrantRequest, DisclosureGrantResult, [Tauri, Http], 3, [];

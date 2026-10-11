@@ -291,6 +291,8 @@ pub fn query_stop(code: u32, cancelled: bool) -> ListOutcome {
 }
 #[cfg(windows)]
 mod native;
+#[cfg(windows)]
+mod profile;
 #[cfg(all(test, windows))]
 pub(crate) use native::force_elevation_for_test;
 #[cfg(all(windows, feature = "shortcut-read"))]
@@ -304,5 +306,7 @@ pub use native::{
 };
 #[cfg(all(windows, any(feature = "content-read", test)))]
 pub(crate) use native::{open_relative_mode, root_handles};
+#[cfg(windows)]
+pub use profile::scan_profile;
 #[cfg(test)]
 mod tests;

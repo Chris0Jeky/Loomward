@@ -104,7 +104,8 @@ pub struct Collection {
     pub name: BoundedStr<1, 64>,
     pub kind: CollectionKind,
     pub member_count: Count,
-    pub logical_bytes: Bytes,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub logical_bytes: Option<Bytes>,
     pub created_at: Timestamp,
 }
 
@@ -135,4 +136,33 @@ pub struct CollectionMembersRequest {
     pub limit: Int<1, 200>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub cursor: Option<Cursor>,
+}
+
+/// A durable member remains visible when its catalogue object cannot be resolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CollectionMemberStatus {
+    Resolved,
+    Unresolved,
+    RootRevoked,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CollectionMember {
+    pub member_id: BoundedStr<1, 64>,
+    pub status: CollectionMemberStatus,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub entry: Option<super::tree::EntryRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CollectionMemberPage {
+    pub collection_id: CollectionId,
+    pub items: BoundedVec<CollectionMember, 0, 200>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub next_cursor: Option<Cursor>,
+    pub total: Count,
+    pub budget_hit: bool,
 }

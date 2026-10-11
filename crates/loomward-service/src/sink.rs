@@ -662,6 +662,15 @@ impl ScanSink for CatalogScanSink {
             return Err(listing_error(e));
         }
         self.invalidated(root, true);
+        if std::env::var_os("LOOMWARD_SCAN_PROFILE").is_some() {
+            if let Some(inner) = self.inner.upgrade() {
+                eprintln!(
+                    "scan-profile writer {}",
+                    serde_json::to_string(&inner.catalog.writer().timings())
+                        .expect("aggregate timings")
+                );
+            }
+        }
         Ok(())
     }
 

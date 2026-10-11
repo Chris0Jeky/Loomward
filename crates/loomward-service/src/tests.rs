@@ -1307,6 +1307,10 @@ fn every_command_answers_a_complete_envelope_and_core_reads_serve_the_catalogue(
                     | Command::LearningStatus
                     | Command::LearningQueue
                     | Command::LearningRefit
+                    | Command::CollectionsList
+                    | Command::CollectionsCreate
+                    | Command::CollectionsUpdateMembers
+                    | Command::CollectionsMembers
             ))
             || command == Command::RootsRequestGrant
         {
@@ -3426,3 +3430,7 @@ fn followup_inspect_uses_the_roots_actual_grant() {
 mod duplicates_tests;
 #[path = "learning_tests.rs"]
 mod learning_tests;
+
+#[cfg(test)]
+#[path = "collections_tests.rs"]
+mod collections_tests;

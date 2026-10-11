@@ -41,6 +41,61 @@ fn known(text: &str, expandable: bool) -> Evidence<Text> {
 }
 
 #[test]
+fn estimated_size_is_registry_evidence_not_disk_measurement() {
+    let p = rows(&[(
+        "EstimatedSize",
+        RegistryValue::Bytes {
+            kind: 4,
+            data: 1024u32.to_le_bytes().to_vec(),
+        },
+    )]);
+    assert_eq!(
+        p[0].applications[0].estimated_size_bytes,
+        Evidence::Known(1048576)
+    );
+    assert_eq!(
+        rows(&[])[0].applications[0].estimated_size_bytes,
+        Evidence::Missing
+    );
+    let bad = rows(&[("EstimatedSize", value(1, "1024"))]);
+    assert!(matches!(
+        bad[0].applications[0].estimated_size_bytes,
+        Evidence::Unknown { .. }
+    ));
+    assert_eq!(bad[0].state, ProviderState::Partial);
+}
+
+#[test]
+fn zero_registry_size_is_unknown_not_a_known_zero_byte_size() {
+    let zero = rows(&[(
+        "EstimatedSize",
+        RegistryValue::Bytes {
+            kind: 4,
+            data: 0u32.to_le_bytes().to_vec(),
+        },
+    )]);
+    assert_eq!(
+        zero[0].applications[0].estimated_size_bytes,
+        Evidence::Unknown {
+            reason: "provider reported zero (often unset)".into()
+        }
+    );
+    // Unset is not unreadable: an unknown zero size keeps the provider's coverage.
+    assert_eq!(zero[0].state, ProviderState::Available);
+    let one_kib = rows(&[(
+        "EstimatedSize",
+        RegistryValue::Bytes {
+            kind: 4,
+            data: 1u32.to_le_bytes().to_vec(),
+        },
+    )]);
+    assert_eq!(
+        one_kib[0].applications[0].estimated_size_bytes,
+        Evidence::Known(1024)
+    );
+}
+
+#[test]
 fn scope_and_cross_view_duplicates() {
     let providers = rows(&[("DisplayName", value(1, "Synthetic Editor"))]);
     for (index, view) in REGISTRY_VIEWS.into_iter().enumerate() {

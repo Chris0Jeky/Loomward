@@ -80,6 +80,8 @@ pub struct Application {
     pub display_icon: Evidence<Text>,
     pub parent_key_name: Evidence<Text>,
     pub system_component: Evidence<bool>,
+    /// The provider's EstimatedSize in KiB, never a filesystem measurement.
+    pub estimated_size_bytes: Evidence<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -162,9 +164,29 @@ pub fn inventory(reader: &impl RegistryReader) -> Vec<ProviderInventory> {
                 display_icon: text("DisplayIcon"),
                 parent_key_name: text("ParentKeyName"),
                 system_component: Evidence::Missing,
+                estimated_size_bytes: Evidence::Missing,
             };
             app.system_component = system_evidence(entry.values.get("SystemComponent"));
             incomplete |= matches!(app.system_component, Evidence::Unknown { .. });
+            // An unset size (installers often write 0) is unknown, but not an unreadable field:
+            // only unreadable or malformed sizes lower the provider's coverage.
+            let mut size_unreadable = true;
+            app.estimated_size_bytes = match entry.values.get("EstimatedSize") {
+                None => {
+                    size_unreadable = false;
+                    Evidence::Missing
+                }
+                Some(RegistryValue::Unknown { reason }) => unknown(reason),
+                Some(RegistryValue::Bytes { kind: 4, data }) if data.len() == 4 => {
+                    size_unreadable = false;
+                    match u32::from_le_bytes(data.as_slice().try_into().unwrap()) {
+                        0 => unknown("provider reported zero (often unset)"),
+                        kib => Evidence::Known(u64::from(kib) * 1024),
+                    }
+                }
+                _ => unknown("expected a four-byte REG_DWORD EstimatedSize"),
+            };
+            incomplete |= size_unreadable;
             if incomplete && result.state == ProviderState::Available {
                 result.state = ProviderState::Partial;
                 result.reason =

@@ -93,6 +93,7 @@ impl Inner {
         let handled = match command {
             SessionHello => self.hello(ctx),
             HealthGet => self.health(),
+            AppsList | DesktopContexts => self.metadata_page(req, command, work),
             RootsList => self.roots_list(work),
             RootsRequestGrant => self.request_grant(ctx),
             RootsRevoke => {
@@ -115,6 +116,10 @@ impl Inner {
             GrantsList => self.grants_list(),
             VolumesList => self.placement_command(req, command, work),
             VolumesDeclareTier => self.declare_tier(req.decode_payload()?, req.expected_state_rev),
+            CollectionsList => self.collections_list(work),
+            CollectionsCreate => self.collections_create(req),
+            CollectionsUpdateMembers => self.collections_update(req),
+            CollectionsMembers => self.collections_members(req, work),
             DuplicatesInspect => self.duplicates_inspect(req),
             DuplicatesCancel => self.duplicates_cancel(req.decode_payload()?),
             ScanStart => self.scan_start(req.decode_payload()?),

@@ -130,6 +130,21 @@ Stored canonical row references and input digests survive restart and never conf
 
 ## 4. Idempotency
 
+| Read-only command | Idempotency | Deadline | Pagination and unknowns |
+|---|---|---|---|
+| `apps.list` | Safe to retry; no state or registry writes | 2,000 ms default; shares the eight-read admission pool | `limit` 1–200, required nullable `cursor`. First page observes at most 6,144 registry entries across three bounded views; provider coverage is explicit (packaged/portable remain unavailable). `estimated_size_bytes` is the registry's EstimatedSize in KiB converted to bytes, never a disk measurement; absent/malformed fields stay null with `size_reason`. Registry text stays literal, including expandable values. |
+| `desktop.contexts` | Safe to retry; no file, icon, shortcut or process effects | 2,000 ms default; shares the eight-read admission pool | Five configured known folders, personal/public ownership and nullable redirection; configured paths establish neither existence nor online state. At most 200 shortcut entries per page. Synthetic sessions use injected fixtures only. Personal shortcut enumeration currently reports `desktop_enumeration_unavailable`: the existing safe reader requires an explicit path and exposes no bounded pinned-directory listing; pathname enumeration would weaken no-follow containment. It performs no desktop content or target reads. |
+
+Both commands have `effects: none`, no events, and null catalogue/state revisions. Cursors retain
+one bounded observation (maximum 4 MiB encoded snapshot), bind the command and session, and never
+trigger a new provider read. Unknown/evicted/foreign cursors answer `stale_generation` with
+`cursor_expired`; a cursor for the other command answers `invalid_request`. `cursor: null` refreshes
+the observation. Paging itself is not `budget_hit`; incomplete provider coverage stays in its
+provider state and reason. Provider calls may block in the OS after a caller's deadline; their read
+permit remains held until they finish, preventing unbounded worker accumulation. An elevated
+personal session refuses both reads with `personal_metadata_elevated`; unsupported platforms
+report `personal_metadata_unsupported`. There is no synthetic fallback for personal sessions.
+
 - **Session cache.** For every mutating command the service keeps, for 10 minutes, the response keyed by
   `request_id` alone, scoped to the session. Replaying the same `request_id` with a byte-identical canonical payload returns
   the cached response. The same `request_id` with a different payload is `invalid_request` with
@@ -328,3 +343,25 @@ shows cancel_requested until the worker drains. Cancelled jobs may retain verifi
 with stop=cancelled when no earlier reader stop exists; a permission refusal instead carries error
 and no duplicates report. seq and rev
 have the same ordering semantics as scan jobs. Personal scan gating is unchanged.
+
+## Collections (local preferences)
+
+The four `collections.*` commands work in synthetic and personal sessions. They read catalogue
+metadata and write only Loomward's FULL-synchronous state store. Membership is meaning, never a
+root grant, disclosure approval or file effect; no content is read, moved, copied or linked.
+Names are exact, case-sensitive keys (1-64 characters, no controls); a duplicate returns
+`invalid_request` with `detail.existing_id`. At most 256 collections are stored; further creates
+return `resource_budget`, never a truncated list. There is no rename command.
+
+`collections.update_members` requires `expected_state_rev`; omission is `invalid_request`, a
+mismatch is `stale_generation` / `state_rev_changed` before any state write. Adds/removes are atomic
+sets of current node IDs, require durable native identity and an active root, and may not overlap.
+An unchanged set is a no-op. Removed or replaced objects are never rebound by path. Members bind
+`object_ref`, including pending reference publication during rescans; unresolved references remain
+members until explicitly removed through a resolvable node ID. `member_id` is a stable local
+reference identifier, not an operation grant. `status` is `resolved`, `root_revoked` or `unresolved`;
+`entry` is null for the latter two, so no names, paths or zero sizes are fabricated. Collection
+`member_count` includes unresolved members; `logical_bytes` is null if any member's size is unknown
+or directory coverage is incomplete. The sum is virtual entry size, not reclaimable disk space.
+Pages order by durable member ID and cursors bind the collection, session, catalogue instance,
+`catalog_rev` and `state_rev`. Changed limits may reuse a cursor; changed bindings may not.

@@ -787,8 +787,22 @@ export interface Collection {
   name: string;
   kind: "human" | "label_view";
   member_count: Count;
-  logical_bytes: ByteCount;
+  logical_bytes: ByteCount | null;
   created_at: Timestamp;
+}
+
+export interface CollectionMember {
+  member_id: string;
+  status: "resolved" | "unresolved" | "root_revoked";
+  entry: EntryRow | null;
+}
+
+export interface CollectionMemberPage {
+  collection_id: CollectionId;
+  items: CollectionMember[];
+  next_cursor: Cursor | null;
+  total: Count;
+  budget_hit: boolean;
 }
 
 export interface CollectionList {
@@ -1361,11 +1375,94 @@ export interface LearningUpdated {
   status: LearningStatus;
 }
 
+export interface MetadataPageRequest {
+  limit: number;
+  cursor: Cursor | null;
+}
+
+export type InventoryProviderState = "available" | "denied" | "unavailable" | "partial";
+
+export interface InventoryProvider {
+  provider: string;
+  state: InventoryProviderState;
+  reason: string | null;
+}
+
+export type InventoryTextState = "known" | "missing" | "unknown";
+
+export interface InventoryText {
+  state: InventoryTextState;
+  value: string | null;
+  expandable: boolean | null;
+  reason: string | null;
+}
+
+export type ApplicationScope = "per_machine" | "per_user" | "portable" | "unknown";
+
+export interface InstalledApplication {
+  provider: string;
+  scope: ApplicationScope;
+  registry_key: string;
+  name: InventoryText;
+  version: InventoryText;
+  publisher: InventoryText;
+  install_location: InventoryText;
+  estimated_size_bytes: NullableBytes;
+  size_reason: string | null;
+}
+
+export interface ApplicationPage {
+  observed_at: Timestamp;
+  providers: InventoryProvider[];
+  applications: InstalledApplication[];
+  next_cursor: Cursor | null;
+  budget_hit: boolean;
+}
+
+export type DesktopFolder = "desktop" | "public_desktop" | "documents" | "downloads" | "onedrive";
+
+export type DesktopOwnership = "per_user" | "public";
+
+export type DesktopLocation = "filesystem" | "virtual" | "unavailable";
+
+export interface DesktopContext {
+  folder: DesktopFolder;
+  ownership: DesktopOwnership;
+  location: DesktopLocation;
+  current_path: DisplayPath | null;
+  default_path: DisplayPath | null;
+  redirected: boolean | null;
+  reason: string | null;
+}
+
+export type ShortcutHealth = "present" | "missing" | "volume_unavailable" | "network_unreachable_unknown" | "ambiguous" | "unknown";
+
+export interface DesktopShortcut {
+  desktop: "desktop" | "public_desktop";
+  name: string;
+  health: ShortcutHealth;
+  reason: string | null;
+  target: InventoryText;
+  arguments: InventoryText;
+  working_directory: InventoryText;
+}
+
+export interface DesktopPage {
+  observed_at: Timestamp;
+  contexts: DesktopContext[];
+  providers: InventoryProvider[];
+  shortcuts: DesktopShortcut[];
+  next_cursor: Cursor | null;
+  budget_hit: boolean;
+}
+
 // ---- commands (commands.json)
 
 export interface CommandMap {
   "session.hello": { request: EmptyRequest; result: SessionInfo };
   "health.get": { request: EmptyRequest; result: Health };
+  "apps.list": { request: MetadataPageRequest; result: ApplicationPage };
+  "desktop.contexts": { request: MetadataPageRequest; result: DesktopPage };
   "roots.list": { request: EmptyRequest; result: RootList };
   "roots.request_grant": { request: RootGrantRequest; result: RootGrantResult };
   "roots.revoke": { request: RootRevokeRequest; result: RootRevokeResult };
@@ -1393,7 +1490,7 @@ export interface CommandMap {
   "collections.list": { request: EmptyRequest; result: CollectionList };
   "collections.create": { request: CollectionCreateRequest; result: Collection };
   "collections.update_members": { request: CollectionMembersUpdate; result: Collection };
-  "collections.members": { request: CollectionMembersRequest; result: EntryPage };
+  "collections.members": { request: CollectionMembersRequest; result: CollectionMemberPage };
   "teacher.preview": { request: TeacherPreviewRequest; result: TeacherPreview };
   "grants.list": { request: EmptyRequest; result: GrantList };
   "grants.create_disclosure": { request: DisclosureGrantRequest; result: DisclosureGrantResult };
@@ -1420,6 +1517,8 @@ export type CommandKey = keyof CommandMap;
 export const COMMANDS = {
   "session.hello": { adapters: ["tauri", "http"], wave: 1, events: [] },
   "health.get": { adapters: ["tauri", "http"], wave: 2, events: [] },
+  "apps.list": { adapters: ["tauri", "http"], wave: 2, events: [] },
+  "desktop.contexts": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "roots.list": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "roots.request_grant": { adapters: ["tauri"], wave: 2, events: [] },
   "roots.revoke": { adapters: ["tauri", "http"], wave: 2, events: [] },

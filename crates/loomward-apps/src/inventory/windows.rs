@@ -12,7 +12,7 @@ use windows_sys::Win32::{
 };
 
 const UNINSTALL: &str = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall";
-const FIELDS: [&str; 8] = [
+const FIELDS: [&str; 9] = [
     "DisplayName",
     "DisplayVersion",
     "Publisher",
@@ -21,6 +21,7 @@ const FIELDS: [&str; 8] = [
     "DisplayIcon",
     "ParentKeyName",
     "SystemComponent",
+    "EstimatedSize",
 ];
 // shortcut: finite registry budgets can truncate coverage; raise only with memory evidence.
 const MAX_ENTRIES: u32 = 2048;

@@ -17,6 +17,7 @@ export class LoomwardError extends Error {
 
 export interface CallOptions {
   deadlineMs?: number;
+  expectedStateRev?: string;
   signal?: AbortSignal;
 }
 
@@ -33,7 +34,7 @@ export class Client {
     const request_id = `r_${String(++this.n).padStart(6, '0')}`;
     const res = asResponse(
       await this.transport.call(
-        { protocol: 'loomward/3', request_id, command, payload: payload as unknown as Record<string, unknown>, deadline_ms: opts.deadlineMs ?? 5000 },
+        { protocol: 'loomward/3', request_id, command, payload: payload as unknown as Record<string, unknown>, deadline_ms: opts.deadlineMs ?? 5000, ...(opts.expectedStateRev !== undefined ? { expected_state_rev: opts.expectedStateRev } : {}) },
         opts.signal,
       ),
       request_id,
