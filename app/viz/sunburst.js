@@ -493,7 +493,9 @@ export function createSunburst(canvas, options) {
   return {
     /** @param {SliceLike} s @param {{ animate?: boolean }} [opts] */
     setSlice(s, opts = {}) {
-      const next = buildTree(s, options.label);
+      let next;
+      try { next = buildTree(s, options.label); }
+      catch (e) { this.clear(); throw e; }
       const prevRoot = root, prevIds = byId;
       provisional = s.aggregate_state === 'provisional_live';
       cursorHints = [prevRoot?.id, prevRoot?.children[cursor]?.id];

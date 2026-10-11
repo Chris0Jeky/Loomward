@@ -1,0 +1,11 @@
+[package]
+name = "loomward-backup"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Pure, bounded backup evidence normalisation; no provider execution or file effects"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

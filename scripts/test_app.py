@@ -11,8 +11,8 @@ Run `npm.cmd --prefix app run build` first.
 `--a11y` runs only the WCAG 2.2 AA leg (scripts/test_app_a11y.py, lane L18): names, focus, announcements,
 zoom reflow, control-edge contrast, canvas keyboard and forced-colours states, on the mock transport.
 
-`--live-serve` replaces the Python servers with the real `loomward-serve --static app/dist` binary
-(lane L6) over the engine service (lane L8) on a fresh synthetic state directory: the static files
+`--live-serve` rebuilds app/dist first (the same build script, production mode), then replaces the Python
+servers with the real `loomward-serve --static app/dist` binary (lane L6) over the engine service (lane L8) on a fresh synthetic state directory: the static files
 under the server's own CSP header, the fragment-token handshake, calls and the SSE stream through
 the real security boundary, and "unavailable" once the process is gone. A personal session granted one
 small folder on the command line scans it when Scan is pressed, and its totals match the fixture.
@@ -195,6 +195,11 @@ def meaning_weft(page: Page, base: str) -> None:
     toggle = page.get_by_role('checkbox', name='Meaning', exact=True)
     expect(toggle).to_be_checked()
     expect(page.locator('main .legend')).to_contain_text('Suggestions, relative scores, not probabilities, never actions.')
+    # The undyed states are told apart on the canvas itself (swatches share one renderer with the cloth), and the legend says what each means.
+    expect(page.locator('main .legend')).to_contain_text('with no model, nothing has looked')
+    swatch = page.evaluate("""() => Object.fromEntries([...document.querySelectorAll('main .legend li')].map(li => [li.textContent.trim(), li.querySelector('canvas').toDataURL()]))""")
+    undyed = ['None', 'Pending', 'No model', 'Abstained', 'Not eligible']
+    check(all(k in swatch for k in undyed) and len({swatch[k] for k in undyed}) == len(undyed), 'meaning: none, pending, no model, abstained and not eligible draw five different swatches')
     page.get_by_text('Meaning as text', exact=False).click()
     expect(page.locator('[aria-label="Visible meaning threads"] [data-meaning-state="abstained"]').first).to_contain_text('Abstained: neutral')
     neutral = page.locator('[aria-label="Visible meaning threads"] [data-meaning-state="abstained"]').first
@@ -294,12 +299,14 @@ def live_learning(page: Page, token: str, state: Path) -> None:
     page.get_by_role('button', name='Record human label').press('Space')
     expect(page.get_by_role('status').filter(has_text='Human feedback recorded, revision 2.')).to_be_visible()
     check(live_call(page, token, 'learning.status', {})['result']['human_events'] == 2, 'learning: review UI records real human feedback')
-    expect(page.get_by_text('Human history exceeds fitted examples.', exact=False)).to_be_visible()
+    expect(page.get_by_text('No fitted model yet.', exact=False)).to_be_visible()
     page.get_by_role('button', name='Review synthetic-report.txt').click()
     page.get_by_role('button', name='Withdraw human label').click()
     expect(page.get_by_role('status').filter(has_text='Human feedback recorded, revision 3.')).to_be_visible()
-    expect(page.get_by_text('Human history exceeds fitted examples.', exact=False)).to_be_visible()
-    check(True, 'learning: candidate freshness warning after newer feedback and withdrawal')
+    expect(page.get_by_text('No fitted model yet.', exact=False)).to_be_visible()
+    status = live_call(page, token, 'learning.status', {})
+    check(status['ok'] and status['result']['model_id'] is None and status['result']['human_support']['Documents'] == 0,
+          'learning: newer feedback and withdrawal retire candidate advice immediately')
     def unavailable_status(route):
         request = route.request.post_data_json
         if request['command'] == 'learning.status':
@@ -490,6 +497,14 @@ def live_personal_scan(browser, exe: Path) -> None:
         fixture.cleanup()
 
 
+def build_app(out: Path | None, development: bool) -> None:
+    """The app's `build` script, the one build both modes run: into app/dist when out is None, else into out."""
+    args = ['npm.cmd' if os.name == 'nt' else 'npm', '--prefix', 'app', 'run', 'build']
+    if out is not None:
+        args += ['--', '--outDir', str(out)]
+    subprocess.run(args, cwd=ROOT, env=dict(os.environ, NODE_ENV='development') if development else None, check=True)
+
+
 def run_live_serve(browser_path: str | None) -> None:
     """The app's http transport against the real loomward-serve binary (lane L6) and engine service (L8)."""
     subprocess.run(['cargo', 'build', '-q', '-p', 'loomward-http', '--bin', 'loomward-serve'], cwd=ROOT, check=True)
@@ -569,6 +584,10 @@ def main() -> None:
     ap.add_argument('--a11y', action='store_true', help='run only the WCAG 2.2 AA leg (scripts/test_app_a11y.py, lane L18)')
     ap.add_argument('--live-serve', action='store_true', help='run the http leg against the real loomward-serve binary')
     a = ap.parse_args()
+    if a.live_serve:
+        # The live legs serve app/dist, which is gitignored and goes stale (e.g. after a merge): rebuild it first.
+        print('live serve: rebuilding app/dist before the live legs', flush=True)
+        build_app(None, development=False)
     if not (DIST / 'index.html').exists():
         sys.exit('app/dist is missing: run `npm.cmd --prefix app run build` first')
     subprocess.run([sys.executable, str(ROOT / 'scripts/test_app_timing.py')], check=True)
@@ -576,11 +595,7 @@ def main() -> None:
         return run_live_serve(a.browser)
 
     DIST = ROOT / '.loomward/app-e2e'
-    subprocess.run(
-        ['npm.cmd' if os.name == 'nt' else 'npm', '--prefix', 'app', 'run', 'build', '--',
-         '--outDir', str(DIST)],
-        cwd=ROOT, env=dict(os.environ, NODE_ENV='development'), check=True,
-    )
+    build_app(DIST, development=True)
     assert (DIST / 'index.html').is_file(), 'development fixtures were not built'
 
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)

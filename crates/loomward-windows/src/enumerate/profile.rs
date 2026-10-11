@@ -17,6 +17,9 @@ impl Phase {
         }
     }
     pub(super) fn start(&'static self) -> Timer {
+        // Read once per process, deliberately: start() runs per directory entry (CALLBACK) and per open,
+        // so a live env read here is a per-file cost on the scan hot path. Consequence: a profile flag set
+        // after this process's first call is not seen by these counters (the engine-side sites read live).
         static ENABLED: OnceLock<bool> = OnceLock::new();
         Timer(
             self,

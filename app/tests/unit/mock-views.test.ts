@@ -68,7 +68,7 @@ describe('mock tiers and placement', () => {
     expect(p.proposals[0]!.target_id).toBe('vo_g');
     expect(p.satisfied).toBe(true);
     expect(p.assumptions.join(' ')).toContain('assumed 0.1');
-    expect(BigInt(p.projected_free_bytes.vo_g!)).toBeLessThan(BigInt(Math.round(0.58 * 930 * GiB)));
+    expect(BigInt(p.projected_free_bytes.vo_g!)).toBeLessThan(BigInt(Math.round(0.58 * 1024 * GiB)));
   });
 
   it('keeps unknown relief out of a verified-only plan and lets the what-if policy in, labelled', async () => {

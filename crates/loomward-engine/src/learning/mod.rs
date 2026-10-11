@@ -91,7 +91,7 @@ impl Store {
     }
 
     fn student(db: &Connection) -> EngineResult<(Student, Option<String>)> {
-        let saved: Option<(String,i64)> = db.query_row("SELECT state_json,fitted_at_ns FROM st.student_model WHERE status='candidate' ORDER BY fitted_at_ns DESC,id DESC LIMIT 1", [], |r| Ok((r.get(0)?,r.get(1)?))).optional().map_err(internal)?;
+        let saved: Option<(String,i64)> = db.query_row("SELECT state_json,fitted_at_ns FROM st.student_model WHERE status='candidate' AND training_count>0 AND fitted_at_ns>=coalesce((SELECT max(recorded_at_ns) FROM st.human_feedback),0) ORDER BY fitted_at_ns DESC,id DESC LIMIT 1", [], |r| Ok((r.get(0)?,r.get(1)?))).optional().map_err(internal)?;
         match saved {
             Some((s, at)) => Ok((
                 Student::from_value(&serde_json::from_str(&s).map_err(internal)?)
@@ -179,6 +179,21 @@ impl Engine {
             .transpose()
     }
 
+    /// Validate label semantics before the service creates a durable reference.
+    pub fn learning_validate_feedback(&self, r: &FeedbackRequest) -> EngineResult<()> {
+        self.learning_gate()?;
+        if r.retract != r.label.is_none() {
+            return Err(invalid("label must be null exactly when retract is true"));
+        }
+        if r.label
+            .as_ref()
+            .is_some_and(|label| !DEFAULT_LABELS.contains(&label.as_str()))
+        {
+            return Err(invalid("label is outside the taxonomy"));
+        }
+        Ok(())
+    }
+
     /// Appends one human event against a resolved durable object and a bounded feature snapshot.
     pub fn learning_feedback(
         &self,
@@ -195,9 +210,7 @@ impl Engine {
         if let Some(replay) = Store::replay(&tx, r)? {
             return Ok(replay);
         }
-        if r.retract != r.label.is_none() {
-            return Err(invalid("label must be null exactly when retract is true"));
-        }
+        self.learning_validate_feedback(r)?;
         loomward_learn::features::validate_features(features)
             .map_err(|_| invalid("invalid learning features"))?;
         let resolved: bool = tx
@@ -229,6 +242,11 @@ impl Engine {
         let event = crate::events::random_id("fe_");
         tx.execute("INSERT INTO st.human_feedback(event_id,client_event_id,content_digest,object_ref_id,revision,label,retracted,taxonomy_version,features_json,recorded_at_ns) VALUES(?1,?2,?3,?4,?5,?6,?7,1,?8,?9)",params![event,r.client_event_id.as_str(),fingerprint(r),object_ref,revision,label,r.retract,features.to_string(),now_ns()]).map_err(internal)?;
         tx.execute("INSERT INTO st.learning_node VALUES(?1,?2) ON CONFLICT(node_id) DO UPDATE SET object_ref_id=excluded.object_ref_id", params![r.node_id.as_str(), object_ref]).map_err(internal)?;
+        tx.execute(
+            "UPDATE st.student_model SET status='retired' WHERE status='candidate'",
+            [],
+        )
+        .map_err(internal)?;
         tx.execute("UPDATE st.revision SET state_rev=state_rev+1", [])
             .map_err(internal)?;
         let result: FeedbackResult = decode(
@@ -276,7 +294,7 @@ impl Engine {
         }
         let store = self.learning_store()?;
         let db = store.db.lock().unwrap();
-        let (student, fitted) = Store::student(&db)?;
+        let (student, _) = Store::student(&db)?;
         let state: i64 = db
             .query_row("SELECT state_rev FROM st.revision", [], |row| row.get(0))
             .map_err(internal)?;
@@ -337,7 +355,7 @@ impl Engine {
             None
         };
         decode(
-            json!({"model_id":fitted.map(|_|format!("md_{}",student.model_id())),"items":items.into_iter().skip(offset).take(end.saturating_sub(offset)).collect::<Vec<_>>(),"next_cursor":next}),
+            json!({"model_id":format!("md_{}",student.model_id()),"items":items.into_iter().skip(offset).take(end.saturating_sub(offset)).collect::<Vec<_>>(),"next_cursor":next}),
         )
     }
 
@@ -399,23 +417,31 @@ impl Engine {
                     detail: None,
                 });
             }
-            tx.execute("INSERT INTO st.student_model VALUES(?1,'weighted_multinomial_nb_v1',1,?2,?3,?4,'candidate',?5) ON CONFLICT(id) DO UPDATE SET fitted_at_ns=excluded.fitted_at_ns",params![format!("md_{}",student.model_id()),student.model_id(),student.training_count() as i64,student.to_value().to_string(),now_ns()]).map_err(internal)?;
+            tx.execute(
+                "UPDATE st.student_model SET status='retired' WHERE status='candidate'",
+                [],
+            )
+            .map_err(internal)?;
+            if student.training_count() > 0 {
+                tx.execute("INSERT INTO st.student_model VALUES(?1,'weighted_multinomial_nb_v1',1,?2,?3,?4,'candidate',?5) ON CONFLICT(id) DO UPDATE SET fitted_at_ns=excluded.fitted_at_ns,status='candidate'",params![format!("md_{}",student.model_id()),student.model_id(),student.training_count() as i64,student.to_value().to_string(),now_ns()]).map_err(internal)?;
+            }
             tx.execute("UPDATE st.revision SET state_rev=state_rev+1", [])
                 .map_err(internal)?;
             #[cfg(test)]
             if let Some(hook) = REFIT_HOOK.lock().unwrap().clone() {
-                hook(&ctx);
+                hook(&ctx, &tx);
             }
             if !ctx.commit_if_not_cancelled(|| tx.commit().map_err(internal))? {
                 return Ok(CoverageState::Cancelled);
             }
-            let status = Store::status(&db, dataset)?;
-            let _ = events.publish(
-                EventName::LearningUpdated,
-                json!({"status":status}).as_object().unwrap().clone(),
-                None,
-                None,
-            );
+            if let Ok(status) = Store::status(&db, dataset) {
+                let _ = events.publish(
+                    EventName::LearningUpdated,
+                    json!({"status":status}).as_object().unwrap().clone(),
+                    None,
+                    None,
+                );
+            }
             Ok(CoverageState::Complete)
         });
         self.jobs.submit(
@@ -435,15 +461,16 @@ fn now_ns() -> i64 {
 }
 
 #[cfg(test)]
-type RefitHook = Arc<dyn Fn(&crate::jobs::JobContext) + Send + Sync>;
+type RefitHook = Arc<dyn Fn(&crate::jobs::JobContext, &Connection) + Send + Sync>;
 #[cfg(test)]
 static REFIT_HOOK: Mutex<Option<RefitHook>> = Mutex::new(None);
+#[cfg(test)]
+static REFIT_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn learning_refits_cancel_at_commit_without_candidate_or_update() {
+    fn fixture() -> (tempfile::TempDir, Engine) {
         let dir = tempfile::tempdir().unwrap();
         let _catalog = loomward_catalog::Catalog::open(dir.path(), "synthetic").unwrap();
         let engine = Engine::open(crate::EngineConfig::new(
@@ -451,9 +478,44 @@ mod tests {
             DatasetClass::Synthetic,
         ))
         .unwrap();
-        engine.install_learning(Store::open(dir.path()).unwrap());
+        let store = Store::open(dir.path()).unwrap();
+        store.db.lock().unwrap().execute_batch("INSERT INTO st.object_ref(volume_key,file_id,creation_ft,kind,state,retired) VALUES('fixture',cast('1111111111111111' AS BLOB),1,'file','resolved',0);
+            INSERT INTO st.human_feedback(event_id,client_event_id,content_digest,object_ref_id,revision,label,retracted,taxonomy_version,features_json,recorded_at_ns) VALUES('fe_fixture','ce_fixture','fixture',1,1,'Documents',0,1,'{\"name\":\"fixture.txt\",\"extension\":\"txt\",\"context\":\"fixture\",\"size_bytes\":1}',0)").unwrap();
+        engine.install_learning(store);
+        (dir, engine)
+    }
+    #[test]
+    fn learning_refit_status_failure_does_not_fail_committed_candidate() {
+        let _serial = REFIT_TEST_LOCK.lock().unwrap();
+        let (_dir, engine) = fixture();
+        *REFIT_HOOK.lock().unwrap() = Some(Arc::new(|_, tx| {
+            tx.execute_batch("DROP TABLE st.teacher_label").unwrap();
+        }));
+        let mut stream = engine.subscribe_events(None).unwrap();
+        let job = engine.learning_refit().unwrap();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let done = loop {
+            let done = engine.job_status(&job.job_id).unwrap();
+            if done.finished_at.is_some() {
+                break done;
+            }
+            assert!(std::time::Instant::now() < until);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        };
+        *REFIT_HOOK.lock().unwrap() = None;
+        assert_eq!(done.state, JobState::Completed);
+        assert!(engine.learning_status().is_err());
+        assert_eq!(engine.learning_store().unwrap().db.lock().unwrap().query_row("SELECT count(*) FROM st.student_model WHERE status='candidate' AND training_count=1", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        while let RecvOutcome::Event(event) = stream.recv_timeout(std::time::Duration::ZERO) {
+            assert_ne!(event.event, EventName::LearningUpdated);
+        }
+    }
+    #[test]
+    fn learning_refits_cancel_at_commit_without_candidate_or_update() {
+        let _serial = REFIT_TEST_LOCK.lock().unwrap();
+        let (_dir, engine) = fixture();
         let (tx, rx) = std::sync::mpsc::channel();
-        *REFIT_HOOK.lock().unwrap() = Some(Arc::new(move |ctx| {
+        *REFIT_HOOK.lock().unwrap() = Some(Arc::new(move |ctx, _| {
             tx.send(()).unwrap();
             while !ctx.is_cancelled() {
                 std::thread::yield_now();

@@ -91,17 +91,22 @@
 </script>
 
 <h1>Collections</h1>
-<p class="muted">Your virtual groupings. Membership is a preference, never permission to act. Files stay where they are.</p>
-<section class="panel">
-  <h2>Make a collection</h2>
-  <form class="bar" onsubmit={(e) => { e.preventDefault(); void create(); }}>
-    <label>Collection name <input type="text" bind:value={name} maxlength="64" required /></label>
-    <button class="btn" type="submit" aria-disabled={creating || !name.length} onclick={(e) => { if (creating || !name.length) e.preventDefault(); }}>Create collection</button>
+<p class="lede">Your virtual groupings.</p>
+<p class="note">Membership is a preference, never permission to act. Files stay where they are.</p>
+<p class="live muted" class:has={!!notice} role="status" aria-label="Collection result">{notice}</p>
+<p class="live bad" class:has={!!error} role="alert">{error}</p>
+
+<section class="panel" aria-labelledby="collection-make">
+  <h2 id="collection-make">Make a collection</h2>
+  <form class="controls" onsubmit={(e) => { e.preventDefault(); void create(); }}>
+    <label class="lw-field"><span class="lbl">Collection name</span> <input type="text" bind:value={name} maxlength="64" required /></label>
+    <button class="btn primary" type="submit" aria-disabled={creating || !name.length} onclick={(e) => { if (creating || !name.length) e.preventDefault(); }}>Create collection</button>
   </form>
-  <p class="live muted" role="status" aria-label="Collection result">{notice}</p>
-  <p class="live bad" role="alert">{error}</p>
-  <div class="bar">
-    <label>Collection <select bind:value={selected} onchange={() => void load()} disabled={!collections.length}>
+</section>
+
+<section class="panel">
+  <div class="controls pick">
+    <label class="lw-field"><span class="lbl">Collection</span> <select bind:value={selected} onchange={() => void load()} disabled={!collections.length}>
       {#each collections as c (c.collection_id)}<option value={c.collection_id}>{escapedName(c.name)}</option>{/each}
     </select></label>
     <button class="btn" type="button" aria-disabled={loading} onclick={() => { if (!loading) void load(); }}>Refresh collections</button>
@@ -109,16 +114,16 @@
   {#if current}
     <h2><VisibleName name={current.name} /></h2>
     <p class="muted">{current.member_count} members · virtual size {formatBytes(current.logical_bytes)}. Overlapping entries may count the same bytes.</p>
-  {:else if !loading && !error}<p class="muted">No collections yet. Create one, then add a node from Explorer’s inspector.</p>{/if}
+  {:else if !loading && !error}<p class="empty">No collections yet. Create one, then add a node from Explorer’s inspector.</p>{/if}
   <div class="tbl-wrap" aria-busy={loading}>
     <table class="tbl">
       <caption class="sr-only">Collection members</caption>
-      <thead><tr><th scope="col">Member</th><th scope="col">Status</th><th scope="col">Logical size</th><th scope="col">Location</th><th scope="col">Membership</th></tr></thead>
+      <thead><tr><th scope="col">Member</th><th scope="col">Status</th><th scope="col" class="r">Logical size</th><th scope="col">Location</th><th scope="col">Membership</th></tr></thead>
       <tbody>
         {#each members as member (member.member_id)}
           <tr><th scope="row">{#if member.entry}<VisibleName name={member.entry.name} />{:else}Unresolved member <span class="muted">{member.member_id}</span>{/if}</th>
-            <td>{member.status === 'resolved' ? 'Resolved' : member.status === 'root_revoked' ? 'Root revoked' : member.status === 'root_unavailable' ? 'Root unavailable' : 'Object unavailable'}</td>
-            <td class="num">{formatBytes(member.entry?.logical_bytes ?? null)}</td>
+            <td>{#if member.status === 'resolved'}Resolved{:else}<span class="tag warn">{member.status === 'root_revoked' ? 'Root revoked' : member.status === 'root_unavailable' ? 'Root unavailable' : 'Object unavailable'}</span>{/if}</td>
+            <td class="r num">{formatBytes(member.entry?.logical_bytes ?? null)}</td>
             <td>{#if member.entry?.location_hint}<VisibleName name={member.entry.location_hint.text} />{:else}<span class="unknown">unknown</span>{/if}</td>
             <td>{#if current?.kind === 'human'}<button class="btn" type="button" aria-label={`Remove member ${member.member_id}`} aria-disabled={loading || removing || stateRev === null} onclick={() => void remove(member)}>Remove</button>{/if}</td>
           </tr>
@@ -126,15 +131,13 @@
       </tbody>
     </table>
   </div>
-  <div class="bar foot">
+  <div class="foot">
     <span class="muted" tabindex="-1" bind:this={summary}>Showing {members.length} of {total ?? 'unknown'} members</span>
     {#if next}<button class="btn" type="button" bind:this={more} aria-disabled={loading} onclick={() => { if (!loading) void load(true); }}>Load more members</button>{/if}
   </div>
 </section>
 <style>
-  .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
-  label { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .pick { margin-top: 0; }
   input, select { max-width: 100%; }
-  .foot { justify-content: space-between; margin-top: 12px; }
-  .bad { color: var(--danger); }
+  .foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-3); margin-top: var(--sp-3); }
 </style>

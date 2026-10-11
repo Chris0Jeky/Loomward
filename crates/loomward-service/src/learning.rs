@@ -1,11 +1,20 @@
 //! L14 handlers; the engine owns human events and refit, the service resolves session identities.
 use crate::{catalog_error, fail, sql_error, with_reason, Inner, Out};
-use loomward_catalog::{NodeKey, Reader, WriteCommand, WriteReply};
+use loomward_catalog::{NodeDetail, NodeKey, Reader, WriteCommand, WriteReply};
 use loomward_protocol::*;
 use serde_json::{json, Value};
 
 pub(super) fn features(reader: &mut Reader, key: NodeKey) -> Result<(EntryRow, Value), ErrorBody> {
     let detail = reader.inspect(key).map_err(catalog_error)?;
+    features_of(reader, key, detail)
+}
+
+/// `features` for a caller that already inspected the node.
+pub(super) fn features_of(
+    reader: &mut Reader,
+    key: NodeKey,
+    detail: NodeDetail,
+) -> Result<(EntryRow, Value), ErrorBody> {
     let path = reader.path(key).map_err(catalog_error)?;
     let context = path
         .ancestors
@@ -57,6 +66,9 @@ impl Inner {
         if let Some(replay) = self.engine.learning_replay(&r).map_err(ErrorBody::from)? {
             return self.learning_out(replay);
         }
+        self.engine
+            .learning_validate_feedback(&r)
+            .map_err(ErrorBody::from)?;
         if r.retract {
             let prior = self
                 .engine
@@ -81,7 +93,7 @@ impl Inner {
                             ))
                         }
                     };
-                    let prior: Option<(i64, String)> = self.db().query_row("SELECT h.object_ref_id,h.features_json FROM st.human_feedback h JOIN st.object_ref o ON o.id=h.object_ref_id WHERE o.catalog_instance=?1 AND o.kind=?2 AND o.row_id=?3 AND o.born_run=?4 ORDER BY h.revision DESC LIMIT 1", rusqlite::params![self.instance, kind, row, born], |r| Ok((r.get(0)?,r.get(1)?))).optional().map_err(sql_error)?;
+                    let prior: Option<(i64, String)> = self.db().query_row("SELECT h.object_ref_id,h.features_json FROM st.human_feedback h JOIN st.object_ref o ON o.id=h.object_ref_id WHERE o.catalog_instance=?1 AND o.kind=?2 AND o.row_id=?3 AND o.born_run=?4 ORDER BY (o.state='resolved' AND o.retired=0) DESC,h.revision DESC,h.id DESC LIMIT 1", rusqlite::params![self.instance, kind, row, born], |r| Ok((r.get(0)?,r.get(1)?))).optional().map_err(sql_error)?;
                     let (reference, features) = prior.ok_or_else(|| {
                         fail(ErrorCode::InvalidRequest, "no prior human label to retract")
                     })?;
@@ -158,7 +170,7 @@ impl Inner {
         let revs = self.revisions()?;
         let ids = {
             let db = self.db();
-            let ids=db.prepare("SELECT f.id FROM main.file f JOIN main.dir d ON d.id=f.dir_id JOIN main.root rt ON rt.id=d.root_id JOIN st.root_grant g ON g.id=rt.grant_id WHERE g.state='active' AND (?1 IS NULL OR rt.id=?1) AND f.flags=0 AND d.listing_state NOT IN ('excluded','absent_pending') ORDER BY f.id LIMIT 10001").map_err(sql_error)?.query_map([root],|row|row.get::<_,i64>(0)).map_err(sql_error)?.collect::<rusqlite::Result<Vec<_>>>().map_err(sql_error)?;
+            let ids=db.prepare("SELECT f.id FROM main.file f JOIN main.dir d ON d.id=f.dir_id JOIN main.root rt ON rt.id=d.root_id JOIN st.root_grant g ON g.id=rt.grant_id JOIN main.volume v ON v.id=rt.volume_id WHERE g.state='active' AND (?1 IS NULL OR rt.id=?1) AND f.flags=0 AND d.listing_state NOT IN ('excluded','absent_pending') AND v.filesystem IN ('NTFS','ReFS') AND f.created_ft IS NOT NULL AND f.file_id IS NOT NULL AND (v.filesystem!='ReFS' OR length(f.file_id)=16) ORDER BY f.id LIMIT 10001").map_err(sql_error)?.query_map([root],|row|row.get::<_,i64>(0)).map_err(sql_error)?.collect::<rusqlite::Result<Vec<_>>>().map_err(sql_error)?;
             ids
         };
         if ids.len() > 10000 {

@@ -400,6 +400,113 @@ fn metadata_entry_bounds_refuse_the_whole_page_and_issue_no_cursor() {
 }
 
 #[test]
+fn timed_out_metadata_page_does_not_evict_a_received_cursor() {
+    let tmp = tempfile::tempdir().unwrap();
+    let s = Arc::new(open(tmp.path(), DatasetClass::Synthetic, None));
+    let first = call(&s, "apps.list", json!({"limit": 1, "cursor": null}), 2000)["result"]
+        ["next_cursor"]
+        .clone();
+    for _ in 0..15 {
+        assert_eq!(
+            call(&s, "apps.list", json!({"limit": 1, "cursor": null}), 2000)["ok"],
+            true
+        );
+    }
+    s.inner.hooks.arrived.lock().unwrap().clear();
+    s.inner
+        .hooks
+        .closed
+        .lock()
+        .unwrap()
+        .push((Command::AppsList, "after"));
+    let caller = s.clone();
+    let worker = std::thread::spawn(move || {
+        call(
+            &caller,
+            "apps.list",
+            json!({"limit": 1, "cursor": null}),
+            500,
+        )
+    });
+    s.inner.hooks.until("metadata response held", |h| {
+        h.arrived
+            .lock()
+            .unwrap()
+            .contains(&(Command::AppsList, "after"))
+    });
+    let timeout = worker.join().unwrap();
+    s.inner.hooks.open(Command::AppsList, "after");
+    s.inner.hooks.until("metadata worker finished", |_| {
+        *s.inner.reads.lock().unwrap() == 0
+    });
+    assert_eq!(timeout["error"]["code"], "deadline_exceeded");
+    let resumed = call(
+        &s,
+        "apps.list",
+        json!({"limit": 200, "cursor": first}),
+        2000,
+    );
+    assert_eq!(resumed["ok"], true, "{resumed}");
+    assert_eq!(
+        resumed["result"]["applications"].as_array().unwrap().len(),
+        1
+    );
+}
+
+#[test]
+fn metadata_encoding_stops_before_serializing_an_over_budget_tail() {
+    struct Oversized;
+    impl serde::Serialize for Oversized {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            use serde::ser::SerializeSeq;
+            let mut sequence = serializer.serialize_seq(Some(2))?;
+            sequence.serialize_element(&"x".repeat(SNAPSHOT_BYTES))?;
+            panic!("serializer reached the tail after exceeding its budget");
+        }
+    }
+    assert_eq!(
+        encoded_size(&json!({"synthetic": "😀\n\""})).unwrap(),
+        serde_json::to_vec(&json!({"synthetic": "😀\n\""}))
+            .unwrap()
+            .len()
+    );
+    assert_eq!(
+        encoded_size(&Oversized).unwrap_err().code,
+        ErrorCode::ResourceBudget
+    );
+}
+
+#[test]
+fn application_projection_refuses_cumulative_encoded_bytes_before_full_snapshot() {
+    use loomward_apps::inventory::*;
+    struct Registry;
+    impl RegistryReader for Registry {
+        fn read(&self, _: RegistryView) -> RegistryRead {
+            RegistryRead {
+                state: ProviderState::Available,
+                reason: None,
+                entries: vec![RegistryEntry {
+                    key: "synthetic".into(),
+                    values: std::collections::BTreeMap::new(),
+                }],
+            }
+        }
+    }
+    let mut providers = inventory(&Registry);
+    let mut app = providers[0].applications[0].clone();
+    app.display_name = Evidence::Known(Text {
+        value: "\"".repeat(1024),
+        expandable: false,
+    });
+    providers[0].applications = vec![app; 2048];
+    let result = crate::apps::project(providers, Instant::now() + Duration::from_secs(10));
+    assert_eq!(
+        result.unwrap_err().detail.unwrap()["reason"],
+        "metadata_snapshot_budget"
+    );
+}
+
+#[test]
 fn metadata_modules_expose_no_effect_or_unbounded_filesystem_api() {
     for source in [
         include_str!("../apps.rs"),

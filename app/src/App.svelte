@@ -166,11 +166,11 @@
   }
   .legend-title { letter-spacing: 0.1em; text-transform: uppercase; }
   .thread { display: inline-flex; align-items: center; gap: 8px; }
-  /* the same structures the views weave: vertical warp, horizontal weft, a stitched selvedge */
+  /* the same structures the atlas weaves: horizontal weft for meaning, vertical warp for residency, a stitched selvedge */
   .thread i { width: 22px; height: 14px; }
   .thread em { font-style: normal; color: var(--text); }
-  .thread.meaning i { background: repeating-linear-gradient(90deg, var(--meaning) 0 3px, transparent 3px 5px); }
-  .thread.residency i { background: repeating-linear-gradient(0deg, var(--residency) 0 3px, transparent 3px 5px); }
+  .thread.meaning i { background: repeating-linear-gradient(0deg, var(--meaning) 0 3px, transparent 3px 5px); }
+  .thread.residency i { background: repeating-linear-gradient(90deg, var(--residency) 0 3px, transparent 3px 5px); }
   .thread.permission i { border: 2px dashed var(--permission); }
 
   @media (forced-colors: active) {

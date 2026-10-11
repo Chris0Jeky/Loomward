@@ -34,7 +34,8 @@ Research prototype, not a file manager or system optimiser.
   over a mock transport or a live `loomward-serve`. Anything the engine cannot answer is shown
   as unavailable or unknown, never as demo data.
 - The **desktop shell** (`native/`): a Tauri 2 and WebView2 build with a strict CSP and a
-  self-test. It runs the app against the contract fixtures.
+  self-test. It runs the app against the contract fixtures. An unsigned Windows preview installer is
+  published as a GitHub pre-release by hand ([RELEASING.md](RELEASING.md)).
 
 **In review or not built yet**
 
@@ -119,7 +120,8 @@ npm.cmd --prefix app run dev
 
 Open the address Vite prints and add `?transport=mock` to it. Without that parameter and with no
 engine the shell shows "unavailable" by design (`app/src/lib/transport/select.ts`); the mock
-answers from synthetic data and reports every engine figure as unknown.
+answers from invented, contract-shaped synthetic data, including catalogue and resource figures;
+values the mock does not supply remain explicitly unknown. These are not engine observations.
 
 ### Prototype
 
@@ -197,7 +199,8 @@ measurement, not a guarantee.
 
 **Native enumeration spike** ([docs/research/enumeration-spike.md](docs/research/enumeration-spike.md),
 raw receipt [evidence/v3/enumeration-spike.json](evidence/v3/enumeration-spike.json)). Four ways of
-walking synthetic trees on an NVMe NTFS volume (`G:`), 20 logical processors, wall time:
+walking synthetic trees on a fast local NTFS volume (`G:`), wall time (host hardware is withheld from this
+summary; the raw receipt keeps its fields as recorded at the time):
 
 | Strategy | 100,000 files | 3,000,000 files |
 |---|---:|---:|
@@ -224,7 +227,7 @@ engine does not call the Rust planner yet.
 
 **Real folders** ([report](docs/research/real-folder-stress.md),
 [receipt](evidence/v3/real-folder-stress.json)). Four owner-authorised folders, named only
-`real-A` to `real-D` (A to C on the C: NVMe, D on the E: HDD), walked read-only, metadata only.
+`real-A` to `real-D` (A to C on the C: fast local volume, D on the E: slow local volume), walked read-only, metadata only.
 Warm median wall time, five runs each:
 
 | Root | Entries | Logical GiB | `handle` | `find` | `std-single` |
@@ -240,7 +243,7 @@ comparison, not a pass. Skipped links and denied directories stay counted. There
 cold-cache run: the "initial" sweep is only first-touch for the session.
 
 On identical synthetic 1M-file trees (warm, uncontrolled) the `handle` strategy took a median
-0.202 s on the NVMe and 0.131 s on the HDD. The HDD was not slower, which is compatible with
+0.202 s on the fast local volume and 0.131 s on the slow local volume. The slow local volume was not slower, which is compatible with
 cache effects; it is not a measure of device speed.
 
 **Student and telemetry.** `fixtures/learning-v3/` holds 288 student parity cases (230 tokeniser,

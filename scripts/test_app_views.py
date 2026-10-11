@@ -67,6 +67,9 @@ class FakeEngine:
         self.fail_proposals = False
         self.saved_scenarios = False
         self.candidate_gate = None  # one (arrived, release) event pair
+        self.tier_volumes: list[dict] | None = None
+        self.candidate_sources: list[str] = []
+        self.simulate_overrides: list = []
         self.plan_mode = 'executable'  # 'executable' or 'malformed': how placement.simulate misbehaves
         self.slice_queue: list[tuple[float, str]] = []  # (delay, root name) per tree.slice call, then the default
         self.events: queue.Queue[dict] = queue.Queue()
@@ -161,9 +164,10 @@ class FakeEngine:
             return {'anchor': p['node_id'], 'generation': '7', 'items': [row(f'item-{i:03d}.txt', i) for i in range(start, end)], 'next_cursor': f'c_{end}' if end < 120 else None, 'total': 120, 'budget_hit': False}
         if cmd == 'tiers.model':
             tier = {'tier': 1, 'basis': 'device_hint', 'declared_tier': None, 'hint_tier': 1, 'note': 'hint'}
-            return {'volumes': [{'volume_id': 'vo_x', 'display_name': 'X:', 'tier': tier, 'online': True, 'writable': True, 'capacity_bytes': '1000000000000', 'free_bytes': '90000000000', 'reserve_bytes': '1', 'free_fraction': 0.09, 'pressure': 'pressure'}],
+            return {'volumes': self.tier_volumes if self.tier_volumes is not None else [{'volume_id': 'vo_x', 'display_name': 'X:', 'tier': tier, 'online': True, 'writable': True, 'capacity_bytes': '1000000000000', 'free_bytes': '90000000000', 'reserve_bytes': '1', 'free_fraction': 0.09, 'pressure': 'pressure', 'source_eligible': True}],
                     'policy': {'watch_free_fraction': 0.2, 'pressure_free_fraction': 0.1, 'reserve_note': 'r', 'note': 'n'}}
         if cmd == 'placement.candidates':
+            self.candidate_sources.append(p['source_volume_id'])
             gate, self.candidate_gate = self.candidate_gate, None
             if gate:
                 gate[0].set()
@@ -171,7 +175,7 @@ class FakeEngine:
                     return ('deadline_exceeded', 'synthetic candidate gate expired')
             g = {'group_id': 'cg_a', 'node_id': 'nd_a', 'root_id': 'rt_a', 'name': 'group-a', 'source_bytes': '5000', 'destination_bytes': '5000', 'transfer_bytes': '5000', 'estimate_basis': 'allocated_entries',
                  'estimated_relief_bytes': '5000', 'relief_basis': 'verified_unique_allocation', 'heat': None, 'heat_basis': 'unknown', 'newest_modified_at': None, 'pinned': False, 'active': False, 'protected': False, 'days_since_move': 30, 'coverage': 'complete'}
-            return {'source_volume_id': 'vo_x', 'root_generations': [], 'groups': [g], 'note': 'n'}
+            return {'source_volume_id': 'vo_x', 'root_generations': [], 'groups': [g], 'excluded_volumes': [], 'note': 'n'}
         if cmd == 'volumes.declare_tier':
             return {'volume': json.loads((ROOT / 'contracts/v3/examples/commands/volumes.declare_tier.result.json').read_text())['volume'], 'preference_recorded_at': '2026-10-01T00:00:00Z'}
         if cmd == 'proposals.get':
@@ -183,6 +187,7 @@ class FakeEngine:
                 return ('internal_error', 'synthetic saved scenarios failure')
             return {'proposals': [self.result({'command': 'proposals.get'})['summary']] if self.saved_scenarios else []}
         if cmd == 'placement.simulate':
+            self.simulate_overrides.append(p.get('overrides'))
             plan = {'mode': 'simulation', 'algorithm': 'bounded_portfolio_search_v2', 'optimality_claim': False, 'optimality_scope': 's', 'shortfall_optimal': True,
                     'search': {'complete': True, 'nodes_visited': 1, 'node_budget': 10, 'reason': 'exhausted', 'eligible_groups': 1, 'eligible_targets': 1, 'lower_bound_shortfall_bytes': '0'},
                     'proposals': [{'group_id': 'cg_a', 'source_id': 'vo_x', 'target_id': 'vo_y', 'source_bytes_relieved': '5000', 'destination_bytes_required': '5000', 'transfer_bytes': '5000', 'reason': 'bounded_capacity_budget_allocation', 'requires_consent': True, 'executable': True}],
@@ -488,6 +493,58 @@ def check_tiers_loading_followups(page: Page, engine: FakeEngine) -> None:
 
 # --- Tiers ------------------------------------------------------------------------------------------
 
+def check_tiers_source_eligibility(page: Page, engine: FakeEngine) -> None:
+    template = engine.result({'command': 'tiers.model'})['volumes'][0]
+    engine.tier_volumes = [
+        {**template, 'volume_id': 'vo_blocked', 'display_name': 'Blocked', 'source_eligible': False},
+        {**template, 'pressure': 'ok'},
+        {**template, 'volume_id': 'vo_other', 'display_name': 'Other', 'pressure': 'ok'},
+    ]
+    engine.candidate_sources.clear()
+    page.goto(f'{engine.base}/#token={TOKEN}')
+    page.evaluate("location.hash = '#/tiers'")
+    panel = page.locator('section[aria-labelledby="h-vol"]')
+    selected = panel.get_by_role('button', name=re.compile('^Source volume'))
+    expect(selected).to_contain_text('X:')
+    expect(panel.get_by_role('button', name=re.compile(r'^Use as source\s*:\s*Blocked$'))).to_be_disabled()
+    panel.get_by_role('button', name=re.compile(r'^Use as source\s*:\s*Other$')).click()
+    expect(selected).to_contain_text('Other')
+    panel.get_by_label('Declared tier for X:').select_option('2')
+    expect(panel).to_have_attribute('aria-busy', 'false')
+    expect(selected).to_contain_text('Other')
+    engine.tier_volumes[2]['source_eligible'] = False
+    panel.get_by_label('Declared tier for X:').select_option('3')
+    expect(selected).to_contain_text('X:')
+    expect(panel.get_by_role('button', name=re.compile(r'^Use as source\s*:\s*Other$'))).to_be_disabled()
+    engine.tier_volumes[1]['source_eligible'] = False
+    engine.saved_scenarios = True
+    panel.get_by_label('Declared tier for X:').select_option('4')
+    expect(panel).to_have_attribute('aria-busy', 'false')
+    expect(selected).to_have_count(0)
+    count = len(engine.candidate_sources)
+    page.get_by_role('button', name=re.compile('Show saved scenario')).click()
+    expect(page.get_by_text('Saved scenario shown. Simulation only.', exact=True)).to_be_attached()
+    expect(selected).to_have_count(0)
+    ok(len(engine.candidate_sources) == count and 'vo_blocked' not in engine.candidate_sources,
+       'Tiers defaults, preserves, enables and restores only eligible sources; ineligible saved sources stay historical')
+    # Codex P2 on #340: a refresh that replaces an ineligible source clears that source's assumptions.
+    engine.saved_scenarios = False
+    engine.tier_volumes = [{**template, 'pressure': 'ok'}, {**template, 'volume_id': 'vo_other', 'display_name': 'Other', 'pressure': 'ok'}]
+    page.goto(f'{engine.base}/#token={TOKEN}')
+    page.evaluate("location.hash = '#/tiers'")
+    expect(selected).to_contain_text('X:')
+    page.get_by_label('Assumed heat for group-a').select_option('0.9')
+    engine.tier_volumes[0]['source_eligible'] = False
+    panel.get_by_label('Declared tier for X:').select_option('5')
+    expect(selected).to_contain_text('Other')
+    expect(panel).to_have_attribute('aria-busy', 'false')
+    engine.simulate_overrides.clear()
+    page.get_by_role('button', name='Simulate', exact=True).click()
+    expect(page.get_by_role('heading', name='Alternatives')).to_be_visible()
+    ok(engine.simulate_overrides and engine.simulate_overrides[-1] == [],
+       f'a source replaced on refresh sends no stale group overrides ({engine.simulate_overrides[-1:] if engine.simulate_overrides else None})')
+    engine.tier_volumes = None
+
 def check_tiers(page: Page, base: str, shoot) -> None:
     page.goto(f'{base}/?transport=mock#/tiers')
     expect(page.get_by_role('heading', name='Tiers', level=1)).to_be_visible()
@@ -519,6 +576,8 @@ def check_tiers(page: Page, base: str, shoot) -> None:
     model_row = rows(page).filter(has_text='synthetic-model-store').first
     model_row.get_by_role('combobox').select_option('0.1')
     model_row.get_by_role('checkbox').check()
+    # 19% of the generic 2 TiB source (389 GiB) is within 184 GiB free plus 212 GiB relief: the target-met path
+    page.get_by_label('Free space wanted on the source').fill('19')
     page.get_by_role('button', name='Simulate', exact=True).click()
     expect(page.get_by_text('Target met in the simulation')).to_be_visible()
     expect(main.get_by_text('consent required').first).to_be_visible()
@@ -769,6 +828,8 @@ def check_companion(page: Page, base: str, shoot) -> None:
     expect(observed).to_have_text(observed.get_attribute('datetime'))
     ok(bool(re.fullmatch(r'\d{4}-\d{2}-\d{2}T.*Z', observed.get_attribute('datetime') or '')), 'each process row exposes its own observation time')
     ok(main.get_by_role('button', name=FORBIDDEN_BUTTONS).count() == 0, 'no control to end, pause, re-prioritise or trim anything')
+    # shared form patterns must not restyle this view's own toolbar (Codex on #345)
+    ok(main.locator('.ctl').first.evaluate('e => getComputedStyle(e).flexDirection') == 'row', 'the Companion toolbar stays a wrapping row')
 
     plist = lambda: page.locator('table.procs tbody tr')
     expect(plist()).to_have_count(20)
@@ -1026,6 +1087,7 @@ def run_views(page: Page, base: str, shots: Path | None) -> None:
         check_explorer_starts(page, engine)
         check_explorer_fallback(page, engine)
         check_tiers_loading_followups(page, engine)
+        check_tiers_source_eligibility(page, engine)
         check_tiers_refused(page, engine)
     finally:
         engine.stop()

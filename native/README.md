@@ -24,7 +24,9 @@ native/target/debug/loomward-desktop.exe --self-test  # headless; exit 1 on any 
 serves the embedded `app/dist` (there is no `devUrl`; for UI work use Vite with `loomward-serve`).
 The Tauri CLI is pinned as an app devDependency (`@tauri-apps/cli` 2.12.1, no global install);
 from the repository root, `app/node_modules/.bin/tauri.cmd info` reports the toolchain and config.
-Bundling is off (`bundle.active: false`); no installer is built.
+`cargo build` and `cargo test` do not bundle. The unsigned NSIS preview installer is built only by
+`.github/workflows/release.yml` (`tauri build --bundles nsis`; see [RELEASING.md](../RELEASING.md)). It
+bundles `contracts/v3/examples` beside the exe, and an installed build loads them from there because it has no checkout.
 
 ## Checks
 

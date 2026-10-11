@@ -109,7 +109,7 @@ def main():
             _, phase, payload = line.split(' ', 2)
             assert phase not in phases, 'expected one scan per process'
             phases[phase] = json.loads(payload)
-    assert set(phases) == {'native', 'pipeline', 'writer'}
+    assert set(phases) in ({'native', 'pipeline', 'writer'}, {'native', 'pipeline', 'writer', 'checkpoint'})
     assert phases['native']['metadata_opens']['calls'] < files, 'per-file metadata opens returned'
     assert phases['pipeline']['relist_calls'] == 0
     if a.dataset == 'personal':

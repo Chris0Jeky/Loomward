@@ -63,8 +63,11 @@ fn bounded<T>(v: Result<T, impl std::fmt::Debug>) -> EngineResult<T> {
     })
 }
 
-fn notes(mut plan: PlacementPlan, conn: &Connection) -> EngineResult<PlacementPlan> {
-    let mut excluded = plan.excluded_volumes.to_vec();
+/// Volumes the snapshot dropped for want of an active grant are disclosed, never silently omitted.
+fn with_inactive(
+    mut excluded: Vec<PlacementPlanExcludedVolume>,
+    conn: &Connection,
+) -> EngineResult<BoundedVec<PlacementPlanExcludedVolume, 0, 64>> {
     for row in inactive_volumes(conn)? {
         if excluded
             .iter()
@@ -77,7 +80,11 @@ fn notes(mut plan: PlacementPlan, conn: &Connection) -> EngineResult<PlacementPl
             reason: PlacementPlanExcludedVolumeReason::NoActiveGrant,
         });
     }
-    plan.excluded_volumes = bounded(BoundedVec::new(excluded))?;
+    bounded(BoundedVec::new(excluded))
+}
+
+fn notes(mut plan: PlacementPlan, conn: &Connection) -> EngineResult<PlacementPlan> {
+    plan.excluded_volumes = with_inactive(plan.excluded_volumes.to_vec(), conn)?;
     let mut assumptions = plan.assumptions.to_vec();
     for note in [
         "No reserve preferences are recorded; zero reserve is assumed.",
@@ -119,6 +126,7 @@ impl Inner {
                 let mut volumes = model.volumes.to_vec();
                 for v in &mut volumes {
                     if inactive.iter().any(|row| v.volume_id.as_str() == format!("vo_{row}")) {
+                        v.source_eligible = false;
                         v.tier.note = Text::new("No active grant; excluded from placement simulation. Device speed is unmeasured.").expect("bounded note");
                     }
                 }
@@ -134,11 +142,13 @@ impl Inner {
                 r.source_volume_id =
                     VolumeId::new(format!("vo_{}", self.volume_row(&r.source_volume_id)?))
                         .expect("volume row");
-                serde_json::to_value(
-                    self.engine
-                        .placement_candidates(&input, &r, deadline)
-                        .map_err(placement_error)?,
-                )
+                let mut candidates = self
+                    .engine
+                    .placement_candidates(&input, &r, deadline)
+                    .map_err(placement_error)?;
+                candidates.excluded_volumes =
+                    with_inactive(candidates.excluded_volumes.to_vec(), &input.conn)?;
+                serde_json::to_value(candidates)
             }
             Command::PlacementSimulate => {
                 let mut r: PlacementSimulateRequest = req.decode_payload()?;
@@ -295,19 +305,23 @@ fn bounded_space(
         .map_err(|_| EngineError::ResourceBudget {
             message: "no volume observation worker".into(),
         })?;
-    let observed = rx
-        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-        .map_err(|e| match e {
-            std::sync::mpsc::RecvTimeoutError::Timeout => EngineError::DeadlineExceeded {
-                message: "lab volume observation deadline expired".into(),
-            },
-            std::sync::mpsc::RecvTimeoutError::Disconnected => EngineError::Internal {
-                message: "lab volume observation worker failed".into(),
-                detail: None,
-            },
-        })?;
-    check(deadline)?;
-    Ok(observed)
+    receive_space(deadline, |timeout| rx.recv_timeout(timeout))
+}
+
+fn receive_space<T>(
+    deadline: Instant,
+    receive: impl FnOnce(Duration) -> Result<T, std::sync::mpsc::RecvTimeoutError>,
+) -> EngineResult<T> {
+    // Keep an accepted receipt, including one already queued when the remaining wait is zero.
+    receive(deadline.saturating_duration_since(Instant::now())).map_err(|e| match e {
+        std::sync::mpsc::RecvTimeoutError::Timeout => EngineError::DeadlineExceeded {
+            message: "lab volume observation deadline expired".into(),
+        },
+        std::sync::mpsc::RecvTimeoutError::Disconnected => EngineError::Internal {
+            message: "lab volume observation worker failed".into(),
+            detail: None,
+        },
+    })
 }
 
 /// One SQLite snapshot spans directory headers and every selected group's entries. Reads cannot
@@ -894,6 +908,45 @@ impl ProposalStore for Store<'_> {
 #[cfg(test)]
 mod followup_tests {
     use super::*;
+
+    #[test]
+    fn accepted_space_receipt_survives_post_receive_deadline_crossing() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(Some((
+            loomward_windows::volumes::Space {
+                capacity_bytes: "1024".into(),
+                free_bytes: "512".into(),
+                cluster_bytes: Some(64),
+                read_only: Some(false),
+            },
+            0,
+        )))
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_millis(50);
+        let result = receive_space(deadline, |timeout| {
+            let received = rx.recv_timeout(timeout);
+            assert!(received.is_ok());
+            assert!(
+                Instant::now() < deadline,
+                "fixture must receive before deadline"
+            );
+            std::thread::sleep(
+                deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(1),
+            );
+            received
+        })
+        .unwrap()
+        .unwrap();
+        assert!(Instant::now() >= deadline);
+        assert_eq!(
+            (
+                result.0.capacity_bytes.as_str(),
+                result.0.free_bytes.as_str(),
+                result.1
+            ),
+            ("1024", "512", 0)
+        );
+    }
 
     #[test]
     fn placement_space_timeout_releases_read_permit_while_os_call_finishes() {

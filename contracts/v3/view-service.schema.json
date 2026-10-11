@@ -1524,7 +1524,7 @@
     "TierVolume": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["volume_id", "display_name", "tier", "online", "writable", "capacity_bytes", "free_bytes", "reserve_bytes", "free_fraction", "pressure"],
+      "required": ["volume_id", "display_name", "tier", "online", "writable", "capacity_bytes", "free_bytes", "reserve_bytes", "free_fraction", "pressure", "source_eligible"],
       "properties": {
         "volume_id": { "$ref": "#/$defs/VolumeId" },
         "display_name": { "type": "string", "maxLength": 64 },
@@ -1535,7 +1535,8 @@
         "free_bytes": { "$ref": "#/$defs/NullableBytes" },
         "reserve_bytes": { "$ref": "#/$defs/ByteCount" },
         "free_fraction": { "$ref": "#/$defs/NullableFraction" },
-        "pressure": { "enum": ["ok", "watch", "pressure", "unknown"] }
+        "pressure": { "enum": ["ok", "watch", "pressure", "unknown"] },
+        "source_eligible": { "type": "boolean" }
       }
     },
     "TierModel": {
@@ -1598,11 +1599,22 @@
     "PlacementCandidates": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["source_volume_id", "root_generations", "groups", "note"],
+      "required": ["source_volume_id", "root_generations", "groups", "excluded_volumes", "note"],
       "properties": {
         "source_volume_id": { "$ref": "#/$defs/VolumeId" },
         "root_generations": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/RootGeneration" } },
         "groups": { "type": "array", "maxItems": 200, "items": { "$ref": "#/$defs/CandidateGroup" } },
+        "excluded_volumes": {
+          "type": "array", "maxItems": 64,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["volume_id", "reason"],
+            "properties": {
+              "volume_id": { "$ref": "#/$defs/VolumeId" },
+              "reason": { "enum": ["tier_unknown", "capacity_unknown", "offline", "no_active_grant", "physics_unusable"] }
+            }
+          }
+        },
         "note": { "type": "string", "maxLength": 512 }
       }
     },
@@ -1715,7 +1727,7 @@
             "required": ["volume_id", "reason"],
             "properties": {
               "volume_id": { "$ref": "#/$defs/VolumeId" },
-              "reason": { "enum": ["tier_unknown", "capacity_unknown", "offline", "no_active_grant"] }
+              "reason": { "enum": ["tier_unknown", "capacity_unknown", "offline", "no_active_grant", "physics_unusable"] }
             }
           }
         },

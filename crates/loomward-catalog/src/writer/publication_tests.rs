@@ -132,6 +132,53 @@ fn first_scan_batches_staged_payloads_without_charging_unused_reservations() {
 }
 
 #[test]
+fn first_scan_ignores_another_roots_prior_run() {
+    let (temp, conn) = first_scan_fixture("full", false);
+    conn.execute_batch("INSERT INTO st.root_grant(id,volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns) VALUES(2,'fixture',zeroblob(16),'Other synthetic root','fixture','fixture','active',0);
+        INSERT INTO root(id,grant_id,volume_id,root_file_id,state) VALUES(2,2,1,zeroblob(16),'complete');
+        INSERT INTO scan_run(id,root_id,mode,strategy,state,started_at_ns,counters_json,budget_json) VALUES(1,2,'full','fixture','completed',0,'{}','{}');").unwrap();
+    let reservation = 24 * 1024 * 1024;
+    let quota = Arc::new((Mutex::new(3 * reservation), Condvar::new()));
+    let (tx, rx) = bounded(3);
+    let mut replies = Vec::new();
+    for seq in 0..3 {
+        let (reply, result) = bounded(1);
+        tx.send(Pending {
+            command: WriteCommand::StageChunk {
+                run_id: 2,
+                dir_id: 1,
+                seq,
+                files: vec![],
+                dirs: vec![],
+            },
+            reply,
+            _permit: BytePermit {
+                quota: quota.clone(),
+                bytes: reservation,
+            },
+        })
+        .unwrap();
+        replies.push(result);
+    }
+    drop(tx);
+    let timings = Arc::new(Mutex::new(WriterTimings::default()));
+    let (alive, _) = bounded(0);
+    work(conn, rx, timings.clone(), alive, None);
+    for reply in replies {
+        reply.recv().unwrap().unwrap();
+    }
+    assert_eq!(timings.lock().unwrap().transactions, 1);
+    assert_eq!(*quota.0.lock().unwrap(), 0);
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    assert_eq!(
+        db.query_row("SELECT state FROM scan_run WHERE id=1", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        "completed"
+    );
+}
+
+#[test]
 fn first_scan_pipeline_preserves_atomic_listings_other_roots_and_recovery() {
     fn observe(conn: &Connection, committed: bool) {
         let path = conn.path().unwrap();
@@ -316,6 +363,79 @@ fn depth_end_run() -> WriteCommand {
         run_id: 2,
         state: "completed".into(),
         finished_at_ns: 6,
+    }
+}
+
+#[test]
+fn flattening_ancestor_and_descendant_is_independent_of_listing_order() {
+    for reverse in [false, true] {
+        let (temp, conn) = depth_fixture();
+        let mut dirs = vec![observation("spine-1", 10, 0), observation("spine-2", 12, 0)];
+        if reverse {
+            dirs.reverse();
+        }
+        let (results, _) = depth_batch(
+            conn,
+            vec![depth_listing(600, vec![], dirs), depth_end_run()],
+        );
+        for result in results {
+            result.unwrap();
+        }
+        let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+        for id in [10, 11] {
+            assert_eq!(
+                db.query_row("SELECT parent_id FROM dir WHERE id=?1", [id], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                600
+            );
+        }
+        assert_eq!(
+            db.query_row("SELECT max(depth) FROM dir", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            511
+        );
+    }
+}
+
+#[test]
+fn aborted_ok_batch_reports_the_failure_to_every_caller() {
+    for flush in [false, true] {
+        let (temp, conn) = first_scan_fixture("full", false);
+        if flush {
+            conn.execute_batch("CREATE TRIGGER reject_dirty BEFORE UPDATE OF dirty_rev ON dir BEGIN SELECT RAISE(ABORT,'synthetic flush failure'); END;").unwrap();
+        } else {
+            conn.execute_batch("PRAGMA foreign_keys=ON;
+                CREATE TABLE fault_parent(id INTEGER PRIMARY KEY);
+                CREATE TABLE fault_child(id INTEGER REFERENCES fault_parent(id) DEFERRABLE INITIALLY DEFERRED);
+                CREATE TRIGGER reject_commit AFTER INSERT ON file BEGIN INSERT INTO fault_child VALUES(1); END;").unwrap();
+        }
+        let (results, _) = depth_batch(
+            conn,
+            vec![
+                depth_listing(1, vec![Observation::file("before", 10, Some(10))], vec![]),
+                depth_listing(1, vec![Observation::file("after", 20, Some(20))], vec![]),
+            ],
+        );
+        assert_eq!(results.len(), 2);
+        for result in results {
+            let error = result.unwrap_err();
+            assert!(
+                !matches!(error, Error::Closed),
+                "batch failure lost: {error:?}"
+            );
+            assert!(error.to_string().contains(if flush {
+                "synthetic flush failure"
+            } else {
+                "FOREIGN KEY"
+            }));
+        }
+        let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM file", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 }
 
@@ -1225,14 +1345,21 @@ fn v2_upgrade_preserves_bindings_membership_and_catalogue_instance() {
 fn confirmation_failure_closes_writer_and_recovery_retries() {
     let (temp, conn, command) = fixture();
     let before = bindings(temp.path());
+    let before_listing = old_listing(temp.path());
     conn.execute_batch("CREATE TRIGGER st.fail_confirmation BEFORE UPDATE ON object_ref BEGIN SELECT RAISE(ABORT,'test confirmation failure'); END").unwrap();
     let writer = Writer::start(conn).unwrap();
-    assert!(matches!(writer.call(command), Err(Error::Sql(_))));
+    assert!(matches!(
+        writer.call(command),
+        Ok(WriteReply::Listing { .. })
+    ));
     assert!(matches!(
         writer.send(WriteCommand::Barrier),
         Err(Error::Closed)
     ));
     drop(writer);
+    let committed = old_listing(temp.path());
+    assert_eq!(committed.0, before_listing.0 + 1);
+    assert!(committed.1.iter().any(|(_, name)| name == "link"));
     assert_eq!(bindings(temp.path()), before);
     assert_eq!(pending_count(temp.path()), 4);
     let st = Connection::open(temp.path().join("state.db")).unwrap();
@@ -1512,4 +1639,144 @@ fn file_matching_prefers_exact_name_and_consumes_each_old_row_once() {
             .unwrap(),
         -1
     );
+}
+
+/// #356: `fixture()` without the references on "a" (row 1) and "omitted" (row 3), published on a
+/// writer thread that pauses inside the pending-publication window. While it is paused, another
+/// connection binds new references to both rows exactly as `collections.update_members` does: one
+/// IMMEDIATE transaction over both files. The publication then drops both rows; "a" survives as
+/// its hard link "link" (row 2). With `late_commit` that transaction is still open when the window
+/// is released, so the writer reaches its fence while the binding holds both write locks.
+fn publish_with_window_bind(
+    crash: Option<PublicationCrash>,
+    late_commit: bool,
+) -> (tempfile::TempDir, Result<WriteReply>) {
+    let (temp, conn, command) = fixture();
+    conn.execute_batch(
+        "DELETE FROM st.collection_member WHERE object_ref_id IN (1,2);
+        DELETE FROM st.object_ref WHERE id IN (1,2);",
+    )
+    .unwrap();
+    let window = Arc::new(PublicationWindow::default());
+    window.arm();
+    let paused = window.clone();
+    let publication = std::thread::spawn(move || {
+        let (tx, rx) = bounded(1);
+        let (reply, result) = bounded(1);
+        tx.send(Pending {
+            command,
+            reply,
+            _permit: BytePermit {
+                quota: Arc::new((Mutex::new(0), Condvar::new())),
+                bytes: 0,
+            },
+        })
+        .unwrap();
+        drop(tx);
+        let (alive, _) = bounded(0);
+        serve(
+            conn,
+            rx,
+            Arc::new(Mutex::new(WriterTimings::default())),
+            alive,
+            crash,
+            Some(paused),
+        );
+        result.recv().unwrap_or(Err(Error::Closed))
+    });
+    window.wait_paused();
+    let mut other = Connection::open(temp.path().join("catalog.db")).unwrap();
+    other
+        .execute(
+            "ATTACH DATABASE ?1 AS st",
+            [temp.path().join("state.db").to_string_lossy().as_ref()],
+        )
+        .unwrap();
+    let tx = other
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    tx.execute_batch(
+        "INSERT INTO st.object_ref(volume_key,file_id,creation_ft,kind,state,last_resolved_ns,catalog_instance,row_id,born_run)
+            SELECT 'fixture',file_id,created_ft,'file','resolved',0,(SELECT value FROM main.meta WHERE key='instance_id'),id,born_run
+            FROM main.file WHERE id IN (1,3) ORDER BY id;
+        INSERT INTO st.collection_member SELECT 1,id,1 FROM st.object_ref WHERE id>4;",
+    )
+    .unwrap();
+    if late_commit {
+        window.release();
+        // Ordering only: the assertions hold whether the writer is already waiting or not.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        tx.commit().unwrap();
+    } else {
+        tx.commit().unwrap();
+        window.release();
+    }
+    (temp, publication.join().unwrap())
+}
+
+fn pending_references(dir: &std::path::Path) -> Vec<(i64, Option<i64>)> {
+    let st = Connection::open(dir.join("state.db")).unwrap();
+    let mut s = st
+        .prepare("SELECT object_ref_id,row_id FROM pending_reference ORDER BY object_ref_id")
+        .unwrap();
+    s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+}
+
+#[test]
+fn a_reference_bound_inside_the_publication_window_is_restaged_before_publication() {
+    for late_commit in [false, true] {
+        let (temp, result) = publish_with_window_bind(None, late_commit);
+        result.unwrap();
+        assert_eq!(pending_count(temp.path()), 0);
+        let after = bindings(temp.path());
+        // The window's reference to "a" follows the identity to its surviving hard link, row 2.
+        assert_eq!(after[2], (5, "resolved".into(), false, 2, 1));
+        // The one to "omitted" is retired with the row, never left resolved to a deleted row id.
+        assert_eq!(after[3], (6, "unresolved".into(), true, 3, 1));
+        assert_eq!(
+            old_listing(temp.path()).1,
+            vec![(2, "link".into()), (4, "nested".into())]
+        );
+        assert_eq!(
+            Reader::open(temp.path())
+                .unwrap()
+                .inspect(NodeKey::File(2))
+                .unwrap()
+                .memberships[0]
+                .name,
+            "Kept"
+        );
+    }
+}
+
+#[test]
+fn crash_after_a_window_restage_recovers_like_any_publication() {
+    // Before the catalogue commit: the re-staged intents are durable, the witness is not, and
+    // recovery discards them; both window references keep their still-current rows.
+    let (temp, result) = publish_with_window_bind(Some(PublicationCrash::BeforeCatalog), false);
+    assert!(matches!(result, Err(Error::Closed)));
+    assert_eq!(
+        pending_references(temp.path()),
+        vec![(3, None), (4, None), (5, Some(2)), (6, None)]
+    );
+    let listing = old_listing(temp.path());
+    drop(crate::db::open_pair(temp.path(), "synthetic").unwrap());
+    assert_eq!(pending_count(temp.path()), 0);
+    assert_eq!(old_listing(temp.path()).1, listing.1);
+    let after = bindings(temp.path());
+    assert_eq!(after[2], (5, "resolved".into(), false, 1, 1));
+    assert_eq!(after[3], (6, "resolved".into(), false, 3, 1));
+    assert_recovered_slice(temp.path());
+    // After the catalogue commit: the witness names the re-staged token, so recovery confirms it.
+    let (temp, result) = publish_with_window_bind(Some(PublicationCrash::AfterCatalog), false);
+    assert!(matches!(result, Err(Error::Closed)));
+    assert_eq!(pending_count(temp.path()), 4);
+    drop(crate::db::open_pair(temp.path(), "synthetic").unwrap());
+    assert_eq!(pending_count(temp.path()), 0);
+    let after = bindings(temp.path());
+    assert_eq!(after[2], (5, "resolved".into(), false, 2, 1));
+    assert_eq!(after[3], (6, "unresolved".into(), true, 3, 1));
 }

@@ -28,6 +28,7 @@ pub struct TierVolume {
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub free_fraction: Option<Fraction>,
     pub pressure: TierVolumePressure,
+    pub source_eligible: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -128,6 +129,7 @@ pub struct PlacementCandidates {
     pub source_volume_id: VolumeId,
     pub root_generations: BoundedVec<RootGeneration, 0, 64>,
     pub groups: BoundedVec<CandidateGroup, 0, 200>,
+    pub excluded_volumes: BoundedVec<PlacementPlanExcludedVolume, 0, 64>,
     pub note: Text<512>,
 }
 
@@ -283,6 +285,7 @@ pub struct PlacementPlanPreRejected {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlacementPlanExcludedVolumeReason {
+    PhysicsUnusable,
     NoActiveGrant,
     TierUnknown,
     CapacityUnknown,

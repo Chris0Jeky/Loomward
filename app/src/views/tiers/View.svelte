@@ -35,7 +35,7 @@
     shares_objects_with_other_group: 'Shares file objects with another group (hard links)',
     group_coverage_incomplete: 'Scan coverage of this folder is incomplete',
   };
-  const EXCLUDED = { tier_unknown: 'Tier unknown', capacity_unknown: 'Capacity unknown', offline: 'Offline', no_active_grant: 'No active grant' } as const;
+  const EXCLUDED = { tier_unknown: 'Tier unknown', capacity_unknown: 'Capacity unknown', offline: 'Offline', no_active_grant: 'No active grant', physics_unusable: 'Observed volume physics is unusable' } as const;
   const PRESSURE = { ok: 'Comfortable', watch: 'Watch', pressure: 'Under pressure', unknown: 'Unknown' } as const;
   const BUS: Record<string, string> = { nvme: 'NVMe', sata: 'SATA', sas: 'SAS', scsi: 'SCSI', usb: 'USB', raid: 'RAID', virtual: 'virtual', sd: 'SD', other: 'other bus', unknown: 'unknown bus' };
 
@@ -82,8 +82,8 @@
     simTicket++;
     simulating = false;
     cands = null;
-    if (!c || !v) return;
     const mine = ++candTicket;
+    if (!c || !v?.source_eligible) return;
     try {
       const { result } = await c.call('placement.candidates', { source_volume_id: v.volume_id, basis: 'largest_dirs', max_groups: 50, min_bytes: '0' });
       if (mine === candTicket) cands = result;
@@ -103,8 +103,11 @@
       if (mine !== modelTicket) return;
       model = result;
       error = '';
-      const keep = result.volumes.find((v) => v.volume_id === source && v.tier.tier !== null);
-      source = (keep ?? result.volumes.find((v) => v.pressure === 'pressure' && v.tier.tier !== null) ?? result.volumes.find((v) => v.tier.tier !== null))?.volume_id ?? '';
+      const keep = result.volumes.find((v) => v.volume_id === source && v.source_eligible);
+      const next = (keep ?? result.volumes.find((v) => v.pressure === 'pressure' && v.source_eligible) ?? result.volumes.find((v) => v.source_eligible))?.volume_id ?? '';
+      // Assumptions name groups of the old source; a changed source starts clean, as choose() does.
+      if (next !== source) assume = {};
+      source = next;
       await loadCandidates();
       await loadProposals();
     } catch (e) {
@@ -141,8 +144,10 @@
     try {
       const { result } = await c.call('proposals.get', { proposal_id: id });
       if (mine !== savedTicket) return;
-      source = result.summary.source_volume_id;
-      await loadCandidates();
+      if (volume(result.summary.source_volume_id)?.source_eligible) {
+        source = result.summary.source_volume_id;
+        await loadCandidates();
+      }
       if (mine !== savedTicket) return;
       savedDetail = result;
       savedError = '';
@@ -151,6 +156,7 @@
   }
 
   function choose(id: string) {
+    if (!volume(id)?.source_eligible) return;
     source = id;
     assume = {};
     void loadCandidates();
@@ -176,7 +182,7 @@
     const c = session.client;
     const cap = parseBytes(src?.capacity_bytes);
     formError = '';
-    if (!c || !src || cap === null) { formError = 'The source volume has no known capacity, so there is nothing to simulate.'; return; }
+    if (!c || !src?.source_eligible || cap === null) { formError = 'Choose an eligible source volume to simulate.'; return; }
     if (pct === null || !(pct >= 1 && pct <= 90)) { formError = 'Target free space must be between 1% and 90% of the volume.'; return; }
     if (transferGiB === null || !(transferGiB >= 0 && transferGiB <= 100000)) { formError = 'The transfer cap must be between 0 and 100,000 GiB.'; return; }
     const target = (cap * BigInt(Math.round(pct * 10))) / 1000n;
@@ -252,7 +258,7 @@
               {#each Array.from({ length: 10 }, (_, i) => i) as tier (tier)}<option value={tier}>Tier {tier}</option>{/each}
             </select>
           </label>
-          <button class="btn" type="button" aria-pressed={v.volume_id === source} disabled={v.tier.tier === null || !v.online} onclick={() => choose(v.volume_id)}>
+          <button class="btn" type="button" aria-pressed={v.volume_id === source} disabled={!v.source_eligible} onclick={() => choose(v.volume_id)}>
             {v.volume_id === source ? 'Source volume' : 'Use as source'}<span class="sr-only">: {escapedName(v.display_name)}</span>
           </button>
         </article>
@@ -267,6 +273,9 @@
   <h2 id="h-cand">Candidate groups {#if src}on <VisibleName name={src.display_name} />{/if}</h2>
   {#if cands}
     <p class="muted small">{cands.note}</p>
+    {#if cands.excluded_volumes.length}
+      <ul class="list" aria-label="Excluded placement volumes">{#each cands.excluded_volumes as x (x.volume_id)}<li><VisibleName name={vname(x.volume_id)} /> · {EXCLUDED[x.reason]}</li>{/each}</ul>
+    {/if}
     <div class="tbl-wrap">
       <table class="tbl">
         <caption class="sr-only">Candidate folder groups with what-if assumptions</caption>

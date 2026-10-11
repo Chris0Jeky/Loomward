@@ -62,7 +62,42 @@ fn estimated_size_is_registry_evidence_not_disk_measurement() {
         bad[0].applications[0].estimated_size_bytes,
         Evidence::Unknown { .. }
     ));
-    assert_eq!(bad[0].state, ProviderState::Partial);
+    assert_eq!(bad[0].state, ProviderState::Available);
+}
+
+#[test]
+fn malformed_size_does_not_downgrade_provider_or_healthy_entry() {
+    let providers = inventory(&Fake(RegistryRead {
+        state: ProviderState::Available,
+        reason: None,
+        entries: vec![
+            RegistryEntry {
+                key: "synthetic-bad".into(),
+                values: BTreeMap::from([("EstimatedSize".into(), value(1, "1024"))]),
+            },
+            RegistryEntry {
+                key: "synthetic-good".into(),
+                values: BTreeMap::from([(
+                    "EstimatedSize".into(),
+                    RegistryValue::Bytes {
+                        kind: 4,
+                        data: 1u32.to_le_bytes().to_vec(),
+                    },
+                )]),
+            },
+        ],
+    }));
+    for provider in &providers[..3] {
+        assert_eq!(provider.state, ProviderState::Available);
+        assert_eq!(provider.reason, None);
+        assert!(
+            matches!(&provider.applications[0].estimated_size_bytes, Evidence::Unknown { reason } if !reason.is_empty())
+        );
+        assert_eq!(
+            provider.applications[1].estimated_size_bytes,
+            Evidence::Known(1024)
+        );
+    }
 }
 
 #[test]

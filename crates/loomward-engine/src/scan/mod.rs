@@ -637,12 +637,13 @@ impl Engine {
         revoked.revoked = true;
         revoked.duplicate_cancel.store(true, Ordering::Release);
         // Watch teardown can terminate a queued runner before it reaches the byte budget.
-        let cancelled = revoked
-            .aliases
-            .iter()
-            .flat_map(|id| self.jobs.root_jobs_for_revocation(id))
-            .map(|id| self.jobs.cancel_revoked(&id, &self.events))
-            .collect();
+        let cancelled = self.jobs.revoke_jobs(
+            revoked
+                .aliases
+                .iter()
+                .flat_map(|id| self.jobs.root_jobs_for_revocation(id)),
+            &self.events,
+        );
         #[cfg(windows)]
         {
             for id in &revoked.aliases {

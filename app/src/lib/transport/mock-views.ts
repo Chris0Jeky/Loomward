@@ -9,7 +9,7 @@ import { formatBytes } from '../format/bytes';
 import { prng } from './synth';
 
 // Everything below is invented, contract-shaped data for the Tiers, Companion and Grants views on the
-// mock transport. Volumes follow the owner's machine in shape only (NVMe, NVMe, HDD); no real path or
+// mock transport. Volumes follow the owner's machine in shape only (fast local, fast local, slow local); no real path or
 // process is named. TODO(L1): serve contracts/v3/examples/ once lane L1 lands them.
 
 export type Fail = (code: ErrorCode, message: string) => never;
@@ -23,10 +23,10 @@ const PRESSURE = 0.1;
 
 interface VolumeSeed { id: string; name: string; fs: string; bus: Volume['device']['bus_type']; seek: boolean | null; capacity: bigint; freeFraction: number; declared: number | null; hint: number | null; removable: boolean }
 const VOLUMES: VolumeSeed[] = [
-  { id: 'vo_c', name: 'C:', fs: 'NTFS', bus: 'nvme', seek: false, capacity: BigInt(Math.round(1.86 * 2 ** 40)), freeFraction: 0.09, declared: null, hint: 1, removable: false },
-  { id: 'vo_g', name: 'G:', fs: 'NTFS', bus: 'nvme', seek: false, capacity: 930n * GiB, freeFraction: 0.58, declared: 2, hint: 1, removable: false },
-  { id: 'vo_e', name: 'E:', fs: 'NTFS', bus: 'sata', seek: true, capacity: BigInt(Math.round(1.86 * 2 ** 40)), freeFraction: 0.31, declared: null, hint: 5, removable: false },
-  { id: 'vo_f', name: 'F:', fs: 'exFAT', bus: 'usb', seek: null, capacity: 238n * GiB, freeFraction: 0.7, declared: null, hint: null, removable: true },
+  { id: 'vo_c', name: 'C:', fs: 'NTFS', bus: 'nvme', seek: false, capacity: 2048n * GiB, freeFraction: 0.09, declared: null, hint: 1, removable: false },
+  { id: 'vo_g', name: 'G:', fs: 'NTFS', bus: 'nvme', seek: false, capacity: 1024n * GiB, freeFraction: 0.58, declared: 2, hint: 1, removable: false },
+  { id: 'vo_e', name: 'E:', fs: 'NTFS', bus: 'sata', seek: true, capacity: 2048n * GiB, freeFraction: 0.31, declared: null, hint: 5, removable: false },
+  { id: 'vo_f', name: 'F:', fs: 'exFAT', bus: 'usb', seek: null, capacity: 256n * GiB, freeFraction: 0.7, declared: null, hint: null, removable: true },
 ];
 
 interface GroupSeed {
@@ -93,6 +93,7 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
         volume_id: v.id, display_name: v.name, tier: tierInfo(v), online: true, writable: true,
         capacity_bytes: str(v.capacity), free_bytes: str(free(v)), reserve_bytes: str(v.capacity / 50n), free_fraction: frac,
         pressure: frac < PRESSURE ? 'pressure' : frac < WATCH ? 'watch' : 'ok',
+        source_eligible: tierInfo(v).tier !== null,
       };
     }),
     policy: {
@@ -115,7 +116,7 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
     seed(p.source_volume_id);
     const min = typeof p.min_bytes === 'string' && /^\d{1,19}$/.test(p.min_bytes) ? BigInt(p.min_bytes) : fail('invalid_request', 'min_bytes');
     const groups = p.source_volume_id === 'vo_c' ? GROUPS.filter((g) => bytesOf(g) >= min).slice(0, Number(p.max_groups) || 200).map(candidate) : [];
-    return { source_volume_id: String(p.source_volume_id), root_generations: [], groups, note: 'Candidates are non-overlapping folders on the source volume. Sizes are bytes by directory entry; relief is only known where every object was verified.' };
+    return { source_volume_id: String(p.source_volume_id), root_generations: [], groups, excluded_volumes: [], note: 'Candidates are non-overlapping folders on the source volume. Sizes are bytes by directory entry; relief is only known where every object was verified.' };
   };
 
   // Planner v2's eligibility order and thresholds (python/loomward/planner_v2.py), on invented volumes.

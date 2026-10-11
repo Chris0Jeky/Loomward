@@ -105,7 +105,7 @@ consistent snapshot nor a production coexistence benchmark. No file contents are
 `real_stress.py --plan <private-absolute-JSON> --root-log <private-log> --synthetic` reproduces six
 sweeps per real root (one initial uncontrolled sweep plus five warm sweeps), the Python comparison
 on the smallest root, and five warm runs per strategy on identical marked G:/E: mixed 1M trees.
-The private plan is a list of `{ "label": "real-A", "path": "<explicit-root>", "storage": "NVMe" }`
+The private plan is a list of `{ "label": "real-A", "path": "<explicit-root>", "storage": "fast local volume" }`
 objects, labelled consecutively, with three or four roots. Keep it outside the public worktree.
 The Python scanner keeps per-file records in memory but exports aggregate context only; its
 200k examination cap remains in force. Generation/validation primes synthetic caches; no cold

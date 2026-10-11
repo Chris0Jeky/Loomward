@@ -23,6 +23,7 @@ pub(crate) struct Hooks {
     pub runs: Mutex<HashMap<Command, usize>>,
     pub order: Mutex<Vec<Command>>,
     pub fail_spawn: std::sync::atomic::AtomicBool,
+    pub fail_job_list: std::sync::atomic::AtomicBool,
     pub closed: Mutex<Vec<(Command, &'static str)>>,
     pub arrived: Mutex<Vec<(Command, &'static str)>>,
     pub opened: std::sync::Condvar,
@@ -131,6 +132,52 @@ fn followup_stored_grant_version_errors_fail_closed() {
 
 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+#[test]
+fn health_job_list_failure_is_an_error_not_idle() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (health, _) = ok("health.get", call(&svc, "health.get", json!({})));
+    assert_eq!(health["jobs_running"], 0);
+    svc.inner
+        .hooks
+        .fail_job_list
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let error = err(call(&svc, "health.get", json!({})));
+    assert_eq!(error.code, ErrorCode::InternalError);
+    assert_eq!(error.message.as_str(), "synthetic job list failure");
+}
+
+#[test]
+fn roots_list_keeps_a_root_mid_scan_with_unknown_totals() {
+    // Every scan dirties its root's aggregates; the list must stay available with an
+    // honest unknown for that root, not fail for every root (review of #358).
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (root, grant) = fixture(&svc, 2);
+    let (roots, _) = ok("roots.list", call(&svc, "roots.list", json!({})));
+    assert!(!roots["roots"][0]["totals"].is_null());
+    svc.inner
+        .catalog
+        .writer()
+        .call(WriteCommand::BeginRun {
+            grant_id: grant,
+            mode: "full".into(),
+            strategy: "fixture".into(),
+            started_at_ns: 0,
+        })
+        .unwrap();
+    svc.inner
+        .db()
+        .execute(
+            "UPDATE main.dir SET dirty_rev=agg_valid_rev+1 WHERE root_id=?1 AND parent_id IS NULL",
+            [root],
+        )
+        .unwrap();
+    let (roots, _) = ok("roots.list", call(&svc, "roots.list", json!({})));
+    assert!(roots["roots"][0]["totals"].is_null());
+    assert_eq!(roots["roots"][0]["grant_state"], "active");
+}
+
 fn placement_fixture(svc: &Service) -> (i64, i64, String) {
     let (root, grant) = fixture(svc, 3);
     svc.inner.db().execute("UPDATE main.volume SET capabilities_json=?1,bytes_per_cluster=4096", [json!({"space":{"capacity_bytes":"1048576","free_bytes":"65536","read_only":false}}).to_string()]).unwrap();
@@ -235,6 +282,10 @@ fn placement_revoked_only_volumes_stay_visible_but_are_not_targets() {
             .as_str()
             .unwrap()
             .contains("No active grant"));
+        if command == "tiers.model" {
+            assert_eq!(row["source_eligible"], false);
+            assert_eq!(result["volumes"][0]["source_eligible"], true);
+        }
     }
     let (plan, _) = ok(
         "placement.simulate",
@@ -246,6 +297,20 @@ fn placement_revoked_only_volumes_stay_visible_but_are_not_targets() {
         .iter()
         .any(|v| v["volume_id"] == target_id && v["reason"] == "no_active_grant"));
     assert!(plan["projected_free_bytes"].get(&target_id).is_none());
+    // Candidate estimates disclose the same omission (Codex P2 on #350).
+    let (candidates, _) = ok(
+        "placement.candidates",
+        call(
+            &svc,
+            "placement.candidates",
+            json!({"source_volume_id":volume,"basis":"largest_dirs","max_groups":50,"min_bytes":"0"}),
+        ),
+    );
+    assert!(candidates["excluded_volumes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v["volume_id"] == target_id && v["reason"] == "no_active_grant"));
     let (detail, _) = ok(
         "proposals.get",
         call(
@@ -270,6 +335,7 @@ fn placement_revoked_only_volumes_stay_visible_but_are_not_targets() {
         )
         .unwrap();
     let (model, _) = ok("tiers.model", call(&svc, "tiers.model", json!({})));
+    assert_eq!(model["volumes"][1]["source_eligible"], true);
     assert!(!model["volumes"][1]["tier"]["note"]
         .as_str()
         .unwrap()
@@ -286,10 +352,6 @@ fn placement_revoked_only_volumes_stay_visible_but_are_not_targets() {
 
 #[test]
 fn placement_physics_drift_alone_keeps_the_historical_scenario() {
-    let semantics = include_str!("../../../contracts/v3/semantics.md");
-    assert!(
-        semantics.contains("Free-space and capacity drift alone does not mark a scenario stale")
-    );
     let tmp = temp_root();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     let (_, _, volume) = placement_fixture(&svc);
@@ -297,7 +359,7 @@ fn placement_physics_drift_alone_keeps_the_historical_scenario() {
         "placement.simulate",
         call(&svc, "placement.simulate", placement_request(&volume, true)),
     );
-    svc.inner.db().execute("UPDATE main.volume SET capabilities_json=?1", [json!({"space":{"capacity_bytes":"2097152","free_bytes":"131072","read_only":false}}).to_string()]).unwrap();
+    svc.inner.db().execute("UPDATE main.volume SET capabilities_json=?1,observed_at_ns=(SELECT max(created_at_ns)+1 FROM st.proposal)", [json!({"space":{"capacity_bytes":"2097152","free_bytes":"131072","read_only":false}}).to_string()]).unwrap();
     let (model, _) = ok("tiers.model", call(&svc, "tiers.model", json!({})));
     assert_eq!(model["volumes"][0]["free_bytes"], "131072");
     assert_eq!(model["volumes"][0]["capacity_bytes"], "2097152");
@@ -311,6 +373,8 @@ fn placement_physics_drift_alone_keeps_the_historical_scenario() {
     );
     assert_eq!(detail["summary"]["status"], "simulation_only");
     assert_eq!(detail["plan"], Value::Object(plan.clone()));
+    let (listed, _) = ok("proposals.list", call(&svc, "proposals.list", json!({})));
+    assert_eq!(listed["proposals"][0]["status"], "simulation_only");
     svc.inner
         .db()
         .execute(
@@ -1239,8 +1303,11 @@ fn hardening_picker_cooldown_survives_cancellation_and_new_ids() {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             None
         }
-        fn confirm_disclosure(&self, _: &DisclosureSummary) -> bool {
-            false
+        fn confirm_disclosure(
+            &self,
+            _: &DisclosureSummary,
+        ) -> Result<bool, loomward_protocol::ErrorBody> {
+            Ok(false)
         }
     }
     let tmp = temp_root();
@@ -1483,6 +1550,67 @@ fn relist(svc: &Service, grant: i64, dir: i64, files: u64) {
         finished_at_ns: 1,
     })
     .unwrap();
+}
+
+/// #356: makes file row 2 a hard link of row 1, then rescans the fixture root keeping only row 2's
+/// name and the subdirectory, so the publication drops rows 1 and 3 and row 1's identity survives
+/// as row 2. The listing runs on its own thread and is returned paused inside the writer's
+/// pending-publication window (precious staging committed, catalogue transaction not begun);
+/// the caller acts, then releases the window and joins.
+fn rescan_paused_in_publication_window(svc: &Arc<Service>) -> std::thread::JoinHandle<()> {
+    let (identity, created, name): (Vec<u8>, i64, String) = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT a.file_id,a.created_ft,b.name FROM main.file a, main.file b WHERE a.id=1 AND b.id=2",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    svc.inner
+        .db()
+        .execute(
+            "UPDATE main.file SET file_id=?1,created_ft=?2 WHERE id=2",
+            rusqlite::params![identity, created],
+        )
+        .unwrap();
+    let writer = svc.inner.catalog.writer();
+    let WriteReply::Run(run) = writer
+        .call(WriteCommand::BeginRun {
+            grant_id: 1,
+            mode: "full".into(),
+            strategy: "fixture".into(),
+            started_at_ns: 0,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    let mut kept = file(&name, 1001);
+    kept.file_id = Some(identity);
+    kept.created_ft = Some(created);
+    let mut sub = Observation::file("sub", 0, Some(0));
+    sub.family = "none".into();
+    writer.publication_window().arm();
+    let worker = svc.clone();
+    let listing = std::thread::spawn(move || {
+        worker
+            .inner
+            .catalog
+            .writer()
+            .call(WriteCommand::DirListing(DirListing {
+                run_id: run,
+                dir_id: 1,
+                files: vec![kept],
+                dirs: vec![sub],
+                state: "complete".into(),
+                skipped: 0,
+                errors: 0,
+            }))
+            .unwrap();
+    });
+    writer.publication_window().wait_paused();
+    listing
 }
 
 fn root_slice(svc: &Service, root: i64) -> Payload {
@@ -3535,11 +3663,11 @@ fn followup_all_catalogue_reads_observe_deadlines() {
         let cmd = Command::from_name(command).unwrap();
         let control = svc
             .inner
-            .handle(&req, cmd, &CallContext::http(), Some(&active));
+            .handle(&req, cmd, &CallContext::http(), Some(&active), None);
         assert!(control.is_ok(), "{command} control: {:?}", control.err());
         assert_eq!(
             svc.inner
-                .handle(&req, cmd, &CallContext::http(), Some(&expired))
+                .handle(&req, cmd, &CallContext::http(), Some(&expired), None)
                 .err()
                 .expect(command)
                 .code,
@@ -3556,8 +3684,11 @@ fn followup_picker_refusal_reaches_the_user() {
         fn pick_folder(&self) -> Option<std::path::PathBuf> {
             Some(self.0.clone())
         }
-        fn confirm_disclosure(&self, _: &DisclosureSummary) -> bool {
-            false
+        fn confirm_disclosure(
+            &self,
+            _: &DisclosureSummary,
+        ) -> Result<bool, loomward_protocol::ErrorBody> {
+            Ok(false)
         }
     }
     let tmp = temp_root();
@@ -3585,8 +3716,11 @@ fn a_stale_stored_grant_still_blocks_a_picked_parent() {
         fn pick_folder(&self) -> Option<std::path::PathBuf> {
             Some(self.0.clone())
         }
-        fn confirm_disclosure(&self, _: &DisclosureSummary) -> bool {
-            false
+        fn confirm_disclosure(
+            &self,
+            _: &DisclosureSummary,
+        ) -> Result<bool, loomward_protocol::ErrorBody> {
+            Ok(false)
         }
     }
     let tmp = temp_root();

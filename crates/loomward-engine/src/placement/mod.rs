@@ -167,20 +167,15 @@ impl Engine {
         let mut volumes = Vec::new();
         for observed in snapshot.volumes {
             check_deadline(deadline)?;
+            let physics_usable = usable_physics(&observed);
             let VolumeObservation {
                 volume: v,
                 reserve_bytes,
-                cluster_bytes,
                 ..
             } = observed;
             // #159-5: unusable numbers stay visible as Unknown instead of
             // failing the whole tier view.
-            let unusable = v.online
-                && (matches!(
-                    (v.capacity_bytes, v.free_bytes),
-                    (Some(cap), Some(free)) if free.get() > cap.get()
-                ) || matches!(v.capacity_bytes, Some(cap) if reserve_bytes.get() > cap.get())
-                    || cluster_bytes == Some(0));
+            let unusable = v.online && !physics_usable;
             let fraction = if unusable {
                 None
             } else {
@@ -202,6 +197,7 @@ impl Engine {
                 None => TierVolumePressure::Unknown,
             };
             let tier = tier_info(&v);
+            let source_eligible = v.online && tier.tier.is_some() && physics_usable;
             volumes.push(TierVolume {
                 volume_id: v.volume_id,
                 display_name: v.display_name,
@@ -213,6 +209,7 @@ impl Engine {
                 reserve_bytes,
                 free_fraction: fraction,
                 pressure,
+                source_eligible,
             });
         }
         Ok(TierModel {volumes: bounded(BoundedVec::new(volumes))?, policy: TierModelPolicy {
@@ -229,7 +226,7 @@ impl Engine {
     ) -> EngineResult<PlacementCandidates> {
         check_deadline(deadline)?;
         let snapshot = input.snapshot(Some(&request.source_volume_id), deadline)?;
-        let _ = planner_volumes(&snapshot)?;
+        let (_, excluded) = planner_volumes(&snapshot)?;
         require_source(&snapshot, &request.source_volume_id)?;
         let (cluster, unknown_clusters) = target_cluster(&snapshot, &request.source_volume_id);
         let mut view = candidates(
@@ -243,6 +240,7 @@ impl Engine {
             deadline,
         )?
         .view;
+        view.excluded_volumes = bounded(BoundedVec::new(excluded))?;
         // The rounded destination estimates rest on an assumed cluster size: say so here too.
         if unknown_clusters > 0 {
             view.note = Text::new(format!(
@@ -654,8 +652,7 @@ fn target_cluster(snapshot: &Snapshot, source: &VolumeId) -> (Option<u64>, usize
             v.volume.volume_id != *source
                 && v.volume.online
                 && v.volume.read_only == Some(false)
-                && v.volume.capacity_bytes.is_some()
-                && v.volume.free_bytes.is_some()
+                && usable_physics(v)
                 && tier_info(&v.volume)
                     .tier
                     .is_some_and(|tier| tier.get() >= source_tier.get())
@@ -676,12 +673,12 @@ fn target_cluster(snapshot: &Snapshot, source: &VolumeId) -> (Option<u64>, usize
 }
 
 fn require_source(snapshot: &Snapshot, source: &VolumeId) -> EngineResult<()> {
-    let v = &snapshot
+    let observed = snapshot
         .volumes
         .iter()
         .find(|v| v.volume.volume_id == *source)
-        .ok_or_else(|| invalid("source_volume_unknown"))?
-        .volume;
+        .ok_or_else(|| invalid("source_volume_unknown"))?;
+    let v = &observed.volume;
     if !v.online {
         return Err(invalid("source_offline"));
     }
@@ -691,7 +688,17 @@ fn require_source(snapshot: &Snapshot, source: &VolumeId) -> EngineResult<()> {
     if v.capacity_bytes.is_none() || v.free_bytes.is_none() {
         return Err(invalid("source_capacity_unknown"));
     }
+    if !usable_physics(observed) {
+        return Err(invalid("source_physics_unusable"));
+    }
     Ok(())
+}
+
+fn usable_physics(observed: &VolumeObservation) -> bool {
+    matches!((observed.volume.capacity_bytes, observed.volume.free_bytes),
+        (Some(cap), Some(free)) if cap.get() > 0 && cap.get() <= MAX_SAFE_INTEGER
+            && free <= cap && observed.reserve_bytes <= cap)
+        && !matches!(observed.cluster_bytes, Some(n) if n == 0 || n > MAX_SAFE_INTEGER)
 }
 
 fn planner_volumes(
@@ -720,6 +727,8 @@ fn planner_volumes(
             Some(PlacementPlanExcludedVolumeReason::TierUnknown)
         } else if v.capacity_bytes.is_none() || v.free_bytes.is_none() {
             Some(PlacementPlanExcludedVolumeReason::CapacityUnknown)
+        } else if !usable_physics(observed) {
+            Some(PlacementPlanExcludedVolumeReason::PhysicsUnusable)
         } else {
             None
         };
@@ -733,13 +742,6 @@ fn planner_volumes(
         let capacity = safe(v.capacity_bytes.expect("known capacity").get())?;
         let free = safe(v.free_bytes.expect("known free").get())?;
         let reserve = safe(observed.reserve_bytes.get())?;
-        if capacity == 0
-            || free > capacity
-            || reserve > capacity
-            || observed.cluster_bytes == Some(0)
-        {
-            return Err(invalid("invalid observed volume physics"));
-        }
         let mut value = json!({"id": v.volume_id, "capacity_bytes": capacity, "free_bytes": free,
             "reserve_bytes": reserve, "tier": tier.expect("known tier").get(), "online": true});
         if let Some(ro) = v.read_only {
@@ -963,7 +965,7 @@ fn candidates(
     }
     check_deadline(deadline)?;
     Ok(Candidates {view: PlacementCandidates {source_volume_id: source.clone(), root_generations: bounded(BoundedVec::new(snapshot.root_generations.clone()))?,
-        groups: bounded(BoundedVec::new(groups))?, note: Text::new("Default-stream entry estimates and point-in-time verified relief; simulation only.").expect("bounded note")}, objects})
+        groups: bounded(BoundedVec::new(groups))?, excluded_volumes: bounded(BoundedVec::new(Vec::new()))?, note: Text::new("Default-stream entry estimates and point-in-time verified relief; simulation only.").expect("bounded note")}, objects})
 }
 
 fn entry_bytes(s: &Subtree) -> Bytes {

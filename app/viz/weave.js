@@ -4,6 +4,8 @@
  *
  * The cloth is a 3/1 warp-faced twill (denim's structure): the warp floats over three wefts and
  * under one, so the meaning dye dominates and the residency weft shows as a diagonal of flecks.
+ * That is the tile as authored. The views turn it a quarter (`meaningWeft`), so on screen meaning
+ * runs horizontally (weft) and residency vertically (warp); see the orientation note in colour.js.
  */
 import { shade } from './colour.js';
 
@@ -27,6 +29,21 @@ export function ctx2d(c) {
   const g = c.getContext('2d');
   if (!g) throw new Error('2d canvas unavailable');
   return /** @type {CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D} */ (g);
+}
+
+/**
+ * Which warp crossings stay unwoven. Undyed meaning states share one colour and differ only here, so
+ * they read apart on the canvas without a dye (a dye would be an approval).
+ * @param {import('./colour.js').WarpPattern} pattern @param {number} i @param {number} j
+ */
+export function warpBreak(pattern, i, j) {
+  switch (pattern) {
+    case 'pending': return (i * 3 + j) % 8 === 0; // the label is not there yet: a sparse diagonal
+    case 'no_model': return j % 4 === 0; // no model has looked: a slit across every fourth crossing
+    case 'abstained': return i % 2 === 1; // a model looked and declined: every second thread missing
+    case 'not_eligible': return true; // not a candidate: no warp at all
+    default: return false;
+  }
 }
 
 /**
@@ -60,11 +77,11 @@ export function weaveTile(dpr, warp, weft, o) {
       const weftHere = showWeft && !looseRow && weft.pattern !== 'missing';
       const wTop = showWarp && (warpOn(i, j) || !weftHere);
       const wc = warpColour(i);
-      // pending meaning: the warp breaks every fourth crossing (the label is not there yet)
-      const warpBreak = warp.pattern === 'pending' && (i * 3 + j) % 8 === 0;
+      const broken = warpBreak(warp.pattern, i, j);
       if (weftHere && solidWeft && wTop) { g.fillStyle = shade(/** @type {string} */ (weft.colour), -0.62); g.fillRect(x, y, p, p); }
-      if (showWarp && (!wTop || !solidWeft)) { g.fillStyle = shade(wc, -0.66); g.fillRect(x + p * 0.18, y, p * 0.64, p); }
-      if (wTop && !warpBreak) {
+      // a broken crossing leaves no meaning thread at all: neither the top nor the under strand
+      if (showWarp && !broken && (!wTop || !solidWeft)) { g.fillStyle = shade(wc, -0.66); g.fillRect(x + p * 0.18, y, p * 0.64, p); }
+      if (wTop && !broken) {
         const k = jit(i, 1);
         const gr = g.createLinearGradient(x, 0, x + p, 0);
         gr.addColorStop(0, shade(wc, -0.55 + k));
