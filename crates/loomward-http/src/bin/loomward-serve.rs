@@ -212,4 +212,63 @@ mod tests {
         assert_eq!(options.grant_roots, vec![grant.canonicalize().unwrap()]);
         std::fs::remove_dir_all(base).unwrap();
     }
+
+    fn argv(items: &[&str]) -> impl Iterator<Item = String> {
+        items
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
+    #[test]
+    fn personal_dataset_is_refused_without_allow_personal() {
+        let err = parse(argv(&["--fixtures", "--dataset", "personal"]))
+            .err()
+            .unwrap();
+        assert_eq!(err, "--dataset personal also requires --allow-personal");
+        // Control: the same request with the opt-in is accepted.
+        let ok = parse(argv(&[
+            "--fixtures",
+            "--dataset",
+            "personal",
+            "--allow-personal",
+        ]));
+        assert!(ok.is_ok());
+    }
+
+    #[test]
+    fn invalid_dataset_is_refused() {
+        for bad in ["production", "Synthetic", "", "personal;synthetic"] {
+            let err = parse(argv(&["--fixtures", "--dataset", bad]))
+                .err()
+                .unwrap();
+            assert_eq!(err, "--dataset is synthetic or personal", "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn invalid_port_is_refused() {
+        for bad in ["65536", "-1", "http", "", "1.5"] {
+            let err = parse(argv(&["--fixtures", "--port", bad])).err().unwrap();
+            assert_eq!(err, "--port takes 0-65535", "{bad:?}");
+        }
+        // Boundary: the largest port is accepted.
+        assert!(parse(argv(&["--fixtures", "--port", "65535"])).is_ok());
+    }
+
+    #[test]
+    fn a_flag_without_its_value_is_refused() {
+        for flag in [
+            "--dataset",
+            "--state-dir",
+            "--grant-root",
+            "--port",
+            "--allow-origin",
+            "--static",
+        ] {
+            let err = parse(argv(&["--fixtures", flag])).err().unwrap();
+            assert_eq!(err, format!("{flag} needs a value"));
+        }
+    }
 }
