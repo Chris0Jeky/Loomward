@@ -32,6 +32,7 @@ pub(crate) struct Hooks {
     /// (profile, profiles directory) for the scan-time fence instead of the OS folders (#312).
     pub profile: Mutex<Option<(std::path::PathBuf, std::path::PathBuf)>>,
     /// #219: the filesystem name grant-time probes observe instead of the volume's.
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub filesystem: Mutex<Option<&'static str>>,
 }
 
