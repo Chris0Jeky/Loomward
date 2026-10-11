@@ -120,6 +120,16 @@ negative results are preserved below and in the JSON history.
   Family conflicts still reject. Directory identity prefetch was measured and removed:
   27,110 -> 27,017 directories/s in a separate 100k-directory probe, no end-to-end gain.
   Its tested replacement invalidation complexity does not remain in production.
+- Depth bound placement (#218, 2026-10-11): the 512-directory ancestor bound is enforced
+  per command again. After `apply`, each command walks every chain it seeded to the root
+  (`Context::check_chains`, sharing the parent cache) before its savepoint commits, and
+  rejects only itself with `tree depth limit`. Stored `depth` is refreshed only by rollup, so
+  a deep subtree moved under a deep directory in one run passed the `depth >= 511` guard and
+  used to fail the whole batch in `flush_dirty`. A parent changed after a seed's check was
+  itself seeded by a newer command, which the reverse-order flush marks first, so the flush
+  bound (kept as a `directory identity cycle` backstop) is unreachable without corruption.
+  Single publication, transaction-wide dirtying and `fail_batch` are unchanged. Pinned by
+  `deep_reparented_chain_rejects_only_its_listing_in_a_shared_batch`.
 
 Main memory settings remain **256 MiB catalogue cache, `temp_store=MEMORY`**,
 4 KiB pages and the main-only 16,384-page checkpoint threshold. State stays FULL.
