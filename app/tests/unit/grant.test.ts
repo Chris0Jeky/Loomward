@@ -109,10 +109,59 @@ describe('"Add a folder…" state machine', () => {
     expect(grantPicker.text).toMatch(/No folder was added yet/);
   });
 
-  it('shows the service message for busy and other engine errors', async () => {
-    fake({ 'roots.request_grant': { error: 'busy', message: 'a native dialog is already open' } });
+  it('shows the service message for other engine errors', async () => {
+    fake({ 'roots.request_grant': { error: 'internal_error', message: 'the service failed' } });
     await grantPicker.ask([]);
-    expect(grantPicker).toMatchObject({ phase: 'failed', text: 'a native dialog is already open' });
+    expect(grantPicker).toMatchObject({ phase: 'failed', text: 'the service failed' });
+  });
+
+  it('busy is neutral: the dialog is still open, so it is not worded as a failure and a root that lands counts', async () => {
+    fake({ 'roots.request_grant': { error: 'busy', message: 'a native dialog is already open' } });
+    await grantPicker.ask(['rt_old']);
+    expect(grantPicker.phase).toBe('deadline');
+    expect(grantPicker.text).toMatch(/still open/);
+    grantPicker.sync([root('rt_old'), root('rt_new', 'E:\New')]);
+    expect(grantPicker).toMatchObject({ phase: 'granted', rootId: 'rt_new' });
+  });
+
+  it('asks nothing until the first roots read has finished: no baseline, no "Added"', async () => {
+    const seen = fake({ 'roots.request_grant': granted(root('rt_old')) });
+    await grantPicker.ask(null);
+    expect(seen).toHaveLength(0);
+    expect(grantPicker.phase).toBe('failed');
+    expect(grantPicker.rootId).toBeNull();
+  });
+
+  it('a root that lands after the deadline text is worded as added by the next roots refresh, without a second picker', async () => {
+    const seen = fake({ 'roots.request_grant': { error: 'deadline_exceeded' }, 'roots.list': { roots: [root('rt_old')] } });
+    await grantPicker.ask(['rt_old']);
+    expect(grantPicker.phase).toBe('deadline');
+    grantPicker.sync([root('rt_old')]); // an unrelated refresh changes nothing
+    expect(grantPicker.phase).toBe('deadline');
+    grantPicker.sync([root('rt_old'), root('rt_late', 'F:\Late')]);
+    expect(grantPicker).toMatchObject({ phase: 'granted', rootId: 'rt_late' });
+    expect(grantPicker.text).toContain('Added F:\Late');
+    expect(seen.filter((s) => s.command === 'roots.request_grant')).toHaveLength(1);
+  });
+
+  it('an "Added" outcome is dropped when the root is revoked, and when the page is opened again', async () => {
+    fake({ 'roots.request_grant': granted(root('rt_new')) });
+    await grantPicker.ask([]);
+    grantPicker.sync([root('rt_new')]);
+    expect(grantPicker.phase).toBe('granted');
+    grantPicker.sync([{ ...root('rt_new'), grant_state: 'revoked' } as Root]);
+    expect(grantPicker).toMatchObject({ phase: 'idle', text: '', rootId: null });
+    fake({ 'roots.request_grant': granted(root('rt_two')) });
+    await grantPicker.ask([]);
+    grantPicker.dismiss();
+    expect(grantPicker).toMatchObject({ phase: 'idle', text: '', rootId: null });
+  });
+
+  it('opening the page again keeps a dialog that may still be open worded', async () => {
+    fake({ 'roots.request_grant': { error: 'deadline_exceeded' }, 'roots.list': { roots: [] } });
+    await grantPicker.ask([]);
+    grantPicker.dismiss();
+    expect(grantPicker.phase).toBe('deadline');
   });
 
   it('a transport fault is handed to the shell and leaves the button usable', async () => {
