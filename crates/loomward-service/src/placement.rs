@@ -266,15 +266,24 @@ fn bounded_space(
     read: impl FnOnce() -> Option<(loomward_windows::volumes::Space, i64)> + Send + 'static,
 ) -> EngineResult<Option<(loomward_windows::volumes::Space, i64)>> {
     check(deadline)?;
-    SPACE_READS
-        .fetch_update(
+    // A compare-exchange loop: `fetch_update` is deprecated on newer stable toolchains (#276).
+    let mut running = SPACE_READS.load(std::sync::atomic::Ordering::SeqCst);
+    loop {
+        if running >= 8 {
+            return Err(EngineError::ResourceBudget {
+                message: "lab volume observations still running".into(),
+            });
+        }
+        match SPACE_READS.compare_exchange_weak(
+            running,
+            running + 1,
             std::sync::atomic::Ordering::SeqCst,
             std::sync::atomic::Ordering::SeqCst,
-            |n| (n < 8).then_some(n + 1),
-        )
-        .map_err(|_| EngineError::ResourceBudget {
-            message: "lab volume observations still running".into(),
-        })?;
+        ) {
+            Ok(_) => break,
+            Err(now) => running = now,
+        }
+    }
     let permit = SpacePermit;
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
