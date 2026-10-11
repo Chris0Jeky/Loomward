@@ -113,10 +113,7 @@ impl Inner {
                 ))
             }
             GrantsList => self.grants_list(),
-            VolumesList => {
-                let revs = self.revisions()?;
-                Ok(out(json!({"volumes": self.volumes(None)?}), Some(revs)))
-            }
+            VolumesList => self.placement_command(req, command, work),
             VolumesDeclareTier => self.declare_tier(req.decode_payload()?, req.expected_state_rev),
             CollectionsList => self.collections_list(work),
             CollectionsCreate => self.collections_create(req),
@@ -147,7 +144,7 @@ impl Inner {
             SearchQuery => self.search(req, work),
             StatsBreakdown => self.breakdown(req, work),
             TiersModel | PlacementCandidates | PlacementSimulate | ProposalsList | ProposalsGet => {
-                unavailable("placement is not wired to the catalogue yet")
+                self.placement_command(req, command, work)
             }
             TelemetrySubscribe => engine(self.engine.telemetry_lease(&req.decode_payload()?)),
             TelemetryUnsubscribe => engine(self.engine.telemetry_release(&req.decode_payload()?)),
@@ -603,8 +600,10 @@ impl Inner {
 
     fn volumes(&self, only: Option<i64>) -> Result<Vec<Value>, ErrorBody> {
         let rows = db::volumes(&self.db(), only).map_err(sql_error)?;
+        // db::volumes reads one row past the bound so volumes.list can refuse; a change notice keeps 64.
         Ok(rows
             .iter()
+            .take(64)
             .map(|v| {
                 let declared = v.declared.flatten();
                 json!({

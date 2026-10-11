@@ -1,5 +1,5 @@
 import type {
-  EventKey, EventMap, Basis, DatasetClass, EntryPage, EntryRow, ErrorCode, EventEnvelope, GrantList, Health, RequestEnvelope,
+  EventKey, EventMap, Basis, DatasetClass, EntryPage, EntryRow, ErrorCode, EventEnvelope, GrantList, GrantRevokeResult, Health, RequestEnvelope,
   ResponseEnvelope, Root, RootList, SearchRequest, SessionInfo, SliceNode, TreeChildrenRequest, TreeSlice,
   TreeSliceRequest, Threads,
 } from '../contracts.gen';
@@ -21,8 +21,8 @@ export interface MockOptions {
 
 const DATASET: DatasetClass = 'synthetic';
 const GRANTED_AT = '2026-10-01T09:00:00Z';
-/** The synthetic catalogue never changes, so its revision is fixed. The state.db revision comes from the view mock. */
-const CATALOG_REV = '1';
+/** The synthetic catalogue's scan generation is fixed. Both database revisions come from the view mock. */
+const GENERATION = '1';
 const EPOCH = 'e_mock_epoch';
 /** Which revision scopes (semantics.md section 5) a command's response is read at: catalogue, state.db, both, or neither. */
 const REVS: Partial<Record<string, 'c' | 's' | 'cs'>> = {
@@ -30,7 +30,8 @@ const REVS: Partial<Record<string, 'c' | 's' | 'cs'>> = {
   'node.inspect': 'cs',
   'health.get': 'c', 'tree.children': 'c', 'search.query': 'c',
   'roots.list': 'cs', 'tree.slice': 'cs', 'placement.candidates': 'cs', 'placement.simulate': 'cs',
-  'roots.revoke': 's', 'grants.list': 's', 'grants.revoke': 's', 'volumes.list': 's', 'tiers.model': 's',
+  'proposals.list': 'cs', 'proposals.get': 'cs', 'volumes.declare_tier': 'cs',
+  'roots.revoke': 'cs', 'grants.list': 's', 'grants.revoke': 's', 'volumes.list': 's', 'tiers.model': 's',
 };
 
 class CommandFailure extends Error {
@@ -110,11 +111,13 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     location_hint: hint ? { text: pathOf(tree.nodes[n.parent]!), truncated: false } : null,
   });
 
-  const cursorOf = (offset: number) => `c_${offset}`;
+  // A cursor binds catalog_rev (semantics 5): one issued before a catalogue commit is stale_generation.
+  const cursorOf = (offset: number) => `c_${views.catalogRev()}_${offset}`;
   const offsetOf = (cursor: unknown): number => {
     if (cursor === null || cursor === undefined) return 0;
-    const m = typeof cursor === 'string' ? /^c_(\d{1,7})$/.exec(cursor) : null;
-    return m ? Number(m[1]) : fail('invalid_request', 'cursor is not valid for this request');
+    const m = typeof cursor === 'string' ? /^c_(\d{1,9})_(\d{1,7})$/.exec(cursor) : null;
+    if (!m) return fail('invalid_request', 'cursor is not valid for this request');
+    return m[1] === views.catalogRev() ? Number(m[2]) : fail('stale_generation', 'the catalogue changed since this cursor was issued');
   };
   const page = (anchor: string | null, all: SynthNode[], offset: number, limit: number, hint: boolean): EntryPage => {
     const items = all.slice(offset, offset + limit).map((n) => entryRow(n, hint));
@@ -155,7 +158,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     }
     const live = provisional(anchor);
     return {
-      anchor_node_id: anchor.id, basis, root_generations: rootsUnder(anchor).map((r) => ({ root_id: rootId(r), generation: CATALOG_REV })), complete: !truncated, live,
+      anchor_node_id: anchor.id, basis, root_generations: rootsUnder(anchor).map((r) => ({ root_id: rootId(r), generation: GENERATION })), complete: !truncated, live,
       aggregate_state: live ? 'provisional_live' : 'consistent', ordering: live ? 'approximate_live' : 'exact', truncated, nodes: out,
     };
   };
@@ -187,7 +190,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
   const listeners = new Set<(ev: EventEnvelope) => void>();
   let seq = 0;
   const emit = <E extends EventKey>(event: E, data: EventMap[E]): void => {
-    const ev: EventEnvelope = { protocol: 'loomward/3', epoch: EPOCH, seq: ++seq, event, at: now().toISOString(), catalog_rev: event === 'tree.invalidated' ? CATALOG_REV : null, state_rev: null, data: data as unknown as EventEnvelope['data'] };
+    const ev: EventEnvelope = { protocol: 'loomward/3', epoch: EPOCH, seq: ++seq, event, at: now().toISOString(), catalog_rev: event === 'tree.invalidated' ? views.catalogRev() : null, state_rev: null, data: data as unknown as EventEnvelope['data'] };
     for (const l of listeners) l(ev);
   };
   const scan = createScanMock({ now, fail: failWith, emit, isRevoked: (id) => views.revokedRoots.has(id) });
@@ -220,11 +223,11 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     root_id: rootId(n), display_path: { text: `[mock] ${n.name}`, truncated: false }, origin: 'fixture', dataset_class: DATASET,
     volume_id: n.index === tree.rootIndexes[0] ? 'vo_c' : 'vo_g',
     granted_at: GRANTED_AT, granted_via: 'fixture', grant_state: views.revokedRoots.has(rootId(n)) ? 'revoked' : 'active',
-    scan: { state: 'complete', last_job_id: null, generation: CATALOG_REV, finished_at: GRANTED_AT, coverage: n.coverage },
+    scan: { state: 'complete', last_job_id: null, generation: GENERATION, finished_at: GRANTED_AT, coverage: n.coverage },
     totals: {
       files: n.files, dirs: n.dirs, logical_bytes: n.logical.toString(), allocated_bytes: n.allocated === null ? null : n.allocated.toString(),
       allocation_unknown_files: n.unknownFiles, skipped: 0, failed: 0, complete: n.coverage === 'complete', stream_coverage: 'default_stream_only',
-      unique_objects: null, unique_allocated_bytes: null, multi_link_entries: 0, // the synthetic catalogue has no native file IDs: unknown, not zero
+      unique_objects: null, unique_allocated_bytes: null, multi_link_entries: 0, // the schema's Count has no null: this 0 is a placeholder, the synthetic catalogue has no native file IDs to count
     },
   });
 
@@ -233,6 +236,13 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     ...rootRow(tree.nodes[tree.rootIndexes[1]!]!), root_id: HOSTILE_ROOT_ID, display_path: { text: '[mock] reports‮txt.exe', truncated: false },
     grant_state: views.revokedRoots.has(HOSTILE_ROOT_ID) ? 'revoked' : 'active',
   });
+
+  /** One grant per root, as in the engine: revoking either one revokes both, and both lists show it. */
+  const rootGrants = () => [
+    ...tree.rootIndexes.map((i, k) => ({ grant_id: `gr_mock_root_${k}`, root_id: rootId(tree.nodes[i]!) })),
+    { grant_id: 'gr_mock_root_2', root_id: HOSTILE_ROOT_ID },
+    ...scan.roots().map((r, k) => ({ grant_id: `gr_mock_lab_${k}`, root_id: r.root_id })),
+  ];
 
   const handlers: Record<string, (payload: Record<string, unknown>) => unknown> = {
     'session.hello': (): SessionInfo => ({
@@ -256,9 +266,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     'roots.list': (): RootList => ({ roots: [...tree.rootIndexes.map((i) => rootRow(tree.nodes[i]!)), hostileRoot(), ...scan.roots()] }),
     'grants.list': (): GrantList => ({
       grants: [
-        ...tree.rootIndexes.map((i, k) => ({ grant_id: `gr_mock_root_${k}`, kind: 'metadata_root' as const, root_id: rootId(tree.nodes[i]!), granted_at: GRANTED_AT, granted_via: 'fixture' as const, revoked_at: views.revokedRoots.get(rootId(tree.nodes[i]!)) ?? null })),
-        { grant_id: 'gr_mock_root_2', kind: 'metadata_root' as const, root_id: HOSTILE_ROOT_ID, granted_at: GRANTED_AT, granted_via: 'fixture' as const, revoked_at: views.revokedRoots.get(HOSTILE_ROOT_ID) ?? null },
-        ...scan.roots().map((r, k) => ({ grant_id: `gr_mock_lab_${k}`, kind: 'metadata_root' as const, root_id: r.root_id, granted_at: GRANTED_AT, granted_via: 'fixture' as const, revoked_at: views.revokedRoots.get(r.root_id) ?? null })),
+        ...rootGrants().map((g) => ({ ...g, kind: 'metadata_root' as const, granted_at: GRANTED_AT, granted_via: 'fixture' as const, revoked_at: views.revokedGrants.get(g.grant_id) ?? views.revokedRoots.get(g.root_id) ?? null })),
         { grant_id: 'gr_mock_teacher_0', kind: 'teacher_disclosure' as const, recipient: 'codex_cli_gpt_6_1_sol', dataset_class: DATASET, fields: ['name', 'extension'], item_count: 25, payload_digest: 'sha256:' + '0'.repeat(64), created_at: GRANTED_AT, expires_at: '2026-10-01T10:00:00Z', revoked_at: views.revokedGrants.get('gr_mock_teacher_0') ?? null, used: false, confirmed_via: 'synthetic_policy' as const },
       ],
     }),
@@ -273,6 +281,12 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     'tree.children': (p) => children(p as unknown as TreeChildrenRequest),
     'search.query': (p) => search(p as unknown as SearchRequest),
     ...views.handlers,
+    'grants.revoke': (p) => {
+      const r = views.handlers['grants.revoke']!(p) as GrantRevokeResult;
+      const g = rootGrants().find((x) => x.grant_id === r.grant_id);
+      if (g && !views.revokedRoots.has(g.root_id)) views.revokedRoots.set(g.root_id, r.revoked_at); // roots.list shows it too
+      return r;
+    },
     ...scan.handlers,
     'telemetry.snapshot': telemetry, // after the spread: wraps the view mock's sample with gpu and disks
   };
@@ -292,7 +306,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
       // Read after the handler, so a mutation reports the revision it committed.
       const meta = {
         served_at: now().toISOString(), elapsed_ms: 0, dataset_class: DATASET, budget_hit: false,
-        catalog_rev: scope.includes('c') ? CATALOG_REV : null, state_rev: scope.includes('s') ? collections.stateRev() : null,
+        catalog_rev: scope.includes('c') ? views.catalogRev() : null, state_rev: scope.includes('s') ? collections.stateRev() : null,
       };
       return { ...base, ok: true, result, meta };
     } catch (e) {

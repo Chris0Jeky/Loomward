@@ -1,6 +1,62 @@
 use serde::Serialize;
 use std::io;
 
+/// Space on the volume containing one explicitly granted root; no volume enumeration or contents.
+#[derive(Debug, Clone, serde::Deserialize, Serialize)]
+pub struct Space {
+    pub capacity_bytes: String,
+    pub free_bytes: String,
+    pub read_only: Option<bool>,
+    pub cluster_bytes: Option<u64>,
+}
+
+#[cfg(not(windows))]
+pub fn space(_: &std::path::Path) -> io::Result<Space> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "Windows volume space is unavailable",
+    ))
+}
+
+#[cfg(windows)]
+pub fn space(root: &std::path::Path) -> io::Result<Space> {
+    crate::win::non_elevated()?;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetDiskFreeSpaceExW, GetDiskFreeSpaceW, GetVolumePathNameW,
+    };
+    let path = crate::win::wide(root)?;
+    let mut mount = vec![0u16; 32768];
+    if unsafe { GetVolumePathNameW(path.as_ptr(), mount.as_mut_ptr(), mount.len() as u32) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let (mut available, mut capacity, mut free) = (0, 0, 0);
+    if unsafe { GetDiskFreeSpaceExW(mount.as_ptr(), &mut available, &mut capacity, &mut free) } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if capacity == 0 || available > free || free > capacity {
+        return Err(io::Error::other("unusable volume space"));
+    }
+    let (mut sectors, mut bytes, mut free_clusters, mut clusters) = (0, 0, 0, 0);
+    let cluster_bytes = (unsafe {
+        GetDiskFreeSpaceW(
+            mount.as_ptr(),
+            &mut sectors,
+            &mut bytes,
+            &mut free_clusters,
+            &mut clusters,
+        )
+    } != 0)
+        .then(|| u64::from(sectors) * u64::from(bytes))
+        .filter(|n| *n > 0);
+    Ok(Space {
+        capacity_bytes: capacity.to_string(),
+        free_bytes: available.to_string(),
+        read_only: native::filesystem(&mount).ok().map(|fs| fs.read_only),
+        cluster_bytes,
+    })
+}
+
 /// Drive and bus classification for one path; never enumerates volumes or reads capacity.
 #[cfg(windows)]
 pub fn is_removable(path: &std::path::Path) -> io::Result<bool> {
@@ -220,7 +276,7 @@ mod native {
             .map(String::from_utf16_lossy)
             .collect())
     }
-    fn filesystem(name: &[u16]) -> io::Result<Filesystem> {
+    pub(super) fn filesystem(name: &[u16]) -> io::Result<Filesystem> {
         let (mut serial, mut max_component, mut flags) = (0, 0, 0);
         let mut fs = [0; 256];
         if unsafe {
