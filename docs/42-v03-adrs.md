@@ -104,6 +104,32 @@ alike. The listing is incomplete with `IdentityUnverified`, so the run stays par
 establish absence. List-time reparse, offline and recall revalidation reports `Refused`, consistently
 with opens. Native metadata and directory opens all require a non-elevated token.
 
+**Addendum: identity-unverified volumes (#219; owner decision HUMAN_TODO q-12, 2026-10-11).**
+Context: the absent-ID rule above left a FAT, FAT32 or exFAT root (or an unknown third-party
+filesystem) listing as root-partial with zero rows. Decision: only NTFS and ReFS verify file identity
+(`verifies_identity`). Any other filesystem opens only under a grant that allows identity-unverified
+listing, decided from the filesystem name the opened handle reports, never from which query failed,
+so an NTFS or ReFS identity failure stays refused exactly as above. A synthetic or lab root may list
+unverified freely; a personal root needs the owner's explicit confirmation at grant time (the desktop
+picker's one-line native confirmation, or `--allow-identity-unverified` beside `--grant-root`), and the
+grant record carries `identity_mode = 'unverified'` (state schema v5; existing grants migrate
+`verified`). Every grant now records its volume's observed filesystem. Such a root lists metadata only
+(names, sizes, dates): every listed or post-open ID is dropped, directories report `IdBasis::Unverified`
+and are never released for reopening by ID, and the scan is never watched. Find binds its pins to
+the original handle by path alone, which holds because the pins deny rename and delete while the
+original handle is re-read at the pinned path. Each relist rechecks containment by normalised path
+under the granted root; a failed recheck leaves that listing partial and refreshes none of its rows.
+Every row carries the `identity_unverified` flag and quality `unverified`, can never store a file ID,
+and has no durable reference. Limits: such rows never back a placement proposal (simulation included,
+refused `identity_unverified`), a duplicate content read (excluded as unknowns, so coverage is
+partial, and engine and reader both refuse `identity_unverified`), a label, a collection membership
+or any future effect. The grant root keeps the volume's weak, recyclable ID only to bind the grant;
+absence across runs is name-based, so a renamed or recreated folder reads as a new one. Removable
+volumes stay refused, as do volume roots from the CLI, whole profiles, credential stores and every
+elevated open. Unproven on real FAT or exFAT hardware: the mode is exercised by an injected
+filesystem name on NTFS fixtures (`evidence/v3/fat-exfat-unverified-219.md`). Reversibility: two-way;
+revoking the grant hides its rows.
+
 ## ADR-V3-06: SQLite catalogue, single writer thread, per-directory transactions, integer storage
 
 **Context.** 10M rows, live UI reads during scans, readers must never see half a directory (doc 25).

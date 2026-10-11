@@ -1139,6 +1139,7 @@ fn the_engine_service_answers_through_the_adapter() {
         state_dir: tmp.path().into(),
         dataset: DatasetClass::Synthetic,
         allow_personal: false,
+        allow_identity_unverified: false,
         grant_roots: vec![],
     })
     .unwrap();
@@ -1381,6 +1382,7 @@ fn followup_stored_grants_refuse_static_without_recording_new_grants() {
         state_dir: state.clone(),
         dataset: DatasetClass::Synthetic,
         allow_personal: false,
+        allow_identity_unverified: false,
         grant_roots: roots,
     };
     drop(Service::open(cfg(vec![old.canonicalize().unwrap()])).unwrap());
@@ -1435,6 +1437,7 @@ fn followup_proposed_static_overlap_leaves_no_active_grant() {
         state_dir: state,
         dataset: DatasetClass::Synthetic,
         allow_personal: false,
+        allow_identity_unverified: false,
         grant_roots: vec![],
     })
     .unwrap();
@@ -1471,6 +1474,7 @@ fn followup_stored_picker_grant_refuses_static() {
         state_dir: state.clone(),
         dataset: DatasetClass::Personal,
         allow_personal: true,
+        allow_identity_unverified: false,
         grant_roots: vec![],
     })
     .unwrap();
@@ -2046,6 +2050,7 @@ fn revoked_duplicates_are_redacted_from_last_event_id_replay_and_cancel_receipts
         state_dir: state,
         dataset: DatasetClass::Synthetic,
         allow_personal: false,
+        allow_identity_unverified: false,
         grant_roots: vec![root.canonicalize().unwrap()],
     })
     .unwrap();
