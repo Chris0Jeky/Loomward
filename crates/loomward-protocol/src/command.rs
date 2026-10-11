@@ -72,6 +72,8 @@ macro_rules! commands {
 commands! {
     SessionHello = "session.hello", EmptyRequest, SessionInfo, [Tauri, Http], 1, [];
     HealthGet = "health.get", EmptyRequest, Health, [Tauri, Http], 2, [];
+    AppsList = "apps.list", MetadataPageRequest, ApplicationPage, [Tauri, Http], 2, [];
+    DesktopContexts = "desktop.contexts", MetadataPageRequest, DesktopPage, [Tauri, Http], 2, [];
     RootsList = "roots.list", EmptyRequest, RootList, [Tauri, Http], 2, [];
     RootsRequestGrant = "roots.request_grant", RootGrantRequest, RootGrantResult, [Tauri], 2, [];
     RootsRevoke = "roots.revoke", RootRevokeRequest, RootRevokeResult, [Tauri, Http], 2, [];

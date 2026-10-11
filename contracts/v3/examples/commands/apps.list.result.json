@@ -1,0 +1,96 @@
+{
+  "observed_at": "2026-10-01T00:00:00Z",
+  "providers": [
+    {
+      "provider": "registry_machine64",
+      "state": "available",
+      "reason": null
+    },
+    {
+      "provider": "registry_machine32",
+      "state": "partial",
+      "reason": "synthetic unreadable evidence"
+    },
+    {
+      "provider": "registry_current_user",
+      "state": "denied",
+      "reason": "synthetic access denied"
+    },
+    {
+      "provider": "packaged",
+      "state": "unavailable",
+      "reason": "package provider unavailable"
+    },
+    {
+      "provider": "portable",
+      "state": "unavailable",
+      "reason": "portable discovery is not performed"
+    }
+  ],
+  "applications": [
+    {
+      "provider": "registry_machine64",
+      "scope": "per_machine",
+      "registry_key": "Synthetic0",
+      "name": {
+        "state": "known",
+        "value": "Synthetic Studio",
+        "expandable": false,
+        "reason": null
+      },
+      "version": {
+        "state": "known",
+        "value": "1.0",
+        "expandable": false,
+        "reason": null
+      },
+      "publisher": {
+        "state": "known",
+        "value": "Fixture publisher",
+        "expandable": false,
+        "reason": null
+      },
+      "install_location": {
+        "state": "missing",
+        "value": null,
+        "expandable": null,
+        "reason": "provider field absent"
+      },
+      "estimated_size_bytes": "1048576",
+      "size_reason": null
+    },
+    {
+      "provider": "registry_machine32",
+      "scope": "per_machine",
+      "registry_key": "Synthetic1",
+      "name": {
+        "state": "known",
+        "value": "<img src=x onerror=alert(1)>",
+        "expandable": false,
+        "reason": null
+      },
+      "version": {
+        "state": "missing",
+        "value": null,
+        "expandable": null,
+        "reason": "provider field absent"
+      },
+      "publisher": {
+        "state": "known",
+        "value": "Fixture publisher",
+        "expandable": false,
+        "reason": null
+      },
+      "install_location": {
+        "state": "missing",
+        "value": null,
+        "expandable": null,
+        "reason": "provider field absent"
+      },
+      "estimated_size_bytes": null,
+      "size_reason": "provider field absent"
+    }
+  ],
+  "next_cursor": null,
+  "budget_hit": false
+}

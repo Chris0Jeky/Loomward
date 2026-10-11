@@ -15,12 +15,15 @@
 //! No command has an effect on user files or processes (invariant 1), and no command accepts a path.
 #![forbid(unsafe_code)]
 
+mod apps;
 mod cursors;
 mod db;
+mod desktop;
 mod duplicates;
 mod handlers;
 mod idem;
 mod ids;
+mod inventory;
 pub mod lab;
 pub mod paths;
 mod placement;
@@ -85,6 +88,8 @@ pub(crate) struct Inner {
     dialog: Mutex<()>,
     picker_last: Mutex<Option<Instant>>,
     reads: Mutex<usize>,
+    metadata: Arc<dyn inventory::Provider>,
+    metadata_cursors: cursors::Cursors,
     #[cfg(test)]
     pub(crate) hooks: tests::Hooks,
 }
@@ -98,7 +103,7 @@ impl Service {
 
     /// Refuses static overlap with stored and proposed grants before recording any new grant.
     pub fn open_with_static(config: Config, static_dir: Option<&Path>) -> Result<Service, String> {
-        Self::open_stores(config, idem::TTL, true, static_dir)
+        Self::open_stores(config, idem::TTL, true, static_dir, None)
     }
 
     /// `scan_writer: false` leaves the engine without a catalogue scan writer (tests that install
@@ -108,7 +113,7 @@ impl Service {
         ttl: Duration,
         scan_writer: bool,
     ) -> Result<Service, String> {
-        Self::open_stores(config, ttl, scan_writer, None)
+        Self::open_stores(config, ttl, scan_writer, None, None)
     }
 
     fn open_stores(
@@ -116,6 +121,7 @@ impl Service {
         ttl: Duration,
         scan_writer: bool,
         static_dir: Option<&Path>,
+        metadata: Option<Arc<dyn inventory::Provider>>,
     ) -> Result<Service, String> {
         if config.dataset == DatasetClass::Personal && !config.allow_personal {
             return Err("a personal session requires --allow-personal".into());
@@ -210,6 +216,10 @@ impl Service {
             dialog: Mutex::new(()),
             picker_last: Mutex::new(None),
             reads: Mutex::new(0),
+            metadata: metadata
+                .clone()
+                .unwrap_or_else(|| inventory::provider(config.dataset)),
+            metadata_cursors: cursors::Cursors::new(16),
             #[cfg(test)]
             hooks: Default::default(),
         });
