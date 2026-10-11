@@ -609,11 +609,12 @@ fn work(
                 results.push(Err(Error::Sql(e)));
             }
         }
-        if full {
-            if let Err(e) = conn.execute_batch("PRAGMA main.synchronous=NORMAL") {
-                failed = true;
-                fail_batch(&mut results, Error::Sql(e));
-            }
+        if full
+            && conn
+                .execute_batch("PRAGMA main.synchronous=NORMAL")
+                .is_err()
+        {
+            failed = true;
         }
         #[cfg(test)]
         if let Some(PublicationCrash::Observe(observe)) = crash {
@@ -624,9 +625,9 @@ fn work(
             assert!(!failed);
             break;
         }
-        if let Err(e) = crate::db::reconcile_references(&mut conn) {
+        if crate::db::reconcile_references(&mut conn).is_err() {
+            // Publication already committed; pending bindings remain readable and retry on open.
             failed = true;
-            fail_batch(&mut results, e);
         }
         while results.len() < batch.len() {
             results.push(Err(Error::Closed));
@@ -654,7 +655,7 @@ fn work(
     }
     let _ = conn.execute_batch("PRAGMA main.wal_checkpoint(TRUNCATE)");
 }
-fn fail_batch(results: &mut Vec<Result<WriteReply>>, error: Error) {
+fn fail_batch(results: &mut [Result<WriteReply>], error: Error) {
     if results.iter().any(Result::is_err) {
         // An aborted batch loses successful rows, but keeps each caller's first failure.
         for result in results {
@@ -663,8 +664,13 @@ fn fail_batch(results: &mut Vec<Result<WriteReply>>, error: Error) {
             }
         }
     } else {
-        results.clear();
-        results.push(Err(error));
+        let reason = error.to_string();
+        for result in results.iter_mut().skip(1) {
+            *result = Err(Error::BatchAborted(reason.clone()));
+        }
+        if let Some(result) = results.first_mut() {
+            *result = Err(error);
+        }
     }
 }
 fn active_run(conn: &Connection, run: i64, dir: Option<i64>) -> Result<i64> {
@@ -1255,6 +1261,7 @@ fn publish(
     };
     let mut noid = 0i64;
     let mut members_changed = false;
+    let mut moved = Vec::new();
     let mut chunks = conn.prepare_cached(
         "SELECT entries FROM stage_entry WHERE run_id=?1 AND dir_id=?2 ORDER BY seq",
     )?;
@@ -1417,14 +1424,7 @@ fn publish(
                     if cycle {
                         return Err(Error::Invalid("directory identity cycle"));
                     }
-                    let destination = ctx.chain_length(conn, dir, &mut HashMap::new())?;
-                    // EXISTS stops at the first descendant that would exceed 512 directories.
-                    let too_deep: bool = conn.prepare_cached(
-                        "WITH RECURSIVE subtree(id,height) AS (SELECT ?1,0 UNION ALL SELECT d.id,s.height+1 FROM dir d JOIN subtree s ON d.parent_id=s.id WHERE s.height<?2) SELECT EXISTS(SELECT 1 FROM subtree WHERE height=?2)",
-                    )?.query_row(params![id, 512 - destination as i64], |r| r.get(0))?;
-                    if too_deep {
-                        return Err(Error::Invalid("tree depth limit"));
-                    }
+                    moved.push(id);
                     ctx.dirty(parent, run);
                     ctx.parents.insert(id, Some(dir));
                     ctx.dirty(id, run);
@@ -1494,6 +1494,18 @@ fn publish(
     }
     conn.execute("UPDATE dir SET listing_state=?2,seen_run=?3,listing_rev=listing_rev+?4,own_files=?5,own_logical=?6,own_allocated=?7,own_alloc_unknown=?8,own_noid=?9,own_newest_ft=?10,own_skipped=?11,own_errors=?12,listing_outcome=?13 WHERE id=?1",params![dir,if complete{"complete"}else{"incomplete"},run,i64::from(members_changed),own.files as i64,own.logical as i64,own.allocated as i64,own.allocation_unknown as i64,noid,own.newest_ft,skipped as i64,errors as i64,coverage])?;
     ctx.dirty(dir, run);
+    if !moved.is_empty() {
+        let destination = ctx.chain_length(conn, dir, &mut HashMap::new())?;
+        // Later moves in this listing can flatten an earlier move's subtree.
+        for id in moved {
+            let too_deep: bool = conn.prepare_cached(
+                "WITH RECURSIVE subtree(id,height) AS (SELECT ?1,0 UNION ALL SELECT d.id,s.height+1 FROM dir d JOIN subtree s ON d.parent_id=s.id WHERE s.height<?2) SELECT EXISTS(SELECT 1 FROM subtree WHERE height=?2)",
+            )?.query_row(params![id, 512 - destination as i64], |r| r.get(0))?;
+            if too_deep {
+                return Err(Error::Invalid("tree depth limit"));
+            }
+        }
+    }
     conn.execute(
         "DELETE FROM stage_entry WHERE run_id=?1 AND dir_id=?2",
         params![run, dir],

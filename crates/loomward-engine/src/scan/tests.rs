@@ -6,6 +6,32 @@ use loomward_protocol::{DatasetClass, RootId};
 mod followups;
 
 #[test]
+fn refused_scan_begin_does_not_finish_the_existing_run() {
+    let root = root();
+    let sink = Arc::new(MemorySink::default());
+    sink.begin_run(root.root_id(), 7, &RunScope::FullRoot)
+        .unwrap();
+    assert!(matches!(
+        run_scan(
+            &Tree,
+            &root,
+            7,
+            sink.clone(),
+            Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+            Arc::new(AtomicBool::new(false)),
+            ScanOptions::default(),
+        ),
+        Err(EngineError::Busy { .. })
+    ));
+    // The accepted run is still active, so it can reserve and finish its own listing.
+    let identity = Tree.open_root(root.path()).unwrap().1;
+    sink.prepare_listing(root.root_id(), 7, None, &[], identity)
+        .unwrap();
+    sink.finish_run(root.root_id(), 7, &RunScope::FullRoot, false)
+        .unwrap();
+}
+
+#[test]
 fn granted_root_rejects_foreign_catalogue_identities_before_opening_a_path() {
     let state = tempfile::tempdir().unwrap();
     let grant = root();
