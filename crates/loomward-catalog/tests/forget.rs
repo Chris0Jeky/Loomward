@@ -366,6 +366,7 @@ fn the_last_root_of_a_volume_takes_the_volume_row_with_it() {
 fn a_forget_that_stopped_after_its_state_half_finishes_on_the_next_open() {
     let f = fixture();
     revoke(&f, f.grant_a);
+    fold_wal(&f);
     let Fixture {
         temp,
         catalog,
@@ -392,6 +393,18 @@ fn a_forget_that_stopped_after_its_state_half_finishes_on_the_next_open() {
         )
         .unwrap();
     assert_eq!(rows, 0);
+    // The recovered purge zeroes what it frees and cuts the log, as the normal command does.
+    drop(db);
+    let utf16: Vec<u8> = FILE_A.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    for name in ["catalog.db", "catalog.db-wal"] {
+        let bytes = std::fs::read(temp.path().join(name)).unwrap_or_default();
+        for needle in [FILE_A.as_bytes(), utf16.as_slice()] {
+            assert!(
+                !bytes.windows(needle.len()).any(|w| w == needle),
+                "{FILE_A} survived the recovered purge in {name}"
+            );
+        }
+    }
 }
 
 #[test]

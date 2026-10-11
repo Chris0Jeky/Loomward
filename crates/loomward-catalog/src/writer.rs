@@ -853,7 +853,7 @@ fn serve(
 /// Page images from before a purge sit in the WALs until they are folded in and cut. Waits at most
 /// `wait` for readers, so a slow one never holds the committed receipt; the caller retries until
 /// both logs are cut. Whether every log was cut.
-fn wal_cut(conn: &Connection, wait: Duration) -> bool {
+pub(crate) fn wal_cut(conn: &Connection, wait: Duration) -> bool {
     let Ok(timeout) = conn.query_row("PRAGMA busy_timeout", [], |r| r.get::<_, u32>(0)) else {
         return false;
     };

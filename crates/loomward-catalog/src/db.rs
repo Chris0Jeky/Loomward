@@ -354,10 +354,17 @@ pub(crate) fn open_pair(dir: &Path, dataset: &str) -> Result<Connection> {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows
     };
-    for root in forgotten {
+    if !forgotten.is_empty() {
+        // As the normal command: freed pages are zeroed and the logs cut once the rows are gone.
+        tx.execute_batch("PRAGMA main.secure_delete=ON")?;
+    }
+    for &root in &forgotten {
         crate::writer::purge_root(&tx, root)?;
     }
     tx.commit()?;
+    if !forgotten.is_empty() {
+        crate::writer::wal_cut(&conn, Duration::from_millis(750));
+    }
     Ok(conn)
 }
 /// Only state.db is written; read the publication witness before recovery changes main.
