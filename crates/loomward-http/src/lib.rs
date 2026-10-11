@@ -428,7 +428,7 @@ async fn handle(s: &Shared, req: hyper::Request<Incoming>) -> Response<Body> {
 /// What a body turned out to be after the bounded drain.
 enum Drained {
     Complete(Bytes),
-    /// Longer than the drain limit; left unread.
+    /// Longer than the drain limit; the remainder is left unread.
     TooLarge,
     /// Stalled past the read timeout, or the connection failed.
     Failed,
@@ -443,10 +443,7 @@ fn content_length(headers: &HeaderMap) -> Option<u64> {
     v.to_str().ok()?.parse().ok()
 }
 
-async fn drain(body: Incoming, headers: &HeaderMap, timeout: Duration) -> Drained {
-    if content_length(headers).is_some_and(|n| n > DRAIN_LIMIT as u64) {
-        return Drained::TooLarge;
-    }
+async fn drain(body: Body, _headers: &HeaderMap, timeout: Duration) -> Drained {
     match tokio::time::timeout(timeout, Limited::new(body, DRAIN_LIMIT).collect()).await {
         Ok(Ok(collected)) => Drained::Complete(collected.to_bytes()),
         Ok(Err(e)) if e.is::<http_body_util::LengthLimitError>() => Drained::TooLarge,
@@ -461,7 +458,7 @@ async fn early_reply(
     res: Response<Body>,
 ) -> Response<Body> {
     // LW-001: a bounded drain preserves early replies on Windows; it cannot override the gate.
-    let _ = drain(body, headers, s.read_timeout).await;
+    let _ = drain(Body::new(body), headers, s.read_timeout).await;
     res
 }
 
@@ -738,6 +735,19 @@ pub fn sse_frame(e: &EventEnvelope) -> Bytes {
 }
 
 async fn events(s: &Shared, headers: &HeaderMap) -> Response<Body> {
+    events_with_spawn(s, headers, |run| {
+        std::thread::Builder::new()
+            .name("loomward-sse".into())
+            .spawn(run)
+    })
+    .await
+}
+
+async fn events_with_spawn(
+    s: &Shared,
+    headers: &HeaderMap,
+    spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> io::Result<JoinHandle<()>>,
+) -> Response<Body> {
     let Ok(permit) = s.streams.clone().try_acquire_owned() else {
         return refuse(StatusCode::TOO_MANY_REQUESTS, "at most four event streams");
     };
@@ -766,17 +776,16 @@ async fn events(s: &Shared, headers: &HeaderMap) -> Response<Body> {
             );
         }
     };
+    let stream = ClosingStream(stream);
     let (tx, rx) = mpsc::channel::<Bytes>(32);
     let _ = tx.try_send(sse_frame(&first));
     let stop = s.stop.clone();
     let runtime = tokio::runtime::Handle::current();
     let send_timeout = s.sse_send_timeout;
-    let spawned = std::thread::Builder::new()
-        .name("loomward-sse".into())
-        .spawn(move || {
-            let _permit = permit;
-            pump(stream, &tx, &stop, &runtime, send_timeout);
-        });
+    let spawned = spawn(Box::new(move || {
+        let _permit = permit;
+        pump(stream, &tx, &stop, &runtime, send_timeout);
+    }));
     if spawned.is_err() {
         return refuse(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -796,15 +805,22 @@ async fn events(s: &Shared, headers: &HeaderMap) -> Response<Body> {
 
 /// Moves events from the service's stream into the response until the client goes, the
 /// service closes the stream or the adapter stops. Always releases the subscriber slot.
+struct ClosingStream(Box<dyn EventStream>);
+impl Drop for ClosingStream {
+    fn drop(&mut self) {
+        self.0.close();
+    }
+}
+
 fn pump(
-    mut stream: Box<dyn EventStream>,
+    mut stream: ClosingStream,
     tx: &mpsc::Sender<Bytes>,
     stop: &AtomicBool,
     runtime: &tokio::runtime::Handle,
     timeout: Duration,
 ) {
     while !stop.load(Ordering::SeqCst) && !tx.is_closed() {
-        match stream.recv_timeout(PUMP_POLL) {
+        match stream.0.recv_timeout(PUMP_POLL) {
             RecvOutcome::Event(e) => {
                 if runtime
                     .block_on(tx.send_timeout(sse_frame(&e), timeout))
@@ -817,7 +833,6 @@ fn pump(
             RecvOutcome::Closed(_) => break,
         }
     }
-    stream.close();
 }
 
 /// Maps a URL path to a file under the static root, or `None`. Only plain segments of
@@ -913,6 +928,91 @@ mod tests {
     use super::*;
 
     #[test]
+    fn early_large_body_drains_to_the_byte_bound() {
+        let read = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = read.clone();
+        let body = Body::from_stream(stream::repeat_with(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, Infallible>(Bytes::from(vec![0; DRAIN_LIMIT / 4]))
+        }));
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONTENT_LENGTH,
+            (DRAIN_LIMIT * 2).to_string().parse().unwrap(),
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        assert!(matches!(
+            runtime.block_on(drain(body, &headers, Duration::from_secs(1))),
+            Drained::TooLarge
+        ));
+        assert_eq!(read.load(Ordering::SeqCst), 5);
+    }
+
+    #[test]
+    fn sse_spawn_failure_explicitly_closes_the_subscription() {
+        struct Service(Arc<std::sync::atomic::AtomicUsize>);
+        struct Source {
+            fixture: Box<dyn EventStream>,
+            closed: Arc<std::sync::atomic::AtomicUsize>,
+        }
+        impl EventStream for Source {
+            fn epoch(&self) -> &str {
+                self.fixture.epoch()
+            }
+            fn recv_timeout(&mut self, timeout: Duration) -> RecvOutcome {
+                self.fixture.recv_timeout(timeout)
+            }
+            fn close(&mut self) {
+                self.closed.fetch_add(1, Ordering::SeqCst);
+                self.fixture.close();
+            }
+        }
+        impl ViewService for Service {
+            fn call(&self, _: RequestEnvelope, _: &CallContext) -> ResponseEnvelope {
+                unreachable!()
+            }
+            fn subscribe(&self, resume: Option<(String, u64)>) -> Box<dyn EventStream> {
+                Box::new(Source {
+                    fixture: fixture::FixtureService::new(
+                        loomward_protocol::DatasetClass::Synthetic,
+                    )
+                    .unwrap()
+                    .subscribe(resume),
+                    closed: self.0.clone(),
+                })
+            }
+        }
+        let closed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let shared = Shared {
+            service: Arc::new(Service(closed.clone())),
+            host: String::new(),
+            self_origin: String::new(),
+            allow_origins: vec![],
+            token: String::new(),
+            static_dir: None,
+            read_timeout: Duration::from_secs(1),
+            write_timeout: Duration::from_secs(1),
+            connection_lifetime: Duration::from_secs(1),
+            sse_send_timeout: Duration::from_secs(1),
+            streams: Arc::new(Semaphore::new(MAX_STREAMS)),
+            stop: Arc::new(AtomicBool::new(false)),
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let response = runtime.block_on(events_with_spawn(&shared, &HeaderMap::new(), |_| {
+            Err(io::Error::other("synthetic spawn failure"))
+        }));
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(closed.load(Ordering::SeqCst), 1);
+        assert_eq!(shared.streams.available_permits(), MAX_STREAMS);
+    }
+
+    #[test]
     fn stalled_sse_channel_closes_stream_and_releases_permit() {
         use loomward_protocol::DatasetClass;
         let service = Arc::new(
@@ -932,7 +1032,7 @@ mod tests {
         let worker = std::thread::spawn(move || {
             let _permit = permit;
             pump(
-                source,
+                ClosingStream(source),
                 &tx,
                 &AtomicBool::new(false),
                 &handle,

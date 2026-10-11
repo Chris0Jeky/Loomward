@@ -16,7 +16,7 @@
  *   tm.on('select' | 'hover' | 'drill' | 'back' | 'edge', handler) -> unsubscribe
  *   tm.reveal()  tm.renderFrame()  tm.benchmark(frames)  tm.timeLayout()
  */
-import { buildTree, layoutTreemap } from './layout.js';
+import { buildTree, layoutTreemap, toNumber } from './layout.js';
 import { selvedgeOf, warpOf, weftOf, weaveKey } from './colour.js';
 import { weaveTile, fringeTile, looseTile, hatchTile, strokeStitch } from './weave.js';
 
@@ -64,7 +64,7 @@ export function zeroCounts(v) {
   let denied = 0, unmeasured = 0, empty = 0;
   for (const z of v.zero) {
     if (z.coverage === 'denied' || z.threads.permission.state === 'denied') denied++;
-    else if (z.coverage !== 'complete') unmeasured++;
+    else if (z.coverage !== 'complete' || toNumber(z.size_bytes) === null) unmeasured++;
     else empty++;
   }
   return { denied, unmeasured, empty };
@@ -523,8 +523,11 @@ export function createWovenTreemap(canvas, options) {
       const start = performance.now();
       const prev = view;
       const previousAnimation = anim;
+      let tree;
+      try { tree = buildTree(s, options.label); }
+      catch (e) { this.clear(); throw e; }
       slice = s;
-      const { root, byId: ids } = buildTree(s, options.label);
+      const { root, byId: ids } = tree;
       treeById = ids;
       const next = build(root);
       pendingMark = { start, layout: performance.now() - start, nodes: s.nodes.length };

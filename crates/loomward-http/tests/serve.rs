@@ -1457,8 +1457,11 @@ fn followup_stored_picker_grant_refuses_static() {
         fn pick_folder(&self) -> Option<PathBuf> {
             Some(self.0.clone())
         }
-        fn confirm_disclosure(&self, _: &loomward_protocol::dto::DisclosureSummary) -> bool {
-            false
+        fn confirm_disclosure(
+            &self,
+            _: &loomward_protocol::dto::DisclosureSummary,
+        ) -> Result<bool, loomward_protocol::ErrorBody> {
+            Ok(false)
         }
     }
     let tmp = tempfile::tempdir_in(".").unwrap();
@@ -1799,8 +1802,80 @@ fn duplicated_last_event_id_resyncs_as_epoch_changed() {
 }
 
 #[test]
-fn declared_length_above_drain_limit_is_refused_without_reading_body() {
-    let (h, _) = start();
+fn early_large_body_keeps_reading_before_preserving_the_auth_reply() {
+    let (h, _) = start_with(
+        fixture(),
+        Options {
+            read_timeout: Duration::from_secs(2),
+            ..Default::default()
+        },
+    );
+    let head =
+        call_head(&h, loomward_http::DRAIN_LIMIT * 2, "").replace(h.token(), &"0".repeat(64));
+    let mut tcp = connect(h.addr());
+    tcp.write_all(format!("{head}\r\nConnection: close\r\n\r\n").as_bytes())
+        .unwrap();
+    tcp.write_all(&[b'x'; 4096]).unwrap();
+    tcp.set_read_timeout(Some(Duration::from_millis(100)))
+        .unwrap();
+    let error = tcp
+        .read(&mut [0; 1])
+        .expect_err("large body was rejected before the bounded drain");
+    assert!(matches!(
+        error.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+    ));
+    tcp.write_all(&vec![b'x'; loomward_http::DRAIN_LIMIT - 4096])
+        .unwrap();
+    tcp.shutdown(std::net::Shutdown::Write).unwrap();
+    tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut raw = Vec::new();
+    tcp.read_to_end(&mut raw).unwrap();
+    let response = Response::parse(&raw);
+    assert_eq!(response.status, 403);
+    assert_eq!(
+        response.json()["error"],
+        "a valid local session token is required"
+    );
+}
+
+#[test]
+fn fixture_publish_invalid_batch_leaves_sequence_and_buffer_unchanged() {
+    use loomward_protocol::{RecvOutcome, ViewService};
+    let service = fixture();
+    let mut stream = service.subscribe(None);
+    let RecvOutcome::Event(hello) = stream.recv_timeout(Duration::ZERO) else {
+        panic!("hello")
+    };
+    assert_eq!(hello.seq.get(), 0);
+    assert!(service
+        .publish([
+            health_warning(1),
+            (EventName::HealthWarning, Payload::new())
+        ])
+        .is_err());
+    assert!(matches!(
+        stream.recv_timeout(Duration::ZERO),
+        RecvOutcome::Timeout
+    ));
+    service.publish([health_warning(2)]).unwrap();
+    let RecvOutcome::Event(event) = stream.recv_timeout(Duration::ZERO) else {
+        panic!("event")
+    };
+    assert_eq!(event.seq.get(), 1);
+    assert_eq!(event.data["message"], "warning 2");
+    stream.close();
+}
+
+#[test]
+fn declared_length_above_drain_limit_is_refused_after_a_bounded_drain_timeout() {
+    let (h, _) = start_with(
+        fixture(),
+        Options {
+            read_timeout: Duration::from_millis(100),
+            ..Default::default()
+        },
+    );
     let over = loomward_http::DRAIN_LIMIT as u64 + 1;
     let huge = loomward_http::DRAIN_LIMIT as u64 * 2;
     for declared in [over, huge] {
@@ -1808,12 +1883,16 @@ fn declared_length_above_drain_limit_is_refused_without_reading_body() {
         let mut tcp = connect(h.addr());
         tcp.write_all(format!("{head}\r\nConnection: close\r\n\r\n").as_bytes())
             .unwrap();
-        // No body bytes follow; a correct server refuses from the headers alone.
+        // No body bytes follow; the bounded drain times out without changing the refusal.
         let t = Instant::now();
         let mut raw = Vec::new();
         tcp.read_to_end(&mut raw).unwrap();
         let r = Response::parse(&raw);
         assert_eq!(r.status, 413, "declared {declared}");
+        assert!(
+            t.elapsed() >= Duration::from_millis(50),
+            "drain was skipped"
+        );
         assert_eq!(
             r.json()["error"],
             "the request body exceeds 64 KiB or has no valid Content-Length",
@@ -1827,7 +1906,7 @@ fn declared_length_above_drain_limit_is_refused_without_reading_body() {
     }
     // Boundary: valid framing still succeeds.
     assert_eq!(call(&h, HELLO).status, 200);
-    // Error path: a huge declaration with a bad token is refused without the body.
+    // A huge declaration with a bad token preserves the auth refusal after the drain timeout.
     let bad = call_head(&h, huge as usize, "").replace(h.token(), &"0".repeat(64));
     let mut tcp = connect(h.addr());
     tcp.write_all(format!("{bad}\r\nConnection: close\r\n\r\n").as_bytes())

@@ -368,7 +368,7 @@ allows it (Q3). P2 is measured at 2M and extrapolated, clearly labelled, until t
 **Alternatives.** Run 10M anyway: rejected, a lasting side effect on the owner's disk without consent.
 **Reversibility.** Two-way.
 
-**Owner decision (2026-10-10).** The 10M-entry lab tier is allowed on the HDD lab root `E:\loomward-lab\scale` (850 GB free); `G:` stays capped at 2M entries.
+**Owner decision (2026-10-10).** The 10M-entry lab tier is allowed on the slow local volume lab root `E:\loomward-lab\scale`; `G:` stays capped at 2M entries.
 
 ## ADR-V3-18: Refresh reconciles identity first and finalises absence only after a completed run (new)
 

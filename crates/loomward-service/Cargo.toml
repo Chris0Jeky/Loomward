@@ -23,4 +23,5 @@ getrandom = "0.4"
 
 [dev-dependencies]
 loomward-windows = { path = "../loomward-windows", features = ["fixtures"] }
+loomward-catalog = { path = "../loomward-catalog", features = ["test-hooks"] }
 tempfile.workspace = true

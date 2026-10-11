@@ -64,6 +64,8 @@ pub struct Writer {
     stopped: Receiver<()>,
     join: Option<JoinHandle<()>>,
     timings: Arc<Mutex<WriterTimings>>,
+    #[cfg(any(test, feature = "test-hooks"))]
+    window: Arc<PublicationWindow>,
 }
 pub struct Receipt {
     rx: Receiver<Result<WriteReply>>,
@@ -84,17 +86,23 @@ impl Writer {
         };
         let timings = Arc::new(Mutex::new(WriterTimings::default()));
         let measured = timings.clone();
+        #[cfg(any(test, feature = "test-hooks"))]
+        let window = Arc::new(PublicationWindow::default());
+        #[cfg(any(test, feature = "test-hooks"))]
+        let paused = window.clone();
         let join = std::thread::Builder::new()
             .name("loomward-catalog".into())
             .spawn(move || {
                 let _scratch = scratch;
-                work(
+                serve(
                     conn,
                     rx,
                     measured,
                     alive,
                     #[cfg(test)]
                     None,
+                    #[cfg(any(test, feature = "test-hooks"))]
+                    Some(paused),
                 );
             })?;
         Ok(Self {
@@ -103,7 +111,14 @@ impl Writer {
             stopped,
             join: Some(join),
             timings,
+            #[cfg(any(test, feature = "test-hooks"))]
+            window,
         })
+    }
+    /// Test seam (#356): the gate inside the pending-publication window.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn publication_window(&self) -> &PublicationWindow {
+        &self.window
     }
     pub fn reserve_bytes(&self, bytes: usize, cancel: &Cancellation) -> Result<BytePermit> {
         if bytes > QUEUE_BYTES - WRITER_BYTES {
@@ -395,6 +410,86 @@ enum PublicationCrash {
     AfterCatalog,
     Observe(fn(&Connection, bool)),
 }
+/// Test seam (#356): holds the writer after a publication's precious staging has committed and
+/// before its catalogue transaction begins, so a test can act inside that window. Only commands
+/// that stage reference intents pause; the gate is one-shot.
+#[cfg(any(test, feature = "test-hooks"))]
+#[derive(Default)]
+pub struct PublicationWindow {
+    /// (armed, paused)
+    state: Mutex<(bool, bool)>,
+    changed: Condvar,
+}
+#[cfg(any(test, feature = "test-hooks"))]
+impl PublicationWindow {
+    /// The next reference-staging publication pauses inside the window.
+    pub fn arm(&self) {
+        *self.state.lock().expect("window lock") = (true, false);
+    }
+    /// Blocks until the writer is paused inside the window (panics after a minute).
+    pub fn wait_paused(&self) {
+        let give_up = Instant::now() + Duration::from_secs(60);
+        let mut state = self.state.lock().expect("window lock");
+        while !state.1 {
+            assert!(Instant::now() < give_up, "writer never reached the window");
+            state = self
+                .changed
+                .wait_timeout(state, Duration::from_millis(50))
+                .expect("window lock")
+                .0;
+        }
+    }
+    /// Lets the paused writer continue towards the catalogue transaction.
+    pub fn release(&self) {
+        *self.state.lock().expect("window lock") = (false, false);
+        self.changed.notify_all();
+    }
+    fn pause(&self) {
+        let mut state = self.state.lock().expect("window lock");
+        if !state.0 {
+            return;
+        }
+        state.1 = true;
+        self.changed.notify_all();
+        // Bounded, so a test that fails while the writer is paused ends instead of hanging the
+        // binary when the writer's drop joins this thread.
+        let give_up = Instant::now() + Duration::from_secs(60);
+        while state.0 && Instant::now() < give_up {
+            state = self
+                .changed
+                .wait_timeout(state, Duration::from_millis(50))
+                .expect("window lock")
+                .0;
+        }
+    }
+}
+/// Commands whose precious preparation stages reference intents from a snapshot of `object_ref`.
+fn stages_references(command: &WriteCommand) -> bool {
+    matches!(
+        command,
+        WriteCommand::DirListing(_)
+            | WriteCommand::ListingDone { .. }
+            | WriteCommand::EndRun { .. }
+    )
+}
+/// AUTOINCREMENT's high-water mark: every new reference raises it, even after a deletion.
+fn reference_mark(conn: &Connection) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT coalesce((SELECT seq FROM st.sqlite_sequence WHERE name='object_ref'),0)",
+        [],
+        |r| r.get(0),
+    )
+}
+/// Reference intents are staged from a snapshot of `object_ref` and commit before the catalogue
+/// transaction begins, so another connection can bind a new reference in between (#356):
+/// `collections.update_members` does, inside BEGIN IMMEDIATE over both files. Once this
+/// transaction holds main's write lock no such binding can start or still be uncommitted, so an
+/// unchanged mark proves the staging saw every reference this publication can move. Any future
+/// reference writer outside this thread must also take main's write lock.
+fn reference_fence(tx: &Connection, mark: i64) -> rusqlite::Result<bool> {
+    tx.execute("UPDATE revision SET catalog_rev=catalog_rev WHERE id=1", [])?;
+    Ok(reference_mark(tx)? == mark)
+}
 fn listing_command(command: &WriteCommand) -> bool {
     matches!(
         command,
@@ -420,12 +515,23 @@ fn transaction_bytes(p: &Pending, first_run: Option<i64>) -> usize {
         p._permit.bytes
     }
 }
+#[cfg(test)]
 fn work(
+    conn: Connection,
+    rx: Receiver<Pending>,
+    timings: Arc<Mutex<WriterTimings>>,
+    alive: Sender<()>,
+    crash: Option<PublicationCrash>,
+) {
+    serve(conn, rx, timings, alive, crash, None)
+}
+fn serve(
     mut conn: Connection,
     rx: Receiver<Pending>,
     timings: Arc<Mutex<WriterTimings>>,
     alive: Sender<()>,
     #[cfg(test)] crash: Option<PublicationCrash>,
+    #[cfg(any(test, feature = "test-hooks"))] window: Option<Arc<PublicationWindow>>,
 ) {
     let mut alive = Some(alive);
     let mut pending = None;
@@ -443,56 +549,93 @@ fn work(
         };
         let checkpoint = matches!(first.command, WriteCommand::EndRun { .. });
         let mut batch = vec![first];
-        let batchable = listing_command(&batch[0].command)
-            && !conn
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM st.object_ref WHERE state='resolved')",
-                    [],
-                    |r| r.get::<_, bool>(0),
-                )
-                .unwrap_or(true);
         let first_run = staged_run(&batch[0].command).filter(|run| {
             conn.query_row("SELECT s.mode='full' AND NOT EXISTS(SELECT 1 FROM scan_run prior WHERE prior.root_id=s.root_id AND prior.id<s.id) FROM scan_run s WHERE s.id=?1", [run], |r| r.get::<_, bool>(0)).unwrap_or(false)
         });
         let mut results = Vec::with_capacity(batch.len());
         let mut failed = false;
-        // Precious writes commit before the catalogue transaction, which writes main only.
-        let prepare_start = Instant::now();
-        let mut prepared = Some(prepare_state(
-            &mut conn,
-            &batch[0].command,
-            &context.fenced_listings,
-        ));
-        context
-            .timings
-            .lock()
-            .expect("timing lock")
-            .state_prepare_seconds += prepare_start.elapsed().as_secs_f64();
-        #[cfg(test)]
-        if matches!(crash, Some(PublicationCrash::BeforeCatalog)) {
-            break;
-        }
-        let durability = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM st.pending_reference)",
-            [],
-            |r| r.get::<_, bool>(0),
-        );
-        let full = matches!(durability, Ok(true));
-        // The publication must survive power loss before FULL state confirmation can retire it.
-        match durability.and_then(|full| {
-            if full {
-                conn.execute_batch("PRAGMA main.synchronous=FULL")?;
+        let stages = stages_references(&batch[0].command);
+        let mut batchable = false;
+        let mut prepared = None;
+        let mut full = false;
+        // The transaction borrows the connection only until the batch is applied.
+        {
+            // Precious writes commit before the catalogue transaction, which writes main only.
+            let opened = loop {
+                // A reference bound after this mark is invisible to the staging below (#356).
+                let mark = match stages.then(|| reference_mark(&conn)).transpose() {
+                    Ok(mark) => mark,
+                    Err(e) => break Err((e, false)),
+                };
+                batchable = listing_command(&batch[0].command)
+                    && !conn
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM st.object_ref WHERE state='resolved')",
+                            [],
+                            |r| r.get::<_, bool>(0),
+                        )
+                        .unwrap_or(true);
+                let prepare_start = Instant::now();
+                prepared = Some(prepare_state(
+                    &mut conn,
+                    &batch[0].command,
+                    &context.fenced_listings,
+                ));
+                context
+                    .timings
+                    .lock()
+                    .expect("timing lock")
+                    .state_prepare_seconds += prepare_start.elapsed().as_secs_f64();
+                #[cfg(any(test, feature = "test-hooks"))]
+                if let Some(window) = window.as_ref().filter(|_| stages) {
+                    window.pause();
+                }
+                let durability = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM st.pending_reference)",
+                    [],
+                    |r| r.get::<_, bool>(0),
+                );
+                // Sticky across a re-stage, so NORMAL is always restored after the batch.
+                full |= matches!(durability, Ok(true));
+                // The publication must survive power loss before FULL state confirmation can retire it.
+                let tx = match durability.and_then(|pending| {
+                    if pending {
+                        conn.execute_batch("PRAGMA main.synchronous=FULL")?;
+                    }
+                    conn.transaction()
+                }) {
+                    Ok(tx) => tx,
+                    Err(e) => break Err((e, true)),
+                };
+                let Some(mark) = mark else {
+                    break Ok(tx);
+                };
+                match reference_fence(&tx, mark) {
+                    Ok(true) => break Ok(tx),
+                    Ok(false) => {}
+                    // The command fails unpublished; reconciliation discards its intents.
+                    Err(e) => break Err((e, false)),
+                }
+                drop(tx);
+                // Nothing is published: drop this attempt's intents and stage again over every reference.
+                let unpublished = "DELETE FROM st.pending_reference WHERE publication_token IS NOT (SELECT value FROM meta WHERE key='reference_publication')";
+                if let Err(e) = conn.execute(unpublished, []) {
+                    break Err((e, false));
+                }
+            };
+            #[cfg(test)]
+            if matches!(crash, Some(PublicationCrash::BeforeCatalog)) {
+                break;
             }
-            conn.transaction()
-        }) {
-            Ok(mut tx) => {
-                let transaction_start = Instant::now();
-                let mut bytes = 0;
-                loop {
-                    let p = batch.last_mut().expect("transaction command");
-                    let command_bytes = transaction_bytes(p, first_run);
-                    let ready = prepared.take().unwrap_or(Ok(None));
-                    results.push(ready.and_then(|prepared| {
+            match opened {
+                Ok(mut tx) => {
+                    let transaction_start = Instant::now();
+                    let mut bytes = 0;
+                    loop {
+                        let p = batch.last_mut().expect("transaction command");
+                        let command_bytes = transaction_bytes(p, first_run);
+                        let ready = prepared.take().unwrap_or(Ok(None));
+                        results.push(ready.and_then(|prepared| {
                         let save = tx.savepoint()?;
                         save.execute(
                             "UPDATE revision SET catalog_rev=catalog_rev+1 WHERE id=1",
@@ -530,83 +673,84 @@ fn work(
                             }
                         }
                     }));
-                    if results.last().is_some_and(Result::is_err) {
-                        if let WriteCommand::StageChunk { run_id, dir_id, .. } = &p.command {
-                            // Savepoint rollback must not make the accepted prefix publishable as complete.
-                            context.fenced_listings.insert((*run_id, *dir_id));
+                        if results.last().is_some_and(Result::is_err) {
+                            if let WriteCommand::StageChunk { run_id, dir_id, .. } = &p.command {
+                                // Savepoint rollback must not make the accepted prefix publishable as complete.
+                                context.fenced_listings.insert((*run_id, *dir_id));
+                            }
                         }
-                    }
-                    bytes += command_bytes;
-                    // Free the applied payload so producers can refill the bounded queue before COMMIT.
-                    p.command = WriteCommand::Barrier;
-                    release(&p._permit.quota, p._permit.bytes);
-                    p._permit.bytes = 0;
-                    // An auto-rollback must not let the next savepoint commit a new transaction.
-                    if tx.is_autocommit()
-                        || !batchable
-                        || bytes >= TRANSACTION_BYTES
-                        || transaction_start.elapsed() >= TRANSACTION_TIME
-                    {
-                        break;
-                    }
-                    let wait_start = Instant::now();
-                    // A synchronous caller cannot enqueue again until this transaction commits.
-                    let next = rx.try_recv();
-                    {
-                        let mut timing = context.timings.lock().expect("timing lock");
-                        timing.batch_wait_calls += 1;
-                        timing.batch_wait_seconds += wait_start.elapsed().as_secs_f64();
-                    }
-                    match next {
-                        Ok(next)
-                            if listing_command(&next.command)
-                                && bytes + transaction_bytes(&next, first_run)
-                                    <= TRANSACTION_BYTES =>
+                        bytes += command_bytes;
+                        // Free the applied payload so producers can refill the bounded queue before COMMIT.
+                        p.command = WriteCommand::Barrier;
+                        release(&p._permit.quota, p._permit.bytes);
+                        p._permit.bytes = 0;
+                        // An auto-rollback must not let the next savepoint commit a new transaction.
+                        if tx.is_autocommit()
+                            || !batchable
+                            || bytes >= TRANSACTION_BYTES
+                            || transaction_start.elapsed() >= TRANSACTION_TIME
                         {
-                            batch.push(next)
-                        }
-                        Ok(next) => {
-                            pending = Some(next);
                             break;
                         }
-                        Err(_) => break,
+                        let wait_start = Instant::now();
+                        // A synchronous caller cannot enqueue again until this transaction commits.
+                        let next = rx.try_recv();
+                        {
+                            let mut timing = context.timings.lock().expect("timing lock");
+                            timing.batch_wait_calls += 1;
+                            timing.batch_wait_seconds += wait_start.elapsed().as_secs_f64();
+                        }
+                        match next {
+                            Ok(next)
+                                if listing_command(&next.command)
+                                    && bytes + transaction_bytes(&next, first_run)
+                                        <= TRANSACTION_BYTES =>
+                            {
+                                batch.push(next)
+                            }
+                            Ok(next) => {
+                                pending = Some(next);
+                                break;
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    let commit_start = Instant::now();
+                    #[cfg(test)]
+                    if let Some(PublicationCrash::Observe(observe)) = crash {
+                        observe(&tx, false);
+                    }
+                    // After an auto-rollback the connection is in autocommit mode: flushing dirty marks
+                    // would commit them one by one for a batch that never happened. COMMIT then fails.
+                    let committed = if tx.is_autocommit() {
+                        tx.commit().map_err(Error::Sql)
+                    } else {
+                        context
+                            .flush_dirty(&tx)
+                            .and_then(|()| tx.commit().map_err(Error::Sql))
+                    };
+                    context.timings.lock().expect("timing lock").commit_seconds +=
+                        commit_start.elapsed().as_secs_f64();
+                    {
+                        let mut timing = context.timings.lock().expect("timing lock");
+                        timing.transactions += 1;
+                        timing.commands += batch.len() as u64;
+                        timing.max_transaction_bytes = timing.max_transaction_bytes.max(bytes);
+                        timing.max_transaction_commands =
+                            timing.max_transaction_commands.max(batch.len());
+                    }
+                    if let Err(e) = committed {
+                        failed = true;
+                        fail_batch(&mut results, e);
+                        context.parents.clear();
+                        context.dirty.clear();
+                        context.extensions.clear();
                     }
                 }
-                let commit_start = Instant::now();
-                #[cfg(test)]
-                if let Some(PublicationCrash::Observe(observe)) = crash {
-                    observe(&tx, false);
+                Err((e, fatal)) => {
+                    failed = fatal;
+                    results.push(Err(Error::Sql(e)));
                 }
-                // After an auto-rollback the connection is in autocommit mode: flushing dirty marks
-                // would commit them one by one for a batch that never happened. COMMIT then fails.
-                let committed = if tx.is_autocommit() {
-                    tx.commit().map_err(Error::Sql)
-                } else {
-                    context
-                        .flush_dirty(&tx)
-                        .and_then(|()| tx.commit().map_err(Error::Sql))
-                };
-                context.timings.lock().expect("timing lock").commit_seconds +=
-                    commit_start.elapsed().as_secs_f64();
-                {
-                    let mut timing = context.timings.lock().expect("timing lock");
-                    timing.transactions += 1;
-                    timing.commands += batch.len() as u64;
-                    timing.max_transaction_bytes = timing.max_transaction_bytes.max(bytes);
-                    timing.max_transaction_commands =
-                        timing.max_transaction_commands.max(batch.len());
-                }
-                if let Err(e) = committed {
-                    failed = true;
-                    fail_batch(&mut results, e);
-                    context.parents.clear();
-                    context.dirty.clear();
-                    context.extensions.clear();
-                }
-            }
-            Err(e) => {
-                failed = true;
-                results.push(Err(Error::Sql(e)));
             }
         }
         if full

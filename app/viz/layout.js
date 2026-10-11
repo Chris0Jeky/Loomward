@@ -24,7 +24,24 @@
  */
 
 /** @param {string | null | undefined} s */
-export const toNumber = (s) => (typeof s === 'string' && /^\d{1,20}$/.test(s) ? Number(s) : 0);
+export const toNumber = (s) => (typeof s === 'string' && /^(0|[1-9][0-9]{0,19})$/.test(s) ? Number(s) : null);
+
+/** Validate before adopting a slice or allocating its render tree. @param {SliceLike} slice @param {number} [maxNodes] */
+export function validateSlice(slice, maxNodes = Infinity) {
+  if (!Array.isArray(slice?.nodes) || !slice.nodes.length) throw new Error('empty or malformed slice');
+  if (slice.nodes.length > maxNodes) throw new Error(`slice exceeds requested limit of ${maxNodes} nodes`);
+  const ids = new Set();
+  for (let i = 0; i < slice.nodes.length; i++) {
+    const n = slice.nodes[i];
+    if (!n || typeof n.node_id !== 'string' || !n.node_id || ids.has(n.node_id) || typeof n.name !== 'string'
+      || !n.threads?.meaning || !n.threads?.residency || !n.threads?.permission) throw new Error(`malformed slice node ${i}`);
+    if (i === 0 ? n.parent !== null || n.node_id !== slice.anchor_node_id
+      : !Number.isInteger(n.parent) || n.parent === null || n.parent < 0 || n.parent >= i) {
+      throw new Error(`slice node ${i} must name a preceding parent (only the anchor is a root)`);
+    }
+    ids.add(n.node_id);
+  }
+}
 
 /** A remainder smaller than this share of its parent is not worth a cell (rounding noise). */
 export const REMAINDER_MIN_SHARE = 0.002;
@@ -39,13 +56,14 @@ export const REMAINDER_MIN_SHARE = 0.002;
  * @returns {{ root: VNode, byId: Map<string, VNode> }}
  */
 export function buildTree(slice, label = (n) => n) {
+  validateSlice(slice);
   /** @type {VNode[]} */
   const at = [];
   /** @type {Map<string, VNode>} */
   const byId = new Map();
   slice.nodes.forEach((n, i) => {
     /** @type {VNode} */
-    const v = { id: n.node_id, name: n.name, label: label(n.name), size: toNumber(n.size_bytes), src: n, parent: null, children: [], zero: [], synthetic: null, folded: n.kind === 'other' ? n.folded_count : 0 };
+    const v = { id: n.node_id, name: n.name, label: label(n.name), size: toNumber(n.size_bytes) ?? 0, src: n, parent: null, children: [], zero: [], synthetic: null, folded: n.kind === 'other' ? n.folded_count : 0 };
     at[i] = v;
     byId.set(v.id, v);
     if (n.parent === null) return;

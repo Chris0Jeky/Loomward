@@ -3,7 +3,7 @@
 //! grants no dialog permission, no dialog plugin is registered, and the only way in is a service
 //! call that passes the [`CallContext`]. The chosen path never crosses IPC.
 
-use loomward_protocol::{DatasetClass, DisclosureSummary, NativeDialogs};
+use loomward_protocol::{DatasetClass, DisclosureSummary, ErrorBody, ErrorCode, NativeDialogs};
 use serde::Serialize;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
@@ -105,22 +105,35 @@ impl NativeDialogs for DesktopDialogs {
     }
 
     /// Refuses a summary of another dataset class without asking.
-    fn confirm_disclosure(&self, summary: &DisclosureSummary) -> bool {
+    fn confirm_disclosure(&self, summary: &DisclosureSummary) -> Result<bool, ErrorBody> {
         if summary.dataset_class != self.dataset || self.dataset == DatasetClass::Personal {
-            return false;
+            return Ok(false);
         }
         let Ok(_active) = self.active.try_lock() else {
-            return false;
+            return Ok(false);
         };
-        let text = disclosure_text(summary);
-        summary.items.len() <= MAX_DISCLOSURE_ITEMS
-            && text.chars().count() <= MAX_DISCLOSURE_CHARS
-            && text
-                .lines()
-                .map(|line| line.chars().count().div_ceil(80).max(1))
-                .sum::<usize>()
-                <= MAX_DISCLOSURE_LINES
-            && (self.ask)(DISCLOSURE_TITLE, &text)
+        let pages = (0..summary.items.len())
+            .step_by(MAX_DISCLOSURE_ITEMS)
+            .map(|start| {
+                disclosure_page(
+                    summary,
+                    start,
+                    (start + MAX_DISCLOSURE_ITEMS).min(summary.items.len()),
+                )
+            })
+            .collect::<Vec<_>>();
+        if pages.iter().any(|text| {
+            text.chars().count() > MAX_DISCLOSURE_CHARS
+                || text
+                    .lines()
+                    .map(|line| line.chars().count().div_ceil(80).max(1))
+                    .sum::<usize>()
+                    > MAX_DISCLOSURE_LINES
+        }) {
+            return Err(ErrorBody::new(ErrorCode::ResourceBudget,
+                "The disclosure exceeds the native display budget; no items were sent. Use shorter fields or a smaller preview.", true));
+        }
+        Ok(pages.iter().all(|text| (self.ask)(DISCLOSURE_TITLE, text)))
     }
 }
 
@@ -137,6 +150,10 @@ pub fn validate_picked_folder(root: &Path, profile: &Path) -> Result<PathBuf, St
 /// The confirmation text: recipient, model, fields and every item, with characters that change
 /// how text looks without showing (controls, bidi overrides, zero-width) written as `\u{..}`.
 pub fn disclosure_text(s: &DisclosureSummary) -> String {
+    disclosure_page(s, 0, s.items.len())
+}
+
+fn disclosure_page(s: &DisclosureSummary, start: usize, end: usize) -> String {
     let fields: Vec<String> = s.fields.iter().map(wire).collect();
     let mut t = String::new();
     let _ = writeln!(
@@ -148,12 +165,16 @@ pub fn disclosure_text(s: &DisclosureSummary) -> String {
     );
     let _ = writeln!(t, "Dataset: {}", wire(&s.dataset_class));
     let _ = writeln!(t, "Fields sent: {}", fields.join(", "));
-    let _ = writeln!(t, "Items ({}):", s.items.len());
-    for (i, item) in s.items.iter().enumerate() {
+    if start == 0 && end == s.items.len() {
+        let _ = writeln!(t, "Items ({}):", s.items.len());
+    } else {
+        let _ = writeln!(t, "Items {}-{} of {}:", start + 1, end, s.items.len());
+    }
+    for (i, item) in s.items[start..end].iter().enumerate() {
         let _ = writeln!(
             t,
             "{:>2}. {}  [{}]  in {}  (size bucket {})",
-            i + 1,
+            start + i + 1,
             visible(&item.name),
             visible(&item.extension),
             visible(&item.context),
@@ -164,7 +185,17 @@ pub fn disclosure_text(s: &DisclosureSummary) -> String {
     let _ = writeln!(t, "Payload: {}", s.payload_digest.as_str());
     let _ = writeln!(t, "Runner profile: {}", s.runner_profile_digest.as_str());
     let _ = writeln!(t, "Expires: {}", s.expires_at.as_str());
-    t.push_str("\nOK sends exactly these items once. Cancel (the default) sends nothing.");
+    if end < s.items.len() {
+        t.push_str("\nOK reviews the next page. Cancel (the default) sends nothing.");
+    } else if start > 0 {
+        let _ = write!(
+            t,
+            "\nOK sends all {} reviewed items once. Cancel (the default) sends nothing.",
+            s.items.len()
+        );
+    } else {
+        t.push_str("\nOK sends exactly these items once. Cancel (the default) sends nothing.");
+    }
     t
 }
 

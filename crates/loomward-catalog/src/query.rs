@@ -16,6 +16,8 @@ pub struct Reader {
     pub(crate) conn: Connection,
     pub(crate) writer: Option<Arc<Writer>>,
     pub live_clamp_count: u64,
+    /// Detail reads served, so a caller that owes one per node can prove it.
+    pub inspect_count: u64,
     breakdowns: HashMap<(i64, String, Basis, usize, String), Breakdown>,
     pub(crate) deadline: Option<std::time::Instant>,
 }
@@ -359,6 +361,7 @@ impl Reader {
             conn,
             writer: None,
             live_clamp_count: 0,
+            inspect_count: 0,
             breakdowns: HashMap::new(),
             deadline: None,
         })
@@ -422,6 +425,7 @@ impl Reader {
         self.read(|conn| node_path(conn, key))
     }
     pub fn inspect(&mut self, key: NodeKey) -> Result<NodeDetail> {
+        self.inspect_count += 1;
         self.read(|conn|{
             let r=get(conn,key)?;if !r.valid{return Err(Error::RepairRequired);}let path=node_path(conn,key)?;
             let (display,volume,volume_key):(String,Option<i64>,Option<String>)=conn.query_row("SELECT g.display_path,g.volume_id,v.volume_key FROM root_grant g LEFT JOIN volume v ON v.id=g.volume_id WHERE g.id=?1",[r.grant],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;

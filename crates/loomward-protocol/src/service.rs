@@ -14,8 +14,8 @@ pub trait NativeDialogs: Send + Sync {
     /// Rust-side folder picker; the chosen path never crosses IPC.
     fn pick_folder(&self) -> Option<PathBuf>;
     /// Native modal listing recipient, model, fields and every item of the summary. `true` only on
-    /// explicit accept.
-    fn confirm_disclosure(&self, summary: &DisclosureSummary) -> bool;
+    /// explicit accept. A display-budget refusal is an error, not an owner decline.
+    fn confirm_disclosure(&self, summary: &DisclosureSummary) -> Result<bool, crate::ErrorBody>;
     /// #219: one-line native confirmation that a picked folder's volume cannot verify file
     /// identity and will be listed read-only, never acted on. `true` only on explicit accept;
     /// an adapter without it refuses.

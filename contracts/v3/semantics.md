@@ -299,6 +299,11 @@ is not a `JobResult` fails. Implementations MUST enable `format` validation for 
 
 ## 11. Disclosure
 
+The Rust-owned native disclosure dialog pages synthetic summaries within its display limits;
+every page must be accepted. A summary that exceeds the character or height limit returns
+`resource_budget` to its caller, rather than being represented as an owner decline. Personal
+disclosure remains gated.
+
 - A teacher preview is immutable and expires after 10 minutes. It yields at most one disclosure grant.
 - A disclosure grant authorises exactly one `teacher.run` with exactly the previewed request (by
   `payload_digest`) under exactly the pinned runner profile (by `runner_profile_digest`). Any mismatch is
@@ -456,3 +461,7 @@ toggle-off and destruction abort the projection and ignore late replies. Explore
 one inspected node. Meaning crosses as horizontal weft using the existing palette; intensity
 is relative score (quantised to the eight-thread tile), never a probability. The inspector
 and visible-node text list carry labels, scores, abstention and reasons independently of colour.
+`no_model`, `abstained` and `not_eligible` all stay undyed but weave differently (a slit across every
+fourth crossing, every second thread missing, no meaning thread), and the legend names each. A human
+`labelled` or `mixed` meaning (`source: "human"`) already in a slice is never replaced by the student
+projection; a system aggregate or a teacher label is.
