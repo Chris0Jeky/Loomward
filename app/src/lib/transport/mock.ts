@@ -6,6 +6,7 @@ import type {
 import type { TelemetrySample } from '../contracts.gen';
 import { createScanMock } from './mock-scan';
 import { createViewMock } from './mock-views';
+import { createInventoryMock } from './mock-inventory';
 import { generateTree, prng, type SynthNode } from './synth';
 import type { Transport } from './transport';
 
@@ -263,6 +264,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     'tree.children': (p) => children(p as unknown as TreeChildrenRequest),
     'search.query': (p) => search(p as unknown as SearchRequest),
     ...views.handlers,
+    ...createInventoryMock(now, fail),
     ...scan.handlers,
     'telemetry.snapshot': telemetry, // after the spread: wraps the view mock's sample with gpu and disks
   };
