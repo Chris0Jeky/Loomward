@@ -3240,6 +3240,16 @@ fn scan_start_is_refused_outside_registered_lab_roots() {
     ));
     assert_eq!(e.code, ErrorCode::PermissionDenied);
     assert_eq!(reason(&e), Some("synthetic_session_requires_lab_root"));
+    let inspected = err(call(
+        &synthetic,
+        "duplicates.inspect",
+        json!({"root_id": synthetic.inner.root_id(root), "budget": {"max_candidates": 200, "max_bytes": "1024", "max_ms": 1000}}),
+    ));
+    assert_eq!(inspected.code, ErrorCode::PermissionDenied);
+    assert_eq!(
+        reason(&inspected),
+        Some("synthetic_session_requires_lab_root")
+    );
 }
 
 /// A personal session scans only its own active owner grants: an unknown root, a lab root and
@@ -3255,6 +3265,17 @@ fn personal_scan_start_refuses_unknown_lab_and_revoked_roots() {
             "scan.start",
             json!({"root_id": root, "mode": "full"}),
         ));
+        // q-10: content inspection shares the scan's root gate, so it refuses the same roots.
+        let inspected = err(call(
+            &personal,
+            "duplicates.inspect",
+            json!({"root_id": root, "budget": {"max_candidates": 200, "max_bytes": "1024", "max_ms": 1000}}),
+        ));
+        assert_eq!(
+            (inspected.code, reason(&inspected)),
+            (e.code, reason(&e)),
+            "{root}: {inspected:?}"
+        );
         let (list, _) = ok(
             "jobs.list",
             call(&personal, "jobs.list", json!({"limit": 50})),
@@ -3372,6 +3393,13 @@ fn personal_scan_start_refuses_a_stored_grant_todays_fences_refuse() {
             !e.message.contains(&*base.to_string_lossy()),
             "no path on the wire"
         );
+        let inspected = err(call(
+            &svc,
+            "duplicates.inspect",
+            json!({"root_id": svc.inner.root_id(root), "budget": {"max_candidates": 200, "max_bytes": "1024", "max_ms": 1000}}),
+        ));
+        assert_eq!(inspected.code, ErrorCode::PermissionDenied, "{inspected:?}");
+        assert_eq!(reason(&inspected), Some("protected_profile_or_store"));
         let (list, _) = ok("jobs.list", call(&svc, "jobs.list", json!({"limit": 50})));
         assert_eq!(list["jobs"], json!([]), "no job started");
         assert_eq!(
@@ -4097,7 +4125,7 @@ fn an_unverified_run_flags_every_published_row() {
 /// live-scanned NTFS root keeps a durable reference. Before, every grant recorded none and labels
 /// and collection adds were refused as `durable_reference_unavailable`.
 #[cfg(windows)]
-fn label_and_collect_live(svc: &Service, root: &str, file: &str, personal: bool) {
+fn label_and_collect_live(svc: &Service, root: &str, file: &str) {
     let (filesystem, mode): (Option<String>, String) = svc
         .inner
         .db()
@@ -4125,12 +4153,9 @@ fn label_and_collect_live(svc: &Service, root: &str, file: &str, personal: bool)
         "feedback.record",
         json!({"node_id": node, "client_event_id": "ce_live_ntfs", "label": "Documents", "retract": false}),
     );
-    if personal {
-        // Personal learning stays behind its own owner gate, never the filesystem.
-        assert_eq!(reason(&err(label)), Some("learning_personal_gated"));
-    } else {
-        ok("feedback.record", label);
-    }
+    // q-11: personal learning is open, so a real granted NTFS folder is labelled like a lab root
+    // (the eligibility Codex asked for on #368, now that grants record their filesystem, #372).
+    ok("feedback.record", label);
     let (created, _) = ok(
         "collections.create",
         call(svc, "collections.create", json!({"name": "Live NTFS"})),
@@ -4161,7 +4186,7 @@ fn label_and_collect_live(svc: &Service, root: &str, file: &str, personal: bool)
 #[test]
 fn a_live_scanned_ntfs_grant_can_be_labelled_and_collected() {
     let Some(lab) = lab() else { return };
-    label_and_collect_live(&lab.svc, &lab.root, "top.bin", false);
+    label_and_collect_live(&lab.svc, &lab.root, "top.bin");
     let tmp = temp_root();
     let folder = tmp.path().join("owner-folder");
     std::fs::create_dir_all(&folder).unwrap();
@@ -4176,5 +4201,5 @@ fn a_live_scanned_ntfs_grant_can_be_labelled_and_collected() {
     .unwrap();
     let (roots, _) = ok("roots.list", call(&svc, "roots.list", json!({})));
     let root = roots["roots"][0]["root_id"].as_str().unwrap().to_owned();
-    label_and_collect_live(&svc, &root, "synthetic-note.txt", true);
+    label_and_collect_live(&svc, &root, "synthetic-note.txt");
 }

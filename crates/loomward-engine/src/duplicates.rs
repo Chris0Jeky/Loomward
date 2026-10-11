@@ -15,7 +15,7 @@ use std::{
 };
 
 impl Engine {
-    /// Submit only already-resolved catalogue observations under a synthetic durable grant.
+    /// Submit only already-resolved catalogue observations under an active durable grant.
     pub fn duplicates_start(
         self: &Arc<Self>,
         root: GrantedRoot,

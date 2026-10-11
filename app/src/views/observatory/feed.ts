@@ -1,19 +1,48 @@
 import { LoomwardError, type Client } from '../../lib/transport/client';
-import type { DatasetClass, ProcessList } from '../../lib/contracts.gen';
+import type { DatasetClass, ProcessList, TelemetryChannel, TelemetryTrends, TrendCandidate, TrendMetric, TrendSeries } from '../../lib/contracts.gen';
 import { readProcesses, TelemetryLease } from '../companion/telemetry';
 import { PROCESS_LIMIT, PROCESS_REFRESH_MS, type ProcessLens } from './processes';
 
 export interface ProcessReading { list: ProcessList | null; dataset: DatasetClass | null; error: string; note: string; lens: ProcessLens }
 
-/** Gauges and strip share one lease and one poller; process reads follow the enumeration cadence. */
+const BASE_CHANNELS: TelemetryChannel[] = ['system', 'gpu', 'disks'];
+const CANDIDATE_CAP = 64; // the engine's report cap
+/** The series the engine files under the `processes` channel (`TrendMetric::channel`). */
+const PROCESS_METRICS = new Set<TrendMetric>(['private_commit_bytes', 'private_working_set_bytes', 'working_set_bytes', 'cpu_fraction', 'io_read_bytes_per_s', 'io_write_bytes_per_s', 'gpu_dedicated_bytes']);
+
+/** One trend report split into its process part and the rest, candidate indexes following their series. */
+function splitTrends(t: TelemetryTrends) {
+  const part = (keep: boolean): TelemetryTrends => {
+    const at = new Map<number, number>();
+    const series = t.series.filter((s, i) => PROCESS_METRICS.has(s.metric) === keep && (at.set(i, at.size), true));
+    const candidates = t.candidates.flatMap((c) => { const n = at.get(c.series_index); return n === undefined ? [] : [{ ...c, series_index: n }]; });
+    return { series, candidates, candidates_truncated: t.candidates_truncated, unknowns: keep ? t.unknowns : [] };
+  };
+  return { rest: part(false), processes: part(true) };
+}
+
+/** Machine and disk trends first, then the process trends from the last poll that asked for them. */
+function joinTrends(rest: TelemetryTrends, p: TelemetryTrends): TelemetryTrends {
+  const room = Math.max(0, CANDIDATE_CAP - rest.candidates.length);
+  const carried: TrendCandidate[] = p.candidates.map((c) => ({ ...c, series_index: c.series_index + rest.series.length }));
+  return {
+    series: [...rest.series, ...p.series],
+    candidates: [...rest.candidates, ...carried.slice(0, room)],
+    candidates_truncated: rest.candidates_truncated || p.candidates_truncated || carried.length > room,
+    unknowns: [...rest.unknowns, ...p.unknowns],
+  };
+}
+
+/** Gauges and strip share one lease and one poller; process reads (and the process trends) follow the enumeration cadence. */
 export class ObservatoryFeed {
   private readonly lease: TelemetryLease;
   private closed = false;
   private dueAt = 0;
   private sort: ProcessLens | null = null;
+  private processTrends: TelemetryTrends | null = null;
 
   constructor(private readonly client: Client, private readonly processesAvailable: boolean, private readonly now = Date.now, private readonly epoch = 0) {
-    this.lease = new TelemetryLease(client, processesAvailable ? ['system', 'gpu', 'disks', 'processes'] : ['system', 'gpu', 'disks'], 1000, now);
+    this.lease = new TelemetryLease(client, processesAvailable ? [...BASE_CHANNELS, 'processes'] : BASE_CHANNELS, 1000, now);
   }
 
   forSession(client: Client, processesAvailable: boolean, epoch: number): ObservatoryFeed {
@@ -23,11 +52,25 @@ export class ObservatoryFeed {
   }
 
   async read(lens: ProcessLens) {
+    try { return await this.poll(lens); } catch (e) {
+      this.dueAt = 0; // the next good poll asks for the process part again and replaces the carried one
+      throw e;
+    }
+  }
+
+  private async poll(lens: ProcessLens) {
+    const due = this.processesAvailable && (this.now() >= this.dueAt || this.sort !== lens);
     await this.lease.ensure();
     if (this.closed) throw new Error('Observatory closed');
-    const telemetry = await this.client.call('telemetry.snapshot', { channels: this.processesAvailable ? ['system', 'gpu', 'disks', 'processes'] : ['system', 'gpu', 'disks'] });
+    // The lease keeps `processes` so the sampler collects; a snapshot carries the (large) process trends only when due.
+    let telemetry = await this.client.call('telemetry.snapshot', { channels: due ? [...BASE_CHANNELS, 'processes'] : BASE_CHANNELS });
+    if (this.processesAvailable) {
+      const { rest, processes } = splitTrends(telemetry.result.trends);
+      if (due) this.processTrends = processes;
+      telemetry = { ...telemetry, result: { ...telemetry.result, trends: joinTrends(rest, this.processTrends ?? { series: [], candidates: [], candidates_truncated: false, unknowns: [] }) } };
+    }
     let processes: ProcessReading | null = null;
-    if (!this.closed && this.processesAvailable && (this.now() >= this.dueAt || this.sort !== lens)) {
+    if (!this.closed && due) {
       this.dueAt = this.now() + PROCESS_REFRESH_MS;
       this.sort = lens;
       try {
