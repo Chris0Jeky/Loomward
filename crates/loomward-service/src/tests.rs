@@ -148,7 +148,9 @@ fn health_job_list_failure_is_an_error_not_idle() {
 }
 
 #[test]
-fn roots_list_catalogue_failure_is_an_error_not_missing_totals() {
+fn roots_list_keeps_a_root_mid_scan_with_unknown_totals() {
+    // Every scan dirties its root's aggregates; the list must stay available with an
+    // honest unknown for that root, not fail for every root (review of #358).
     let tmp = temp_root();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
     let (root, grant) = fixture(&svc, 2);
@@ -171,9 +173,9 @@ fn roots_list_catalogue_failure_is_an_error_not_missing_totals() {
             [root],
         )
         .unwrap();
-    let error = err(call(&svc, "roots.list", json!({})));
-    assert_eq!(error.code, ErrorCode::PartialCoverage);
-    assert_eq!(error.message.as_str(), "aggregates are being repaired");
+    let (roots, _) = ok("roots.list", call(&svc, "roots.list", json!({})));
+    assert!(roots["roots"][0]["totals"].is_null());
+    assert_eq!(roots["roots"][0]["grant_state"], "active");
 }
 
 fn placement_fixture(svc: &Service) -> (i64, i64, String) {

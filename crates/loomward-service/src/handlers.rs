@@ -396,12 +396,15 @@ impl Inner {
         };
         let active = r.grant_state == "active";
         let totals = match (reader, r.dir, active && r.state != "never_scanned") {
-            (Some(reader), Some(dir), true) => reader
-                .inspect(NodeKey::Dir(dir))
-                .map_err(catalog_error)?
-                .subtree
-                .map(|s| encode(&s))
-                .transpose()?,
+            (Some(reader), Some(dir), true) => match reader.inspect(NodeKey::Dir(dir)) {
+                // Mid-scan or awaiting repair, the aggregates are unsettled: unknown, not an error.
+                Err(loomward_catalog::Error::RepairRequired) => None,
+                result => result
+                    .map_err(catalog_error)?
+                    .subtree
+                    .map(|s| encode(&s))
+                    .transpose()?,
+            },
             _ => None,
         };
         let display: String = r.display_path.chars().take(1024).collect();
