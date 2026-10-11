@@ -597,9 +597,28 @@ impl Inner {
         {
             return refused(RootGrantResultRefusal::AlreadyGranted);
         }
-        let (root, fresh) = match self.grant(&path, "desktop_picker") {
+        // #219: a volume that cannot verify file identity is granted only after the owner's
+        // explicit native confirmation; declining is a cancellation, not a refusal.
+        let unverified = match self.root_filesystem(&path) {
+            Ok(fs) => !loomward_windows::enumerate::verifies_identity(&fs),
+            Err(r) => return refused(r),
+        };
+        if unverified && !dialogs.confirm_identity_unverified() {
+            return Ok(out(
+                json!({"outcome": "cancelled_by_user", "root": null, "refusal": null}),
+                None,
+            ));
+        }
+        let (root, fresh) = match self.grant(&path, "desktop_picker", unverified) {
             Ok(g) => g,
             Err(crate::Refused::Rule(r)) => return refused(r),
+            // Unreachable after confirmation; fail closed all the same.
+            Err(crate::Refused::IdentityUnverified) => {
+                return Ok(out(
+                    json!({"outcome": "cancelled_by_user", "root": null, "refusal": null}),
+                    None,
+                ))
+            }
             Err(crate::Refused::RootLimit) => {
                 return Err(with_reason(
                     fail(

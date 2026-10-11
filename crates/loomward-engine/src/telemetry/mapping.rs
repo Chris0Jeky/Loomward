@@ -357,5 +357,6 @@ pub(super) fn sample(
         disks,
         engine,
         processes,
+        trends: TelemetryTrends::default(),
     })
 }

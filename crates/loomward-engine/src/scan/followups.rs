@@ -152,7 +152,7 @@ fn obsolete() -> crate::EngineError {
 }
 
 #[cfg(windows)]
-fn native_relist_containment(mode: u8) {
+fn native_relist_containment(mode: u8, unverified: bool) {
     use loomward_windows::enumerate::{NativeDir, NativeSource};
     if skip_elevated() {
         return;
@@ -160,8 +160,13 @@ fn native_relist_containment(mode: u8) {
     // All effects are confined to this disposable fixture, including the outside sibling.
     let temp = canonical_tempdir();
     for retained in [false, true] {
+        // #219: an identity-unverified directory is never released, so it is always retained.
+        let retained = retained || unverified;
         for strategy in [Strategy::Extended, Strategy::Both, Strategy::Find] {
             let base = temp.path().join(format!("case-{retained}-{strategy:?}"));
+            if base.exists() {
+                continue;
+            }
             let path = base.join("root");
             let child = path.join("child");
             std::fs::create_dir_all(&child).unwrap();
@@ -216,13 +221,20 @@ fn native_relist_containment(mode: u8) {
                     })
                 }
             }
+            let native = NativeSource::with_strategy(strategy);
+            let native = if unverified {
+                native.with_filesystem("exFAT").with_identity_unverified()
+            } else {
+                native
+            };
             let source = Arc::new(Source {
-                native: NativeSource::with_strategy(strategy),
+                native,
                 retained,
                 child_lists: AtomicUsize::new(0),
                 relisted_entries: AtomicUsize::new(0),
             });
             let expected = source.open_root(&path).unwrap().1;
+            assert_eq!(expected.basis == IdBasis::Unverified, unverified);
             let grant = GrantedRoot::new(
                 RootId::new("rt_containment_fixture").unwrap(),
                 path.clone(),
@@ -327,17 +339,20 @@ fn native_relist_containment(mode: u8) {
 #[cfg(windows)]
 #[test]
 fn native_relist_containment_refuses_moved_out_directory() {
-    native_relist_containment(0);
+    native_relist_containment(0, false);
+    native_relist_containment(0, true);
 }
 #[cfg(windows)]
 #[test]
 fn native_relist_containment_allows_move_within_root() {
-    native_relist_containment(1);
+    native_relist_containment(1, false);
+    native_relist_containment(1, true);
 }
 #[cfg(windows)]
 #[test]
 fn native_relist_containment_follows_renamed_root_handle() {
-    native_relist_containment(2);
+    native_relist_containment(2, false);
+    native_relist_containment(2, true);
 }
 
 #[test]

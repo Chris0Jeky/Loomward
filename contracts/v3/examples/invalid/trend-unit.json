@@ -1,0 +1,35 @@
+{
+  "def": "TrendSeries",
+  "value": {
+    "key": "pc_4242_116444736000000001",
+    "metric": "private_commit_bytes",
+    "unit": "fraction",
+    "max_gap_ms": 30000,
+    "points": [
+      {
+        "offset_ms": 0,
+        "observed_at": "2026-10-09T12:00:00Z",
+        "value": "0"
+      },
+      {
+        "offset_ms": 15000,
+        "observed_at": "2026-10-09T12:00:15Z",
+        "value": "1048576"
+      },
+      {
+        "offset_ms": 30000,
+        "observed_at": "2026-10-09T12:00:30Z",
+        "value": "2097152"
+      },
+      {
+        "offset_ms": 45000,
+        "observed_at": "2026-10-09T12:00:45Z",
+        "value": "3145728"
+      }
+    ],
+    "unknowns": [
+      "Shared resident memory is unknown."
+    ]
+  },
+  "reason": "Trend metric/value units or bounded history disagree with the contract."
+}
