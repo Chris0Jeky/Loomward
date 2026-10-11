@@ -2,8 +2,8 @@
 
 11 October 2026, native Windows, non-elevated, warm/uncontrolled cache, hardware withheld.
 Synthetic fixtures only; no real-folder scan was run in this lane. Branch
-`perf/first-scan-bulk-load-148`, based on main `6e6682d`. Aggregate receipts append to
-[first-scan-bulk-load-148.json](bench/first-scan-bulk-load-148.json); task-owned raw logs,
+`perf/first-scan-bulk-load-148`, based on main `6e6682d`. Quiet-host aggregate receipts will append to
+`bench/first-scan-bulk-load-148.json` (none yet; see the A/B section); task-owned raw logs,
 diagnostic receipts, mutation runner and frozen binaries stay in the ignored
 `.loomward/bulk148/` of the lane's worktree.
 
