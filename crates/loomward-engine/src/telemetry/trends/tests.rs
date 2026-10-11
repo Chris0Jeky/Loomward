@@ -697,3 +697,99 @@ fn event_histories_fit_the_sse_line_and_reindex_candidates_without_losing_snapsh
     assert_eq!(no_rows.unknowns.len(), 8);
     assert!(no_rows.unknowns[0].as_str().contains("snapshot"));
 }
+
+#[test]
+fn the_candidate_cap_keeps_machine_candidates_before_many_growing_processes() {
+    let mut h = History::default();
+    for i in 0..4 {
+        let mut r = raw();
+        r.captured_at_unix_ms += i * 15000;
+        r.processes_observed_at_unix_ms = Some(r.captured_at_unix_ms);
+        r.processes = (0..70)
+            .map(|pid| loomward_telemetry::Process {
+                pid,
+                private_commit_bytes: Some(i << 20),
+                ..r.processes[0].clone()
+            })
+            .collect();
+        r.memory = Observation::Observed {
+            value: Memory {
+                total_bytes: Some(1000),
+                available_bytes: Some(50),
+                standby_bytes: Some(300 - i * 10),
+                ..Default::default()
+            },
+        };
+        r.system_cpu_busy_fraction = Some(0.95);
+        h.push(&r, i * 15000, 15000);
+    }
+    let report = h.report(CHANNELS);
+    assert_eq!(report.candidates.len(), 64);
+    assert!(report.candidates_truncated);
+    let kinds: Vec<_> = report.candidates.iter().map(|c| c.kind).collect();
+    assert!(kinds.contains(&TrendCandidateKind::MemoryPressure));
+    assert!(kinds.contains(&TrendCandidateKind::CpuSaturation));
+    // machine first, then disks, then processes; the cut falls on processes
+    let channel = |c: &TrendCandidate| report.series[c.series_index.get() as usize].metric.channel();
+    let order: Vec<_> = report.candidates.iter().map(channel).collect();
+    assert!(order.windows(2).all(|w| {
+        let rank = |c: &TelemetryChannel| match c {
+            TelemetryChannel::System => 0,
+            TelemetryChannel::Disks => 1,
+            _ => 2,
+        };
+        rank(&w[0]) <= rank(&w[1])
+    }));
+    assert_eq!(
+        report
+            .candidates
+            .iter()
+            .filter(|c| c.kind == TrendCandidateKind::Growth)
+            .count(),
+        64 - kinds.iter().filter(|k| **k != TrendCandidateKind::Growth).count()
+    );
+}
+
+#[test]
+fn a_missing_value_only_ends_the_run_behind_it() {
+    // null, then four good contiguous points: the newest run is a candidate
+    let h = series(&[None, Some(0), Some(1 << 20), Some(2 << 20), Some(3 << 20)]);
+    let c = growth(&h);
+    assert_eq!(c.len(), 1);
+    assert_eq!(c[0].sample_count.get(), 4);
+    assert_eq!(c[0].window_ms.get(), 45_000);
+    assert_eq!(c[0].start_value, TrendValue::Bytes(0u64.into()));
+    // a null after the run, or too few points behind it, is still no candidate
+    assert!(growth(&series(&[Some(0), Some(1 << 20), Some(2 << 20), Some(3 << 20), None])).is_empty());
+    assert!(growth(&series(&[Some(0), Some(1 << 20), None, Some(2 << 20), Some(3 << 20)])).is_empty());
+    // a run never reaches back across the null for its fourth point
+    let c = growth(&series(&[Some(0), None, Some(1 << 20), Some(2 << 20), Some(3 << 20), Some(4 << 20)]));
+    assert_eq!(c.len(), 1);
+    assert_eq!(c[0].sample_count.get(), 4);
+}
+
+#[test]
+fn memory_pressure_uses_the_newest_aligned_run_after_a_missing_sample() {
+    let mut h = History::default();
+    for i in 0..5 {
+        let mut r = raw();
+        r.captured_at_unix_ms += i * 1000;
+        r.memory = Observation::Observed {
+            value: Memory {
+                total_bytes: Some(1000),
+                available_bytes: if i == 0 { None } else { Some(50) },
+                standby_bytes: Some(300 - i * 10),
+                ..Memory::default()
+            },
+        };
+        h.push(&r, i * 1000, 1000);
+    }
+    let report = h.report(CHANNELS);
+    let c = report
+        .candidates
+        .iter()
+        .find(|c| c.kind == TrendCandidateKind::MemoryPressure)
+        .expect("the four samples after the null are a window");
+    assert_eq!(c.sample_count.get(), 4);
+    assert_eq!(c.window_ms.get(), 3000);
+}

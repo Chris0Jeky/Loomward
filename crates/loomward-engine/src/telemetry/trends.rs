@@ -303,6 +303,12 @@ impl History {
                 candidates.push(c);
             }
         }
+        // The cap cuts the tail, so machine candidates go first, then disks, then the many processes.
+        candidates.sort_by_key(|c| match series[c.series_index.get() as usize].metric.channel() {
+            TelemetryChannel::System => 0,
+            TelemetryChannel::Disks => 1,
+            _ => 2,
+        });
         let candidates_truncated = candidates.len() > 64;
         candidates.truncate(64);
         TelemetryTrends {
@@ -384,16 +390,29 @@ fn difference(a: &TrendValue, b: &TrendValue) -> f64 {
     }
 }
 
-fn window(s: &TrendSeries) -> Option<Vec<&TrendValue>> {
-    if s.points.len() < MIN_SAMPLES
-        || s.points.windows(2).any(|p| {
-            let dt = p[1].offset_ms.get().saturating_sub(p[0].offset_ms.get());
-            dt == 0 || dt > s.max_gap_ms.get()
-        })
-    {
-        return None;
+/// The newest run of known points with in-bounds spacing. A missing value, a repeated or backward
+/// timestamp or a gap wider than `max_gap_ms` ends the run behind it, so it never lets one bad
+/// point hide a later window; no candidate ever crosses one.
+fn segment(s: &TrendSeries) -> Option<&[TrendPoint]> {
+    let points: &[TrendPoint] = &s.points;
+    let mut start = points.len();
+    while start > 0 && points[start - 1].value.is_some() {
+        if start < points.len() {
+            let dt = points[start]
+                .offset_ms
+                .get()
+                .saturating_sub(points[start - 1].offset_ms.get());
+            if dt == 0 || dt > s.max_gap_ms.get() {
+                break;
+            }
+        }
+        start -= 1;
     }
-    s.points.iter().map(|p| p.value.as_ref()).collect()
+    (points.len() - start >= MIN_SAMPLES).then(|| &points[start..])
+}
+
+fn values<'a>(points: impl IntoIterator<Item = &'a TrendPoint>) -> Vec<&'a TrendValue> {
+    points.into_iter().filter_map(|p| p.value.as_ref()).collect()
 }
 
 fn candidate(
@@ -402,9 +421,10 @@ fn candidate(
     series: &[Arc<TrendSeries>],
     notes: &[Text<256>],
 ) -> Option<TrendCandidate> {
-    let v = window(s)?;
-    let first = s.points.first()?;
-    let last = s.points.last()?;
+    let points = segment(s)?;
+    let v = values(points);
+    let first = points.first()?;
+    let last = points.last()?;
     let ms = last.offset_ms.get().checked_sub(first.offset_ms.get())?;
     let start = v.first()?;
     let end = v.last()?;
@@ -441,20 +461,18 @@ fn candidate(
             TrendCandidateKind::DiskQueue
         }
         TrendMetric::AvailableBytes => {
+            // A companion series counts only if it is known at exactly this run's timestamps.
             let aligned = |metric| -> Option<Vec<&TrendValue>> {
                 let other = series
                     .iter()
                     .find(|o| o.key == s.key && o.metric == metric)?;
-                if !other
+                let same: Vec<_> = other
                     .points
                     .iter()
-                    .zip(&s.points)
-                    .all(|(a, b)| a.offset_ms == b.offset_ms)
-                    || other.points.len() != s.points.len()
-                {
-                    return None;
-                }
-                window(other)
+                    .filter(|o| points.iter().any(|p| p.offset_ms == o.offset_ms))
+                    .collect();
+                let known = values(same.iter().copied());
+                (same.len() == points.len() && known.len() == same.len()).then_some(known)
             };
             let totals = aligned(TrendMetric::TotalBytes)?;
             if ms < 3000
