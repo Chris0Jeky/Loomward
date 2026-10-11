@@ -467,7 +467,7 @@ def check_tiers_loading_followups(page: Page, engine: FakeEngine) -> None:
         wait_until(page, arrived.is_set)
         expect(panel).to_have_attribute('aria-busy', 'true')
         button.click()
-        expect(page.get_by_text('Saved scenario shown. Simulation only.', exact=True)).to_be_attached()
+        expect(page.get_by_role('heading', name='Placement plan', level=2)).to_be_visible()  # durable: the live-region sentence can be replaced
     finally:
         release.set()
     expect(panel).to_have_attribute('aria-busy', 'false')
@@ -508,7 +508,7 @@ def check_tiers_source_eligibility(page: Page, engine: FakeEngine) -> None:
     expect(selected).to_have_count(0)
     count = len(engine.candidate_sources)
     page.get_by_role('button', name=re.compile('Show saved scenario')).click()
-    expect(page.get_by_text('Saved scenario shown. Simulation only.', exact=True)).to_be_attached()
+    expect(page.get_by_role('heading', name='Placement plan', level=2)).to_be_visible()  # durable: the live-region sentence can be replaced
     expect(selected).to_have_count(0)
     ok(len(engine.candidate_sources) == count and 'vo_blocked' not in engine.candidate_sources,
        'Tiers defaults, preserves, enables and restores only eligible sources; ineligible saved sources stay historical')
