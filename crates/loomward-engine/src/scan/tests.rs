@@ -292,6 +292,54 @@ fn duplicate_admission_rechecks_durable_class_identity_and_ambiguity() {
         "grant_not_active"
     );
 }
+
+#[test]
+fn duplicate_worker_admission_waits_for_same_root_gate() {
+    let state = tempfile::tempdir().unwrap();
+    let grant = root();
+    let _conn = duplicate_grant_store(state.path(), &grant);
+    let engine = Arc::new(
+        Engine::open(EngineConfig::new(
+            state.path().to_owned(),
+            DatasetClass::Synthetic,
+        ))
+        .unwrap(),
+    );
+    for revoke in [false, true] {
+        let gate = engine.scan_root_gate(grant.key());
+        let mut held = gate.lock().unwrap();
+        let (entered, started) = std::sync::mpsc::channel();
+        let (result, outcome) = std::sync::mpsc::channel();
+        let worker_engine = engine.clone();
+        let worker_grant = grant.clone();
+        let worker = std::thread::spawn(move || {
+            entered.send(()).unwrap();
+            result
+                .send(worker_engine.duplicate_read_admission_worker(&worker_grant))
+                .unwrap();
+        });
+        started
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let premature = outcome.recv_timeout(std::time::Duration::from_millis(50));
+        held.revoked = revoke;
+        drop(held);
+        worker.join().unwrap();
+        assert!(matches!(
+            premature,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        let admitted = outcome.recv().unwrap();
+        if revoke {
+            assert_eq!(
+                admitted.unwrap_err().to_body().message.as_str(),
+                "root revoked"
+            );
+        } else {
+            assert!(admitted.is_ok());
+        }
+    }
+}
 use source::*;
 use std::{
     sync::{atomic::AtomicBool, Arc},

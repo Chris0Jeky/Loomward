@@ -80,6 +80,8 @@ pub struct Application {
     pub display_icon: Evidence<Text>,
     pub parent_key_name: Evidence<Text>,
     pub system_component: Evidence<bool>,
+    /// The provider's EstimatedSize in KiB, never a filesystem measurement.
+    pub estimated_size_bytes: Evidence<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -162,9 +164,19 @@ pub fn inventory(reader: &impl RegistryReader) -> Vec<ProviderInventory> {
                 display_icon: text("DisplayIcon"),
                 parent_key_name: text("ParentKeyName"),
                 system_component: Evidence::Missing,
+                estimated_size_bytes: Evidence::Missing,
             };
             app.system_component = system_evidence(entry.values.get("SystemComponent"));
             incomplete |= matches!(app.system_component, Evidence::Unknown { .. });
+            app.estimated_size_bytes = match entry.values.get("EstimatedSize") {
+                None => Evidence::Missing,
+                Some(RegistryValue::Unknown { reason }) => unknown(reason),
+                Some(RegistryValue::Bytes { kind: 4, data }) if data.len() == 4 => Evidence::Known(
+                    u64::from(u32::from_le_bytes(data.as_slice().try_into().unwrap())) * 1024,
+                ),
+                _ => unknown("expected a four-byte REG_DWORD EstimatedSize"),
+            };
+            incomplete |= matches!(app.estimated_size_bytes, Evidence::Unknown { .. });
             if incomplete && result.state == ProviderState::Available {
                 result.state = ProviderState::Partial;
                 result.reason =

@@ -698,6 +698,7 @@ name = "loomward-service"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.4.3",
+ "loomward-apps",
  "loomward-catalog",
  "loomward-engine",
  "loomward-protocol",

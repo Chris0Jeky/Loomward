@@ -77,7 +77,49 @@ re-send as stated.
 | `budgets.set` | Yes | `request_id`, 10 min | `budgets.get` | Loomward's own pools reset at restart. After cache expiry set a value only if the owner confirms it against the value read |
 | `telemetry.subscribe`, `telemetry.unsubscribe` | Yes | `subscription_id` | Unknown or expired IDs are `not_found` | Re-subscribe with a fresh lease |
 
+### Placement reads and stored scenarios
+
+`tiers.model`, `placement.candidates`, `placement.simulate` with `save: false`, `proposals.list`
+and `proposals.get` are reads: no mutation ticket, idempotency-cache claim or state revision change.
+Only `placement.simulate` with `save: true` writes a scenario to the existing `state.db` proposal
+table; it never writes a file-operation manifest. A duplicate canonical inputs digest returns the
+saved scenario. Saving checks the read's catalogue revision, declarations, active grants and root
+generations before committing, including catalogue changes within a generation.
+
+The catalogue adapter reads active granted roots only, in one bounded SQLite snapshot. Missing
+fresh identity-matched link observations leave relief Unknown; default `verified_only` simulation
+pre-rejects those groups. Entry-allocation what-ifs remain explicitly labelled assumptions. Missing
+reserve preferences are disclosed as an assumed zero reserve. Unknown target clusters and hidden
+descendants retain the engine's assumptions; `pre_rejected` and `excluded_volumes` are preserved.
+
+Personal placement reads catalogue metadata only. When source volume physics are not recorded,
+it refuses with `capability_unavailable`, `detail.reason = "personal_placement_physics_unobserved"`,
+explaining the missing observation. It performs no per-file native opens or content reads. A
+synthetic registered lab root may supply scoped volume-space observations; no other volumes are
+enumerated. Unprovable ancestry across overlapping grants is `partial_coverage` with the named
+reason `overlapping_grant_ancestry_unknown`.
+
+Proposals are historical simulations. Changed catalogue revisions, declarations or root
+generations mark them `stale`; inactive grants hide them from list/get. Wire IDs are bound to the
+current session and catalogue instance: after restart, clients re-list rather than reuse old IDs.
+Stored canonical row references and input digests survive restart and never confer effect authority.
+
 ## 4. Idempotency
+
+| Read-only command | Idempotency | Deadline | Pagination and unknowns |
+|---|---|---|---|
+| `apps.list` | Safe to retry; no state or registry writes | 2,000 ms default; shares the eight-read admission pool | `limit` 1–200, required nullable `cursor`. First page observes at most 6,144 registry entries across three bounded views; provider coverage is explicit (packaged/portable remain unavailable). `estimated_size_bytes` is the registry's EstimatedSize in KiB converted to bytes, never a disk measurement; absent/malformed fields stay null with `size_reason`. Registry text stays literal, including expandable values. |
+| `desktop.contexts` | Safe to retry; no file, icon, shortcut or process effects | 2,000 ms default; shares the eight-read admission pool | Five configured known folders, personal/public ownership and nullable redirection; configured paths establish neither existence nor online state. At most 200 shortcut entries per page. Synthetic sessions use injected fixtures only. Personal shortcut enumeration currently reports `desktop_enumeration_unavailable`: the existing safe reader requires an explicit path and exposes no bounded pinned-directory listing; pathname enumeration would weaken no-follow containment. It performs no desktop content or target reads. |
+
+Both commands have `effects: none`, no events, and null catalogue/state revisions. Cursors retain
+one bounded observation (maximum 4 MiB encoded snapshot), bind the command and session, and never
+trigger a new provider read. Unknown/evicted/foreign cursors answer `stale_generation` with
+`cursor_expired`; a cursor for the other command answers `invalid_request`. `cursor: null` refreshes
+the observation. Paging itself is not `budget_hit`; incomplete provider coverage stays in its
+provider state and reason. Provider calls may block in the OS after a caller's deadline; their read
+permit remains held until they finish, preventing unbounded worker accumulation. An elevated
+personal session refuses both reads with `personal_metadata_elevated`; unsupported platforms
+report `personal_metadata_unsupported`. There is no synthetic fallback for personal sessions.
 
 - **Session cache.** For every mutating command the service keeps, for 10 minutes, the response keyed by
   `request_id` alone, scoped to the session. Replaying the same `request_id` with a byte-identical canonical payload returns
@@ -242,7 +284,17 @@ grouped by exact logical size; only sizes with at least two names are candidates
 the cap sets truncated=true, partial=true and stop=entry_budget unless a later stop takes precedence.
 A cap can omit an entire trailing size group; truncated never means those names were absent.
 Catalogue selection also caps aggregate JSON-encoded relative names at 64 KiB, with the same
-truncated flag and stop, so retained reports remain bounded in jobs.list as well as jobs.get.
+truncated flag and stop. An unrepresentable candidate path is omitted, leaving partial=true and
+stop=path_depth or path_length unless a budget or cancellation stop takes precedence; other pairs
+remain inspectable. Reader groups and link sets exceeding the wire bounds are truncated into a
+partial report with stop=report_budget unless an earlier stop takes precedence.
+
+Terminal job status remains recoverable for ten minutes. Duplicate evidence is retained for at
+most ten minutes, 50 reports and 4 MiB of JSON-encoded reports per engine, whichever expires first.
+Newest reports are retained first; eviction removes job.duplicates, increments rev and publishes
+job.state without changing the terminal outcome. jobs.list returns at most 50 jobs; retained report
+bytes plus bounded job metadata fit below the HTTP client's 8 MiB response limit. Tauri carries the
+same envelope and imposes no separate response-byte limit.
 
 jobs.get/jobs.list and terminal job.state carry optional job.duplicates. Its entries are root-relative
 names and logical byte sizes; groups/links/skipped.entry refer to indices in entries. Groups are
@@ -256,8 +308,14 @@ Personal sessions are refused before resolving or opening a root, with capabilit
 detail.reason=content_read_gated. The engine repeats the synthetic-grant admission before metadata
 and content I/O. Scan file identity, size, attributes and creation/write/change ticks must match
 fresh root-relative metadata before the existing handle reader compares content. Root revocation
-uses the existing root cancellation fence and refuses the report; no report survives that refusal.
+uses the existing root cancellation fence and refuses the report: after revocation `jobs.get` and
+`jobs.list` carry no report, including evidence from an already-terminal job. Events published before
+the revocation (the replay ring) and responses already cached for idempotent replay are not rewritten
+and may still hold the earlier report (tracked for redaction). Removing terminal evidence increments rev and
+publishes job.state once, without changing its outcome. Repeated revocation is idempotent. A pending
+job's permission error is published only with its terminal state; pending evidence stays private.
 `duplicates.cancel` uses the existing non-joining job cancellation seam and is idempotent; jobs.get
 shows cancel_requested until the worker drains. Cancelled jobs may retain verified partial evidence
-with stop=cancelled; a permission refusal instead carries error and no duplicates report. seq and rev
+with stop=cancelled when no earlier reader stop exists; a permission refusal instead carries error
+and no duplicates report. seq and rev
 have the same ordering semantics as scan jobs. Personal scan gating is unchanged.

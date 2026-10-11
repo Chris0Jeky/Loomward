@@ -6,6 +6,7 @@ import type {
 import type { TelemetrySample } from '../contracts.gen';
 import { createScanMock } from './mock-scan';
 import { createViewMock } from './mock-views';
+import { createInventoryMock } from './mock-inventory';
 import { generateTree, prng, type SynthNode } from './synth';
 import type { Transport } from './transport';
 
@@ -27,6 +28,7 @@ const EPOCH = 'e_mock_epoch';
 const REVS: Partial<Record<string, 'c' | 's' | 'cs'>> = {
   'health.get': 'c', 'tree.children': 'c', 'search.query': 'c',
   'roots.list': 'cs', 'tree.slice': 'cs', 'placement.candidates': 'cs', 'placement.simulate': 'cs',
+  'proposals.list': 'cs', 'proposals.get': 'cs', 'volumes.declare_tier': 'cs',
   'roots.revoke': 'cs', 'grants.list': 's', 'grants.revoke': 's', 'volumes.list': 's', 'tiers.model': 's',
 };
 
@@ -270,6 +272,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     'tree.children': (p) => children(p as unknown as TreeChildrenRequest),
     'search.query': (p) => search(p as unknown as SearchRequest),
     ...views.handlers,
+    ...createInventoryMock(now, fail),
     'grants.revoke': (p) => {
       const r = views.handlers['grants.revoke']!(p) as GrantRevokeResult;
       const g = rootGrants().find((x) => x.grant_id === r.grant_id);

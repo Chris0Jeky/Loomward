@@ -167,6 +167,10 @@ def cursor_roundtrip(page: Page, live, crumbs, check) -> None:
 
 
 def run_a11y(browser: Browser, base: str, check) -> None:
+    from test_app_inventory import run_inventory
+    inventory_page = browser.new_page(viewport={'width': 1440, 'height': 900})
+    run_inventory(inventory_page, base, check)
+    inventory_page.close()
     errors: list[str] = []
 
     def new_page(width: int = 1280, height: int = 800, **kw) -> Page:
