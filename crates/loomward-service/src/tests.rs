@@ -1502,6 +1502,67 @@ fn relist(svc: &Service, grant: i64, dir: i64, files: u64) {
     .unwrap();
 }
 
+/// #356: makes file row 2 a hard link of row 1, then rescans the fixture root keeping only row 2's
+/// name and the subdirectory, so the publication drops rows 1 and 3 and row 1's identity survives
+/// as row 2. The listing runs on its own thread and is returned paused inside the writer's
+/// pending-publication window (precious staging committed, catalogue transaction not begun);
+/// the caller acts, then releases the window and joins.
+fn rescan_paused_in_publication_window(svc: &Arc<Service>) -> std::thread::JoinHandle<()> {
+    let (identity, created, name): (Vec<u8>, i64, String) = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT a.file_id,a.created_ft,b.name FROM main.file a, main.file b WHERE a.id=1 AND b.id=2",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    svc.inner
+        .db()
+        .execute(
+            "UPDATE main.file SET file_id=?1,created_ft=?2 WHERE id=2",
+            rusqlite::params![identity, created],
+        )
+        .unwrap();
+    let writer = svc.inner.catalog.writer();
+    let WriteReply::Run(run) = writer
+        .call(WriteCommand::BeginRun {
+            grant_id: 1,
+            mode: "full".into(),
+            strategy: "fixture".into(),
+            started_at_ns: 0,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    let mut kept = file(&name, 1001);
+    kept.file_id = Some(identity);
+    kept.created_ft = Some(created);
+    let mut sub = Observation::file("sub", 0, Some(0));
+    sub.family = "none".into();
+    writer.publication_window().arm();
+    let worker = svc.clone();
+    let listing = std::thread::spawn(move || {
+        worker
+            .inner
+            .catalog
+            .writer()
+            .call(WriteCommand::DirListing(DirListing {
+                run_id: run,
+                dir_id: 1,
+                files: vec![kept],
+                dirs: vec![sub],
+                state: "complete".into(),
+                skipped: 0,
+                errors: 0,
+            }))
+            .unwrap();
+    });
+    writer.publication_window().wait_paused();
+    listing
+}
+
 fn root_slice(svc: &Service, root: i64) -> Payload {
     ok(
         "tree.slice",
