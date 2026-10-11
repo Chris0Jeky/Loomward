@@ -543,8 +543,25 @@ fn serve(
         revision: 0,
         fenced_listings: HashSet::new(),
     };
+    // The WAL cut after a forget, when a reader outlasted the first try: retried between commands.
+    let mut cut_pending = false;
     loop {
-        let Some(first) = pending.take().or_else(|| rx.recv().ok()) else {
+        let first = loop {
+            if let Some(p) = pending.take() {
+                break Some(p);
+            }
+            if !cut_pending {
+                break rx.recv().ok();
+            }
+            match rx.recv_timeout(Duration::from_millis(500)) {
+                Ok(p) => break Some(p),
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                    cut_pending = !wal_cut(&conn, Duration::ZERO)
+                }
+                Err(_) => break None,
+            }
+        };
+        let Some(first) = first else {
             break;
         };
         let checkpoint = matches!(first.command, WriteCommand::EndRun { .. });
@@ -802,10 +819,7 @@ fn serve(
                 .checkpoint_seconds += seconds;
         }
         if forget && results.iter().all(Result::is_ok) {
-            // Page images from before the purge sit in the WALs until they are folded in and cut.
-            let _ = conn.execute_batch(
-                "PRAGMA st.wal_checkpoint(TRUNCATE); PRAGMA main.wal_checkpoint(TRUNCATE)",
-            );
+            cut_pending = !wal_cut(&conn, Duration::from_millis(750));
         }
         for (p, result) in batch.into_iter().zip(results) {
             let Pending { reply, _permit, .. } = p;
@@ -817,6 +831,24 @@ fn serve(
         }
     }
     let _ = conn.execute_batch("PRAGMA main.wal_checkpoint(TRUNCATE)");
+}
+/// Page images from before a purge sit in the WALs until they are folded in and cut. Waits at most
+/// `wait` for readers, so a slow one never holds the committed receipt; the caller retries until
+/// both logs are cut. Whether every log was cut.
+fn wal_cut(conn: &Connection, wait: Duration) -> bool {
+    let Ok(timeout) = conn.query_row("PRAGMA busy_timeout", [], |r| r.get::<_, u32>(0)) else {
+        return false;
+    };
+    let _ = conn.busy_timeout(wait);
+    let cut = |db: &str| {
+        conn.query_row(&format!("PRAGMA {db}.wal_checkpoint(TRUNCATE)"), [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .is_ok_and(|busy| busy == 0)
+    };
+    let (state, catalog) = (cut("st"), cut("main"));
+    let _ = conn.busy_timeout(Duration::from_millis(u64::from(timeout)));
+    state && catalog
 }
 fn end_checkpoint(conn: &Connection) -> rusqlite::Result<[i64; 3]> {
     let timeout = conn.query_row("PRAGMA busy_timeout", [], |r| r.get::<_, u32>(0))?;

@@ -491,3 +491,34 @@ fn an_object_another_root_still_observes_keeps_its_reference() {
     assert_eq!(state_count(&f, "SELECT count(*) FROM human_feedback"), 2);
     assert_eq!(state_count(&f, "SELECT count(*) FROM collection_member"), 2);
 }
+
+#[test]
+fn a_reader_that_outlasts_the_forget_only_delays_the_log_cut() {
+    let f = fixture();
+    fold_wal(&f);
+    revoke(&f, f.grant_a);
+    // An older snapshot of state.db keeps the pre-purge pages alive; SQLite cannot cut the log under it.
+    let reader = Connection::open(f.temp.path().join("state.db")).unwrap();
+    reader
+        .execute_batch("BEGIN; SELECT count(*) FROM root_grant")
+        .unwrap();
+    let started = std::time::Instant::now();
+    forget(&f, f.grant_a, None).unwrap();
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "the forget must not wait for the reader"
+    );
+    assert!(
+        on_disk(&f, PATH_A),
+        "the reader's snapshot still needs those pages"
+    );
+    reader.execute_batch("COMMIT").unwrap();
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while on_disk(&f, PATH_A) && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(
+        !on_disk(&f, PATH_A),
+        "the writer cuts the log once the reader is gone"
+    );
+}

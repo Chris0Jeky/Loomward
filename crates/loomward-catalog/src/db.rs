@@ -291,7 +291,9 @@ pub(crate) fn open_pair(dir: &Path, dataset: &str) -> Result<Connection> {
         "ATTACH DATABASE ?1 AS st",
         [state.to_string_lossy().as_ref()],
     )?;
-    conn.execute_batch("PRAGMA st.synchronous=FULL;PRAGMA st.foreign_keys=ON")?;
+    conn.execute_batch(
+        "PRAGMA st.synchronous=FULL;PRAGMA st.foreign_keys=ON;PRAGMA st.secure_delete=ON",
+    )?;
     reconcile_references(&mut conn)?;
     let instance: String =
         conn.query_row("SELECT value FROM meta WHERE key='instance_id'", [], |r| {
