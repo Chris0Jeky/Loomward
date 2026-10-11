@@ -19,6 +19,15 @@
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
   --dur: 220ms;
   --gutter: 16px;
+  /* type and space steps the views share (a 4 px base; small text is never below 0.78rem) */
+  --fs-xs: 0.78rem;
+  --fs-sm: 0.85rem;
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --measure: 68ch;
   color-scheme: dark;
 }
 
