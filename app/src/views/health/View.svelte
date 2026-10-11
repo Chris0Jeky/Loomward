@@ -132,13 +132,18 @@
     : session.info.dataset_class === 'synthetic' ? 'A synthetic session scans registered lab folders only; it cannot add a folder.'
     : 'This session has no folder picker.');
 
-  /** One native dialog at a time. The roots are read again afterwards and focus comes back to the button, which stays in the page while it waits. */
+  /**
+   * One native dialog at a time. The roots are read again afterwards. The button stays in the page (aria-disabled, never
+   * disabled) so it keeps focus while the dialog is open; if focus was lost meanwhile it comes back, but it is never
+   * pulled away from wherever the owner moved it.
+   */
   async function addFolder() {
     if (picker.phase === 'waiting') return;
     await picker.ask(roots?.roots.map((r) => r.root_id) ?? []);
     await load();
     await tick();
-    addBtn?.focus();
+    const a = document.activeElement;
+    if (!a || a === document.body || !a.isConnected) addBtn?.focus();
   }
 
   /** Scan or Cancel: one button that keeps its place, so keyboard focus is never lost while a scan starts, runs and ends. */
