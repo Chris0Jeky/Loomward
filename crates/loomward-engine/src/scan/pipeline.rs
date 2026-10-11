@@ -84,6 +84,110 @@ pub struct ScanReport {
 }
 /// `discovered` value while a sighted directory's slot is still being created.
 const PENDING: usize = usize::MAX;
+
+#[cfg(test)]
+#[test]
+fn directory_limit_releases_pending_identity_before_parent_relist() {
+    use super::tests::{identity, Tree};
+    let ticket = ListingTicket {
+        dir: 1,
+        input_revision: 1,
+        old_parent: None,
+    };
+    let (tx, rx) = mpsc::sync_channel::<Envelope>(32);
+    let shared = Shared {
+        source: &Tree,
+        root_identity: identity(1),
+        round: AtomicU32::new(1),
+        run: 1,
+        options: ScanOptions::default(),
+        tasks: Mutex::new(Tasks {
+            queue: VecDeque::new(),
+            active: 0,
+            done: false,
+        }),
+        ready: Condvar::new(),
+        arena: Mutex::new(vec![Slot {
+            parent: None,
+            listings: 0,
+            seen: 0,
+            dir: Some(Arc::new(1)),
+            identity: reopen_key(identity(1)),
+            round: 1,
+            counts: [0; 3],
+            depth: 0,
+            own: Sums::ZERO,
+            listed: false,
+            sums: Sums::ZERO,
+            complete: false,
+            ticket,
+        }]),
+        discovered: Mutex::new(HashMap::new()),
+        catalog_dirs: Mutex::new(HashMap::from([(1, 0)])),
+        tx,
+        bytes: Arc::new(ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        cancel: Default::default(),
+        writer_failed: Default::default(),
+        attempted: Default::default(),
+        duplicate_identity: Default::default(),
+        enumeration_ns: Default::default(),
+        strategy: Mutex::new(Strategy::Portable),
+        limit_hit: Default::default(),
+        excluded: vec![],
+        max_dirs: 1,
+        held: Default::default(),
+        arena_bytes: crate::budgets::SCAN_BYTES,
+        node_bytes: 1,
+        handle_bytes: 1,
+        handles: AtomicUsize::new(1),
+    };
+    std::thread::scope(|threads| {
+        let writer = threads.spawn(move || {
+            while let Ok(envelope) = rx.recv_timeout(Duration::from_secs(2)) {
+                match envelope.command {
+                    Command::Prepare { reply, .. } => {
+                        reply.send(Ok(ListingTicket { dir: 2, ..ticket })).unwrap()
+                    }
+                    Command::Stop => break,
+                    _ => (),
+                }
+            }
+        });
+        let key = directory_key(identity(2)).unwrap();
+        shared.discovered.lock().unwrap().insert(key, PENDING);
+        let task = || Task {
+            dir: Arc::new(1),
+            slot: 0,
+            depth: 0,
+        };
+        assert!(!shared
+            .adopt(&task(), ticket, 1, &[120], 2, identity(2), Some(key))
+            .unwrap());
+        let adopted_marker = shared.discovered.lock().unwrap().get(&key).copied();
+        // Exercise the earlier reservation limit on two successive parent listings as well.
+        shared.discovered.lock().unwrap().remove(&key);
+        shared.visit(task()).unwrap();
+        shared.visit(task()).unwrap();
+        shared
+            .tx
+            .send(Envelope {
+                command: Command::Stop,
+                _permit: None,
+            })
+            .unwrap();
+        writer.join().unwrap();
+        assert_eq!(
+            adopted_marker, None,
+            "arena rejection must release the pending identity"
+        );
+        assert_eq!(
+            shared.duplicate_identity.load(Ordering::Relaxed),
+            0,
+            "a rejected child is not a duplicate on relist"
+        );
+        assert!(shared.limit_hit.load(Ordering::Acquire));
+    });
+}
 struct Slot<D> {
     parent: Option<usize>,
     /// Listings of this directory started so far.
@@ -497,6 +601,9 @@ impl<S: DirSource> Shared<'_, S> {
                 // be requested before then. Held handles and names, across all workers, count
                 // against the arena reservation.
                 let Some(held) = self.hold(raw.name.len() * 2) else {
+                    if let Some(key) = key {
+                        self.discovered.lock().unwrap().remove(&key);
+                    }
                     complete = false;
                     stopped = Some(IncompleteReason::Limit);
                     return Flow::Stop;
@@ -624,6 +731,9 @@ impl<S: DirSource> Shared<'_, S> {
                 return Ok(claimed);
             }
             if arena.len() >= self.max_dirs {
+                if let Some(key) = key {
+                    self.discovered.lock().unwrap().remove(&key);
+                }
                 self.limit_hit.store(true, Ordering::Release);
                 return Ok(false);
             }
@@ -1062,7 +1172,7 @@ pub fn run_scan<S: DirSource>(
                         }
                         let Some(identity) = slot.identity else {
                             slot.listed = false;
-                            slot.counts[2] = slot.counts[2].max(1);
+                            slot.counts[2] += 1;
                             continue;
                         };
                         let expected = reopen_identity(identity);
@@ -1078,7 +1188,7 @@ pub fn run_scan<S: DirSource>(
                             }
                             _ => {
                                 slot.listed = false;
-                                slot.counts[2] = slot.counts[2].max(1);
+                                slot.counts[2] += 1;
                                 continue;
                             }
                         }

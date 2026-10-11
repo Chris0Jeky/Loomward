@@ -20,7 +20,6 @@ import argparse
 import ctypes
 import json
 import os
-import socket
 import shutil
 import statistics
 import subprocess
@@ -80,27 +79,33 @@ def fixture_shell() -> Path:
     return exe
 
 
-def connect_webview(pw, port: int):
+def connect_webview(pw, profile: Path):
+    """WebView2 picks its own debug port (no pre-bound port to race) and writes it to DevToolsActivePort."""
+    port = None
     for _ in range(60):
+        marker = next(profile.rglob('DevToolsActivePort'), None)
         try:
+            port = port or int(marker.read_text().split()[0])
             return pw.chromium.connect_over_cdp(f'http://127.0.0.1:{port}')
         except Exception:
             time.sleep(0.5)
-    raise RuntimeError('could not reach the WebView2 DevTools endpoint')
+    found = 'no DevToolsActivePort' if port is None else f'DevToolsActivePort {port} refused'
+    raise RuntimeError(f'could not reach the WebView2 DevTools endpoint ({found})')
 
 
 def p9(exe: Path, out: Path, count: int) -> dict:
-    port = free_port()
     PROFILES.mkdir(parents=True, exist_ok=True)
     profile = Path(tempfile.mkdtemp(prefix='p9-profile-', dir=PROFILES))
-    env = dict(os.environ, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=f'--remote-debugging-port={port}',
+    env = dict(os.environ, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS='--remote-debugging-port=0',
                WEBVIEW2_USER_DATA_FOLDER=str(profile.resolve()))
     with open(out / 'webview2-p9-shell.log', 'w', encoding='utf-8') as log:
         shell = subprocess.Popen([str(exe)], env=env, stdout=log, stderr=subprocess.STDOUT)
         try:
             with sync_playwright() as pw:
-                browser = connect_webview(pw, port)
+                browser = connect_webview(pw, profile)
                 page = next(p for c in browser.contexts for p in c.pages)
+                # Let Tauri's initial navigation finish before replacing it with the fixture URL.
+                page.wait_for_selector('[data-mode]')
                 runs = []
                 for i in range(count):
                     page.goto(f'http://tauri.localhost/index.html?transport=mock&run={i}#/atlas')
@@ -122,12 +127,6 @@ def p9(exe: Path, out: Path, count: int) -> dict:
             if shell.poll() is None:
                 shell.kill()
                 shell.wait(timeout=20)
-
-def free_port() -> int:
-    with socket.socket() as s:
-        s.bind(('127.0.0.1', 0))
-        return s.getsockname()[1]
-
 
 def close_window(pid: int) -> bool:
     """Posts WM_CLOSE to the process's app window, as the title-bar close does."""
@@ -161,11 +160,10 @@ def main() -> int:
     if a.p9_runs < 1:
         ap.error('--p9-runs must be positive')
     a.out.mkdir(parents=True, exist_ok=True)
-    port = free_port()
     # Each run owns its profile: debug options must not collide with another WebView2 environment.
     PROFILES.mkdir(parents=True, exist_ok=True)
     profile = Path(tempfile.mkdtemp(prefix='profile-', dir=PROFILES))
-    env = dict(os.environ, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=f'--remote-debugging-port={port}',
+    env = dict(os.environ, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS='--remote-debugging-port=0',
                WEBVIEW2_USER_DATA_FOLDER=str(profile.resolve()))
     log_path = a.out / 'webview2-shell.log'
     results: dict = {'checks': []}
@@ -181,7 +179,12 @@ def main() -> int:
         shell = subprocess.Popen([str(a.exe)], env=env, stdout=log, stderr=subprocess.STDOUT)
         try:
             with sync_playwright() as pw:
-                browser = connect_webview(pw, port)
+                try:
+                    browser = connect_webview(pw, profile)
+                except RuntimeError as e:
+                    hosts = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq msedgewebview2.exe', '/FO', 'CSV', '/NH'],
+                                           capture_output=True, text=True).stdout.count('msedgewebview2.exe')
+                    raise RuntimeError(f'{e}; shell exit code {shell.poll()}, {hosts} msedgewebview2 processes') from e
                 results['webview2'] = browser.version
                 page = next(p for c in browser.contexts for p in c.pages)
                 page.wait_for_load_state('load')
