@@ -66,6 +66,36 @@ fn estimated_size_is_registry_evidence_not_disk_measurement() {
 }
 
 #[test]
+fn zero_registry_size_is_unknown_not_a_known_zero_byte_size() {
+    let zero = rows(&[(
+        "EstimatedSize",
+        RegistryValue::Bytes {
+            kind: 4,
+            data: 0u32.to_le_bytes().to_vec(),
+        },
+    )]);
+    assert_eq!(
+        zero[0].applications[0].estimated_size_bytes,
+        Evidence::Unknown {
+            reason: "provider reported zero (often unset)".into()
+        }
+    );
+    // Same coverage rule as any other unknown evidence field: the provider is Partial.
+    assert_eq!(zero[0].state, ProviderState::Partial);
+    let one_kib = rows(&[(
+        "EstimatedSize",
+        RegistryValue::Bytes {
+            kind: 4,
+            data: 1u32.to_le_bytes().to_vec(),
+        },
+    )]);
+    assert_eq!(
+        one_kib[0].applications[0].estimated_size_bytes,
+        Evidence::Known(1024)
+    );
+}
+
+#[test]
 fn scope_and_cross_view_duplicates() {
     let providers = rows(&[("DisplayName", value(1, "Synthetic Editor"))]);
     for (index, view) in REGISTRY_VIEWS.into_iter().enumerate() {
