@@ -40,7 +40,7 @@ def main():
     refusal('SnapshotMissing', 'missing_snapshot_and_unbound_or_failed_observations_are_not_recovery')
     replace('same-device-or-unknown', 'source.topology != Topology::IndependentTarget', 'false',
             'same_device_and_unknown_topology_are_not_recovery')
-    replace('successful-control', 'verified_recovery: refusals.is_empty(),', 'verified_recovery: false,',
+    replace('successful-control', 'reported_recovery_evidence: refusals.is_empty(),', 'reported_recovery_evidence: false,',
             'complete_restore_is_scoped_and_proposal_is_only_data')
     replace('integrity-summary', '&& summary.num_errors == 0', '&& true',
             'integrity_summary_errors_and_structure_only_check_do_not_verify_recovery')
@@ -59,6 +59,17 @@ def main():
     # Extra discriminating mutations for the numeric bound and identity binding.
     replace('huge-number', 'if !v.is_finite() || v.abs() >= i64::MAX as f64 {', 'if !v.is_finite() {',
             'malformed_wrong_types_huge_numbers_and_duplicate_keys_are_rejected')
+    # #349 fold-ins (backups stage 1).
+    replace('summary-shape', '.filter(|s| s.message_type == "summary" && s.num_errors >= 0)', '',
+            'unreadable_integrity_documents_refuse_without_losing_the_snapshot')
+    replace('bound-only', 'if id != source.snapshot_id {\n            continue;\n        }', '',
+            'only_the_bound_snapshot_is_validated_strictly')
+    replace('label-charset', '.all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))', '.all(|_| true)',
+            'labels_and_snapshot_time_are_restricted_charsets')
+    replace('time-charset', '.all(|b| b.is_ascii_alphanumeric() || b":.+-".contains(&b))', '.all(|_| true)',
+            'labels_and_snapshot_time_are_restricted_charsets')
+    replace('trailing-space-stem', ".trim_end_matches(' ')", '',
+            'traversal_and_windows_ambiguous_names_are_refused')
     pattern = r'observation.repository_id == source.repository_id\s*&& observation.snapshot_id == source.snapshot_id\s*&& observation.exit_code == 0'
     bypassed, count = re.subn(pattern, 'true', text)
     assert count == 1, 'binding seam moved'
