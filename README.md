@@ -197,7 +197,8 @@ measurement, not a guarantee.
 
 **Native enumeration spike** ([docs/research/enumeration-spike.md](docs/research/enumeration-spike.md),
 raw receipt [evidence/v3/enumeration-spike.json](evidence/v3/enumeration-spike.json)). Four ways of
-walking synthetic trees on a fast local NTFS volume (`G:`), host hardware withheld, wall time:
+walking synthetic trees on a fast local NTFS volume (`G:`), wall time (host hardware is withheld from this
+summary; the raw receipt keeps its fields as recorded at the time):
 
 | Strategy | 100,000 files | 3,000,000 files |
 |---|---:|---:|
