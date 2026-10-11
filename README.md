@@ -34,7 +34,8 @@ Research prototype, not a file manager or system optimiser.
   over a mock transport or a live `loomward-serve`. Anything the engine cannot answer is shown
   as unavailable or unknown, never as demo data.
 - The **desktop shell** (`native/`): a Tauri 2 and WebView2 build with a strict CSP and a
-  self-test. It runs the app against the contract fixtures.
+  self-test. It runs the app against the contract fixtures. An unsigned Windows preview installer is
+  published as a GitHub pre-release by hand ([RELEASING.md](RELEASING.md)).
 
 **In review or not built yet**
 
