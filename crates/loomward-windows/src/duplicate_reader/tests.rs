@@ -502,6 +502,35 @@ mod native {
     fn root_id(root: &Path) -> crate::enumerate::OpenedIdentity {
         NativeSource::default().open_root(root).unwrap().1
     }
+    /// #219: an identity-unverified root is refused before any pin, metadata or content read.
+    #[test]
+    fn identity_unverified_root_is_never_a_content_read_input() {
+        let Some(temp) = fixture() else { return };
+        fs::write(temp.path().join("a"), b"same").unwrap();
+        fs::write(temp.path().join("b"), b"same").unwrap();
+        let mut root = root_id(temp.path());
+        assert!(inspect(
+            temp.path(),
+            &root,
+            &[entry(temp.path(), "a"), entry(temp.path(), "b")],
+            Budget::test(),
+            Default::default()
+        )
+        .is_ok());
+        root.basis = crate::enumerate::IdBasis::Unverified;
+        assert_eq!(
+            inspect(
+                temp.path(),
+                &root,
+                &[entry(temp.path(), "a"), entry(temp.path(), "b")],
+                Budget::test(),
+                Default::default()
+            )
+            .unwrap_err(),
+            Reason::IdentityUnverified
+        );
+        assert_eq!(Reason::IdentityUnverified.as_str(), "identity_unverified");
+    }
     #[cfg(feature = "content-read")]
     #[test]
     fn native_candidate_hydration_is_root_relative_and_never_follows_a_junction() {
