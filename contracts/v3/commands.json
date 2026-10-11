@@ -18,6 +18,8 @@
   "commands": {
     "session.hello":              { "request": "EmptyRequest",              "result": "SessionInfo",           "adapters": ["tauri", "http"], "wave": 1, "effects": "none" },
     "health.get":                 { "request": "EmptyRequest",              "result": "Health",                "adapters": ["tauri", "http"], "wave": 2, "effects": "none" },
+    "apps.list": {"request": "MetadataPageRequest", "result": "ApplicationPage", "adapters": ["tauri", "http"], "wave": 2, "effects": "none"},
+    "desktop.contexts": {"request": "MetadataPageRequest", "result": "DesktopPage", "adapters": ["tauri", "http"], "wave": 2, "effects": "none"},
     "roots.list":                 { "request": "EmptyRequest",              "result": "RootList",              "adapters": ["tauri", "http"], "wave": 2, "effects": "none" },
     "roots.request_grant":        { "request": "RootGrantRequest",          "result": "RootGrantResult",       "adapters": ["tauri"],         "wave": 2, "effects": "none", "note": "Rust opens the native folder picker. HTTP: capability_unavailable; browser roots come only from loomward-serve --grant-root." },
     "roots.revoke":               { "request": "RootRevokeRequest",         "result": "RootRevokeResult",      "adapters": ["tauri", "http"], "wave": 2, "effects": "none" },
