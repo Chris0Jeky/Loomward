@@ -9,7 +9,7 @@ use loomward_protocol::*;
 use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 type Handled = Result<Out, ErrorBody>;
@@ -97,16 +97,39 @@ pub(crate) fn default_name(at: &Timestamp) -> String {
     )
 }
 
-/// Writes `bytes` to an owner-picked `target`, never through a link and never half-written.
+/// The folder a target resolves to may be written only when it is a local directory: a junction or
+/// link among its ancestors that resolves to a share is refused. `is_dir` runs only for a path that
+/// is not a network path, so a refused share is never touched.
+pub(crate) fn folder_allowed(resolved: &Path, is_dir: impl FnOnce(&Path) -> bool) -> bool {
+    !paths::network_path(resolved) && is_dir(resolved)
+}
+
+/// A target that passed every check: its path inside the resolved folder, and whether a file
+/// already exists there (then the owner must confirm the replace first).
+#[derive(Debug)]
+pub(crate) struct Target {
+    path: PathBuf,
+    folder: PathBuf,
+    pub(crate) exists: bool,
+}
+
+impl Target {
+    pub(crate) fn name(&self) -> String {
+        self.path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
+}
+
+/// Checks an owner-picked `target` before anything is written.
 ///
-/// Refuses before touching anything: a relative path, a network, device or verbatim namespace, a
-/// Windows device name, a stream name, a parent that is not a directory, and an existing target
-/// that is not a regular file or is a link, reparse point or cloud placeholder. The bytes go to a
-/// new temporary file in the same directory, are flushed, and replace the target by rename: a
-/// rename replaces the directory entry, so it never follows a link the target became meanwhile,
-/// and a failure leaves the target as it was and removes the temporary file. An existing regular
-/// target is replaced only because the owner confirmed that in the native dialog.
-pub(crate) fn write_export(target: &Path, bytes: &[u8]) -> Result<(), Why> {
+/// Refuses: a relative path, a network, device or verbatim namespace, a Windows device name, a
+/// stream name, a parent folder that is missing or resolves to a network path, and an existing
+/// final component that is not a regular file or is a link, reparse point or cloud placeholder.
+/// Local junctions and links among the ancestors are followed: the folder is canonicalised and the
+/// target joined to it, so a link swapped into the path later is not followed.
+pub(crate) fn check_target(target: &Path) -> Result<Target, Why> {
     let name = target.file_name().map(|n| n.to_string_lossy());
     if !target.is_absolute()
         || paths::network_path(target)
@@ -116,24 +139,34 @@ pub(crate) fn write_export(target: &Path, bytes: &[u8]) -> Result<(), Why> {
         return Err(Why::UnsupportedTarget);
     }
     let dir = target.parent().ok_or(Why::UnsupportedTarget)?;
-    // The folder as resolved: a junction or link among its ancestors that leads to a share is refused.
-    let resolved = std::fs::canonicalize(dir).map_err(|_| Why::UnsupportedTarget)?;
-    if paths::network_path(&resolved) || !resolved.is_dir() {
+    let folder = std::fs::canonicalize(dir).map_err(|_| Why::UnsupportedTarget)?;
+    if !folder_allowed(&folder, Path::is_dir) {
         return Err(Why::UnsupportedTarget);
     }
-    // From here on, everything happens in the resolved folder, so a link swapped in later is not followed.
-    let target = &resolved.join(target.file_name().ok_or(Why::UnsupportedTarget)?);
-    match std::fs::symlink_metadata(target) {
+    let path = folder.join(target.file_name().ok_or(Why::UnsupportedTarget)?);
+    let exists = match std::fs::symlink_metadata(&path) {
         Ok(meta) if !meta.is_file() || paths::unsafe_attributes(&meta) => {
             return Err(Why::UnsupportedTarget)
         }
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Ok(_) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
         Err(_) => return Err(Why::UnsupportedTarget),
-    }
+    };
+    Ok(Target {
+        path,
+        folder,
+        exists,
+    })
+}
+
+/// Writes `bytes` to a checked target, never half-written: a new temporary file in the resolved
+/// folder, flushed, then renamed over the target. A rename replaces the directory entry, so it
+/// never follows a link the target became meanwhile; a failure leaves the target as it was and
+/// removes the temporary file. The caller has the owner confirm a replace first.
+pub(crate) fn write_to(target: &Target, bytes: &[u8]) -> Result<(), Why> {
     let mut nonce = [0u8; 8];
     getrandom::fill(&mut nonce).map_err(|_| Why::WriteFailed)?;
-    let temporary = resolved.join(format!(
+    let temporary = target.folder.join(format!(
         ".loomward-diagnostics-{}.partial",
         nonce.iter().map(|b| format!("{b:02x}")).collect::<String>()
     ));
@@ -145,13 +178,19 @@ pub(crate) fn write_export(target: &Path, bytes: &[u8]) -> Result<(), Why> {
         file.write_all(bytes)?;
         file.sync_all()?;
         drop(file);
-        std::fs::rename(&temporary, target)
+        std::fs::rename(&temporary, &target.path)
     })();
     if written.is_err() {
         let _ = std::fs::remove_file(&temporary);
         return Err(Why::WriteFailed);
     }
     Ok(())
+}
+
+/// Check, then write (tests and callers without a dialog: an existing file is replaced).
+#[cfg(test)]
+pub(crate) fn write_export(target: &Path, bytes: &[u8]) -> Result<(), Why> {
+    write_to(&check_target(target)?, bytes)
 }
 
 impl Inner {
@@ -384,7 +423,15 @@ impl Inner {
         let Some(target) = dialogs.save_file(SAVE_TITLE, &default_name(&now())) else {
             return answer(DiagnosticsSaveOutcome::CancelledByUser, None, None);
         };
-        match write_export(&target, &bytes) {
+        let target = match check_target(&target) {
+            Ok(t) => t,
+            Err(why) => return answer(DiagnosticsSaveOutcome::Refused, None, Some(why)),
+        };
+        // Loomward asks itself before replacing a file; it does not rely on the save dialog's prompt.
+        if target.exists && !dialogs.confirm_replace(&target.name()) {
+            return answer(DiagnosticsSaveOutcome::CancelledByUser, None, None);
+        }
+        match write_to(&target, &bytes) {
             Ok(()) => answer(DiagnosticsSaveOutcome::Saved, Some(bytes.len()), None),
             Err(why) => answer(DiagnosticsSaveOutcome::Refused, None, Some(why)),
         }

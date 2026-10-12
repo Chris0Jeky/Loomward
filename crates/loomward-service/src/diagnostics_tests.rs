@@ -11,6 +11,10 @@ use std::path::PathBuf;
 struct Saves {
     queue: Mutex<Vec<Option<PathBuf>>>,
     asked: Mutex<Vec<(String, String)>>,
+    /// Answers to Loomward's own replace confirmation, in order (none left = decline), and the
+    /// file names it was shown.
+    replace: Mutex<Vec<bool>>,
+    replace_asked: Mutex<Vec<String>>,
 }
 
 impl Saves {
@@ -18,6 +22,8 @@ impl Saves {
         Arc::new(Self {
             queue: Mutex::new(picks.into_iter().rev().collect()),
             asked: Mutex::default(),
+            replace: Mutex::default(),
+            replace_asked: Mutex::default(),
         })
     }
     fn count(&self) -> usize {
@@ -38,6 +44,11 @@ impl NativeDialogs for Saves {
             .unwrap()
             .push((title.to_owned(), default_name.to_owned()));
         self.queue.lock().unwrap().pop().flatten()
+    }
+    fn confirm_replace(&self, name: &str) -> bool {
+        self.replace_asked.lock().unwrap().push(name.to_owned());
+        let mut answers = self.replace.lock().unwrap();
+        !answers.is_empty() && answers.remove(0)
     }
     fn confirm_disclosure(&self, _: &DisclosureSummary) -> Result<bool, ErrorBody> {
         Ok(false)
@@ -341,21 +352,62 @@ fn cancel_writes_nothing_and_a_retried_save_never_writes_twice() {
     assert_eq!(std::fs::read(out.join("a.json")).unwrap(), bytes);
 }
 
-/// An existing regular file is replaced only because the native dialog asked the owner first.
+/// Loomward asks before replacing a file, whatever the save dialog did: a decline (Cancel is the
+/// default) is `cancelled_by_user` and writes nothing; an accept replaces the file whole. A new file
+/// is never asked about.
 #[test]
-fn an_owner_confirmed_replace_overwrites_a_regular_file_whole() {
+fn a_replace_is_confirmed_by_loomward_and_a_decline_writes_nothing() {
     let tmp = temp_root();
-    let target = tmp.path().join("existing.json");
-    std::fs::write(&target, vec![b'x'; 300_000]).unwrap();
+    let out = tmp.path().join("out");
+    std::fs::create_dir(&out).unwrap();
+    let target = out.join("existing.json");
+    let old = vec![b'x'; 300_000];
+    std::fs::write(&target, &old).unwrap();
     let svc = open(&tmp.path().join("state"), DatasetClass::Synthetic);
     let (_, bytes, d) = preview(&svc);
-    let r = save(&svc, &Saves::new(vec![Some(target.clone())]), &d);
+    let saves = Saves::new(vec![
+        Some(target.clone()),
+        Some(target.clone()),
+        Some(out.join("new.json")),
+    ]);
+    // Declined.
+    let r = save(&svc, &saves, &d);
+    assert_eq!(r["outcome"], "cancelled_by_user", "{r:?}");
+    assert_eq!(std::fs::read(&target).unwrap(), old);
+    assert_eq!(names(&out), ["existing.json"], "no temporary file");
+    // Accepted.
+    saves.replace.lock().unwrap().push(true);
+    let r = save(&svc, &saves, &d);
     assert_eq!(r["outcome"], "saved");
     assert_eq!(
         std::fs::read(&target).unwrap(),
         bytes,
         "no tail of the old file"
     );
+    // A new file needs no confirmation.
+    let r = save(&svc, &saves, &d);
+    assert_eq!(r["outcome"], "saved");
+    assert_eq!(
+        *saves.replace_asked.lock().unwrap(),
+        ["existing.json", "existing.json"]
+    );
+}
+
+/// The resolved-folder rule alone: a share is refused before its folder is even looked at.
+#[test]
+fn a_folder_that_resolves_to_a_share_is_refused_unread() {
+    use crate::diagnostics::folder_allowed;
+    for share in [
+        r"\\?\UNC\synthetic-server\share\folder",
+        r"\\synthetic-server\share",
+    ] {
+        assert!(
+            !folder_allowed(Path::new(share), |_| panic!("a share was read")),
+            "{share}"
+        );
+    }
+    assert!(folder_allowed(Path::new(r"\\?\C:\synthetic"), |_| true));
+    assert!(!folder_allowed(Path::new(r"\\?\C:\synthetic"), |_| false));
 }
 
 #[cfg(windows)]

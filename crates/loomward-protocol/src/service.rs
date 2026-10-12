@@ -20,11 +20,17 @@ pub trait NativeDialogs: Send + Sync {
         None
     }
     /// Rust-side save dialog for a diagnostic bundle (docs/42 ADR-V3-24); the chosen path never
-    /// crosses IPC. The dialog asks before replacing an existing file. An adapter without one never
-    /// opens a dialog.
+    /// crosses IPC. Replacing an existing file needs [`NativeDialogs::confirm_replace`] too. An
+    /// adapter without one never opens a dialog.
     fn save_file(&self, title: &str, default_name: &str) -> Option<PathBuf> {
         let _ = (title, default_name);
         None
+    }
+    /// Loomward's own confirmation before a diagnostic save replaces the existing file `name`.
+    /// `true` only on explicit accept; Cancel is the default. Without one, nothing is replaced.
+    fn confirm_replace(&self, name: &str) -> bool {
+        let _ = name;
+        false
     }
     /// Native modal listing recipient, model, fields and every item of the summary. `true` only on
     /// explicit accept. A display-budget refusal is an error, not an owner decline.

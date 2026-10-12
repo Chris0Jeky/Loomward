@@ -102,8 +102,8 @@ impl DesktopDialogs {
 impl DesktopDialogs {
     /// The same parented dialog from the profile start folder, as a save dialog named for a
     /// diagnostic bundle (docs/42 ADR-V3-24). Every session may save: the bundle is redacted and
-    /// holds no personal data. One dialog at a time. Windows' save dialog (IFileSaveDialog, whose
-    /// defaults include FOS_OVERWRITEPROMPT) asks before an existing file is replaced.
+    /// holds no personal data. One dialog at a time. Whatever this dialog asks about an existing
+    /// file, the service replaces one only after [`REPLACE_TITLE`] is accepted.
     pub fn save_with(
         &self,
         title: &str,
@@ -159,6 +159,18 @@ pub const DISCLOSURE_TITLE: &str = "Loomward: send these items to the teacher?";
 pub const UNVERIFIED_TITLE: &str = "Loomward: list this folder without file identity?";
 pub const UNVERIFIED_TEXT: &str =
     "This volume cannot verify file identity; Loomward will list it read-only and never act on it";
+/// Loomward's own question before a diagnostic save replaces a file (ADR-V3-24): it does not rely
+/// on the save dialog's overwrite prompt.
+pub const REPLACE_TITLE: &str = "Loomward: replace this file?";
+
+/// Names the file, with hidden characters spelled out, and says what Cancel (the default) does.
+pub fn replace_text(name: &str) -> String {
+    format!(
+        "Replace {} with the diagnostic bundle you previewed?\n\nThe file's current contents are lost. \
+         Cancel (the default) writes nothing.",
+        visible(name)
+    )
+}
 /// Conservative temporary MessageBox budget; personal use needs LW-111's scrolling dialog.
 pub const MAX_DISCLOSURE_CHARS: usize = 2048;
 pub const MAX_DISCLOSURE_ITEMS: usize = 4;
@@ -181,6 +193,14 @@ impl NativeDialogs for DesktopDialogs {
     /// Any session: the path goes to the service in-process and never crosses IPC.
     fn save_file(&self, title: &str, default_name: &str) -> Option<PathBuf> {
         self.save_with(title, default_name, |dialog| dialog.save_file())
+    }
+
+    /// Every session, like the save dialog; Cancel is the default, and a second dialog declines.
+    fn confirm_replace(&self, name: &str) -> bool {
+        let Ok(_active) = self.active.try_lock() else {
+            return false;
+        };
+        (self.ask)(REPLACE_TITLE, &replace_text(name))
     }
 
     /// Personal sessions only (the picker never opens in a synthetic one); Cancel is the default.
@@ -465,6 +485,40 @@ mod tests {
             );
             drop(active);
         }
+    }
+
+    /// The replace question names the file (hidden characters spelled out), is asked in every
+    /// session, accepts only on OK, and is never stacked on another dialog.
+    #[test]
+    fn replace_confirmation_names_the_file_and_defaults_to_cancel() {
+        for (class, accept) in [
+            (DatasetClass::Synthetic, true),
+            (DatasetClass::Personal, false),
+        ] {
+            let asked = Arc::new(Mutex::new(Vec::new()));
+            let seen = asked.clone();
+            let dialogs = DesktopDialogs::with_prompt(class, move |title, text| {
+                seen.lock()
+                    .unwrap()
+                    .push((title.to_owned(), text.to_owned()));
+                accept
+            });
+            assert_eq!(dialogs.confirm_replace("bundle\u{202E}.json"), accept);
+            let busy = dialogs.active.lock().unwrap();
+            assert!(!dialogs.confirm_replace("bundle.json"), "stacked question");
+            drop(busy);
+            let asked = asked.lock().unwrap();
+            assert_eq!(asked.len(), 1);
+            assert_eq!(asked[0].0, REPLACE_TITLE);
+            assert!(
+                asked[0].1.starts_with("Replace bundle\\u{202E}.json with"),
+                "{}",
+                asked[0].1
+            );
+            assert!(asked[0].1.contains("Cancel (the default) writes nothing"));
+        }
+        // With no owner window the real box is never shown, so nothing is replaced.
+        assert!(!DesktopDialogs::new(DatasetClass::Personal).confirm_replace("bundle.json"));
     }
 
     #[test]
