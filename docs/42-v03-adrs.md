@@ -522,13 +522,30 @@ identity is committed before anything is created in it, and each item's identity
 (batched) and before any write. An entry the journal does not know is never adopted or deleted, even under a
 manifest name. Recovery decides from journal plus disk (doc 47 section 5) and never resumes an effect after a
 restart without the owner. Revoking a source grant, or an emergency stop, commits first and bumps a fence epoch.
-The executor rechecks it at every cooperative boundary (each item open, each 1 MiB chunk, each journal commit,
-before publish). On a change it issues no further effects, journals `revoked`, cancels and removes only its own
-journaled staging. Stale-epoch records are rejected (doc 05, ADR-V3-22).
+The executor runs every effect as one step under a per-run admission lock: read the epoch, then make one bounded
+call (one create, one write of at most 1 MiB, one flush, one metadata set, or the rename). The revocation acquires
+the same lock before it is acknowledged, so no effect step starts after an acknowledged revocation, and at most one
+step already in flight finishes before it (doc 47 section 5).
+
+Before publish, a moved epoch means: no further effects, `revoked` is journaled, any publish intent is withdrawn, the
+run is cancelled, and only Loomward's own journaled staging is removed. The rename step's own epoch read is the last
+point a revocation can stop publish. After that the fence never cancels: the run confirms and commits, and the
+receipt is annotated `revoked_after_publish`. Stale-epoch records are rejected, except `committed`, `revoked`,
+`publish_withdrawn` and the cleanup records (doc 05, ADR-V3-22).
 5. *Verification.* SHA-256 per stream on the bytes read, compared with an independent non-cached read-back of the
 destination; signature check of each source before and after; a final tree check of staging against the manifest;
 after publish, the final folder's identity must equal the staging folder's. One retry from zero on a mismatch, then
-`needs_attention`. The receipt states the limit: the read-back is below the system cache, not proof against a device
+`needs_attention`.
+
+The final check is made under deny-write holds: every staged file is reopened by ID without `FILE_SHARE_WRITE`, and
+it is hashed through that held handle. The holds stay open through the rename. If doc 47 hypothesis H2 shows they
+block the rename, they are released just before it and reacquired by ID just after it, and every file's content is
+re-hashed.
+
+After the rename, a post-publish confirmation runs under the holds. It checks the tree shape, the identities, the
+preserved metadata (which share modes do not protect) and, on the release path, the content. Only then are
+`committed` and a verified receipt written. Any late change fails closed: the outcome is `published_unverified`, the
+run goes to `needs_attention`, and the copy is kept. The receipt states the limit: the read-back is below the system cache, not proof against a device
 cache.
 6. *Metadata.* Preserve default and named data streams, size, creation and last-write times and the read-only,
 hidden, archive and not-content-indexed attributes, and verify each. Security descriptors are inherited from the
@@ -543,15 +560,19 @@ preview, open or locked sources (deny-write open fails), insufficient space, des
 destination in a cloud sync root or on a removable, network or unsupported volume, case-only collisions under the
 destination's rules, unrepresentable names and over-length paths (doc 47 section 7). In-use, access and space
 refusals block resumably; the rest end the operation.
-8. *Resume and rollback.* Resume revalidates and continues; cancel or abandon before publish removes only Loomward's
-own staging entries. Each entry is opened by its journaled ID, and both its creation time and its name-to-ID binding
-are rechecked. It is then removed with a POSIX disposition that ignores the read-only attribute (or after clearing
+8. *Resume and rollback.* Resume revalidates and continues. Resume out of `needs_attention` needs the owner to have
+resolved the cause and to confirm again; `source_changed` can only be abandoned. Cancel or abandon before publish
+removes only Loomward's own staging entries. Cleanup refuses outright in two cases: the staging name no longer
+resolves to the journaled staging identity, or the run holds a publish intent that was not withdrawn. Cleanup
+therefore never follows an ID into a published folder. Each entry is opened by its journaled ID, and both its
+creation time and its name-to-ID binding are rechecked. It is then removed with a POSIX disposition that ignores the read-only attribute (or after clearing
 that bit on the same verified handle), since staged files may be read-only (Q1). Anything unjournaled or failing a
 check is left, and the operation goes to `needs_attention`. A published copy is never removed: undo is a new operation (doc 08).
 9. *Evidence.* Each operation writes a doc 08 recovery receipt: operation and manifest digests, grants, topology
 (same volume or not), identities before and after, intended, copied and verified bytes (ADR-V3-04 strings), per-stream
 hashes, metadata results per class, refusals by code, phase durations and rates, resumes, versions, and one outcome
-(`committed`, `cancelled`, `refused`, `needs_attention`). Space relief is always reported as none. Public evidence
+(`committed`, `cancelled`, `refused`, `needs_attention`, `published_unverified`), plus any `revoked_after_publish`
+annotation. Space relief is always reported as none. Public evidence
 carries counts and buckets only.
 10. *Gate.* The capability opens only in lane C8, after all of: the lab suite, the crash matrix by child-process
 kill, the fault and refusal proofs, **real power-cut runs** by the method the owner picks in Q2, a **proven restore**

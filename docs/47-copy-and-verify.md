@@ -118,8 +118,41 @@ times are set bottom-up after their children are verified.
 `ReplaceIfExists = FALSE`, which returns an error when the target exists [W5]. Staging and final names share the
 same parent, so the rename is a same-directory name change on one volume and atomic from a reader's view.
 
+**Holding staged content from the final check to the receipt.** Staged children inherit the destination ACL, so
+another process in the same account could change a staged file between the final tree check and the rename. The
+protocol closes that window in two parts: hold, then confirm.
+
+1. **Hold.** The final tree check reopens every staged file by its journaled ID with read access and share mode
+   `FILE_SHARE_READ | FILE_SHARE_DELETE`, never `FILE_SHARE_WRITE`. That open fails if anyone already has the file
+   open for write (`staging_in_use`, resumable), and while it is held no one can open the file for write [W2]. The
+   final content hash is taken through that held handle (non-cached), so the bytes verified are the bytes held. The
+   holds stay open until the `committed` record (up to 200,000 handles; assumption, measured in C2).
+2. **Publish with holds, if H2 allows.** If H2 shows that held children opened with `FILE_SHARE_DELETE` do not block
+   renaming their ancestor, the rename is issued with every hold in place. If H2 shows they do, the holds are released
+   just before the rename and reacquired by ID straight after it. Content can change only in that gap, and step 3
+   then re-hashes every file.
+3. **Confirm after publish.** Under the holds, still held or reacquired, a post-publish confirmation checks four
+   things:
+   - the published tree's entries, names and IDs against the manifest, with no extras;
+   - each item's preserved metadata (section 6), because share modes do not stop a holder of write-attributes
+     access from changing times or attributes;
+   - that the final folder's identity equals the staging identity;
+   - content, re-hashed, but only on the H2-negative path.
+
+   Only then is `committed` journaled and a verified receipt issued. Any difference fails closed: nothing is
+   recorded as verified or committed for the changed items, the run goes to `needs_attention`, and the receipt
+   outcome is `published_unverified`. The published copy is kept, because a published copy is never removed.
+
 **Staging removal.** Only on cancel, abandon or a redo after a failed item. Only inside the staging folder whose
-identity was journaled, and only for entries whose identity was journaled. Each one is opened by ID [W2], and its
+identity was journaled, and only for entries whose identity was journaled. Before touching any entry, cleanup checks
+two things and refuses outright, with the operation going to `needs_attention`, if either fails:
+
+- the staging name, opened relative to the pinned destination parent, must still resolve to the journaled staging
+  identity;
+- the run must hold no publish intent that has not been withdrawn (section 5).
+
+A folder that has been renamed to its final name is therefore never reached by following IDs, and a published copy
+is never removed. Each entry is then opened by ID [W2], and its
 creation time must match the journal. Its manifest name must still resolve to that same ID through the pinned
 staging handle. It is then removed with a POSIX-semantics disposition [W14]. Staged files can carry the read-only
 attribute (section 6), and a read-only file refuses deletion [W14]. So the disposition sets
@@ -147,27 +180,37 @@ stateDiagram-v2
   approved --> preparing: start (approval consumed)
   preparing --> copying: staging folder created, identity journaled
   preparing --> refused: revalidation failed
-  copying --> staged: every item verified, tree check passed
+  preparing --> cancelling: grant revoked or emergency stop (fenced)
+  copying --> staged: every item verified, tree check passed under deny-write holds
   copying --> blocked: resumable item refusal
+  copying --> needs_attention: non-resumable item refusal, or journal and disk disagree
   blocked --> copying: owner resumes (native confirmation)
   copying --> cancelling: owner cancels
   blocked --> cancelling: owner abandons
   copying --> cancelling: grant revoked or emergency stop (fenced)
   blocked --> cancelling: grant revoked (fenced)
   staged --> cancelling: grant revoked or emergency stop (fenced)
-  staged --> publishing: publish intent journaled
-  publishing --> committed: renamed without replace, final identity equals staging identity
-  publishing --> blocked: rename refused while a handle is held
-  publishing --> needs_attention: final name taken, or identity mismatch
+  staged --> publishing: epoch checked, publish intent journaled
+  publishing --> cancelling: epoch moved at the pre-rename check under the admission lock (publish withdrawn, no rename)
+  publishing --> committed: renamed without replace, post-publish confirmation passed (a revocation acknowledged after the rename only annotates)
+  publishing --> blocked: rename refused while another process holds a handle
+  publishing --> needs_attention: final name taken, identity mismatch, or post-publish confirmation failed (copy kept, receipt published_unverified)
+  needs_attention --> copying: owner resolves the cause and confirms (native confirmation)
+  needs_attention --> cancelling: owner abandons
   cancelling --> cancelled: own staging removed
-  cancelling --> needs_attention: unexpected entry in staging
-  copying --> needs_attention: journal and disk disagree
+  cancelling --> needs_attention: unexpected entry, or cleanup refused (section 4)
   committed --> [*]
 ```
 
 Items move `pending -> created -> written -> metadata_set -> verified`, or to `failed(reason)`. A verification
 mismatch retries that item once from zero (new staging object, old one removed by identity); a second mismatch is
 `needs_attention`, never a silent pass.
+
+`needs_attention -> copying` is allowed only when the owner has resolved a cause outside Loomward and confirms in the
+native dialog. Such causes are removing an unjournaled leftover, or moving away an entry that took the final name.
+Resume then re-runs every start check and continues from the first unverified item. When every item is already
+verified, it passes straight through `staged` to `publishing`. A cause Loomward cannot recheck to its original state,
+such as `source_changed`, has only one exit: Abandon. A new preview makes a new operation.
 
 **Write-ahead order and recovery.** Every effect has its intent committed to `state.db` (`synchronous=FULL`,
 ADR-V3-22) before it happens and its outcome after. Loomward has cleanup authority over an entry only when its
@@ -185,27 +228,62 @@ identity is in the journal. Nothing is ever adopted by name. Three ordering rule
 | item create batch and its identity commit | empty files under manifest names, identities not journaled | never adopted or deleted (a file someone created after the crash under that name would look the same); each such name is reported and the operation waits in `needs_attention` until the owner removes it, then resumes |
 | identity commit and `verified` | partial or unverified file with a journaled identity | reopen by ID; creation time and name-to-ID must match (section 4); remove it and redo the item; on any mismatch, `needs_attention` and touch nothing |
 | `verified` batch and next batch | verified files | re-verify (non-cached read-back) only the unrecorded ones |
-| publish intent and rename | staging name present with its identity | rename again |
-| rename and `committed` | final name with the staging identity | record `committed`, write the receipt |
+| publish intent and rename | staging name present with its identity | on owner Resume, re-read the epoch: unchanged, rename again; moved, journal `publish_withdrawn` and cancel |
+| rename and `committed` | final name with the staging identity; holds lost with the process | reacquire holds by ID and run the post-publish confirmation with a full content re-hash; pass, record `committed` (epoch-exempt) and write the receipt, noting any revocation; fail, `needs_attention` with outcome `published_unverified`; never cleanup |
 | rename and `committed` | final name with another identity, staging gone | `needs_attention` (someone else acted), touch nothing |
 
 **Revocation and emergency stop.** Doc 05 requires every consequential step to recheck grants, and an emergency
 stop to halt cooperative work at documented boundaries. ADR-V3-22 commits a revocation before it cancels anything,
-then fences later messages. The copy run follows the same pattern:
+then fences later messages. The copy run follows the same pattern, with one addition. A fence check followed by an OS call is not atomic on its own, so the two are serialised through a per-run
+**admission lock** (an in-process lock; the engine is one process, ADR-V3-01).
 
-1. Revoking a source grant (or pressing emergency stop) commits first in `state.db`. That commit bumps the run's
-   fence epoch and marks the approval unusable.
-2. The executor reads the epoch at every cooperative boundary: before each item open, after every 1 MiB chunk, before
-   each identity or `verified` commit, and before the publish intent.
-3. When the epoch has moved, the executor issues no further create, write, metadata or rename. It closes its source
-   handles, journals `revoked`, and goes to `cancelling`. Removing its own journaled staging (section 4) is the only
-   effect still allowed.
-4. The journal rejects any later item or publish record carrying the old epoch, so a worker that is still in flight
-   cannot advance the run.
-5. Resume is refused (`grant_revoked`). A new grant needs a new preview and a new approval.
+1. **Effect steps.** The executor runs every effect as one step. A step takes the lock, reads the epoch, issues
+   exactly one bounded effect call and releases the lock. The bounded calls are: one create, one write of at most
+   1 MiB, one flush, one metadata set, or the rename. Steps happen at every cooperative boundary: each item open,
+   each chunk, before each identity or `verified` commit, the publish intent, and the rename itself. The rename
+   step's epoch read is therefore the pre-rename check (HIGH fix (d)).
+2. **Revocation.** Revoking a source grant, or pressing emergency stop, runs in this order:
+   1. commit the revocation and bump the run's fence epoch in `state.db`, marking the approval unusable;
+   2. acquire the run's admission lock, which waits for at most one in-flight step;
+   3. read and journal the run's position (`stopped_before_publish`, or `published`);
+   4. release the lock and return the acknowledgement.
+3. **Acknowledgement semantics.** An acknowledged revocation means four things:
+   1. the revocation is durable;
+   2. no effect step of the run starts after the acknowledgement, because every later step reads the new epoch under
+      the lock;
+   3. at most one step that was already in flight completed before it, and the acknowledgement names that step;
+   4. the acknowledgement says which side of publish the run is on.
 
-A rename that was already issued is atomic, so revocation either lands before the publish intent (the run is
-cancelled) or after the rename (the run is committed, and the receipt notes the revocation time).
+   If a step does not return within 30 s (stuck I/O), the revocation is reported as `pending_in_flight_step`, not
+   acknowledged. It is acknowledged when the step returns (assumption: 30 s, measured in C2).
+4. **Before publish.** Up to and including the rename step's epoch read, a moved epoch means:
+   - no further create, write, metadata change or rename;
+   - close the source handles, journal `revoked`, and go to `cancelling`;
+   - if a publish intent was already journaled, withdraw it (`publish_withdrawn`) in the same transaction, so no
+     rename is issued;
+   - the only effect still allowed is removing Loomward's own journaled staging (section 4). Cleanup steps also take
+     the lock but are not fenced.
+5. **After the rename.** Once the rename step has read an unchanged epoch, the rename completes inside that step.
+   A revocation can only be acknowledged after it, and the fence no longer cancels: the post-publish confirmation
+   (section 4) still runs, because it is a read of the destination and not an effect. The receipt is annotated
+   `revoked_after_publish` with the acknowledgement time (HIGH fix (a)).
+6. **Stale records.** The journal rejects any later item or publish-intent record that carries the old epoch, so a
+   worker still in flight cannot advance the run. Four records are exempt from the epoch check: `committed`,
+   `revoked`, `publish_withdrawn`, and the cleanup records (HIGH fix (b)).
+7. **Resume.** Resume is refused (`grant_revoked`). A new grant needs a new preview and a new approval.
+
+How revocation meets publish:
+
+- **Acknowledged before the rename step takes the lock**, whether before or after the publish intent: the step reads
+  the new epoch, the intent (if any) is withdrawn, there is no rename, and the run is cancelled.
+- **Requested while the rename step holds the lock:** the acknowledgement waits for the rename to return, then
+  reports `published`. The run goes on to confirmation and `committed`, annotated.
+- **After a crash between the rename and `committed`:** recovery finds the final name carrying the staging identity
+  and confirms (section 5 table). It never cancels, even if a revocation landed meanwhile.
+
+The rename is atomic. Cleanup refuses whenever the staging name no longer resolves to the staging identity, or a
+publish intent is not withdrawn (section 4, HIGH fix (c)). So no path can remove a published copy, and no publish
+starts after a revocation is acknowledged.
 
 A restart never resumes an effect by itself: interrupted operations wait in a banner for Resume (native
 confirmation) or Abandon. Resume revalidates grants, destination identity, space and each pending source signature;
@@ -242,11 +320,14 @@ Checked at preview (P), at start or resume (S) and per item at open (I). "Resuma
 | Code | Cause | When | Resumable |
 |---|---|---|---|
 | `identity_unverified` | source or destination not NTFS/ReFS (FAT, exFAT, unknown; #219 rows never back an effect) | P, S | no |
-| `cloud_placeholder` | offline or recall attributes, cloud reparse tag; never recalled | P, I | no |
-| `reparse_point` | any other reparse tag in the group | P, I | no |
-| `unsupported_attribute`, `extended_attributes`, `alternate_streams_unsupported`, `too_many_streams` | section 6 | P, I | no |
-| `special_file` | handle is not a disk file (`duplicate_reader/native.rs:196-198`) | I | no |
-| `source_changed` | signature differs from the manifest, or the name no longer reaches the object | S, I | no: re-preview |
+| `cloud_placeholder` | offline or recall attributes, cloud reparse tag; never recalled | P, I | no; at I the run goes to `needs_attention`, staging kept |
+| `reparse_point` | any other reparse tag in the group | P, I | no; at I the run goes to `needs_attention`, staging kept |
+| `unsupported_attribute`, `extended_attributes`, `alternate_streams_unsupported`, `too_many_streams` | section 6 | P, I | no; at I the run goes to `needs_attention`, staging kept |
+| `special_file` | handle is not a disk file (`duplicate_reader/native.rs:196-198`) | I | no; the run goes to `needs_attention`, staging kept |
+| `source_changed` | signature differs from the manifest, or the name no longer reaches the object | S, I | no; at I the run goes to `needs_attention`, staging kept; only exit Abandon, then a new preview |
+| `staging_name_taken` | `FILE_CREATE` of an item fails on create or resume because the name is taken in staging (an unjournaled leftover or someone else's entry) [W1] | I | after the owner removes the entry: the run goes to `needs_attention`, then `copying` on confirmation |
+| `staging_in_use` | a staged file is open for write elsewhere when the final check takes its deny-write hold (section 4) | I | yes |
+| `changed_after_verification` | the post-publish confirmation finds a change (section 4) | publish | no; the run goes to `needs_attention`, outcome `published_unverified`, copy kept |
 | `source_in_use` | sharing violation on the deny-write open | I | yes |
 | `access_denied` | source unreadable, or destination write blocked (for example by Controlled Folder Access) | I | yes |
 | `insufficient_space` | caller-available bytes < need + reserve, or preallocation failed | P, S, I | yes |
@@ -273,6 +354,10 @@ those the rule is **no further effects**:
 - `publish_in_use` allows only the bounded rename retries;
 - the receipt names the item, the code and the last journaled state.
 
+Where a runtime refusal leaves the run: a resumable code sends it to `blocked`, with staging kept and Resume or
+Abandon offered. A non-resumable code sends it to `needs_attention`, with staging kept, and Abandon is the exit
+unless the owner can resolve the cause (section 5). Both keep the no-further-effects rule.
+
 Destination name: the server proposes it (the single top source name, else "Loomward copy" plus the date) and adds
 " (2)", " (3)" when the parent already has it, so a new-folder copy never needs an overwrite. Space need is the
 cluster-rounded size of every stream plus 4 KiB per folder; the reserve is the larger of 1 GiB and 1% of the
@@ -284,7 +369,9 @@ volume (assumption, to be measured in C5).
 |---|---|---|---|
 | Process crash or kill at any step | non-terminal journal state at start | section 5 table; wait for owner | C6 crash matrix |
 | Power loss | same, plus files the OS had not flushed | redo unverified items; re-verify the last batch | G5: real power-cut runs (Q2); lab-only until they pass |
-| Grant revoked or emergency stop mid-run | fence epoch at cooperative boundaries | no further effects; journal `revoked`; cancel; own staging removed | lab test revoking at each boundary, plus a stale-epoch record rejected |
+| Grant revoked or emergency stop mid-run | fence epoch read under the admission lock at every step | acknowledged only after the in-flight step; no step starts afterwards; before publish: cancel, own staging removed; after the rename: commit, annotated | lab test revoking at each boundary; stale-epoch record rejected; publish barrier test (section 10) |
+| Revocation, or a crash followed by a revoke, between the rename and `committed` | final name holds the staging identity; staging name gone | `committed` is epoch-exempt; cleanup refuses; receipt annotated | revoke at CP-13 and after a crash at CP-13; the published copy must survive byte-identical |
+| Staged file changed between the final check and the receipt | deny-write holds; post-publish confirmation | no verified or committed receipt for changed bytes; `needs_attention`, `published_unverified`; copy kept | publish TOCTOU test (section 10) |
 | Same-name entry appears in staging after a crash | identity not in the journal | never deleted or adopted; `needs_attention` | crash at the create batch, then a file planted under that name |
 | Read-only staged file during cleanup | deletion refused [W14] | ignore-read-only disposition, or clear the bit on the verified handle (H6) | native test |
 | Source edited after preview | signature mismatch | `source_changed`, re-preview | real edit fixture |
@@ -344,6 +431,27 @@ HTTP adapter refuses personal approvals, as it does personal disclosure grants (
   signature-identical; nothing in the destination parent changed except the staging or final folder; no receipt says
   completed unless the C1 verifier agrees; abandon leaves the parent exactly as before. A process kill keeps the OS
   cache, so it proves crash consistency, **not** power-loss durability.
+- **Publish TOCTOU regression.** Pause at a fault point after the final tree check. A second process then tries
+  four mutations against a staged file:
+  - open it for write and change one byte;
+  - change its last-write time and attributes through write-attributes access;
+  - rename a staged child;
+  - add a file inside staging.
+
+  Then release the pause. Run this once per H2 outcome, holds kept and holds released around the rename. Required:
+  - while holds are in place, the open for write fails;
+  - every mutation that does succeed is caught by the post-publish confirmation;
+  - no `verified` record and no `committed` receipt ever covers changed bytes, metadata or tree shape;
+  - the published copy is not removed.
+- **Publish barrier test (revocation linearisation).** Pause after the rename step has taken the admission lock but
+  before its epoch read. In a second thread, after the final epoch check and the committed publish intent, commit a
+  revoke and wait for its acknowledgement while the pause holds the lock, then release. Required:
+  - the acknowledgement arrives only after the lock is released;
+  - the rename step reads the new epoch and issues no rename (`publish_withdrawn`, cancelled);
+  - no publish happens after the acknowledgement.
+
+  The mirror case pauses inside the rename step after its epoch read. There the acknowledgement must wait for the
+  rename and report `published`.
 - **Power cut (real, mandatory per HUMAN_TODO q-39).** Use the method the owner picks in Q2. Run at least 20 hard
   power-offs at random points during lab copies, including inside the create-batch, publish and cleanup windows.
   After each, boot, recover and resume or abandon, then apply the same oracle as the crash runs.
@@ -401,6 +509,23 @@ C7 run on synthetic sessions, and C8 does not open, whatever else is green.
     personal data.
 
   (c) never opens the gate. Recommended: (a), because it repeats cheaply and needs no physical action after setup.
+
+### Open items for lane C2
+
+Recorded from the final review of #423 and deliberately not resolved in this design:
+
+- G4's runtime proofs should also cover the crash-then-redo path (a refusal, a crash, a resume) and not only the
+  live path.
+- Wording that says refusals come "before effects" (ADR-V3-25 consequences) predates the split between preflight and
+  runtime refusals and should say "preflight refusals".
+- The crash-point list CP-01 to CP-15 should be extended to cover the new boundaries: the identity commit of a
+  create batch, the rename step's epoch read under the lock, `publish_withdrawn`, the post-publish confirmation and
+  each cleanup removal.
+- Which lane owns the G5 power-cut runs and the G9 proven restore (C6 or a separate lane) is not decided.
+- The create-batch intent record should list the names it is about to create, so recovery can report leftovers
+  precisely.
+- Cleanup should check that a staged file's link count is 1 before removing it, so that a hard link someone added to
+  a staged file is never removed by an unlink that looks like cleanup.
 - **Q3 Destination shape.** v1 always creates a new folder (with " (2)" when the name exists) and never writes into
   an existing folder. Is that enough, or do you need copies into an existing folder (new names only, never
   overwriting)?
@@ -409,7 +534,11 @@ C7 run on synthetic sessions, and C8 does not open, whatever else is green.
 
 - **H1.** `NtCreateFile` with `RootDirectory` = an open file handle and the name `:<stream>` opens or creates that
   named stream on NTFS and ReFS.
-- **H2.** Renaming a folder fails while another process holds a handle on a file beneath it; which error code.
+- **H2.** Renaming a folder fails while another process holds a handle on a file beneath it; which error code; and
+  whether Loomward's own deny-write holds (`FILE_SHARE_READ | FILE_SHARE_DELETE`) on the children block its own
+  rename. That last answer picks the publish path in section 4.
+- **H7.** A deny-write open fails while another process keeps a writable mapped section of the file after closing
+  its handle, so a mapping cannot change held bytes.
 - **H3.** A `FILE_FLAG_NO_BUFFERING` read by ID after `FlushFileBuffers` returns the written bytes, including the
   final partial sector (a short count at end of file).
 - **H4.** Times set through `FileBasicInfo` after the last write survive close and reopen unchanged.
