@@ -1,12 +1,30 @@
 # Loomward
 
-**A local-first Windows workspace, storage and resource companion.** Loomward aims to show where
-your disk space goes (a far faster WinDirStat that says plainly what it does not know), learn how
-you organise your files, let you arrange them virtually, simulate how data could be balanced
-across fast and slow disks, and explain what is using your memory and processes, all without
-changing anything on your machine. Its core ruling is that **meaning, residency and permission are
-separate systems**: what a file is about, where it lives and whether anything may act on it are
-three different questions, and none of them answers another.
+**Your files, understood. Nothing touched without you.**
+
+Loomward is a local-first Windows workspace memory: a model of what your files mean to you
+(projects, finance, collections), kept separate from where the files live and from what may act
+on them. It is a research prototype. It reads and simulates; it changes nothing on your machine.
+
+## What it is
+
+- **A model of your work.** The core ruling is that **meaning, residency and permission are
+  separate systems**: what a file is about, where it lives and whether anything may act on it are
+  three different questions, and none of them answers another. A file can belong to a project and
+  to Finance without moving.
+- **Honest by construction.** Each claim comes with its evidence and its blanks. Unknown, partial
+  and offline stay visible, and unknown is never shown as zero. Until you teach it, the learning
+  component abstains rather than guesses.
+- **Agent-ready.** Agents reach the same model through a scoped, read-only MCP reference, as
+  another view of it. No agent gets an execute, delete or kill tool.
+- **Views, not the pitch.** Where the disk space goes, duplicates, backups, memory and processes,
+  and storage tiers are views of that model. A "find and ask" view (fast search, plus an optional
+  chat model limited to read-only tools) is planned and not built.
+
+Whether learned organisation beats folders is an open research question, not a result:
+[docs/24](docs/24-thesis-and-research-program.md) says how it would be tested, and
+[docs/44](docs/44-product-thesis.md) states the thesis, the first five minutes and what would
+falsify it.
 
 ## Status
 
