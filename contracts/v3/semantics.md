@@ -571,7 +571,7 @@ never omitted, `null` or zero; `recent_errors` is always `{"unknown": "not_retai
 dataset class. A digest other than the held preview's is `refused` / `preview_changed` before any dialog opens.
 Rust opens the native save dialog (one dialog at a time with the pickers, 2 s cooldown: `busy`); Windows asks
 there before an existing file is replaced. Cancel is `cancelled_by_user` and writes nothing. A relative,
-network, device or verbatim path, a device name, a stream name, a missing parent folder, or an existing target
+network, device or verbatim path, a device name, a stream name, a parent folder that is missing or resolves (through a junction or link) to a share, or an existing target
 that is not a regular file or is a link, reparse point or cloud placeholder is `unsupported_target`; a write
 that fails is `write_failed`. Neither writes anything: the bytes go to a temporary file beside the target that is
 renamed over it, or removed. `saved` reports `bytes_written`. The path is never returned. Send `deadline_ms`

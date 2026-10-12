@@ -3,6 +3,7 @@
   import { session } from '../../lib/stores/session.svelte';
   import { formatCount } from '../../lib/format/time';
   import type { DiagnosticsPreviewResult } from '../../lib/contracts.gen';
+  import { LoomwardError } from '../../lib/transport/client';
   import { canonicalText, matches, SAVE_REFUSAL_WORDS } from './diagnostics';
 
   let preview = $state<DiagnosticsPreviewResult | null>(null);
@@ -14,6 +15,8 @@
   let notice = $state('');
   let problem = $state('');
   let generation = 0;
+  /** A reload asked for while a save is open waits for it: the text shown stays the text being saved. */
+  let reloadAfterSave = false;
 
   /** The save dialog exists only where the service says so: the desktop app. */
   const canSave = $derived(session.info?.features.diagnostics_save === true);
@@ -22,6 +25,7 @@
   async function load(): Promise<void> {
     const c = session.client;
     if (!c) return;
+    if (saving) { reloadAfterSave = true; return; }
     const mine = ++generation;
     loading = true; problem = ''; verified = null;
     try {
@@ -30,6 +34,7 @@
       const shown = canonicalText(result.bundle);
       const same = await matches(shown, result);
       if (mine !== generation) return;
+      if (preview && result.digest !== preview.digest) notice = ''; // an earlier save's notice described other text
       preview = result; text = shown; verified = same;
     } catch (e) {
       if (mine === generation) { problem = session.handle(e); preview = null; }
@@ -46,8 +51,15 @@
       if (result.outcome === 'saved') notice = `Saved ${formatCount(Number(result.bytes_written))} bytes, exactly the text shown. Nothing was uploaded.`;
       else if (result.outcome === 'cancelled_by_user') notice = 'Save cancelled. No file was written.';
       else problem = result.refusal ? SAVE_REFUSAL_WORDS[result.refusal] : 'The save was refused. No file was written.';
-    } catch (e) { problem = session.handle(e); }
-    finally { saving = false; }
+    } catch (e) {
+      // The dialog can outlive the wait; the service then finishes the save on its own, so the outcome is unknown.
+      problem = e instanceof LoomwardError && e.code === 'deadline_exceeded'
+        ? 'The save dialog outlived the wait, so whether a file was written is unknown. Check the folder you chose before saving again.'
+        : session.handle(e);
+    } finally {
+      saving = false;
+      if (reloadAfterSave) { reloadAfterSave = false; void load(); }
+    }
   }
 
   $effect(() => {

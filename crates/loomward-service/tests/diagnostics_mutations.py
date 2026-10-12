@@ -26,7 +26,7 @@ MUTANTS = [
     ('device-name-refusal', SERVICE, '        || paths::reserved_device(target)\n', '', SVC, TARGETS),
     ('stream-name-refusal', SERVICE, "name.as_deref().is_none_or(|n| n.contains(':'))", 'name.is_none()',
      SVC, TARGETS),
-    ('parent-is-directory', SERVICE, '    if !std::fs::metadata(dir).is_ok_and(|m| m.is_dir()) {', '    if false {',
+    ('parent-is-directory', SERVICE, ' || !resolved.is_dir() {', ' {',
      SVC, TARGETS),
     ('existing-target-regular', SERVICE,
      '        Ok(meta) if !meta.is_file() || paths::unsafe_attributes(&meta) => {',

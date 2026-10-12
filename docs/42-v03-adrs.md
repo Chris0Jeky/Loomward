@@ -528,7 +528,8 @@ and never writes twice) without a ticket, sharing the pickers' one-dialog lock a
    `owner_picked_export`, and the contract test pins that no other command has an effect.
 **The write gate.** `write_export` refuses, before writing anything: a relative path; network, device and
 verbatim namespaces (`\server`, `\?\UNC`, `\.\`, `\?\GLOBALROOT`, `\?\Volume{..}`; only `\?\C:\` is
-local); Windows device names (`CON`, `COM1 .json`); a stream name (`:`); a parent that is not a directory; and an
+local); Windows device names (`CON`, `COM1 .json`); a stream name (`:`); a parent folder whose resolved location
+is not a local directory (a junction or link among its ancestors that leads to a share is refused); and an
 existing target that is not a regular file or is a link, reparse point or cloud placeholder (the same lexical and
 metadata checks as the receipt reader, shared in `paths.rs`). It writes the bytes to a new temporary file in the
 same directory (`create_new`), flushes it, and renames it over the target: a rename replaces the directory entry,

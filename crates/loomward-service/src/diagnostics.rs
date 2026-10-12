@@ -116,7 +116,9 @@ pub(crate) fn write_export(target: &Path, bytes: &[u8]) -> Result<(), Why> {
         return Err(Why::UnsupportedTarget);
     }
     let dir = target.parent().ok_or(Why::UnsupportedTarget)?;
-    if !std::fs::metadata(dir).is_ok_and(|m| m.is_dir()) {
+    // The folder as resolved: a junction or link among its ancestors that leads to a share is refused.
+    let resolved = std::fs::canonicalize(dir).map_err(|_| Why::UnsupportedTarget)?;
+    if paths::network_path(&resolved) || !resolved.is_dir() {
         return Err(Why::UnsupportedTarget);
     }
     match std::fs::symlink_metadata(target) {

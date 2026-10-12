@@ -142,7 +142,10 @@ class FakeEngine:
             return json.loads((ROOT / 'contracts/v3/examples/commands/diagnostics.preview.result.json').read_text(encoding='utf-8'))
         if cmd == 'diagnostics.save' and self.diagnostics_answers is not None:
             self.diagnostics_calls.append(req)
-            return self.diagnostics_answers.pop(0)
+            answer = self.diagnostics_answers.pop(0)
+            if isinstance(answer, dict) and answer.get('delay'):
+                time.sleep(answer.pop('delay'))
+            return answer
         if cmd == 'roots.list':
             return {'roots': self.roots}
         if cmd == 'grants.list':
@@ -750,7 +753,8 @@ def check_diagnostics_save(page: Page, engine: FakeEngine) -> None:
     engine.diagnostics_answers = [
         {'outcome': 'cancelled_by_user', 'bytes_written': None, 'refusal': None},
         {'outcome': 'refused', 'bytes_written': None, 'refusal': 'preview_changed'},
-        {'outcome': 'saved', 'bytes_written': fixture['bytes'], 'refusal': None},
+        {'outcome': 'saved', 'bytes_written': fixture['bytes'], 'refusal': None, 'delay': 1.5},
+        ('deadline_exceeded', 'the dialog outlived the deadline'),
     ]
     try:
         page.goto('about:blank')
@@ -766,13 +770,21 @@ def check_diagnostics_save(page: Page, engine: FakeEngine) -> None:
         expect(result).to_have_text('Save cancelled. No file was written.')
         save.click()
         expect(panel.get_by_role('alert')).to_contain_text('The bundle changed since this preview')
+        previews = engine.served.get('diagnostics.preview', 0)
         save.click()
+        panel.get_by_role('button', name='Preview again').click()  # asked while the dialog is open
+        page.wait_for_timeout(500)
+        ok(engine.served.get('diagnostics.preview', 0) == previews, 'no new preview replaces the text while it is being saved')
         expect(result).to_contain_text(f"Saved {int(fixture['bytes']):,} bytes, exactly the text shown.")
+        wait_until(page, lambda: engine.served.get('diagnostics.preview', 0) == previews + 1, timeout_ms=5000)
+        ok(True, 'the deferred preview runs once the save has answered')
+        save.click()
+        expect(panel.get_by_role('alert')).to_contain_text('whether a file was written is unknown')
         for call in engine.diagnostics_calls:
             ok(call['payload'] == {'digest': fixture['digest']}, f'only the shown digest leaves the page: {call["payload"]}')
             ok(call['deadline_ms'] == 60000, 'the save waits up to 60 s for the owner at the native dialog')
-        ok(len(engine.diagnostics_calls) == 3, 'one call per click')
-        print('PASS diagnostic bundle save: cancel, named refusal and save through the engine; only the digest leaves the page')
+        ok(len(engine.diagnostics_calls) == 4, 'one call per click')
+        print('PASS diagnostic bundle save: cancel, named refusal, save and an outlived dialog reported as unknown; only the digest leaves the page')
     finally:
         engine.diagnostics_answers = None
 

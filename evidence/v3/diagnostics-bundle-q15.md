@@ -76,6 +76,24 @@ parent-is-directory, existing-target-regular, partial-file cleanup, shared dialo
 canonical (pretty) text, a root path leaked into the bundle, the native dialog's title, the native one-at-a-time
 lock. Logs: gitignored `.loomward/diagnostics-bundle/`.
 
+## Review round 1 (Codex on #399) and hosted CI
+
+- **Linux clippy** failed on an unused `write_export` import and `MARKERS` (both used only by Windows tests): now
+  `#[cfg(windows)]`.
+- **Parent through a junction (P1):** the parent folder is canonicalised and refused when it resolves to a
+  network path or is not a directory. A local junction still writes (test), a file as parent is refused (new
+  case, and the `parent-is-directory` mutant now targets the resolved check). A junction to a real share was
+  not exercised: no share exists on this host.
+- **Preview frozen during a save (P1):** a reload asked for while a save is open waits for its answer, so the
+  text shown is the text being saved; an earlier save's notice clears when a reload changes the digest.
+  Playwright proves no preview is served while the delayed save is open and one runs after; removing the guard
+  fails that check (run once, then restored).
+- **Dialog outliving the 60 s wait (P1):** `deadline_exceeded` now says whether a file was written is unknown
+  and asks the owner to check the folder before saving again (Playwright). The request id is not kept for a
+  retry; tracked as residual.
+- Re-proved: service 177 tests, workspace clippy `--all-features`, the mutation script (14 of 14 killed), app
+  check, vitest 394, `scripts/test_app.py` 253 checks.
+
 ## Failures and workarounds
 
 - One full `cargo test --workspace` run failed two `loomward-windows` duplicate-reader tests

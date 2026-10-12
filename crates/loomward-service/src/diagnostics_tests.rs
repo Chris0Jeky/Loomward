@@ -2,7 +2,9 @@
 //! name, label or volume identity, and `diagnostics.save` writes exactly the previewed bytes to an
 //! owner-picked file, or nothing. Synthetic data and disposable folders only.
 use super::*;
-use crate::diagnostics::{canonical, digest, write_export, SAVE_TITLE};
+#[cfg(windows)]
+use crate::diagnostics::write_export;
+use crate::diagnostics::{canonical, digest, SAVE_TITLE};
 use std::path::PathBuf;
 
 /// Answers each save dialog with the next queued path (`None` = the owner cancelled).
@@ -85,6 +87,7 @@ fn names(dir: &Path) -> Vec<String> {
 }
 
 /// Markers that must never reach a bundle, raw or as JSON escapes.
+#[cfg(windows)]
 const MARKERS: [&str; 9] = [
     "lw-marker",
     "\u{202E}",
@@ -383,6 +386,7 @@ fn unsupported_targets_are_refused_before_anything_is_written() {
         out.join("regular.json:stream"),
         out.join("a-folder"),
         out.join("missing-folder").join("bundle.json"),
+        out.join("regular.json").join("bundle.json"),
     ];
     // A file symlink needs a privilege or developer mode; when it can be made it must be refused.
     let link = out.join("link.json");
@@ -399,6 +403,22 @@ fn unsupported_targets_are_refused_before_anything_is_written() {
     }
     assert_eq!(names(&out), before);
     assert_eq!(std::fs::read(out.join("regular.json")).unwrap(), b"keep");
+    // A junction to a local folder is followed to where it resolves: still a local write.
+    let junction = tmp.path().join("junction");
+    let made = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&junction)
+        .arg(out.join("a-folder"))
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if made {
+        assert_eq!(write_export(&junction.join("via.json"), b"{}"), Ok(()));
+        assert_eq!(
+            std::fs::read(out.join("a-folder").join("via.json")).unwrap(),
+            b"{}"
+        );
+        std::fs::remove_file(out.join("a-folder").join("via.json")).unwrap();
+    }
     // Through the command: refused, nothing written.
     let svc = open(&tmp.path().join("state"), DatasetClass::Synthetic);
     let (_, _, d) = preview(&svc);
