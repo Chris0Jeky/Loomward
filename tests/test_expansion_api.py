@@ -3,7 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from loomward.server import App, ASSETS
+from loomward.server import App
 from loomward.scheduler import admit_workloads
 
 class ExpansionApiTests(unittest.TestCase):
@@ -30,5 +30,3 @@ class ExpansionApiTests(unittest.TestCase):
     def test_v1_plan_contract_is_preserved(self):
         plan=self.app.post('/api/plan',self.app.scenario)
         self.assertNotEqual(plan.get('algorithm'),'bounded_portfolio_search_v2')
-    def test_expansion_asset_is_explicit(self):
-        self.assertEqual(ASSETS['/expansion.js'][0],'expansion.js')

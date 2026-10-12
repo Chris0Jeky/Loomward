@@ -221,7 +221,7 @@ in wave 3; one `mod watch;` line in L7's `scan/mod.rs` to L16.
 | L20 wave-3 service integration | Sonnet high (L8's worker) | `crates/loomward-service/` in wave 3 | LW-112 | After L14; L15 for teacher commands | Dispatch for taxonomy, feedback, learning, collections, threads, teacher and disclosure commands; grant and provenance policy (synthetic-policy grants only for fixture or lab items; personal refused until LW-111); idempotency and timed-out-mutation behaviour of `semantics.md` §3 for these commands, including `teacher.run` replay returning the same job | `cargo test -p loomward-service`; `py -3 scripts/test_app.py --live` |
 | L16 change tracking | Sol high | `loomward-windows/src/watch.rs`, `loomward-engine/src/scan/watch.rs`, `experiments/usn-unprivileged/` | LW-008, LW-007 (spike) | After L7 | Watch established **before** the scan; both overflow forms (`ERROR_NOTIFY_ENUM_DIR` and successful zero-byte completion) dirty the root; dirty epochs; dirtied directories relisted before a run completes; renames reconcile both parents or leave a tombstone; ancestor sums via the repair rollup; USN hypothesis reported either way | `cargo test -p loomward-engine scan`; fixture-lab overflow case |
 | L17 scale and comparison | Sol high | `experiments/windows-benchmarks/`, `evidence/v3/bench/` | LW-056 | After L7, L8 | All P targets with doc 41 §15 methodology: phase-separated timings, generated 10M-row catalogue, stated distributions, `PeakPagefileUsage`, at least 20 runs for p95, one tool per cold boot, P12 against idle baseline; real-folder runs as aggregates only | Bench commands and JSON evidence |
-| L18 accessibility, parity, `ui/` retirement | Sonnet high plus Opus | app-wide fixes by request to owning lanes; then the `ui/` retirement PR | LW-019, LW-096 | After L10, L13 | As in revision 1 | `py -3 scripts/test_app.py --a11y`; `py -3 scripts/verify.py --ui` |
+| L18 accessibility, parity, `ui/` retirement | Sonnet high plus Opus | app-wide fixes by request to owning lanes; then the `ui/` retirement PR | LW-019, LW-096 | After L10, L13 | As in revision 1 | `py -3 scripts/test_app.py --a11y`; `py -3 scripts/verify.py --app (the `--ui` leg was removed with the legacy UI, q-40)` |
 | L19 CI | Coordinator | `.github/workflows/` | LW-002 follow-up | With L3 and L9 | App job and native build job; actions pinned by SHA | Hosted results, or named local equivalents when billing blocks CI |
 
 ## Integration order
@@ -237,7 +237,7 @@ in wave 3; one `mod watch;` line in L7's `scan/mod.rs` to L16.
    **L15b** after L15 (authorised by the owner on 2026-10-10; elevated steps are the owner's).
 
 At every merge the coordinator runs `cargo fmt --all --check`, `cargo test --workspace`,
-`cargo clippy --workspace --all-targets -- -D warnings`, `py -3 scripts/verify.py --ui`, and once `app/` exists
+`cargo clippy --workspace --all-targets -- -D warnings`, `py -3 scripts/verify.py` (its `--ui` leg was removed with the legacy UI, q-40), and once `app/` exists
 `npm.cmd --prefix app run check`, `test` and `build` plus `py -3 scripts/test_app.py`, and keeps
 `docs/16-implementation-status.md` and `handoff/CHECKPOINT.json` current, with Python-reference and native results
 kept separate (invariant 9).
