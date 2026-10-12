@@ -38,9 +38,11 @@ re-running the same version.
 | `SHA256SUMS.txt` | SHA-256 of the installer, one `sha256sum` line |
 
 The release body (`.github/release/preview-notes.md`) says the build is unsigned; that it runs the
-engine on the tester's machine and reads only folders granted through the Windows folder picker,
-metadata only; that the interface cannot open that picker yet; that it has no file or process
-effect; and where its state lives. It links the evidence index and the issue tracker. The app's
+engine on the tester's machine, starts with no folders and reads only folders added through the
+Windows folder picker (*Grants & health*, *Add a folder*), metadata only; that file contents are
+read only for duplicates on a folder the tester added and for a backup receipt the tester picks;
+that learning is local and uses the tester's own labels; what it refuses; that it has no file or
+process effect; and where its state lives. It links the evidence index and the issue tracker. The app's
 state is under `%LOCALAPPDATA%\Loomward Data\v3\`, a sibling of the per-user install directory
 `%LOCALAPPDATA%\Loomward`, so uninstalling removes the program files, not that state. A build that
 finds state an earlier build left in `%LOCALAPPDATA%\Loomward\v3\` moves it there once.
