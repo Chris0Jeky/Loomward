@@ -304,7 +304,9 @@ and the same pipe protocol, so moving from H1 to H2 changes the launcher, not th
 **What it may read:** only the USN records returned by `FSCTL_ENUM_USN_DATA`, `FSCTL_QUERY_USN_JOURNAL` and
 `FSCTL_READ_USN_JOURNAL` [F12, F27]. These carry names, references, attributes and journal reasons, and no
 file data. It may never read raw MFT records or `$MFT`, create, delete or resize a journal (those are
-writes), open a file, write anywhere, or touch the network.
+writes), open any file for its content, write anywhere, or touch the network. The only handles it opens are the
+volume handle the three controls need and, for the list-rights check, directories with attribute or security-read
+access (unverified API path; confirm in the gate PR).
 
 **Visibility never exceeds the owner's own.** The helper impersonates the pipe client
 (`ImpersonateNamedPipeClient`) and runs an access check for list-directory rights on each directory it
@@ -331,16 +333,18 @@ Everything Service, which shows every local user all names [F04].
 > 2. **No silent reach.** No automatic cloud requests, model downloads, installers, global config changes,
 > elevation or whole-disk scans. [... existing text unchanged ...] **One gated exception (LW-115, the NTFS
 > metadata helper):** after its gate passes, the owner may launch (or, by separate decision, install) a
-> read-only elevated helper. It reads only change-journal records (names, file references, attributes and
-> journal reasons, which carry no file data). It never reads raw MFT records, which hold small files'
-> contents, and never opens a file. It returns only entries under the owner's granted roots that the
+> read-only elevated helper. It reads only the `USN_RECORD` structures those three controls return (names, file references,
+> attributes and, from the journal, reasons; no file data). It never reads raw MFT records, which hold small files'
+> contents, and opens no file for content: only the volume handle, and directories with attribute or
+> security-read access for the access check. It returns only entries under the owner's granted roots that the
 > owner's own token can list, starts only from an explicit owner action, and runs from an
 > administrator-only install location. Nothing else in Loomward runs elevated.
 
 **Gate evidence.** Fuzzing hours and corpus; DACL and client-check tests (a foreign process is refused);
 an ACL-withholding test (a lab directory denied to the test user stays withheld); and on a lab volume
 (E:\loomward-lab, ADR-V3-17), a check observed with Process Monitor that only the three journal controls are
-issued during a run (no `FSCTL_GET_NTFS_FILE_RECORD`, no `$MFT` open, no file open, no write control). Plus
+issued during a run (no `FSCTL_GET_NTFS_FILE_RECORD`, no `$MFT` open, no file opened for data, only the volume handle and
+attribute- or security-read directory opens, no write control). Plus
 two review lenses, because this is an elevation boundary.
 
 ## 6. Semantic layer
