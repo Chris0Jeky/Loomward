@@ -323,22 +323,27 @@ fn absent_budgeted_search_advances_examined_rows_and_terminates() {
     let mut reader = c.reader().unwrap();
     let mut req = SearchRequest {
         root_id: Some(grant),
-        text: "absent".into(),
+        // Every name matches and the size filter rejects every row: all examined, none returned.
+        text: "synthetic".into(),
         extension: None,
-        min_bytes: None,
+        min_bytes: Some(i64::MAX as u64),
+        max_bytes: None,
+        modified_after: None,
+        modified_before: None,
         kind: "file".into(),
         limit: 10,
         cursor: None,
         work_budget: 500,
     };
-    let mut last = 0;
+    let mut last = (0, i64::MIN);
     let mut hits = 0;
     for _ in 0..100 {
         let page = reader.search(&req).unwrap();
-        assert!(page.items.is_empty());
+        assert!(page.hits.is_empty());
         if let Some(cursor) = page.next_cursor {
-            assert!(cursor.last_id > last, "stalled at {last}: {cursor:?}");
-            last = cursor.last_id;
+            let at = (cursor.pass, cursor.last_key);
+            assert!(at > last, "stalled at {last:?}: {cursor:?}");
+            last = at;
             hits += usize::from(page.budget_hit);
             req.cursor = Some(cursor);
         } else {
@@ -452,6 +457,9 @@ fn sparse_budgeted_search_keeps_every_match_without_duplicates() {
         text: "5.txt".into(),
         extension: None,
         min_bytes: None,
+        max_bytes: None,
+        modified_after: None,
+        modified_before: None,
         kind: "file".into(),
         limit: 2,
         cursor: None,
@@ -460,7 +468,7 @@ fn sparse_budgeted_search_keeps_every_match_without_duplicates() {
     let mut names = Vec::new();
     for _ in 0..100 {
         let page = r.search(&req).unwrap();
-        names.extend(page.items.into_iter().map(|row| row.name));
+        names.extend(page.hits.into_iter().map(|h| h.row.name));
         if page.next_cursor.is_none() {
             assert_eq!(
                 names,
@@ -594,6 +602,9 @@ fn budget_hit_is_visible_and_progress_handler_does_not_poison_later_queries() {
         text: "no match".into(),
         extension: None,
         min_bytes: None,
+        max_bytes: None,
+        modified_after: None,
+        modified_before: None,
         kind: "any".into(),
         limit: 10,
         cursor: None,
@@ -601,16 +612,15 @@ fn budget_hit_is_visible_and_progress_handler_does_not_poison_later_queries() {
     };
     let p = r.search(&req).unwrap();
     assert!(p.budget_hit);
-    assert!(p.total.is_none());
     req.text = "synthetic".into();
     req.work_budget = 1_000_000;
     let p = r.search(&req).unwrap();
-    assert_eq!(p.items.len(), 10);
+    assert_eq!(p.hits.len(), 10);
     assert!(!p.budget_hit);
     assert!(p.next_cursor.is_some());
     req.cursor = p.next_cursor;
     let p = r.search(&req).unwrap();
-    assert_eq!(p.items[0].name, "synthetic-010.txt");
+    assert_eq!(p.hits[0].row.name, "synthetic-010.txt");
     let b = r
         .breakdown(root, "extension", Basis::Allocated, 10, 1)
         .unwrap();
@@ -1053,6 +1063,9 @@ fn budgeted_absent_search_resumes_and_catalogue_instance_invalidates_cursors() {
         text: "absent".into(),
         extension: None,
         min_bytes: None,
+        max_bytes: None,
+        modified_after: None,
+        modified_before: None,
         kind: "file".into(),
         limit: 10,
         cursor: None,
@@ -1065,7 +1078,7 @@ fn budgeted_absent_search_resumes_and_catalogue_instance_invalidates_cursors() {
     req.work_budget = 100000;
     let second = reader.search(&req).unwrap();
     assert!(!second.budget_hit);
-    assert!(second.items.is_empty());
+    assert!(second.hits.is_empty());
     assert!(second.next_cursor.is_none());
     let mut page_req = ChildrenRequest {
         dir_id: root,
@@ -1096,6 +1109,9 @@ fn budgeted_search_resumes_after_the_last_returned_match() {
         text: "synthetic".into(),
         extension: None,
         min_bytes: None,
+        max_bytes: None,
+        modified_after: None,
+        modified_before: None,
         kind: "file".into(),
         limit: 100,
         cursor: None,
@@ -1106,16 +1122,16 @@ fn budgeted_search_resumes_after_the_last_returned_match() {
         .find_map(|budget| {
             req.work_budget = budget * 100;
             let page = reader.search(&req).unwrap();
-            (page.budget_hit && !page.items.is_empty()).then_some(page)
+            (page.budget_hit && !page.hits.is_empty()).then_some(page)
         })
         .expect("a budget must interrupt after returning matches");
-    let mut names: Vec<_> = first.items.into_iter().map(|r| r.name).collect();
+    let mut names: Vec<_> = first.hits.into_iter().map(|h| h.row.name).collect();
     req.cursor = first.next_cursor;
     req.work_budget = 100_000;
     let rest = reader.search(&req).unwrap();
     assert!(!rest.budget_hit);
     assert!(rest.next_cursor.is_none());
-    names.extend(rest.items.into_iter().map(|r| r.name));
+    names.extend(rest.hits.into_iter().map(|h| h.row.name));
     assert_eq!(
         names,
         (0..60)
@@ -1297,6 +1313,9 @@ fn search_sql_error_survives_exhausted_budget() {
         text: "synthetic".into(),
         extension: None,
         min_bytes: None,
+        max_bytes: None,
+        modified_after: None,
+        modified_before: None,
         kind: "file".into(),
         limit: 10,
         cursor: None,
@@ -1344,6 +1363,9 @@ fn pure_budget_interrupt_still_reports_budget_cut() {
             text: "no match".into(),
             extension: None,
             min_bytes: None,
+            max_bytes: None,
+            modified_after: None,
+            modified_before: None,
             kind: "any".into(),
             limit: 10,
             cursor: None,

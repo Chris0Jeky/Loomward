@@ -345,6 +345,7 @@ pub(crate) fn open_pair(dir: &Path, dataset: &str) -> Result<Connection> {
     }
     tx.execute("UPDATE scan_run SET state='failed',error_json='{\"code\":\"restart_interrupted\"}' WHERE state='running'",[])?;
     tx.execute("DELETE FROM stage_entry", [])?;
+    search_index(&tx)?;
     bulk_tables(&tx, false)?;
     tx.execute("UPDATE revision SET catalog_rev=catalog_rev+1", [])?;
     tx.commit()?;
@@ -372,6 +373,23 @@ pub(crate) fn open_pair(dir: &Path, dataset: &str) -> Result<Connection> {
     }
     Ok(conn)
 }
+/// The name search index (q-34): created with its triggers by the first open that lacks it, and
+/// filled from the rows already there in the same transaction, so it is never behind the tables.
+pub(crate) fn search_index(conn: &Connection) -> Result<()> {
+    if conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='search_name')",
+        [],
+        |r| r.get::<_, bool>(0),
+    )? {
+        return Ok(());
+    }
+    conn.execute_batch(include_str!("search.sql"))?;
+    conn.execute_batch(
+        "INSERT INTO search_name(rowid,name) SELECT id, char(1)||replace(replace(name,char(1),' '),char(2),' ')||char(2) FROM dir WHERE parent_id IS NOT NULL;
+         INSERT INTO search_name(rowid,name) SELECT id+281474976710656, char(1)||replace(replace(name,char(1),' '),char(2),' ')||char(2) FROM file;",
+    )?;
+    Ok(())
+}
 /// First-scan bulk build tables (#148): the live `dir`/`file` definitions and the `dir` indexes,
 /// but none of the `file` secondary indexes. Rebuilt at every open, which also discards any build
 /// an interrupted run left behind; no reader queries them. `file` alone is recreated after a swap:
@@ -383,7 +401,7 @@ pub(crate) fn bulk_tables(conn: &Connection, file_only: bool) -> Result<()> {
         "DROP TABLE IF EXISTS bulk_file; DROP TABLE IF EXISTS bulk_dir"
     })?;
     let mut s = conn.prepare(
-        "SELECT type,name,sql FROM sqlite_schema WHERE tbl_name IN ('dir','file') AND sql IS NOT NULL AND (type='table' OR tbl_name='dir') AND NOT (?1 AND tbl_name='dir') ORDER BY type DESC,tbl_name",
+        "SELECT type,name,sql FROM sqlite_schema WHERE tbl_name IN ('dir','file') AND sql IS NOT NULL AND type IN ('table','index') AND (type='table' OR tbl_name='dir') AND NOT (?1 AND tbl_name='dir') ORDER BY type DESC,tbl_name",
     )?;
     let ddl = s
         .query_map([file_only], |r| {

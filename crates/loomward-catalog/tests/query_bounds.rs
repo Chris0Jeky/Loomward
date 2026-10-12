@@ -74,6 +74,9 @@ fn search_req(grant: i64) -> SearchRequest {
         text: "synthetic".into(),
         extension: None,
         min_bytes: None,
+        max_bytes: None,
+        modified_after: None,
+        modified_before: None,
         kind: "file".into(),
         limit: 10,
         cursor: None,
@@ -101,12 +104,12 @@ fn search_limit_zero_and_101_rejected_while_1_and_100_pass() {
     let mut req = search_req(grant);
     req.limit = 1;
     let page = reader.search(&req).unwrap();
-    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.hits.len(), 1);
     assert!(page.next_cursor.is_some());
     let mut req = search_req(grant);
     req.limit = 100;
     let page = reader.search(&req).unwrap();
-    assert_eq!(page.items.len(), 3);
+    assert_eq!(page.hits.len(), 3);
     assert!(page.next_cursor.is_none());
 }
 
@@ -125,7 +128,7 @@ fn search_text_over_256_chars_rejected() {
     let mut req = search_req(grant);
     req.text = "q".repeat(256);
     let page = reader.search(&req).unwrap();
-    assert_eq!(page.items.len(), 0);
+    assert_eq!(page.hits.len(), 0);
     assert!(page.next_cursor.is_none());
 }
 
@@ -144,7 +147,7 @@ fn search_extension_over_32_chars_rejected() {
     let mut req = search_req(grant);
     req.extension = Some("z".repeat(32));
     let page = reader.search(&req).unwrap();
-    assert_eq!(page.items.len(), 0);
+    assert_eq!(page.hits.len(), 0);
     assert!(page.next_cursor.is_none());
 }
 
@@ -166,7 +169,7 @@ fn search_kind_outside_any_file_dir_rejected() {
         let mut req = search_req(grant);
         req.kind = kind.into();
         let page = reader.search(&req).unwrap();
-        assert_eq!(page.items.len(), expected, "kind {kind:?}");
+        assert_eq!(page.hits.len(), expected, "kind {kind:?}");
     }
 }
 
@@ -187,7 +190,7 @@ fn search_min_bytes_above_i64_max_rejected() {
     let mut req = search_req(grant);
     req.min_bytes = Some(i64::MAX as u64);
     let page = reader.search(&req).unwrap();
-    assert_eq!(page.items.len(), 0);
+    assert_eq!(page.hits.len(), 0);
     assert!(page.next_cursor.is_none());
 }
 

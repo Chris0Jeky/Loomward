@@ -14,6 +14,7 @@ mod duplicates;
 pub use duplicates::{DuplicateCandidate, DuplicateCandidates};
 mod model;
 mod query;
+mod search;
 mod slice;
 mod writer;
 pub use model::*;

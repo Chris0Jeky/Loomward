@@ -826,13 +826,16 @@ fn assert_memberships(dir: &std::path::Path) {
             text: String::new(),
             extension: None,
             min_bytes: None,
+            max_bytes: None,
+            modified_after: None,
+            modified_before: None,
             kind: "file".into(),
             limit: 10,
             cursor: None,
             work_budget: 2_000_000,
         })
         .unwrap();
-    assert_eq!(page.items.len(), 4);
+    assert_eq!(page.hits.len(), 4);
 }
 
 fn assert_recovered_slice(dir: &std::path::Path) {

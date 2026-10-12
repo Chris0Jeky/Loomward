@@ -320,28 +320,60 @@ pub struct SliceRequest {
     pub basis: Basis,
     pub include_files: bool,
 }
+/// Keyset position of `search.query` (q-34): the match pass and the last examined index key. It
+/// binds the catalogue instance and the filters, not `catalog_rev`, so live watcher commits do not
+/// invalidate a paging user; a row changed between pages may be skipped or seen twice.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SearchCursor {
-    pub catalog_rev: i64,
     pub catalog_instance: String,
-    pub text: String,
-    pub extension: Option<String>,
-    pub min_bytes: Option<u64>,
-    pub kind: String,
-    pub root_id: Option<i64>,
-    pub last_kind: u8,
-    pub last_id: i64,
+    pub filters: String,
+    pub pass: u8,
+    pub last_key: i64,
+    /// Extension-only listings run largest first: the size of the last examined file.
+    pub last_size: Option<i64>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct SearchRequest {
     pub root_id: Option<i64>,
     pub text: String,
     pub extension: Option<String>,
     pub min_bytes: Option<u64>,
+    pub max_bytes: Option<u64>,
+    /// FILETIME bounds on the modified time, inclusive. An entry with no modified time never matches one.
+    pub modified_after: Option<i64>,
+    pub modified_before: Option<i64>,
     pub kind: String,
     pub limit: usize,
     pub cursor: Option<SearchCursor>,
     pub work_budget: u64,
+}
+#[derive(Clone, Debug, Serialize)]
+pub struct SearchHit {
+    pub row: EntryRow,
+    /// The catalogue root row the hit lies under.
+    pub root_id: i64,
+    /// Root-relative path of the hit itself, `\`-separated, display only.
+    pub path: DisplayPath,
+    pub match_kind: String,
+    /// Half-open UTF-16 offsets into `row.name` of the matched text; best effort, may be empty.
+    pub highlights: Vec<[u32; 2]>,
+}
+#[derive(Clone, Debug, Serialize)]
+pub struct SearchRootState {
+    pub root_id: i64,
+    pub scan_state: String,
+    pub coverage: String,
+}
+#[derive(Clone, Debug)]
+pub struct SearchPage {
+    pub generation: Option<String>,
+    pub hits: Vec<SearchHit>,
+    pub next_cursor: Option<SearchCursor>,
+    pub budget_hit: bool,
+    pub index_state: String,
+    pub partial: bool,
+    pub substring_searched: bool,
+    pub roots: Vec<SearchRootState>,
 }
 
 // The following projections mirror contracts/v3. L8 replaces the internal references and cursors.
@@ -386,7 +418,6 @@ pub struct EntryPage<C> {
     pub budget_hit: bool,
 }
 pub type ChildrenPage = EntryPage<ChildrenCursor>;
-pub type SearchPage = EntryPage<SearchCursor>;
 #[derive(Clone, Debug, Serialize)]
 pub struct MeaningThread {
     pub state: String,
