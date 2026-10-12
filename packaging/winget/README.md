@@ -78,7 +78,9 @@ Microsoft CLA acceptance (a `Needs-CLA` label blocks the merge until the GitHub 
    gh pr create --repo microsoft/winget-pkgs --title "New package: Chris0Jeky.Loomward version <version>" --body "..."
    ```
 
-   (`wingetcreate submit --prtitle ... --token ... <folder>` does the same with a classic PAT (permissions in the winget-create README);
+   (`wingetcreate submit --prtitle ... <folder>` does the same; the owner supplies the classic PAT through the
+   `WINGET_CREATE_GITHUB_TOKEN` environment variable rather than `--token`, which would land in shell history (permissions
+   in the winget-create README);
    [submit.md](https://github.com/microsoft/winget-create/blob/main/doc/submit.md).) Later versions of an existing
    package: rerun the generator with the new version and use `New version:` in the title, or
    `wingetcreate update Chris0Jeky.Loomward --version <v> --urls <installer url> --submit`

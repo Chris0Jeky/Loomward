@@ -42,7 +42,8 @@ loudly instead of shipping a broken app.
 `checkver` reads `https://api.github.com/repos/Chris0Jeky/Loomward/releases` with `jsonpath: $[0].tag_name` and a
 regex that accepts `v0.3.0-preview.1` as well as `v0.3.0`. The shorthand `"checkver": "github"` is not used
 because it ignores pre-releases ([App Manifest Autoupdate](https://github.com/ScoopInstaller/Scoop/wiki/App-Manifest-Autoupdate),
-"Pre-releases will be ignored!"). The list is newest-first and the API returns no drafts without a token.
+"Pre-releases will be ignored!"). The list is newest-first and the API returns no drafts without a token. With `SCOOP_GH_TOKEN` set, the owner's draft
+releases are visible too, so check `git diff bucket/loomward.json` names a published tag before committing.
 `autoupdate` rebuilds the URL from `$version` and reads the hash from the release's `SHA256SUMS.txt` (`$baseurl`
 mode `extract`, which finds the `sha256sum` line by file name).
 

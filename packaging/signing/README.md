@@ -101,7 +101,8 @@ so eligibility needs the owner's reading before applying. Different publisher na
 5. Re-measure the winget and Scoop channels once with the signed build (hash changes with the signature, which the
    existing flows already read from `SHA256SUMS.txt`).
 
-Secrets rules: only `GITHUB_TOKEN`-class and the three Azure values above are ever needed; nothing is committed, and
+Secrets rules: only the secrets of the option the owner picks are ever needed (option A's three Azure values, option
+B's certificate and password or vault credentials, option C's SignPath credentials); nothing is committed, and
 `.gitignore` already blocks `*.pfx`, `*.pem` and `*.key`.
 
 Not verified: any of this against a real certificate or Azure account; `artifact-signing-cli` behaviour (read only in
