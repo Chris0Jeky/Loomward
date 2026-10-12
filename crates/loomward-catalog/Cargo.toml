@@ -3,7 +3,7 @@ name = "loomward-catalog"
 version = "0.3.0"
 edition = "2021"
 rust-version = "1.88"
-license = "MIT"
+license.workspace = true
 
 [features]
 # Test seams for dependent crates' tests (#356); never enabled by a production build.

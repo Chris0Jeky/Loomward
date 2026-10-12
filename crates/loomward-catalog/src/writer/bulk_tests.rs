@@ -626,3 +626,52 @@ fn a_failed_run_discards_the_build_and_the_next_scan_is_incremental() {
         end(w, run, "completed").unwrap();
     }
 }
+
+/// #386: revocation, a failed `EndRun` and the swap drop a build with one cascading
+/// `DELETE FROM bulk_dir`, a trigger recursion SQLite caps at 1000 levels. That is safe only while
+/// the writer's chain limit keeps every build shallower: this builds the deepest chain the writer
+/// accepts and ends it each way. Raising the limit past the cap fails here, not in a user's revoke.
+#[test]
+fn the_deepest_build_the_writer_accepts_is_discarded_or_swapped_in_one_cascade() {
+    for ending in ["revoke", "failed", "completed"] {
+        let temp = tempfile::tempdir().unwrap();
+        let catalog = open(temp.path(), true);
+        let w = catalog.writer();
+        let (grant, root_dir) = register(w, 1);
+        let run = begin(w, grant);
+        let (mut dir, mut levels) = (root_dir, 0);
+        let refused = loop {
+            let listing = w.call(WriteCommand::DirListing(DirListing {
+                run_id: run,
+                dir_id: dir,
+                files: vec![obs("f", 1, None)],
+                dirs: vec![obs("d", 0, None)],
+                state: "complete".into(),
+                skipped: 0,
+                errors: 0,
+            }));
+            match listing {
+                Ok(_) if levels < 1100 => levels += 1,
+                other => break other,
+            }
+            dir = child(temp.path(), dir, "d");
+        };
+        assert!(
+            matches!(refused, Err(Error::Invalid("tree depth limit"))),
+            "{refused:?} at {levels}"
+        );
+        assert!(levels < 999, "a {levels}-level build outgrows the cascade");
+        match ending {
+            "revoke" => w
+                .call(WriteCommand::RevokeGrant {
+                    grant_id: grant,
+                    revoked_at_ns: 3,
+                })
+                .unwrap(),
+            state => end(w, run, state).unwrap(),
+        };
+        assert_eq!(bulk_rows(temp.path()), 0);
+        let swapped = if ending == "completed" { levels } else { 0 };
+        assert_eq!(visible(temp.path(), root_dir), (swapped + 1, swapped));
+    }
+}

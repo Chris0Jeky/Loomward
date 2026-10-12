@@ -18,7 +18,7 @@ balancing simulated against the real C:, G: and E: volumes; (d) a read-only reso
 synthetic, scale and stress testing.
 
 **Forces.** One owner, many parallel agents (4 Sol, 2 Opus, 2 Sonnet, Haiku and Muse swarms), Windows 11 host,
-public MIT repo, workers already building `loomward-windows`, `loomward-lab`, `loomward-telemetry` and
+public repo (MIT then; AGPL-3.0-only since #396), workers already building `loomward-windows`, `loomward-lab`, `loomward-telemetry` and
 `app/prototype/`. Rust 1.97, Node 24, Python 3.14 measured. The UI must grow with the engine, so the contract
 between them must be stable before either side is finished.
 
@@ -897,7 +897,7 @@ app/
 - **Mock transport** serves `contracts/v3/examples/` and a deterministic synthetic slice generator.
 - **E2E**: `scripts/test_app.py` (owned by L3) is a runner that discovers `app/tests/e2e/test_*.py`; each view
   lane owns its own test module. Python Playwright, already installed.
-- The old `ui/` stays until the new app reaches parity, then is retired in a dedicated PR (L18).
+- The old `ui/` was retired after a parity check in a dedicated PR (q-40, 2026-10-12; table in `30-interface-and-workspace-spec.md`).
 
 ## 14. Lab, testing and validation
 

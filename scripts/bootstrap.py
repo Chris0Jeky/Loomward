@@ -20,7 +20,7 @@ def main():
     if a.telemetry:
         if not python.is_file():raise SystemExit('Create the .venv first; telemetry will not be installed globally')
         subprocess.run([str(python),'-m','pip','install','psutil==7.2.2'],check=True,timeout=300)
-    print('Run: python scripts/run.py demo --open')
+    print('Verify: python scripts/verify.py (the Python reference is a frozen test oracle; the product UI is app/)')
     print('Native path: install Rust MSVC and Microsoft C++ Build Tools through their official installers, then run cargo test --workspace.')
     return 0
 if __name__=='__main__':raise SystemExit(main())

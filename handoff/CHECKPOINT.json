@@ -464,5 +464,19 @@
       "q-14 stage 1 backup evidence import (#383; state v6; never verified recovery)",
       "q-9 Forget a revoked root (#382; state v7; 54 commands)"
     ]
+  },
+  "owner_decisions_2026_10_12": {
+    "source": "HUMAN_TODO q-20 to q-46 (guided walkthrough in chat)",
+    "licence": "AGPL-3.0-only since #396 (earlier versions MIT); dual licensing kept open through CLA.md; TRADEMARKS.md",
+    "release_gate": "invariant 8 now authorises unsigned preview pre-releases and a rolling nightly pre-release (q-17, q-31, q-33); first publication to winget, Scoop or the Store is still a re-review trigger",
+    "released": "none yet at this commit",
+    "thesis": "workspace memory, honest by construction, agent-ready (q-25)",
+    "decided_not_yet_implemented": [
+      "nightly pre-release and opt-in update check (q-30, q-33)",
+      "Find & Ask: search index, Everything integration, elevated NTFS helper behind its own gate (invariant 2 unchanged until then), semantic layer, Ask provider interface (q-34 to q-36)",
+      "copy-and-verify as the first file effect, behind its own gate (invariant 1 unchanged until then) (q-32)",
+      "daily-use readiness bar (q-39); legacy browser UI retirement and Python reference freeze (q-40)",
+      "package channels: winget, Scoop bucket, Microsoft Store; code signing later (q-28, q-29)"
+    ]
   }
 }

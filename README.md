@@ -1,12 +1,30 @@
 # Loomward
 
-**A local-first Windows workspace, storage and resource companion.** Loomward aims to show where
-your disk space goes (a far faster WinDirStat that says plainly what it does not know), learn how
-you organise your files, let you arrange them virtually, simulate how data could be balanced
-across fast and slow disks, and explain what is using your memory and processes, all without
-changing anything on your machine. Its core ruling is that **meaning, residency and permission are
-separate systems**: what a file is about, where it lives and whether anything may act on it are
-three different questions, and none of them answers another.
+**Your files, understood. Nothing touched without you.**
+
+Loomward is a local-first Windows workspace memory: a model of what your files mean to you
+(projects, finance, collections), kept separate from where the files live and from what may act
+on them. It is a research prototype. It reads and simulates; it changes nothing on your machine.
+
+## What it is
+
+- **A model of your work.** The core ruling is that **meaning, residency and permission are
+  separate systems**: what a file is about, where it lives and whether anything may act on it are
+  three different questions, and none of them answers another. A file can belong to a project and
+  to Finance without moving.
+- **Honest by construction.** Each claim comes with its evidence and its blanks. Unknown, partial
+  and offline stay visible, and unknown is never shown as zero. Until you teach it, the learning
+  component reports that it has no model rather than guessing.
+- **Agent-ready.** Agents reach the same model through a scoped, read-only MCP reference, as
+  another view of it. No agent gets an execute, delete or kill tool.
+- **Views, not the pitch.** Where the disk space goes, duplicates, backups, memory and processes,
+  and storage tiers are views of that model. A "find and ask" view (fast search, plus an optional
+  chat model limited to read-only tools) is planned and not built.
+
+Whether learned organisation beats folders is an open research question, not a result:
+[docs/24](docs/24-thesis-and-research-program.md) says how it would be tested, and
+[docs/44](docs/44-product-thesis.md) states the thesis, the first five minutes and what would
+falsify it.
 
 ## Status
 
@@ -14,9 +32,13 @@ Research prototype, not a file manager or system optimiser.
 
 **Runs today**
 
-- The **Python reference** (`python/loomward/`) and its browser workbench (`ui/`): a synthetic
-  demo, a bounded metadata scan of one explicit folder, a small weighted student model, a tier
-  simulator and a read-only MCP reference. Its gates pass on Windows (see [Verify](#verify)).
+- The **Python reference** (`python/loomward/`), a **frozen test oracle** (owner decision q-40,
+  2026-10-12): a synthetic demo, a bounded metadata scan of one explicit folder, a small weighted
+  student model, a tier simulator and a read-only MCP reference. It changes only to keep the
+  cross-language fixtures aligned and is not the product; its legacy browser UI was retired after
+  a parity check against `app/` (the table is in
+  [docs/30](docs/30-interface-and-workspace-spec.md#legacy-browser-ui-retired)). Its gates pass on
+  Windows (see [Verify](#verify)).
 - The **native engine** (`crates/`, Rust, first compiled and tested on Windows on 2026-10-09):
   - `loomward-windows`: non-elevated native enumeration (no-recall opens, reparse and offline
     refusal) and guarded `ReadDirectoryChangesW` change watchers;
@@ -81,7 +103,6 @@ never an approval ([app/prototype/README.md](app/prototype/README.md)).
 | Path | What it is |
 |---|---|
 | `python/loomward/`, `scripts/` | Python reference: scanner, student, tier simulator, loopback server, CLI, MCP reference |
-| `ui/` | Original browser workbench; to be retired once `app/` reaches parity |
 | `app/` | Svelte 5 + Vite + TypeScript shell (views today: Explorer, Tiers, Companion, Grants & health; transports: mock, HTTP, Tauri); `app/prototype/` is the no-build woven-atlas and Observatory prototype |
 | `crates/loomward-core` | Pure domain: capability policy, simulated transaction state machine, planner v1 and a v2 port |
 | `crates/loomward-windows` | Read-only Windows identity and volume observation; opt-in `fixtures` feature for a disposable lab |
@@ -99,17 +120,18 @@ Prerequisites (measured versions from [AGENTS.md](AGENTS.md)): Python 3.11 or la
 Rust 1.85 or later (1.97.1) with the MSVC toolchain and C++ Build Tools, Node 24.13.1 and npm
 11.8.0 for `app/`. In PowerShell use `npm.cmd` and `npx.cmd`; the `.ps1` shims may be blocked.
 
-### Python reference demo
+### Python reference API (frozen oracle)
 
 ```powershell
-py -3 scripts/run.py demo --open
+py -3 scripts/run.py demo
 ```
 
-Starts a loopback-only server on port 8765 (`--port 0` picks a free one) and opens a synthetic
-workbench. It scans nothing and calls no model, but creates a demo state database. Keep the
-printed URL private: its `#token=` fragment is the session secret. Stop with Ctrl+C. Scanning a
-real folder (`scripts/run.py serve --root <folder>`) is a separate step: use a disposable folder
-and read the [operating guide](docs/38-reference-operating-guide.md) first.
+Starts a loopback-only JSON API on port 8765 (`--port 0` picks a free one) over synthetic data; it
+serves no pages, because the legacy browser UI is retired (use the Svelte app below). It scans
+nothing and calls no model, but creates a demo state database. Keep the printed URL private: its
+`#token=` fragment is the session secret. Stop with Ctrl+C. Scanning a real folder
+(`scripts/run.py serve --root <folder>`) is a separate step: use a disposable folder and read the
+[operating guide](docs/38-reference-operating-guide.md) first.
 
 ### Svelte app in mock mode
 
@@ -170,27 +192,25 @@ Run from the repository root. Missing tooling is reported as UNVERIFIED, never a
 
 | You changed | Run |
 |---|---|
-| Python reference, schemas, JS boundary, fixtures | `py -3 scripts/verify.py` (also runs the Rust gates when `cargo` is present) |
+| Python reference (frozen oracle), schemas, fixtures | `py -3 scripts/verify.py` (also runs the Rust gates when `cargo` is present) |
 | Rust workspace | `cargo fmt --all --check`, `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings` |
-| Browser workbench (`ui/`) | `py -3 scripts/test_ui.py`, or everything at once: `py -3 scripts/verify.py --ui` |
 | Svelte app | `npm.cmd --prefix app run check`, `... run test`, `... run build`, then `py -3 scripts/test_app.py` |
 | Prototype | `py -3 app/prototype/check.py` (add `--gpu` for the hardware rasterizer) |
 
-The browser checks need Playwright and a Chromium (`--browser PATH` selects one);
+The browser checks need Playwright and a Chromium;
 `scripts/test_app.py` expects `app/dist`, so build first. `py -3 scripts/verify.py --app` runs
 the four `app/` checks in order (after `npm ci --prefix app`). Docs-only changes: `git diff --check` plus the links you touched.
 
-Counts as [AGENTS.md](AGENTS.md) records them (Windows 11): 212 Python tests with one skip
-(symlink creation needs a privilege a standard user lacks), 2 JavaScript syntax checks, 9
-JavaScript boundary assertions, 80 cross-language fixtures, 54 Rust tests (core 29, windows 10,
-telemetry 10, lab 5; more are landing in open PRs) and 14 Chromium UI checks. Counts move with
-every merge; the command output is the authority. The Chromium harness bridges `fetch` through
-Python, so it is not WebView2 or direct browser-network evidence.
+Counts as [AGENTS.md](AGENTS.md) records them (Windows 11): Python tests with one skip
+(symlink creation needs a privilege a standard user lacks), 80 cross-language admission fixtures
+and the Rust tests (core 29, windows 10, telemetry 10, lab 5; more are landing in open PRs). The
+checks of the retired legacy UI (2 JavaScript syntax checks, 9 JavaScript boundary assertions, 14
+Chromium UI checks) are gone. Counts move with every merge; the command output is the authority.
 
 Hosted CI (`.github/workflows/ci.yml`) has three jobs, each on Ubuntu and Windows: `python`
-(Python 3.11 and 3.13, unit tests, JavaScript checks), `native` (rustfmt, tests, clippy) and `app`
-(`npm ci`, check, test, build; the Playwright suites `scripts/test_app.py` and `scripts/test_ui.py`
-run on Linux only). A local run is never described as hosted CI.
+(Python 3.11 and 3.13, unit tests), `native` (rustfmt, tests, clippy) and `app`
+(`npm ci`, check, test, build; the Playwright suite `scripts/test_app.py`
+runs on Linux only). A local run is never described as hosted CI.
 
 ## Measured results
 
@@ -270,15 +290,28 @@ in [docs/41](docs/41-v03-architecture.md) section 15 are hypotheses, not results
   [docs/16](docs/16-implementation-status.md); [docs/INDEX.md](docs/INDEX.md) maps every chapter.
 - **Agents:** [AGENTS.md](AGENTS.md) is the one baseline for every agent runtime, with the product
   invariants (no effects, no silent reach, honest unknowns and more). Read it before changing anything.
-- **Backlog:** 112 `LW-*` items (`backlog/issues.json`; [backlog/INDEX.md](backlog/INDEX.md) lists
-  the first 100). `LW-` IDs are not GitHub numbers; [backlog/github-issues.json](backlog/github-issues.json)
-  maps them (LW-001 to LW-100 are #4 to #105, LW-101 to LW-112 are #120 to #131).
+- **Backlog:** 130 `LW-*` items (`backlog/issues.json`; [backlog/INDEX.md](backlog/INDEX.md) lists
+  them). `LW-` IDs are not GitHub numbers; [backlog/github-issues.json](backlog/github-issues.json)
+  maps them (LW-001 to LW-100 are #4 to #105, LW-101 to LW-112 are #120 to #131, LW-113 to LW-130 are #404 to #421).
 - **Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md). Fixtures here
   must be synthetic. Open owner decisions: [HUMAN_TODO.md](HUMAN_TODO.md).
 
-## Licence and stance
+## Licence
 
-MIT ([LICENSE](LICENSE)). No theatre and no false claims: no release, package or "done" status is declared to show progress;
+GNU Affero General Public License v3.0 only (`AGPL-3.0-only`; [LICENSE](LICENSE)).
+Copyright (C) 2026 Cristian Tcaci.
+
+- **Earlier versions.** Commits and releases published before the relicensing change (#396, merged 2026-10-12) were
+  published under the MIT licence and stay available under it. This and later versions are AGPL-3.0-only.
+- **Commercial licences.** Loomward is dual licensed: besides the AGPL, the maintainer can grant
+  proprietary licences. To ask for one, contact the maintainer through GitHub ([@Chris0Jeky](https://github.com/Chris0Jeky)).
+- **Contributions** need a signed [Contributor Licence Agreement](CLA.md); you keep your copyright. Outside code is merged
+  only after its author has signed.
+- **The name.** "Loomward" is an unregistered project name; see [TRADEMARKS.md](TRADEMARKS.md).
+
+## Stance
+
+No theatre and no false claims: no release, package or "done" status is declared to show progress;
 unknown, partial and unverified stay visible; failed experiments are kept. Loomward does not claim
 native compilation of its desktop shell, backup verification, memory optimisation, learned heat,
 live disk balancing or safe deletion, because none of them has passed its own gate.

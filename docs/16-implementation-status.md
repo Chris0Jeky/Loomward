@@ -280,3 +280,19 @@ Counts (Windows, at `b00c564`): Rust 917 (apps 24, backup 19, catalog 164, core 
 - a real picker grant exercised by a person.
 
 **No file or process effect exists:** duplicates, placement, collections and backups observe, simulate or record only. Forget (q-9, #382) deletes Loomward's own records of a revoked root, never the owner's files.
+
+## Owner decisions of 12 October 2026 (guided walkthrough; HUMAN_TODO q-20 to q-46)
+
+Recorded here because q-33 changes product invariant 8. Nothing below is implemented unless a PR is named.
+
+- **Licence:** AGPL-3.0-only since #396. Earlier versions stay MIT. Dual licensing is kept open by `CLA.md`.
+- **Release gate:** invariant 8 now authorises unsigned preview pre-releases and a rolling nightly pre-release (q-17, q-31,
+  q-33). The first publication to winget, Scoop or the Store is still a re-review trigger. No release is published at this commit.
+- **Decided, not yet implemented:**
+  - the nightly channel and an opt-in update check;
+  - Find & Ask: a search index; Everything integration; an elevated NTFS helper behind its own gate, with invariant 2
+    unchanged until then; a semantic layer; an Ask provider interface;
+  - copy-and-verify as the first file effect, behind its own gate, with invariant 1 unchanged until then;
+  - the daily-use readiness bar;
+  - retiring the legacy browser UI and freezing the Python reference;
+  - package channels.
