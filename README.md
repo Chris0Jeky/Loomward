@@ -14,7 +14,7 @@ on them. It is a research prototype. It reads and simulates; it changes nothing 
   to Finance without moving.
 - **Honest by construction.** Each claim comes with its evidence and its blanks. Unknown, partial
   and offline stay visible, and unknown is never shown as zero. Until you teach it, the learning
-  component abstains rather than guesses.
+  component reports that it has no model rather than guessing.
 - **Agent-ready.** Agents reach the same model through a scoped, read-only MCP reference, as
   another view of it. No agent gets an execute, delete or kill tool.
 - **Views, not the pitch.** Where the disk space goes, duplicates, backups, memory and processes,

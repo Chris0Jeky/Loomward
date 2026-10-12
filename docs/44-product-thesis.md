@@ -44,12 +44,13 @@ The honest version, with nothing assumed to be learned yet:
 
 1. The owner grants one folder. Loomward lists its metadata and draws it by structure: folders,
    sizes, residency, and what it could not read.
-2. Before any teaching, the student has an empty training set and abstains
-   ([docs/00](00-design-brief.md), assumptions); the Atlas shows abstention as undyed, not as a
-   guess ([meaning threads](../evidence/v3/meaning-threads.md)). Grouping at this point can come only
+2. Before any teaching there is no fitted model: the engine reports `no_model`
+   ([contracts/v3/semantics.md](../contracts/v3/semantics.md)), which the Atlas shows apart from
+   `abstained`, a fitted model declining an item; neither is drawn as a guess
+   ([meaning threads](../evidence/v3/meaning-threads.md)). Grouping at this point can come only
    from structure and markers such as repository roots and manifests. That is designed
-   ([docs/24](24-thesis-and-research-program.md) section 3, [LW-010](../backlog/issues/LW-010.md)); I found no
-   implementation of it, so treat it as not built.
+   ([docs/24](24-thesis-and-research-program.md) section 3, [LW-010](../backlog/issues/LW-010.md)); no
+   implementation exists yet (2026-10-12), so treat it as not built.
 3. The owner corrects a few items. The suggestions change across the folder and no path does.
 
 How many corrections it takes before step 3 feels useful is unknown. That is the first thing to
