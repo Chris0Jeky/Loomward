@@ -103,7 +103,10 @@ fn completed_dirty_root_has_unknown_totals_and_partial_coverage() {
     let before = listed_root(&service);
     assert_eq!(before["scan"]["state"], "complete");
     assert_eq!(before["scan"]["coverage"], "complete");
-    assert!(!before["totals"].is_null(), "known empty root is not unknown");
+    assert!(
+        !before["totals"].is_null(),
+        "known empty root is not unknown"
+    );
 
     // Dirty only the aggregate witness. The completed traversal and sub_complete flag stay set.
     assert_eq!(
