@@ -1,0 +1,10 @@
+{
+  "def": "DiagnosticsSaveResult",
+  "reason": "the chosen path never crosses IPC",
+  "value": {
+    "outcome": "saved",
+    "bytes_written": "2817",
+    "refusal": null,
+    "path": "C:\\fixture\\loomward-diagnostics.json"
+  }
+}

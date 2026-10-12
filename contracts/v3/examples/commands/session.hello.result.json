@@ -32,7 +32,8 @@
     "disclosure_dialog": false,
     "teacher_available": true,
     "telemetry_available": true,
-    "gpu_available": false
+    "gpu_available": false,
+    "diagnostics_save": false
   },
   "limits": {
     "max_request_bytes": 65536,

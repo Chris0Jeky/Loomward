@@ -280,7 +280,7 @@ No command accepts a path string; `DisplayPath` is output-only.
 
 ### 5.2 Commands
 
-All 45 commands have `effects: none`. Bold rows exist only on the desktop adapter.
+Every command has `effects: none` except `diagnostics.save` (`owner_picked_export`, ADR-V3-24). Bold rows exist only on the desktop adapter.
 
 | Area | Command | Request | Result | Notes |
 |---|---|---|---|---|
@@ -311,6 +311,8 @@ All 45 commands have `effects: none`. Bold rows exist only on the desktop adapte
 | | `teacher.results` | `JobRefRequest` | `TeacherResults` | `data_class: teacher`, weight 0.2, `requires_review: true` |
 | Placement | `tiers.model`, `placement.candidates`, `placement.simulate`, `proposals.list`, `proposals.get` | | | Simulation only; `pre_rejected`, `excluded_volumes`, relief basis (section 10) |
 | Companion | `telemetry.subscribe` / `.unsubscribe` / `.snapshot`, `processes.list` / `.explain`, `budgets.get` / `.set` | | | Leases; read-only; own pools only |
+| Diagnostics | `diagnostics.preview` | `EmptyRequest` | `DiagnosticsPreviewResult` | Redacted allowlist bundle with the size and SHA-256 of its exact text; writes nothing (LW-055, q-15) |
+| | **`diagnostics.save`** | `DiagnosticsSaveRequest` | `DiagnosticsSaveResult` | Writes exactly the previewed bytes, named by digest, to a file the owner picks in a Rust save dialog; the path never crosses IPC (ADR-V3-24) |
 
 **Events.** `stream.hello`, `stream.lagged`, `job.state`, `scan.progress` (at most 4/s per job),
 `tree.invalidated` (at most 2/s per root), `telemetry.sample`, `learning.updated`, `roots.changed`,
@@ -895,7 +897,7 @@ app/
 - **Mock transport** serves `contracts/v3/examples/` and a deterministic synthetic slice generator.
 - **E2E**: `scripts/test_app.py` (owned by L3) is a runner that discovers `app/tests/e2e/test_*.py`; each view
   lane owns its own test module. Python Playwright, already installed.
-- The old `ui/` stays until the new app reaches parity, then is retired in a dedicated PR (L18).
+- The old `ui/` was retired after a parity check in a dedicated PR (q-40, 2026-10-12; table in `30-interface-and-workspace-spec.md`).
 
 ## 14. Lab, testing and validation
 

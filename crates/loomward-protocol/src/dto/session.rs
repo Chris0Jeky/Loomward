@@ -43,6 +43,8 @@ pub struct SessionInfoFeatures {
     pub teacher_available: bool,
     pub telemetry_available: bool,
     pub gpu_available: bool,
+    /// The desktop adapter's Rust-side save dialog for `diagnostics.save` (docs/42 ADR-V3-24).
+    pub diagnostics_save: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -12,6 +12,7 @@
   import { session } from '../../lib/stores/session.svelte';
   import { Say } from '../../lib/ui/say.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
+  import Diagnostics from './Diagnostics.svelte';
   import type { GrantList, Health, Root, RootList } from '../../lib/contracts.gen';
   import type { ScanView } from '../../lib/scan/model';
   import type { Grant } from '../../lib/derived';
@@ -247,6 +248,8 @@
   {:else}<p class="muted">Loading</p>{/if}
 </section>
 
+<Diagnostics />
+
 <section class="panel" aria-labelledby="h-roots">
   <h2 id="h-roots">Roots</h2>
   {#if canPick}
@@ -348,7 +351,7 @@
 
 <section class="panel" aria-labelledby="h-caps">
   <h2 id="h-caps">What this build can do</h2>
-  <p class="muted">Every effect is off, fixed by the contract: Loomward v0.3 observes and simulates only.</p>
+  <p class="muted">Every effect below is off, fixed by the contract: Loomward v0.3 observes and simulates only. The one exception is a diagnostic bundle you save yourself (above), written only to a file you pick and confirm.</p>
   <h3>Effects</h3>
   <ul class="caps">
     {#each effects as [name, on] (name)}

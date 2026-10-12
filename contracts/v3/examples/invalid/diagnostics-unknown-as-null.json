@@ -1,0 +1,123 @@
+{
+  "def": "DiagnosticsBundle",
+  "reason": "an unread value is an explicit unknown, never null or omitted",
+  "value": {
+    "format": "loomward-diagnostics/1",
+    "generated_at": "2026-10-09T12:00:00Z",
+    "loomward": {
+      "engine_version": "loomward-service/0.3.0",
+      "protocol": "loomward/3",
+      "adapter": "tauri",
+      "dataset_class": "synthetic",
+      "enumeration_strategy": "file_id_extd_directory_info"
+    },
+    "host": {
+      "os_family": "windows",
+      "os_build": 26100,
+      "logical_processors": 8,
+      "memory_total_bytes": null
+    },
+    "session": {
+      "capabilities": {
+        "observation": {
+          "metadata_scan": true,
+          "process_observation": true,
+          "gpu_observation": false,
+          "disk_io_observation": true,
+          "teacher_disclosure": true
+        },
+        "effects": {
+          "file_move": false,
+          "file_delete": false,
+          "file_rename": false,
+          "file_write": false,
+          "content_read": false,
+          "process_kill": false,
+          "process_suspend": false,
+          "process_priority": false,
+          "memory_trim": false,
+          "uninstall": false,
+          "elevation": false
+        }
+      },
+      "features": {
+        "grant_picker": false,
+        "disclosure_dialog": false,
+        "teacher_available": false,
+        "telemetry_available": false,
+        "gpu_available": false,
+        "diagnostics_save": true
+      }
+    },
+    "health": {
+      "engine_private_commit_bytes": "104857600",
+      "engine_cpu_ms": 12500,
+      "catalog_db_bytes": "52428800",
+      "catalog_wal_bytes": {
+        "unknown": "not_present"
+      },
+      "writer_queue_depth": 0,
+      "writer_queue_capacity": 67108864,
+      "jobs_running": 0,
+      "warning_codes": [
+        "scan_throttled"
+      ]
+    },
+    "stores": {
+      "catalog_schema_version": 7,
+      "state_schema_version": 7,
+      "catalog_files": 41880,
+      "catalog_dirs": 6120
+    },
+    "counts": {
+      "roots_active": 1,
+      "roots_revoked": 1,
+      "roots_identity_changed": 0,
+      "roots_forgotten": 0,
+      "collections": 2,
+      "human_feedback_records": 14,
+      "teacher_label_records": 0,
+      "backup_evidence": 0
+    },
+    "jobs": {
+      "window": 50,
+      "by_kind_state": [
+        {
+          "kind": "scan",
+          "state": "completed",
+          "count": 3
+        },
+        {
+          "kind": "duplicates",
+          "state": "cancelled",
+          "count": 1
+        }
+      ]
+    },
+    "roots": [
+      {
+        "root_id": "rt_1",
+        "origin": "lab_generated",
+        "grant_state": "active",
+        "scan_state": "complete",
+        "coverage": "complete",
+        "filesystem": "ntfs",
+        "identity_mode": "verified"
+      },
+      {
+        "root_id": "rt_2",
+        "origin": "lab_generated",
+        "grant_state": "revoked",
+        "scan_state": "stale",
+        "coverage": "stale",
+        "filesystem": {
+          "unknown": "volume_not_observed"
+        },
+        "identity_mode": "verified"
+      }
+    ],
+    "recent_errors": {
+      "unknown": "not_retained"
+    }
+  }
+}

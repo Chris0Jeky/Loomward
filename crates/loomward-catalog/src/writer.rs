@@ -611,8 +611,10 @@ fn serve(
         bulk_enabled,
     };
     // The state rewrite and WAL cut after a forget, when a lock outlasted the first try: retried between commands.
-    let mut cut_pending = false;
-    let mut vacuum_pending = false;
+    // A forget that committed its state half but whose rewrite and log cut never finished (a crash,
+    // a lock that outlasted open) leaves the marker in state.db: finish it here.
+    let mut cut_pending = scrub_pending(&conn);
+    let mut vacuum_pending = cut_pending;
     loop {
         let first = loop {
             if let Some(p) = pending.take() {
@@ -902,11 +904,23 @@ fn serve(
             break;
         }
     }
+    crate::crashpoint::hit("shutdown checkpoint");
     let _ = conn.execute_batch("PRAGMA main.wal_checkpoint(TRUNCATE)");
 }
+/// Whether a forget's rewrite of the stores is still owed (the `scrub_pending` marker, written in
+/// the forget's own state.db transaction and cleared only after both rewrites and both log cuts).
+pub(crate) fn scrub_pending(conn: &Connection) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM st.meta WHERE key='scrub_pending')",
+        [],
+        |r| r.get(0),
+    )
+    .unwrap_or(false)
+}
 /// Page images from before a purge sit in the WALs until they are folded in and cut, and stale
-/// cells an earlier build freed without secure_delete sit in state.db's free space until it is
-/// rewritten: while `vacuum` is set, `VACUUM st` runs first. Waits at most `wait` for a lock, so a
+/// cells freed without secure_delete (a staged listing deleted when it was published, a cell an
+/// earlier build freed) sit in the free space and unused tails of both files until they are
+/// rewritten: while `vacuum` is set, `VACUUM st` and `VACUUM main` run first (#391). Waits at most `wait` for a lock, so a
 /// slow reader or writer never holds the committed receipt; the caller retries until the rewrite is
 /// done and both logs are cut. Whether all of it was done.
 pub(crate) fn wal_cut(conn: &Connection, wait: Duration, vacuum: &mut bool) -> bool {
@@ -915,13 +929,18 @@ pub(crate) fn wal_cut(conn: &Connection, wait: Duration, vacuum: &mut bool) -> b
     };
     let _ = conn.busy_timeout(wait);
     if *vacuum {
-        *vacuum = conn.execute_batch("VACUUM st").is_err();
+        crate::crashpoint::hit("VACUUM st");
+        *vacuum = conn.execute_batch("VACUUM st").is_err() || {
+            crate::crashpoint::hit("VACUUM main");
+            conn.execute_batch("VACUUM main").is_err()
+        };
         if *vacuum {
             let _ = conn.busy_timeout(Duration::from_millis(u64::from(timeout)));
             return false;
         }
     }
     let cut = |db: &str| {
+        crate::crashpoint::hit("wal cut");
         conn.query_row(&format!("PRAGMA {db}.wal_checkpoint(TRUNCATE)"), [], |r| {
             r.get::<_, i64>(0)
         })
@@ -929,12 +948,18 @@ pub(crate) fn wal_cut(conn: &Connection, wait: Duration, vacuum: &mut bool) -> b
     };
     let (state, catalog) = (cut("st"), cut("main"));
     let _ = conn.busy_timeout(Duration::from_millis(u64::from(timeout)));
-    state && catalog
+    let done = state && catalog;
+    if done && !*vacuum {
+        crate::crashpoint::hit("clear scrub marker");
+        let _ = conn.execute("DELETE FROM st.meta WHERE key='scrub_pending'", []);
+    }
+    done
 }
 fn end_checkpoint(conn: &Connection) -> rusqlite::Result<[i64; 3]> {
     let timeout = conn.query_row("PRAGMA busy_timeout", [], |r| r.get::<_, u32>(0))?;
     // Best-effort WAL maintenance must not hold a committed EndRun receipt behind a reader.
     conn.busy_timeout(Duration::ZERO)?;
+    crate::crashpoint::hit("end-of-run checkpoint");
     let result = conn.query_row("PRAGMA main.wal_checkpoint(TRUNCATE)", [], |r| {
         Ok([r.get(0)?, r.get(1)?, r.get(2)?])
     });
@@ -1251,6 +1276,11 @@ fn forget_state(conn: &mut Connection, grant: i64, at: i64, expected: Option<i64
     tx.execute(
         "INSERT INTO st.root_forgotten(grant_id,root_number,forgotten_at_ns) VALUES (?1,?2,?3)",
         params![grant, root.unwrap_or(0), at],
+    )?;
+    // Owes the rewrite of both stores: durable with the forget, so a crash before it cannot lose it.
+    tx.execute(
+        "INSERT INTO st.meta(key,value) VALUES('scrub_pending','1') ON CONFLICT(key) DO NOTHING",
+        [],
     )?;
     state_revision(&tx)?;
     tx.commit()?;

@@ -9,6 +9,9 @@
 //! token match the published witness, keeping surviving hard links visible before confirmation.
 #![forbid(unsafe_code)]
 use std::path::Path;
+mod crashpoint;
+#[cfg(feature = "test-hooks")]
+pub use crashpoint::CRASH_EXIT;
 mod db;
 mod duplicates;
 pub use duplicates::{DuplicateCandidate, DuplicateCandidates};

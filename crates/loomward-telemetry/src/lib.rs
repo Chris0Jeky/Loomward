@@ -241,6 +241,26 @@ pub struct OwnUsage {
     pub working_set_bytes: u64,
 }
 
+/// The host facts a diagnostic bundle may carry (owner decision q-16): the OS build number, the
+/// active logical processor count and installed physical memory. `None` when the API failed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Host {
+    pub os_build: Option<u32>,
+    pub logical_processors: Option<u32>,
+    pub memory_total_bytes: Option<u64>,
+}
+
+pub fn host() -> Host {
+    #[cfg(windows)]
+    {
+        windows::host()
+    }
+    #[cfg(not(windows))]
+    {
+        Host::default()
+    }
+}
+
 /// Read current own CPU, private commit and working set. Failed APIs make the observation unknown.
 pub fn own_usage() -> Observation<OwnUsage> {
     #[cfg(windows)]

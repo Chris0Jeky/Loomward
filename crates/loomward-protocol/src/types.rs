@@ -496,6 +496,16 @@ string_newtype!(
 );
 
 string_newtype!(
+    /// Why a diagnostic value is unknown: a fixed snake_case token chosen by the service, so it
+    /// can never carry input, a path or an OS message.
+    UnknownReason,
+    "1-64 characters of [a-z0-9_], starting with a letter",
+    |s| (1..=64).contains(&s.len())
+        && s.as_bytes()[0].is_ascii_lowercase()
+        && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+);
+
+string_newtype!(
     /// A provider snapshot ID: 64 lowercase hex digits.
     SnapshotId,
     "64 lowercase hex digits",

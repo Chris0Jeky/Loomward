@@ -52,6 +52,30 @@ fn ticks(time: FILETIME) -> u64 {
     (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime)
 }
 
+pub(super) fn host() -> Host {
+    let mut version = windows_sys::Win32::System::SystemInformation::OSVERSIONINFOW {
+        dwOSVersionInfoSize: size_of::<windows_sys::Win32::System::SystemInformation::OSVERSIONINFOW>(
+        ) as u32,
+        ..Default::default()
+    };
+    let mut physical = MEMORYSTATUSEX {
+        dwLength: size_of::<MEMORYSTATUSEX>() as u32,
+        ..Default::default()
+    };
+    // Each API fills only its initialized, correctly sized output structure. RtlGetVersion reports
+    // the real build, unlike GetVersionExW without a compatibility manifest.
+    unsafe {
+        let built = windows_sys::Wdk::System::SystemServices::RtlGetVersion(&mut version) == 0;
+        let cores = GetActiveProcessorCount(u16::MAX);
+        Host {
+            os_build: built.then_some(version.dwBuildNumber),
+            logical_processors: (cores > 0).then_some(cores),
+            memory_total_bytes: (GlobalMemoryStatusEx(&mut physical) != 0)
+                .then_some(physical.ullTotalPhys),
+        }
+    }
+}
+
 pub(super) fn own_usage() -> Observation<OwnUsage> {
     let mut memory = PROCESS_MEMORY_COUNTERS_EX {
         cb: size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
