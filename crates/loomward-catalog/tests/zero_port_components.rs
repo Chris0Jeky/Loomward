@@ -12,7 +12,7 @@ fn zero_numbered_port_components_preserve_the_verbatim_namespace() {
 }
 
 #[test]
-fn_multi_digit_port_like_names_still_use_the_sqlite_workaround() {
+fn multi_digit_port_like_names_still_use_the_sqlite_workaround() {
     for name in ["COM00", "LPT00", "COM10", "LPT10"] {
         let plain = format!(r"C:\{name}\state");
         let path = format!(r"\\?\{plain}");
