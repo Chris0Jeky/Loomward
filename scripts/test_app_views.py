@@ -271,9 +271,16 @@ class FakeEngine:
             if text == 'slow':
                 time.sleep(1.5)
             name = 'SLOW-RESULT.txt' if text == 'slow' else 'FAST-RESULT.txt'
-            hit = {'row': {**row(name, 1), 'location_hint': {'text': 'Fake Root', 'truncated': False}}, 'root_id': 'rt_fake', 'path': {'text': name, 'truncated': False},
+            generation, cursor, budget = '7', None, False
+            if text == 'paged':  # the root's generation moves between the two pages (a watcher run)
+                second = p.get('cursor') == 'c_page2'
+                name, generation, cursor = ('PAGED-TWO.txt', '8', None) if second else ('PAGED-ONE.txt', '7', 'c_page2')
+            hit = {'row': {**row(name, 2 if name == 'PAGED-TWO.txt' else 1), 'location_hint': {'text': 'Fake Root', 'truncated': False}}, 'root_id': 'rt_fake', 'path': {'text': name, 'truncated': False},
                    'match_kind': 'substring', 'highlights': [[0, 4]]}
-            return {'generation': '7', 'hits': [hit], 'next_cursor': None, 'budget_hit': False, 'index_state': 'building', 'partial': True, 'substring_searched': True,
+            hits = [hit]
+            if text == 'cut':  # the page ran out of budget before any match
+                hits, cursor, budget = [], 'c_cut', True
+            return {'generation': generation, 'hits': hits, 'next_cursor': cursor, 'budget_hit': budget, 'index_state': 'building', 'partial': True, 'substring_searched': True,
                     'roots': [{'root_id': 'rt_fake', 'scan_state': 'scanning', 'coverage': 'partial'}]}
         return ('capability_unavailable', f'fake engine: {cmd} not implemented')
 
@@ -439,6 +446,18 @@ def check_explorer_engine(page: Page, engine: FakeEngine) -> None:
     expect(coverage).to_contain_text('not proof of absence')
     page.wait_for_timeout(2000)
     ok(page.get_by_text('SLOW-RESULT.txt').count() == 0 and page.get_by_text('FAST-RESULT.txt').count() == 1, 'a slow reply for an older search is dropped')
+    # a root generation that moves between pages (every watcher run) does not restart a search
+    box.fill('paged')
+    page.get_by_role('button', name='Search', exact=True).click()
+    expect(page.get_by_text('PAGED-ONE.txt')).to_be_visible()
+    page.get_by_role('button', name='Load more').click()
+    expect(page.get_by_text('PAGED-TWO.txt')).to_be_visible()
+    ok(page.get_by_text('PAGED-ONE.txt').count() == 1 and page.get_by_text('starts again from the top').count() == 0,
+       'search paging continues across a root generation change')
+    box.fill('cut')
+    page.get_by_role('button', name='Search', exact=True).click()
+    expect(page.locator('main table tbody')).to_contain_text('Nothing found yet')
+    print('PASS an empty budget-cut search page reads as unfinished, not as no matches')
     page.get_by_role('button', name='Clear search').click()
     expect(rows(page)).to_have_count(50)
 

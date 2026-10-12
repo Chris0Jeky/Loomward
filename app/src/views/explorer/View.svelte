@@ -87,7 +87,9 @@
         root_id: null, text: query.trim(), extension: ext || null, min_bytes: minBytes || null, max_bytes: null,
         modified_after: null, modified_before: null, kind, limit: PAGE, cursor,
       }, { signal });
-      return { result: { generation: result.generation, items: result.hits.map((h) => h.row), next_cursor: result.next_cursor, total: null, budget_hit: result.budget_hit, search: result } };
+      // No generation: a search cursor is a keyset over the live index, so a root's generation moving
+      // between pages (every watcher run) is no reason to restart the results from the top.
+      return { result: { generation: null, items: result.hits.map((h) => h.row), next_cursor: result.next_cursor, total: null, budget_hit: result.budget_hit, search: result } };
     }
     return c.call('tree.children', { node_id: here!.id, sort, basis, limit: PAGE, cursor }, { signal });
   }
@@ -388,7 +390,7 @@
             <td><button class="btn" type="button" data-inspect onkeydown={rowKeys} aria-label={`Inspect ${escapedName(r.name)}`} onclick={() => void inspect(r)}>Inspect</button></td>
           </tr>
         {:else}
-          <tr><td colspan="8" class="muted">{busy ? 'Loading' : error ? 'Nothing is shown because the last request failed.' : searching && scope?.partial ? 'No matches in what is catalogued so far; coverage is partial, so this is not proof of absence.' : searching ? 'No matches.' : 'Nothing to show.'}</td></tr>
+          <tr><td colspan="8" class="muted">{busy ? 'Loading' : error ? 'Nothing is shown because the last request failed.' : searching && budgetHit ? 'Nothing found yet: the engine stopped at its work budget before finding a match.' : searching && scope?.partial ? 'No matches in what is catalogued so far; coverage is partial, so this is not proof of absence.' : searching ? 'No matches.' : 'Nothing to show.'}</td></tr>
         {/each}
       </tbody>
     </table>
