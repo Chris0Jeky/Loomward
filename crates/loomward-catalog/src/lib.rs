@@ -59,7 +59,7 @@ impl From<std::io::Error> for Error {
 /// process's connections; its in-process accounting races when two readers end together, leaking a
 /// WAL read lock until every connection to the file closes, so the log can never be cut. Paths used
 /// for comparisons (grants, `--static`) keep their canonical form; only SQLite opens use this.
-// Keep the existing 200 UTF-16-unit budget, leaving room for SQLite's file suffixes.
+// Retain the 200-unit budget, expressed in UTF-16, leaving room for SQLite's file suffixes.
 // Removing the prefix must not change Win32 name resolution (#398).
 pub fn sqlite_dir(dir: &Path) -> std::path::PathBuf {
     let Some(text) = dir.to_str() else {
@@ -108,7 +108,9 @@ fn ordinary_win32_component(component: &str) -> bool {
     ) {
         return false;
     }
-    let port = stem.strip_prefix("COM").or_else(|| stem.strip_prefix("LPT"));
+    let port = stem
+        .strip_prefix("COM")
+        .or_else(|| stem.strip_prefix("LPT"));
     !port.is_some_and(|suffix| {
         let mut chars = suffix.chars();
         matches!(chars.next(), Some('1'..='9' | '¹' | '²' | '³')) && chars.next().is_none()
