@@ -180,7 +180,8 @@ think of, even if it requires additional scope and work". The driver's plan is r
 Selected: "Native save dialog (desktop app)". The desktop app writes the redacted bundle to a file the owner picks in a
 Rust-side save dialog; this is Loomward's first file write and lands with its own small safety gate (path never crosses
 IPC; only the previewed bytes; new file or owner-confirmed overwrite).
-- [ ] Implemented and merged.
+- [x] Implemented and merged: #399 (2026-10-12; ADR-V3-24; Loomward asks its own Cancel-default question before replacing a
+  file). Not yet observed by a person: the real save dialog and the replace box (#437, q-45).
 
 ### q-16 — Tier and posture — ANSWERED: T2, with lower weight on privacy and security
 
@@ -193,7 +194,7 @@ forbidden because they are irreversible.
 ### q-17 — Releases (LW-057) — ANSWERED: unsigned preview pre-release
 
 Selected: "Unsigned preview pre-release": a GitHub pre-release of the Tauri desktop app, unsigned, marked preview, after T2.
-- [ ] Release workflow and first preview pre-release published.
+- [x] Release workflow and first preview pre-release published: v0.3.0-preview.1 (2026-10-12).
 
 ### q-18 — Older hardware mentions (#283) — ANSWERED: scrub to generic labels
 
@@ -267,7 +268,7 @@ me)". Shown four candidate theses, the owner selected "Memory + ledger + agents"
 - **Identity:** a model of the owner's work, kept separate from where files live and what may touch them.
 - **Trust mechanism:** evidence and explicit blanks.
 - **Growth path:** agents and MCP.
-- [ ] Thesis doc and README positioning merged.
+- [x] Thesis doc and README positioning merged: #403 (docs/44).
 
 ### q-26 — Money — ANSWERED: not now; keep the option
 
@@ -287,6 +288,7 @@ that". Agents keep the release pipeline ready for a certificate and a Store subm
 
 Publishing to winget, Scoop or the Store for the first time is still a tier re-review trigger under AGENTS.md invariant 8;
 this answer chooses the channels, it does not pre-authorise those publications.
+Prepared: #425 (Scoop placeholder bucket, winget generator, Store and signing runbooks); nothing published.
 
 ### q-30 — Updates — ANSWERED: an opt-in update check
 
@@ -302,12 +304,16 @@ working state" (q-33).
 ### q-32 — First real effect — ANSWERED: copy-and-verify
 
 It never deletes the source and lands behind its own safety gate. AGENTS.md invariant 1 changes only with that gate.
+Design merged: #423 (ADR-V3-25, docs/47). The gate is not open. Owner questions Q1 to Q3 are in docs/47 section 12
+and are asked when lane C2 starts (q-47).
 
 ### q-33 — The owner's machines — ANSWERED: a public nightly pre-release
 
 The selected option: every merge to `main` publishes a rolling, unsigned nightly pre-release, and the opt-in updater
 on the owner's machines follows it. Driver's plan, stated in chat: state is copied before every migration and the
 previous nightly stays restorable. AGENTS.md invariant 8 names the nightly as owner-authorised.
+Implemented: #432. The first nightly, 0.3.0-nightly.20261012.1, published on 2026-10-12. Update installs stay off until
+the owner's updater key exists (q-30); rollback is manual (RELEASING.md).
 
 ### q-34 — New scope — ANSWERED: Find & Ask, plus four areas
 
@@ -320,7 +326,7 @@ it should be easily usable by humans too), and the model could also be a local o
 Also selected: developer clutter, content understanding, cloud and sync awareness, and monitoring and alerts. The model
 gets read-only tools over the same query surface as people and MCP agents. Anything it suggests doing becomes a proposal
 the owner approves.
-- [ ] LW items minted for Find & Ask and the four areas.
+- [x] LW items minted for Find & Ask and the four areas: #422 (LW-113 to LW-130).
 
 ### q-35 — Where the model runs — ANSWERED: one provider interface
 
@@ -336,6 +342,9 @@ disclosure rules. A bundled engine comes later. Downloads happen only on explici
 - **Everything integration** where it is installed.
 - **Plus "whatever extra":** the driver adds a local semantic (embedding) layer.
 
+Design merged: #426 (docs/46; the helper reads USN journal records only, never raw MFT records). Search v1 merged:
+#438 (owner-local FTS5 index; MCP and Ask exposure waits on the LW-069 adapter gate, #429).
+
 ### q-37 — Linux — ANSWERED: Windows first, Linux later
 
 An observe-only Linux port comes after the Windows daily-use bar. The core stays portable meanwhile.
@@ -350,13 +359,14 @@ and nice to haves if there is capacity". Nice-to-haves: NAS shares as roots, pai
 The bar: crash injection at every write, the 10M-entry lab, pathological trees, churn during scans, injected I/O faults
 and a full disk, fuzzing, and a 72-hour soak. Every effect also needs power-cut and proven-restore evidence. The owner
 alone judges "UX done".
-- [ ] Readiness checklist merged.
+- [x] Readiness checklist merged: #427 (docs/45; crash injection at every catalogue write).
 - [ ] Every line carries pass evidence.
 
 ### q-40 — Old code — ANSWERED: freeze the Python reference, retire the legacy browser UI
 
 The Python reference stays as a frozen test oracle. The legacy browser UI and `preview.html` retire once parity with the
 Svelte app is shown.
+- [x] Implemented: #424 (parity table in docs/30).
 
 ### q-41 — Pace — ANSWERED: maximum throughput
 
@@ -383,7 +393,24 @@ and possibly a full redesign, come later. "for now I wanna keep the momentum goi
 - [ ] Dismiss the Dependabot alert (q-19 steps).
 - [ ] Install the preview on this PC and Kraspyon and enable the nightly channel, once both ship.
 - [ ] Hardware tests: a FAT or exFAT USB stick (q-12), and a folder granted through the real picker.
+- [ ] Save a diagnostic bundle once to a new file and once over an existing file in the desktop app, to see the real save
+  dialog and Loomward's replace box (#437).
 
 ### q-46 — Repository home — ANSWERED: stays under Chris0Jeky
 
 An empty GitHub organisation named `Loomward` (created 2026-08-06) exists. Whose it is was not established.
+
+### q-47 — Design questions waiting for their lanes — NOT YET ASKED
+
+Recorded so a later session asks them at the right time; no answer is needed now.
+- Copy-and-verify (docs/47 section 12), before the copy lanes that need them:
+  - Q1: may cancel delete Loomward's own staging files?
+  - Q2: how to prove power-cut safety (Hyper-V hard stop or a power pull on lab data; until then the operation stays
+    lab-only)?
+  - Q3: copies into new folders only, or also into an existing folder (new names only)?
+- Find & Ask (docs/46 section 11, which names each question's trigger lane):
+  - the elevated helper's launch model;
+  - Everything results outside the grants (hidden is recommended);
+  - local-model disclosure per folder;
+  - conversation retention.
+- Microsoft Store: a short privacy policy page is required before a Store submission (packaging/store/README.md).

@@ -296,3 +296,42 @@ Recorded here because q-33 changes product invariant 8. Nothing below is impleme
   - the daily-use readiness bar;
   - retiring the legacy browser UI and freezing the Python reference;
   - package channels.
+
+## v0.3 status, wave 9 (11 to 13 October 2026; counts measured at `129373f`)
+
+The sections above are kept as history.
+- **Merged:** 22 PRs, every one with green hosted CI at merge. The 16 this session merged each had one fresh-context review (Sonnet reviewers), with Codex inline findings triaged on every PR. The concurrent agent's six carry their own review records (1 to 11 reviews each, plus Codex). Three hosted-runner timing failures in crates the PRs did not touch were investigated, tracked (#439, fixed by #443; #441; #446) and re-run green.
+- **Owner walkthrough:** on 12 October it recorded decisions q-20 to q-46 (HUMAN_TODO).
+- **Concurrent agent:** a second agent, working from a repository ZIP under the owner's account, merged six of the 22 in parallel: #428, #429, #430, #440, #443 and #445. Several close follow-ups this session filed. Its open drafts (#435, #444, #447) are not counted.
+
+| Area | State on `main` | Evidence |
+|---|---|---|
+| Licence (q-20 to q-23) | **AGPL-3.0-only** since #396. Earlier versions stay MIT. Dual licensing is kept open by `CLA.md`; the CLA bot is not connected yet. `TRADEMARKS.md` requires modified forks to rename | `LICENSE`, `CLA.md`, `TRADEMARKS.md` |
+| Releases (q-17, q-31, q-33) | **v0.3.0-preview.1 published** (unsigned GitHub pre-release; release notes checked against the code in #400). The **rolling nightly** publishes the latest qualifying main commit after green CI (runs that queue up while one publishes are coalesced); the first was `0.3.0-nightly.20261012.1` (#432). Opt-in update check (off by default; `requireSignedVersion`). The updater stays unconfigured until the owner's key exists | `RELEASING.md` |
+| Package channels (q-28, q-29) | Scoop bucket (fail-closed placeholder), winget manifest generator, Store and signing runbooks (#425). **Nothing published to any package channel** | `packaging/` |
+| Diagnostics (q-15, LW-055) | **The first file write.** A previewed, redacted bundle goes to an owner-picked file through a Rust-side save dialog. The path never crosses IPC. Loomward asks its own Cancel-default replace question before overwriting (#399, ADR-V3-24) | `evidence/v3/diagnostics-bundle-q15.md` |
+| Search v1 (LW-113, q-34, q-36) | An FTS5 trigram index over names, kept by triggers, with exact, prefix, word-start and substring tiers. Each page has a 250 ms soft budget and resumes. Owner-local and active grants only; no MCP or Ask exposure yet. Forget leaves no index entry. Cost: about 100 B per entry, and first scans about 25% slower (#438, #442) | `evidence/v3/search-v1.md` |
+| Forget (q-9) | Also rewrites `catalog.db` (`VACUUM main`) under a crash-safe scrub marker, because first scans stage chunks (#427). Follow-ups: RAM use and silent retry (#434) | `crates/loomward-catalog/tests/crash_sweep.rs` |
+| Readiness bar (q-39) | `docs/45-daily-use-readiness.md`, with crash injection at every catalogue write. The full-mode run at a9299b4 recovered at all 272 lifecycle, 14 migration and 3,870 double-crash points; the default mode in CI samples 149 and 191. No full sweep has run since #438 added search triggers inside writer transactions (#427). **No line is PASS yet** | `docs/45-daily-use-readiness.md` |
+| Designs (no capability opened) | Product thesis (docs/44, #403). Copy-and-verify gate (ADR-V3-25, docs/47, #423). Find & Ask: search tiers, a USN-journal helper behind its own gate, semantic layer, Ask provider (docs/46, #426, follow-ups #433) | docs |
+| Concurrent agent's fixes | SQLite path identity is kept for verbatim, malformed and zero-numbered device-port paths (#428, closes the #398 items). Completed roots report partial coverage when an aggregate is dirty (#430, #361). `verify.py --app` fails closed when app gates are unverified (#440, #431). Only qualifying nightly jobs queue (#445, #436). The heartbeat test measures from the actual delivery (#443, #439). Search and updater contract docs (#429) | test suites |
+| Housekeeping | Legacy browser UI retired; Python reference frozen as a test oracle (#424, q-40). Hardware scrub finished (#394, q-18; the PNG screenshots were not inspected). SQLite opens plain paths, fixing the long-reader WAL pin (#397, #390, follow-ups #398). Writer batching fix (#395). 18 LW items minted, LW-113 to LW-130 (#422). Decision record (#401) | test suites |
+
+Counts (Windows, at `129373f`):
+- **Rust:** 988 (apps 24, backup 19, catalog 213, core 30, engine 209, http 72, lab 27, learn 18, protocol 36, service 179, shell 27, telemetry 34, windows 100; doc tests counted in their crates).
+- **App:** 406 vitest, plus Playwright e2e, `--a11y` and `--live-serve`.
+- **Python:** 256 tests (2 skips).
+- **Contract:** 56 commands.
+
+**Not established:**
+- updater installs (no owner key);
+- every docs/45 line at PASS;
+- a real power cut;
+- P4 at 250k rows/s (#148);
+- P14 under the bulk path and the search index (#386, #442);
+- search and Forget timings at 10M;
+- a real FAT volume;
+- the real save dialog and replace box driven by a person (#437);
+- any package-channel publication.
+
+**Effects:** one file write exists: the owner-initiated diagnostic export. When the owner confirms Loomward's replace question, it overwrites that existing file; that is the only act on an existing owner file. No other effect touches existing owner files, and none touches processes. Copy-and-verify is designed, not built.
