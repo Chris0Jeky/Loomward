@@ -98,15 +98,12 @@ fn listed_root(service: &Service) -> Value {
 }
 
 #[test]
-fn completed_dirty_root_has_unknown_totals_and_partial_coverage() {
+fn completed_dirty_root_never_advertises_complete_coverage() {
     let (_tmp, service, connection, root_id) = fixture();
     let before = listed_root(&service);
     assert_eq!(before["scan"]["state"], "complete");
     assert_eq!(before["scan"]["coverage"], "complete");
-    assert!(
-        !before["totals"].is_null(),
-        "known empty root is not unknown"
-    );
+    assert_eq!(before["totals"]["complete"], true);
 
     // Dirty only the aggregate witness. The completed traversal and sub_complete flag stay set.
     assert_eq!(
@@ -121,13 +118,16 @@ fn completed_dirty_root_has_unknown_totals_and_partial_coverage() {
     let dirty = listed_root(&service);
     assert_eq!(dirty["grant_state"], "active");
     assert_eq!(dirty["scan"]["state"], "complete");
-    assert!(dirty["totals"].is_null());
+    // Reader::repair_committed repairs inactive dirty roots before inspection. Repair uses
+    // rollup(clean=false), so known partial totals are legitimate, but complete coverage is not.
+    assert_eq!(dirty["totals"]["complete"], false);
     assert_eq!(dirty["scan"]["coverage"], "partial");
+    assert_eq!(listed_root(&service)["scan"]["coverage"], "partial");
 
-    // Restore the unchanged aggregate's witness, without fabricating a new scan or totals.
+    // A refreshed complete witness must restore complete coverage without changing the counts.
     connection
         .execute(
-            "UPDATE dir SET dirty_rev=agg_valid_rev WHERE root_id=?1 AND parent_id IS NULL",
+            "UPDATE dir SET sub_complete=1 WHERE root_id=?1 AND parent_id IS NULL",
             [root_id],
         )
         .unwrap();
