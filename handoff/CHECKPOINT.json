@@ -495,7 +495,7 @@
     "release": "v0.3.0-preview.1 published; nightly and opt-in updater merged (#432), updater inactive until the owner key exists",
     "crash_sweep": "full mode at a9299b4: every catalogue write boundary killed and recovered (272 lifecycle, 14 migration, 3,870 double crashes); default CI mode samples; no full sweep since #438's search triggers (#427)",
     "licence": "AGPL-3.0-only since #396; CLA.md, TRADEMARKS.md",
-    "effects": "one file write (the diagnostic export); no effect on existing owner files or processes"
+    "effects": "one file write: the diagnostic export, which may overwrite an existing owner-picked file only after Loomward's own confirmation; no other effect on existing owner files, none on processes"
   },
   "owner_decisions_2026_10_11": {
     "source": "HUMAN_TODO.md q-5, q-9 to q-19 (recorded in #360)",
@@ -521,7 +521,7 @@
     "source": "HUMAN_TODO q-20 to q-46 (guided walkthrough in chat)",
     "licence": "AGPL-3.0-only since #396 (earlier versions MIT); dual licensing kept open through CLA.md; TRADEMARKS.md",
     "release_gate": "invariant 8 now authorises unsigned preview pre-releases and a rolling nightly pre-release (q-17, q-31, q-33); first publication to winget, Scoop or the Store is still a re-review trigger",
-    "released": "v0.3.0-preview.1 (unsigned GitHub pre-release, 2026-10-12); the rolling nightly publishes after each green main push (#432)",
+    "released": "v0.3.0-preview.1 (unsigned GitHub pre-release, 2026-10-12); the rolling nightly publishes the latest qualifying main commit after green CI, coalescing runs queued during a publish (#432, #445)",
     "thesis": "workspace memory, honest by construction, agent-ready (q-25)",
     "decided_not_yet_implemented": [
       "Find & Ask beyond search v1: Everything integration (LW-114), elevated USN-journal helper behind its own gate (LW-115; invariant 2 unchanged until then), semantic layer (LW-116), Ask provider and chat (LW-117/118); design docs/46 (#426)",

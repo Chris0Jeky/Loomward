@@ -307,7 +307,7 @@ The sections above are kept as history.
 | Area | State on `main` | Evidence |
 |---|---|---|
 | Licence (q-20 to q-23) | **AGPL-3.0-only** since #396. Earlier versions stay MIT. Dual licensing is kept open by `CLA.md`; the CLA bot is not connected yet. `TRADEMARKS.md` requires modified forks to rename | `LICENSE`, `CLA.md`, `TRADEMARKS.md` |
-| Releases (q-17, q-31, q-33) | **v0.3.0-preview.1 published** (unsigned GitHub pre-release; release notes checked against the code in #400). The **rolling nightly** publishes after each green main push; the first was `0.3.0-nightly.20261012.1` (#432). Opt-in update check (off by default; `requireSignedVersion`). The updater stays unconfigured until the owner's key exists | `RELEASING.md` |
+| Releases (q-17, q-31, q-33) | **v0.3.0-preview.1 published** (unsigned GitHub pre-release; release notes checked against the code in #400). The **rolling nightly** publishes the latest qualifying main commit after green CI (runs that queue up while one publishes are coalesced); the first was `0.3.0-nightly.20261012.1` (#432). Opt-in update check (off by default; `requireSignedVersion`). The updater stays unconfigured until the owner's key exists | `RELEASING.md` |
 | Package channels (q-28, q-29) | Scoop bucket (fail-closed placeholder), winget manifest generator, Store and signing runbooks (#425). **Nothing published to any package channel** | `packaging/` |
 | Diagnostics (q-15, LW-055) | **The first file write.** A previewed, redacted bundle goes to an owner-picked file through a Rust-side save dialog. The path never crosses IPC. Loomward asks its own Cancel-default replace question before overwriting (#399, ADR-V3-24) | `evidence/v3/diagnostics-bundle-q15.md` |
 | Search v1 (LW-113, q-34, q-36) | An FTS5 trigram index over names, kept by triggers, with exact, prefix, word-start and substring tiers. Each page has a 250 ms soft budget and resumes. Owner-local and active grants only; no MCP or Ask exposure yet. Forget leaves no index entry. Cost: about 100 B per entry, and first scans about 25% slower (#438, #442) | `evidence/v3/search-v1.md` |
@@ -334,4 +334,4 @@ Counts (Windows, at `129373f`):
 - the real save dialog and replace box driven by a person (#437);
 - any package-channel publication.
 
-**Effects:** one file write exists: the owner-initiated diagnostic export. No effect acts on existing owner files or on processes. Copy-and-verify is designed, not built.
+**Effects:** one file write exists: the owner-initiated diagnostic export. When the owner confirms Loomward's replace question, it overwrites that existing file; that is the only act on an existing owner file. No other effect touches existing owner files, and none touches processes. Copy-and-verify is designed, not built.
