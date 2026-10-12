@@ -248,3 +248,139 @@ AMBER, nothing blocking found. `loomward.com` is held by an unrelated shop. A Gi
 Scoop Main are free. The trademark registers (USPTO, EUIPO, UKIPO, WIPO) could not be searched by an agent (JavaScript-only
 search pages); "Loom" (Atlassian) is the nearest mark, judged low-to-moderate risk.
 - [ ] Owner hand-search of the four registers for LOOMWARD in classes 9 and 42 (about 15 minutes).
+
+## Owner decisions of 2026-10-12, rounds 2 to 7 (guided walkthrough in chat)
+
+Each question came with context, options and a recommendation. Final decision map, rounds 1 to 7:
+`map:v1:32675268460511cc436407354aec933d652538e7cc8ce0fc2b67c59f75d2387a`. Quotes are the owner's words.
+
+### q-24 — Audience — ANSWERED: the owner first, then power users, then wider
+
+Selected "You first, then power users". Later: mainstream Windows users, developers and agent users, and IT and
+small-business admins ("since development is going well and it's very quick"). Possibly Linux users too (q-37).
+
+### q-25 — Thesis — ANSWERED: workspace memory, honest by construction, agent-ready
+
+First asked as the preview's hero feature. The owner deferred: "I'm not sure the "hero" feature is just the disk
+explorer.... it's so much more ... I'd like to find the best thesis for this yet (you can reason on and do this for
+me)". Shown four candidate theses, the owner selected "Memory + ledger + agents":
+- **Identity:** a model of the owner's work, kept separate from where files live and what may touch them.
+- **Trust mechanism:** evidence and explicit blanks.
+- **Growth path:** agents and MCP.
+- [ ] Thesis doc and README positioning merged.
+
+### q-26 — Money — ANSWERED: not now; keep the option
+
+### q-27 — Success in six months — ANSWERED: daily use, a public preview others use, a research write-up
+
+"I'm actually planning on using it daily as soon as it becomes stable, extremely well tested in synthetic but extreme
+scenarios to prove its safety, and as soon as all the features and the UX are done genuinely".
+
+### q-28 — Code signing — ANSWERED: unsigned for now; the Store and a certificate soon
+
+"Unsigned for now but I'll go with the Store and signing certificate in the near future so agents should account for
+that". Agents keep the release pipeline ready for a certificate and a Store submission.
+- [ ] Owner opens a Microsoft Store individual developer account (free; identity check).
+- [ ] Owner buys a code-signing certificate.
+
+### q-29 — Channels — ANSWERED: GitHub Releases, winget, a Scoop bucket and the Microsoft Store
+
+### q-30 — Updates — ANSWERED: an opt-in update check
+
+Off by default: a "Check for updates" button and an optional check-on-start toggle. Invariant 2 is unchanged.
+- [ ] Owner generates the updater signing key and stores it as a repository secret (steps arrive with the updater PR).
+
+### q-31 — First preview — ANSWERED: right after the AGPL change, then one per wave
+
+Also: "for my personal use (which will be done on this machine as well as on Kraspyon , the second machine) I don't
+want to wait for releases for the new features etc, the upgrades should be seamless and streamlined directly into the
+working state" (q-33).
+
+### q-32 — First real effect — ANSWERED: copy-and-verify
+
+It never deletes the source and lands behind its own safety gate. AGENTS.md invariant 1 changes only with that gate.
+
+### q-33 — The owner's machines — ANSWERED: a public nightly pre-release
+
+Every merge to `main` publishes a rolling, unsigned nightly pre-release. The opt-in updater gains a nightly channel the
+owner enables on this PC and Kraspyon. State is copied before every migration, and the previous nightly stays
+restorable. AGENTS.md invariant 8 names the nightly as owner-authorised.
+
+### q-34 — New scope — ANSWERED: Find & Ask, plus four areas
+
+"Based on the ability to organise and create structures (for files and folders): the ability to easily find what is
+needed, potentially also having a smaller model with which one can chat and ask about the files, apps, etc and it can
+find anything, list, etc , so both the search engine that is extremely well-optimised and engineered for efficiency and
+robustness, as well as a way for a small model to be integrated seamlessly and to give it the ability to use it (though
+it should be easily usable by humans too), and the model could also be a local one".
+
+Also selected: developer clutter, content understanding, cloud and sync awareness, and monitoring and alerts. The model
+gets read-only tools over the same query surface as people and MCP agents. Anything it suggests doing becomes a proposal
+the owner approves.
+- [ ] LW items minted for Find & Ask and the four areas.
+
+### q-35 — Where the model runs — ANSWERED: one provider interface
+
+The local OpenAI-compatible endpoint the owner runs comes first. Cloud with the owner's own key follows, under q-5's
+disclosure rules. A bundled engine comes later. Downloads happen only on explicit consent (invariant 2).
+
+### q-36 — Search reach — ANSWERED: maximum capability
+
+"The most effective choices possible in terms of performance and capabilities. no matter the engineering cost."
+- **The backbone:** Loomward's own full-text and substring index over granted roots, kept live by the non-elevated watchers.
+- **An optional elevated NTFS-metadata helper** for instant whole-volume search, designed behind its own gate. The
+  invariant 2 change lands only with that gate.
+- **Everything integration** where it is installed.
+- **Plus "whatever extra":** the driver adds a local semantic (embedding) layer.
+
+### q-37 — Linux — ANSWERED: Windows first, Linux later
+
+An observe-only Linux port comes after the Windows daily-use bar. The core stays portable meanwhile.
+
+### q-38 — Connectivity — ANSWERED: local only for now; the rest when there is capacity
+
+"the ability to have have a NAS would be nice, but all the focus for now should be for local only, the rest is optional
+and nice to haves if there is capacity". Nice-to-haves: NAS shares as roots, paired machines, remote MCP, cloud sync.
+
+### q-39 — Daily-use readiness bar — ANSWERED: the proposed bar
+
+The bar: crash injection at every write, the 10M-entry lab, pathological trees, churn during scans, injected I/O faults
+and a full disk, fuzzing, and a 72-hour soak. Every effect also needs power-cut and proven-restore evidence. The owner
+alone judges "UX done".
+- [ ] Readiness checklist merged.
+- [ ] Every line carries pass evidence.
+
+### q-40 — Old code — ANSWERED: freeze the Python reference, retire the legacy browser UI
+
+The Python reference stays as a frozen test oracle. The legacy browser UI and `preview.html` retire once parity with the
+Svelte app is shown.
+
+### q-41 — Pace — ANSWERED: maximum throughput
+
+More lanes, plus Muse swarms for test writing and bug hunts. The owner warned that usage limits will likely be reached
+tonight and reset later in the day.
+
+### q-42 — Domains — ANSWERED: GitHub only for now
+
+"like for taskdeck, this will likely fall under the deliverasoft umbrella domain, but let's leave it for github only for
+now".
+
+### q-43 — Priorities under usage limits — ANSWERED: no preference; the driver's plan order stands
+
+"I don't have a preference, I'm not gonna start using it tomorrow, things will advance as planned".
+
+### q-44 — UX steering — ANSWERED: agents decide for now
+
+Agents use impeccable-style prototypes and A/B variants for the owner to try and criticise. Per-area review sessions,
+and possibly a full redesign, come later. "for now I wanna keep the momentum going".
+
+### q-45 — The owner's hands-on items (planned for the next few days)
+
+- [ ] Connect the CLA bot (q-22 steps).
+- [ ] Dismiss the Dependabot alert (q-19 steps).
+- [ ] Install the preview on this PC and Kraspyon and enable the nightly channel, once both ship.
+- [ ] Hardware tests: a FAT or exFAT USB stick (q-12), and a folder granted through the real picker.
+
+### q-46 — Repository home — ANSWERED: stays under Chris0Jeky
+
+An empty GitHub organisation named `Loomward` (created 2026-08-06) exists. Whose it is was not established.
