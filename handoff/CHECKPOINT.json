@@ -493,7 +493,7 @@
     "first_file_write": "q-15 diagnostic bundle (#399, ADR-V3-24): previewed redacted bytes to an owner-picked file; Loomward's own Cancel-default replace box; path never crosses IPC",
     "forget": "also rewrites catalog.db (VACUUM main) with a crash-safe scrub marker, because first scans stage chunks (#427); RAM and silent-retry follow-ups #434",
     "release": "v0.3.0-preview.1 published; nightly and opt-in updater merged (#432), updater inactive until the owner key exists",
-    "crash_sweep": "every catalogue write boundary killed and recovered: 272 lifecycle, 14 migration, 3,870 double crashes (#427)",
+    "crash_sweep": "full mode at a9299b4: every catalogue write boundary killed and recovered (272 lifecycle, 14 migration, 3,870 double crashes); default CI mode samples; no full sweep since #438's search triggers (#427)",
     "licence": "AGPL-3.0-only since #396; CLA.md, TRADEMARKS.md",
     "effects": "one file write (the diagnostic export); no effect on existing owner files or processes"
   },
@@ -514,7 +514,8 @@
       "q-13 first-scan bulk load (#387; KPI end-to-end files/s; quiet-host A/B unverified; P14 155 to 230 bytes/entry, #386)",
       "q-14 stage 1 backup evidence import (#383; state v6; never verified recovery)",
       "q-9 Forget a revoked root (#382; state v7; 54 commands)"
-    ]
+    ],
+    "superseded_by_wave9": "decided_not_yet_implemented above predates wave 9: q-15 is implemented (#399), q-17 is published (v0.3.0-preview.1) and q-18 is finished (#394); see wave9 and HUMAN_TODO"
   },
   "owner_decisions_2026_10_12": {
     "source": "HUMAN_TODO q-20 to q-46 (guided walkthrough in chat)",

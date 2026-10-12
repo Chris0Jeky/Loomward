@@ -403,12 +403,12 @@ An empty GitHub organisation named `Loomward` (created 2026-08-06) exists. Whose
 ### q-47 — Design questions waiting for their lanes — NOT YET ASKED
 
 Recorded so a later session asks them at the right time; no answer is needed now.
-- Copy-and-verify (docs/47 section 12), when lane C2 starts:
+- Copy-and-verify (docs/47 section 12), before the copy lanes that need them:
   - Q1: may cancel delete Loomward's own staging files?
   - Q2: how to prove power-cut safety (Hyper-V hard stop or a power pull on lab data; until then the operation stays
     lab-only)?
   - Q3: copies into new folders only, or also into an existing folder (new names only)?
-- Find & Ask (docs/46 section 11), when each lane starts:
+- Find & Ask (docs/46 section 11, which names each question's trigger lane):
   - the elevated helper's launch model;
   - Everything results outside the grants (hidden is recommended);
   - local-model disclosure per folder;
