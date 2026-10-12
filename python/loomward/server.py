@@ -1,4 +1,4 @@
-"""Source-checkout loopback UI. No arbitrary filesystem paths or shell commands in IPC."""
+"""Source-checkout loopback JSON API (the legacy page UI was retired in q-40). No arbitrary filesystem paths or shell commands in IPC."""
 from __future__ import annotations
 import hmac
 import json
