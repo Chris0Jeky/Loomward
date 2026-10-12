@@ -23,19 +23,23 @@ early testers, built from commit `{{SHA}}`.
 - **Content is read in one place only: duplicates.** *Duplicates* compares file contents on this
   machine, locally and read-only, only for a folder you added and only when you press *Start
   inspection*. It goes by size, then a partial hash, then a full hash and a byte comparison, within
-  fixed byte and time budgets. Cloud placeholders are skipped, never downloaded. Nothing is deleted
-  or moved; equal content is an observation, not advice to delete. The one other file it reads is a
-  *restic* receipt you pick in the *Backups* view: read-only, at most 256 KiB, and only the
+  fixed budgets (at most 200 candidate files, 64 MiB and 10 s per inspection). Cloud placeholders are skipped, never downloaded. Nothing is deleted
+  or moved; equal content is an observation, not advice to delete. The other files it reads are a
+  *restic* receipt (and optionally its check output) you pick in the *Backups* view: read-only, at most 256 KiB, and only the
   normalised evidence is stored.
 - **Learning stays local.** *Learning review* learns from the labels you give, on this machine,
   using metadata features of the folders you added. Its suggestions are advice with relative
   scores, never an approval, and they never move or delete anything. The optional teacher is
   synthetic-only and is not available in this build. Nothing is sent anywhere: no cloud, no teacher,
-  no network requests, no model downloads.
+  no model downloads, and Loomward itself makes no network requests.
 - **Unknown is shown as unknown.** Partial scans, unreadable names, offline items and unverified
   results stay visible as such; missing data is never replaced with zero.
 - **Read-only, simulation-only.** Loomward never moves, deletes, renames or writes your files, and
-  never kills, suspends, reprioritises or trims your processes. The only files it writes are its
+  never kills, suspends, reprioritises or trims your processes. While a scan or a duplicate
+  inspection runs, renaming a scanned folder or writing a file being compared may be refused
+  briefly ("in use"); this ends when it finishes. The *Grants & health* view may still show
+  "content read: off" under its capability tags; that tag is stale (duplicates do read contents, as
+  above). The only files it writes are its
   own: its state under `%LOCALAPPDATA%\Loomward Data\v3\` and the WebView2 browser data under
   `%LOCALAPPDATA%\dev.loomward.desktop\`. *Revoke* stops it reading a folder; *Forget* on a revoked
   folder then removes its name and catalogue from Loomward's own database and backup copies. Your
