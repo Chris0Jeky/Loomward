@@ -1,6 +1,6 @@
 # Implementation backlog
 
-100 local, dependency-linked issue specifications: the original 64 plus 36 expansion tasks. These are **not remote GitHub issue numbers** and all remain planned production continuation. The runnable reference work is recorded separately in `docs/37-expansion-verification.md`.
+130 local, dependency-linked issue specifications: the original 64, 36 expansion tasks, 12 v3 tasks and 18 owner-decision tasks. These are **not remote GitHub issue numbers**. This inventory is not an implementation-completion claim; consult each issue and the implementation status for its evidence and remaining gates. The runnable reference work is recorded separately in `docs/37-expansion-verification.md`.
 
 The first eight manifest entries preserve the original native critical path. Publishing helpers remain dry-run by default, at most eight unless explicitly expanded. `M1I` covers integration foundations, `M2I` advanced evidence/workload integration, and `MX` optional experiments; none bypass the original native safety milestones.
 
@@ -129,7 +129,7 @@ The first eight manifest entries preserve the original native critical path. Pub
 | [LW-121](issues/LW-121.md) | Add growth and low-space monitoring with alerts | M6 | P1 | LW-008, LW-051, LW-107 |
 | [LW-122](issues/LW-122.md) | Publish a rolling nightly channel and an opt-in updater | M1 | P1 | LW-057 |
 | [LW-123](issues/LW-123.md) | Define and evidence the daily-use readiness bar | M1 | P1 | LW-041, LW-056, LW-096 |
-| [LW-124](issues/LW-124.md) | Gate the first real effect: approved copy-and-verify | M3 | P0 | LW-036, LW-038, LW-039, LW-040 |
+| [LW-124](issues/LW-124.md) | Gate the first real effect: approved copy-and-verify | M3 | P0 | LW-036, LW-038, LW-039, LW-040, LW-041 |
 | [LW-125](issues/LW-125.md) | Retire the legacy browser UI and freeze the Python reference | M1 | P1 | LW-018, LW-104 |
 | [LW-126](issues/LW-126.md) | Prepare package channels: winget, Scoop bucket, Microsoft Store and a signing hook | M1 | P1 | LW-057, LW-063 |
 | [LW-127](issues/LW-127.md) | Nice-to-have: NAS shares as granted roots | MX | P2 | LW-004, LW-006 |
