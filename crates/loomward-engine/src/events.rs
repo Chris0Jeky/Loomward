@@ -371,7 +371,10 @@ mod tests {
         let mut s = bus.subscribe(None);
         assert_eq!(event(&mut s).event, EventName::StreamHello);
         let delivered = s.last_delivery;
-        assert!(matches!(s.recv_timeout(Duration::ZERO), RecvOutcome::Timeout));
+        assert!(matches!(
+            s.recv_timeout(Duration::ZERO),
+            RecvOutcome::Timeout
+        ));
         assert_eq!(s.last_delivery, delivered);
     }
     #[test]
