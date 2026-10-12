@@ -1,5 +1,7 @@
 # Loomward
 
+<p align="center"><img src="docs/assets/Loomward-loop.svg" alt="Loomward workflow, animated" width="100%"></p>
+
 Loomward is a local-first Windows workspace memory that keeps what your files mean apart from where they live and what is allowed to act on them.
 
 [![CI](https://github.com/Chris0Jeky/Loomward/actions/workflows/ci.yml/badge.svg)](https://github.com/Chris0Jeky/Loomward/actions/workflows/ci.yml)
