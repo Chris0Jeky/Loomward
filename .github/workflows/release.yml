@@ -1,7 +1,9 @@
 name: release-preview
 # Unsigned Windows preview pre-release of the Tauri desktop shell (owner decision HUMAN_TODO q-17).
 # Run it by hand (workflow_dispatch from main) or push a tag v<major>.<minor>.<patch>-preview.<n>.
-# See RELEASING.md. Nothing here signs, publishes a package, or uses a secret other than GITHUB_TOKEN.
+# See RELEASING.md. The build, self-test and install smoke test live in .github/actions/desktop-installer
+# (shared with nightly.yml). Nothing here code-signs or publishes a package. The only secrets besides
+# GITHUB_TOKEN are the optional updater-signing pair; without them no latest.json is published.
 on:
   workflow_dispatch:
     inputs:
@@ -28,6 +30,9 @@ jobs:
         shell: bash
     env:
       INPUT_VERSION: ${{ inputs.version }}
+      # Updater signatures (HUMAN_TODO q-30). Empty when the owner has not stored the key yet.
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -57,77 +62,40 @@ jobs:
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "::error::release $TAG already exists; delete it first (RELEASING.md)"; exit 1
           fi
-      - run: rustup toolchain install stable --profile minimal
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - name: Build, self-test, install and uninstall
+        id: build
+        uses: ./.github/actions/desktop-installer
         with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: app/package-lock.json
-      - run: npm ci --prefix app
-      - run: npm --prefix app run build
-      - name: Build the NSIS installer
-        working-directory: native
+          version: ${{ env.VERSION }}
+      - name: Write the updater manifest (signed builds only)
+        if: steps.build.outputs.signed == 'true'
         run: |
-          # The config `version` wins over Cargo.toml for the installer name, the PE version and the
-          # app's reported version, so the preview number lives in no tracked file.
-          printf '{"version":"%s"}' "$VERSION" > "$RUNNER_TEMP/tauri-version.json"
-          node ../app/node_modules/@tauri-apps/cli/tauri.js build --ci --bundles nsis --config "$RUNNER_TEMP/tauri-version.json" -- --locked
-      - name: Self-test the release binary
-        run: ./native/target/release/loomward-desktop.exe --self-test
-      - name: Collect the installer and checksums
-        run: |
-          mkdir release-assets
-          cp native/target/release/bundle/nsis/*-setup.exe release-assets/
-          cd release-assets
-          [ "$(ls *-setup.exe | wc -l)" = 1 ] || { echo "::error::expected exactly one installer"; ls; exit 1; }
-          sha256sum *-setup.exe > SHA256SUMS.txt
-          cat SHA256SUMS.txt
-      - name: Smoke-test a silent per-user install and uninstall
-        shell: pwsh
-        run: |
-          $setup = Get-ChildItem release-assets -Filter '*-setup.exe' | Select-Object -First 1
-          Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait
-          $uninstall = Get-ChildItem $env:LOCALAPPDATA -Recurse -Depth 2 -Filter 'uninstall.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $uninstall) { throw 'no per-user install found under LOCALAPPDATA' }
-          $dir = $uninstall.Directory.FullName
-          Get-ChildItem $dir -Recurse -Depth 1 | ForEach-Object { $_.FullName }
-          $exe = Get-ChildItem $dir -Filter '*.exe' | Where-Object Name -ne 'uninstall.exe' | Select-Object -First 1
-          $examples = @(Get-ChildItem (Join-Path $dir 'contracts/v3/examples/commands') -Filter '*.result.json' -ErrorAction SilentlyContinue)
-          if (-not $exe) { throw 'installed app exe missing' }
-          if ($examples.Count -eq 0) { throw 'bundled contract examples missing from the install' }
-          # Remove the checkout's copy so the installed self-test can only use its own bundled examples.
-          Remove-Item -Recurse -Force contracts/v3/examples
-          $t = Start-Process -FilePath $exe.FullName -ArgumentList '--self-test' -Wait -PassThru -NoNewWindow
-          if ($t.ExitCode -ne 0) { throw "installed self-test failed with code $($t.ExitCode)" }
-          # The default start: the engine service in a personal session, its state in
-          # %LOCALAPPDATA%\Loomward Data\v3, beside (not inside) the install directory.
-          $state = Join-Path $env:LOCALAPPDATA 'Loomward Data\v3\personal'
-          if (Test-Path (Join-Path $dir 'v3')) { throw 'state found inside the install directory' }
-          $p = Start-Process -FilePath $exe.FullName -PassThru
-          Start-Sleep -Seconds 10
-          if ($p.HasExited) { throw "installed app exited early with code $($p.ExitCode)" }
-          # A failed start shows an error box and stays up, so staying up alone proves nothing:
-          # the store must exist too.
-          if (-not (Test-Path (Join-Path $state 'state.db'))) { throw "no state.db in $state after the default start" }
-          Stop-Process -Id $p.Id -Force
-          $p.WaitForExit()
-          # Uninstall silently. The NSIS uninstaller re-runs itself from TEMP and returns at once,
-          # so wait for the installed exe to disappear.
-          Start-Process -FilePath $uninstall.FullName -ArgumentList '/S' -Wait
-          $deadline = (Get-Date).AddSeconds(120)
-          while ((Test-Path $exe.FullName) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
-          if (Test-Path $exe.FullName) { throw 'the uninstaller left the app exe in place' }
-          if (-not (Test-Path (Join-Path $state 'state.db'))) { throw "uninstalling removed the state in $state" }
-          "installed self-test passed; installed app stayed up for 10 s with its store ($($examples.Count) bundled examples); state survived a silent uninstall"
+          python scripts/release_meta.py latest-json --version "$VERSION" --tag "$TAG" \
+            --installer "$(ls release-assets/*-setup.exe)" \
+            --notes "Loomward $VERSION, an unsigned preview. Release notes: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG" \
+            > release-assets/latest.json
+          cat release-assets/latest.json
       - name: Create the pre-release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          sed -e "s|{{VERSION}}|$VERSION|g" -e "s|{{TAG}}|$TAG|g" -e "s|{{SHA}}|$GITHUB_SHA|g" \
-            .github/release/preview-notes.md > "$RUNNER_TEMP/notes.md"
-          gh release create "$TAG" release-assets/*-setup.exe release-assets/SHA256SUMS.txt \
+          python scripts/release_meta.py notes --version "$VERSION" --ref "$TAG" --sha "$GITHUB_SHA" > "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" release-assets/* \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --prerelease \
             --title "Loomward $VERSION (unsigned preview)" \
             --notes-file "$RUNNER_TEMP/notes.md"
+      - name: Point the preview update channel at this release (signed builds only)
+        if: steps.build.outputs.signed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The updater cannot follow /releases/latest (that skips pre-releases), so the preview channel
+          # reads latest.json from this rolling pre-release (native/src/updates.rs).
+          if ! gh release view preview-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create preview-latest --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
+              --title "Preview update channel (updater metadata only)" \
+              --notes "Holds only latest.json, which points the opt-in updater at the newest preview. Download installers from the versioned preview releases."
+          fi
+          gh release upload preview-latest release-assets/latest.json --repo "$GITHUB_REPOSITORY" --clobber

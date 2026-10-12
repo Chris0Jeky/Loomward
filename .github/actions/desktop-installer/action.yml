@@ -1,0 +1,102 @@
+name: desktop-installer
+description: >-
+  Builds app/dist and the NSIS installer at a given version, self-tests the release binary, collects
+  release-assets/ (installer, SHA256SUMS.txt and, when signed, the updater .sig), then installs
+  silently, self-tests and starts the installed app, and uninstalls checking the state survives.
+  Shared by release.yml and nightly.yml. Signs updater artifacts only when the job's env carries
+  TAURI_SIGNING_PRIVATE_KEY (and TAURI_SIGNING_PRIVATE_KEY_PASSWORD); otherwise it logs a notice.
+inputs:
+  version:
+    description: 'Version without the leading v, e.g. 0.3.0-preview.1 or 0.3.0-nightly.20261012.7'
+    required: true
+outputs:
+  signed:
+    description: "'true' when release-assets holds the installer's updater signature"
+    value: ${{ steps.collect.outputs.signed }}
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: rustup toolchain install stable --profile minimal
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      with:
+        node-version: '24'
+        cache: npm
+        cache-dependency-path: app/package-lock.json
+    - shell: bash
+      run: npm ci --prefix app
+    - shell: bash
+      run: npm --prefix app run build
+    - name: Build the NSIS installer
+      shell: bash
+      working-directory: native
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        # The config `version` wins over Cargo.toml for the installer name, the PE version and the
+        # app's reported version, so the version lives in no tracked file.
+        if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+          printf '{"version":"%s","bundle":{"createUpdaterArtifacts":true}}' "$VERSION" > "$RUNNER_TEMP/tauri-version.json"
+        else
+          echo "::notice::TAURI_SIGNING_PRIVATE_KEY is not set: no updater signature and no latest.json for $VERSION (RELEASING.md, updater key)"
+          printf '{"version":"%s"}' "$VERSION" > "$RUNNER_TEMP/tauri-version.json"
+        fi
+        node ../app/node_modules/@tauri-apps/cli/tauri.js build --ci --bundles nsis --config "$RUNNER_TEMP/tauri-version.json" -- --locked
+    - name: Self-test the release binary
+      shell: bash
+      run: ./native/target/release/loomward-desktop.exe --self-test
+    - name: Collect the installer and checksums
+      id: collect
+      shell: bash
+      run: |
+        mkdir release-assets
+        cp native/target/release/bundle/nsis/*-setup.exe release-assets/
+        cd release-assets
+        [ "$(ls *-setup.exe | wc -l)" = 1 ] || { echo "::error::expected exactly one installer"; ls; exit 1; }
+        sha256sum *-setup.exe > SHA256SUMS.txt
+        cat SHA256SUMS.txt
+        signed=false
+        if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+          cp ../native/target/release/bundle/nsis/*-setup.exe.sig .
+          signed=true
+        fi
+        echo "signed=$signed" >> "$GITHUB_OUTPUT"
+    - name: Smoke-test a silent per-user install and uninstall
+      shell: pwsh
+      run: |
+        $setup = Get-ChildItem release-assets -Filter '*-setup.exe' | Select-Object -First 1
+        Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait
+        $uninstall = Get-ChildItem $env:LOCALAPPDATA -Recurse -Depth 2 -Filter 'uninstall.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $uninstall) { throw 'no per-user install found under LOCALAPPDATA' }
+        $dir = $uninstall.Directory.FullName
+        Get-ChildItem $dir -Recurse -Depth 1 | ForEach-Object { $_.FullName }
+        $exe = Get-ChildItem $dir -Filter '*.exe' | Where-Object Name -ne 'uninstall.exe' | Select-Object -First 1
+        $examples = @(Get-ChildItem (Join-Path $dir 'contracts/v3/examples/commands') -Filter '*.result.json' -ErrorAction SilentlyContinue)
+        if (-not $exe) { throw 'installed app exe missing' }
+        if ($examples.Count -eq 0) { throw 'bundled contract examples missing from the install' }
+        # Remove the checkout's copy so the installed self-test can only use its own bundled examples.
+        Remove-Item -Recurse -Force contracts/v3/examples
+        $t = Start-Process -FilePath $exe.FullName -ArgumentList '--self-test' -Wait -PassThru -NoNewWindow
+        if ($t.ExitCode -ne 0) { throw "installed self-test failed with code $($t.ExitCode)" }
+        # The default start: the engine service in a personal session, its state in
+        # %LOCALAPPDATA%\Loomward Data\v3, beside (not inside) the install directory.
+        $state = Join-Path $env:LOCALAPPDATA 'Loomward Data\v3\personal'
+        if (Test-Path (Join-Path $dir 'v3')) { throw 'state found inside the install directory' }
+        $p = Start-Process -FilePath $exe.FullName -PassThru
+        Start-Sleep -Seconds 10
+        if ($p.HasExited) { throw "installed app exited early with code $($p.ExitCode)" }
+        # A failed start shows an error box and stays up, so staying up alone proves nothing:
+        # the store must exist too.
+        if (-not (Test-Path (Join-Path $state 'state.db'))) { throw "no state.db in $state after the default start" }
+        # The update check is off by default: a fresh start writes no update prefs and asks nothing.
+        if (Test-Path (Join-Path $state 'updates.json')) { throw 'a fresh start wrote update prefs' }
+        Stop-Process -Id $p.Id -Force
+        $p.WaitForExit()
+        # Uninstall silently. The NSIS uninstaller re-runs itself from TEMP and returns at once,
+        # so wait for the installed exe to disappear.
+        Start-Process -FilePath $uninstall.FullName -ArgumentList '/S' -Wait
+        $deadline = (Get-Date).AddSeconds(120)
+        while ((Test-Path $exe.FullName) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+        if (Test-Path $exe.FullName) { throw 'the uninstaller left the app exe in place' }
+        if (-not (Test-Path (Join-Path $state 'state.db'))) { throw "uninstalling removed the state in $state" }
+        "installed self-test passed; installed app stayed up for 10 s with its store ($($examples.Count) bundled examples); state survived a silent uninstall"

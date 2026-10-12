@@ -98,11 +98,13 @@ budget. The interactive disclosure test remains excluded.
 |---|---|---|---|
 | `lw_call` | `Uint8Array` containing a UTF-8 JSON `RequestEnvelope` | `ResponseEnvelope` | The raw body is checked against 64 KiB before our JSON parsing; `RequestEnvelope::from_slice` refuses duplicate keys at every depth. Already-parsed JSON IPC is refused, but a JSON content type is parsed by Tauri before this command's Raw check: the raw size/duplicate guarantees do not protect that earlier parsing. At most four calls are admitted before blocking work is spawned; a full cap rejects with `busy:` before dispatch and the app retries once after 500 ms with the same bytes. `roots.request_grant` in a synthetic session and `grants.create_disclosure` in a personal one are refused here before the service (`synthetic_session_requires_lab_root`, `confinement_not_enforced`). |
 | `lw_events` | `{ channel: Channel<EventEnvelope>, lastEpoch: string \| null, lastSeq: number \| null }` | `null` once `stream.hello` is on the channel | The service's stream is pumped into the channel, `stream.hello` heartbeat after 15 s of silence included. At four streams the oldest is evicted; drop guards release slots on pump panics. A page load or window close tears that window's streams down. A `lastSeq` without a valid `lastEpoch` resumes from an unknown epoch (`stream.lagged`, `epoch_changed`). This command uses Tauri's parsed arguments; it does not claim raw size or duplicate-key enforcement. |
+| `lw_update` | `{ request: { action: "status" } \| { action: "set_prefs", check_on_start, channel } \| { action: "check", previous } \| { action: "install", version } }` | update status JSON | The opt-in update check (`src/updates.rs`, HUMAN_TODO q-30/q-33). No action takes a URL, path or file; the endpoints are compiled in. `may_request` lets a request through only for `check` (a click) or a start with check-on-start on (off by default), and never in a build without `plugins.updater.pubkey` ("updates are not configured in this build") or in `--fixtures` mode. `install` must name the checked offer's version and shows a native OK/Cancel box (Cancel is the default) before the Tauri updater downloads, verifies the signature and runs the installer. Prefs live in `<state dir>\updates.json`. |
 
-`capabilities/default.json` grants the `main` window `allow-lw-call` and `allow-lw-events` and
-nothing else: no `core:*` permission, and no plugin is registered (no fs, shell, dialog, http,
-process or updater). `build.rs` declares the two commands to the ACL, so an unlisted one is
-refused. The CSP in `tauri.conf.json` allows only same-origin scripts and styles and IPC.
+`capabilities/default.json` grants the `main` window `allow-lw-call`, `allow-lw-events` and
+`allow-lw-update` and nothing else: no `core:*` permission and no plugin permission (no fs, shell,
+dialog, http or process plugin is registered; the updater plugin is, but only Rust calls it, and
+its own `plugin:updater|*` commands are refused). `build.rs` declares the three commands to the
+ACL, so an unlisted one is refused. The CSP in `tauri.conf.json` allows only same-origin scripts and styles and IPC.
 Main-document navigation stays on the embedded origin and new windows are denied. Production
 assets ignore `?transport=mock`; mock UI checks require a development build. The client turns
 live events older than five seconds into one `stream.lagged` resync notice, discarding stale

@@ -846,7 +846,7 @@ flowchart LR
 | Revocation racing a scan | Revocation commits in `state.db` first, updates the engine's revoked set, cancels the root's run, and the writer drops any later message for that grant |
 | Scanning outside a grant | Only granted roots; root identity and post-open attributes re-verified; reparse points never followed; volume roots only through the owner's native grant (Q1, ADR-V3-08), never agent-picked |
 | Silent reach | No automatic scans, model downloads, network calls, installs, elevation or global config changes; telemetry only under a lease |
-| Tauri capability creep | Webview capability lists only `lw_call` and `lw_events`; no fs, shell, http, process or updater plugin permissions; dialog plugin used from Rust only |
+| Tauri capability creep | Webview capability lists only `lw_call`, `lw_events` and the opt-in `lw_update` (q-30; no URL, path or file argument); no fs, shell, http, process or updater plugin permissions; dialog and updater used from Rust only |
 
 ## 13. Frontend architecture (`app/`)
 
