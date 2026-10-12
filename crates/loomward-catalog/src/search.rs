@@ -229,14 +229,14 @@ fn statement(filter: bool, files: bool, by_size: bool) -> String {
     } else {
         "?4 IS NULL AND (?5 IS NULL OR d.sub_logical>=?5) AND (?6 IS NULL OR d.sub_logical<=?6) AND (?7 IS NULL OR d.modified_ft>=?7) AND (?8 IS NULL OR d.modified_ft<=?8)"
     };
-    let matched = format!("coalesce(g.state='active' AND d.listing_state!='absent_pending' AND (?3 IS NULL OR d.root_id=?3) AND {filters},0)");
+    let matched = format!("coalesce(d.root_id IN (SELECT id FROM root_grant WHERE state='active') AND d.listing_state!='absent_pending' AND (?3 IS NULL OR d.root_id=?3) AND {filters},0)");
     match (filter, files) {
-        (false, false) => format!("SELECT {DIR_COLUMNS},{matched},s.rowid FROM search_name s JOIN dir d ON d.id=s.rowid LEFT JOIN root_grant g ON g.id=d.root_id WHERE search_name MATCH ?1 AND s.rowid>?2 AND s.rowid<{FILE_KEY} ORDER BY s.rowid LIMIT {BATCH}"),
-        (false, true) => format!("SELECT {FILE_COLUMNS},{matched},s.rowid FROM search_name s JOIN file f ON f.id=s.rowid-{FILE_KEY} JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id LEFT JOIN root_grant g ON g.id=d.root_id WHERE search_name MATCH ?1 AND s.rowid>?2 ORDER BY s.rowid LIMIT {BATCH}"),
-        (true, false) => format!("SELECT {DIR_COLUMNS},{matched},d.id FROM dir d LEFT JOIN root_grant g ON g.id=d.root_id WHERE ?1 IS NOT NULL AND d.id>?2 AND d.parent_id IS NOT NULL ORDER BY d.id LIMIT {BATCH}"),
+        (false, false) => format!("SELECT {DIR_COLUMNS},{matched},s.rowid FROM search_name s JOIN dir d ON d.id=s.rowid WHERE search_name MATCH ?1 AND s.rowid>?2 AND s.rowid<{FILE_KEY} ORDER BY s.rowid LIMIT {BATCH}"),
+        (false, true) => format!("SELECT {FILE_COLUMNS},{matched},s.rowid FROM search_name s JOIN file f ON f.id=s.rowid-{FILE_KEY} JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id WHERE search_name MATCH ?1 AND s.rowid>?2 ORDER BY s.rowid LIMIT {BATCH}"),
+        (true, false) => format!("SELECT {DIR_COLUMNS},{matched},d.id FROM dir d WHERE ?1 IS NOT NULL AND d.id>?2 AND d.parent_id IS NOT NULL ORDER BY d.id LIMIT {BATCH}"),
         // One extension: its index, largest first, then by id.
-        (true, true) if by_size => format!("SELECT {FILE_COLUMNS},{matched},f.id+{FILE_KEY} FROM file f INDEXED BY file_by_ext JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id LEFT JOIN root_grant g ON g.id=d.root_id WHERE ?1 IS NOT NULL AND f.ext_id=(SELECT id FROM ext WHERE ext=?4) AND (?9 IS NULL OR f.logical<?9 OR (f.logical=?9 AND f.id>?2-{FILE_KEY})) ORDER BY f.logical DESC,f.id LIMIT {BATCH}"),
-        (true, true) => format!("SELECT {FILE_COLUMNS},{matched},f.id+{FILE_KEY} FROM file f JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id LEFT JOIN root_grant g ON g.id=d.root_id WHERE ?1 IS NOT NULL AND f.id>?2-{FILE_KEY} ORDER BY f.id LIMIT {BATCH}"),
+        (true, true) if by_size => format!("SELECT {FILE_COLUMNS},{matched},f.id+{FILE_KEY} FROM file f INDEXED BY file_by_ext JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id WHERE ?1 IS NOT NULL AND f.ext_id=(SELECT id FROM ext WHERE ext=?4) AND (?9 IS NULL OR f.logical<?9 OR (f.logical=?9 AND f.id>?2-{FILE_KEY})) ORDER BY f.logical DESC,f.id LIMIT {BATCH}"),
+        (true, true) => format!("SELECT {FILE_COLUMNS},{matched},f.id+{FILE_KEY} FROM file f JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id WHERE ?1 IS NOT NULL AND f.id>?2-{FILE_KEY} ORDER BY f.id LIMIT {BATCH}"),
 }
 }
 
