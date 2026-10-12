@@ -2,20 +2,20 @@
 
 ## Start without a model or provider account
 
-Extract the complete source archive and enter the `loomward` directory. Python 3.11 or later is required; the authoring tests used Python 3.13.5 on Linux. Use the installed Python command appropriate to your machine. No installation, model download or administrator rights are needed for the synthetic web workbench.
+Extract the complete source archive and enter the `loomward` directory. Python 3.11 or later is required; the authoring tests used Python 3.13.5 on Linux. Use the installed Python command appropriate to your machine. No installation, model download or administrator rights are needed for the synthetic reference API.
+
+**The legacy browser workbench (`ui/`, `preview.html`) is retired** (q-40, 2026-10-12; see "Legacy browser UI retired" in `30-interface-and-workspace-spec.md`). The Python reference is a frozen test oracle and no longer serves pages. The product interface is the Svelte app in `app/` (`npm.cmd --prefix app run build`, then `loomward-serve --static app/dist`, or its mock transport). The commands below remain for the loopback JSON API the tests exercise.
 
 ```powershell
-python scripts/run.py demo --open
+python scripts/run.py demo
 ```
 
-Keep the printed session URL private. It contains the local session token. The application runs on loopback and demo feedback writes only to application state. Ctrl+C stops it. The no-server `preview.html` opens directly in a browser, uses synthetic data and has network connections disabled; it cannot retrain the Python student.
-
-The new pages are Decision desk, Connections and Resource budgets. Decision choices are session review notes. The MCP builder exports an unsent request. Resource inputs are synthetic budgets, not measurements of your machine. In the live reference, tier simulation uses Python v2; the standalone HTML clearly identifies its simpler greedy preview.
+Keep the printed session URL private. It contains the local session token, and opening it in a browser shows nothing: only `/api/*` answers. The application runs on loopback and demo feedback writes only to application state. Ctrl+C stops it.
 
 ## Select a small real metadata scope
 
 ```powershell
-python scripts/run.py serve --root "C:\LoomwardTest" --open
+python scripts/run.py serve --root "C:\LoomwardTest"
 ```
 
 Create and select a disposable folder first. Do not begin with a whole drive, Windows directory or only copy of important files. Running the server does not grant content hashing or model transmission automatically. Keep application state outside the selected scan root. Native Windows object identity and race-safe effects are not implemented by the portable path checks.
@@ -67,12 +67,11 @@ Replace the path and interpreter with installed absolute paths. Start with demo,
 
 ```powershell
 python scripts/verify.py
-python scripts/verify.py --ui --browser "C:\PATH\TO\chrome.exe"
-python scripts/build_preview.py
+python scripts/verify.py --app
 python experiments/v2_benchmarks.py
 ```
 
-The browser gate requires installed Playwright plus a usable Chromium/Chrome executable. The schema validation test uses the optional jsonschema package when installed; an absent validator is an explicit skipped test, not a schema-conformance pass. Do not install prerequisites silently on someone else's computer.
+The `--app` gate requires Node, `npm ci --prefix app`, and installed Playwright plus its Chromium. The schema validation test uses the optional jsonschema package when installed; an absent validator is an explicit skipped test, not a schema-conformance pass. Do not install prerequisites silently on someone else's computer.
 
 Cargo is a separate native gate. On a suitable host, run `cargo fmt --all -- --check`, `cargo test --workspace` and `cargo clippy --workspace --all-targets -- -D warnings`. The Tauri scaffold is separate from the root workspace and remains synthetic-only until native IPC integration is implemented and verified.
 

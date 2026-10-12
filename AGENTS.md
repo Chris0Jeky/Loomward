@@ -16,7 +16,7 @@ optional LLM teacher as weak supervision), virtual organisation, disk-tier balan
 duplicate/unused-file inspection, backups, and understandable process/RAM control. Its core
 ruling: **meaning, residency and permission are separate systems.**
 
-Python reference app + browser UI (tested on Windows), Rust native workspace (first compiled and
+Python reference app (a frozen test oracle since q-40; it changes only to keep cross-language fixtures aligned), Rust native workspace (first compiled and
 tested here on 2026-10-09; the Tauri 2 desktop shell first built on 2026-10-10, #164), MCP read-only reference, 112-task
 `LW-*` backlog.
 
@@ -47,11 +47,10 @@ a first measurement and must be reported as such. On Windows use `codex.cmd`, `n
 
 | You changed | Run |
 |---|---|
-| Python reference, schemas, JS boundary, fixtures | `py -3 scripts/verify.py` (224 tests with 1 symlink-privilege skip, 2 JS syntax, 9 JS boundary, 80 cross-language fixtures; it also runs the Rust gates when cargo is present) |
+| Python reference (frozen oracle), schemas, fixtures | `py -3 scripts/verify.py` (227 tests with 1 symlink-privilege skip, including the 80 admission-parity fixtures; it also runs the Rust gates when cargo is present) |
 | Rust workspace (`crates/*`, glob) | `cargo fmt --all --check`, `cargo test --workspace` (763 on Windows at 0b27935: apps 23, catalog 130, core 30, engine 164, http 66, lab 27, learn 18, protocol 36, service 112, shell 27, telemetry 34, windows 93, doc 3; native scan tests assert the elevation refusal on an elevated host such as hosted CI and run fully otherwise), `cargo clippy --workspace --all-targets -- -D warnings`; add `--all-features` for the `loomward-windows` fixture lab |
-| Browser UI | `py -3 scripts/test_ui.py` (14 Chromium checks; Playwright installed here) |
 | Svelte app (`app/`) | `npm.cmd --prefix app run check`, `run test`, `run build`, then `py -3 scripts/test_app.py` (Playwright e2e incl. Atlas and Observatory), or all four via `py -3 scripts/verify.py --app`; add `--live-serve` when you touch `loomward-http` or an app transport |
-| Python, Rust, the legacy browser UI and the Svelte app in one go | `py -3 scripts/verify.py --ui --app` (`--app` reports UNVERIFIED, never PASS, when Node, npm or `app/node_modules` is missing) |
+| Python, Rust and the Svelte app in one go | `py -3 scripts/verify.py --app` (`--app` reports UNVERIFIED, never PASS, when Node, npm or `app/node_modules` is missing) |
 | Tauri shell (`native/`) | excluded from the root workspace: `cargo build`, `cargo test` (7 + 1 ignored) and `cargo clippy --all-targets -- -D warnings` with `--manifest-path native/Cargo.toml`, then `native/target/debug/loomward-desktop.exe --self-test`; `native/tests/webview2_probe.py` drives the real window |
 | Docs only | `git diff --check` plus the links you touched |
 
@@ -128,4 +127,4 @@ names, paths or inventories in this public repository. Owner decisions of that d
 - Public repo: synthetic fixtures only; no real filenames, inventories or training exports.
   Personal diagnostics and `.loomward/` state or database files never enter Git.
 - The UI is not frozen. The owner wants a signature, elegant interface that grows with the
-  engine; the bundle's pages are a reference, not a design to preserve.
+  engine; the legacy `ui/` pages were retired in q-40 and the Svelte app is the one interface.
