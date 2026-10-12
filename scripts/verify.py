@@ -6,7 +6,9 @@ Flags:
                     Playwright e2e (scripts/test_app.py), stopping at the first failure;
                     reports UNVERIFIED when Node/npm or app/node_modules is missing, and
                     UNVERIFIED for only the e2e when the Playwright package or its Chromium
-                    is missing (#154, #186)
+                    is missing (#154, #186, #431). An explicit --app request returns
+                    status 2 if any required app leg is unverified; executed failures
+                    return 1 and take precedence. Plain verification keeps app optional.
 """
 import argparse
 import importlib.util
@@ -41,7 +43,7 @@ def run_app(legs,run,env):
         print('PASS '+name,flush=True)
     return True
 def main(argv=None,*,which=shutil.which,run=subprocess.run,isdir=os.path.isdir,e2e_gap=playwright_gap):
-    p=argparse.ArgumentParser();p.add_argument('--require-native',action='store_true');p.add_argument('--app',action='store_true',help='also run the Svelte app checks, build and Playwright e2e (app/)');a=p.parse_args(argv)
+    p=argparse.ArgumentParser();p.add_argument('--require-native',action='store_true');p.add_argument('--app',action='store_true',help='require Svelte app checks, build and Playwright e2e; exit 2 if unverified');a=p.parse_args(argv)
     env=dict(os.environ,PYTHONPATH=str(ROOT/'python'));failed=False
     commands=[('Python suite',[sys.executable,'-m','unittest','discover','-s','tests'])]
     if which('cargo'):
@@ -57,5 +59,7 @@ def main(argv=None,*,which=shutil.which,run=subprocess.run,isdir=os.path.isdir,e
         if result.returncode:failed=True;print('FAIL '+name,flush=True)
         else:print('PASS '+name,flush=True)
     if not run_app(legs,run,env):failed=True
-    return 1 if failed else 0
+    # Missing optional Rust does not fail plain verification. An explicitly requested
+    # app gate is different: successful available legs do not qualify the missing legs.
+    return 1 if failed else (2 if notes else 0)
 if __name__=='__main__':raise SystemExit(main())
