@@ -482,3 +482,125 @@ than change their meaning.
 **Alternatives.** Run restic from the service now: rejected, it is a process effect and a credential reach
 without a gate. Accept receipt text over IPC: rejected, the webview would choose what the service reads.
 **Reversibility.** Two-way: dropping the table and three commands removes stage 1.
+
+## ADR-V3-25: Copy-and-verify is the first file effect: handle-bound, staged, journaled, verified, never destructive (new)
+
+**Status.** Proposed (2026-10-12). It records the design only: no effect is authorised until the gate PR (doc 47
+lane C8) changes AGENTS.md invariant 1. Numbered 25 because PR #399 may take ADR-V3-24 for diagnostics; renumber
+at merge if it does not. Owner questions Q1 to Q3 are in doc 47 section 12.
+**Context.** Owner decision HUMAN_TODO q-32 (2026-10-12): the first real file effect is copy with verification,
+never deleting the source, behind its own safety gate. Invariant 1 forbids every file effect until its `LW-*` issue
+and Windows safety gate authorise it; doc 36 asks for one operation class with native handles, manifest approval,
+durable intent, fault injection and successful restoration; doc 08 sets the lifecycle and doc 05 the regression
+classes. The backlog already splits the work: LW-038 consent (#43), LW-039 journal (#45), LW-040 copy-only
+transactions (#46), LW-041 fault matrix (#47). The read-only native pieces exist: pinned roots and parent-relative
+`NtCreateFile` opens with `FILE_OPEN_REPARSE_POINT | FILE_OPEN_NO_RECALL` (`enumerate/native.rs:188-251`), the
+handle identity (volume serial, 128-bit file ID, creation time, reparse tag, ancestor chain; `identity.rs:11-35`),
+the q-10 reader's deny-write content open, before/after signature and reopen through pinned parents
+(`duplicate_reader/native.rs:67-75,159-219`), and the NTFS/ReFS-only identity rule (`enumerate/mod.rs:118-120`).
+**Decision.**
+1. *Scope.* Copy owner-selected ordinary files and folders from owner-granted, identity-verified roots into **one
+new folder** Loomward creates inside an owner-picked destination folder. Never write, rename, move or delete a
+source; never replace any existing destination entry. The name is proposed server-side with " (2)" suffixes, so v1
+never needs an overwrite and never writes into an existing folder (Q3).
+2. *Authority.* `copy.preview` turns HMAC-verified node IDs (ADR-V3-20) into a manifest built from a **fresh**
+listing: per item the grant, relative components and full native identity with ancestors, plus refusals and a
+canonical digest. The destination parent comes from a Rust-side picker and the path never crosses IPC (ADR-V3-08).
+Approval is a native confirmation rendered from the stored manifest, single use, bound to the digest, the source
+grants, the destination identity, a byte ceiling and a 30-minute expiry; it is consumed in `state.db` before the
+first effect. Synthetic sessions may approve over HTTP for lab roots only; personal approvals are refused by HTTP and
+absent from MCP. A label, suggestion or learned score can pre-select items but is never an input to the approval
+(invariant 3). Execution re-validates every identity at open; a UI integer or a path is never authority (invariant 5).
+3. *Mechanism.* Handle-based, not `CopyFile2`: sources open relative to pinned parents, no-recall, sharing only read
+and delete so no writer can join; destinations are created with `FILE_CREATE` relative to a pinned staging folder on
+the destination volume, preallocated, written, flushed with `FlushFileBuffers`, given their preserved metadata, then
+re-read by ID with `FILE_FLAG_NO_BUFFERING` and hashed. Publish is one rename of the staging folder within its
+parent with `ReplaceIfExists = FALSE`. Doc 47 section 4 cites each call.
+4. *Durable intent.* A write-ahead journal in `state.db` (`synchronous=FULL`, ADR-V3-22): intent before each effect,
+outcome after. Cleanup authority comes only from a journaled identity, never from a name. The staging folder's
+identity is committed before anything is created in it, and each item's identity right after its empty create
+(batched) and before any write. An entry the journal does not know is never adopted or deleted, even under a
+manifest name. Recovery decides from journal plus disk (doc 47 section 5) and never resumes an effect after a
+restart without the owner. Revoking a source grant, or an emergency stop, commits first and bumps a fence epoch.
+The executor runs every effect as one step under a per-run admission lock: read the epoch, then make one bounded
+call (one create, one write of at most 1 MiB, one flush, one metadata set, or the rename). The revocation acquires
+the same lock before it is acknowledged, so no effect step starts after an acknowledged revocation, and at most one
+step already in flight finishes before it (doc 47 section 5).
+
+Before publish, a moved epoch means: no further effects, `revoked` is journaled, any publish intent is withdrawn, the
+run is cancelled, and only Loomward's own journaled staging is removed. The rename step's own epoch read is the last
+point a revocation can stop publish. After that the fence never cancels: the run confirms and commits, and the
+receipt is annotated `revoked_after_publish`. Stale-epoch records are rejected, except `committed`, `revoked`,
+`publish_withdrawn` and the cleanup records (doc 05, ADR-V3-22).
+5. *Verification.* SHA-256 per stream on the bytes read, compared with an independent non-cached read-back of the
+destination; signature check of each source before and after; a final tree check of staging against the manifest;
+after publish, the final folder's identity must equal the staging folder's. One retry from zero on a mismatch, then
+`needs_attention`.
+
+The final check is made under deny-write holds: every staged file is reopened by ID without `FILE_SHARE_WRITE`, and
+it is hashed through that held handle. The holds stay open through the rename. If doc 47 hypothesis H2 shows they
+block the rename, they are released just before it and reacquired by ID just after it, and every file's content is
+re-hashed.
+
+After the rename, a post-publish confirmation runs under the holds. It checks the tree shape, the identities, the
+preserved metadata (which share modes do not protect) and, on the release path, the content. Only then are
+`committed` and a verified receipt written. Any late change fails closed: the outcome is `published_unverified`, the
+run goes to `needs_attention`, and the copy is kept. The receipt states the limit: the read-back is below the system cache, not proof against a device
+cache.
+6. *Metadata.* Preserve default and named data streams, size, creation and last-write times and the read-only,
+hidden, archive and not-content-indexed attributes, and verify each. Security descriptors are inherited from the
+destination, as Explorer does for copies. Refuse system, temporary, compressed, sparse, encrypted, integrity-stream,
+extended-attribute and reparse items (doc 47 section 6).
+7. *Refusals.* Codes checked at preview or start come before any write handle exists; runtime refusals (at item
+open, at a cooperative boundary, at publish, or on a verification mismatch) obey a no-further-effects rule: nothing
+more is created, written or renamed after the refusal is journaled, apart from one redo after a mismatch, bounded
+publish retries and identity-bound cleanup. The codes cover: identity-unverified file systems (FAT, exFAT, unknown;
+#219 rows never back an effect), cloud placeholders (never recalled), reparse points and links, sources changed since
+preview, open or locked sources (deny-write open fails), insufficient space, destination inside a copied folder,
+destination in a cloud sync root or on a removable, network or unsupported volume, case-only collisions under the
+destination's rules, unrepresentable names and over-length paths (doc 47 section 7). In-use, access and space
+refusals block resumably; the rest end the operation.
+8. *Resume and rollback.* Resume revalidates and continues. Resume out of `needs_attention` needs the owner to have
+resolved the cause and to confirm again; `source_changed` can only be abandoned. Cancel or abandon before publish
+removes only Loomward's own staging entries. Cleanup refuses outright in two cases: the staging name no longer
+resolves to the journaled staging identity, or the run holds a publish intent that was not withdrawn. Cleanup
+therefore never follows an ID into a published folder. Each entry is opened by its journaled ID, and both its
+creation time and its name-to-ID binding are rechecked. It is then removed with a POSIX disposition that ignores the read-only attribute (or after clearing
+that bit on the same verified handle), since staged files may be read-only (Q1). Anything unjournaled or failing a
+check is left, and the operation goes to `needs_attention`. A published copy is never removed: undo is a new operation (doc 08).
+9. *Evidence.* Each operation writes a doc 08 recovery receipt: operation and manifest digests, grants, topology
+(same volume or not), identities before and after, intended, copied and verified bytes (ADR-V3-04 strings), per-stream
+hashes, metadata results per class, refusals by code, phase durations and rates, resumes, versions, and one outcome
+(`committed`, `cancelled`, `refused`, `needs_attention`, `published_unverified`), plus any `revoked_after_publish`
+annotation. Space relief is always reported as none. Public evidence
+carries counts and buckets only.
+10. *Gate.* The capability opens only in lane C8, after all of: the lab suite, the crash matrix by child-process
+kill, the fault and refusal proofs, **real power-cut runs** by the method the owner picks in Q2, a **proven restore**
+(a copy committed after a power-cut run, copied back and verified against the original manifest), and doc 45's
+readiness bar (HUMAN_TODO q-39; doc 47 section 11). A process kill is not a power-cut proof. Until the power-cut and
+restore proofs pass, copy-and-verify stays lab-only (synthetic sessions and lab roots).
+11. *Restore drills.* ADR-V3-23 stage 3 reuses the destination rules, staging, tree verifier and receipt. Restic
+remains the writer there, so stage 3 still needs stage 2's process gate; this record does not open it.
+**Consequences.** Good: every write lands in a folder only Loomward created, under an identity the journal knew
+before the write; a crash at any point resolves without guessing; refusals happen before effects; the verifier is
+useful read-only first (lane C1). Bad: the most code of the options; metadata fidelity is ours to prove class by
+class; the first delete primitive enters the codebase (staging only); much real-world content (cloud-synced, sparse,
+encrypted) is refused in v1; a crash inside a create batch can leave empty files that the owner must remove before
+resuming; personal use waits on a real power-cut rig. Neutral: no space relief, so storage planning is unchanged.
+**Alternatives.** `CopyFile2`/`CopyFileEx` then verify: rejected, path arguments reopen the junction race of doc 05,
+no-recall cannot be requested and metadata behaviour varies by Windows build. Spawning robocopy: rejected, a process
+effect and a shell surface. Verify-only (the owner copies, Loomward compares): kept as lane C1, but it does not meet
+q-32 on its own.
+**Reversibility.** Two-way for the code (unwire the commands). Copies already published stay on the owner's disk by
+design. The journal tables are a `state.db` migration (moderate). Reopen if a fidelity class must widen (sparse,
+encrypted, cloud files with a tested provider), if copies into existing folders are wanted (Q3), if a move or
+source retirement is proposed (LW-042 needs its own record), or if any crash or fault run produces a source change or
+a false-complete receipt.
+**Invariant 1 text for the gate PR (C8).** "1. **No file or process effects** (move, delete, uninstall, kill,
+suspend, priority, trim) until the specific `LW-*` issue and its Windows safety gate authorise that capability. Never
+add a general execute, shell, delete or kill endpoint, through HTTP, IPC or MCP. **One effect is open: copy-and-verify**
+(LW-040, ADR-V3-25, owner decision HUMAN_TODO q-32): ordinary files and folders from owner-granted, identity-verified
+roots into a new folder the owner picked in the native dialog, after the owner approves the exact manifest, never
+through MCP; it never deletes, moves, renames or overwrites a source or an existing destination entry, and the only
+removal is of Loomward's own unpublished staging, matched by recorded identity. Moving, source retirement, overwrite
+and every other effect stay gated."
