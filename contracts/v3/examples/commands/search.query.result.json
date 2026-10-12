@@ -1,30 +1,52 @@
 {
-  "anchor": null,
   "generation": "12",
-  "items": [
+  "hits": [
     {
-      "node_id": "nd_0020",
-      "kind": "file",
-      "name": "report_final.docx",
-      "extension": "docx",
-      "ext_family": "document",
-      "logical_bytes": "48213",
-      "allocated_bytes": "49152",
-      "files": null,
-      "dirs": null,
-      "modified_at": "2026-10-09T11:58:30Z",
-      "attributes": [
-        "archive"
-      ],
-      "flags": [],
-      "coverage": "complete",
-      "location_hint": {
-        "text": "Lab\\S1\\Projects\\Alpha",
+      "row": {
+        "node_id": "nd_0020",
+        "kind": "file",
+        "name": "report_final.docx",
+        "extension": "docx",
+        "ext_family": "document",
+        "logical_bytes": "48213",
+        "allocated_bytes": "49152",
+        "files": null,
+        "dirs": null,
+        "modified_at": "2026-10-09T11:58:30Z",
+        "attributes": [
+          "archive"
+        ],
+        "flags": [],
+        "coverage": "complete",
+        "location_hint": {
+          "text": "Lab\\S1\\Projects\\Alpha",
+          "truncated": false
+        }
+      },
+      "root_id": "rt_synth1",
+      "path": {
+        "text": "S1\\Projects\\Alpha\\report_final.docx",
         "truncated": false
-      }
+      },
+      "match_kind": "prefix",
+      "highlights": [
+        [
+          0,
+          6
+        ]
+      ]
     }
   ],
   "next_cursor": null,
-  "total": 1,
-  "budget_hit": false
+  "budget_hit": false,
+  "index_state": "current",
+  "partial": false,
+  "substring_searched": true,
+  "roots": [
+    {
+      "root_id": "rt_synth1",
+      "scan_state": "complete",
+      "coverage": "complete"
+    }
+  ]
 }

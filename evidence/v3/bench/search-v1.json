@@ -1,0 +1,898 @@
+{
+ "lane": "LW-113 search v1",
+ "host": "DESKTOP-IHKOOJS, Windows 11, shared host (other lanes active), warm cache",
+ "dataset": "in-process generated synthetic names, 1,000,000 files in 1,000 directories",
+ "runs": {
+  "sb2-idx-1": {
+   "catalog_bytes": 367075328,
+   "catalog_bytes_per_entry": 366.7086193806194,
+   "directories": 1001,
+   "end_run_seconds": 10.3958121,
+   "files": 1000000,
+   "index_bytes": 100978688,
+   "index_bytes_per_entry": 100.87781018981019,
+   "indexed": true,
+   "publish_seconds": 4.5905764,
+   "queries": {
+    "digits": {
+     "budget_hit": false,
+     "first_kind": "token",
+     "hits": 50,
+     "more": true,
+     "text": "4242",
+     "timing": {
+      "max_ms": 3.5397,
+      "p50_ms": 2.5869,
+      "p95_ms": 3.1966,
+      "runs": 21
+     }
+    },
+    "extension_only_largest": {
+     "budget_hit": false,
+     "first_kind": "filter",
+     "hits": 50,
+     "more": true,
+     "text": "",
+     "timing": {
+      "max_ms": 0.6306,
+      "p50_ms": 0.5917,
+      "p95_ms": 0.6282,
+      "runs": 21
+     }
+    },
+    "inner_substring": {
+     "budget_hit": false,
+     "first_kind": "substring",
+     "hits": 50,
+     "more": true,
+     "text": "udge",
+     "timing": {
+      "max_ms": 3.3197,
+      "p50_ms": 2.3693999999999997,
+      "p95_ms": 3.2478,
+      "runs": 21
+     }
+    },
+    "no_match": {
+     "budget_hit": false,
+     "first_kind": null,
+     "hits": 0,
+     "more": false,
+     "text": "zzqqxx",
+     "timing": {
+      "max_ms": 2.084,
+      "p50_ms": 1.8047,
+      "p95_ms": 2.0758,
+      "runs": 21
+     }
+    },
+    "rare_filter": {
+     "budget_hit": false,
+     "first_kind": "prefix",
+     "hits": 34,
+     "more": false,
+     "text": "report",
+     "timing": {
+      "max_ms": 515.5812,
+      "p50_ms": 500.51730000000003,
+      "p95_ms": 513.6979,
+      "runs": 21
+     }
+    },
+    "two_chars": {
+     "budget_hit": false,
+     "first_kind": "prefix",
+     "hits": 50,
+     "more": true,
+     "text": "pl",
+     "timing": {
+      "max_ms": 1.5102,
+      "p50_ms": 0.846,
+      "p95_ms": 1.4908000000000001,
+      "runs": 21
+     }
+    },
+    "two_words": {
+     "budget_hit": false,
+     "first_kind": "prefix",
+     "hits": 50,
+     "more": true,
+     "text": "annual report",
+     "timing": {
+      "max_ms": 6.2641,
+      "p50_ms": 5.141299999999999,
+      "p95_ms": 5.9847,
+      "runs": 21
+     }
+    },
+    "word": {
+     "budget_hit": false,
+     "first_kind": "prefix",
+     "hits": 50,
+     "more": true,
+     "text": "budget",
+     "timing": {
+      "max_ms": 2.3097,
+      "p50_ms": 1.9621,
+      "p95_ms": 2.1805000000000003,
+      "runs": 21
+     }
+    },
+    "word_and_extension": {
+     "budget_hit": false,
+     "first_kind": "prefix",
+     "hits": 50,
+     "more": true,
+     "text": "invoice",
+     "timing": {
+      "max_ms": 6.8925,
+      "p50_ms": 5.2338000000000005,
+      "p95_ms": 6.797499999999999,
+      "runs": 21
+     }
+    },
+    "word_size_and_time": {
+     "budget_hit": false,
+     "first_kind": "prefix",
+     "hits": 50,
+     "more": true,
+     "text": "photo",
+     "timing": {
+      "max_ms": 74.574,
+      "p50_ms": 66.322,
+      "p95_ms": 72.7325,
+      "runs": 21
+     }
+    }
+   },
+   "query_note": "first page, limit 50, warm, 21 runs after one warm-up, including hit serialisation; P8 target p95 300 ms",
+   "scope": "in-process generated synthetic names; no enumeration, no HTTP",
+   "targeted_relist_100_dirs_seconds": 5.732287,
+   "through_end_run_rows_per_second": 66793.94438493303
+  },
+  "sb2-idx-2": {
+   "catalog_bytes": 367075328,
+   "catalog_bytes_per_entry": 366.7086193806194,
+   "directories": 1001,
+   "end_run_seconds": 9.6386033,
+   "files": 1000000,
+   "index_bytes": 100978688,
+   "index_bytes_per_entry": 100.87781018981019,
+   "indexed": true,
+   "publish_seconds": 4.5904869999999995,
+   "queries": {
+    "digits": {
+     "budget_hit": false,
+     "first_kind": "token",
+     "hits": 50,
+     "more": true,
+     "text": "4242",
+     "timing": {
+      "max_ms": 2.8035,
+      "p50_ms": 2.3933,
+      "p95_ms": 2.8002000000000002,
+      "runs": 21
+     }
+    },
+    "extension_only_largest": {
+     "budget_hit": false,
+     "first_kind": "filter",
+     "hits": 50,
+     "more": true,
+     "text": "",
+     "timing": {
+      "max_ms": 0.61,
+      "p50_ms": 0.5643,
+      "p95_ms": 0.6086,
+      "runs": 21
+     }
+    },
+    "inner_substring": {
+     "budget_hit": false,
+     "first_kind": "substring",
+     "hits": 50,
+     "more": true,
+     "text": "udge",
+     "timing": {
+      "max_ms": 2.7041,
+      "p50_ms": 2.1795999999999998,
+      "p95_ms": 2.5363,
+      "runs": 21
+     }
+    },
+    "no_match": {
+     "budget_hit": false,
+     "first_kind": null,
+     "hits": 0,
+     "more": false,
+     "text": "zzqqxx",
+     "timing": {
+      "max_ms": 2.9265,
+      "p50_ms": 2.095,
+      "p95_ms": 2.6266000000000003,
+      "runs": 21
+     }
+    },
+    "rare_filter": {
+     "budget_hit": false,
+     "first_kind": "prefix",
+     "hits": 34,
+     "more": false,
+     "text": "report",
+     "timing": {
+      "max_ms": 648.995,
+      "p50_ms": 497.7161,
+      "p95_ms": 569.7641,
+      "runs": 21
+     }
+    },
+    "two_chars": {
+     "budget_hit": false,
+     "first_kind": "prefix",
+     "hits": 50,
+     "more": true,
+     "text": "pl",
+     "timing": {
+      "max_ms": 1.3404,
+      "p50_ms": 0.8224,
+      "p95_ms": 1.0525,
+      "runs": 21
+     }
+    },
+    "two_words": {
+     "budget_hit": false,
+     "first_kind": "prefix",
+     "hits": 50,
+     "more": true,
+     "text": "annual report",
+     "timing": {
+      "max_ms": 5.6819,
+      "p50_ms": 4.9148000000000005,
+      "p95_ms": 5.583,
+      "runs": 21
+     }
+    },
+    "word": {
+     "budget_hit": false,
+     "first_kind": "prefix",
+     "hits": 50,
+     "more": true,
+     "text": "budget",
+     "timing": {
+      "max_ms": 2.972,
+      "p50_ms": 1.9507999999999999,
+      "p95_ms": 2.7704,
+      "runs": 21
+     }
+    },
+    "word_and_extension": {
+     "budget_hit": false,
+     "first_kind": "prefix",
+     "hits": 50,
+     "more": true,
+     "text": "invoice",
+     "timing": {
+      "max_ms": 6.1917,
+      "p50_ms": 5.3063,
+      "p95_ms": 5.9172,
+      "runs": 21
+     }
+    },
+    "word_size_and_time": {
+     "budget_hit": false,
+     "first_kind": "prefix",
+     "hits": 50,
+     "more": true,
+     "text": "photo",
+     "timing": {
+      "max_ms": 73.98830000000001,
+      "p50_ms": 66.01809999999999,
+      "p95_ms": 70.6335,
+      "runs": 21
+     }
+    }
+   },
+   "query_note": "first page, limit 50, warm, 21 runs after one warm-up, including hit serialisation; P8 target p95 300 ms",
+   "scope": "in-process generated synthetic names; no enumeration, no HTTP",
+   "targeted_relist_100_dirs_seconds": 6.3720183,
+   "through_end_run_rows_per_second": 70348.84022065697
+  },
+  "sb2-idx-3": {
+   "catalog_bytes": 367075328,
+   "catalog_bytes_per_entry": 366.7086193806194,
+   "directories": 1001,
+   "end_run_seconds": 10.1322716,
+   "files": 1000000,
+   "index_bytes": 100978688,
+   "index_bytes_per_entry": 100.87781018981019,
+   "indexed": true,
+   "publish_seconds": 4.9919807,
+   "queries": {
+    "digits": {
+     "budget_hit": false,
+     "first_kind": "token",
+     "hits": 50,
+     "more": true,
+     "text": "4242",
+     "timing": {
+      "max_ms": 3.0783,
+      "p50_ms": 2.4511,
+      "p95_ms": 3.0148,
+      "runs": 21
+     }
+    },
+    "extension_only_largest": {
+     "budget_hit": false,
+     "first_kind": "filter",
+     "hits": 50,
+     "more": true,
+     "text": "",
+     "timing": {
+      "max_ms": 1.0904,
+      "p50_ms": 0.5923999999999999,
+      "p95_ms": 1.089,
+      "runs": 21
+     }
+    },
+    "inner_substring": {
+     "budget_hit": false,
+     "first_kind": "substring",
+     "hits": 50,
+     "more": true,
+     "text": "udge",
+     "timing": {
+      "max_ms": 3.9319,
+      "p50_ms": 2.487,
+      "p95_ms": 3.8087,
+      "runs": 21
+     }
+    },
+    "no_match": {
+     "budget_hit": false,
+     "first_kind": null,
+     "hits": 0,
+     "more": false,
+     "text": "zzqqxx",
+     "timing": {
+      "max_ms": 2.5411,
+      "p50_ms": 1.9304999999999999,
+      "p95_ms": 2.1677,
+      "runs": 21
+     }
+    },
+    "rare_filter": {
+     "budget_hit": false,
+     "first_kind": "prefix",
+     "hits": 34,
+     "more": false,
+     "text": "report",
+     "timing": {
+      "max_ms": 705.4986,
+      "p50_ms": 540.526,
+      "p95_ms": 656.1455000000001,
+      "runs": 21
+     }
+    },
+    "two_chars": {
+     "budget_hit": false,
+     "first_kind": "prefix",
+     "hits": 50,
+     "more": true,
+     "text": "pl",
+     "timing": {
+      "max_ms": 1.3205,
+      "p50_ms": 0.8361,
+      "p95_ms": 0.9835,
+      "runs": 21
+     }
+    },
+    "two_words": {
+     "budget_hit": false,
+     "first_kind": "prefix",
+     "hits": 50,
+     "more": true,
+     "text": "annual report",
+     "timing": {
+      "max_ms": 7.4098999999999995,
+      "p50_ms": 5.668699999999999,
+      "p95_ms": 7.056500000000001,
+      "runs": 21
+     }
+    },
+    "word": {
+     "budget_hit": false,
+     "first_kind": "prefix",
+     "hits": 50,
+     "more": true,
+     "text": "budget",
+     "timing": {
+      "max_ms": 3.0964,
+      "p50_ms": 2.0214,
+      "p95_ms": 2.7729,
+      "runs": 21
+     }
+    },
+    "word_and_extension": {
+     "budget_hit": false,
+     "first_kind": "prefix",
+     "hits": 50,
+     "more": true,
+     "text": "invoice",
+     "timing": {
+      "max_ms": 9.2632,
+      "p50_ms": 5.4871,
+      "p95_ms": 8.610899999999999,
+      "runs": 21
+     }
+    },
+    "word_size_and_time": {
+     "budget_hit": false,
+     "first_kind": "prefix",
+     "hits": 50,
+     "more": true,
+     "text": "photo",
+     "timing": {
+      "max_ms": 82.53960000000001,
+      "p50_ms": 67.9371,
+      "p95_ms": 77.3379,
+      "runs": 21
+     }
+    }
+   },
+   "query_note": "first page, limit 50, warm, 21 runs after one warm-up, including hit serialisation; P8 target p95 300 ms",
+   "scope": "in-process generated synthetic names; no enumeration, no HTTP",
+   "targeted_relist_100_dirs_seconds": 5.8999896,
+   "through_end_run_rows_per_second": 66185.090022599
+  },
+  "sb2-noidx-1": {
+   "catalog_bytes": 266567680,
+   "catalog_bytes_per_entry": 266.3013786213786,
+   "directories": 1001,
+   "end_run_seconds": 5.5645522,
+   "files": 1000000,
+   "index_bytes": 0,
+   "index_bytes_per_entry": 0.0,
+   "indexed": false,
+   "publish_seconds": 5.0664158,
+   "scope": "in-process generated synthetic names; no enumeration, no HTTP",
+   "targeted_relist_100_dirs_seconds": 3.2899364,
+   "through_end_run_rows_per_second": 94158.8762189859
+  },
+  "sb2-noidx-2": {
+   "catalog_bytes": 266567680,
+   "catalog_bytes_per_entry": 266.3013786213786,
+   "directories": 1001,
+   "end_run_seconds": 5.516756,
+   "files": 1000000,
+   "index_bytes": 0,
+   "index_bytes_per_entry": 0.0,
+   "indexed": false,
+   "publish_seconds": 4.6465739,
+   "scope": "in-process generated synthetic names; no enumeration, no HTTP",
+   "targeted_relist_100_dirs_seconds": 3.4002668,
+   "through_end_run_rows_per_second": 98491.34189769831
+  },
+  "sb2-noidx-3": {
+   "catalog_bytes": 266567680,
+   "catalog_bytes_per_entry": 266.3013786213786,
+   "directories": 1001,
+   "end_run_seconds": 5.6308074999999995,
+   "files": 1000000,
+   "index_bytes": 0,
+   "index_bytes_per_entry": 0.0,
+   "indexed": false,
+   "publish_seconds": 4.6613811,
+   "scope": "in-process generated synthetic names; no enumeration, no HTTP",
+   "targeted_relist_100_dirs_seconds": 3.5646037,
+   "through_end_run_rows_per_second": 97258.22552454977
+  },
+  "sb3-idx-1": {
+   "catalog_bytes": 367075328,
+   "catalog_bytes_per_entry": 366.7086193806194,
+   "directories": 1001,
+   "end_run_seconds": 9.0505716,
+   "files": 1000000,
+   "index_bytes": 100978688,
+   "index_bytes_per_entry": 100.87781018981019,
+   "indexed": true,
+   "publish_seconds": 4.2255309,
+   "queries": {
+    "digits": {
+     "budget_hit": false,
+     "first_kind": "token",
+     "hits": 50,
+     "more": true,
+     "text": "4242",
+     "timing": {
+      "max_ms": 3.0077,
+      "p50_ms": 2.39,
+      "p95_ms": 2.6557,
+      "runs": 21
+     }
+    },
+    "extension_only_largest": {
+     "budget_hit": false,
+     "first_kind": "filter",
+     "hits": 50,
+     "more": true,
+     "text": "",
+     "timing": {
+      "max_ms": 0.9774,
+      "p50_ms": 0.5963999999999999,
+      "p95_ms": 0.7755000000000001,
+      "runs": 21
+     }
+    },
+    "inner_substring": {
+     "budget_hit": false,
+     "first_kind": "substring",
+     "hits": 50,
+     "more": true,
+     "text": "udge",
+     "timing": {
+      "max_ms": 2.7128,
+      "p50_ms": 2.2131999999999996,
+      "p95_ms": 2.4608,
+      "runs": 21
+     }
+    },
+    "no_match": {
+     "budget_hit": false,
+     "first_kind": null,
+     "hits": 0,
+     "more": false,
+     "text": "zzqqxx",
+     "timing": {
+      "max_ms": 2.3595,
+      "p50_ms": 1.9155000000000002,
+      "p95_ms": 2.3289,
+      "runs": 21
+     }
+    },
+    "rare_filter": {
+     "budget_hit": true,
+     "first_kind": "prefix",
+     "hits": 34,
+     "more": true,
+     "text": "report",
+     "timing": {
+      "max_ms": 250.5228,
+      "p50_ms": 250.47419999999997,
+      "p95_ms": 250.52200000000002,
+      "runs": 21
+     }
+    },
+    "two_chars": {
+     "budget_hit": false,
+     "first_kind": "prefix",
+     "hits": 50,
+     "more": true,
+     "text": "pl",
+     "timing": {
+      "max_ms": 1.5103,
+      "p50_ms": 0.8799,
+      "p95_ms": 1.4618,
+      "runs": 21
+     }
+    },
+    "two_words": {
+     "budget_hit": false,
+     "first_kind": "prefix",
+     "hits": 50,
+     "more": true,
+     "text": "annual report",
+     "timing": {
+      "max_ms": 5.9458,
+      "p50_ms": 5.226,
+      "p95_ms": 5.8705,
+      "runs": 21
+     }
+    },
+    "word": {
+     "budget_hit": false,
+     "first_kind": "prefix",
+     "hits": 50,
+     "more": true,
+     "text": "budget",
+     "timing": {
+      "max_ms": 2.2129,
+      "p50_ms": 1.9401,
+      "p95_ms": 2.0915999999999997,
+      "runs": 21
+     }
+    },
+    "word_and_extension": {
+     "budget_hit": false,
+     "first_kind": "prefix",
+     "hits": 50,
+     "more": true,
+     "text": "invoice",
+     "timing": {
+      "max_ms": 5.8135,
+      "p50_ms": 5.2541,
+      "p95_ms": 5.7600999999999996,
+      "runs": 21
+     }
+    },
+    "word_size_and_time": {
+     "budget_hit": false,
+     "first_kind": "prefix",
+     "hits": 50,
+     "more": true,
+     "text": "photo",
+     "timing": {
+      "max_ms": 64.9517,
+      "p50_ms": 62.464600000000004,
+      "p95_ms": 64.8198,
+      "runs": 21
+     }
+    }
+   },
+   "query_note": "first page, limit 50, warm, 21 runs after one warm-up, including hit serialisation; P8 target p95 300 ms",
+   "scope": "in-process generated synthetic names; no enumeration, no HTTP",
+   "targeted_relist_100_dirs_seconds": 4.5918125,
+   "through_end_run_rows_per_second": 75398.63450135308
+  },
+  "sb3-idx-2": {
+   "catalog_bytes": 367075328,
+   "catalog_bytes_per_entry": 366.7086193806194,
+   "directories": 1001,
+   "end_run_seconds": 8.1458034,
+   "files": 1000000,
+   "index_bytes": 100978688,
+   "index_bytes_per_entry": 100.87781018981019,
+   "indexed": true,
+   "publish_seconds": 3.8930557,
+   "queries": {
+    "digits": {
+     "budget_hit": false,
+     "first_kind": "token",
+     "hits": 50,
+     "more": true,
+     "text": "4242",
+     "timing": {
+      "max_ms": 2.6218,
+      "p50_ms": 2.3511,
+      "p95_ms": 2.6094,
+      "runs": 21
+     }
+    },
+    "extension_only_largest": {
+     "budget_hit": false,
+     "first_kind": "filter",
+     "hits": 50,
+     "more": true,
+     "text": "",
+     "timing": {
+      "max_ms": 0.5952999999999999,
+      "p50_ms": 0.5544,
+      "p95_ms": 0.5808,
+      "runs": 21
+     }
+    },
+    "inner_substring": {
+     "budget_hit": false,
+     "first_kind": "substring",
+     "hits": 50,
+     "more": true,
+     "text": "udge",
+     "timing": {
+      "max_ms": 3.3481,
+      "p50_ms": 2.1536,
+      "p95_ms": 2.4909,
+      "runs": 21
+     }
+    },
+    "no_match": {
+     "budget_hit": false,
+     "first_kind": null,
+     "hits": 0,
+     "more": false,
+     "text": "zzqqxx",
+     "timing": {
+      "max_ms": 2.2143,
+      "p50_ms": 1.7913000000000001,
+      "p95_ms": 2.1386,
+      "runs": 21
+     }
+    },
+    "rare_filter": {
+     "budget_hit": true,
+     "first_kind": "prefix",
+     "hits": 34,
+     "more": true,
+     "text": "report",
+     "timing": {
+      "max_ms": 250.6862,
+      "p50_ms": 250.4937,
+      "p95_ms": 250.58970000000002,
+      "runs": 21
+     }
+    },
+    "two_chars": {
+     "budget_hit": false,
+     "first_kind": "prefix",
+     "hits": 50,
+     "more": true,
+     "text": "pl",
+     "timing": {
+      "max_ms": 1.4185,
+      "p50_ms": 0.821,
+      "p95_ms": 1.0132999999999999,
+      "runs": 21
+     }
+    },
+    "two_words": {
+     "budget_hit": false,
+     "first_kind": "prefix",
+     "hits": 50,
+     "more": true,
+     "text": "annual report",
+     "timing": {
+      "max_ms": 5.7291,
+      "p50_ms": 4.7715,
+      "p95_ms": 5.4910000000000005,
+      "runs": 21
+     }
+    },
+    "word": {
+     "budget_hit": false,
+     "first_kind": "prefix",
+     "hits": 50,
+     "more": true,
+     "text": "budget",
+     "timing": {
+      "max_ms": 2.1326,
+      "p50_ms": 1.9231,
+      "p95_ms": 2.114,
+      "runs": 21
+     }
+    },
+    "word_and_extension": {
+     "budget_hit": false,
+     "first_kind": "prefix",
+     "hits": 50,
+     "more": true,
+     "text": "invoice",
+     "timing": {
+      "max_ms": 5.657299999999999,
+      "p50_ms": 5.0645999999999995,
+      "p95_ms": 5.4905,
+      "runs": 21
+     }
+    },
+    "word_size_and_time": {
+     "budget_hit": false,
+     "first_kind": "prefix",
+     "hits": 50,
+     "more": true,
+     "text": "photo",
+     "timing": {
+      "max_ms": 63.6642,
+      "p50_ms": 61.6793,
+      "p95_ms": 63.52869999999999,
+      "runs": 21
+     }
+    }
+   },
+   "query_note": "first page, limit 50, warm, 21 runs after one warm-up, including hit serialisation; P8 target p95 300 ms",
+   "scope": "in-process generated synthetic names; no enumeration, no HTTP",
+   "targeted_relist_100_dirs_seconds": 4.3664971,
+   "through_end_run_rows_per_second": 83147.41386083669
+  },
+  "p4b2-1": {
+   "variant": "branch",
+   "P4": {
+    "insert_seconds": 4.0198435,
+    "met": false,
+    "met_basis": "through_end_run_rows_per_second",
+    "rows_per_second": 249014.91811808094,
+    "target_rows_per_second": 250000,
+    "through_end_run_rows_per_second": 88591.62842870831
+   },
+   "finalise_seconds": 7.2792038,
+   "P14": {
+    "bytes_per_entry": 311.17702379917705,
+    "catalog_bytes": 311488512,
+    "dataset_scale_met": false,
+    "target_bytes_per_entry": 200,
+    "target_dataset_rows": 10000000
+   }
+  },
+  "p4b2-2": {
+   "variant": "branch",
+   "P4": {
+    "insert_seconds": 4.0729067,
+    "met": false,
+    "met_basis": "through_end_run_rows_per_second",
+    "rows_per_second": 245770.66791144517,
+    "target_rows_per_second": 250000,
+    "through_end_run_rows_per_second": 79792.88116365613
+   },
+   "finalise_seconds": 8.4720846,
+   "P14": {
+    "bytes_per_entry": 311.17702379917705,
+    "catalog_bytes": 311488512,
+    "dataset_scale_met": false,
+    "target_bytes_per_entry": 200,
+    "target_dataset_rows": 10000000
+   }
+  },
+  "p4b2-3": {
+   "variant": "branch",
+   "P4": {
+    "insert_seconds": 4.0901525,
+    "met": false,
+    "met_basis": "through_end_run_rows_per_second",
+    "rows_per_second": 244734.39560016405,
+    "target_rows_per_second": 250000,
+    "through_end_run_rows_per_second": 82052.81208805082
+   },
+   "finalise_seconds": 8.1093197,
+   "P14": {
+    "bytes_per_entry": 311.17702379917705,
+    "catalog_bytes": 311488512,
+    "dataset_scale_met": false,
+    "target_bytes_per_entry": 200,
+    "target_dataset_rows": 10000000
+   }
+  },
+  "p4m2-1": {
+   "variant": "main",
+   "P4": {
+    "insert_seconds": 3.8451828,
+    "met": false,
+    "met_basis": "through_end_run_rows_per_second",
+    "rows_per_second": 260325.9850220905,
+    "target_rows_per_second": 250000,
+    "through_end_run_rows_per_second": 119302.01454777562
+   },
+   "finalise_seconds": 4.5452958,
+   "P14": {
+    "bytes_per_entry": 229.85043171785043,
+    "catalog_bytes": 230080512,
+    "dataset_scale_met": false,
+    "target_bytes_per_entry": 200,
+    "target_dataset_rows": 10000000
+   }
+  },
+  "p4m2-2": {
+   "variant": "main",
+   "P4": {
+    "insert_seconds": 4.7739955,
+    "met": false,
+    "met_basis": "through_end_run_rows_per_second",
+    "rows_per_second": 209677.82646632157,
+    "target_rows_per_second": 250000,
+    "through_end_run_rows_per_second": 105459.6967787057
+   },
+   "finalise_seconds": 4.7177917,
+   "P14": {
+    "bytes_per_entry": 229.85043171785043,
+    "catalog_bytes": 230080512,
+    "dataset_scale_met": false,
+    "target_bytes_per_entry": 200,
+    "target_dataset_rows": 10000000
+   }
+  },
+  "p4m2-3": {
+   "variant": "main",
+   "P4": {
+    "insert_seconds": 3.9193428,
+    "met": false,
+    "met_basis": "through_end_run_rows_per_second",
+    "rows_per_second": 255400.21658733193,
+    "target_rows_per_second": 250000,
+    "through_end_run_rows_per_second": 101322.60177232791
+   },
+   "finalise_seconds": 5.9600028,
+   "P14": {
+    "bytes_per_entry": 229.85043171785043,
+    "catalog_bytes": 230080512,
+    "dataset_scale_met": false,
+    "target_bytes_per_entry": 200,
+    "target_dataset_rows": 10000000
+   }
+  }
+ }
+}

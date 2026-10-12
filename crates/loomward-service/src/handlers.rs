@@ -141,6 +141,12 @@ fn binding(request: &RequestEnvelope) -> String {
     Value::Object(p).to_string()
 }
 
+/// A request timestamp as FILETIME; one before 1601 is out of range.
+fn ft(t: &Timestamp) -> Result<i64, ErrorBody> {
+    loomward_catalog::filetime(t.as_ref())
+        .ok_or_else(|| fail(ErrorCode::InvalidRequest, "timestamp out of range"))
+}
+
 /// A root's scan state and coverage as `roots.list` shows them; a root that is not active is stale.
 pub(crate) fn scan_view(r: &db::RootRow) -> (&'static str, &'static str) {
     if r.grant_state != "active" {
@@ -1094,6 +1100,9 @@ impl Inner {
                 text: r.text.to_string(),
                 extension: r.extension.as_ref().map(|e| e.to_string()),
                 min_bytes: r.min_bytes.map(|b| b.get()),
+                max_bytes: r.max_bytes.map(|b| b.get()),
+                modified_after: r.modified_after.as_ref().map(ft).transpose()?,
+                modified_before: r.modified_before.as_ref().map(ft).transpose()?,
                 kind: match r.kind {
                     SearchRequestKind::Any => "any",
                     SearchRequestKind::File => "file",
@@ -1104,19 +1113,48 @@ impl Inner {
                 cursor,
                 // SQLite VM steps, additionally interrupted at the request deadline.
                 work_budget: 50_000_000,
+                // P8: a page answers within about 300 ms, partial with budget_hit and a cursor if need be.
+                time_budget: Some(std::time::Duration::from_millis(250)),
             })
             .map_err(catalog_error)?;
         let next = page.next_cursor.map(|c| {
             self.cursors
                 .issue(Command::SearchQuery, bind, Position::Search(c), None)
         });
+        let hits = page
+            .hits
+            .iter()
+            .map(|h| {
+                Ok(json!({
+                    "row": encode(&h.row)?,
+                    "root_id": self.root_id(h.root_id),
+                    "path": encode(&h.path)?,
+                    "match_kind": h.match_kind,
+                    "highlights": h.highlights,
+                }))
+            })
+            .collect::<Result<Vec<_>, ErrorBody>>()?;
+        // As roots.list: a root mid-repair reads partial.
+        let roots: Vec<Value> = page
+            .roots
+            .iter()
+            .map(|r| {
+                json!({
+                    "root_id": self.root_id(r.root_id),
+                    "scan_state": if r.scan_state == "repairing" { "partial" } else { r.scan_state.as_str() },
+                    "coverage": r.coverage,
+                })
+            })
+            .collect();
         let value = json!({
-            "anchor": null,
             "generation": page.generation,
-            "items": encode(&page.items)?,
+            "hits": hits,
             "next_cursor": next,
-            "total": page.total,
             "budget_hit": page.budget_hit,
+            "index_state": page.index_state,
+            "partial": page.partial,
+            "substring_searched": page.substring_searched,
+            "roots": roots,
         });
         self.sealed(value, revs)
     }

@@ -17,6 +17,7 @@ mod duplicates;
 pub use duplicates::{DuplicateCandidate, DuplicateCandidates};
 mod model;
 mod query;
+mod search;
 mod slice;
 mod writer;
 pub use model::*;
@@ -62,19 +63,63 @@ impl From<std::io::Error> for Error {
 /// process's connections; its in-process accounting races when two readers end together, leaking a
 /// WAL read lock until every connection to the file closes, so the log can never be cut. Paths used
 /// for comparisons (grants, `--static`) keep their canonical form; only SQLite opens use this.
-// ponytail: a plain path past MAX_PATH would fail to open, so such a path stays verbatim.
+// Retain the 200-unit budget, expressed in UTF-16, leaving room for SQLite's file suffixes.
+// Removing the prefix must not change Win32 name resolution (#398).
 pub fn sqlite_dir(dir: &Path) -> std::path::PathBuf {
-    let text = dir.to_string_lossy();
-    match text.strip_prefix(r"\\?\") {
-        Some(rest)
-            if rest.len() < 200
-                && rest.as_bytes()[0].is_ascii_alphabetic()
-                && rest.get(1..3) == Some(r":\") =>
-        {
-            rest.into()
-        }
-        _ => dir.into(),
+    let Some(text) = dir.to_str() else {
+        return dir.into();
+    };
+    let Some(rest) = text.strip_prefix(r"\\?\") else {
+        return dir.into();
+    };
+    if !rest.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+        || rest.get(1..3) != Some(r":\")
+        || rest.encode_utf16().take(200).count() >= 200
+    {
+        return dir.into();
     }
+    // Drive roots and a single trailing separator are safe; empty interior components are not.
+    let tail = &rest[3..];
+    let components = tail.strip_suffix('\\').unwrap_or(tail);
+    if !tail.is_empty() && !components.split('\\').all(ordinary_win32_component) {
+        return dir.into();
+    }
+    rest.into()
+}
+
+fn ordinary_win32_component(component: &str) -> bool {
+    if component.is_empty()
+        || component.ends_with(' ')
+        || component.ends_with('.')
+        || component
+            .chars()
+            .any(|c| c < ' ' || matches!(c, '<' | '>' | ':' | '"' | '/' | '|' | '?' | '*'))
+    {
+        return false;
+    }
+    // Win32 device aliases also apply before extensions, including COM/LPT superscript digits.
+    // https://learn.microsoft.com/windows/win32/fileio/naming-a-file
+    let stem = component
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    if matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) {
+        return false;
+    }
+    let port = stem
+        .strip_prefix("COM")
+        .or_else(|| stem.strip_prefix("LPT"));
+    !port.is_some_and(|suffix| {
+        let mut chars = suffix.chars();
+        // RtlIsDosDeviceName_U recognises COMn/LPTn for a digit, including zero.
+        // https://learn.microsoft.com/windows/win32/devnotes/rtlisdosdevicename_u
+        matches!(chars.next(), Some('0'..='9' | '¹' | '²' | '³')) && chars.next().is_none()
+    })
 }
 pub struct Catalog {
     dir: std::path::PathBuf,

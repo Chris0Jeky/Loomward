@@ -511,10 +511,72 @@ pub struct SearchRequest {
     pub extension: Option<Text<32>>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub min_bytes: Option<Bytes>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub max_bytes: Option<Bytes>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub modified_after: Option<Timestamp>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub modified_before: Option<Timestamp>,
     pub kind: SearchRequestKind,
     pub limit: Int<1, 100>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub cursor: Option<Cursor>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchPageIndexState {
+    Current,
+    Building,
+    Stale,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchHitMatchKind {
+    Exact,
+    Prefix,
+    Token,
+    Substring,
+    Filter,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SearchHit {
+    pub row: EntryRow,
+    pub root_id: RootId,
+    /// Root-relative path of the hit itself, display only.
+    pub path: DisplayPath,
+    pub match_kind: SearchHitMatchKind,
+    /// Half-open UTF-16 offsets into row.name; best effort and may be empty.
+    pub highlights: BoundedVec<BoundedVec<Int<0, 1024>, 2, 2>, 0, 8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SearchRootCoverage {
+    pub root_id: RootId,
+    pub scan_state: RootScanStateState,
+    pub coverage: CoverageState,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SearchPage {
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub generation: Option<Generation>,
+    pub hits: BoundedVec<SearchHit, 0, 100>,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub next_cursor: Option<Cursor>,
+    pub budget_hit: bool,
+    /// building: a searched root is being scanned; stale: a searched root is stale or failed.
+    pub index_state: SearchPageIndexState,
+    /// A searched root does not have complete coverage: no hit is not proof of absence.
+    pub partial: bool,
+    /// False when the text was too short for a trigram: inner substrings were not searched.
+    pub substring_searched: bool,
+    pub roots: BoundedVec<SearchRootCoverage, 0, 64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

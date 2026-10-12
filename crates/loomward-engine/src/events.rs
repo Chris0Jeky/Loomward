@@ -351,6 +351,33 @@ mod tests {
         assert_eq!(event(&mut s).data["reason"], "subscriber_overflow");
     }
     #[test]
+    fn overdue_heartbeat_does_not_restart_the_silence_window() {
+        let bus = Arc::new(Bus::new(DatasetClass::Synthetic, Duration::from_millis(10)));
+        let mut s = bus.subscribe(None);
+        assert_eq!(event(&mut s).event, EventName::StreamHello);
+        // Model a descheduled receiver without adding a sleep or an upper wall-clock bound.
+        s.last_delivery = Instant::now() - Duration::from_millis(20);
+        let silence_started = s.last_delivery;
+        let RecvOutcome::Event(heartbeat) = s.recv_timeout(Duration::ZERO) else {
+            panic!("an overdue heartbeat must be available without another wait")
+        };
+        assert_eq!(heartbeat.event, EventName::StreamHello);
+        heartbeat.validate().unwrap();
+        assert!(s.last_delivery.duration_since(silence_started) >= bus.interval);
+    }
+    #[test]
+    fn a_fresh_delivery_does_not_emit_a_heartbeat_on_a_zero_timeout() {
+        let bus = Arc::new(Bus::new(DatasetClass::Synthetic, Duration::from_secs(3600)));
+        let mut s = bus.subscribe(None);
+        assert_eq!(event(&mut s).event, EventName::StreamHello);
+        let delivered = s.last_delivery;
+        assert!(matches!(
+            s.recv_timeout(Duration::ZERO),
+            RecvOutcome::Timeout
+        ));
+        assert_eq!(s.last_delivery, delivered);
+    }
+    #[test]
     fn heartbeat_after_configurable_silence_and_epoch_change() {
         let bus = Arc::new(Bus::new(DatasetClass::Synthetic, Duration::from_millis(10)));
         let mut s = bus.subscribe(Some(EventResume {
@@ -359,9 +386,11 @@ mod tests {
         }));
         event(&mut s);
         assert_eq!(event(&mut s).data["reason"], "epoch_changed");
-        let now = Instant::now();
+        // The silence clock starts at delivery, not after this test consumes the lag notice.
+        // Scheduler delay before this point is already part of that silence (#439).
+        let silence_started = s.last_delivery;
         assert_eq!(event(&mut s).event, EventName::StreamHello);
-        assert!(now.elapsed() >= Duration::from_millis(9));
+        assert!(s.last_delivery.duration_since(silence_started) >= bus.interval);
         s.close();
         assert!(matches!(
             s.recv_timeout(Duration::ZERO),

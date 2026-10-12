@@ -297,6 +297,16 @@ impl<'a> WorkGuard<'a> {
         budget: u64,
         deadline: Option<std::time::Instant>,
     ) -> Result<Self> {
+        Self::with_soft_deadline(conn, budget, deadline, None)
+    }
+    /// As `new`, and reaching `soft` counts as an exhausted budget (a partial page, resumable),
+    /// where reaching `deadline` is the caller's hard stop.
+    pub(crate) fn with_soft_deadline(
+        conn: &'a Connection,
+        budget: u64,
+        deadline: Option<std::time::Instant>,
+        soft: Option<std::time::Instant>,
+    ) -> Result<Self> {
         let remaining = Arc::new(AtomicU64::new(budget));
         let hit = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let rem = remaining.clone();
@@ -306,6 +316,10 @@ impl<'a> WorkGuard<'a> {
             granularity,
             Some(move || {
                 if deadline.is_some_and(|at| std::time::Instant::now() >= at) {
+                    return true;
+                }
+                if soft.is_some_and(|at| std::time::Instant::now() >= at) {
+                    h.store(true, Ordering::Relaxed);
                     return true;
                 }
                 // A CAS loop rather than fetch_update, which newer stable toolchains deprecate.
@@ -329,7 +343,7 @@ impl<'a> WorkGuard<'a> {
         )?;
         Ok(Self { conn, hit })
     }
-    fn hit(&self) -> bool {
+    pub(crate) fn hit(&self) -> bool {
         self.hit.load(Ordering::Relaxed)
     }
 }
@@ -338,7 +352,7 @@ impl Drop for WorkGuard<'_> {
         let _ = self.conn.progress_handler(0, None::<fn() -> bool>);
     }
 }
-fn is_budget_interrupt(e: &Error) -> bool {
+pub(crate) fn is_budget_interrupt(e: &Error) -> bool {
     matches!(
         e,
         Error::Sql(rusqlite::Error::SqliteFailure(err, _))
@@ -443,68 +457,6 @@ impl Reader {
             let exclusions=flags(r.flags).into_iter().filter(|s|s!="hardlink_suspected").map(|code|Exclusion{explanation:code.replace('_'," "),code}).collect();
             let denied_capabilities=["file_move","file_delete","file_rename","content_read","teacher_disclosure","training"].into_iter().map(|capability|DeniedCapability{capability:capability.into(),reason:if r.flags&1!=0 && matches!(capability,"teacher_disclosure"|"training"){"sensitive_name"}else{"not_implemented_in_v03"}.into()}).collect();
             Ok(NodeDetail{row:r.entry(),root_id:format!("rt_{}",r.grant),volume_id:volume.map(|v|format!("vo_{v}")),display_path:DisplayPath::bounded(display_path,path.truncated),identity,timestamps:Timestamps{created_at:timestamp(r.created),modified_at:timestamp(r.modified),changed_at:timestamp(r.changed),accessed_at:timestamp(r.accessed),accessed_note:"Last access may be disabled or delayed; it is not usage evidence.".into()},subtree,threads:threads(conn,r.grant,&r.coverage(),r.flags)?,exclusions,denied_capabilities,memberships,suggestion:None})
-        })
-    }
-    pub fn search(&mut self, req: &SearchRequest) -> Result<SearchPage> {
-        let deadline = self.deadline;
-        if deadline.is_some_and(|at| std::time::Instant::now() >= at) {
-            return Err(Error::Cancelled);
-        }
-        if !(1..=100).contains(&req.limit)
-            || req.text.chars().count() > 256
-            || req
-                .extension
-                .as_ref()
-                .is_some_and(|s| s.chars().count() > 32)
-            || req.min_bytes.is_some_and(|v| v > i64::MAX as u64)
-            || !matches!(req.kind.as_str(), "any" | "file" | "dir")
-        {
-            return Err(Error::Invalid("search bounds"));
-        }
-        self.read(|conn|{
-            let revisions=revisions(conn,req.root_id)?;let catalog_rev=catalog_rev(conn)?;let catalog_instance=instance(conn)?;
-            if let Some(c)=&req.cursor {if c.text!=req.text || c.extension!=req.extension || c.min_bytes!=req.min_bytes || c.kind!=req.kind || c.root_id!=req.root_id {return Err(Error::Invalid("search cursor binding"));}
-if c.catalog_rev!=catalog_rev||c.catalog_instance!=catalog_instance{return Err(Error::StaleGeneration);}}
-            let guard=WorkGuard::new(conn,req.work_budget,deadline)?;
-            let mut rows=Vec::new();let mut hit=false;
-            let mut last_kind=req.cursor.as_ref().map_or(0,|c|c.last_kind);
-            let mut last_id=req.cursor.as_ref().map_or(0,|c|c.last_id);
-            let mut more=false;
-            let result=(||->Result<()> {
-                for (kind,table,columns,from) in [(0,"d",DIR_COLUMNS,"dir d"),(1,"f",FILE_COLUMNS,FILE_FROM)] {
-                    if (req.kind=="file"&&kind==0)||(req.kind=="dir"&&kind==1)||kind<last_kind{continue;}
-                    if kind!=last_kind {last_kind=kind;last_id=0;}
-                    loop {
-                        let ext_filter=if kind==0 {"?4 IS NULL"}else{"(?4 IS NULL OR e.ext=?4)"};
-                        let size=if kind==0 {"d.sub_logical"}else{"f.logical"};
-                        // Yield examined rows as well as matches so an interrupted scan can resume.
-                        let sql=format!("SELECT {columns},coalesce(g.state='active' AND d.id IN (SELECT id FROM visible_dir) AND (?1 IS NULL OR d.root_id=?1) AND instr(lower({table}.name),lower(?2))>0 AND {ext_filter} AND (?5 IS NULL OR {size}>=?5),0) matched FROM {from} JOIN root_grant g ON g.id=d.root_id WHERE {table}.id>?3 ORDER BY {table}.id LIMIT 128");
-                        let mut stmt=conn.prepare_cached(&sql)?;
-                        let mut iter=stmt.query(params![req.root_id,req.text,last_id,req.extension,req.min_bytes.map(|v|v as i64)])?;
-                        let mut examined=0;
-                        while let Some(row)=iter.next()? {
-                            last_id=row.get(0)?;examined+=1;
-                            if row.get::<_,bool>(23)? {let row=raw(row)?;if !row.valid{return Err(Error::RepairRequired);}rows.push(row);if rows.len()>req.limit{break;}}
-                        }
-                        if rows.len()>req.limit{more=true;break;}
-                        if examined<128{break;}
-                    }
-                    if more{break;}
-                }Ok(())
-            })();
-            if let Err(e) = result {
-                if guard.hit() && is_budget_interrupt(&e) {
-                    hit = true;
-                } else {
-                    return Err(e);
-                }
-            }
-            hit |= guard.hit();
-            drop(guard);
-            if more{rows.truncate(req.limit);if let Some(row)=rows.last(){(last_kind,last_id)=row_key(row);}}
-            let next_cursor=if more||hit {Some(SearchCursor{catalog_rev,catalog_instance:catalog_instance.clone(),text:req.text.clone(),extension:req.extension.clone(),min_bytes:req.min_bytes,kind:req.kind.clone(),root_id:req.root_id,last_kind,last_id})}else{None};
-            let mut paths=HashMap::new();let mut items=Vec::new();for r in rows {let mut row=r.entry();if let Some(parent)=r.parent {let p=if let Some(p)=paths.get(&parent){p}else{paths.insert(parent,node_path(conn,NodeKey::Dir(parent))?);paths.get(&parent).unwrap()};row.location_hint=Some(DisplayPath::bounded(p.ancestors.iter().map(|p|p.name.as_str()).collect::<Vec<_>>().join("\\"),p.truncated));}items.push(row);}
-            Ok(SearchPage{anchor:None,generation:if revisions.len()==1{revisions[0].1.map(|g|g.to_string())}else{None},items,next_cursor,total:None,budget_hit:hit})
         })
     }
     pub fn breakdown(
@@ -734,9 +686,6 @@ pub(crate) fn instance(conn: &Connection) -> Result<String> {
             r.get(0)
         })?,
     )
-}
-fn catalog_rev(conn: &Connection) -> Result<i64> {
-    Ok(conn.query_row("SELECT catalog_rev FROM revision", [], |r| r.get(0))?)
 }
 fn durable_quality(conn: &Connection, r: &Raw) -> Result<String> {
     let fs: Option<String> = conn.query_row(

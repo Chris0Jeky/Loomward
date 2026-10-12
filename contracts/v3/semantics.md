@@ -224,14 +224,27 @@ Rules:
   is `invalid_request`. A mismatch is `stale_generation` with `detail.reason = "state_rev_changed"` and nothing
   is written (section 3, step 3).
 - A cursor binds the command, the complete filter set, the sort, the basis, the tie-breaker (row ID), the
-  catalogue instance, the session, and revisions: `subtree_rev` of the anchor for `tree.children`; `catalog_rev`
-  for `search.query`; **`catalog_rev` and `state_rev` for `collections.members` and `learning.queue`**, because
+  catalogue instance, the session, and revisions: `subtree_rev` of the anchor for `tree.children`; none for
+  `search.query`, whose cursor is a keyset position in the live name index (below); **`catalog_rev` and `state_rev` for `collections.members` and `learning.queue`**, because
   their pages depend on `state.db` data (membership, feedback) that changes without a catalogue commit. If a
   bound revision changed, the next page is `stale_generation`; clients restart from the first page.
 - While a root is being scanned its `subtree_rev` changes continuously, so paging inside it will go stale. The UI
   SHOULD page from slices (which are snapshots) during scans and use cursors once the scan finishes.
 - A page that stops on its work budget returns the items found so far, `budget_hit: true`, and a cursor that
   resumes the scan after the last examined row (not the last returned row).
+- `search.query` (LW-113, owner-local and grant-scoped; no MCP or Ask exposure before LW-067) reads a name index
+  that every catalogue commit keeps exact in the same transaction. Hits come in tiers, each tier folders first and
+  then files in index-key order: `exact` (the whole name, or the name up to a dot), `prefix`, `token` (after a
+  separator), `substring`, then for several words `token` (every word at a word start) and `substring` (every word
+  anywhere). Matching is case-insensitive under SQLite's Unicode case fold. An empty `text` lists by filters
+  only, `filter` hits, one extension largest first. Its cursor binds the filters and the catalogue instance but
+  no revision, so watcher commits do not stale a paging user; a row changed between pages may be missed or
+  shown twice. Only active grants are searched, a revoked root never appears, and a forgotten root leaves no
+  index entry. `index_state` is `building` while a searched root is scanned (a first scan publishes at its end),
+  `stale` when one is stale or failed; `partial` is true when any searched root lacks complete coverage, so an
+  empty page is not proof of absence; `substring_searched` is false when the text, or a word of it, was too
+  short for a trigram (under three characters), and then only whole names, name starts and word starts were
+  searched.
 - Node IDs are bound to the session and catalogue instance and carry the row's incarnation. A deleted row's ID
   is `not_found`; IDs are never reissued for another row.
 

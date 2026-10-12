@@ -17,7 +17,7 @@ duplicate/unused-file inspection, backups, and understandable process/RAM contro
 ruling: **meaning, residency and permission are separate systems.**
 
 Python reference app (a frozen test oracle since q-40; it changes only to keep cross-language fixtures aligned), Rust native workspace (first compiled and
-tested here on 2026-10-09; the Tauri 2 desktop shell first built on 2026-10-10, #164), MCP read-only reference, 112-task
+tested here on 2026-10-09; the Tauri 2 desktop shell first built on 2026-10-10, #164), MCP read-only reference, 130-task
 `LW-*` backlog.
 
 ## Where the ChatGPT material stands

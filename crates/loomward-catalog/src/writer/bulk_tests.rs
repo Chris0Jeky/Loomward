@@ -321,10 +321,14 @@ fn dump(path: &Path, catalog: &crate::Catalog, roots: &[(i64, i64)]) -> Vec<Stri
                     text: text.into(),
                     extension: None,
                     min_bytes: None,
+                    max_bytes: None,
+                    modified_after: None,
+                    modified_before: None,
                     kind: "any".into(),
                     limit: 100,
                     cursor: None,
                     work_budget: 1_000_000,
+                    time_budget: None,
                 })
             ));
         }
