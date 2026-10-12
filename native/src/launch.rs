@@ -165,6 +165,18 @@ impl ViewService for Locked {
     }
 }
 
+/// The state directory a launch uses, or `None` for `--fixtures` (no state). Holds the update
+/// prefs as well (`updates.rs`).
+pub fn state_dir(launch: &Launch, local_app_data: Option<OsString>) -> Option<PathBuf> {
+    if launch.fixtures {
+        return None;
+    }
+    match &launch.state_dir {
+        Some(dir) => Some(dir.clone()),
+        None => default_state_dir(local_app_data, launch.dataset).ok(),
+    }
+}
+
 /// Opens the service the window hosts. `local_app_data` is `%LOCALAPPDATA%` (injected for tests);
 /// it is read only when no `--state-dir` was given.
 pub fn open(

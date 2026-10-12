@@ -1,4 +1,4 @@
-// Declares the two app commands to the ACL, so each needs an explicit permission and the
+// Declares the app commands to the ACL, so each needs an explicit permission and the
 // capability file (capabilities/default.json) is the whole list of what the webview may invoke.
 //
 // The common-controls v6 manifest (Tauri's own) is linked into every target, test binaries
@@ -16,7 +16,11 @@ fn main() {
     tauri_build::try_build(
         tauri_build::Attributes::new()
             .windows_attributes(windows)
-            .app_manifest(tauri_build::AppManifest::new().commands(&["lw_call", "lw_events"])),
+            .app_manifest(tauri_build::AppManifest::new().commands(&[
+                "lw_call",
+                "lw_events",
+                "lw_update",
+            ])),
     )
     .expect("tauri-build failed");
 }
