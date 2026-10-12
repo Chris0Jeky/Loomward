@@ -1281,6 +1281,9 @@ fn hardening_expired_sql_reads_do_not_start_or_resume() {
         text: "report".into(),
         extension: None,
         min_bytes: None,
+        max_bytes: None,
+        modified_after: None,
+        modified_before: None,
         kind: "any".into(),
         limit: 10,
         cursor: None,
@@ -1315,7 +1318,7 @@ fn hardening_expired_sql_reads_do_not_start_or_resume() {
         matches!(expired.reader(&svc.inner.catalog), Err(e) if e.code == ErrorCode::DeadlineExceeded)
     );
     reader.set_deadline(Instant::now() + Duration::from_secs(10));
-    assert!(!reader.search(&req).unwrap().items.is_empty());
+    assert!(!reader.search(&req).unwrap().hits.is_empty());
     assert!(!reader
         .breakdown(
             dir,
@@ -1718,7 +1721,7 @@ fn every_command_answers_a_complete_envelope_and_core_reads_serve_the_catalogue(
         ),
         (
             "search.query",
-            json!({"root_id": svc.inner.root_id(root), "text": "report", "extension": null, "min_bytes": null, "kind": "file", "limit": 10, "cursor": null}),
+            json!({"root_id": svc.inner.root_id(root), "text": "report", "extension": null, "min_bytes": null, "max_bytes": null, "modified_after": null, "modified_before": null, "kind": "file", "limit": 10, "cursor": null}),
         ),
         (
             "tree.slice",
@@ -1735,7 +1738,8 @@ fn every_command_answers_a_complete_envelope_and_core_reads_serve_the_catalogue(
         let (result, meta) = ok(command, call(&svc, command, payload));
         assert_eq!(meta.dataset_class, DatasetClass::Synthetic);
         if command == "search.query" {
-            assert_eq!(result["items"].as_array().unwrap().len(), 5);
+            assert_eq!(result["hits"].as_array().unwrap().len(), 5);
+            assert_eq!(result["index_state"], "current");
         }
         if command == "roots.list" {
             let r = &result["roots"][0];
@@ -1991,12 +1995,12 @@ fn cursors_go_stale_when_their_revision_moves_and_never_cross_requests() {
         (e.code, reason(&e)),
         (ErrorCode::StaleGeneration, Some("cursor_expired"))
     );
-    // Search pages are bound to catalog_rev.
+    // Search pages are a keyset over the live index (LW-113): a commit does not stale them.
     let search = |cursor: Value| {
         call(
             &svc,
             "search.query",
-            json!({"root_id": null, "text": "report", "extension": null, "min_bytes": null, "kind": "any", "limit": 2, "cursor": cursor}),
+            json!({"root_id": null, "text": "report", "extension": null, "min_bytes": null, "max_bytes": null, "modified_after": null, "modified_before": null, "kind": "any", "limit": 2, "cursor": cursor}),
         )
     };
     let (s1, _) = ok("search.query", search(Value::Null));
@@ -2017,7 +2021,8 @@ fn cursors_go_stale_when_their_revision_moves_and_never_cross_requests() {
         err(children(next, "size_desc")).code,
         ErrorCode::StaleGeneration
     );
-    assert_eq!(err(search(s_next)).code, ErrorCode::StaleGeneration);
+    let (s2, _) = ok("search.query", search(s_next));
+    assert!(s2["hits"].as_array().is_some_and(|h| !h.is_empty()));
 }
 
 #[test]

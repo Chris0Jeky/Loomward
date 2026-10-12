@@ -1049,15 +1049,61 @@
     "SearchRequest": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["root_id", "text", "extension", "min_bytes", "kind", "limit", "cursor"],
+      "required": ["root_id", "text", "extension", "min_bytes", "max_bytes", "modified_after", "modified_before", "kind", "limit", "cursor"],
+      "$comment": "Owner-local and grant-scoped (LW-113): only active grants are searched. An empty text lists by filters only. Both size and time bounds are inclusive; an entry without a modified time never matches a time bound.",
       "properties": {
         "root_id": { "anyOf": [{ "$ref": "#/$defs/RootId" }, { "type": "null" }] },
         "text": { "type": "string", "maxLength": 256 },
         "extension": { "type": ["string", "null"], "maxLength": 32 },
         "min_bytes": { "$ref": "#/$defs/NullableBytes" },
+        "max_bytes": { "$ref": "#/$defs/NullableBytes" },
+        "modified_after": { "$ref": "#/$defs/NullableTimestamp" },
+        "modified_before": { "$ref": "#/$defs/NullableTimestamp" },
         "kind": { "enum": ["any", "file", "dir"] },
         "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
         "cursor": { "anyOf": [{ "$ref": "#/$defs/Cursor" }, { "type": "null" }] }
+      }
+    },
+    "SearchPage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generation", "hits", "next_cursor", "budget_hit", "index_state", "partial", "substring_searched", "roots"],
+      "properties": {
+        "generation": { "$ref": "#/$defs/NullableGeneration" },
+        "hits": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/SearchHit" } },
+        "next_cursor": { "anyOf": [{ "$ref": "#/$defs/Cursor" }, { "type": "null" }] },
+        "budget_hit": { "type": "boolean" },
+        "index_state": { "enum": ["current", "building", "stale"], "$comment": "building: a searched root is being scanned; stale: a searched root is stale or failed. The index itself follows every catalogue commit." },
+        "partial": { "type": "boolean", "$comment": "A searched root does not have complete coverage: no hit is not proof of absence." },
+        "substring_searched": { "type": "boolean", "$comment": "False for texts too short for a trigram (or with a word under three characters): only whole names, name starts and word starts were searched." },
+        "roots": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/SearchRootCoverage" } }
+      }
+    },
+    "SearchHit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["row", "root_id", "path", "match_kind", "highlights"],
+      "properties": {
+        "row": { "$ref": "#/$defs/EntryRow" },
+        "root_id": { "$ref": "#/$defs/RootId" },
+        "path": { "$ref": "#/$defs/DisplayPath", "$comment": "Root-relative path of the hit itself, display only." },
+        "match_kind": { "enum": ["exact", "prefix", "token", "substring", "filter"] },
+        "highlights": {
+          "type": "array",
+          "maxItems": 8,
+          "items": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "integer", "minimum": 0, "maximum": 1024 } },
+          "$comment": "Half-open UTF-16 offsets into row.name; best effort and may be empty."
+        }
+      }
+    },
+    "SearchRootCoverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root_id", "scan_state", "coverage"],
+      "properties": {
+        "root_id": { "$ref": "#/$defs/RootId" },
+        "scan_state": { "enum": ["never_scanned", "scanning", "complete", "partial", "stale", "failed"] },
+        "coverage": { "$ref": "#/$defs/CoverageState" }
       }
     },
     "BreakdownRequest": {

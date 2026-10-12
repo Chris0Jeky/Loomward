@@ -518,6 +518,16 @@ mod tests {
         assert_eq!(phrase("a\"b"), "\"a\"\"b\"");
     }
     #[test]
+    fn filetime_inverts_timestamp() {
+        let ft = filetime("2026-10-09T12:00:00Z").unwrap();
+        assert_eq!(
+            crate::model::timestamp(Some(ft)).unwrap(),
+            "2026-10-09T12:00:00Z"
+        );
+        assert_eq!(filetime("1601-01-01T00:00:00Z"), Some(0));
+        assert_eq!(filetime("not a time"), None);
+    }
+    #[test]
     fn highlights_are_utf16_offsets_of_the_folded_match() {
         assert_eq!(highlights("Annual Report.pdf", "report", 2), vec![[7, 13]]);
         assert_eq!(highlights("REPORT.pdf", "report", 0), vec![[0, 6]]);

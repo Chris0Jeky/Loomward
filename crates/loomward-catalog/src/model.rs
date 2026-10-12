@@ -589,6 +589,15 @@ pub(crate) fn timestamp(ft: Option<i64>) -> Option<String> {
             .ok()
     })
 }
+/// The FILETIME of an RFC 3339 timestamp, the inverse of `timestamp`; None when unparseable or
+/// outside the FILETIME range.
+pub fn filetime(rfc3339: &str) -> Option<i64> {
+    let t = time::OffsetDateTime::parse(rfc3339, &time::format_description::well_known::Rfc3339)
+        .ok()?;
+    i64::try_from(t.unix_timestamp_nanos() / 100 + 116_444_736_000_000_000)
+        .ok()
+        .filter(|ft| *ft >= 0)
+}
 pub(crate) fn flags(bits: u32) -> Vec<String> {
     FLAG_NAMES
         .iter()

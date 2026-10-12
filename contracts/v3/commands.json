@@ -37,7 +37,7 @@
     "tree.path":                  { "request": "NodeRefRequest",            "result": "NodePath",              "adapters": ["tauri", "http"], "wave": 2, "effects": "none" },
     "node.inspect":               { "request": "NodeRefRequest",            "result": "NodeDetail",            "adapters": ["tauri", "http"], "wave": 2, "effects": "none" },
     "threads.meaning":            { "request": "MeaningRequest",            "result": "MeaningResult",         "adapters": ["tauri", "http"], "wave": 3, "effects": "none" },
-    "search.query":               { "request": "SearchRequest",             "result": "EntryPage",             "adapters": ["tauri", "http"], "wave": 2, "effects": "none" },
+    "search.query":               { "request": "SearchRequest",             "result": "SearchPage",            "adapters": ["tauri", "http"], "wave": 2, "effects": "none", "note": "Owner-local name index over active grants (LW-113); not exposed to MCP or Ask until LW-067. The cursor binds the catalogue instance and filters, not catalog_rev (semantics.md section 5)." },
     "stats.breakdown":            { "request": "BreakdownRequest",          "result": "Breakdown",             "adapters": ["tauri", "http"], "wave": 2, "effects": "none" },
     "taxonomy.get":               { "request": "EmptyRequest",              "result": "Taxonomy",              "adapters": ["tauri", "http"], "wave": 3, "effects": "none" },
     "feedback.record":            { "request": "FeedbackRequest",           "result": "FeedbackResult",        "adapters": ["tauri", "http"], "wave": 3, "effects": "none", "events": ["learning.updated"] },

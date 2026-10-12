@@ -3,6 +3,9 @@
   "text": "report",
   "extension": "docx",
   "min_bytes": "1024",
+  "max_bytes": null,
+  "modified_after": "2026-01-01T00:00:00Z",
+  "modified_before": null,
   "kind": "file",
   "limit": 50,
   "cursor": null
