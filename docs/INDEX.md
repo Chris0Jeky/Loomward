@@ -1,6 +1,6 @@
 # Documentation map
 
-Chapters 00-22 preserve the initial project. Chapters 23-40 expand it. Start with 23 and 37 for the current design/status. The thesis is 24, executable MCP scope 28, use cases 33 and local-agent lanes 40.
+Chapters 00-22 preserve the initial project. Chapters 23-40 expand it. Start with 23 and 37 for the current design/status. The research thesis is 24, the product thesis 44, executable MCP scope 28, use cases 33 and local-agent lanes 40.
 
 - [00: Loomward: design brief](00-design-brief.md)
 - [01: Loomward first prototype implementation plan](01-implementation-plan.md)
@@ -46,5 +46,6 @@ Chapters 00-22 preserve the initial project. Chapters 23-40 expand it. Start wit
 - [41: Loomward v0.3 architecture: the "Woven" programme](41-v03-architecture.md)
 - [42: v0.3 architecture decision records](42-v03-adrs.md)
 - [43: v0.3 parallel implementation plan](43-v03-lanes.md)
+- [44: Product thesis: workspace memory, honest by construction, agent-ready](44-product-thesis.md)
 
 [Expansion research references](EXPANSION-SOURCES.md) · [Backlog](../backlog/INDEX.md) · [Contract index](../contracts/v2/README.md) · [Handoff](../handoff/START-HERE.md)
