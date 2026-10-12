@@ -67,5 +67,4 @@ from loomward.inventory import features_for
 model=Student().fit(seed)
 data['demo_model']={'model_id':model.model_id,'predictions':{f['id']:model.predict(features_for(f)) for f in files if 'sensitive' not in f['flags']}}
 (ROOT/'fixtures/demo.json').write_text(json.dumps(data,indent=2)+'\n',encoding='utf-8')
-(ROOT/'ui/demo-data.js').write_text('window.LOOMWARD_DEMO = '+json.dumps(data)+';\n',encoding='utf-8')
 print('Generated synthetic demo fixtures.')

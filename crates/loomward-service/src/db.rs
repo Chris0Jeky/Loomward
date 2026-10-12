@@ -102,7 +102,7 @@ pub struct RootRow {
     pub revoked_at_ns: Option<i64>,
     pub dir: Option<i64>,
     pub finished_at_ns: Option<i64>,
-    /// The root directory's subtree is complete: nothing excluded, denied, failed or skipped.
+    /// Complete with a current aggregate witness; a retained sub_complete bit alone is not proof.
     pub subtree_complete: bool,
 }
 
@@ -123,7 +123,7 @@ fn rows(conn: &Connection, only: Option<i64>, limit: i64) -> Sql<Vec<RootRow>> {
                 g.granted_at_ns,g.revoked_at_ns,
                 (SELECT id FROM main.dir WHERE root_id=r.id AND parent_id IS NULL),
                 (SELECT max(finished_at_ns) FROM main.scan_run WHERE root_id=r.id AND state='completed'),
-                coalesce((SELECT sub_complete FROM main.dir WHERE root_id=r.id AND parent_id IS NULL),0)
+                coalesce((SELECT sub_complete AND agg_valid_rev>=dirty_rev FROM main.dir WHERE root_id=r.id AND parent_id IS NULL),0)
          FROM main.root r JOIN st.root_grant g ON g.id=r.grant_id
          WHERE (?1 IS NULL OR r.id=?1) AND g.id NOT IN (SELECT grant_id FROM st.root_forgotten) ORDER BY g.state='active' DESC,r.id DESC LIMIT ?2",
     )?;

@@ -7,7 +7,6 @@ import os
 import platform
 import shutil
 import sys
-import webbrowser
 from pathlib import Path
 from typing import Any
 from . import __version__
@@ -52,14 +51,13 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--version', action='version', version=__version__)
     sub = p.add_subparsers(dest='command', required=True)
     for name in ('demo', 'serve'):
-        s = sub.add_parser(name, help='Run the loopback reference UI; demo uses synthetic data')
+        s = sub.add_parser(name, help='Run the loopback reference API (no pages; the legacy browser UI is retired); demo uses synthetic data')
         if name == 'serve':
             s.add_argument('--root', required=True, help='Explicit metadata-scan root; no implicit whole-disk scan')
             s.add_argument('--processes', action='store_true', help='Permit optional read-only process inspection')
             s.add_argument('--max-entries', type=int, default=50_000)
         s.add_argument('--state-dir', type=Path, default=None)
         s.add_argument('--port', type=int, default=8765)
-        s.add_argument('--open', action='store_true', help='Open the printed local session in the default browser')
     s=sub.add_parser('doctor', help='Print capability and tool availability, without a file scan');s.add_argument('--output')
     s=sub.add_parser('scan', help='Read bounded metadata only');s.add_argument('root');s.add_argument('--max-entries',type=int,default=50_000);s.add_argument('--output')
     s=sub.add_parser('duplicates', help='Explicitly read contents within a budget; never delete')
@@ -89,10 +87,9 @@ def main(argv: list[str] | None = None) -> int:
                     max_entries=getattr(args,'max_entries',50_000))
             server=Server(('127.0.0.1',args.port),app)
             url=server.origin+'/#token='+server.token
-            print('Loomward reference UI. '+('SYNTHETIC DEMO.' if demo else 'EXPLICIT ROOT OBSERVATION.'))
+            print('Loomward reference API (frozen test oracle, no UI). '+('SYNTHETIC DEMO.' if demo else 'EXPLICIT ROOT OBSERVATION.'))
             print('No user-file or process mutation endpoints. Ctrl+C stops the local session.')
             print(url,flush=True)
-            if args.open:webbrowser.open(url)
             try:server.serve_forever()
             except KeyboardInterrupt:pass
             finally:server.server_close()

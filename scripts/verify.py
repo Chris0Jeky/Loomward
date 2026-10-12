@@ -2,8 +2,6 @@
 
 Flags:
   --require-native  fail the run when cargo is missing
-  --ui              also run the Chromium bridged-UI integration (scripts/test_ui.py)
-  --browser PATH    Chromium executable for --ui
   --app             also run the Svelte app in app/: check, unit tests, build, then the
                     Playwright e2e (scripts/test_app.py), stopping at the first failure;
                     reports UNVERIFIED when Node/npm or app/node_modules is missing, and
@@ -43,21 +41,14 @@ def run_app(legs,run,env):
         print('PASS '+name,flush=True)
     return True
 def main(argv=None,*,which=shutil.which,run=subprocess.run,isdir=os.path.isdir,e2e_gap=playwright_gap):
-    p=argparse.ArgumentParser();p.add_argument('--require-native',action='store_true');p.add_argument('--ui',action='store_true');p.add_argument('--browser');p.add_argument('--app',action='store_true',help='also run the Svelte app checks, build and Playwright e2e (app/)');a=p.parse_args(argv)
+    p=argparse.ArgumentParser();p.add_argument('--require-native',action='store_true');p.add_argument('--app',action='store_true',help='also run the Svelte app checks, build and Playwright e2e (app/)');a=p.parse_args(argv)
     env=dict(os.environ,PYTHONPATH=str(ROOT/'python'));failed=False
     commands=[('Python suite',[sys.executable,'-m','unittest','discover','-s','tests'])]
-    if which('node'):
-        commands.extend([('JavaScript app syntax',['node','--check','ui/app.js']),
-                         ('JavaScript expansion syntax',['node','--check','ui/expansion.js']),
-                         ('JavaScript boundary and Python parity fixtures',['node','tests/test_ui_logic.mjs'])])
-    else:print('SKIP JavaScript syntax: Node is missing',flush=True)
     if which('cargo'):
         commands.extend([('Rust format',['cargo','fmt','--all','--','--check']),('Rust unit tests',['cargo','test','--workspace']),('Rust lint',['cargo','clippy','--workspace','--all-targets','--','-D','warnings'])])
     else:
         print('UNVERIFIED Rust: cargo is missing; no native success is claimed',flush=True)
         failed=a.require_native
-    if a.ui:
-        c=[sys.executable,'scripts/test_ui.py'];c+=['--browser',a.browser] if a.browser else [];commands.append(('Chromium bridged-UI integration',c))
     legs,notes=app_legs(ROOT,which,isdir,e2e_gap) if a.app else ([],[])
     for line in notes:print(line,flush=True)
     for name,command in commands:

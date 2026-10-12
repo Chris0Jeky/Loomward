@@ -1,0 +1,48 @@
+{
+    "##": "Placeholder until the owner approves publishing the Scoop channel: version and hash below are filled by `checkver -u -f -Version <v>` (see packaging/scoop/README.md); installing this placeholder fails closed (404/hash).",
+    "version": "0.0.0-unreleased",
+    "description": "Local-first Windows workspace, storage and resource companion (unsigned preview): read-only file inventory, personal learning, understandable resource view",
+    "homepage": "https://github.com/Chris0Jeky/Loomward",
+    "license": "AGPL-3.0-only",
+    "notes": [
+        "Loomward is an UNSIGNED preview: Windows SmartScreen may warn on first run.",
+        "Its state lives in %LOCALAPPDATA%\\Loomward Data\\v3\\, outside the Scoop folder, so `scoop uninstall loomward` keeps it; delete that folder to remove all state.",
+        "Needs the Microsoft WebView2 runtime (built into Windows 11 and current Windows 10). Install it with `scoop install extras/webview2` if the window stays blank."
+    ],
+    "suggest": {
+        "WebView2 Runtime": "extras/webview2"
+    },
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/Chris0Jeky/Loomward/releases/download/v0.0.0-unreleased/Loomward_0.0.0-unreleased_x64-setup.exe#/dl.7z",
+            "hash": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+    },
+    "pre_install": [
+        "# Extract-only install: drop the NSIS plumbing 7-Zip unpacks next to the app.",
+        "Get-ChildItem $dir -Force | Where-Object { $_.Name -like '$*' -or $_.Name -eq '[NSIS].nsi' } | Remove-Item -Recurse -Force",
+        "# Fail closed on an unexpected installer layout instead of leaving a broken app.",
+        "if (!(Test-Path \"$dir\\loomward-desktop.exe\") -or !(Test-Path \"$dir\\contracts\\v3\\examples\\commands\")) { throw 'Unexpected Loomward installer layout (loomward-desktop.exe or contracts/v3/examples missing).' }"
+    ],
+    "shortcuts": [
+        [
+            "loomward-desktop.exe",
+            "Loomward"
+        ]
+    ],
+    "checkver": {
+        "url": "https://api.github.com/repos/Chris0Jeky/Loomward/releases",
+        "jsonpath": "$[0].tag_name",
+        "regex": "v(\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.]+)?)"
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/Chris0Jeky/Loomward/releases/download/v$version/Loomward_$version_x64-setup.exe#/dl.7z",
+                "hash": {
+                    "url": "$baseurl/SHA256SUMS.txt"
+                }
+            }
+        }
+    }
+}
