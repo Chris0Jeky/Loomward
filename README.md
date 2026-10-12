@@ -288,9 +288,9 @@ in [docs/41](docs/41-v03-architecture.md) section 15 are hypotheses, not results
   [docs/16](docs/16-implementation-status.md); [docs/INDEX.md](docs/INDEX.md) maps every chapter.
 - **Agents:** [AGENTS.md](AGENTS.md) is the one baseline for every agent runtime, with the product
   invariants (no effects, no silent reach, honest unknowns and more). Read it before changing anything.
-- **Backlog:** 112 `LW-*` items (`backlog/issues.json`; [backlog/INDEX.md](backlog/INDEX.md) lists
-  the first 100). `LW-` IDs are not GitHub numbers; [backlog/github-issues.json](backlog/github-issues.json)
-  maps them (LW-001 to LW-100 are #4 to #105, LW-101 to LW-112 are #120 to #131).
+- **Backlog:** 130 `LW-*` items (`backlog/issues.json`; [backlog/INDEX.md](backlog/INDEX.md) lists
+  them). `LW-` IDs are not GitHub numbers; [backlog/github-issues.json](backlog/github-issues.json)
+  maps them (LW-001 to LW-100 are #4 to #105, LW-101 to LW-112 are #120 to #131, LW-113 to LW-130 are #404 to #421).
 - **Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md). Fixtures here
   must be synthetic. Open owner decisions: [HUMAN_TODO.md](HUMAN_TODO.md).
 
