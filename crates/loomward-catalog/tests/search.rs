@@ -555,3 +555,154 @@ fn a_spent_time_budget_returns_a_partial_page_that_resumes() {
     assert!(cut > 0, "a zero budget must cut the page");
     assert_eq!(paged, all);
 }
+
+/// The index holds exactly one entry per non-root folder and per file, keyed as the triggers key them.
+fn assert_index_parity(lab: &Lab) {
+    let db = Connection::open(lab.temp.path().join("catalog.db")).unwrap();
+    let keys = |sql: &str| -> Vec<i64> {
+        let mut s = db.prepare(sql).unwrap();
+        let mut v: Vec<i64> = s
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        v.sort_unstable();
+        v
+    };
+    assert_eq!(
+        keys("SELECT rowid FROM search_name"),
+        keys("SELECT id FROM dir WHERE parent_id IS NOT NULL UNION ALL SELECT id+281474976710656 FROM file"),
+        "search index and catalogue rows differ"
+    );
+}
+
+/// Root → `outer` → `middle` → `inner`, a file at each level, all named `nest-*`.
+fn nested(lab: &mut Lab, r: &Root) -> i64 {
+    let run = begin(lab, r, "full");
+    let top = obs(lab, "nest-top.txt", 1);
+    let outer = obs(lab, "nest-outer", 0);
+    let keep = obs(lab, "nest-keep", 0);
+    list(lab, run, r.dir, vec![top], vec![outer, keep]);
+    let keep = child(lab, r.dir, "nest-keep");
+    list(lab, run, keep, vec![], vec![]);
+    let mut parent = child(lab, r.dir, "nest-outer");
+    for level in ["middle", "inner"] {
+        let f = obs(lab, &format!("nest-{level}-file.txt"), 1);
+        let d = obs(lab, &format!("nest-{level}"), 0);
+        list(lab, run, parent, vec![f], vec![d]);
+        parent = child(lab, parent, &format!("nest-{level}"));
+    }
+    let f = obs(lab, "nest-deepest.txt", 1);
+    list(lab, run, parent, vec![f], vec![]);
+    end(lab, run);
+    run
+}
+
+#[test]
+fn a_grandchild_of_a_vanished_folder_is_hidden_and_a_full_run_deletes_the_subtree_from_the_index() {
+    let mut lab = lab();
+    let r = register(&lab, "vol", "Alpha", 1);
+    nested(&mut lab, &r);
+    assert_index_parity(&lab);
+    assert_eq!(search(&lab, &req("nest")).hits.len(), 8);
+    // A full rescan lists the root without `nest-outer`: it goes absent_pending at once, and only
+    // it does, so everything below it is hidden through its ancestor alone.
+    let run = begin(&lab, &r, "full");
+    let top = Connection::open(lab.temp.path().join("catalog.db"))
+        .unwrap()
+        .query_row(
+            "SELECT created_ft FROM file WHERE name='nest-top.txt'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    let mut keep_file = Observation::file("nest-top.txt", 1, Some(1));
+    keep_file.file_id = Some([(top as u32).to_le_bytes().to_vec(), vec![7; 12]].concat());
+    keep_file.created_ft = Some(top);
+    keep_file.extension = Some("txt".into());
+    keep_file.family = "data".into();
+    let mut keep_dir = Observation::file("nest-keep", 0, Some(0));
+    let kid: i64 = Connection::open(lab.temp.path().join("catalog.db"))
+        .unwrap()
+        .query_row(
+            "SELECT created_ft FROM dir WHERE name='nest-keep'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    keep_dir.file_id = Some([(kid as u32).to_le_bytes().to_vec(), vec![7; 12]].concat());
+    keep_dir.created_ft = Some(kid);
+    list(&lab, run, r.dir, vec![keep_file], vec![keep_dir]);
+    let keep = child(&lab, r.dir, "nest-keep");
+    list(&lab, run, keep, vec![], vec![]);
+    let state = |name: &str| -> String {
+        Connection::open(lab.temp.path().join("catalog.db"))
+            .unwrap()
+            .query_row(
+                "SELECT listing_state FROM dir WHERE name=?1",
+                [name],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(state("nest-outer"), "absent_pending");
+    assert_ne!(
+        state("nest-inner"),
+        "absent_pending",
+        "the fixture must hide by ancestry"
+    );
+    // Files only: mid-run, a folder hit's aggregates are unsettled and the page asks for a repair.
+    let mut files = req("nest");
+    files.kind = "file".into();
+    assert_eq!(
+        names(&search(&lab, &files)),
+        pairs(&[("prefix", "nest-top.txt")]),
+        "nothing under the vanished folder, however deep"
+    );
+    end(&lab, run);
+    // EndRun's delete cascades through dir and file foreign keys: the triggers must follow it.
+    let gone: i64 = Connection::open(lab.temp.path().join("catalog.db"))
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM dir WHERE name LIKE 'nest-%' AND name NOT IN ('nest-keep')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(gone, 0, "the full run deleted the vanished subtree");
+    assert_index_parity(&lab);
+}
+
+#[test]
+fn forgetting_a_multi_level_root_leaves_no_index_entry_for_it() {
+    let mut lab = lab();
+    let a = register(&lab, "vol", "Alpha", 1);
+    let b = register(&lab, "vol", "Beta", 2);
+    nested(&mut lab, &a);
+    let run = begin(&lab, &b, "full");
+    let f = obs(&mut lab, "beta-only.txt", 1);
+    list(&lab, run, b.dir, vec![f], vec![]);
+    end(&lab, run);
+    assert_index_parity(&lab);
+    lab.c
+        .writer()
+        .call(WriteCommand::RevokeGrant {
+            grant_id: a.grant,
+            revoked_at_ns: 9,
+        })
+        .unwrap();
+    lab.c
+        .writer()
+        .call(WriteCommand::ForgetGrant {
+            grant_id: a.grant,
+            forgotten_at_ns: 10,
+            expected_state_rev: None,
+        })
+        .unwrap();
+    assert_index_parity(&lab);
+    let left: i64 = Connection::open(lab.temp.path().join("catalog.db"))
+        .unwrap()
+        .query_row("SELECT count(*) FROM search_name", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(left, 1, "only Beta's file is indexed");
+}
