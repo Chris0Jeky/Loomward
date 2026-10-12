@@ -4,7 +4,8 @@ description: >-
   release-assets/ (installer, SHA256SUMS.txt and, when signed, the updater .sig), then installs
   silently, self-tests and starts the installed app, and uninstalls checking the state survives.
   Shared by release.yml and nightly.yml. Signs updater artifacts only when the job's env carries
-  TAURI_SIGNING_PRIVATE_KEY (and TAURI_SIGNING_PRIVATE_KEY_PASSWORD); otherwise it logs a notice.
+  TAURI_SIGNING_PRIVATE_KEY (and _PASSWORD) and native/tauri.conf.json has plugins.updater.pubkey;
+  otherwise it logs a notice.
 inputs:
   version:
     description: 'Version without the leading v, e.g. 0.3.0-preview.1 or 0.3.0-nightly.20261012.7'
@@ -35,10 +36,14 @@ runs:
       run: |
         # The config `version` wins over Cargo.toml for the installer name, the PE version and the
         # app's reported version, so the version lives in no tracked file.
-        if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+        # Updater artifacts need both halves: the secret to sign, and the public key in tauri.conf.json,
+        # which the Tauri CLI checks (an empty pubkey fails the build). Either missing: log and skip.
+        pubkey=$(python -c "import json; print(json.load(open('tauri.conf.json'))['plugins']['updater']['pubkey'].strip())")
+        if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ] && [ -n "$pubkey" ]; then
           printf '{"version":"%s","bundle":{"createUpdaterArtifacts":true}}' "$VERSION" > "$RUNNER_TEMP/tauri-version.json"
+          echo "SIGN_UPDATER=true" >> "$GITHUB_ENV"
         else
-          echo "::notice::TAURI_SIGNING_PRIVATE_KEY is not set: no updater signature and no latest.json for $VERSION (RELEASING.md, updater key)"
+          echo "::notice::updater key not configured (secret set: $([ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ] && echo yes || echo no), pubkey in tauri.conf.json: $([ -n "$pubkey" ] && echo yes || echo no)): no updater signature and no latest.json for $VERSION (RELEASING.md, The update channels)"
           printf '{"version":"%s"}' "$VERSION" > "$RUNNER_TEMP/tauri-version.json"
         fi
         node ../app/node_modules/@tauri-apps/cli/tauri.js build --ci --bundles nsis --config "$RUNNER_TEMP/tauri-version.json" -- --locked
@@ -56,7 +61,7 @@ runs:
         sha256sum *-setup.exe > SHA256SUMS.txt
         cat SHA256SUMS.txt
         signed=false
-        if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+        if [ "${SIGN_UPDATER:-}" = true ]; then
           cp ../native/target/release/bundle/nsis/*-setup.exe.sig .
           signed=true
         fi
