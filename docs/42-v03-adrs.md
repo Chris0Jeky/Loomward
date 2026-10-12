@@ -517,8 +517,14 @@ the destination volume, preallocated, written, flushed with `FlushFileBuffers`, 
 re-read by ID with `FILE_FLAG_NO_BUFFERING` and hashed. Publish is one rename of the staging folder within its
 parent with `ReplaceIfExists = FALSE`. Doc 47 section 4 cites each call.
 4. *Durable intent.* A write-ahead journal in `state.db` (`synchronous=FULL`, ADR-V3-22): intent before each effect,
-outcome after; item records group-committed, since the journaled staging folder is the ownership boundary. Recovery
-decides from journal plus disk (doc 47 section 5) and never resumes an effect after a restart without the owner.
+outcome after. Cleanup authority comes only from a journaled identity, never from a name. The staging folder's
+identity is committed before anything is created in it, and each item's identity right after its empty create
+(batched) and before any write. An entry the journal does not know is never adopted or deleted, even under a
+manifest name. Recovery decides from journal plus disk (doc 47 section 5) and never resumes an effect after a
+restart without the owner. Revoking a source grant, or an emergency stop, commits first and bumps a fence epoch.
+The executor rechecks it at every cooperative boundary (each item open, each 1 MiB chunk, each journal commit,
+before publish). On a change it issues no further effects, journals `revoked`, cancels and removes only its own
+journaled staging. Stale-epoch records are rejected (doc 05, ADR-V3-22).
 5. *Verification.* SHA-256 per stream on the bytes read, compared with an independent non-cached read-back of the
 destination; signature check of each source before and after; a final tree check of staging against the manifest;
 after publish, the final folder's identity must equal the staging folder's. One retry from zero on a mismatch, then
@@ -528,29 +534,38 @@ cache.
 hidden, archive and not-content-indexed attributes, and verify each. Security descriptors are inherited from the
 destination, as Explorer does for copies. Refuse system, temporary, compressed, sparse, encrypted, integrity-stream,
 extended-attribute and reparse items (doc 47 section 6).
-7. *Refusals.* Before any write handle exists where possible: identity-unverified file systems (FAT, exFAT, unknown;
+7. *Refusals.* Codes checked at preview or start come before any write handle exists; runtime refusals (at item
+open, at a cooperative boundary, at publish, or on a verification mismatch) obey a no-further-effects rule: nothing
+more is created, written or renamed after the refusal is journaled, apart from one redo after a mismatch, bounded
+publish retries and identity-bound cleanup. The codes cover: identity-unverified file systems (FAT, exFAT, unknown;
 #219 rows never back an effect), cloud placeholders (never recalled), reparse points and links, sources changed since
 preview, open or locked sources (deny-write open fails), insufficient space, destination inside a copied folder,
 destination in a cloud sync root or on a removable, network or unsupported volume, case-only collisions under the
 destination's rules, unrepresentable names and over-length paths (doc 47 section 7). In-use, access and space
 refusals block resumably; the rest end the operation.
 8. *Resume and rollback.* Resume revalidates and continues; cancel or abandon before publish removes only Loomward's
-own staging entries, matched by journaled identity, with POSIX disposition (Q1); anything unexpected is left and the
-operation goes to `needs_attention`. A published copy is never removed: undo is a new operation (doc 08).
+own staging entries. Each entry is opened by its journaled ID, and both its creation time and its name-to-ID binding
+are rechecked. It is then removed with a POSIX disposition that ignores the read-only attribute (or after clearing
+that bit on the same verified handle), since staged files may be read-only (Q1). Anything unjournaled or failing a
+check is left, and the operation goes to `needs_attention`. A published copy is never removed: undo is a new operation (doc 08).
 9. *Evidence.* Each operation writes a doc 08 recovery receipt: operation and manifest digests, grants, topology
 (same volume or not), identities before and after, intended, copied and verified bytes (ADR-V3-04 strings), per-stream
 hashes, metadata results per class, refusals by code, phase durations and rates, resumes, versions, and one outcome
 (`committed`, `cancelled`, `refused`, `needs_attention`). Space relief is always reported as none. Public evidence
 carries counts and buckets only.
-10. *Gate.* The capability opens only in lane C8, after the lab suite, the crash matrix by child-process kill, the
-fault and refusal proofs, the power-loss proof the owner picks (Q2) and doc 45's readiness bar (doc 47 section 11).
+10. *Gate.* The capability opens only in lane C8, after all of: the lab suite, the crash matrix by child-process
+kill, the fault and refusal proofs, **real power-cut runs** by the method the owner picks in Q2, a **proven restore**
+(a copy committed after a power-cut run, copied back and verified against the original manifest), and doc 45's
+readiness bar (HUMAN_TODO q-39; doc 47 section 11). A process kill is not a power-cut proof. Until the power-cut and
+restore proofs pass, copy-and-verify stays lab-only (synthetic sessions and lab roots).
 11. *Restore drills.* ADR-V3-23 stage 3 reuses the destination rules, staging, tree verifier and receipt. Restic
 remains the writer there, so stage 3 still needs stage 2's process gate; this record does not open it.
 **Consequences.** Good: every write lands in a folder only Loomward created, under an identity the journal knew
 before the write; a crash at any point resolves without guessing; refusals happen before effects; the verifier is
 useful read-only first (lane C1). Bad: the most code of the options; metadata fidelity is ours to prove class by
 class; the first delete primitive enters the codebase (staging only); much real-world content (cloud-synced, sparse,
-encrypted) is refused in v1. Neutral: no space relief, so storage planning is unchanged.
+encrypted) is refused in v1; a crash inside a create batch can leave empty files that the owner must remove before
+resuming; personal use waits on a real power-cut rig. Neutral: no space relief, so storage planning is unchanged.
 **Alternatives.** `CopyFile2`/`CopyFileEx` then verify: rejected, path arguments reopen the junction race of doc 05,
 no-recall cannot be requested and metadata behaviour varies by Windows build. Spawning robocopy: rejected, a process
 effect and a shell surface. Verify-only (the owner copies, Loomward compares): kept as lane C1, but it does not meet

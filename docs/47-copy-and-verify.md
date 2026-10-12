@@ -81,8 +81,11 @@ and the reopen-by-name through pinned parents (`duplicate_reader/native.rs:207-2
 created relative to their parent handle with `NtCreateFile` and `FILE_CREATE`, which fails if the name exists and
 never opens or replaces an existing object [W1]; files add `FILE_NON_DIRECTORY_FILE`, folders
 `FILE_DIRECTORY_FILE`. The security descriptor argument is NULL, so the new object takes the ACL the file system
-propagates from its parent [W1], which is what Explorer does for a copy [W11]. Each file is preallocated to its size
-(`FileAllocationInfo` through `SetFileInformationByHandle` [W16]) so a full disk fails at create, not halfway.
+propagates from its parent [W1], which is what Explorer does for a copy [W11]. Creating and writing are separate
+steps: a batch of up to 256 items is created empty, their identities (file ID, creation time) are committed to the
+journal, and only then is any of them preallocated or written (section 5). Each file is preallocated to its size
+(`FileAllocationInfo` through `SetFileInformationByHandle` [W16]) so a full disk fails before data is written, not
+halfway.
 
 **Writes and flush.** Buffered sequential writes in 1 MiB chunks, then `FlushFileBuffers` once per file (needs
 `GENERIC_WRITE` [W4]). Not `FILE_FLAG_WRITE_THROUGH` per write: Microsoft's own guidance is unbuffered plus
@@ -115,9 +118,16 @@ times are set bottom-up after their children are verified.
 `ReplaceIfExists = FALSE`, which returns an error when the target exists [W5]. Staging and final names share the
 same parent, so the rename is a same-directory name change on one volume and atomic from a reader's view.
 
-**Staging removal.** Only on cancel or abandon, only inside the staging folder whose identity was journaled, only
-for entries the manifest names and whose identity matches the journal: a POSIX-semantics disposition on a handle
-opened by ID [W14]. Anything unexpected in staging is left alone and the operation goes to `needs_attention`.
+**Staging removal.** Only on cancel, abandon or a redo after a failed item. Only inside the staging folder whose
+identity was journaled, and only for entries whose identity was journaled. Each one is opened by ID [W2], and its
+creation time must match the journal. Its manifest name must still resolve to that same ID through the pinned
+staging handle. It is then removed with a POSIX-semantics disposition [W14]. Staged files can carry the read-only
+attribute (section 6), and a read-only file refuses deletion [W14]. So the disposition sets
+`FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE` [W14] together with `DELETE | POSIX_SEMANTICS` (H6). Where that flag is
+unsupported, the read-only bit is first cleared with `FileBasicInfo` [W16] on the same identity-verified handle. A
+mapped view also blocks deletion [W14]: cleanup then stops with that entry kept, and the operation goes to
+`needs_attention`. Anything without a journaled identity, or whose checks fail, is left alone and reported. A file
+someone created after a crash under a manifest name is therefore never deleted.
 
 **Checks.** Cloud sync root: `CfGetSyncRootInfoByHandle` needs only read-attributes access and fails when the item
 is not under a sync root [W9]; success on the destination parent refuses the copy (writing there would upload,
@@ -142,6 +152,9 @@ stateDiagram-v2
   blocked --> copying: owner resumes (native confirmation)
   copying --> cancelling: owner cancels
   blocked --> cancelling: owner abandons
+  copying --> cancelling: grant revoked or emergency stop (fenced)
+  blocked --> cancelling: grant revoked (fenced)
+  staged --> cancelling: grant revoked or emergency stop (fenced)
   staged --> publishing: publish intent journaled
   publishing --> committed: renamed without replace, final identity equals staging identity
   publishing --> blocked: rename refused while a handle is held
@@ -157,20 +170,42 @@ mismatch retries that item once from zero (new staging object, old one removed b
 `needs_attention`, never a silent pass.
 
 **Write-ahead order and recovery.** Every effect has its intent committed to `state.db` (`synchronous=FULL`,
-ADR-V3-22) before it happens and its outcome after. Item records are group-committed (every 256 items or 250 ms)
-because the staging folder, not the item record, is the ownership boundary: whatever is inside the journaled staging
-folder under a manifest name is Loomward's.
+ADR-V3-22) before it happens and its outcome after. Loomward has cleanup authority over an entry only when its
+identity is in the journal. Nothing is ever adopted by name. Three ordering rules follow from that:
+
+- The staging folder's identity is committed before anything is created inside it.
+- Each item's identity is committed right after its empty create and before any byte is written or preallocated.
+  Creates are batched, up to 256 items per identity commit.
+- `verified` records may be group-committed (every 256 items or 250 ms), because a missing one only causes a re-check.
 
 | Crash between | Disk shows | Recovery decides |
 |---|---|---|
 | approval consumed and staging intent | nothing | `approved` again only with a fresh confirmation; else `cancelled` |
-| staging intent and its identity record | a folder with the operation's 128-bit random token in its name, or nothing | adopt it if its creation time follows the intent and it holds only manifest names; record its identity; else `needs_attention` |
-| item create and its record | file under a manifest name in staging | redo the item from zero |
-| write, flush or metadata and `verified` | partial or unverified file | redo the item from zero |
+| staging intent and its identity record | possibly an empty folder carrying this attempt's random token | never adopted or deleted: the next attempt makes a new staging folder with a new token; the receipt names the possible empty leftover for the owner to remove |
+| item create batch and its identity commit | empty files under manifest names, identities not journaled | never adopted or deleted (a file someone created after the crash under that name would look the same); each such name is reported and the operation waits in `needs_attention` until the owner removes it, then resumes |
+| identity commit and `verified` | partial or unverified file with a journaled identity | reopen by ID; creation time and name-to-ID must match (section 4); remove it and redo the item; on any mismatch, `needs_attention` and touch nothing |
 | `verified` batch and next batch | verified files | re-verify (non-cached read-back) only the unrecorded ones |
 | publish intent and rename | staging name present with its identity | rename again |
 | rename and `committed` | final name with the staging identity | record `committed`, write the receipt |
 | rename and `committed` | final name with another identity, staging gone | `needs_attention` (someone else acted), touch nothing |
+
+**Revocation and emergency stop.** Doc 05 requires every consequential step to recheck grants, and an emergency
+stop to halt cooperative work at documented boundaries. ADR-V3-22 commits a revocation before it cancels anything,
+then fences later messages. The copy run follows the same pattern:
+
+1. Revoking a source grant (or pressing emergency stop) commits first in `state.db`. That commit bumps the run's
+   fence epoch and marks the approval unusable.
+2. The executor reads the epoch at every cooperative boundary: before each item open, after every 1 MiB chunk, before
+   each identity or `verified` commit, and before the publish intent.
+3. When the epoch has moved, the executor issues no further create, write, metadata or rename. It closes its source
+   handles, journals `revoked`, and goes to `cancelling`. Removing its own journaled staging (section 4) is the only
+   effect still allowed.
+4. The journal rejects any later item or publish record carrying the old epoch, so a worker that is still in flight
+   cannot advance the run.
+5. Resume is refused (`grant_revoked`). A new grant needs a new preview and a new approval.
+
+A rename that was already issued is atomic, so revocation either lands before the publish intent (the run is
+cancelled) or after the rename (the run is committed, and the receipt notes the revocation time).
 
 A restart never resumes an effect by itself: interrupted operations wait in a banner for Resume (native
 confirmation) or Abandon. Resume revalidates grants, destination identity, space and each pending source signature;
@@ -222,7 +257,21 @@ Checked at preview (P), at start or resume (S) and per item at open (I). "Resuma
 | `path_too_long` | final path over 32,767 units [W13] (over 259 is a warning: many apps and the shell cannot open it [W13]) | P | no |
 | `publish_in_use` | rename refused while another process holds a handle under staging (H2) | publish | yes, after 10 tries over 30 s |
 | `verification_mismatch` | hash or metadata differs twice | I | no: `needs_attention` |
-| `elevated`, `grant_revoked`, `approval_expired`, `digest_mismatch`, `manifest_limit` | authority checks; limit 200,000 entries per operation (assumption) | P, S | no |
+| `grant_revoked` | a source grant revoked, or emergency stop (section 5) | P, S, then every cooperative boundary | no: cancels the run |
+| `elevated`, `approval_expired`, `digest_mismatch`, `manifest_limit` | authority checks; limit 200,000 entries per operation (assumption) | P, S | no |
+
+**Preflight versus runtime refusals.** A refusal raised at P or S comes before the operation's first effect, so no
+write handle exists. That covers every code with a P or S entry, including the first check of codes that are checked
+again later. A refusal raised at I, at a cooperative boundary or at publish happens after effects have started. For
+those the rule is **no further effects**:
+
+- once the refusal is journaled, no new create, write, metadata change or rename happens for that item;
+- for every code except the resumable ones, nothing more happens for the operation either;
+- sources are never touched;
+- staging already written is kept, except for identity-bound removal on cancel, abandon or the single permitted redo;
+- `verification_mismatch` allows exactly one redo of that item, then stops;
+- `publish_in_use` allows only the bounded rename retries;
+- the receipt names the item, the code and the last journaled state.
 
 Destination name: the server proposes it (the single top source name, else "Loomward copy" plus the date) and adds
 " (2)", " (3)" when the parent already has it, so a new-folder copy never needs an overwrite. Space need is the
@@ -234,7 +283,10 @@ volume (assumption, to be measured in C5).
 | Failure | Detection | Response | Proof |
 |---|---|---|---|
 | Process crash or kill at any step | non-terminal journal state at start | section 5 table; wait for owner | C6 crash matrix |
-| Power loss | same, plus files the OS had not flushed | redo unverified items; re-verify the last batch | owner question Q2 |
+| Power loss | same, plus files the OS had not flushed | redo unverified items; re-verify the last batch | G5: real power-cut runs (Q2); lab-only until they pass |
+| Grant revoked or emergency stop mid-run | fence epoch at cooperative boundaries | no further effects; journal `revoked`; cancel; own staging removed | lab test revoking at each boundary, plus a stale-epoch record rejected |
+| Same-name entry appears in staging after a crash | identity not in the journal | never deleted or adopted; `needs_attention` | crash at the create batch, then a file planted under that name |
+| Read-only staged file during cleanup | deletion refused [W14] | ignore-read-only disposition, or clear the bit on the verified handle (H6) | native test |
 | Source edited after preview | signature mismatch | `source_changed`, re-preview | real edit fixture |
 | Source edited during copy | deny-write open excludes new writers; an existing writer fails the open | `source_in_use` | real writer fixture |
 | Source renamed or deleted during copy | reopen through pinned parents fails | `source_changed` | real rename fixture |
@@ -277,8 +329,8 @@ HTTP adapter refuses personal approvals, as it does personal disclosure grants (
   revocation.
 - **Native (Windows, tempdir).** Create-new collision; rename without replace onto an existing name; non-cached
   read-back at sizes 0, 1, 511, 512, 4095, 4096, 4097, 1 MiB + 1 and above 4 GiB; stream enumeration and copy;
-  basic-info set and verify; staging removal refuses an identity mismatch; sync-root check negative; elevated
-  refusal (as `win.rs:4-13`).
+  basic-info set and verify; staging removal refuses an identity mismatch and a same-name replacement, and removes a
+  read-only staged file (H6); sync-root check negative; elevated refusal (as `win.rs:4-13`).
 - **Lab (synthetic roots, `loomward-lab`).** A 10,000-entry tree with mixed sizes, named streams, hidden and
   read-only items, Unicode and 255-unit names, paths over 260, hard links; refusal trees with junctions, sparse,
   compressed and encrypted files, case-sensitive folders with case-only duplicates. The C1 verifier, run
@@ -291,7 +343,13 @@ HTTP adapter refuses personal approvals, as it does personal disclosure grants (
   or abandon. Plus at least 200 kills at random times. Oracle after every run: the source is byte- and
   signature-identical; nothing in the destination parent changed except the staging or final folder; no receipt says
   completed unless the C1 verifier agrees; abandon leaves the parent exactly as before. A process kill keeps the OS
-  cache, so it proves crash consistency, **not** power-loss durability (Q2).
+  cache, so it proves crash consistency, **not** power-loss durability.
+- **Power cut (real, mandatory per HUMAN_TODO q-39).** Use the method the owner picks in Q2. Run at least 20 hard
+  power-offs at random points during lab copies, including inside the create-batch, publish and cleanup windows.
+  After each, boot, recover and resume or abandon, then apply the same oracle as the crash runs.
+- **Proven restore (mandatory per q-39).** Take a copy committed after a power-cut run. Copy it back with this
+  operation to a new lab location. The C1 verifier must then match that copy against the original source manifest:
+  content and every preserved class in section 6.
 - **UI.** Model unit tests; Playwright on a synthetic session: preview, refusals shown, approve over HTTP, progress,
   receipt, interrupted banner after a killed server.
 
@@ -309,24 +367,40 @@ HTTP adapter refuses personal approvals, as it does personal disclosure grants (
 | C8 Gate (session driver) | personal wiring, native confirmation, AGENTS.md invariant 1 text, docs/16 and CHECKPOINT | personal, owner-approved | all of the evidence list below; second-lens review |
 
 C1, C2 and C3 run in parallel; C4 follows C3's schema; C5 needs C2 to C4; C6 needs C5; C7 needs C4; C8 needs C6,
-C7 and the doc 45 readiness bar.
+C7, the G5 and G9 runs, and the doc 45 readiness bar. **Until G5 and G9 pass, the operation stays lab-only**: C5 to
+C7 run on synthetic sessions, and C8 does not open, whatever else is green.
 
-**Gate evidence (what C8 must show, beside doc 45's bar).** G1 the lab suite (C5); G2 the crash matrix (C6); G3
-each failure-mode row's proof; G4 each refusal code refused before any write handle exists; G5 the power-loss proof
-the owner chooses in Q2, or the receipt and invariant text saying it is unverified; G6 MCP has no copy command and
-HTTP refuses personal approvals (tests); G7 one owner-run copy of a small real folder in the desktop app, recorded
-with anonymised counts only; G8 a second, high-risk review lens on C2, C5 and C8.
+**Gate evidence (what C8 must show, beside doc 45's bar and HUMAN_TODO q-39).**
+
+- **G1.** The lab suite (C5).
+- **G2.** The crash matrix (C6).
+- **G3.** Each failure-mode row's proof.
+- **G4.** Each preflight-capable refusal (every code with a P or S entry in section 7) is shown on a fixture to be
+  refused before any write handle exists. Each runtime refusal (`source_in_use`, `access_denied`, `special_file`,
+  item-time `source_changed`, `cloud_placeholder` and attribute codes, preallocation `insufficient_space`,
+  mid-run `grant_revoked`, `publish_in_use`, `verification_mismatch`) is shown to follow section 7's no-further-effects
+  rule. The oracle checks there is no create, write, metadata change or rename after the refusal's journal record,
+  apart from the permitted redo, the bounded rename retries and identity-bound cleanup.
+- **G5.** Real power-cut runs pass by the Q2 method (section 10). Without them the gate stays shut.
+- **G6.** MCP has no copy command and HTTP refuses personal approvals (tests).
+- **G7.** One owner-run copy of a small real folder in the desktop app, recorded with anonymised counts only.
+- **G8.** A second, high-risk review lens on C2, C5 and C8.
+- **G9.** The proven restore of section 10 passes.
 
 ## 12. Open questions for the owner
 
 - **Q1 Staging removal.** Cancel and abandon delete Loomward's own unpublished staging files, matched by recorded
   identity and only inside its own staging folder. This is the first delete code path in Loomward. Recommended:
   allow it. Alternative: never delete anything, and leave the staging folder for you to remove in Explorer.
-- **Q2 Power-loss proof.** A process kill does not lose the OS cache, so it cannot prove durability after a power
-  cut. Options: (a) a Hyper-V VM hard-stopped during copies (you enable Hyper-V once; that needs elevation); (b) you
-  unplug an external NTFS disk mid-copy a few times (destination loss, not host power loss); (c) ship with
-  "power-loss durability: unverified" written in the receipt and the invariant. Recommended: (c) for the gate, (a)
-  as a follow-up.
+- **Q2 Power-cut proof method.** A process kill does not lose the OS cache, so it cannot prove durability after a
+  power cut. Your readiness bar (q-39) makes a real power-cut proof mandatory before the gate opens. Options:
+  - (a) A Hyper-V VM hard-stopped during lab copies. You enable Hyper-V once, which needs elevation; agents then run
+    the cycles.
+  - (b) You pull the power on a disposable test machine, or on this one, while it copies lab data only.
+  - (c) Neither yet: copy-and-verify stays lab-only. C5 to C7 continue on synthetic sessions, and nothing opens for
+    personal data.
+
+  (c) never opens the gate. Recommended: (a), because it repeats cheaply and needs no physical action after setup.
 - **Q3 Destination shape.** v1 always creates a new folder (with " (2)" when the name exists) and never writes into
   an existing folder. Is that enough, or do you need copies into an existing folder (new names only, never
   overwriting)?
@@ -341,6 +415,9 @@ with anonymised counts only; G8 a second, high-risk review lens on C2, C5 and C8
 - **H4.** Times set through `FileBasicInfo` after the last write survive close and reopen unchanged.
 - **H5.** A file created with a NULL security descriptor under a folder with inherited ACEs carries only inherited
   ACEs.
+- **H6.** `SetFileInformationByHandle(FileDispositionInfoEx)` with `FILE_DISPOSITION_FLAG_DELETE |
+  FILE_DISPOSITION_FLAG_POSIX_SEMANTICS | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE` removes a read-only staged
+  file on NTFS and ReFS on this Windows build; otherwise clearing the bit with `FileBasicInfo` first works.
 
 ## 14. Sources
 
