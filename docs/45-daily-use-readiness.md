@@ -38,8 +38,9 @@ running run or half-built bulk table, no staged or pending-reference residue, no
 rows, forget all-or-nothing in rows and bytes, every acknowledged step durable, a second recovery changes
 nothing, the store still takes a write). Three sweeps: the lifecycle (scan, durable reference and labels, bulk
 first scan, rescan, revoke, forget; the scanned root is published through staged chunks, as the service does), a schema migration from a v4-shaped store, and a second
-crash inside the recovery of the first. The checker is proven able to fail: planted damage is caught
-(`the_verifier_catches_planted_damage`) and a mutant that skips finishing a half-done forget fails 13 of 240
+crash inside the recovery of the first. The checker can fail: planted damage is caught (`the_verifier_catches_planted_damage`; two of its cases are damage
+that opening the store already repairs, so they prove less than the others, #434) and a mutant that skips finishing a
+half-done forget failed 13 of 240 (before F1's fix; 10 of 272 for the marker-recovery mutant after it)
 crash points (see the run record). Every sweep child must exit with the crash code at its injected boundary, and
 a clean run must exit 0: an unreached boundary fails the sweep (`an_unreached_crash_point_fails_the_sweep`
 injects `boundaries+1`). Earlier single-point tests stay: `PublicationCrash` in
@@ -54,8 +55,8 @@ downgrade of a current store, not a store written by an old binary. Finding **F1
 **Prove.**
 
 ```powershell
-cargo test -p loomward-catalog --features test-hooks --test crash_sweep   # about 30 s, samples row boundaries
-$env:LOOMWARD_CRASH_SWEEP='full'; cargo test -p loomward-catalog --features test-hooks --test crash_sweep   # every boundary, about 6 min
+cargo test -p loomward-catalog --features test-hooks --test crash_sweep   # about 53 s (2026-10-12), samples row boundaries
+$env:LOOMWARD_CRASH_SWEEP='full'; cargo test -p loomward-catalog --features test-hooks --test crash_sweep   # every boundary, about 505 s (2026-10-12)
 cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- lifecycle_at 123   # one boundary
 ```
 
@@ -153,7 +154,8 @@ crash anywhere in between, including after the catalogue half has already commit
 writer at start-up) finish the rewrite; the sweep found that window by killing the process in it (10 of 272 crash
 points with the marker recovery removed). Regression test, enabled:
 `forget_leaves_no_staged_listing_names`. Cost: `VACUUM main` rewrites the whole catalogue, so a forget takes time
-and temporary disk proportional to its size and holds the writer meanwhile; measure it at 10M entries (row 2). Not
+and temporary space proportional to its size (the copy may be built in RAM because the connection sets
+`temp_store=MEMORY`, #434; plus WAL space on disk) and holds the writer meanwhile; measure it at 10M entries (row 2). Not
 covered by F1: the older `state.start-*`, `state.before-v*` and `catalog.corrupt-*` copies (#391, #402).
 
 The sweep found no recovery defect other than the window F1's marker closes.
