@@ -85,7 +85,6 @@ pub fn sqlite_dir(dir: &Path) -> std::path::PathBuf {
 
 fn ordinary_win32_component(component: &str) -> bool {
     if component.is_empty()
-        || component.starts_with(' ')
         || component.ends_with(' ')
         || component.ends_with('.')
         || component
