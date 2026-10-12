@@ -734,7 +734,7 @@ fn sweep_recovery(step: usize) {
     let root = tempfile::tempdir().unwrap();
     let base = run_child("lifecycle", &root.path().join("clean"), None);
     let firsts: Vec<u64> = (1..=base.boundaries)
-        .filter(|n| sweep_all() || (*n as usize) % step == 0)
+        .filter(|n| sweep_all() || (*n as usize).is_multiple_of(step))
         .collect();
     let failures = Mutex::new(Vec::<String>::new());
     // (N, acks of the first crash, boundaries of the recovery)
@@ -805,7 +805,10 @@ fn migrate_at() {
     single("migrate");
 }
 fn single(scenario: &str) {
-    let Some(n) = std::env::args().last().and_then(|a| a.parse::<u64>().ok()) else {
+    let Some(n) = std::env::args()
+        .next_back()
+        .and_then(|a| a.parse::<u64>().ok())
+    else {
         return;
     };
     let root = tempfile::tempdir().unwrap();
@@ -841,4 +844,53 @@ fn the_verifier_catches_planted_damage() {
             "undetected: {what}"
         );
     }
+}
+
+/// Finding F1 (docs/45), found by this sweep and not fixed here: a root whose listing went through
+/// `StageChunk` keeps its file and directory names in `catalog.db` after a forget, because the
+/// `stage_entry` rows were deleted while `secure_delete` was still off and nothing rewrites
+/// `catalog.db` (only `VACUUM st` runs). No production caller stages chunks yet (the engine
+/// publishes with `DirListing`), so the scan sweep above stages only the root that is kept.
+/// Run with `-- --ignored`; it fails today.
+#[test]
+#[ignore = "finding F1: forget leaves staged-listing names in catalog.db"]
+fn forget_leaves_no_staged_listing_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let c = Catalog::open(dir.path(), "synthetic").unwrap();
+    let w = c.writer();
+    let (grant, root) = register(w, A_NAME, A_PATH, 1);
+    let run = begin(w, grant, "full");
+    w.call(WriteCommand::StageChunk {
+        run_id: run,
+        dir_id: root,
+        seq: 0,
+        files: vec![ident(A_ROOT_FILES[0], 11, 100)],
+        dirs: vec![],
+    })
+    .unwrap();
+    w.call(WriteCommand::ListingDone {
+        run_id: run,
+        dir_id: root,
+        outcome: ListingOutcome::Complete,
+        skipped: 0,
+        errors: 0,
+    })
+    .unwrap();
+    end(w, run);
+    w.call(WriteCommand::RevokeGrant {
+        grant_id: grant,
+        revoked_at_ns: 10,
+    })
+    .unwrap();
+    w.call(WriteCommand::ForgetGrant {
+        grant_id: grant,
+        forgotten_at_ns: 20,
+        expected_state_rev: None,
+    })
+    .unwrap();
+    drop(c);
+    assert!(
+        !on_disk(dir.path(), "crashrootA"),
+        "a staged name survived the forget"
+    );
 }
