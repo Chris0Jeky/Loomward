@@ -21,6 +21,7 @@ mod collections;
 mod cursors;
 mod db;
 mod desktop;
+mod diagnostics;
 mod duplicates;
 mod handlers;
 mod idem;
@@ -94,6 +95,8 @@ pub(crate) struct Inner {
     /// One native dialog at a time (#167): a second request is `busy`, never a stacked dialog.
     dialog: Mutex<()>,
     picker_last: Mutex<Option<Instant>>,
+    /// The last diagnostic preview's digest and exact bytes (one slot, ADR-V3-24).
+    preview: Mutex<diagnostics::Held>,
     reads: Mutex<usize>,
     metadata: Arc<dyn inventory::Provider>,
     metadata_cursors: cursors::Cursors,
@@ -241,6 +244,7 @@ impl Service {
             turn: (Mutex::new(Queue::default()), std::sync::Condvar::new()),
             dialog: Mutex::new(()),
             picker_last: Mutex::new(None),
+            preview: Mutex::new(None),
             reads: Mutex::new(0),
             metadata: metadata
                 .clone()
@@ -338,6 +342,7 @@ pub(crate) fn is_mutation(c: Command) -> bool {
             | BudgetsSet
             | BackupsImport
             | BackupsForget
+            | DiagnosticsSave
     )
 }
 
@@ -399,7 +404,11 @@ fn is_revocation(c: Command) -> bool {
 /// Revocation must never wait behind other mutations (its state change is serialised by
 /// `Inner::mutation`), and the native pickers wait on the owner: none of them takes a ticket.
 fn is_ticketed(c: Command) -> bool {
-    !is_revocation(c) && !matches!(c, Command::RootsRequestGrant | Command::BackupsImport)
+    !is_revocation(c)
+        && !matches!(
+            c,
+            Command::RootsRequestGrant | Command::BackupsImport | Command::DiagnosticsSave
+        )
 }
 
 /// `semantics.md` section 2 defaults.
@@ -521,6 +530,8 @@ impl ViewService for Service {
                     | Command::BackupsList
                     | Command::BackupsImport
                     | Command::BackupsForget
+                    | Command::DiagnosticsPreview
+                    | Command::DiagnosticsSave
             )
         {
             let e = fail(
