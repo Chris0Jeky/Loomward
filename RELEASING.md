@@ -98,10 +98,18 @@ It builds, self-tests, installs and uninstalls exactly as a preview does (both u
 - **Rollback (manual for now, LW-122):** the app finds the previous nightly but does not install it,
   because an older build refuses state that a newer build migrated, and a rollback has to restore
   the matching state copy with the binary. By hand: close Loomward, install the `nightly-previous`
-  installer, and if it then refuses its state, move `state.db` aside in
-  `%LOCALAPPDATA%\Loomward Data\v3\personal` and put the newest `state.before-v<N>.db` copy (made by
-  the newer build before its migration) in its place. `catalog.db` is derived and is rebuilt by a
-  re-scan; it gets no copy before a catalogue migration.
+  installer, and if it then refuses its state, in `%LOCALAPPDATA%\Loomward Data\v3\personal`:
+  1. Move `state.db` (with `state.db-wal` and `state.db-shm` if present) aside and put the newest
+     `state.before-v<N>.db` copy (made by the newer build before its migration) in its place as
+     `state.db`.
+  2. Move `catalog.db` aside too, with `catalog.db-wal` and `catalog.db-shm`. One schema version
+     covers both files, and the newer build migrated `catalog.db` in place without a copy, so the
+     older build refuses it (`NewerDatabase`). The older build creates an empty catalogue.
+
+  The cost: the new catalogue has a new `instance_id`, so every object reference in `state.db` is
+  marked unresolved until its root is scanned again; sizes, trees and resolved references come back
+  only with a re-scan. Restoring `state.before-v<N>.db` also drops whatever the newer build recorded
+  after its migration (grants, labels, collections made since).
 - **Body:** the preview notes behind a NIGHTLY banner (`.github/release/nightly-banner.md`): untested,
   may break, state is kept and copied before a schema change.
 - **Manual run:** `gh workflow run nightly.yml --repo Chris0Jeky/Loomward --ref main`. A run from a

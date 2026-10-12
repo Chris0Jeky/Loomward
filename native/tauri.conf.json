@@ -15,7 +15,7 @@
     }
   },
   "plugins": {
-    "updater": { "pubkey": "", "windows": { "installMode": "passive" } }
+    "updater": { "pubkey": "", "requireSignedVersion": true, "windows": { "installMode": "passive" } }
   },
   "bundle": {
     "active": true,

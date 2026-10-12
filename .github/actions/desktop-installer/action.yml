@@ -4,12 +4,20 @@ description: >-
   release-assets/ (installer, SHA256SUMS.txt and, when signed, the updater .sig), then installs
   silently, self-tests and starts the installed app, and uninstalls checking the state survives.
   Shared by release.yml and nightly.yml. Signs updater artifacts only when the job's env carries
-  TAURI_SIGNING_PRIVATE_KEY (and _PASSWORD) and native/tauri.conf.json has plugins.updater.pubkey;
-  otherwise it logs a notice.
+  the signing-key input and native/tauri.conf.json has plugins.updater.pubkey; otherwise it logs a
+  notice. The key reaches only the `tauri build` step's environment, never npm or other steps.
 inputs:
   version:
     description: 'Version without the leading v, e.g. 0.3.0-preview.1 or 0.3.0-nightly.20261012.7'
     required: true
+  signing-key:
+    description: 'Updater private key (secrets.TAURI_SIGNING_PRIVATE_KEY); empty skips updater artifacts'
+    required: false
+    default: ''
+  signing-key-password:
+    description: 'Its password (secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD)'
+    required: false
+    default: ''
 outputs:
   signed:
     description: "'true' when release-assets holds the installer's updater signature"
@@ -33,6 +41,8 @@ runs:
       working-directory: native
       env:
         VERSION: ${{ inputs.version }}
+        TAURI_SIGNING_PRIVATE_KEY: ${{ inputs.signing-key }}
+        TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ inputs.signing-key-password }}
       run: |
         # The config `version` wins over Cargo.toml for the installer name, the PE version and the
         # app's reported version, so the version lives in no tracked file.

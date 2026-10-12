@@ -293,6 +293,12 @@ fn the_webview_may_invoke_exactly_lw_call_lw_events_and_lw_update() {
     context.config_mut().app.windows.clear();
     // The checked-in config has no updater public key yet: the build must say so, not fail.
     let configured = updates::configured(context.config());
+    // The manifest's version must match the version inside the signed artifact (no downgrade by
+    // an edited latest.json pairing a new number with an older signed installer).
+    assert_eq!(
+        context.config().plugins.0["updater"]["requireSignedVersion"],
+        json!(true)
+    );
     let current = context.package_info().version.to_string();
     let updates = Arc::new(Updates::with_prompt(
         Some(prefs.path().into()),

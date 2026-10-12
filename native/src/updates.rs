@@ -22,7 +22,7 @@ pub const RELEASES: &str = "https://github.com/Chris0Jeky/Loomward/releases/down
 /// Prefs file inside the state directory, so it is copied and restored with the state.
 pub const PREFS_FILE: &str = "updates.json";
 /// Why the previous nightly is shown but not installed in-app (LW-122).
-pub const ROLLBACK_UNAVAILABLE: &str = "rolling back in the app is not available yet: an older build refuses state a newer build migrated, so the previous nightly is a manual download plus a restore of the matching state copy (RELEASING.md, Nightly)";
+pub const ROLLBACK_UNAVAILABLE: &str = "rolling back in the app is not available yet: an older build refuses state.db and catalog.db once a newer build migrated them, so the previous nightly is a manual download plus a restore of the matching state copy with catalog.db moved aside (RELEASING.md, Nightly)";
 pub const CONFIRM_TITLE: &str = "Install a Loomward update";
 /// Release notes longer than this are cut in the native box (MessageBoxW cannot scroll).
 const NOTES_IN_BOX: usize = 600;
@@ -85,10 +85,9 @@ pub fn channel_of(v: &Version) -> Option<Channel> {
 /// build: an older binary refuses state a newer one migrated, and a rollback must restore the
 /// matching state snapshot (LW-122), which this updater does not do.
 /// - Inside one channel: semver-newer (the nightly date and run number compare numerically).
-/// - Switching to nightly: a nightly of the same or a newer core. Semver sorts `nightly` before
-///   `preview`, but nightlies are built from `main` after the preview of that core was cut.
-/// - Switching to preview (or from a local build): a newer core only; a preview of the same core
-///   is older than `main`'s nightly.
+/// - Switching channel (or from a local build): a newer core only. Inside one core the two
+///   channels cannot be ordered (a preview may be dispatched after the newest nightly, or before
+///   it), so a same-core switch is a manual install.
 /// - `previous`: any other version, shown so the owner can find it; [`Updates::install`] refuses it.
 pub fn is_offer(current: &Version, candidate: &Version, selected: Channel, previous: bool) -> bool {
     let core = |v: &Version| (v.major, v.minor, v.patch);
@@ -97,7 +96,6 @@ pub fn is_offer(current: &Version, candidate: &Version, selected: Channel, previ
     }
     match (channel_of(current), selected) {
         (Some(from), to) if from == to => candidate > current,
-        (Some(Channel::Preview), Channel::Nightly) => core(candidate) >= core(current),
         _ => core(candidate) > core(current),
     }
 }
@@ -133,7 +131,8 @@ pub fn confirm_text(offer: &Offer, current: &str) -> String {
         "Install {kind} of Loomward?\n\nVersion: {} ({} channel)\nRunning now: {current}\n\n{notes}\n\n\
          Loomward closes, the installer runs, and Loomward starts again. Your state in \
          %LOCALAPPDATA%\\Loomward Data stays where it is; a build that changes its schema copies \
-         state.db first (state.before-v*.db). Unsigned build: install only what you expect.\n\n\
+         state.db first (state.before-v*.db) and migrates catalog.db in place. Unsigned build: \
+         install only what you expect.\n\n\
          OK installs. Cancel (the default) changes nothing.",
         offer.version,
         match offer.channel {
@@ -481,9 +480,26 @@ mod tests {
             Preview,
             false
         ));
-        // Preview -> nightly of the same core is offered, although `nightly` < `preview` in semver.
-        assert!(n("20261012.9") < v("0.3.0-preview.1"));
-        assert!(offer(v("0.3.0-preview.1"), n("20261012.9"), Nightly, false));
+        // Preview -> nightly of the same core is not offered: a preview dispatched after the
+        // newest nightly would otherwise be replaced by older code. A newer core is offered.
+        assert!(!offer(
+            v("0.3.0-preview.1"),
+            n("20261012.9"),
+            Nightly,
+            false
+        ));
+        assert!(!offer(
+            v("0.3.0-preview.2"),
+            n("20261013.40"),
+            Nightly,
+            false
+        ));
+        assert!(offer(
+            v("0.3.0-preview.1"),
+            v("0.4.0-nightly.20261101.1"),
+            Nightly,
+            false
+        ));
         assert!(!offer(
             v("0.4.0-preview.1"),
             n("20261012.9"),

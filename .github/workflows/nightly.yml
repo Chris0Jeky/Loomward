@@ -34,9 +34,6 @@ jobs:
         shell: bash
     env:
       SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
-      # Updater signatures (HUMAN_TODO q-30). Empty when the owner has not stored the key yet.
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -67,6 +64,10 @@ jobs:
         uses: ./.github/actions/desktop-installer
         with:
           version: ${{ env.VERSION }}
+          # Updater signatures (HUMAN_TODO q-30), passed to the tauri build step only; empty until
+          # the owner stores the key.
+          signing-key: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          signing-key-password: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
       - name: Write the updater manifest (signed builds only)
         if: steps.build.outputs.signed == 'true'
         run: |
