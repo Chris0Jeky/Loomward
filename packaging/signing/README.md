@@ -88,8 +88,9 @@ so eligibility needs the owner's reading before applying. Different publisher na
    `environment: release`; install the signer; build the second config as above; add
    `SIGN_*`/`AZURE_*` to the `Build the NSIS installer` step's `env:` only; keep `permissions` unchanged
    (add `id-token: write` to that job only if OIDC is adopted).
-2. Add a step after "Collect the installer": `Get-AuthenticodeSignature` on the installer, on the installed
-   `loomward-desktop.exe` and on `uninstall.exe` from the smoke install; fail unless `Status` is `Valid` and the
+2. Check signatures where the files exist: `Get-AuthenticodeSignature` on the installer right after "Collect the
+   installer", and on the installed `loomward-desktop.exe` and `uninstall.exe` inside the "Smoke-test a silent per-user
+   install and uninstall" step, after installing and before uninstalling. Fail unless `Status` is `Valid` and the
    subject is the expected one. `signtool verify /pa /all <file>` also works on the runner.
 3. Retire "unsigned" wording in lockstep: `RELEASING.md` (installer row, "Signing is a future owner action"),
    `.github/release/preview-notes.md` (the "Unsigned." paragraph), the release `--title` (`(unsigned preview)`),
