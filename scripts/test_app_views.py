@@ -1085,6 +1085,7 @@ def check_health(page: Page, base: str, shoot) -> None:
     expect(main.get_by_text('Private commit')).to_be_visible()
     expect(main.get_by_text('Writer queue')).to_be_visible()
     ok(main.get_by_text('off', exact=True).count() == 11, 'the capability matrix shows all 11 effects off')
+    expect(main.get_by_text('The one exception is a diagnostic bundle you save yourself')).to_be_visible()
     ok(main.get_by_text('ON', exact=True).count() == 0, 'no effect is on')
     expect(main.get_by_text('not available').first).to_be_visible()
     diag = main.locator('section[aria-labelledby="h-diag"]')

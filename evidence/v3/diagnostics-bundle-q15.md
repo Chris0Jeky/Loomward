@@ -100,6 +100,28 @@ lock. Logs: gitignored `.loomward/diagnostics-bundle/`.
   checks), `--a11y`, `gen_contracts_ts.py --check` and `git diff --check`. Hosted CI on `b68c861`: all 18 checks
   passed, after the two Linux clippy failures on `bc96517`.
 
+## Review round 2 (fresh-context review of b51343d)
+
+- **Replace confirmation (MEDIUM-1):** the overwrite promise no longer rests on the save dialog. `check_target`
+  reports whether the file exists; then the service asks `NativeDialogs::confirm_replace` (an app-owned box,
+  Cancel the default, the file named with hidden characters spelled out). A decline is `cancelled_by_user`,
+  writes nothing and leaves no temporary file; a new file is never asked about. Pinned by a service test, a
+  native test, and the `replace-confirmation` mutant.
+- **Resolved-folder rule (MEDIUM-2):** `folder_allowed` refuses a canonical folder that is a network path
+  before looking at it. A test pins it without touching a share, and the `network-resolved-folder` mutant
+  kills it.
+- **Wording (MEDIUM-3):** code comments, ADR-V3-24, semantics, docs/16 and the checkpoint now say what the code
+  does: the final component may not be a link or reparse point, a parent folder that resolves to a network path
+  is refused, and local junctions are followed.
+- **Status (MEDIUM-4):** the checkpoint states 56 commands, `hard_gates` names the diagnostics exception, and
+  Grants & health says its effects stay off apart from the owner-initiated diagnostic save.
+- Re-proved after merging `origin/main` (with #422): `cargo test --workspace --no-fail-fast` 953 passed, 0
+  failed; fmt; workspace clippy with `--all-features`; native build, `cargo test` (8 lib, 35 integration + 1
+  ignored), clippy and `--self-test`; app check, vitest 396, build; `scripts/test_app.py` (256 checks) and
+  `--a11y`; `gen_contracts_ts.py --check`; `tests.test_v3_contracts`; the mutation script, now **17 of 17**
+  killed (it adds `network-resolved-folder`, `replace-confirmation` and `native-replace-asks`); and
+  `git diff --check`.
+
 ## Failures and workarounds
 
 - One full `cargo test --workspace` run failed two `loomward-windows` duplicate-reader tests
@@ -111,10 +133,9 @@ lock. Logs: gitignored `.loomward/diagnostics-bundle/`.
 
 ## NOT verified
 
-- **The real save dialog.** No automated test opens it. Not exercised: the overwrite prompt
-  (`FOS_OVERWRITEPROMPT` is a documented Windows default that rfd 0.17 leaves untouched; this was read in rfd's
-  source, not observed), parenting to the main window, the start folder, and the default name as displayed.
-  This is a manual or `native/tests/webview2_probe.py` leg.
+- **The real save dialog and the replace confirmation.** No person has driven either yet, and no probe leg
+  covers them: automated tests reach them only through stand-ins. Not exercised: parenting to the main window,
+  the start folder, the default name as displayed, and the app-owned replace box on screen.
 - **The rename on network or cloud-synced folders.** Never run on OneDrive or other synced folders, or on
   FAT/exFAT targets.
 - **Linux and macOS.** Not built or run here: `os_family` would be `other`, and its host facts unknown.

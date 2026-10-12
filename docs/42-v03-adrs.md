@@ -520,17 +520,18 @@ and never writes twice) without a ticket, sharing the pickers' one-dialog lock a
 4. *Synthetic and personal sessions both save.* The bundle carries no personal data, so the save dialog opens in
    every session, unlike the folder and receipt pickers (personal only). `features.diagnostics_save` advertises it
    (true where a native dialog exists).
-5. *The overwrite confirmation is the native dialog's.* rfd 0.17 opens `IFileSaveDialog` without changing its
-   options, and Windows documents `FOS_OVERWRITEPROMPT` (and `FOS_NOREADONLYRETURN`) as defaults of the save
-   dialog, so an existing file is replaced only after the owner confirms it there.
+5. *Loomward confirms a replace itself.* rfd 0.17 opens `IFileSaveDialog` without changing its options, and
+   whether its documented `FOS_OVERWRITEPROMPT` default holds was never observed. So when the chosen file exists,
+   the service asks `NativeDialogs::confirm_replace` (an app-owned box naming the file, Cancel the default);
+   a decline is `cancelled_by_user` and writes nothing.
 6. *`capabilities.effects.file_write` stays `false`.* That matrix describes effects on the owner's files under a
    grant (invariant 1). The export is listed instead as the one command whose `commands.json` `effects` is
    `owner_picked_export`, and the contract test pins that no other command has an effect.
 **The write gate.** `write_export` refuses, before writing anything: a relative path; network, device and
 verbatim namespaces (`\server`, `\?\UNC`, `\.\`, `\?\GLOBALROOT`, `\?\Volume{..}`; only `\?\C:\` is
-local); Windows device names (`CON`, `COM1 .json`); a stream name (`:`); a parent folder whose resolved location
-is not a local directory (a junction or link among its ancestors that leads to a share is refused); and an
-existing target that is not a regular file or is a link, reparse point or cloud placeholder (the same lexical and
+local); Windows device names (`CON`, `COM1 .json`); a stream name (`:`); a parent folder whose canonical location
+is a network path or not a directory (local junctions and links among the ancestors are followed); and an
+existing final component that is not a regular file or is a link, reparse point or cloud placeholder (the same lexical and
 metadata checks as the receipt reader, shared in `paths.rs`). It writes the bytes to a new temporary file in the
 same directory (`create_new`), flushes it, and renames it over the target: a rename replaces the directory entry,
 so it never follows a link the target became meanwhile, and a failed write removes the temporary file and

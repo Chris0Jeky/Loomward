@@ -351,7 +351,7 @@
 
 <section class="panel" aria-labelledby="h-caps">
   <h2 id="h-caps">What this build can do</h2>
-  <p class="muted">Every effect is off, fixed by the contract: Loomward v0.3 observes and simulates only.</p>
+  <p class="muted">Every effect below is off, fixed by the contract: Loomward v0.3 observes and simulates only. The one exception is a diagnostic bundle you save yourself (above), written only to a file you pick and confirm.</p>
   <h3>Effects</h3>
   <ul class="caps">
     {#each effects as [name, on] (name)}
