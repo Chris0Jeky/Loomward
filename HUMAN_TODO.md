@@ -221,7 +221,7 @@ Selected: "Copyleft + paid exceptions". Open-source copyleft for everyone; the o
 licences (dual licensing). Owner's framing: "I don't want MIT for this project, I don't just want it to be used by anyone for
 free, I want it to be at least gplv3 or something similar". Code published before the relicensing commit stays MIT for anyone
 who received it.
-- [ ] Relicensing merged (Loomward#396).
+- [x] Relicensing merged: Loomward#396 (2026-10-12).
 
 ### q-21 — Licence text — ANSWERED: AGPL-3.0-only
 
@@ -285,6 +285,9 @@ that". Agents keep the release pipeline ready for a certificate and a Store subm
 
 ### q-29 — Channels — ANSWERED: GitHub Releases, winget, a Scoop bucket and the Microsoft Store
 
+Publishing to winget, Scoop or the Store for the first time is still a tier re-review trigger under AGENTS.md invariant 8;
+this answer chooses the channels, it does not pre-authorise those publications.
+
 ### q-30 — Updates — ANSWERED: an opt-in update check
 
 Off by default: a "Check for updates" button and an optional check-on-start toggle. Invariant 2 is unchanged.
@@ -302,9 +305,9 @@ It never deletes the source and lands behind its own safety gate. AGENTS.md inva
 
 ### q-33 — The owner's machines — ANSWERED: a public nightly pre-release
 
-Every merge to `main` publishes a rolling, unsigned nightly pre-release. The opt-in updater gains a nightly channel the
-owner enables on this PC and Kraspyon. State is copied before every migration, and the previous nightly stays
-restorable. AGENTS.md invariant 8 names the nightly as owner-authorised.
+The selected option: every merge to `main` publishes a rolling, unsigned nightly pre-release, and the opt-in updater
+on the owner's machines follows it. Driver's plan, stated in chat: state is copied before every migration and the
+previous nightly stays restorable. AGENTS.md invariant 8 names the nightly as owner-authorised.
 
 ### q-34 — New scope — ANSWERED: Find & Ask, plus four areas
 
@@ -374,7 +377,7 @@ now".
 Agents use impeccable-style prototypes and A/B variants for the owner to try and criticise. Per-area review sessions,
 and possibly a full redesign, come later. "for now I wanna keep the momentum going".
 
-### q-45 — The owner's hands-on items (planned for the next few days)
+### q-45 — The owner's hands-on items — OWNER ACTIONS (planned for the next few days; the q-19 and q-22 boxes are the canonical ones)
 
 - [ ] Connect the CLA bot (q-22 steps).
 - [ ] Dismiss the Dependabot alert (q-19 steps).
