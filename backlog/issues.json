@@ -1353,5 +1353,231 @@
       "LW-106"
     ],
     "body_file": "backlog/issues/LW-112.md"
+  },
+  {
+    "id": "LW-113",
+    "title": "[LW-113] Build the live full-text and substring search index over granted roots",
+    "milestone": "M2",
+    "priority": "P1",
+    "status": "in_progress",
+    "depends_on": [
+      "LW-005",
+      "LW-008"
+    ],
+    "body_file": "backlog/issues/LW-113.md"
+  },
+  {
+    "id": "LW-114",
+    "title": "[LW-114] Integrate Everything as an optional whole-volume search backend",
+    "milestone": "M2",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-113"
+    ],
+    "body_file": "backlog/issues/LW-114.md"
+  },
+  {
+    "id": "LW-115",
+    "title": "[LW-115] Design an optional elevated NTFS-metadata search helper behind its own gate",
+    "milestone": "MX",
+    "priority": "P2",
+    "status": "planned",
+    "depends_on": [
+      "LW-113",
+      "LW-007",
+      "LW-017"
+    ],
+    "body_file": "backlog/issues/LW-115.md"
+  },
+  {
+    "id": "LW-116",
+    "title": "[LW-116] Add a local semantic (embedding) search layer with consented model download",
+    "milestone": "M2",
+    "priority": "P2",
+    "status": "planned",
+    "depends_on": [
+      "LW-113",
+      "LW-014",
+      "LW-024"
+    ],
+    "body_file": "backlog/issues/LW-116.md"
+  },
+  {
+    "id": "LW-117",
+    "title": "[LW-117] Define the Ask provider interface for local, cloud and bundled models",
+    "milestone": "M2",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-017",
+      "LW-067"
+    ],
+    "body_file": "backlog/issues/LW-117.md"
+  },
+  {
+    "id": "LW-118",
+    "title": "[LW-118] Build the Ask chat panel with read-only tools and citations",
+    "milestone": "M2",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-113",
+      "LW-117",
+      "LW-058"
+    ],
+    "body_file": "backlog/issues/LW-118.md"
+  },
+  {
+    "id": "LW-119",
+    "title": "[LW-119] Surface developer clutter: build outputs, package caches, model files and stale worktrees",
+    "milestone": "M5",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-061",
+      "LW-076",
+      "LW-086",
+      "LW-087"
+    ],
+    "body_file": "backlog/issues/LW-119.md"
+  },
+  {
+    "id": "LW-120",
+    "title": "[LW-120] Add cloud and sync awareness without triggering recall",
+    "milestone": "M5",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-003",
+      "LW-004",
+      "LW-071"
+    ],
+    "body_file": "backlog/issues/LW-120.md"
+  },
+  {
+    "id": "LW-121",
+    "title": "[LW-121] Add growth and low-space monitoring with alerts",
+    "milestone": "M6",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-008",
+      "LW-051",
+      "LW-107"
+    ],
+    "body_file": "backlog/issues/LW-121.md"
+  },
+  {
+    "id": "LW-122",
+    "title": "[LW-122] Publish a rolling nightly channel and an opt-in updater",
+    "milestone": "M1",
+    "priority": "P1",
+    "status": "in_progress",
+    "depends_on": [
+      "LW-057"
+    ],
+    "body_file": "backlog/issues/LW-122.md"
+  },
+  {
+    "id": "LW-123",
+    "title": "[LW-123] Define and evidence the daily-use readiness bar",
+    "milestone": "M1",
+    "priority": "P1",
+    "status": "in_progress",
+    "depends_on": [
+      "LW-041",
+      "LW-056",
+      "LW-096"
+    ],
+    "body_file": "backlog/issues/LW-123.md"
+  },
+  {
+    "id": "LW-124",
+    "title": "[LW-124] Gate the first real effect: approved copy-and-verify",
+    "milestone": "M3",
+    "priority": "P0",
+    "status": "planned",
+    "depends_on": [
+      "LW-036",
+      "LW-038",
+      "LW-039",
+      "LW-040",
+      "LW-041"
+    ],
+    "body_file": "backlog/issues/LW-124.md"
+  },
+  {
+    "id": "LW-125",
+    "title": "[LW-125] Retire the legacy browser UI and freeze the Python reference",
+    "milestone": "M1",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-018",
+      "LW-104"
+    ],
+    "body_file": "backlog/issues/LW-125.md"
+  },
+  {
+    "id": "LW-126",
+    "title": "[LW-126] Prepare package channels: winget, Scoop bucket, Microsoft Store and a signing hook",
+    "milestone": "M1",
+    "priority": "P1",
+    "status": "planned",
+    "depends_on": [
+      "LW-057",
+      "LW-063"
+    ],
+    "body_file": "backlog/issues/LW-126.md"
+  },
+  {
+    "id": "LW-127",
+    "title": "[LW-127] Nice-to-have: NAS shares as granted roots",
+    "milestone": "MX",
+    "priority": "P2",
+    "status": "planned",
+    "depends_on": [
+      "LW-004",
+      "LW-006"
+    ],
+    "body_file": "backlog/issues/LW-127.md"
+  },
+  {
+    "id": "LW-128",
+    "title": "[LW-128] Nice-to-have: paired machines with a read-only LAN view",
+    "milestone": "MX",
+    "priority": "P2",
+    "status": "planned",
+    "depends_on": [
+      "LW-017",
+      "LW-058",
+      "LW-067"
+    ],
+    "body_file": "backlog/issues/LW-128.md"
+  },
+  {
+    "id": "LW-129",
+    "title": "[LW-129] Nice-to-have: cloud sync design (design only)",
+    "milestone": "MX",
+    "priority": "P2",
+    "status": "planned",
+    "depends_on": [
+      "LW-092",
+      "LW-067"
+    ],
+    "body_file": "backlog/issues/LW-129.md"
+  },
+  {
+    "id": "LW-130",
+    "title": "[LW-130] Observe-only Linux port after the Windows daily-use bar",
+    "milestone": "MX",
+    "priority": "P2",
+    "status": "planned",
+    "depends_on": [
+      "LW-123",
+      "LW-016"
+    ],
+    "body_file": "backlog/issues/LW-130.md"
   }
 ]
