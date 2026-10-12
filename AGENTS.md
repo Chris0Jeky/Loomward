@@ -47,8 +47,8 @@ a first measurement and must be reported as such. On Windows use `codex.cmd`, `n
 
 | You changed | Run |
 |---|---|
-| Python reference (frozen oracle), schemas, fixtures | `py -3 scripts/verify.py` (227 tests with 1 symlink-privilege skip, including the 80 admission-parity fixtures; it also runs the Rust gates when cargo is present) |
-| Rust workspace (`crates/*`, glob) | `cargo fmt --all --check`, `cargo test --workspace` (763 on Windows at 0b27935: apps 23, catalog 130, core 30, engine 164, http 66, lab 27, learn 18, protocol 36, service 112, shell 27, telemetry 34, windows 93, doc 3; native scan tests assert the elevation refusal on an elevated host such as hosted CI and run fully otherwise), `cargo clippy --workspace --all-targets -- -D warnings`; add `--all-features` for the `loomward-windows` fixture lab |
+| Python reference (frozen oracle), schemas, fixtures | `py -3 scripts/verify.py` (256 tests (2 skips), including the 80 admission-parity fixtures; it also runs the Rust gates when cargo is present) |
+| Rust workspace (`crates/*`, glob) | `cargo fmt --all --check`, `cargo test --workspace` (988 on Windows at 129373f: apps 24, backup 19, catalog 213, core 30, engine 209, http 72, lab 27, learn 18, protocol 36, service 179, shell 27, telemetry 34, windows 100; doc tests counted in their crates), `cargo clippy --workspace --all-targets -- -D warnings`; add `--all-features` for the `loomward-windows` fixture lab |
 | Svelte app (`app/`) | `npm.cmd --prefix app run check`, `run test`, `run build`, then `py -3 scripts/test_app.py` (Playwright e2e incl. Atlas and Observatory), or all four via `py -3 scripts/verify.py --app`; add `--live-serve` when you touch `loomward-http` or an app transport |
 | Python, Rust and the Svelte app in one go | `py -3 scripts/verify.py --app` (`--app` reports UNVERIFIED, never PASS, when Node, npm or `app/node_modules` is missing) |
 | Tauri shell (`native/`) | excluded from the root workspace: `cargo build`, `cargo test` (7 + 1 ignored) and `cargo clippy --all-targets -- -D warnings` with `--manifest-path native/Cargo.toml`, then `native/target/debug/loomward-desktop.exe --self-test`; `native/tests/webview2_probe.py` drives the real window |
@@ -86,7 +86,9 @@ disable, skip or weaken a failing test to advance a milestone.
    authorisation. LeaseBroker/admission is accounting, not OS enforcement.
 8. **No theatre.** No releases or packages, source retirement, backup pruning or process-policy
    changes merely to demonstrate completion. Pushes, PRs, issues and merges of reviewed work are
-   normal (T2); unsigned preview pre-releases and a rolling nightly pre-release are owner-authorised (HUMAN_TODO q-17, q-31, q-33); any other release
+   normal (T2); unsigned preview pre-releases and a rolling nightly pre-release are owner-authorised (HUMAN_TODO q-17, q-31, q-33),
+   with their bookkeeping releases `nightly-previous` (the previous nightly, kept for manual rollback) and
+   `preview-latest` (update metadata only); any other release
    or package is a tier re-review trigger.
 9. **No false claims.** Never blur the Python reference and the native engine in a report, and
    never claim native compilation, backup verification, memory optimisation, learned heat, live
@@ -94,7 +96,8 @@ disable, skip or weaken a failing test to advance a milestone.
 
 **Owner posture (2026-10-11).** The owner's data is not high-sensitivity: weigh privacy and security findings lower,
 skip extra security lenses and hardware withholding. Still forbidden because irreversible: secrets in Git and real file
-names, paths or inventories in this public repository. Owner decisions of that day are in HUMAN_TODO q-5, q-9 to q-19.
+names, paths or inventories in this public repository. Owner decisions of that day are in HUMAN_TODO q-5, q-9 to q-19;
+those of 12 October (licence, thesis, channels, nightly, Find & Ask, readiness bar) are q-20 to q-46.
 
 ## Working the product (after unbundling)
 
