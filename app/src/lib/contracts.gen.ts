@@ -198,6 +198,18 @@ export interface Capabilities {
   };
 }
 
+export interface SessionInfoFeatures {
+  grant_picker: boolean;
+  disclosure_dialog: boolean;
+  teacher_available: boolean;
+  telemetry_available: boolean;
+  gpu_available: boolean;
+  /** The desktop adapter's Rust-side save dialog for diagnostics.save (docs/42 ADR-V3-24). */
+  diagnostics_save: boolean;
+}
+
+export type HealthWarningCode = "catalog_writer_backlog" | "low_state_disk" | "scan_throttled" | "telemetry_unavailable" | "teacher_failed" | "root_identity_changed" | "event_stream_lagging";
+
 export interface SessionInfo {
   protocol: Protocol;
   engine_version: string;
@@ -206,13 +218,7 @@ export interface SessionInfo {
   session_started_at: Timestamp;
   enumeration_strategy: EnumerationStrategy;
   capabilities: Capabilities;
-  features: {
-    grant_picker: boolean;
-    disclosure_dialog: boolean;
-    teacher_available: boolean;
-    telemetry_available: boolean;
-    gpu_available: boolean;
-  };
+  features: SessionInfoFeatures;
   limits: {
     max_request_bytes: Count;
     max_slice_nodes: Count;
@@ -221,7 +227,7 @@ export interface SessionInfo {
 }
 
 export interface HealthWarning {
-  code: "catalog_writer_backlog" | "low_state_disk" | "scan_throttled" | "telemetry_unavailable" | "teacher_failed" | "root_identity_changed" | "event_stream_lagging";
+  code: HealthWarningCode;
   message: string;
   at: Timestamp;
 }
@@ -1730,6 +1736,118 @@ export interface BackupForgetResult {
   forgotten_at: Timestamp;
 }
 
+/** A fixed snake_case token chosen by the service; never input, a path or an OS message. */
+export type UnknownReason = string;
+
+/** A value the bundle could not read: visible, never omitted and never zero (invariant 4). */
+export interface DiagnosticUnknown {
+  unknown: UnknownReason;
+}
+
+export type DiagnosticsOsFamily = "windows" | "other";
+
+/** The filesystem family, never the volume name, label or serial. */
+export type DiagnosticsFilesystem = "ntfs" | "refs" | "fat" | "fat32" | "exfat" | "other";
+
+export type DiagnosticsIdentityMode = "verified" | "unverified";
+
+/** Keyed only by the opaque root ID: no path, name or volume label. */
+export interface DiagnosticsRoot {
+  root_id: RootId;
+  origin: "fixture" | "lab_generated" | "owner_granted";
+  grant_state: "active" | "revoked" | "identity_changed";
+  scan_state: "never_scanned" | "scanning" | "complete" | "partial" | "stale" | "failed";
+  coverage: CoverageState;
+  filesystem: DiagnosticsFilesystem | DiagnosticUnknown;
+  identity_mode: DiagnosticsIdentityMode;
+}
+
+export interface DiagnosticsJobCount {
+  kind: JobKind;
+  state: JobState;
+  count: Count;
+}
+
+/** An allowlist by construction (docs/42 ADR-V3-24): no path, file or folder name, volume label or serial, process name or argument, label text, collection name, receipt or message. */
+export interface DiagnosticsBundle {
+  format: "loomward-diagnostics/1";
+  generated_at: Timestamp;
+  loomward: {
+    engine_version: string;
+    protocol: Protocol;
+    adapter: "tauri" | "http";
+    dataset_class: DatasetClass;
+    enumeration_strategy: EnumerationStrategy;
+  };
+  /** Owner decision q-16 allows host hardware in new evidence; the bundle keeps it to these. */
+  host: {
+    os_family: DiagnosticsOsFamily;
+    os_build: Count | DiagnosticUnknown;
+    logical_processors: Count | DiagnosticUnknown;
+    memory_total_bytes: ByteCount | DiagnosticUnknown;
+  };
+  session: {
+    capabilities: Capabilities;
+    features: SessionInfoFeatures;
+  };
+  health: {
+    engine_private_commit_bytes: ByteCount | DiagnosticUnknown;
+    engine_cpu_ms: Count | DiagnosticUnknown;
+    catalog_db_bytes: ByteCount | DiagnosticUnknown;
+    catalog_wal_bytes: ByteCount | DiagnosticUnknown;
+    writer_queue_depth: Count;
+    writer_queue_capacity: Count;
+    jobs_running: Count;
+    warning_codes: HealthWarningCode[];
+  } | DiagnosticUnknown;
+  stores: {
+    catalog_schema_version: Count | DiagnosticUnknown;
+    state_schema_version: Count | DiagnosticUnknown;
+    catalog_files: Count | DiagnosticUnknown;
+    catalog_dirs: Count | DiagnosticUnknown;
+  };
+  counts: {
+    roots_active: Count;
+    roots_revoked: Count;
+    roots_identity_changed: Count;
+    roots_forgotten: Count;
+    collections: Count;
+    human_feedback_records: Count;
+    teacher_label_records: Count;
+    backup_evidence: Count;
+  } | DiagnosticUnknown;
+  jobs: {
+    window: Count;
+    by_kind_state: DiagnosticsJobCount[];
+  } | DiagnosticUnknown;
+  roots: DiagnosticsRoot[] | DiagnosticUnknown;
+  recent_errors: ErrorCode[] | DiagnosticUnknown;
+}
+
+export interface DiagnosticsPreviewResult {
+  bundle: DiagnosticsBundle;
+  /** Length of the exact UTF-8 serialisation diagnostics.save writes. */
+  bytes: ByteCount;
+  /** SHA-256 of those bytes. */
+  digest: Digest;
+}
+
+/** Tauri adapter only. The digest of the preview the owner saw; Rust opens the native save dialog and the webview never supplies a path. */
+export interface DiagnosticsSaveRequest {
+  digest: Digest;
+}
+
+export type DiagnosticsSaveOutcome = "saved" | "cancelled_by_user" | "refused";
+
+export type DiagnosticsSaveRefusal = "preview_changed" | "unsupported_target" | "write_failed";
+
+/** Never the chosen path: it stays in Rust. */
+export interface DiagnosticsSaveResult {
+  outcome: DiagnosticsSaveOutcome;
+  bytes_written: NullableBytes;
+  refusal: DiagnosticsSaveRefusal | null;
+}
+
 // ---- commands (commands.json)
 
 export interface CommandMap {
@@ -1787,6 +1905,8 @@ export interface CommandMap {
   "backups.list": { request: EmptyRequest; result: BackupEvidenceList };
   "backups.import": { request: BackupImportRequest; result: BackupImportResult };
   "backups.forget": { request: BackupForgetRequest; result: BackupForgetResult };
+  "diagnostics.preview": { request: EmptyRequest; result: DiagnosticsPreviewResult };
+  "diagnostics.save": { request: DiagnosticsSaveRequest; result: DiagnosticsSaveResult };
 }
 
 export type CommandKey = keyof CommandMap;
@@ -1847,6 +1967,8 @@ export const COMMANDS = {
   "backups.list": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "backups.import": { adapters: ["tauri"], wave: 3, events: [] },
   "backups.forget": { adapters: ["tauri", "http"], wave: 3, events: [] },
+  "diagnostics.preview": { adapters: ["tauri", "http"], wave: 3, events: [] },
+  "diagnostics.save": { adapters: ["tauri"], wave: 3, events: [] },
 } as const satisfies Record<CommandKey, {
   adapters: readonly ("tauri" | "http")[];
   wave: number;

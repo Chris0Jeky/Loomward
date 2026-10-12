@@ -483,6 +483,72 @@ than change their meaning.
 without a gate. Accept receipt text over IPC: rejected, the webview would choose what the service reads.
 **Reversibility.** Two-way: dropping the table and three commands removes stage 1.
 
+## ADR-V3-24: The first file write is a redacted diagnostic bundle, saved through a Rust dialog (new)
+
+**Context.** LW-055 asks for diagnostic bundles that exclude or redact secrets, paths and process arguments,
+that the owner approves before anything leaves the preview, that keep failure and missing coverage visible, and
+that are never uploaded. The owner chose the delivery (HUMAN_TODO q-15): the desktop app writes the redacted
+bundle to a file the owner picks in a Rust-side save dialog, as Loomward's first file write, behind its own
+small gate: the path never crosses IPC, only the previewed bytes are written, and the target is a new file or an
+owner-confirmed replace. Owner decision q-16 allows host hardware in new evidence.
+**Decision.** Two commands. `diagnostics.preview` (both adapters, every dataset class, read-only) returns the
+bundle, the byte count and the SHA-256 digest of its exact UTF-8 serialisation, and keeps those bytes in one
+in-memory slot. `diagnostics.save {digest}` (desktop adapter only; HTTP answers `capability_unavailable`) writes
+the held bytes only when the digest matches (otherwise `refused` / `preview_changed`, before any dialog opens),
+to a file the owner picks in a parented native save dialog, and answers `saved` with `bytes_written`,
+`cancelled_by_user` or `refused`, never the path. It is a mutation (a retried `request_id` replays the outcome
+and never writes twice) without a ticket, sharing the pickers' one-dialog lock and 2 s cooldown.
+**Assumptions (named; each reversible by a later ADR).**
+1. *The bundle is an allowlist by construction.* Every field is a typed DTO member (`DiagnosticsBundle`, every
+   struct `deny_unknown_fields`, closed in the schema): Loomward version, protocol, adapter, dataset class and
+   enumeration strategy; OS family, build number, logical processor count and installed RAM (q-16, nothing
+   more); session capabilities and features; `health.get` without messages (warning codes only); catalogue and
+   state schema versions and catalogue file and folder counts; counts of roots by grant state and forgotten,
+   collections, human feedback records, teacher label records and backup evidence records; jobs counted by kind
+   and state over the newest 50; per root its opaque ID, origin, grant state, scan state, coverage, filesystem
+   family (an enum, never the volume's name, label or serial) and identity mode; and recent error codes, which
+   the service does not retain, so that field is always `{"unknown": "not_retained"}`. Nothing is scrubbed from a
+   richer structure. Never: a path, a file or folder name, a volume label, serial or key, a process name or
+   argument, a label or teacher prompt, a collection name, a receipt or any error message.
+2. *Unknown is a value.* A field that cannot be read is `{"unknown": "<reason>"}`, never omitted, null or zero
+   (invariant 4); the reason is a fixed snake_case token (`UnknownReason`), so it cannot echo input or an OS
+   message.
+3. *The canonical text is the bundle with sorted keys, indented two spaces, no floating-point numbers.* The
+   service writes `serde_json` pretty output of the wire value; the app reproduces it with
+   `JSON.stringify(sortedKeys(bundle), null, 2)`, checks it against the reported size and digest, shows exactly
+   that text and offers Save only when it matches. CPU time is whole milliseconds for this reason.
+4. *Synthetic and personal sessions both save.* The bundle carries no personal data, so the save dialog opens in
+   every session, unlike the folder and receipt pickers (personal only). `features.diagnostics_save` advertises it
+   (true where a native dialog exists).
+5. *Loomward confirms a replace itself.* rfd 0.17 opens `IFileSaveDialog` without changing its options, and
+   whether its documented `FOS_OVERWRITEPROMPT` default holds was never observed. So when the chosen file exists,
+   the service asks `NativeDialogs::confirm_replace` (an app-owned box naming the file, Cancel the default);
+   a decline is `cancelled_by_user` and writes nothing.
+6. *`capabilities.effects.file_write` stays `false`.* That matrix describes effects on the owner's files under a
+   grant (invariant 1). The export is listed instead as the one command whose `commands.json` `effects` is
+   `owner_picked_export`, and the contract test pins that no other command has an effect.
+**The write gate.** `write_export` refuses, before writing anything: a relative path; network, device and
+verbatim namespaces (`\server`, `\?\UNC`, `\.\`, `\?\GLOBALROOT`, `\?\Volume{..}`; only `\?\C:\` is
+local); Windows device names (`CON`, `COM1 .json`); a stream name (`:`); a parent folder whose canonical location
+is a network path or not a directory (local junctions and links among the ancestors are followed); and an
+existing final component that is not a regular file or is a link, reparse point or cloud placeholder (the same lexical and
+metadata checks as the receipt reader, shared in `paths.rs`). It writes the bytes to a new temporary file in the
+same directory (`create_new`), flushes it, and renames it over the target: a rename replaces the directory entry,
+so it never follows a link the target became meanwhile, and a failed write removes the temporary file and
+leaves the target as it was. `crates/loomward-service/tests/diagnostics_mutations.py` removes each guard in turn
+and a test fails for every one (14 mutants).
+**Still forbidden.** No upload, no automatic or background bundle, no write anywhere but the owner-picked file,
+no path or bytes from the webview, no general write or export endpoint, and no other file effect: invariant 1
+is unchanged for every other capability.
+**Consequences.** Good: the owner can attach an honest bug-report bundle without revealing names or paths.
+Bad: the bundle omits what could identify a problem in a specific folder; the owner describes that in words.
+Neutral: a crash between creating and renaming the temporary file leaves a hidden
+`.loomward-diagnostics-*.partial` beside the target.
+**Alternatives.** Copy to the clipboard or show only: rejected by the owner's choice. Accept a path or bytes over
+IPC: rejected, the webview would choose what Loomward writes and where. Scrub a full state export: rejected, a
+scrubber misses what it does not know.
+**Reversibility.** Two-way: removing the two commands and the dialog method removes the gate.
+
 ## ADR-V3-25: Copy-and-verify is the first file effect: handle-bound, staged, journaled, verified, never destructive (new)
 
 **Status.** Proposed (2026-10-12). It records the design only: no effect is authorised until the gate PR (doc 47

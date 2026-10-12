@@ -9,6 +9,7 @@ import { createScanMock } from './mock-scan';
 import { createViewMock } from './mock-views';
 import { createInventoryMock } from './mock-inventory';
 import { createBackupMock } from './mock-backups';
+import diagnosticsFixture from '../../../../contracts/v3/examples/commands/diagnostics.preview.result.json';
 import { generateTree, prng, type SynthNode } from './synth';
 import type { Transport } from './transport';
 
@@ -303,7 +304,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
         observation: { metadata_scan: true, process_observation: true, gpu_observation: false, disk_io_observation: false, teacher_disclosure: false },
         effects: { file_move: false, file_delete: false, file_rename: false, file_write: false, content_read: false, process_kill: false, process_suspend: false, process_priority: false, memory_trim: false, uninstall: false, elevation: false },
       },
-      features: { grant_picker: false, disclosure_dialog: false, teacher_available: false, telemetry_available: true, gpu_available: true },
+      features: { grant_picker: false, disclosure_dialog: false, teacher_available: false, telemetry_available: true, gpu_available: true, diagnostics_save: false },
       limits: { max_request_bytes: 65536, max_slice_nodes: 6000, max_page_items: 200 },
     }),
     'health.get': (): Health => ({
@@ -344,6 +345,12 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     ...views.handlers,
     ...createInventoryMock(now, fail),
     ...createBackupMock(now, fail),
+    // The contract's synthetic bundle, whose size and digest are those of its canonical text. Like HTTP, the mock
+    // has no Rust-owned save dialog, so diagnostics.save answers capability_unavailable.
+    'diagnostics.preview': (p) => {
+      if (Object.keys(p).length) fail('invalid_request', 'diagnostics.preview takes no fields');
+      return structuredClone(diagnosticsFixture);
+    },
     'roots.revoke': (p) => {
       const r = views.handlers['roots.revoke']!(p) as RootRevokeResult;
       scan.revoke(r.root_id);

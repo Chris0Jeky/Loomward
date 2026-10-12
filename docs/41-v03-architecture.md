@@ -280,7 +280,7 @@ No command accepts a path string; `DisplayPath` is output-only.
 
 ### 5.2 Commands
 
-All 45 commands have `effects: none`. Bold rows exist only on the desktop adapter.
+Every command has `effects: none` except `diagnostics.save` (`owner_picked_export`, ADR-V3-24). Bold rows exist only on the desktop adapter.
 
 | Area | Command | Request | Result | Notes |
 |---|---|---|---|---|
@@ -311,6 +311,8 @@ All 45 commands have `effects: none`. Bold rows exist only on the desktop adapte
 | | `teacher.results` | `JobRefRequest` | `TeacherResults` | `data_class: teacher`, weight 0.2, `requires_review: true` |
 | Placement | `tiers.model`, `placement.candidates`, `placement.simulate`, `proposals.list`, `proposals.get` | | | Simulation only; `pre_rejected`, `excluded_volumes`, relief basis (section 10) |
 | Companion | `telemetry.subscribe` / `.unsubscribe` / `.snapshot`, `processes.list` / `.explain`, `budgets.get` / `.set` | | | Leases; read-only; own pools only |
+| Diagnostics | `diagnostics.preview` | `EmptyRequest` | `DiagnosticsPreviewResult` | Redacted allowlist bundle with the size and SHA-256 of its exact text; writes nothing (LW-055, q-15) |
+| | **`diagnostics.save`** | `DiagnosticsSaveRequest` | `DiagnosticsSaveResult` | Writes exactly the previewed bytes, named by digest, to a file the owner picks in a Rust save dialog; the path never crosses IPC (ADR-V3-24) |
 
 **Events.** `stream.hello`, `stream.lagged`, `job.state`, `scan.progress` (at most 4/s per job),
 `tree.invalidated` (at most 2/s per root), `telemetry.sample`, `learning.updated`, `roots.changed`,
@@ -846,7 +848,7 @@ flowchart LR
 | Revocation racing a scan | Revocation commits in `state.db` first, updates the engine's revoked set, cancels the root's run, and the writer drops any later message for that grant |
 | Scanning outside a grant | Only granted roots; root identity and post-open attributes re-verified; reparse points never followed; volume roots only through the owner's native grant (Q1, ADR-V3-08), never agent-picked |
 | Silent reach | No automatic scans, model downloads, network calls, installs, elevation or global config changes; telemetry only under a lease |
-| Tauri capability creep | Webview capability lists only `lw_call` and `lw_events`; no fs, shell, http, process or updater plugin permissions; dialog plugin used from Rust only |
+| Tauri capability creep | Webview capability lists only `lw_call`, `lw_events` and the opt-in `lw_update` (q-30; no URL, path or file argument); no fs, shell, http, process or updater plugin permissions; dialog and updater used from Rust only |
 
 ## 13. Frontend architecture (`app/`)
 

@@ -1690,6 +1690,8 @@ fn every_command_answers_a_complete_envelope_and_core_reads_serve_the_catalogue(
                     | Command::BackupsList
                     | Command::BackupsImport
                     | Command::BackupsForget
+                    | Command::DiagnosticsPreview
+                    | Command::DiagnosticsSave
             ))
             || command == Command::RootsRequestGrant
         {
@@ -4287,3 +4289,7 @@ fn a_live_scanned_ntfs_grant_can_be_labelled_and_collected() {
 #[cfg(test)]
 #[path = "backups_tests.rs"]
 mod backups_tests;
+
+#[cfg(test)]
+#[path = "diagnostics_tests.rs"]
+mod diagnostics_tests;

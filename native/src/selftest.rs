@@ -125,6 +125,34 @@ pub fn run(log: &mut dyn FnMut(&str)) -> bool {
     );
 
     report(
+        "updates: no request without a click or the check-on-start opt-in",
+        (|| {
+            use crate::updates::{Trigger, Updates};
+            let ask = |_: isize, _: &str, _: &str| false;
+            // No state directory touched: fixtures mode, and a configured build with default prefs.
+            let fixtures = Updates::with_prompt(None, true, "0.1.0", ask);
+            check(
+                fixtures.plan(Trigger::User, false).is_err(),
+                "fixtures mode",
+            )?;
+            let fresh = Updates::with_prompt(
+                Some(std::env::temp_dir().join("loomward-selftest-no-prefs")),
+                true,
+                "0.1.0",
+                ask,
+            );
+            check(
+                fresh.plan(Trigger::Startup, false).is_err(),
+                "start check is off",
+            )?;
+            check(
+                fresh.plan(Trigger::User, false).is_ok(),
+                "a click may check",
+            )
+        })(),
+    );
+
+    report(
         "lw_call: every command returns a complete envelope",
         (|| {
             for &command in Command::ALL {
@@ -375,11 +403,11 @@ pub fn run(log: &mut dyn FnMut(&str)) -> bool {
     for (dataset, name) in [
         (
             DatasetClass::Synthetic,
-            "engine service (synthetic, scratch state): hello, picker refused, stream.hello first",
+            "engine service (synthetic, scratch state): hello, picker refused, bundle preview, stale save refused, stream.hello first",
         ),
         (
             DatasetClass::Personal,
-            "default session: personal engine service (scratch state) offers the native picker",
+            "default session: personal engine service (scratch state) offers the native picker and the bundle save",
         ),
     ] {
         report(name, engine_session(dataset));
@@ -421,6 +449,24 @@ fn engine_session(dataset: DatasetClass) -> Result<(), String> {
         check(
             scratch.join("state.db").is_file(),
             "state.db is not in the state directory",
+        )?;
+        check(
+            hello["features"]["diagnostics_save"] == json!(true),
+            "the save dialog is not advertised",
+        )?;
+        let r = desktop.call(&envelope("diagnostics.preview", json!({})))?;
+        let preview = ok_result(&r)?;
+        let digest = preview.get("digest").and_then(Value::as_str).unwrap_or("");
+        check(
+            digest.starts_with("sha256:")
+                && preview["bundle"]["loomward"]["adapter"] == json!("tauri"),
+            "diagnostics.preview",
+        )?;
+        let stale = format!("sha256:{}", "0".repeat(64));
+        let r = desktop.call(&envelope("diagnostics.save", json!({ "digest": stale })))?;
+        check(
+            ok_result(&r)?.get("refusal") == Some(&json!("preview_changed")),
+            "a stale digest reached the save dialog",
         )?;
         if !personal {
             let r = desktop.call(&envelope(

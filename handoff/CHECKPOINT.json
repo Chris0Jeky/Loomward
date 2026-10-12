@@ -109,7 +109,7 @@
   "remote_publication": true,
   "independent_subagents_used": false,
   "hard_gates": [
-    "No user-file or process effects",
+    "No user-file or process effects (one owner-initiated exception: diagnostics.save writes the previewed redacted bundle to a file the owner picks and confirms, ADR-V3-24)",
     "No automatic installs, elevation, model downloads or account connections",
     "No agent approval/apply authority",
     "No private metadata or secrets in Git",
@@ -308,6 +308,14 @@
     "rule": "a personal session scans its own active owner grants (desktop picker or --grant-root); revoked, lab and unknown roots are refused; metadata only; no new effect, endpoint or elevation (duplicate content reads opened later: personal_duplicates)",
     "evidence": "evidence/v3/personal-scan-opening.md"
   },
+  "diagnostics_bundle": {
+    "state": "open",
+    "opened": "2026-10-12",
+    "decision": "HUMAN_TODO q-15 (native save dialog), q-16 (host hardware allowed in new evidence)",
+    "rule": "Loomward's first file write: diagnostics.preview builds a redacted allowlist bundle (typed fields only; no path, name, volume label or key, process, label, collection name, receipt or message; unread values are explicit unknowns) and holds its exact bytes; diagnostics.save (desktop only, every session) writes exactly those bytes, only for the matching digest, to a file the owner picks in a Rust save dialog; the path never crosses IPC; relative, network, device, verbatim, device-name and stream targets refused, a parent folder that resolves to a network path refused (local junctions are followed), and a final component that is a link, reparse point or not a regular file refused; temporary file renamed over the target; an existing file is replaced only after Loomward's own Cancel-default confirmation; no upload; commands.json effects owner_picked_export for this command only",
+    "not_yet": "no person has driven the real save dialog or the replace confirmation yet; automated tests reach them only through stand-ins (no probe leg covers them)",
+    "evidence": "evidence/v3/diagnostics-bundle-q15.md"
+  },
   "personal_duplicates": {
     "state": "open",
     "opened": "2026-10-11",
@@ -430,7 +438,7 @@
     "rust_tests_at_b00c564": 917,
     "app_vitest": 383,
     "python_tests": 227,
-    "wired_commands": "contract 54 commands after #382 (roots.forget; backups.list, backups.import, backups.forget from #383); state schema v7; counts above measured before #382 (its lane: 936 workspace tests at 39b372e)",
+    "wired_commands": "contract 56 commands after #399 (diagnostics.preview, diagnostics.save; was 54 after #382 (roots.forget; backups.list, backups.import, backups.forget from #383)); state schema v7; counts above measured before #382 (its lane: 936 workspace tests at 39b372e)",
     "p4": "first full scans build in bulk tables and publish atomically (#387); 250k not reached; quiet-host A/B unverified (#148)",
     "p14": "regressed 155 to 230 bytes/entry at 1M under the bulk path; freed build pages stay on the freelist (#386)",
     "crash_recovery": "a host shutdown zeroed the primary .git/config and six manifests in one worktree; config rebuilt, manifests restored from Git, every checkout scanned",

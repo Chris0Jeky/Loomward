@@ -182,6 +182,20 @@
         }
       }
     },
+    "SessionInfoFeatures": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["grant_picker", "disclosure_dialog", "teacher_available", "telemetry_available", "gpu_available", "diagnostics_save"],
+      "properties": {
+        "grant_picker": { "type": "boolean" },
+        "disclosure_dialog": { "type": "boolean" },
+        "teacher_available": { "type": "boolean" },
+        "telemetry_available": { "type": "boolean" },
+        "gpu_available": { "type": "boolean" },
+        "diagnostics_save": { "type": "boolean", "$comment": "The desktop adapter's Rust-side save dialog for diagnostics.save (docs/42 ADR-V3-24)." }
+      }
+    },
+    "HealthWarningCode": { "enum": ["catalog_writer_backlog", "low_state_disk", "scan_throttled", "telemetry_unavailable", "teacher_failed", "root_identity_changed", "event_stream_lagging"] },
     "SessionInfo": {
       "type": "object",
       "additionalProperties": false,
@@ -194,18 +208,7 @@
         "session_started_at": { "$ref": "#/$defs/Timestamp" },
         "enumeration_strategy": { "$ref": "#/$defs/EnumerationStrategy" },
         "capabilities": { "$ref": "#/$defs/Capabilities" },
-        "features": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["grant_picker", "disclosure_dialog", "teacher_available", "telemetry_available", "gpu_available"],
-          "properties": {
-            "grant_picker": { "type": "boolean" },
-            "disclosure_dialog": { "type": "boolean" },
-            "teacher_available": { "type": "boolean" },
-            "telemetry_available": { "type": "boolean" },
-            "gpu_available": { "type": "boolean" }
-          }
-        },
+        "features": { "$ref": "#/$defs/SessionInfoFeatures" },
         "limits": {
           "type": "object",
           "additionalProperties": false,
@@ -223,7 +226,7 @@
       "additionalProperties": false,
       "required": ["code", "message", "at"],
       "properties": {
-        "code": { "enum": ["catalog_writer_backlog", "low_state_disk", "scan_throttled", "telemetry_unavailable", "teacher_failed", "root_identity_changed", "event_stream_lagging"] },
+        "code": { "$ref": "#/$defs/HealthWarningCode" },
         "message": { "type": "string", "maxLength": 512 },
         "at": { "$ref": "#/$defs/Timestamp" }
       }
@@ -2925,6 +2928,19 @@
     "BackupImportRefusal": {"enum": ["synthetic_session", "not_a_regular_file", "unreadable", "too_large", "invalid_json", "invalid_receipt", "invalid_source", "repository_limit"]},
     "BackupImportResult": {"type": "object", "additionalProperties": false, "required": ["outcome", "evidence", "refusal"], "properties": {"outcome": {"$ref": "#/$defs/BackupImportOutcome"}, "evidence": {"anyOf": [{"$ref": "#/$defs/BackupEvidence"}, {"type": "null"}]}, "refusal": {"anyOf": [{"$ref": "#/$defs/BackupImportRefusal"}, {"type": "null"}]}}},
     "BackupForgetRequest": {"type": "object", "additionalProperties": false, "required": ["evidence_id"], "properties": {"evidence_id": {"$ref": "#/$defs/BackupEvidenceId"}}},
-    "BackupForgetResult": {"type": "object", "additionalProperties": false, "required": ["evidence_id", "forgotten_at"], "properties": {"evidence_id": {"$ref": "#/$defs/BackupEvidenceId"}, "forgotten_at": {"$ref": "#/$defs/Timestamp"}}, "$comment": "Removes Loomward's own record only; never touches a backup or a file."}
+    "BackupForgetResult": {"type": "object", "additionalProperties": false, "required": ["evidence_id", "forgotten_at"], "properties": {"evidence_id": {"$ref": "#/$defs/BackupEvidenceId"}, "forgotten_at": {"$ref": "#/$defs/Timestamp"}}, "$comment": "Removes Loomward's own record only; never touches a backup or a file."},
+    "UnknownReason": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$", "$comment": "A fixed snake_case token chosen by the service; never input, a path or an OS message."},
+    "DiagnosticUnknown": {"type": "object", "additionalProperties": false, "required": ["unknown"], "properties": {"unknown": {"$ref": "#/$defs/UnknownReason"}}, "$comment": "A value the bundle could not read: visible, never omitted and never zero (invariant 4)."},
+    "DiagnosticsOsFamily": {"enum": ["windows", "other"]},
+    "DiagnosticsFilesystem": {"enum": ["ntfs", "refs", "fat", "fat32", "exfat", "other"], "$comment": "The filesystem family, never the volume name, label or serial."},
+    "DiagnosticsIdentityMode": {"enum": ["verified", "unverified"]},
+    "DiagnosticsRoot": {"type": "object", "additionalProperties": false, "required": ["root_id", "origin", "grant_state", "scan_state", "coverage", "filesystem", "identity_mode"], "properties": {"root_id": {"$ref": "#/$defs/RootId"}, "origin": {"enum": ["fixture", "lab_generated", "owner_granted"]}, "grant_state": {"enum": ["active", "revoked", "identity_changed"]}, "scan_state": {"enum": ["never_scanned", "scanning", "complete", "partial", "stale", "failed"]}, "coverage": {"$ref": "#/$defs/CoverageState"}, "filesystem": {"anyOf": [{"$ref": "#/$defs/DiagnosticsFilesystem"}, {"$ref": "#/$defs/DiagnosticUnknown"}]}, "identity_mode": {"$ref": "#/$defs/DiagnosticsIdentityMode"}}, "$comment": "Keyed only by the opaque root ID: no path, name or volume label."},
+    "DiagnosticsJobCount": {"type": "object", "additionalProperties": false, "required": ["kind", "state", "count"], "properties": {"kind": {"$ref": "#/$defs/JobKind"}, "state": {"$ref": "#/$defs/JobState"}, "count": {"$ref": "#/$defs/Count"}}},
+    "DiagnosticsBundle": {"type": "object", "additionalProperties": false, "required": ["format", "generated_at", "loomward", "host", "session", "health", "stores", "counts", "jobs", "roots", "recent_errors"], "properties": {"format": {"const": "loomward-diagnostics/1"}, "generated_at": {"$ref": "#/$defs/Timestamp"}, "loomward": {"type": "object", "additionalProperties": false, "required": ["engine_version", "protocol", "adapter", "dataset_class", "enumeration_strategy"], "properties": {"engine_version": {"type": "string", "maxLength": 64}, "protocol": {"$ref": "#/$defs/Protocol"}, "adapter": {"enum": ["tauri", "http"]}, "dataset_class": {"$ref": "#/$defs/DatasetClass"}, "enumeration_strategy": {"$ref": "#/$defs/EnumerationStrategy"}}}, "host": {"type": "object", "additionalProperties": false, "required": ["os_family", "os_build", "logical_processors", "memory_total_bytes"], "properties": {"os_family": {"$ref": "#/$defs/DiagnosticsOsFamily"}, "os_build": {"anyOf": [{"$ref": "#/$defs/Count"}, {"$ref": "#/$defs/DiagnosticUnknown"}]}, "logical_processors": {"anyOf": [{"$ref": "#/$defs/Count"}, {"$ref": "#/$defs/DiagnosticUnknown"}]}, "memory_total_bytes": {"anyOf": [{"$ref": "#/$defs/ByteCount"}, {"$ref": "#/$defs/DiagnosticUnknown"}]}}, "$comment": "Owner decision q-16 allows host hardware in new evidence; the bundle keeps it to these."}, "session": {"type": "object", "additionalProperties": false, "required": ["capabilities", "features"], "properties": {"capabilities": {"$ref": "#/$defs/Capabilities"}, "features": {"$ref": "#/$defs/SessionInfoFeatures"}}}, "health": {"anyOf": [{"type": "object", "additionalProperties": false, "required": ["engine_private_commit_bytes", "engine_cpu_ms", "catalog_db_bytes", "catalog_wal_bytes", "writer_queue_depth", "writer_queue_capacity", "jobs_running", "warning_codes"], "properties": {"engine_private_commit_bytes": {"anyOf": [{"$ref": "#/$defs/ByteCount"}, {"$ref": "#/$defs/DiagnosticUnknown"}]}, "engine_cpu_ms": {"anyOf": [{"$ref": "#/$defs/Count"}, {"$ref": "#/$defs/DiagnosticUnknown"}]}, "catalog_db_bytes": {"anyOf": [{"$ref": "#/$defs/ByteCount"}, {"$ref": "#/$defs/DiagnosticUnknown"}]}, "catalog_wal_bytes": {"anyOf": [{"$ref": "#/$defs/ByteCount"}, {"$ref": "#/$defs/DiagnosticUnknown"}]}, "writer_queue_depth": {"$ref": "#/$defs/Count"}, "writer_queue_capacity": {"$ref": "#/$defs/Count"}, "jobs_running": {"$ref": "#/$defs/Count"}, "warning_codes": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/HealthWarningCode"}}}, "$comment": "health.get without messages: warning codes only."}, {"$ref": "#/$defs/DiagnosticUnknown"}]}, "stores": {"type": "object", "additionalProperties": false, "required": ["catalog_schema_version", "state_schema_version", "catalog_files", "catalog_dirs"], "properties": {"catalog_schema_version": {"anyOf": [{"$ref": "#/$defs/Count"}, {"$ref": "#/$defs/DiagnosticUnknown"}]}, "state_schema_version": {"anyOf": [{"$ref": "#/$defs/Count"}, {"$ref": "#/$defs/DiagnosticUnknown"}]}, "catalog_files": {"anyOf": [{"$ref": "#/$defs/Count"}, {"$ref": "#/$defs/DiagnosticUnknown"}]}, "catalog_dirs": {"anyOf": [{"$ref": "#/$defs/Count"}, {"$ref": "#/$defs/DiagnosticUnknown"}]}}}, "counts": {"anyOf": [{"type": "object", "additionalProperties": false, "required": ["roots_active", "roots_revoked", "roots_identity_changed", "roots_forgotten", "collections", "human_feedback_records", "teacher_label_records", "backup_evidence"], "properties": {"roots_active": {"$ref": "#/$defs/Count"}, "roots_revoked": {"$ref": "#/$defs/Count"}, "roots_identity_changed": {"$ref": "#/$defs/Count"}, "roots_forgotten": {"$ref": "#/$defs/Count"}, "collections": {"$ref": "#/$defs/Count"}, "human_feedback_records": {"$ref": "#/$defs/Count"}, "teacher_label_records": {"$ref": "#/$defs/Count"}, "backup_evidence": {"$ref": "#/$defs/Count"}}, "$comment": "Counts only: never a collection name, a label or a receipt."}, {"$ref": "#/$defs/DiagnosticUnknown"}]}, "jobs": {"anyOf": [{"type": "object", "additionalProperties": false, "required": ["window", "by_kind_state"], "properties": {"window": {"$ref": "#/$defs/Count"}, "by_kind_state": {"type": "array", "maxItems": 24, "items": {"$ref": "#/$defs/DiagnosticsJobCount"}}}, "$comment": "Counted over the newest window jobs the engine lists."}, {"$ref": "#/$defs/DiagnosticUnknown"}]}, "roots": {"anyOf": [{"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/DiagnosticsRoot"}}, {"$ref": "#/$defs/DiagnosticUnknown"}]}, "recent_errors": {"anyOf": [{"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/ErrorCode"}}, {"$ref": "#/$defs/DiagnosticUnknown"}]}}, "$comment": "An allowlist by construction (docs/42 ADR-V3-24): no path, file or folder name, volume label or serial, process name or argument, label text, collection name, receipt or message."},
+    "DiagnosticsPreviewResult": {"type": "object", "additionalProperties": false, "required": ["bundle", "bytes", "digest"], "properties": {"bundle": {"$ref": "#/$defs/DiagnosticsBundle"}, "bytes": {"$ref": "#/$defs/ByteCount", "$comment": "Length of the exact UTF-8 serialisation diagnostics.save writes."}, "digest": {"$ref": "#/$defs/Digest", "$comment": "SHA-256 of those bytes."}}},
+    "DiagnosticsSaveRequest": {"type": "object", "additionalProperties": false, "required": ["digest"], "properties": {"digest": {"$ref": "#/$defs/Digest"}}, "$comment": "Tauri adapter only. The digest of the preview the owner saw; Rust opens the native save dialog and the webview never supplies a path."},
+    "DiagnosticsSaveOutcome": {"enum": ["saved", "cancelled_by_user", "refused"]},
+    "DiagnosticsSaveRefusal": {"enum": ["preview_changed", "unsupported_target", "write_failed"]},
+    "DiagnosticsSaveResult": {"type": "object", "additionalProperties": false, "required": ["outcome", "bytes_written", "refusal"], "properties": {"outcome": {"$ref": "#/$defs/DiagnosticsSaveOutcome"}, "bytes_written": {"$ref": "#/$defs/NullableBytes"}, "refusal": {"anyOf": [{"$ref": "#/$defs/DiagnosticsSaveRefusal"}, {"type": "null"}]}}, "$comment": "Never the chosen path: it stays in Rust."}
   }
 }

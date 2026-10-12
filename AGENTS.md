@@ -62,6 +62,9 @@ disable, skip or weaken a failing test to advance a milestone.
 1. **No file or process effects** (move, delete, uninstall, kill, suspend, priority, trim) until
    the specific `LW-*` issue and its Windows safety gate authorise that capability. Never add a
    general execute, shell, delete or kill endpoint, through HTTP, IPC or MCP.
+   The one file write opened so far is the q-15 diagnostic bundle (LW-055, ADR-V3-24): only the
+   previewed, redacted bytes, to a new file or an owner-confirmed overwrite chosen in the Rust-side
+   save dialog; the path never crosses IPC. It is not a general write capability.
 2. **No silent reach.** No automatic cloud requests, model downloads, installers, global config
    changes, elevation or whole-disk scans. Real-disk scans take an explicit root, non-elevated,
    metadata only, with state outside it; a path seen in a doc is not a grant. Owner grant

@@ -20,6 +20,7 @@ small folder on the command line scans it when Scan is pressed, and its totals m
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -75,7 +76,7 @@ def fake_result(command: str):
             'protocol': 'loomward/3', 'engine_version': 'fake-engine', 'adapter': 'http', 'dataset_class': engine.dataset,
             'session_started_at': '2026-10-01T00:00:00Z', 'enumeration_strategy': 'std_read_dir',
             'capabilities': {'observation': {}, 'effects': effects},
-            'features': {k: False for k in ('grant_picker', 'disclosure_dialog', 'teacher_available', 'telemetry_available', 'gpu_available')},
+            'features': {k: False for k in ('grant_picker', 'disclosure_dialog', 'teacher_available', 'telemetry_available', 'gpu_available', 'diagnostics_save')},
             'limits': {'max_request_bytes': 65536, 'max_slice_nodes': 6000, 'max_page_items': 200},
         }
     if command == 'roots.list':
@@ -669,6 +670,26 @@ def live_backups(page: Page, token: str) -> None:
     print('PASS live Backups: list and forget over HTTP, import refused, the view shows no evidence rather than demo data')
 
 
+def live_diagnostics(page: Page, token: str) -> None:
+    """The diagnostic bundle over the real HTTP adapter: previewed and checked, never saved (no Rust-owned dialog)."""
+    previewed = live_call(page, token, 'diagnostics.preview', {})
+    check(previewed['ok'], f'diagnostics.preview answers over HTTP: {previewed}')
+    r = previewed['result']
+    text = json.dumps(r['bundle'], indent=2, sort_keys=True, ensure_ascii=False).encode('utf-8')
+    check(r['bytes'] == str(len(text)) and r['digest'] == 'sha256:' + hashlib.sha256(text).hexdigest(),
+          'the advertised size and digest are those of the bundle\'s canonical text')
+    check(r['bundle']['loomward']['adapter'] == 'http' and r['bundle']['session']['features']['diagnostics_save'] is False,
+          'the HTTP bundle says it cannot save')
+    saved = live_call(page, token, 'diagnostics.save', {'digest': r['digest']})
+    check(not saved['ok'] and saved['error']['code'] == 'capability_unavailable', f'diagnostics.save is not offered over HTTP: {saved}')
+    page.evaluate("location.hash = '#/health'")
+    panel = page.locator('section[aria-labelledby="h-diag"]')
+    expect(panel.get_by_text('the text below is exactly these bytes')).to_be_visible()
+    expect(panel.get_by_text('Saving needs the desktop app')).to_be_visible()
+    check(panel.get_by_role('button', name='Save…').count() == 0, 'no Save button over HTTP')
+    print('PASS live diagnostic bundle: preview over HTTP matches its digest, save refused, the view offers no save')
+
+
 def run_live_serve(browser_path: str | None) -> None:
     """The app's http transport against the real loomward-serve binary (lane L6) and engine service (L8)."""
     subprocess.run(['cargo', 'build', '-q', '-p', 'loomward-http', '--bin', 'loomward-serve'], cwd=ROOT, check=True)
@@ -717,6 +738,7 @@ def run_live_serve(browser_path: str | None) -> None:
             run_live_collections(page, token, Path(state.name), check)
             run_inventory(page, base, check, live=True)
             live_backups(page, token)
+            live_diagnostics(page, token)
             live_scan_refusals(browser, exe)
             live_personal_scan(browser, exe)
             live_placement(browser, exe)

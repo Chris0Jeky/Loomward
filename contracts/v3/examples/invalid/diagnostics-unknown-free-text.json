@@ -1,0 +1,7 @@
+{
+  "def": "DiagnosticUnknown",
+  "reason": "an unknown reason is a fixed token, never free text that could echo input",
+  "value": {
+    "unknown": "Access denied: C:\\fixture\\secret"
+  }
+}

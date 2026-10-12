@@ -345,6 +345,21 @@ pub(crate) fn network_path(path: &Path) -> bool {
     text.starts_with("\\\\") || text.starts_with("\\??\\")
 }
 
+/// Windows device names open a device, not a file, whatever the folder (`CON`, `COM1 .txt`).
+pub(crate) fn reserved_device(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy())
+        .unwrap_or_default();
+    let stem = name.split('.').next().unwrap_or("").trim_end_matches(' ');
+    let stem = stem.to_ascii_uppercase();
+    ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"].contains(&stem.as_str())
+        || ["COM", "LPT"].iter().any(|p| {
+            stem.strip_prefix(p)
+                .is_some_and(|n| n.len() == 1 && n.as_bytes()[0].is_ascii_digit())
+        })
+}
+
 #[cfg(windows)]
 pub(crate) fn unsafe_attributes(meta: &std::fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
