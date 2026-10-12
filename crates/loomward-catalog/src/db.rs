@@ -78,6 +78,7 @@ pub(crate) fn inspect(path: &Path, dataset: &str) -> Result<i64> {
 }
 
 fn backup(conn: &Connection, path: &Path, label: &str) -> Result<std::path::PathBuf> {
+    crate::crashpoint::hit("backup VACUUM INTO");
     let mut backup = path.with_file_name(format!("state.{label}.db"));
     let mut suffix = 0;
     while backup.exists() {
@@ -89,6 +90,7 @@ fn backup(conn: &Connection, path: &Path, label: &str) -> Result<std::path::Path
 }
 fn migrate(path: &Path, schema: &str, version: i64, dataset: &str, precious: bool) -> Result<()> {
     let mut conn = Connection::open(path)?;
+    crate::crashpoint::arm(&conn);
     conn.busy_timeout(Duration::from_secs(5))?;
     if version < SCHEMA_VERSION {
         if precious {
@@ -183,6 +185,7 @@ fn migrate(path: &Path, schema: &str, version: i64, dataset: &str, precious: boo
         backups.sort();
         let remove = backups.len().saturating_sub(7);
         for old in backups.into_iter().take(remove) {
+            crate::crashpoint::hit("remove old start backup");
             std::fs::remove_file(old)?;
         }
     }
@@ -240,6 +243,7 @@ fn preserve_catalog(dir: &Path, label: &str) -> Result<()> {
     for suffix in ["", "-wal", "-shm"] {
         let file = dir.join(format!("catalog.db{suffix}"));
         if file.exists() {
+            crate::crashpoint::hit("preserve catalogue rename");
             std::fs::rename(
                 file,
                 dir.join(format!("catalog.{label}-{stamp}.db{suffix}")),
@@ -263,6 +267,7 @@ pub(crate) fn open_pair(dir: &Path, dataset: &str) -> Result<Connection> {
     if cv == 1 {
         // Consent migrates first; archive the derived file only after that durable commit.
         let mut st = Connection::open(&state)?;
+        crate::crashpoint::arm(&st);
         st.pragma_update(None, "synchronous", "FULL")?;
         st.execute(
             "ATTACH DATABASE ?1 AS old",
@@ -282,12 +287,14 @@ pub(crate) fn open_pair(dir: &Path, dataset: &str) -> Result<Connection> {
         false,
     )?;
     let mut conn = Connection::open(catalog)?;
+    crate::crashpoint::arm(&conn);
     conn.busy_timeout(Duration::from_secs(5))?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "cache_size", -262144)?;
     conn.pragma_update(None, "temp_store", "MEMORY")?;
     conn.wal_hook(Some(|wal, pages| {
+        crate::crashpoint::hit("post-commit");
         let threshold = if wal.name().to_bytes() == b"main" {
             16384
         } else {
@@ -368,7 +375,8 @@ pub(crate) fn open_pair(dir: &Path, dataset: &str) -> Result<Connection> {
         crate::writer::purge_root(&tx, root)?;
     }
     tx.commit()?;
-    if !forgotten.is_empty() {
+    // Also when the catalogue half finished before the crash and only the rewrite is owed.
+    if !forgotten.is_empty() || crate::writer::scrub_pending(&conn) {
         crate::writer::wal_cut(&conn, Duration::from_millis(750), &mut true);
     }
     Ok(conn)
