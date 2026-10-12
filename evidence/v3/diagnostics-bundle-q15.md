@@ -84,15 +84,21 @@ lock. Logs: gitignored `.loomward/diagnostics-bundle/`.
   network path or is not a directory. A local junction still writes (test), a file as parent is refused (new
   case, and the `parent-is-directory` mutant now targets the resolved check). A junction to a real share was
   not exercised: no share exists on this host.
-- **Preview frozen during a save (P1):** a reload asked for while a save is open waits for its answer, so the
-  text shown is the text being saved; an earlier save's notice clears when a reload changes the digest.
-  Playwright proves no preview is served while the delayed save is open and one runs after; removing the guard
-  fails that check (run once, then restored).
-- **Dialog outliving the 60 s wait (P1):** `deadline_exceeded` now says whether a file was written is unknown
-  and asks the owner to check the folder before saving again (Playwright). The request id is not kept for a
-  retry; tracked as residual.
-- Re-proved: service 177 tests, workspace clippy `--all-features`, the mutation script (14 of 14 killed), app
-  check, vitest 394, `scripts/test_app.py` 253 checks.
+- **Preview frozen during a save (P1):** a `SaveTracker` (`app/src/views/health/save.svelte.ts`) owns the
+  save. While a save runs, or its outcome is unknown, `frozen` is true, and a reload asked for meanwhile waits
+  for the outcome, so the text shown is the text being saved. The success notice names the digest written.
+  Covered by vitest, and by Playwright: no preview is served while a delayed save is open, and exactly one runs
+  after it. Removing the guard fails the Playwright check (tried once, then restored).
+- **Dialog outliving the 60 s wait (P1):** after `deadline_exceeded` or a transport fault, the save stays
+  pending with its request id (`CallOptions.requestId`, `Client.nextRequestId`). The next click resends that
+  same id, so the service waits for or replays the one save; a second click never starts a second save.
+  Covered by vitest, and by Playwright: the retried request carries the same id.
+- **Writes in the resolved folder:** after the resolved-parent check, the target and the temporary file are
+  joined to the canonical folder, so a link swapped into the path later is not followed.
+- Re-proved at the round-1 head: service 177 tests, `cargo fmt --all --check`, workspace clippy
+  `--all-features`, the mutation script (14 of 14 killed), app check, vitest 396, `scripts/test_app.py` (256
+  checks), `--a11y`, `gen_contracts_ts.py --check` and `git diff --check`. Hosted CI on `b68c861`: all 18 checks
+  passed, after the two Linux clippy failures on `bc96517`.
 
 ## Failures and workarounds
 

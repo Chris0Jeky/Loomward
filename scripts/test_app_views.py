@@ -755,6 +755,7 @@ def check_diagnostics_save(page: Page, engine: FakeEngine) -> None:
         {'outcome': 'refused', 'bytes_written': None, 'refusal': 'preview_changed'},
         {'outcome': 'saved', 'bytes_written': fixture['bytes'], 'refusal': None, 'delay': 1.5},
         ('deadline_exceeded', 'the dialog outlived the deadline'),
+        {'outcome': 'saved', 'bytes_written': fixture['bytes'], 'refusal': None},
     ]
     try:
         page.goto('about:blank')
@@ -772,19 +773,23 @@ def check_diagnostics_save(page: Page, engine: FakeEngine) -> None:
         expect(panel.get_by_role('alert')).to_contain_text('The bundle changed since this preview')
         previews = engine.served.get('diagnostics.preview', 0)
         save.click()
-        panel.get_by_role('button', name='Preview again').click()  # asked while the dialog is open
+        panel.get_by_role('button', name='Preview again').click(force=True)  # asked while the dialog is open
         page.wait_for_timeout(500)
         ok(engine.served.get('diagnostics.preview', 0) == previews, 'no new preview replaces the text while it is being saved')
-        expect(result).to_contain_text(f"Saved {int(fixture['bytes']):,} bytes, exactly the text shown.")
+        expect(result).to_contain_text(f"Saved {int(fixture['bytes']):,} bytes with digest {fixture['digest'][:19]}…, exactly the text shown.")
         wait_until(page, lambda: engine.served.get('diagnostics.preview', 0) == previews + 1, timeout_ms=5000)
         ok(True, 'the deferred preview runs once the save has answered')
         save.click()
-        expect(panel.get_by_role('alert')).to_contain_text('whether a file was written is unknown')
+        expect(panel.get_by_role('alert')).to_contain_text('The save is still pending in the dialog')
+        save.click()  # asks for that same save again, never a second one
+        expect(result).to_contain_text('Saved')
+        ids = [c['request_id'] for c in engine.diagnostics_calls]
+        ok(ids[3] == ids[4] and len(set(ids[:4])) == 4, f'the retried save reuses its request id: {ids}')
         for call in engine.diagnostics_calls:
             ok(call['payload'] == {'digest': fixture['digest']}, f'only the shown digest leaves the page: {call["payload"]}')
             ok(call['deadline_ms'] == 60000, 'the save waits up to 60 s for the owner at the native dialog')
-        ok(len(engine.diagnostics_calls) == 4, 'one call per click')
-        print('PASS diagnostic bundle save: cancel, named refusal, save and an outlived dialog reported as unknown; only the digest leaves the page')
+        ok(len(engine.diagnostics_calls) == 5, 'one call per click')
+        print('PASS diagnostic bundle save: cancel, named refusal, save and an outlived dialog kept pending and retried under the same request id; only the digest leaves the page')
     finally:
         engine.diagnostics_answers = None
 

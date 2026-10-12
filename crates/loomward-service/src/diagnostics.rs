@@ -121,6 +121,8 @@ pub(crate) fn write_export(target: &Path, bytes: &[u8]) -> Result<(), Why> {
     if paths::network_path(&resolved) || !resolved.is_dir() {
         return Err(Why::UnsupportedTarget);
     }
+    // From here on, everything happens in the resolved folder, so a link swapped in later is not followed.
+    let target = &resolved.join(target.file_name().ok_or(Why::UnsupportedTarget)?);
     match std::fs::symlink_metadata(target) {
         Ok(meta) if !meta.is_file() || paths::unsafe_attributes(&meta) => {
             return Err(Why::UnsupportedTarget)
@@ -131,7 +133,7 @@ pub(crate) fn write_export(target: &Path, bytes: &[u8]) -> Result<(), Why> {
     }
     let mut nonce = [0u8; 8];
     getrandom::fill(&mut nonce).map_err(|_| Why::WriteFailed)?;
-    let temporary = dir.join(format!(
+    let temporary = resolved.join(format!(
         ".loomward-diagnostics-{}.partial",
         nonce.iter().map(|b| format!("{b:02x}")).collect::<String>()
     ));
