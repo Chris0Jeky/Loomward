@@ -188,7 +188,7 @@ pub(crate) fn write_to(target: &Target, bytes: &[u8]) -> Result<(), Why> {
 }
 
 /// Check, then write (tests and callers without a dialog: an existing file is replaced).
-#[cfg(test)]
+#[cfg(all(test, windows))]
 pub(crate) fn write_export(target: &Path, bytes: &[u8]) -> Result<(), Why> {
     write_to(&check_target(target)?, bytes)
 }
