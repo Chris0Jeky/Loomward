@@ -4,15 +4,13 @@
 
 Loomward is a local-first Windows workspace memory that keeps what your files mean apart from where they live and what is allowed to act on them.
 
-> **Your files, understood. Nothing touched without you.**
-
 [![CI](https://github.com/Chris0Jeky/Loomward/actions/workflows/ci.yml/badge.svg)](https://github.com/Chris0Jeky/Loomward/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/Chris0Jeky/Loomward)](LICENSE)
-[![Preview](https://img.shields.io/github/v/release/Chris0Jeky/Loomward?include_prereleases&label=preview)](https://github.com/Chris0Jeky/Loomward/releases)
+[![Pre-release](https://img.shields.io/github/v/release/Chris0Jeky/Loomward?include_prereleases&label=pre-release)](https://github.com/Chris0Jeky/Loomward/releases)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-DEA584?logo=rust&logoColor=white)](Cargo.toml)
 
-It is a research prototype. It reads and simulates. It does not move, delete, rename, kill or reprioritise anything on your machine, and the two narrow file writes it has are listed under [No file or process effects](#no-file-or-process-effects).
+**Your files, understood. Nothing touched without you.** It is a research prototype. It reads and simulates. It does not move, delete, rename, kill or reprioritise anything on your machine, and the two narrow file writes it has are listed under [No file or process effects](#no-file-or-process-effects).
 
 ## What it is and why it exists
 
@@ -28,7 +26,19 @@ The rules that follow from this are enforced by the code and its tests, not by g
 
 - **Unknown stays unknown.** Partial, offline or unverified data is shown as such. Telemetry reports `null` with a reason, never zero. Before any labels exist, the learner reports that it has no model rather than guessing.
 - **Evidence has blanks.** A green backup job is never shown as verified recovery. Restore drills are not built, so the Backups view says so.
-- **Agents get a read-only view.** The MCP reference exposes a few read-only tools over a supplied snapshot. There is no execute, delete, move or kill tool, through HTTP, IPC or MCP.
+- **Agents get a read-only view.** The MCP reference exposes four read-only tools over a supplied snapshot (`workspace_summary`, `catalog_search`, `evidence_explain`, `placement_simulate`). Names are off by default, so only `workspace_summary` and `placement_simulate` are advertised unless disclosure is enabled. There is no execute, delete, move or kill tool, through HTTP, IPC or MCP.
+
+### The three threads
+
+The "Woven atlas" interface draws the three facts as cloth threads:
+
+| Thread | Question | In the atlas |
+|---|---|---|
+| **Meaning** | What is this part of? (collection, project, label) | Warp: vertical threads dyed by collection |
+| **Residency** | Where does it live? (tier: C:, G:, E:) | Weft: metal threads; hollow means online-only; missing means unknown |
+| **Permission** | May anything act on it? (pinned, protected) | Selvedge: stitched edge where a hold begins |
+
+A collection can list every file of a project without moving one. A disk policy can keep the active project on the fast disk without changing what the project contains. A learned score is never an approval.
 
 Whether learned organisation beats folders is an open question, not a result. [docs/44](docs/44-product-thesis.md) states the thesis, the first five minutes and what would falsify it. [docs/24](docs/24-thesis-and-research-program.md) describes how it would be tested.
 
@@ -39,19 +49,19 @@ Research prototype. Not a file manager, not a system optimiser, not a backup too
 | Piece | State | Read more |
 |---|---|---|
 | Python reference (`python/loomward/`) | Frozen since owner decision q-40 (2026-10-12). Synthetic demo, bounded metadata scan of one explicit folder, a small student model, a tier simulator, and a read-only MCP reference. Its legacy browser UI is retired. | [docs/30](docs/30-interface-and-workspace-spec.md#legacy-browser-ui-retired) |
-| Rust engine (`crates/`) | First compiled and tested on Windows 11 on 2026-10-09. The last recorded Windows run is in [docs/16](docs/16-implementation-status.md). On 2026-10-12 the workspace tests, fmt and clippy passed on Linux with Rust 1.99. Windows-only paths run only on Windows. | [Architecture](#architecture) |
-| Svelte app (`app/`) | Thirteen views over a mock transport, HTTP to `loomward-serve`, or Tauri IPC. With no engine it shows "unavailable", not demo data. | [app/src/views](app/src/views) |
+| Rust engine (`crates/`) | First compiled and tested on Windows 11 on 2026-10-09. [docs/16](docs/16-implementation-status.md) last recorded Windows counts at wave 8 (`b00c564`): 917 Rust tests. Counts move with every merge; the command output is the authority. Windows-only paths run only on Windows. | [Architecture](#architecture) |
+| Svelte app (`app/`) | Thirteen views, discovered from `app/src/views/*/View.svelte`: Explorer, Collections, Duplicates, Atlas, Observatory, Tiers, Learning review, Applications, Desktop, Companion, Backups, Grants & health, Updates. Mock transport, HTTP to `loomward-serve`, or Tauri IPC. With no engine it shows "unavailable", not demo data. | [app/src/views](app/src/views) |
 | Desktop shell (`native/`) | Tauri 2 on WebView2, with a strict CSP and a headless `--self-test`. Hosted CI builds it, tests it and runs the self-test on `windows-latest`. | [native/README.md](native/README.md) |
 | Preview release | `0.3.0-preview.1` is an unsigned Windows pre-release on the [Releases page](https://github.com/Chris0Jeky/Loomward/releases). It is built by the release workflow. | [RELEASING.md](RELEASING.md) |
 | Nightly channel | The rolling nightly workflow is merged (#432). It publishes only after a green CI run on `main`. | [RELEASING.md](RELEASING.md#nightly) |
 
-### Features
+## Features
 
 What is built, with the caveats that matter. Anything not in this table is not built.
 
 | Capability | State | Notes |
 |---|---|---|
-| Metadata scan of granted folders | Built. Personal scans are open. | Explicit roots only, chosen through the Windows folder picker or `--grant-root`. Non-elevated, metadata only (names, sizes, times, identity). It refuses whole profiles, AppData, credential and browser stores, network and removable drives, links, cloud placeholders and any folder that holds Loomward's own state. FAT and exFAT are listed as identity-unverified. |
+| Metadata scan of granted folders | Built. Personal scans are open. | Explicit roots only, chosen through the Windows folder picker or `--grant-root`. A volume root is allowed only from the native picker, never from `--grant-root`. Non-elevated, metadata only (names, sizes, times, identity). It refuses whole profiles, AppData, credential and browser stores, network and removable drives, links, cloud placeholders and any folder that holds Loomward's own state. FAT and exFAT are listed as identity-unverified. |
 | Duplicate inspection | Built. Personal content reads are open (q-10). | Byte-equality groups from catalogue candidates. Reads are budgeted, paged and read-only. Nothing is removed. |
 | Collections | Built. | Virtual groups. Members are listed without moving a file. |
 | Learning | Built locally on your own labels (q-11). The teacher stays synthetic-only. | Weighted multinomial Naive Bayes with explicit abstention. Human labels weigh 1.0, teacher labels 0.2, and the two stay separate. Scores are relative, not probabilities. |
@@ -67,7 +77,7 @@ What is built, with the caveats that matter. Anything not in this table is not b
 | Find and Ask (search index, chat over read-only tools) | Planned. Not built. | [docs/46](docs/46-find-and-ask.md) |
 | Copy-and-verify (first file effect) | Planned. Not built. | Behind its own safety gate ([LW-124](backlog/issues/LW-124.md)). |
 
-### Architecture
+## Architecture
 
 The engine is a set of Rust crates behind one typed service. Every client calls the same `ViewService`, either over loopback HTTP and server-sent events or in-process in the desktop shell. The Python reference shares parity fixtures with the Rust code and is not on the product path.
 
@@ -130,7 +140,7 @@ flowchart LR
 | `crates/loomward-catalog` | The durable SQLite catalogue, with crash-safe reference retirement. Its crash sweeps are in `tests/`. |
 | `crates/loomward-core` | Pure domain code: the capability policy, the simulated transaction state machine, planner v1 and a Rust port of planner v2. |
 | `crates/loomward-learn` | Rust port of the weighted Naive Bayes student. Python is the oracle; 288 parity cases live in [`fixtures/learning-v3/`](fixtures/learning-v3/). |
-| `crates/loomward-telemetry` | Read-only memory, process and PDH disk sampling on Windows. Reports unsupported on other platforms. GPU is unsupported. See its [README](crates/loomward-telemetry/README.md). |
+| `crates/loomward-telemetry` | Read-only memory, process, PDH disk and GPU-adapter sampling on Windows. Per-process GPU is unsupported. Non-Windows builds report unsupported. See its [README](crates/loomward-telemetry/README.md). |
 | `crates/loomward-apps`, `loomward-shell` | Read-only installed-application inventory and shortcut reading. |
 | `crates/loomward-backup` | Pure, bounded backup-receipt normalisation. No provider execution. |
 | `crates/loomward-lab` | Synthetic scale trees, four enumeration strategies, and benchmarks. Windows only. See its [README](crates/loomward-lab/README.md). |
@@ -158,7 +168,7 @@ python3 scripts/run.py demo --state-dir /tmp/loomward-demo
 PYTHONPATH=python python3 -m unittest discover -s tests
 ```
 
-Result on Linux: 239 tests, 8 skipped. The skips come from the optional `jsonschema` validator and from tests that need links or privileges this machine lacks.
+Result on Linux (2026-10-12, Python 3.12.3): 243 tests, 8 skipped. The skips come from the optional `jsonschema` validator and from tests that need links or privileges this machine lacks.
 
 ### Rust workspace
 
@@ -195,7 +205,7 @@ python3 -m pip install playwright && python3 -m playwright install chromium
 python3 scripts/test_app.py
 ```
 
-`scripts/test_app.py` needs `app/dist`, so build first. It runs the browser checks on Linux. Result on Linux on 2026-10-12: all checks passed, no console or page errors.
+`scripts/test_app.py` needs `app/dist`, so build first. It runs the browser checks on Linux. Hosted CI runs this suite on Ubuntu only.
 
 ### The engine over loopback
 
@@ -257,7 +267,7 @@ Run from the repository root. Missing tooling is reported as UNVERIFIED, never a
 | Python reference (frozen oracle), schemas, fixtures | `python3 scripts/verify.py` (also runs the Rust gates when `cargo` is present) |
 | Rust workspace | `cargo fmt --all --check`, `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`; add `--all-features` for the Windows fixture lab |
 | Svelte app | `npm --prefix app run check`, `... run test`, `... run build`, then `python3 scripts/test_app.py` |
-| Everything | `python3 scripts/verify.py --app`. It reports UNVERIFIED when Node, npm, `app/node_modules` or Playwright is missing. A case where it still exits 0 when nothing ran is tracked in [#431](https://github.com/Chris0Jeky/Loomward/issues/431). |
+| Everything | `python3 scripts/verify.py --app`. It reports UNVERIFIED when Node, npm, `app/node_modules` or Playwright is missing, and an explicit `--app` request then exits 2 ([#431](https://github.com/Chris0Jeky/Loomward/issues/431)). |
 | Desktop shell (Windows) | `cargo test --manifest-path native/Cargo.toml`, then `native/target/debug/loomward-desktop.exe --self-test` |
 | Prototype | `python3 app/prototype/check.py`. It rewrites the screenshots under `evidence/v3/ui-prototype/`. Revert them with `git checkout --` unless you mean to update them. |
 | Docs only | `git diff --check` plus the links you touched |
@@ -300,13 +310,13 @@ The four strategies agreed exactly on 23 of 24 final-build sweeps. The exception
 
 **Catalogue.** The P4 insert bench measured a median of 95,916 rows/s on `main` and 109,388 rows/s on the later branch, on a shared host ([crates/loomward-catalog/HANDOFF.md](crates/loomward-catalog/HANDOFF.md)). The P4 target is 250k rows/s and is not met ([#148](https://github.com/Chris0Jeky/Loomward/issues/148)).
 
-**Allocator.** `loomward-core` carries a Rust port of the v2 allocator. A 222-case parity corpus matches Python on all 193 accepted cases field for field, and Rust rejects all 29 inputs that Python rejects ([evidence/v3/planner-v2-rust.md](evidence/v3/planner-v2-rust.md)). On the original 51 synthetic scenarios, v2 misses no feasible target and v1 misses 9. This is a static model. Nothing is moved. v1 and its counterexample are kept ([docs/22](docs/22-experiment-findings.md)). The engine does not call the Rust planner yet.
+**Allocator.** `loomward-core` carries a Rust port of the v2 allocator. A 222-case parity corpus matches Python on all 193 accepted cases field for field, and Rust rejects all 29 inputs that Python rejects ([evidence/v3/planner-v2-rust.md](evidence/v3/planner-v2-rust.md)). On the original 51 synthetic scenarios, v2 misses no feasible target and v1 misses 9. This is a static model. Nothing is moved. v1 and its counterexample are kept ([docs/22](docs/22-experiment-findings.md)). The engine calls planner v2 from placement simulation (`placement.simulate`); it does not move files.
 
 **Student.** The Rust student is checked against 288 parity cases (230 tokeniser, 58 student scenarios) in [`fixtures/learning-v3/`](fixtures/learning-v3/), with Python as the oracle. Run `cargo test -p loomward-learn`. Scores are uncalibrated.
 
 **Telemetry.** On one Windows 11 host, a standalone snapshot took 655.92 ms, including first-call set-up. Three-sample watch intervals took 445.37, 36.83 and 28.41 ms. Host values are omitted from the public receipt ([evidence/v3/telemetry.md](evidence/v3/telemetry.md)). This is a small run, not an overhead guarantee.
 
-**Teacher spike** ([docs/research/teacher-confinement.md](docs/research/teacher-confinement.md)). Synthetic data only. A hardened Codex CLI invocation returned valid output on 10 of 10 attempts (median 21.8 s) and disclosed no canary. A collaboration tool stayed callable despite its flags. Verdict: partially confinable. The teacher stays synthetic-only until an OS-enforced boundary is demonstrated.
+**Teacher spike** ([docs/research/teacher-confinement.md](docs/research/teacher-confinement.md)). Synthetic data only. A hardened Codex CLI invocation returned valid output on 10 of 10 batches of 25 items (median 21.8 s) and disclosed no canary. A collaboration tool stayed callable despite its flags. Verdict: partially confinable. The teacher stays synthetic-only until an OS-enforced boundary is demonstrated.
 
 **Not yet measured:** true cold caches, WinDirStat, WebView2 end to end on hosted CI, a persistent catalogue at P4 speed. The targets in [docs/41](docs/41-v03-architecture.md) section 15 are hypotheses, not results.
 
@@ -320,17 +330,22 @@ The four strategies agreed exactly on 23 of 24 final-build sweeps. The exception
 
 ## Status and roadmap
 
-**Next, decided but not built** (owner decisions of 12 October 2026, [docs/16](docs/16-implementation-status.md)):
+**Shipped since the 12 October 2026 decisions** (each has its own PR; [docs/16](docs/16-implementation-status.md) is the wave-8 checkpoint and does not yet list these):
 
-- Find and Ask: a search index over granted roots ([LW-113](backlog/issues/LW-113.md)), Everything integration ([LW-114](backlog/issues/LW-114.md)), a semantic layer ([LW-116](backlog/issues/LW-116.md)), and an Ask provider interface with read-only tools ([LW-117](backlog/issues/LW-117.md), [LW-118](backlog/issues/LW-118.md)).
+- Unsigned preview `0.3.0-preview.1` and the rolling nightly channel (#432). Nightly publishes only after a green CI run on `main`.
+- The daily-use readiness checklist ([docs/45](docs/45-daily-use-readiness.md)): nine items, five partial, four unverified. The owner judges "done".
+- The Python reference frozen and the legacy browser UI retired (q-40).
+
+**Next, decided but not built:**
+
+- Find and Ask: a search index over granted roots ([LW-113](backlog/issues/LW-113.md)), Everything integration ([LW-114](backlog/issues/LW-114.md)), a semantic layer ([LW-116](backlog/issues/LW-116.md)), and an Ask provider interface with read-only tools ([LW-117](backlog/issues/LW-117.md), [LW-118](backlog/issues/LW-118.md)). Design: [docs/46](docs/46-find-and-ask.md).
 - Copy-and-verify as the first file effect, behind its own gate ([LW-124](backlog/issues/LW-124.md)). Until that gate passes, the invariant stays in force: no move, delete or copy of your files.
-- The daily-use readiness bar ([docs/45](docs/45-daily-use-readiness.md)). Nine items. Five are partial, four are unverified, and the owner judges "done".
-- Package channels: winget, a Scoop bucket and the Microsoft Store ([LW-126](backlog/issues/LW-126.md), [packaging/](packaging/README.md)). Code signing is a later owner decision.
+- Package channels: winget, a Scoop bucket and the Microsoft Store ([LW-126](backlog/issues/LW-126.md), [packaging/README.md](packaging/README.md)). Code signing is a later owner decision.
 - An observe-only Linux port, after the Windows bar ([LW-130](backlog/issues/LW-130.md)).
 
 **Not established yet:**
 
-- The first file effect, or any effect at all.
+- Copy-and-verify of the owner's files, or any other file or process effect. The two narrow writes that exist (diagnostic save, forget of Loomward's own records) are listed under [No file or process effects](#no-file-or-process-effects).
 - Restore drills for backups.
 - A real FAT or exFAT volume test, and a real picker grant exercised by a person.
 - Quiet-host runs for the bulk-load A/B ([#148](https://github.com/Chris0Jeky/Loomward/issues/148)) and the 10-minute telemetry overhead run ([#160](https://github.com/Chris0Jeky/Loomward/issues/160)).
