@@ -1101,6 +1101,8 @@ impl Inner {
                 cursor,
                 // SQLite VM steps, additionally interrupted at the request deadline.
                 work_budget: 50_000_000,
+                // P8: a page answers within about 300 ms, partial with budget_hit and a cursor if need be.
+                time_budget: Some(std::time::Duration::from_millis(250)),
             })
             .map_err(catalog_error)?;
         let next = page.next_cursor.map(|c| {

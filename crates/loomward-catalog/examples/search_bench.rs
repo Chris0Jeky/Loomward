@@ -333,6 +333,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             r.limit = 50;
             r.root_id = Some(root_id);
             r.work_budget = 50_000_000;
+            r.time_budget = Some(std::time::Duration::from_millis(250));
             let page = reader.search(&r)?;
             let mut ms = Vec::new();
             for _ in 0..21 {

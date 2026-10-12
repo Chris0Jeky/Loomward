@@ -297,6 +297,16 @@ impl<'a> WorkGuard<'a> {
         budget: u64,
         deadline: Option<std::time::Instant>,
     ) -> Result<Self> {
+        Self::with_soft_deadline(conn, budget, deadline, None)
+    }
+    /// As `new`, and reaching `soft` counts as an exhausted budget (a partial page, resumable),
+    /// where reaching `deadline` is the caller's hard stop.
+    pub(crate) fn with_soft_deadline(
+        conn: &'a Connection,
+        budget: u64,
+        deadline: Option<std::time::Instant>,
+        soft: Option<std::time::Instant>,
+    ) -> Result<Self> {
         let remaining = Arc::new(AtomicU64::new(budget));
         let hit = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let rem = remaining.clone();
@@ -306,6 +316,10 @@ impl<'a> WorkGuard<'a> {
             granularity,
             Some(move || {
                 if deadline.is_some_and(|at| std::time::Instant::now() >= at) {
+                    return true;
+                }
+                if soft.is_some_and(|at| std::time::Instant::now() >= at) {
+                    h.store(true, Ordering::Relaxed);
                     return true;
                 }
                 // A CAS loop rather than fetch_update, which newer stable toolchains deprecate.

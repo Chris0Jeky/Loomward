@@ -81,6 +81,7 @@ fn search_req(grant: i64) -> SearchRequest {
         limit: 10,
         cursor: None,
         work_budget: 1_000_000,
+        time_budget: None,
     }
 }
 

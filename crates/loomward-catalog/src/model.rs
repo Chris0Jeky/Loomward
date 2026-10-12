@@ -346,6 +346,8 @@ pub struct SearchRequest {
     pub limit: usize,
     pub cursor: Option<SearchCursor>,
     pub work_budget: u64,
+    /// Wall-clock work per page: past it the page returns what it has, `budget_hit` and a cursor.
+    pub time_budget: Option<std::time::Duration>,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct SearchHit {

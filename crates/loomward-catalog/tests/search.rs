@@ -530,3 +530,28 @@ fn a_store_without_the_index_gains_it_filled_on_open_and_a_stale_root_says_so() 
     assert_eq!(page.index_state, "stale");
     assert!(page.partial);
 }
+
+#[test]
+fn a_spent_time_budget_returns_a_partial_page_that_resumes() {
+    let (lab, _r) = ranked();
+    let all = names(&search(&lab, &req("report")));
+    let mut r = req("report");
+    r.time_budget = Some(std::time::Duration::ZERO);
+    let mut paged = Vec::new();
+    let mut cut = 0;
+    for _ in 0..1000 {
+        let page = search(&lab, &r);
+        paged.extend(names(&page));
+        cut += usize::from(page.budget_hit);
+        match page.next_cursor {
+            Some(c) => r.cursor = Some(c),
+            None => break,
+        }
+        // Once some progress exists, finish without the cut so the loop always ends.
+        if cut > 3 {
+            r.time_budget = None;
+        }
+    }
+    assert!(cut > 0, "a zero budget must cut the page");
+    assert_eq!(paged, all);
+}

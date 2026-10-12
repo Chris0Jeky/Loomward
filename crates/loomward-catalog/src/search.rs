@@ -438,7 +438,8 @@ impl Reader {
                 hits: Vec::new(),
                 places: HashMap::new(),
             };
-            let guard = WorkGuard::new(conn, req.work_budget, deadline)?;
+            let soft = req.time_budget.map(|t| std::time::Instant::now() + t);
+            let guard = WorkGuard::with_soft_deadline(conn, req.work_budget, deadline, soft)?;
             let mut hit = false;
             if let Err(e) = walk.run(conn, &plan) {
                 if guard.hit() && is_budget_interrupt(&e) {
