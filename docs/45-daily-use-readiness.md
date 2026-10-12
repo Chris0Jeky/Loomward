@@ -30,23 +30,26 @@ Rules for this file:
 
 **Exists.** `crates/loomward-catalog/tests/crash_sweep.rs` over the `test-hooks` crash points in
 `crates/loomward-catalog/src/crashpoint.rs`. Every durable boundary of the catalogue writer counts: each row
-change, each commit before and after it reaches the log, each checkpoint, `VACUUM st`, backup and rename. A clean
+change, each commit before and after it reaches the log, each checkpoint (end of run, forget cut, shutdown),
+`VACUUM st` and `VACUUM main`, the forget's marker clear, backup and rename. A clean
 run enumerates them; one child process per boundary is ended there (`exit(86)`, no destructors, no graceful
 close); the parent reopens and asserts the recovery invariants (integrity and foreign-key checks on both files, no
 running run or half-built bulk table, no staged or pending-reference residue, no orphan rows, rollups agree with
 rows, forget all-or-nothing in rows and bytes, every acknowledged step durable, a second recovery changes
 nothing, the store still takes a write). Three sweeps: the lifecycle (scan, durable reference and labels, bulk
-first scan with staged chunks, rescan, revoke, forget), a schema migration from a v4-shaped store, and a second
+first scan, rescan, revoke, forget; the scanned root is published through staged chunks, as the service does), a schema migration from a v4-shaped store, and a second
 crash inside the recovery of the first. The checker is proven able to fail: planted damage is caught
 (`the_verifier_catches_planted_damage`) and a mutant that skips finishing a half-done forget fails 13 of 240
-crash points (see the run record). Earlier single-point tests stay: `PublicationCrash` in
+crash points (see the run record). Every sweep child must exit with the crash code at its injected boundary, and
+a clean run must exit 0: an unreached boundary fails the sweep (`an_unreached_crash_point_fails_the_sweep`
+injects `boundaries+1`). Earlier single-point tests stay: `PublicationCrash` in
 `src/writer/publication_tests.rs`, `grant_survives_a_crash_between_precious_and_derived_commits` and the
 uncommitted-transaction child in `tests/writer.rs`, `tests/open.rs` corruption and interrupted-run cases.
 
 **Gap.** A killed process is not a power cut (row 8). Writers outside the catalogue writer are not swept: the
 service's `collections` connection that writes both files, label, learning and job state, backup import. A torn
 `VACUUM INTO` backup file cannot be injected mid-copy by a boundary hook. The migration fixture is a synthetic
-downgrade of a current store, not a store written by an old binary. Finding **F1** below.
+downgrade of a current store, not a store written by an old binary. Finding **F1** below (fixed).
 
 **Prove.**
 
@@ -65,7 +68,7 @@ entries/s, every run partial by design at the engine arena cap (48,769 directori
 files: `evidence/v3/scan-throughput-310.md`; first-scan bulk load: `evidence/v3/first-scan-bulk-load-148.md`.
 
 **Gap.** No complete 10M scan, and no 10M catalogue: the L runs use a sink with no SQLite, and the writer has not
-ingested, queried, rolled up, forgotten or crash-recovered at that size. G: stays capped at 2M by ADR-V3-17.
+ingested, queried, rolled up, forgotten (`VACUUM main` at that size is unmeasured) or crash-recovered at that size. G: stays capped at 2M by ADR-V3-17.
 
 **Prove.** `loomward-lab bench scan --tier L` (E: lab, private root path in `.loomward/scan-roots.log`), then a
 service scan of that root into a real catalogue with `tree.slice` and a forget; record RSS, wall time and WAL size.
@@ -137,17 +140,23 @@ No effect exists to restore from. Backups are evidence import only (`evidence/v3
 no restore has run (invariant 9). The store-level analogue, a start-up `VACUUM INTO` copy that opens, is covered
 by `tests/open.rs`, not by a recovery drill.
 
-## Findings from the crash sweep (not fixed here)
+## Findings from the crash sweep
 
-**F1. Forget leaves staged-listing names in `catalog.db`.** A root whose listing was published through
-`StageChunk`/`ListingDone` keeps its file and directory names in `catalog.db` pages after revoke and forget, after
-a graceful close. The `stage_entry` rows were deleted while `secure_delete` was off, and the forget path only
-rewrites `state.db` (`VACUUM st`). No current production caller stages chunks (the engine publishes with
-`DirListing`), so there is no reachable leak today, but the first caller that does will leak. Repro:
-`cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- --ignored forget_leaves_no_staged_listing_names`
-(fails today). Suggested fix for the driver: `VACUUM main` in the forget cut, or secure-delete before staging.
+**F1 (fixed in this PR; #391). Forget left staged-listing names in `catalog.db`.** The service publishes every
+listing through `StageChunk` and `ListingDone` (`crates/loomward-service/src/sink.rs`). The staged rows are deleted
+when the listing publishes, while `secure_delete` is off, so their bytes stay in the free space and unused page
+tails of `catalog.db`; the forget only deleted rows and rewrote `state.db`, so the root's file and directory names
+stayed in `catalog.db` after revoke and forget, after a graceful close. Fix: the forget's rewrite (`wal_cut`) now
+runs `VACUUM main` as well as `VACUUM st` before the log cuts, and the forget's own `state.db` transaction writes a
+`scrub_pending` marker (a `meta` row, no schema change) that is cleared only after both rewrites and both cuts. A
+crash anywhere in between, including after the catalogue half has already committed, makes the next open (or the
+writer at start-up) finish the rewrite; the sweep found that window by killing the process in it (10 of 272 crash
+points with the marker recovery removed). Regression test, enabled:
+`forget_leaves_no_staged_listing_names`. Cost: `VACUUM main` rewrites the whole catalogue, so a forget takes time
+and temporary disk proportional to its size and holds the writer meanwhile; measure it at 10M entries (row 2). Not
+covered by F1: the older `state.start-*`, `state.before-v*` and `catalog.corrupt-*` copies (#391, #402).
 
-The sweep found no recovery defect in the catalogue or state stores at any crash point of the sequences above.
+The sweep found no recovery defect other than the window F1's marker closes.
 
 ## Run record
 
@@ -158,3 +167,7 @@ The sweep found no recovery defect in the catalogue or state stores at any crash
 | 2026-10-12 | same, with `purge_root` removed from the open-time forget completion (mutant, reverted) | same | `LOOMWARD_CRASH_SWEEP=full ... -- every_write_of_scan` | failed: 13 of 240 crash points (N=223 and later, the state half of the forget committed) |
 | 2026-10-12 | e2833a9 (this PR merged with main 7cf4a54; the merge brought documentation only) | same | default mode of the same command | 7 passed, 1 ignored (F1) in 13 s; lifecycle 132 of 240, migration 13 of 13, 143 double crashes |
 | 2026-10-12 | same | same | `cargo test --workspace --no-fail-fast`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `py -3 scripts/verify.py` | 949 passed, 1 ignored (F1), 0 failed; clippy clean; verify.py exit 0 |
+| 2026-10-12 | round-1 head (F1 fixed, shutdown checkpoint and `VACUUM main` instrumented, strict exit guard), main a9299b4 | same | `LOOMWARD_CRASH_SWEEP=full cargo test -p loomward-catalog --features test-hooks --test crash_sweep` | 9 passed in 505 s: lifecycle 272 of 272 boundaries, migration 14 of 14, 3,870 double crashes, every child exited with the crash code, no violation |
+| 2026-10-12 | same | same | default mode of the same command | 9 passed in 53 s (cold, parallel with a warm build): lifecycle 149 of 272, migration 14 of 14, 191 double crashes |
+| 2026-10-12 | same, with the marker recovery removed (mutant, reverted) | same | `LOOMWARD_CRASH_SWEEP=full ... -- every_write_of_scan` | failed: 10 of 272 crash points (N=261 to 267, after the catalogue half of the forget committed), names left in the live store files |
+| 2026-10-12 | same | same | `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --no-fail-fast`; `py -3 scripts/verify.py`; `git diff --check` | fmt and clippy clean; 951 passed, 0 ignored, 0 failed; verify.py exit 0; diff check clean |

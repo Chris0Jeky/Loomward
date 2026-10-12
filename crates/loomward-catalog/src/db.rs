@@ -374,7 +374,8 @@ pub(crate) fn open_pair(dir: &Path, dataset: &str) -> Result<Connection> {
         crate::writer::purge_root(&tx, root)?;
     }
     tx.commit()?;
-    if !forgotten.is_empty() {
+    // Also when the catalogue half finished before the crash and only the rewrite is owed.
+    if !forgotten.is_empty() || crate::writer::scrub_pending(&conn) {
         crate::writer::wal_cut(&conn, Duration::from_millis(750), &mut true);
     }
     Ok(conn)

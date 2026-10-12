@@ -100,6 +100,25 @@ fn listing(w: &Writer, run: i64, dir: i64, files: Vec<Observation>, dirs: Vec<Ob
     }))
     .unwrap();
 }
+/// A listing as the service publishes it (`sink.rs`): a staged chunk, then `ListingDone`.
+fn staged(w: &Writer, run: i64, dir: i64, files: Vec<Observation>, dirs: Vec<Observation>) {
+    w.call(WriteCommand::StageChunk {
+        run_id: run,
+        dir_id: dir,
+        seq: 0,
+        files,
+        dirs,
+    })
+    .unwrap();
+    w.call(WriteCommand::ListingDone {
+        run_id: run,
+        dir_id: dir,
+        outcome: ListingOutcome::Complete,
+        skipped: 0,
+        errors: 0,
+    })
+    .unwrap();
+}
 fn end(w: &Writer, run: i64) {
     w.call(WriteCommand::EndRun {
         run_id: run,
@@ -123,8 +142,8 @@ impl Ack {
     }
 }
 
-/// open, scan A (a root listing plus a sub directory), durable reference and labels, bulk first
-/// scan of B (staged chunks), rescan of A (one file gone, one new), revoke A, forget A.
+/// open, scan A (staged chunks, the form the service publishes: a root listing plus a sub directory),
+/// durable reference and labels, bulk first scan of B (one-shot listing), rescan of A (one file gone, one new), revoke A, forget A.
 fn lifecycle(store: &Path, ack: &Ack) {
     let c = Catalog::open(store, "synthetic").unwrap();
     ack.log("open");
@@ -132,7 +151,7 @@ fn lifecycle(store: &Path, ack: &Ack) {
     let (ga, da) = register(w, A_NAME, A_PATH, 1);
     ack.log(&format!("register-a {ga} {da}"));
     let run = begin(w, ga, "full");
-    listing(
+    staged(
         w,
         run,
         da,
@@ -143,7 +162,7 @@ fn lifecycle(store: &Path, ack: &Ack) {
         vec![ident(A_SUB, 13, 0)],
     );
     let sub = row_id(store, &format!("SELECT id FROM dir WHERE name='{A_SUB}'"));
-    listing(w, run, sub, vec![ident(A_DEEP, 14, 4096)], vec![]);
+    staged(w, run, sub, vec![ident(A_DEEP, 14, 4096)], vec![]);
     end(w, run);
     ack.log("end-a");
     let deep = row_id(store, &format!("SELECT id FROM file WHERE name='{A_DEEP}'"));
@@ -177,34 +196,25 @@ fn lifecycle(store: &Path, ack: &Ack) {
     ack.log(&format!("register-b {gb} {db}"));
     w.set_bulk_first_scan(true);
     let rb = begin(w, gb, "full");
-    w.call(WriteCommand::StageChunk {
-        run_id: rb,
-        dir_id: db,
-        seq: 0,
-        files: vec![ident(B_FILES[0], 21, 50), ident(B_FILES[1], 22, 60)],
-        dirs: vec![],
-    })
-    .unwrap();
-    w.call(WriteCommand::ListingDone {
-        run_id: rb,
-        dir_id: db,
-        outcome: ListingOutcome::Complete,
-        skipped: 0,
-        errors: 0,
-    })
-    .unwrap();
+    listing(
+        w,
+        rb,
+        db,
+        vec![ident(B_FILES[0], 21, 50), ident(B_FILES[1], 22, 60)],
+        vec![],
+    );
     end(w, rb);
     w.set_bulk_first_scan(false);
     ack.log("end-b");
     let run = begin(w, ga, "refresh");
-    listing(
+    staged(
         w,
         run,
         da,
         vec![ident(A_ROOT_FILES[0], 11, 100), ident(A_NEW, 15, 300)],
         vec![ident(A_SUB, 13, 0)],
     );
-    listing(w, run, sub, vec![ident(A_DEEP, 14, 4096)], vec![]);
+    staged(w, run, sub, vec![ident(A_DEEP, 14, 4096)], vec![]);
     end(w, run);
     ack.log("end-a2");
     w.call(WriteCommand::RevokeGrant {
@@ -293,9 +303,17 @@ fn run_child(scenario: &str, work: &Path, at: Option<u64>) -> Outcome {
     let output = cmd.output().unwrap();
     let code = output.status.code();
     let crashed = code == Some(CRASH_EXIT);
+    // A crash point that is never reached is a missing test, not a recovery: require the exit the
+    // run was meant to end with.
+    let want = if at.is_some() { CRASH_EXIT } else { 0 };
     assert!(
-        crashed || code == Some(0),
-        "{scenario} at {at:?}: child failed ({code:?})\n{}\n{}",
+        code == Some(want),
+        "{scenario} at {at:?}: the child exited {code:?}, expected {want} ({})\nlast output:\n{}\n{}",
+        if at.is_some() {
+            "the crash point was not reached"
+        } else {
+            "a clean run must finish"
+        },
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -406,6 +424,12 @@ fn structural(store: &Path) -> Vec<String> {
         &mut bad,
         "bulk build left behind",
         "SELECT (SELECT count(*) FROM bulk_file)+(SELECT count(*) FROM bulk_dir)",
+    );
+    zero_check(
+        &db,
+        &mut bad,
+        "a forget's rewrite of the stores still owed after recovery",
+        "SELECT count(*) FROM st.meta WHERE key='scrub_pending'",
     );
     zero_check(
         &db,
@@ -846,14 +870,9 @@ fn the_verifier_catches_planted_damage() {
     }
 }
 
-/// Finding F1 (docs/45), found by this sweep and not fixed here: a root whose listing went through
-/// `StageChunk` keeps its file and directory names in `catalog.db` after a forget, because the
-/// `stage_entry` rows were deleted while `secure_delete` was still off and nothing rewrites
-/// `catalog.db` (only `VACUUM st` runs). No production caller stages chunks yet (the engine
-/// publishes with `DirListing`), so the scan sweep above stages only the root that is kept.
-/// Run with `-- --ignored`; it fails today.
+/// A root published through staged chunks (what the service does) must leave none of its names in
+/// either store file after a forget (found by this sweep as F1; #391).
 #[test]
-#[ignore = "finding F1: forget leaves staged-listing names in catalog.db"]
 fn forget_leaves_no_staged_listing_names() {
     let dir = tempfile::tempdir().unwrap();
     let c = Catalog::open(dir.path(), "synthetic").unwrap();
@@ -892,5 +911,19 @@ fn forget_leaves_no_staged_listing_names() {
     assert!(
         !on_disk(dir.path(), "crashrootA"),
         "a staged name survived the forget"
+    );
+}
+
+/// The sweep's guard: a crash point past the last boundary is never reached, and must fail loudly
+/// instead of passing as a clean recovery.
+#[test]
+#[should_panic(expected = "the crash point was not reached")]
+fn an_unreached_crash_point_fails_the_sweep() {
+    let root = tempfile::tempdir().unwrap();
+    let base = run_child("lifecycle", &root.path().join("clean"), None);
+    run_child(
+        "lifecycle",
+        &root.path().join("past"),
+        Some(base.boundaries + 1),
     );
 }
