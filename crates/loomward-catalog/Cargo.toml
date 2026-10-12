@@ -19,3 +19,8 @@ time = { version = "0.3.55", features = ["formatting"] }
 [dev-dependencies]
 tempfile = "3.27.0"
 jsonschema = { version = "0.58.6", default-features = false }
+
+# Needs the crash points in src/crashpoint.rs, which exist only with the feature.
+[[test]]
+name = "crash_sweep"
+required-features = ["test-hooks"]

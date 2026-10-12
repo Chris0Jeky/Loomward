@@ -915,6 +915,7 @@ pub(crate) fn wal_cut(conn: &Connection, wait: Duration, vacuum: &mut bool) -> b
     };
     let _ = conn.busy_timeout(wait);
     if *vacuum {
+        crate::crashpoint::hit("VACUUM st");
         *vacuum = conn.execute_batch("VACUUM st").is_err();
         if *vacuum {
             let _ = conn.busy_timeout(Duration::from_millis(u64::from(timeout)));
@@ -922,6 +923,7 @@ pub(crate) fn wal_cut(conn: &Connection, wait: Duration, vacuum: &mut bool) -> b
         }
     }
     let cut = |db: &str| {
+        crate::crashpoint::hit("wal cut");
         conn.query_row(&format!("PRAGMA {db}.wal_checkpoint(TRUNCATE)"), [], |r| {
             r.get::<_, i64>(0)
         })
@@ -935,6 +937,7 @@ fn end_checkpoint(conn: &Connection) -> rusqlite::Result<[i64; 3]> {
     let timeout = conn.query_row("PRAGMA busy_timeout", [], |r| r.get::<_, u32>(0))?;
     // Best-effort WAL maintenance must not hold a committed EndRun receipt behind a reader.
     conn.busy_timeout(Duration::ZERO)?;
+    crate::crashpoint::hit("end-of-run checkpoint");
     let result = conn.query_row("PRAGMA main.wal_checkpoint(TRUNCATE)", [], |r| {
         Ok([r.get(0)?, r.get(1)?, r.get(2)?])
     });
