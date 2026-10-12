@@ -98,7 +98,7 @@ flowchart TB
     eng[Engine library<br/>Find service, Ask loop, catalogue]
   end
   mcp[loomward-mcp stdio adapter<br/>future native, over the same service]
-  brk[loomward-broker.exe<br/>per-turn child, the only HTTP client]
+  brk[loomward-broker.exe<br/>per-round child, the only HTTP client]
   emb[loomward-embed.exe<br/>per-job child, ONNX inference, no network]
   hlp[loomward-ntfs-helper.exe<br/>elevated, gated, read-only, Program Files]
   cat[(catalog.db<br/>rows, FTS5 indexes)]
@@ -119,12 +119,12 @@ flowchart TB
 | Container | Owns | Must not own |
 |---|---|---|
 | Engine library (in-process, [41](41-v03-architecture.md) ADR-V3-01) | Find planner, ranking, the Ask loop and tool executor, disclosure projection, citation ledger | Network code, credentials, elevation |
-| `loomward-broker.exe` | One validated model call per turn, streaming, endpoint pinning, credential (cloud only) | Tools, files, a second request, conversation state |
+| `loomward-broker.exe` | One validated model call per process (one model round), streaming, endpoint pinning, credential (cloud only) | Tools, files, a second request, conversation state |
 | `loomward-embed.exe` | Embedding inference on bounded text batches from a hash-pinned local model file | Network, file reads beyond its model file, catalogue access |
 | `loomward-ntfs-helper.exe` | NTFS metadata enumeration and journal reads, filtered to what the owner may list | Contents, writes, network, child processes, grants |
 | `catalog.db` | FTS5 trigram and token indexes (search v1) | Anything not rebuildable by rescanning |
 | `semantic.idx` | Vectors keyed by object reference and model digest | Truth: a vector is never a row |
-| `state.db` | Provider profiles, standing disclosure toggles, Ask-originated drafts | Conversation text |
+| `state.db` | Provider profiles, LW-067 client grants, Ask-originated drafts | Conversation text |
 | `ask.db` | Conversations, tool calls as sent, citation ledger, outbound previews | Grants, labels, training data |
 
 **Why `ask.db` is a third file.** Conversations are personal, chatty and disposable. They are neither
@@ -136,12 +136,23 @@ directory, so synthetic and personal conversations never mix.
 
 **Rule.** People, the Ask model and MCP agents call the same `ViewService` read commands. There is no
 model-only endpoint and no `execute_sql`. The Ask tool catalogue (section 8.2) is an allowlisted projection of
-existing read commands with tighter page limits. The native MCP adapter is the same projection over stdio.
+existing read commands with tighter page limits. The native MCP adapter gets **its own, narrower projection**
+over stdio: the read tools only. It excludes `draft_collection`, `suggest_label` and any other tool that
+persists to `state.db` or `ask.db`, because MCP is read-only (invariant 7). Section 8.2 lists both
+projections.
 
 **Principal on every call.** `CallContext` gains a principal: `owner_ui`, `ask(provider_class)` or
-`mcp(host_class)`. The service applies one disclosure projection per principal at the boundary (section 8.3),
+`mcp(client)`. The service applies one disclosure projection per principal at the boundary (section 8.3),
 after the query and before the result leaves the service. Tool layers and adapters never redact on their own,
 so the UI, Ask and MCP cannot drift apart.
+
+**Shared exposure waits for LW-067.** Ask and MCP are clients under LW-067: each gets an owner-issued
+client grant (roots in scope, field projection, model and network distinctions, expiry, revocation epoch),
+checked through `evaluate_grant` on every call. Until LW-067 lands, the search index (LW-113) serves the
+owner's own UI only, as draft PR #429 narrows it. Following LW-114's disclosure contract (#422):
+records outside a client's grant are excluded from its results **and from the totals it is shown**, and
+merged cursors and cached pages are bound to the client and its grant epoch, so a revocation invalidates
+them.
 
 **What `search.query` needs from the contracts owner** (after search v1; field names are theirs):
 
@@ -225,10 +236,15 @@ the owner runs 1.4.
 
 - Everything is a **provider of candidate names**, not evidence of identity ([27](27-provider-runtime-and-events.md)).
   A result is an `unverified_hit`.
-- **Grant filter first.** By default the adapter scopes every Everything query to the owner's granted roots
-  (path-prefix terms in the query), then rechecks each result's prefix against the granted roots' current
-  display paths. Invariant 2 says a path seen is not a grant: results outside the grants are dropped unless
-  the owner turns on the toggle that section 11, Q2 asks about.
+- **Grant filter first, no exceptions.** The adapter scopes every Everything query to the owner's granted
+  roots (path-prefix terms in the query), then rechecks each result's prefix against the granted roots'
+  current display paths. Invariant 2 says a path seen is not a grant, so **out-of-grant rows are dropped in
+  the adapter.** They are never displayed through Ask or MCP, never sent to any model, and never counted in
+  any total. To search a folder, the owner grants it. This is LW-114's disclosure contract (#422): only an
+  explicit **owner-local** whole-volume mode could ever show such rows. This document does not design that
+  mode; it needs its own gate and its own invariant 2 wording (section 11, Q2).
+- **Cursors and caches.** Merged cursors and cached pages are bound to the client and the grant epoch
+  (LW-114, LW-067), so a revocation invalidates them.
 - **Verify on display.** For the visible page (at most 50 rows), the engine opens each result by handle under
   its granted root, runs the post-open validation from [41 section 4.1](41-v03-architecture.md) and matches it
   to a catalogue row by identity. A matched hit becomes an ordinary row with `source: everything+own`.
@@ -243,9 +259,16 @@ the owner runs 1.4.
 **What it is for.** Speed, not reach. Microsoft documents that `FSCTL_ENUM_USN_DATA` enumerates MFT records
 through a volume handle (`\\.\X:`, NTFS only) [F12], and that opening a volume handle "must have administrative
 privileges" [F13]. That is how name-only whole-volume indexes populate in seconds. Loomward's non-elevated
-enumeration cannot match it on a cold volume. Note that USN enumeration yields names, file reference numbers,
-parent references and attributes, **not sizes**. Sizes and file times need either the normal scan or raw MFT
-record parsing, which [41](41-v03-architecture.md) ADR-V3-05 forbids without a malformed-record corpus.
+enumeration cannot match it on a cold volume. USN enumeration returns `USN_RECORD` entries. Their fields are
+file and parent reference numbers, the USN, a record time stamp, reason and source flags, a security ID,
+file attributes and the name [F27]. **They carry no size and no file data.** Sizes and file times come from
+the normal non-elevated scan, which fills them in after the helper's names arrive. Until it does, they show
+as unknown (invariant 4).
+
+**No raw MFT reads.** The helper never reads raw MFT file records (no `$MFT` open, no
+`FSCTL_GET_NTFS_FILE_RECORD`). An MFT record holds a small file's `$DATA` resident, so a raw read is a
+**content read**, not metadata. Raw reads would need a separate content-read gate and owner decision, and are
+not planned. This also keeps ADR-V3-05's ban on an MFT parser without a malformed-record corpus intact.
 q-36 asks for "instant whole-volume search". Under this design that means the owner grants a volume root
 through the native dialog (allowed since q-7; agents never pick one), and the helper then indexes that
 grant in seconds.
@@ -278,11 +301,10 @@ and the same pipe protocol, so moving from H1 to H2 changes the launcher, not th
   binary record batches. No request carries a path string.
 - **Job object:** no children, kill-on-close, a memory cap. The helper exits 60 s after its last request (H1).
 
-**What it may read:** NTFS metadata through `FSCTL_ENUM_USN_DATA`, `FSCTL_QUERY_USN_JOURNAL` and
-`FSCTL_READ_USN_JOURNAL`. A later, separately reviewed slice may read raw MFT file records for sizes and times,
-and must then **drop every `$DATA` attribute value**: small files store their contents resident in the MFT
-record, so a careless parser reads file contents. It may never create, delete or resize a journal (those are
-writes), open a file for content, write anywhere, or touch the network.
+**What it may read:** only the USN records returned by `FSCTL_ENUM_USN_DATA`, `FSCTL_QUERY_USN_JOURNAL` and
+`FSCTL_READ_USN_JOURNAL` [F12, F27]. These carry names, references, attributes and journal reasons, and no
+file data. It may never read raw MFT records or `$MFT`, create, delete or resize a journal (those are
+writes), open a file, write anywhere, or touch the network.
 
 **Visibility never exceeds the owner's own.** The helper impersonates the pipe client
 (`ImpersonateNamedPipeClient`) and runs an access check for list-directory rights on each directory it
@@ -298,7 +320,7 @@ Everything Service, which shows every local user all names [F04].
 |---|---|
 | Another local process talks to the helper | Owner-only DACL, remote clients rejected, client image and hash check |
 | Malware squats the pipe name first | Per-launch nonce, `FIRST_PIPE_INSTANCE`, engine verifies the server process before it sends |
-| Bug in elevated code parsing attacker-influenced names or records | Rust; `unsafe` confined to one ioctl module; record parser fuzzed with a malformed-record corpus; read-only handles; `clippy.toml` `disallowed-methods` for write, delete, process and socket APIs |
+| Bug in elevated code parsing attacker-influenced names or records | Rust; `unsafe` confined to one ioctl module; USN record parser fuzzed with a malformed-record corpus; read-only handles; `clippy.toml` `disallowed-methods` for write, delete, process and socket APIs |
 | Binary replaced to gain elevation | Admin-only install directory; hash pinned at install; the engine refuses a mismatched helper |
 | Reach beyond grants or ACLs | Root-FRN scoping, engine-side grant intersection, per-directory access check under impersonation |
 | Elevation that persists | H1 exits when idle; H2 only by owner decision |
@@ -307,18 +329,19 @@ Everything Service, which shows every local user all names [F04].
 `docs/16-implementation-status.md` and `handoff/CHECKPOINT.json`, per AGENTS.md):
 
 > 2. **No silent reach.** No automatic cloud requests, model downloads, installers, global config changes,
-> elevation or whole-disk scans. [... existing text unchanged ...] **One gated exception (LW-xxx, the NTFS
+> elevation or whole-disk scans. [... existing text unchanged ...] **One gated exception (LW-115, the NTFS
 > metadata helper):** after its gate passes, the owner may launch (or, by separate decision, install) a
-> read-only elevated helper. It reads NTFS metadata only (names, identities, attributes, journal records;
-> never contents), returns only entries under the owner's granted roots that the owner's own token can list,
-> starts only from an explicit owner action, and runs from an administrator-only install location. Nothing
-> else in Loomward runs elevated.
+> read-only elevated helper. It reads only change-journal records (names, file references, attributes and
+> journal reasons, which carry no file data). It never reads raw MFT records, which hold small files'
+> contents, and never opens a file. It returns only entries under the owner's granted roots that the
+> owner's own token can list, starts only from an explicit owner action, and runs from an
+> administrator-only install location. Nothing else in Loomward runs elevated.
 
 **Gate evidence.** Fuzzing hours and corpus; DACL and client-check tests (a foreign process is refused);
-an ACL-withholding test (a lab directory denied to the test user stays withheld); a `$DATA`-stripping test
-on resident files (raw-MFT slice only); and on a lab volume (E:\loomward-lab, ADR-V3-17), a check that no
-write ioctls are issued during a run, observed with Process Monitor. Plus two review lenses, because this is
-an elevation boundary.
+an ACL-withholding test (a lab directory denied to the test user stays withheld); and on a lab volume
+(E:\loomward-lab, ADR-V3-17), a check observed with Process Monitor that only the three journal controls are
+issued during a run (no `FSCTL_GET_NTFS_FILE_RECORD`, no `$MFT` open, no file open, no write control). Plus
+two review lenses, because this is an elevation boundary.
 
 ## 6. Semantic layer
 
@@ -354,7 +377,8 @@ can be cut to fit the byte budget; (6) multilingual ability, if A3 shows it matt
 | Google EmbeddingGemma-300M | ~300M | 768, MRL to 512/256/128 | Gemma terms | 100+ languages; QAT Q4/Q8 checkpoints; no float16 activations [F07] |
 
 **Decision: a bake-off, not a pick.** Run bge-small-en-v1.5 (the cheap baseline) and Qwen3-Embedding-0.6B
-truncated to 256 dimensions on the section 9 corpus. EmbeddingGemma serves as a quality reference only.
+truncated to 256 dimensions on the section 9 corpus. Per LW-116, both are evaluated against the token
+student (LW-024) before either is promoted. EmbeddingGemma serves as a quality reference only.
 Its Gemma terms carry use restrictions that a proprietary-edition customer would inherit, so Loomward does
 not offer it as a download until the licence has been reviewed. The winner is pinned by SHA-256.
 
@@ -385,8 +409,10 @@ that we can delete and rebuild.
 
 | Quantity | Budget |
 |---|---|
-| Embedded items | 15% or fewer of entries (directories plus informative names), deduplicated |
-| Bytes | 40 B or fewer per catalogue entry on average (about 0.4 GB at 10M entries). Per embedded item: a 256-bit binary code (32 B) plus a 256-dimension int8 vector (256 B) |
+| Bytes (the cap) | **48 B or fewer per catalogue entry on average**, about 0.48 GB at 10M entries (a quarter of P14's 200 B per entry) |
+| Bytes per vector, at d dimensions | d/8 (binary code) + d (int8 rescoring vector) + 16 (string-digest key) + 4 (flags and alignment) = **308 B at d = 256** |
+| Bytes per embedded entry | One vector share plus a 12 B mapping row (8 B object reference + 4 B vector index) = **320 B at d = 256** when no strings are shared. Deduplication only lowers this, so 320 B is the upper bound. File header and page padding are under 1 MiB in total |
+| Embedded items | Derived from the cap: 48 / 320 = **15% of entries at d = 256**. At d = 384 (bge-small-en-v1.5, which has no MRL truncation) a vector is 48 + 384 + 20 = 452 B, plus the 12 B mapping gives 464 B, so the cap allows **10%**. The classifier in section 6.1 is tuned to that ratio, and directories come first |
 | Query | Query embedding at most 30 ms on CPU; binary scan plus rescoring of the top 1,000 at most 50 ms p95 at 1.5M vectors |
 | Build | 1,000 strings/s or more on CPU in Loomward's own low-priority pool (about 25 minutes for 1.5M); incremental after |
 | Freshness | Embedding queue drained within 60 s of a catalogue generation commit for changes under 10k items |
@@ -415,7 +441,7 @@ The UI shows the index age per root ("as of 14:02, live") and never presents a s
 |---|---|---|---|---|
 | P0. MCP only (the smallest change): Loomward serves MCP; the owner brings any host and model | Nearly free; any model | No in-app experience; the host decides where data goes ([28](28-mcp-specification.md)) | Disclosure outside Loomward's control | Two-way |
 | P1. HTTP client inside the engine | Simplest streaming | Puts network code and credentials into the engine, against the broker ADR | Egress sprawl | Costly to unwind |
-| **P2. Engine runs the loop; the broker makes each model call** | One egress process for teacher and Ask; endpoint pinning and credential isolation already designed | Process spawn per turn; streaming over stdout | Spawn overhead | Two-way |
+| **P2. Engine runs the loop; the broker makes each model call** | One egress process for teacher and Ask; endpoint pinning and credential isolation already designed | Process spawn per model round; streaming over stdout | Spawn overhead | Two-way |
 
 **Decision: P2, with P0 kept as a parallel lane** (the native MCP adapter, section 10, F12), because MCP
 agents are a stated consumer. P1 loses: the broker ADR makes the broker "the only Loomward component that
@@ -436,15 +462,30 @@ holds a provider credential or links an HTTP client", and Ask needs no exception
 - **Provider profile** in `state.db`, created in a native dialog on the desktop only (the HTTP adapter
   refuses, as for `roots.request_grant`). It holds dialect, base URL, model ID, detected capabilities, probe
   result and class. Its digest is bound into every conversation.
-- **Per turn:** the engine spawns the broker under the job settings from the broker ADR and writes one
-  request (messages, tool schemas, model, limits; at most 256 KiB). The broker validates, calls, and streams
-  NDJSON frames (`delta`, `tool_call`, `done`, `error`) to stdout, with each frame capped and the total
-  reply at most 256 KiB. One call per process. The 256 KiB limit replaces the teacher's 64 KiB for this
-  profile only.
+- **Per model round:** the engine spawns a **fresh broker process** under the job settings from the broker
+  ADR and writes one request (messages, tool schemas, model, limits; at most 256 KiB). The broker validates,
+  calls, and streams NDJSON frames (`delta`, `tool_call`, `done`, `error`) to stdout, with each frame capped
+  and the total reply at most 256 KiB. Then it exits: one request per process, as for the teacher. The
+  256 KiB limit replaces the teacher's 64 KiB for this profile only.
+- **Tool-call rounds.** A user turn is a sequence of model rounds. Round 1 sends the conversation so far. If
+  the reply contains tool calls, the **engine** (never the broker) validates and executes them, appends the
+  results, and starts the next round with a new broker process and a new request. The turn ends when a round
+  returns no tool calls or a section 8.2 budget is hit. At most 8 tool calls per turn means at most 9 rounds:
+  up to 8 rounds that each make one call, plus the final answer. Calls made together in one round count
+  individually. When the budget is spent, one last round is sent with no tools offered, so the model must
+  answer. Rejected alternative: a bounded multi-request broker (one process serving several requests). It
+  would break the one-request-per-process and one-grant-per-request properties that the cloud gate relies on.
+- **Previews and grants per round.** For the `cloud` class, **each round is a separate outbound request
+  under q-5**. Each gets its own stored preview of its exact bytes (system prompt, history and the new tool
+  results), its own native confirmation, and its own single-use grant, consumed before that round's broker
+  starts. Declining a round sends nothing and ends the turn with the text received so far. For `local`,
+  every round runs under the provider's standing LW-067 client grant (section 8.3), with no per-round
+  dialog. Every round is validated the same way in both classes.
 - **Timeouts:** connect 2 s (local) or 10 s (cloud); first byte 90 s, because a cold local model has to
-  load; a 30 s stall between frames; 180 s per turn, as for the teacher. Cancel kills the job. A cancelled
-  or timed-out **cloud** turn is "outcome unknown" and never auto-retried (broker ADR). A local turn is simply
-  dropped.
+  load; a 30 s stall between frames. Each round's job deadline is the smaller of 180 s (as for the teacher)
+  and what is left of the turn's 180 s budget. Time the owner spends in a preview dialog does not count
+  against it. Cancel kills the current round's job. A cancelled or timed-out **cloud** round is "outcome
+  unknown" and never auto-retried (broker ADR). A local round is simply dropped.
 
 **Capability detection** (at profile creation and whenever the model changes):
 
@@ -492,14 +533,20 @@ path-free.
 | `suggest_label` | New: writes a **draft** suggestion | 25 handles | The owner's acceptance becomes a *human* label; the draft trains nothing |
 | `simulate_placement` | `placement.simulate` with `save: false` | n/a | A simulation, never a proposal of record |
 
+**The MCP projection** is this table without `draft_collection` and `suggest_label`. `simulate_placement`
+stays, because `save: false` persists nothing. A test pins that no MCP-listed tool writes to `state.db` or
+`ask.db`, and that calling a draft tool by name over MCP is refused, not merely unlisted ([28](28-mcp-specification.md)
+already requires that hidden names cannot be called).
+
 **Never exposed:** `scan.start` (the model may *suggest* a rescan, rendered as a button the owner clicks),
 `roots.*` grants, `grants.*`, `teacher.*`, `feedback.record`, `budgets.set`, `backups.*`, `jobs.cancel`, and
 anything with an effect. A draft is a record, not an approval (invariant 3, [25](25-control-evidence-architecture.md):
 approval is a separate record). Drafts carry `origin: ask` and the conversation ID, and a test pins that a
 draft never feeds `Student.fit`.
 
-**Turn budgets:** at most 8 tool calls per user turn, 6,000 tokens of tool output per turn (estimated as
-4 bytes per token), and 180 s of wall time. Tool arguments are validated strictly: unknown fields are
+**Turn budgets:** at most 8 tool calls and 9 model rounds per user turn (section 8.1), 6,000 tokens of tool
+output per turn (estimated as 4 bytes per token), and 180 s of model and tool time, not counting the owner's
+time in preview dialogs. Tool arguments are validated strictly: unknown fields are
 rejected, and one repair retry is allowed with the validator's message. An unknown tool returns a tool error
 to the model and never crashes the loop.
 
@@ -507,12 +554,13 @@ to the model and never crashes the loop.
 
 | Class | What tool results may contain | Preview | Preconditions |
 |---|---|---|---|
-| `local` (loopback, model not remote) | Names, relative paths within granted roots (each root shown by its display label), sizes, times, kinds, freshness. Never contents | None per request. A **standing per-root toggle** "local models may see this root", off by default (section 11, Q3) | A provider profile; the root toggle |
-| `cloud` (q-5) | Exactly the teacher field set: `name`, `extension`, `context` (two nearest ancestor names), `size_bucket`, plus `age_bucket`; the sensitive-name screen on the name and each ancestor; nothing under a sensitive or protected ancestor | **Every request**, by native dialog rendered from the stored outbound bytes (system prompt, history, tool results), as `DisclosureSummary` does today; a single-use grant consumed before spawn | The broker's canaries pass, q-5's names-only scope holds, and the repository gains `sensitive_data` (all three per q-5) |
-| `mcp` (external host) | As today: names only when the owner launches with name disclosure ([28](28-mcp-specification.md)) | None (the host owns the model) | Launch-time flag |
+| `local` (loopback, model not remote) | Names, relative paths within granted roots (each root shown by its display label), sizes, times, kinds, freshness. Never contents | None per round. A **standing LW-067 client grant** for the local provider (roots and fields, "local models may see this folder"), off by default and revocable (section 11, Q3) | A provider profile; the LW-067 grant |
+| `cloud` (q-5) | Exactly the teacher field set: `name`, `extension`, `context` (two nearest ancestor names), `size_bucket`, plus `age_bucket`; the sensitive-name screen on the name and each ancestor; nothing under a sensitive or protected ancestor | **Every model round** (each round is a separate request, section 8.1), by native dialog rendered from that round's stored outbound bytes (system prompt, history, tool results), as `DisclosureSummary` does today; a single-use grant per round, consumed before that round's broker spawns | The broker's canaries pass, q-5's names-only scope holds, and the repository gains `sensitive_data` (all three per q-5) |
+| `mcp` (external host) | The fields the client's LW-067 grant projects, within its granted roots; read tools only (section 8.2) | None (the host owns the model) | An LW-067 client grant per MCP client. The Python reference keeps its launch-time flag ([28](28-mcp-specification.md)) |
 
 Everything-sourced unverified hits never go to `cloud` or `mcp` at all, and go to `local` only after native
-verification (section 5.3).
+verification (section 5.3). Out-of-grant rows from any source reach no class at all, and no class's totals
+(LW-114).
 
 ### 8.4 Prompt-injection posture
 
@@ -588,7 +636,7 @@ of names in non-Latin scripts), never with names in Git (q-4, q-18).
 | Semantic | Same relevance metrics on concept queries; bytes per entry; build strings/s; query ms | The section 6.3 budgets |
 | Ask task success | Exact set match of cited handles, or numeric answers within tolerance, on 60 or more scripted tasks across tools | Reported per model; no gate on a number, only that it is measured and recorded |
 | Ask safety | Effectful-action rate (must be 0 by construction; checked); unsupported-claim rate; hallucinated-handle rate; hostile-name corpus success rate (did the answer follow injected text?) | Effectful 0; every hallucinated handle rendered "unverified" |
-| Ask latency | Time to first token, end-to-end per task, tokens per task, broker spawn ms | Spawn overhead under 100 ms (else a review trigger, section 13) |
+| Ask latency | Time to first token, end-to-end per task, rounds and tokens per task, broker spawn ms per round | Spawn overhead under 100 ms per round (else a review trigger, section 13) |
 
 **Model matrix.** On the owner's machine through the owner's Ollama (A1): two or three 3-4B models and two or
 three 7-8B models with tool support at a Q4 quantisation, chosen when the lane runs, with exact model digests
@@ -602,22 +650,24 @@ Owners per [40](40-parallel-work-packs.md): contracts and schemas each have one 
 
 | # | Lane | After | Acceptance evidence |
 |---|---|---|---|
-| F0 | This document accepted (ADR-V3-26 in [42](42-v03-adrs.md)); the driver mints `LW-*` IDs in `backlog/issues.json` | - | Merged doc; IDs minted |
-| F1 | Contract extension for federated search (section 4 list) plus the grammar parser with Rust and TypeScript parity fixtures | search v1 | Contract tests, fixture parity, no effect fields |
-| F2 | Name-tuned token analysis, short-query path, ranking v1: weighted reciprocal-rank fusion [F26, not re-fetched] of trigram and token, with exact, prefix and recency boosts and a stable tie-break by object reference; plus the relevance harness and the semantic-corpus generator | F1 | Baseline MRR and nDCG recorded in `evidence/v3/`; P8 at M and L |
-| F3 | Persistent per-root watchers plus USN bookmark catch-up; per-hit freshness | F1 | Lab: rename and delete between sessions caught up; overflow gives `stale_since`; journal wrap gives a dirty scope |
-| F4 | `loomward-everything` (SDK3 pipe client, MIT notice), grant filter, verify-on-display | F1 | Tests against a fake pipe server; hostile and outside-grant results dropped; real Everything leg reported UNVERIFIED unless installed |
-| F5 | `loomward-ask` crate: tool catalogue projection, `ask` principal and disclosure projection, budgets, citation ledger, `ask.db` schema, scripted mock provider | F1 | Scripted conversations; hostile-name corpus over the mock; Forget cascade test; drafts never reach `Student.fit` |
-| F6 | Broker chat profile (needs broker slices 1-2 from its ADR): loopback-only local class, capability probe, NDJSON streaming, cancel | F5, broker | Stub OpenAI-compatible server tests (tools, stream, stall, oversize, `:cloud` model reclassified); one real Ollama leg on the owner's machine, recorded |
-| F7 | Ask panel UI: badge, streaming, citation chips, tool-call list, draft cards; find-bar "ask" key | F5, F6 | Playwright with hostile names; no `{@html}`; no remote fetch from an answer |
+| F0 | This document accepted (ADR-V3-26 in [42](42-v03-adrs.md)). Lanes map to the minted LW-113 (index), LW-114 (Everything), LW-115 (helper), LW-116 (semantic), LW-117 (provider interface), LW-118 (Ask panel), with shared exposure on LW-067 | - | Merged doc |
+| F1 | (LW-113) Contract extension for federated search (section 4 list) plus the grammar parser with Rust and TypeScript parity fixtures | search v1 | Contract tests, fixture parity, no effect fields |
+| F2 | (LW-113) Name-tuned token analysis, short-query path, ranking v1: weighted reciprocal-rank fusion [F26, not re-fetched] of trigram and token, with exact, prefix and recency boosts and a stable tie-break by object reference; plus the relevance harness and the semantic-corpus generator | F1 | Baseline MRR and nDCG recorded in `evidence/v3/`; P8 at M and L |
+| F3 | (LW-113) Persistent per-root watchers plus USN bookmark catch-up; per-hit freshness | F1 | Lab: rename and delete between sessions caught up; overflow gives `stale_since`; journal wrap gives a dirty scope |
+| F4 | (LW-114) `loomward-everything` (SDK3 pipe client, MIT notice), grant filter with no out-of-grant exception, verify-on-display, cursors bound to client and grant epoch | F1 | Tests against a fake pipe server; hostile and out-of-grant results dropped and absent from totals; real Everything leg reported UNVERIFIED unless installed |
+| F5 | (LW-117, LW-118) `loomward-ask` crate: tool catalogue and MCP projections, `ask` principal and disclosure projection, the round loop with budgets, citation ledger, `ask.db` schema, scripted mock provider | F1, LW-067 | Scripted conversations, including a turn that hits the 8-call and 9-round limits; hostile-name corpus over the mock; Forget cascade test; drafts never reach `Student.fit` |
+| F6 | (LW-117) Broker chat profile (needs broker slices 1-2 from its ADR): one request per process per round, loopback-only local class, capability probe, NDJSON streaming, cancel | F5, broker | Stub OpenAI-compatible server tests (a three-round tool loop with a fresh broker each round, stream, stall, oversize, `:cloud` model reclassified); one real Ollama leg on the owner's machine, recorded |
+| F7 | (LW-118) Ask panel UI: badge, streaming, citation chips, tool-call list, draft cards; find-bar "ask" key | F5, F6 | Playwright with hostile names; no `{@html}`; no remote fetch from an answer |
 | F8 | Ask eval run (section 9) on 3-8B local models | F6, F7 | `evidence/v3/ask-eval-*.md` with model digests and hardware labels |
-| F9 | Semantic layer: consented downloader, `loomward-embed.exe`, flat index, fusion; bake-off | F2 | Section 6.3 budgets measured; bake-off table; download refused without the dialog |
-| F10a | Elevated helper **gate PR**: invariant 2 amendment (driver), threat model, `LW-*` gate, docs/16 and CHECKPOINT updated | owner Q1 | Driver-merged; owner decision recorded |
-| F10b | Helper H1: USN enumeration, names only, ACL and grant filtering, fuzzed parser, pipe security | F10a | Section 5.4 gate evidence; two review lenses |
-| F10c | Raw-MFT sizes and times with `$DATA` stripping and a malformed-record corpus | F10b | Corpus and fuzz; resident-content test |
-| F11 | Cloud class: teacher field-set projection, per-request native preview, single-use grants | broker canaries, q-5 conditions, `sensitive_data` overlay | Preview equals the outbound bytes, checked by digest; nothing sent before the grant |
-| F12 | Native MCP adapter over the same service (principal `mcp`), succeeding the Python reference for live catalogues | F5 | Subprocess MCP tests in both protocol eras, as [28](28-mcp-specification.md); same results as the UI for the same query |
+| F9 | (LW-116) Semantic layer: consented downloader, `loomward-embed.exe`, flat index, fusion; bake-off | F2 | Section 6.3 budgets measured; bake-off table; download refused without the dialog |
+| F10a | (LW-115) Elevated helper **gate PR**: invariant 2 amendment (driver), threat model, gate, docs/16 and CHECKPOINT updated | owner Q1 | Driver-merged; owner decision recorded |
+| F10b | (LW-115) Helper H1: USN enumeration and journal reads only, names only, ACL and grant filtering, fuzzed USN record parser, pipe security | F10a | Section 5.4 gate evidence; two review lenses |
+| F11 | (LW-117) Cloud class: teacher field-set projection, per-round native preview, a single-use grant per round | broker canaries, q-5 conditions, `sensitive_data` overlay, LW-067 | For every round, the preview equals the outbound bytes, checked by digest; nothing sent before that round's grant; declining one round ends the turn |
+| F12 | Native MCP adapter over the same service (principal `mcp`, read-only projection), succeeding the Python reference for live catalogues | F5, LW-067 | Subprocess MCP tests in both protocol eras, as [28](28-mcp-specification.md); same results as the UI for the same query within the client's grant; draft tools absent and refused by name; LW-114's test of one client granted one root, including a revocation between list and explain |
 | F13 | Bundled engine: pinned `llama-server` as an owned child on loopback with a random port and `--api-key`, consented GGUF download | F8 shows local value | Hash-pinned binary and weights; kill-on-close; nothing downloads without consent |
+
+Not planned: raw MFT record reads by the helper. They expose resident file contents, so they would need a
+separate content-read gate and owner decision (section 5.4).
 
 The first slice that proves the design end to end is **F5 + F6 + F7** against the owner's Ollama on a
 synthetic lab root: a question, two tool calls, a cited answer, and a draft collection the owner accepts.
@@ -632,11 +682,13 @@ uninstaller.
 1. **Q1, elevated helper (before F10a):** when its gate is ready, should the helper (a) prompt UAC each time
    it is needed (recommended to start), (b) be installed as an always-on service with no prompts (Everything's
    model), or (c) not be built?
-2. **Q2, Everything beyond your grants (with F4):** should Everything results outside your granted folders
-   be (a) hidden (recommended), (b) shown as names labelled "outside your folders", never sent to any model,
-   or (c) shown and also visible to local models?
+2. **Q2, an owner-only whole-volume view (after F4):** Everything rows outside your granted folders never
+   reach Ask, MCP or any model, and never count in their totals (LW-114). Should Loomward (a) search only
+   your granted folders, so you grant a folder to search it (recommended), or (b) later add an owner-only
+   whole-volume mode in the find bar, labelled "outside your folders"? Option (b) would need its own gate
+   and its own invariant 2 wording.
 3. **Q3, what a local model may see (with F6):** for a model on this machine, is a per-folder "local models may
-   see this" toggle enough (recommended), or should local models also show a preview before every request,
+   see this" grant enough (recommended), or should local models also show a preview before every request,
    as cloud models do?
 4. **Q4, conversation retention (with F5):** keep Ask conversations until you delete them (recommended,
    with Forget cascading), or delete them automatically after a set number of days?
@@ -652,9 +704,10 @@ and its gate. It is decided there, once F9's metadata-only results are in.
 | Cold model load takes longer than 90 s | Turn fails `first_byte_timeout`; the owner can retry; nothing half-stored |
 | Model emits malformed tool calls | One repair retry, then the turn ends with the error and any partial text; counted in the eval |
 | Model cites a handle it never received | Rendered "unverified reference"; the answer is still shown |
-| Tool loop or runaway | 8-call, 6,000-token and 180 s per-turn budgets; then a final answer without tools |
+| Tool loop or runaway | 8-call, 9-round, 6,000-token and 180 s per-turn budgets; then one last round with no tools offered |
 | A loopback endpoint serves a remote model | `:cloud` or remote detection reclassifies it as `cloud`, which is blocked until F11; undetectable forwarding is a stated limit in the UI |
-| Cloud call times out after dispatch | `outcome unknown`, grant consumed, never auto-retried (broker ADR) |
+| Cloud round times out after dispatch | `outcome unknown`, that round's grant consumed, never auto-retried (broker ADR) |
+| Owner declines a cloud round's preview | Nothing is sent; the turn ends with the text received so far; earlier rounds stand |
 | Everything not running, wrong version or database not loaded | Provider `unconfigured`, `blocked` or `degraded`; own index answers alone; the UI says which |
 | Everything returns paths outside grants or hostile names | Dropped before verification; counted |
 | Watcher overflow or journal wrap | Scope `stale_since`, targeted refresh; hits keep the flag until it completes |
@@ -673,7 +726,8 @@ three are the owner-gated ones.
 
 Reopen this design when:
 
-- broker spawn overhead exceeds 100 ms per turn, which points to a per-conversation broker;
+- broker spawn overhead exceeds 100 ms per round, which points to a longer-lived broker. That needs its own
+  review, because one process would then hold several requests and their grants;
 - V1's semantic p95 exceeds 50 ms at the owner's real vector count, which points to V2;
 - the eval shows 3-8B models below a usable task-success rate, which points to more pre-router and fewer
   tools, or a larger default model;
@@ -734,3 +788,6 @@ Checked 2026-10-12 unless marked "not re-fetched".
   https://gorilla.cs.berkeley.edu/leaderboard.html
 - [F26] Cormack, Clarke, Buettcher, "Reciprocal Rank Fusion outperforms Condorcet and individual rank
   learning methods", SIGIR 2009 (not re-fetched): https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf
+- [F27] Microsoft, `USN_RECORD_V2` (members: references, USN, time stamp, reason, source info, security ID,
+  attributes, name; no size or data; page updated 2024-02-22):
+  https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ns-winioctl-usn_record_v2
