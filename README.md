@@ -1,7 +1,5 @@
 # Loomward
 
-<p align="center"><img src="docs/assets/hero.svg" alt="Loomward" width="100%"></p>
-
 Loomward is a local-first Windows workspace memory that keeps what your files mean apart from where they live and what is allowed to act on them.
 
 [![CI](https://github.com/Chris0Jeky/Loomward/actions/workflows/ci.yml/badge.svg)](https://github.com/Chris0Jeky/Loomward/actions/workflows/ci.yml)
@@ -80,8 +78,6 @@ What is built, with the caveats that matter. Anything not in this table is not b
 ## Architecture
 
 The engine is a set of Rust crates behind one typed service. Every client calls the same `ViewService`, either over loopback HTTP and server-sent events or in-process in the desktop shell. The Python reference shares parity fixtures with the Rust code and is not on the product path.
-
-<p align="center"><img src="docs/assets/architecture.svg" alt="Loomward architecture" width="100%"></p>
 
 ```mermaid
 flowchart LR
