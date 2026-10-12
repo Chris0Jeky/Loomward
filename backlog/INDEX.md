@@ -1,6 +1,6 @@
 # Implementation backlog
 
-100 local, dependency-linked issue specifications: the original 64 plus 36 expansion tasks. These are **not remote GitHub issue numbers** and all remain planned production continuation. The runnable reference work is recorded separately in `docs/37-expansion-verification.md`.
+130 local, dependency-linked issue specifications: the original 64, 36 expansion tasks, 12 v3 tasks and 18 owner-decision tasks. These are **not remote GitHub issue numbers**. This inventory is not an implementation-completion claim; consult each issue and the implementation status for its evidence and remaining gates. The runnable reference work is recorded separately in `docs/37-expansion-verification.md`.
 
 The first eight manifest entries preserve the original native critical path. Publishing helpers remain dry-run by default, at most eight unless explicitly expanded. `M1I` covers integration foundations, `M2I` advanced evidence/workload integration, and `MX` optional experiments; none bypass the original native safety milestones.
 
@@ -71,10 +71,10 @@ The first eight manifest entries preserve the original native critical path. Pub
 | [LW-062](issues/LW-062.md) | Run an observation-only personal field trial | M2 | P0 | LW-018, LW-027, LW-056 |
 | [LW-063](issues/LW-063.md) | Confirm name, licence and public repository governance | M1 | P0 | LW-001 |
 | [LW-065](issues/LW-065.md) | Run a real-host dual-era MCP compatibility matrix | M1I | P0 | LW-058 |
-| [LW-066](issues/LW-066.md) | Adopt a production MCP SDK behind the bounded ToolService | M1I | P1 | LW-065, LW-067 |
+| [LW-066](issues/LW-066.md) | Adopt a production MCP SDK behind the bounded ToolService | M1I | P1 | LW-065, LW-067, LW-069 |
 | [LW-067](issues/LW-067.md) | Persist and revoke per-client disclosure grants | M1I | P0 | LW-017, LW-020 |
 | [LW-068](issues/LW-068.md) | Replace full-state explorer loads with paged reference views | M1I | P1 | LW-011 |
-| [LW-069](issues/LW-069.md) | Port scoped catalogue projections to the native query layer | M1I | P0 | LW-005, LW-011, LW-067, LW-068 |
+| [LW-069](issues/LW-069.md) | Port scoped catalogue projections to the native query layer | M1I | P0 | LW-005, LW-011, LW-067, LW-068, LW-113 |
 | [LW-070](issues/LW-070.md) | Represent group lineage and evidence in relational projections | M2I | P1 | LW-005, LW-010, LW-016 |
 | [LW-071](issues/LW-071.md) | Build an opt-in provider registry and descriptor validator | M1I | P0 | LW-017, LW-067 |
 | [LW-072](issues/LW-072.md) | Implement transactional provider inbox and outbox | M1I | P1 | LW-005, LW-016, LW-071 |
@@ -119,17 +119,17 @@ The first eight manifest entries preserve the original native critical path. Pub
 | [LW-111](issues/LW-111.md) | OS-enforced teacher confinement and enforcement canaries | V3 | P1 | LW-109 |
 | [LW-112](issues/LW-112.md) | Wave-3 service integration and grant policy | V3 | P1 | LW-103, LW-106 |
 | [LW-113](issues/LW-113.md) | Build the live full-text and substring search index over granted roots | M2 | P1 | LW-005, LW-008 |
-| [LW-114](issues/LW-114.md) | Integrate Everything as an optional whole-volume search backend | M2 | P1 | LW-113 |
+| [LW-114](issues/LW-114.md) | Integrate Everything as an optional whole-volume search backend | M2 | P1 | LW-113, LW-069 |
 | [LW-115](issues/LW-115.md) | Design an optional elevated NTFS-metadata search helper behind its own gate | MX | P2 | LW-113, LW-007, LW-017 |
 | [LW-116](issues/LW-116.md) | Add a local semantic (embedding) search layer with consented model download | M2 | P2 | LW-113, LW-014, LW-024 |
 | [LW-117](issues/LW-117.md) | Define the Ask provider interface for local, cloud and bundled models | M2 | P1 | LW-017, LW-067 |
-| [LW-118](issues/LW-118.md) | Build the Ask chat panel with read-only tools and citations | M2 | P1 | LW-113, LW-117, LW-058 |
+| [LW-118](issues/LW-118.md) | Build the Ask chat panel with read-only tools and citations | M2 | P1 | LW-113, LW-117, LW-058, LW-069 |
 | [LW-119](issues/LW-119.md) | Surface developer clutter: build outputs, package caches, model files and stale worktrees | M5 | P1 | LW-061, LW-076, LW-086, LW-087 |
 | [LW-120](issues/LW-120.md) | Add cloud and sync awareness without triggering recall | M5 | P1 | LW-003, LW-004, LW-071 |
 | [LW-121](issues/LW-121.md) | Add growth and low-space monitoring with alerts | M6 | P1 | LW-008, LW-051, LW-107 |
 | [LW-122](issues/LW-122.md) | Publish a rolling nightly channel and an opt-in updater | M1 | P1 | LW-057 |
 | [LW-123](issues/LW-123.md) | Define and evidence the daily-use readiness bar | M1 | P1 | LW-041, LW-056, LW-096 |
-| [LW-124](issues/LW-124.md) | Gate the first real effect: approved copy-and-verify | M3 | P0 | LW-036, LW-038, LW-039, LW-040 |
+| [LW-124](issues/LW-124.md) | Gate the first real effect: approved copy-and-verify | M3 | P0 | LW-036, LW-038, LW-039, LW-040, LW-041 |
 | [LW-125](issues/LW-125.md) | Retire the legacy browser UI and freeze the Python reference | M1 | P1 | LW-018, LW-104 |
 | [LW-126](issues/LW-126.md) | Prepare package channels: winget, Scoop bucket, Microsoft Store and a signing hook | M1 | P1 | LW-057, LW-063 |
 | [LW-127](issues/LW-127.md) | Nice-to-have: NAS shares as granted roots | MX | P2 | LW-004, LW-006 |

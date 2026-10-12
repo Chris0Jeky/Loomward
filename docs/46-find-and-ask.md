@@ -146,13 +146,18 @@ projections.
 after the query and before the result leaves the service. Tool layers and adapters never redact on their own,
 so the UI, Ask and MCP cannot drift apart.
 
-**Shared exposure waits for LW-067.** Ask and MCP are clients under LW-067: each gets an owner-issued
-client grant (roots in scope, field projection, model and network distinctions, expiry, revocation epoch),
-checked through `evaluate_grant` on every call. Until LW-067 lands, the search index (LW-113) serves the
-owner's own UI only, as draft PR #429 narrows it. Following LW-114's disclosure contract (#422):
-records outside a client's grant are excluded from its results **and from the totals it is shown**, and
-merged cursors and cached pages are bound to the client and its grant epoch, so a revocation invalidates
-them.
+**Shared exposure requires LW-067 grants and the qualified LW-069 adapter.** Ask and MCP are clients under
+LW-067: each gets an owner-issued grant (roots, field projection, model and network distinctions, expiry and
+revocation epoch), checked through `evaluate_grant` on every call. LW-069 owns the shared lexical search
+adapter and its scope, totals, cursor and revocation canaries; it depends on the LW-113 index and cannot
+complete after only generic projection work. The LW-066 MCP and LW-118 Ask consumers depend on that adapter.
+Until both gates pass, LW-113 serves the owner's own UI only. This is the same scheduling chain recorded in
+`backlog/issues.json` and #429, not an alternative path to completion.
+
+Following LW-114's disclosure contract (#422), records outside a client's grant are excluded from results
+and totals. Scope applies before aggregate totals are computed. Merged cursors and cached pages bind the
+client and grant epoch, so revocation invalidates them. LW-114 owns the optional Everything adapter's
+additional qualification after LW-069; its absence never blocks the ordinary lexical path or its consumers.
 
 **What `search.query` needs from the contracts owner** (after search v1; field names are theirs):
 
@@ -556,6 +561,9 @@ to the model and never crashes the loop.
 
 ### 8.3 Disclosure rules per provider class
 
+All shared-search results in this table require LW-069's qualified adapter in addition to the class-specific
+LW-067 grants and any cloud gate. A provider profile or a client grant alone does not qualify the adapter.
+
 | Class | What tool results may contain | Preview | Preconditions |
 |---|---|---|---|
 | `local` (loopback, model not remote) | Names, relative paths within granted roots (each root shown by its display label), sizes, times, kinds, freshness. Never contents | None per round. A **standing LW-067 client grant** for the local provider (roots and fields, "local models may see this folder"), off by default and revocable (section 11, Q3) | A provider profile; the LW-067 grant |
@@ -654,27 +662,33 @@ Owners per [40](40-parallel-work-packs.md): contracts and schemas each have one 
 
 | # | Lane | After | Acceptance evidence |
 |---|---|---|---|
-| F0 | This document accepted (ADR-V3-26 in [42](42-v03-adrs.md)). Lanes map to the minted LW-113 (index), LW-114 (Everything), LW-115 (helper), LW-116 (semantic), LW-117 (provider interface), LW-118 (Ask panel), with shared exposure on LW-067 | - | Merged doc |
+| F0 | This document accepted (ADR-V3-26 in [42](42-v03-adrs.md)). Lanes map to LW-113 (index), LW-114 (Everything), LW-115 (helper), LW-116 (semantic), LW-117 (provider), LW-118 (Ask), LW-066 (MCP), and LW-069 (shared adapter) under LW-067 grants | - | Merged doc; no runtime gate is qualified by documentation alone |
 | F1 | (LW-113) Contract extension for federated search (section 4 list) plus the grammar parser with Rust and TypeScript parity fixtures | search v1 | Contract tests, fixture parity, no effect fields |
 | F2 | (LW-113) Name-tuned token analysis, short-query path, ranking v1: weighted reciprocal-rank fusion [F26, not re-fetched] of trigram and token, with exact, prefix and recency boosts and a stable tie-break by object reference; plus the relevance harness and the semantic-corpus generator | F1 | Baseline MRR and nDCG recorded in `evidence/v3/`; P8 at M and L |
 | F3 | (LW-113) Persistent per-root watchers plus USN bookmark catch-up; per-hit freshness | F1 | Lab: rename and delete between sessions caught up; overflow gives `stale_since`; journal wrap gives a dirty scope |
-| F4 | (LW-114) `loomward-everything` (SDK3 pipe client, MIT notice), grant filter with no out-of-grant exception, verify-on-display, cursors bound to client and grant epoch | F1 | Tests against a fake pipe server; hostile and out-of-grant results dropped and absent from totals; real Everything leg reported UNVERIFIED unless installed |
-| F5 | (LW-117, LW-118) `loomward-ask` crate: tool catalogue and MCP projections, `ask` principal and disclosure projection, the round loop with budgets, citation ledger, `ask.db` schema, scripted mock provider | F1, LW-067 | Scripted conversations, including a turn that hits the 8-call and 9-round limits; hostile-name corpus over the mock; Forget cascade test; drafts never reach `Student.fit` |
+| F3a | (LW-069) Qualify the grant-scoped shared lexical search adapter; generic projection alone cannot complete this item | LW-113 complete, LW-067 | Ungranted client, one-root versus multi-root index, excluded totals/fields, client-bound cursor reuse and revoke-between-list-and-explain canaries pass |
+| F4 | (LW-114) `loomward-everything` (SDK3 pipe client, MIT notice), grant filter with no out-of-grant exception, verify-on-display, cursors bound to client and grant epoch | F1, LW-069 | Tests against a fake pipe server; hostile and out-of-grant results dropped and absent from totals; real Everything leg reported UNVERIFIED unless installed |
+| F5 | (LW-117, LW-118) `loomward-ask` crate: tool catalogue and MCP projections, `ask` principal and disclosure projection, the round loop with budgets, citation ledger, `ask.db` schema, scripted mock provider | F1, LW-067, LW-069 | Scripted conversations, including a turn that hits the 8-call and 9-round limits; hostile-name corpus over the mock; Forget cascade test; drafts never reach `Student.fit` |
 | F6 | (LW-117) Broker chat profile (needs broker slices 1-2 from its ADR): one request per process per round, loopback-only local class, capability probe, NDJSON streaming, cancel | F5, broker | Stub OpenAI-compatible server tests (a three-round tool loop with a fresh broker each round, stream, stall, oversize, `:cloud` model reclassified); one real Ollama leg on the owner's machine, recorded |
 | F7 | (LW-118) Ask panel UI: badge, streaming, citation chips, tool-call list, draft cards; find-bar "ask" key | F5, F6 | Playwright with hostile names; no `{@html}`; no remote fetch from an answer |
 | F8 | Ask eval run (section 9) on 3-8B local models | F6, F7 | `evidence/v3/ask-eval-*.md` with model digests and hardware labels |
 | F9 | (LW-116) Semantic layer: consented downloader, `loomward-embed.exe`, flat index, fusion; bake-off | F2 | Section 6.3 budgets measured; bake-off table; download refused without the dialog |
 | F10a | (LW-115) Elevated helper **gate PR**: invariant 2 amendment (driver), threat model, gate, docs/16 and CHECKPOINT updated | owner Q1 | Driver-merged; owner decision recorded |
 | F10b | (LW-115) Helper H1: USN enumeration and journal reads only, names only, ACL and grant filtering, fuzzed USN record parser, pipe security | F10a | Section 5.4 gate evidence; two review lenses |
-| F11 | (LW-117) Cloud class: teacher field-set projection, per-round native preview, a single-use grant per round | broker canaries, q-5 conditions, `sensitive_data` overlay, LW-067 | For every round, the preview equals the outbound bytes, checked by digest; nothing sent before that round's grant; declining one round ends the turn |
-| F12 | Native MCP adapter over the same service (principal `mcp`, read-only projection), succeeding the Python reference for live catalogues | F5, LW-067 | Subprocess MCP tests in both protocol eras, as [28](28-mcp-specification.md); same results as the UI for the same query within the client's grant; draft tools absent and refused by name; LW-114's test of one client granted one root, including a revocation between list and explain |
+| F11 | (LW-117) Cloud class: teacher field-set projection, per-round native preview, a single-use grant per round | broker canaries, q-5 conditions, `sensitive_data` overlay, LW-067, LW-069 for search | For every round, the preview equals the outbound bytes, checked by digest; nothing sent before that round's grant; declining one round ends the turn |
+| F12 | (LW-066) Native MCP adapter over the same service (principal `mcp`, read-only projection), succeeding the Python reference for live catalogues | F5, LW-067, LW-069 | Subprocess MCP tests in both protocol eras, as [28](28-mcp-specification.md); same results as the UI for the same query within the client's grant; draft tools absent and refused by name; LW-069 lexical-adapter scope/revocation tests; optional Everything also requires LW-114's own adapter tests |
 | F13 | Bundled engine: pinned `llama-server` as an owned child on loopback with a random port and `--api-key`, consented GGUF download | F8 shows local value | Hash-pinned binary and weights; kill-on-close; nothing downloads without consent |
+
+F3a and the lexical MCP/Ask path do not depend on F4 or an Everything installation. F4's optional backend
+must pass its own adapter canaries before exposure; completing the lexical adapter does not qualify it.
+The manifest and this roadmap both schedule index -> qualified shared adapter -> consumer.
 
 Not planned: raw MFT record reads by the helper. They expose resident file contents, so they would need a
 separate content-read gate and owner decision (section 5.4).
 
-The first slice that proves the design end to end is **F5 + F6 + F7** against the owner's Ollama on a
-synthetic lab root: a question, two tool calls, a cited answer, and a draft collection the owner accepts.
+The first slice that proves the design end to end is **F5 + F6 + F7**, after F3a qualifies LW-069, against
+the owner's Ollama on a synthetic lab root: a question, two tool calls, a cited answer, and a draft collection
+the owner accepts.
 
 **Migration and rollback.** Every lane is additive behind a capability flag in `session.hello`. Rollback is
 turning the flag off. All new stores are derived (`semantic.idx`), disposable (`ask.db`) or new tables. The
