@@ -1,0 +1,114 @@
+name: nightly
+# Rolling, unsigned nightly pre-release of the desktop shell (owner decisions HUMAN_TODO q-31, q-33;
+# AGENTS.md invariant 8). Every push to main whose CI run succeeded publishes `nightly`; the build it
+# replaces moves to `nightly-previous`, so the previous installer stays one download away (RELEASING.md, "Nightly").
+# The build, self-test and install smoke test are release.yml's (.github/actions/desktop-installer).
+on:
+  workflow_run:
+    workflows: [reference-and-native]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+# One publish at a time. A newer run waiting here replaces an older waiting one; a running publish is
+# never cancelled half-way (that could leave neither `nightly` nor `nightly-previous`).
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+jobs:
+  windows-nightly:
+    # Only a CI run for a push to this repository's main; a fork's PR from a branch named `main` also
+    # reports head_branch main, but its event is pull_request and its head repository is the fork.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write # move the nightly tags and replace their releases; the only write scope here
+    defaults:
+      run:
+        shell: bash
+    env:
+      SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ env.SHA }}
+          fetch-depth: 0 # the reachability check below needs main's history
+          persist-credentials: false # build scripts and npm never see the token; gh gets it by env below
+      - name: Resolve the version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch -q origin main
+          if ! git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "::error::$SHA is not reachable from origin/main"; exit 1
+          fi
+          # Never publish older code over newer: a late CI run for an earlier push, or a dispatch from
+          # an old ref, would otherwise get a newer date and run number than the build it replaces.
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly" --jq .object.sha 2>/dev/null || true)
+          if [ -n "$current" ] && [ "$current" != "$SHA" ] && git merge-base --is-ancestor "$SHA" "$current" 2>/dev/null; then
+            echo "::notice::the nightly already holds $current, which contains $SHA: nothing to publish"
+            echo "SKIP=true" >> "$GITHUB_ENV"; exit 0
+          fi
+          version=$(python scripts/release_meta.py nightly-version --date "$(date -u +%Y%m%d)" --run "$GITHUB_RUN_NUMBER")
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "nightly $version from $SHA"
+      - name: Build, self-test, install and uninstall
+        if: env.SKIP != 'true'
+        id: build
+        uses: ./.github/actions/desktop-installer
+        with:
+          version: ${{ env.VERSION }}
+          # Updater signatures (HUMAN_TODO q-30), passed to the tauri build step only; empty until
+          # the owner stores the key.
+          signing-key: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          signing-key-password: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      - name: Write the updater manifest (signed builds only)
+        if: steps.build.outputs.signed == 'true'
+        run: |
+          python scripts/release_meta.py latest-json --version "$VERSION" --tag nightly \
+            --installer "$(ls release-assets/*-setup.exe)" \
+            --notes "NIGHTLY $VERSION, untested, built from $SHA. Your state is kept; a schema change copies state.db first." \
+            > release-assets/latest.json
+          cat release-assets/latest.json
+      - name: Keep the current nightly as nightly-previous
+        if: env.SKIP != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          R="$GITHUB_REPOSITORY"
+          if ! gh release view nightly --repo "$R" >/dev/null 2>&1; then
+            echo "no nightly yet: nothing to keep"; exit 0
+          fi
+          prev_sha=$(gh api "repos/$R/git/ref/tags/nightly" --jq .object.sha)
+          if [ "$prev_sha" = "$SHA" ]; then
+            echo "the current nightly is this commit: nightly-previous stays as it is"; exit 0
+          fi
+          mkdir prev
+          gh release download nightly --repo "$R" --dir prev
+          if [ -f prev/latest.json ]; then
+            python scripts/release_meta.py retag prev/latest.json --tag nightly-previous > prev/latest.json.new
+            mv prev/latest.json.new prev/latest.json
+          fi
+          gh release view nightly --repo "$R" --json body --jq .body > "$RUNNER_TEMP/prev-notes.md"
+          title=$(gh release view nightly --repo "$R" --json name --jq .name)
+          gh release delete nightly-previous --repo "$R" --cleanup-tag --yes 2>/dev/null || true
+          gh release create nightly-previous prev/* --repo "$R" --target "$prev_sha" --prerelease --latest=false \
+            --title "${title/ nightly/ previous nightly}" --notes-file "$RUNNER_TEMP/prev-notes.md"
+      - name: Publish the nightly
+        if: env.SKIP != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          R="$GITHUB_REPOSITORY"
+          # Links point at the commit, not the moving tag.
+          python scripts/release_meta.py notes --nightly --version "$VERSION" --ref "$SHA" --sha "$SHA" > "$RUNNER_TEMP/notes.md"
+          # Delete and recreate rather than edit: the tag moves to $SHA and no asset of the old build stays.
+          gh release delete nightly --repo "$R" --cleanup-tag --yes 2>/dev/null || true
+          gh release create nightly release-assets/* --repo "$R" --target "$SHA" --prerelease --latest=false \
+            --title "Loomward $VERSION (unsigned nightly)" --notes-file "$RUNNER_TEMP/notes.md"

@@ -13,6 +13,7 @@ pub mod dialogs;
 pub mod launch;
 pub mod selftest;
 pub mod shell;
+pub mod updates;
 
 use loomward_protocol::limits::MAX_REQUEST_BYTES;
 use loomward_protocol::{

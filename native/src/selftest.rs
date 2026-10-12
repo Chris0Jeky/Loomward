@@ -125,6 +125,34 @@ pub fn run(log: &mut dyn FnMut(&str)) -> bool {
     );
 
     report(
+        "updates: no request without a click or the check-on-start opt-in",
+        (|| {
+            use crate::updates::{Trigger, Updates};
+            let ask = |_: isize, _: &str, _: &str| false;
+            // No state directory touched: fixtures mode, and a configured build with default prefs.
+            let fixtures = Updates::with_prompt(None, true, "0.1.0", ask);
+            check(
+                fixtures.plan(Trigger::User, false).is_err(),
+                "fixtures mode",
+            )?;
+            let fresh = Updates::with_prompt(
+                Some(std::env::temp_dir().join("loomward-selftest-no-prefs")),
+                true,
+                "0.1.0",
+                ask,
+            );
+            check(
+                fresh.plan(Trigger::Startup, false).is_err(),
+                "start check is off",
+            )?;
+            check(
+                fresh.plan(Trigger::User, false).is_ok(),
+                "a click may check",
+            )
+        })(),
+    );
+
+    report(
         "lw_call: every command returns a complete envelope",
         (|| {
             for &command in Command::ALL {

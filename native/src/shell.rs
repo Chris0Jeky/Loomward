@@ -1,13 +1,15 @@
-//! The Tauri binding: the two `#[tauri::command]`s and the lifecycle hooks that tear streams
-//! down. Generic over the runtime so the tests can drive it through Tauri's own IPC and ACL
+//! The Tauri binding: the `#[tauri::command]`s (`lw_call`, `lw_events` and the opt-in
+//! `lw_update`, `updates.rs`) and the lifecycle hooks that tear streams down. Generic over the runtime so the tests can drive it through Tauri's own IPC and ACL
 //! with the mock runtime.
 
+use crate::updates::{Action, Prefs, Trigger, Updates};
 use crate::Desktop;
 use loomward_protocol::{EventEnvelope, ResponseEnvelope};
+use serde_json::Value;
 use std::sync::Arc;
 use tauri::ipc::{Channel, InvokeBody, Request};
 use tauri::webview::PageLoadEvent;
-use tauri::{Builder, Manager, Runtime, State, Webview, WindowEvent};
+use tauri::{AppHandle, Builder, Manager, Runtime, State, Webview, WindowEvent};
 
 #[tauri::command]
 async fn lw_call(
@@ -51,12 +53,55 @@ async fn lw_events<R: Runtime>(
     .map_err(|_| "the service failed".to_string())?
 }
 
-/// Registers the desktop state, exactly the two commands, and stream teardown on page load
-/// and window close.
+/// The Updates view's one entry point (`updates.rs`). No action takes a URL, path or file.
+#[tauri::command]
+async fn lw_update<R: Runtime>(
+    app: AppHandle<R>,
+    updates: State<'_, Arc<Updates>>,
+    request: Action,
+) -> Result<Value, String> {
+    let updates = updates.inner().clone();
+    match request {
+        Action::Status => Ok(updates.status()),
+        Action::SetPrefs {
+            check_on_start,
+            channel,
+        } => updates.set_prefs(Prefs {
+            check_on_start,
+            channel,
+        }),
+        Action::Check { previous } => updates.check(&app, Trigger::User, previous).await,
+        Action::Install { version } => updates.install(&version, owner(&app)).await,
+    }
+}
+
+/// The main window's handle, so the confirmation is modal to it (0: no box is shown).
+fn owner<R: Runtime>(app: &AppHandle<R>) -> isize {
+    #[cfg(windows)]
+    if let Some(Ok(hwnd)) = app.get_webview_window("main").map(|w| w.hwnd()) {
+        return hwnd.0 as isize;
+    }
+    let _ = app;
+    0
+}
+
+/// Registers the desktop state, the commands, the updater (used from Rust only), and stream
+/// teardown on page load and window close.
 pub fn configure<R: Runtime>(builder: Builder<R>, desktop: Arc<Desktop>) -> Builder<R> {
     builder
         .manage(desktop)
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            // Only a start the owner opted into checks (`may_request`); the result waits for the
+            // Updates view.
+            if let Some(updates) = app.try_state::<Arc<Updates>>() {
+                let (updates, handle) = (updates.inner().clone(), app.handle().clone());
+                if updates.plan(Trigger::Startup, false).is_ok() {
+                    tauri::async_runtime::spawn(async move {
+                        let _ = updates.check(&handle, Trigger::Startup, false).await;
+                    });
+                }
+            }
             if let Some(config) = app.config().app.windows.iter().find(|w| w.label == "main") {
                 let window = tauri::WebviewWindowBuilder::from_config(app, config)?
                     .on_navigation(local_navigation)
@@ -70,7 +115,7 @@ pub fn configure<R: Runtime>(builder: Builder<R>, desktop: Arc<Desktop>) -> Buil
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![lw_call, lw_events])
+        .invoke_handler(tauri::generate_handler![lw_call, lw_events, lw_update])
         .on_page_load(|webview, payload| {
             // A new document can never receive on the old one's channels.
             if payload.event() == PageLoadEvent::Started {
