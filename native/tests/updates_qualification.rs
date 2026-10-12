@@ -5,12 +5,10 @@ use loomward_desktop::updates::{Trigger, Updates};
 fn malformed_running_versions_refuse_before_planning_a_request() {
     for current in ["", "not-a-version", "0.3", "\n0.3.0"] {
         let tmp = tempfile::tempdir().unwrap();
-        let updates = Updates::with_prompt(
-            Some(tmp.path().to_path_buf()),
-            true,
-            current,
-            |_, _, _| panic!("planning must not open a dialog"),
-        );
+        let updates =
+            Updates::with_prompt(Some(tmp.path().to_path_buf()), true, current, |_, _, _| {
+                panic!("planning must not open a dialog")
+            });
         assert!(
             updates.plan(Trigger::User, false).is_err(),
             "invalid running version {current:?} must not become 0.0.0"
