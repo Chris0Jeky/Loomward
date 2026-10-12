@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-window",
-  "description": "The webview may invoke lw_call and lw_events and nothing else: no core, filesystem, shell, dialog, process, HTTP or updater permission (docs/41 section 12).",
+  "description": "The webview may invoke lw_call, lw_events and lw_update (the opt-in update check, src/updates.rs) and nothing else: no core, filesystem, shell, dialog, process, HTTP or updater-plugin permission (docs/41 section 12).",
   "windows": ["main"],
-  "permissions": ["allow-lw-call", "allow-lw-events"]
+  "permissions": ["allow-lw-call", "allow-lw-events", "allow-lw-update"]
 }
