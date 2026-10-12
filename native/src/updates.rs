@@ -21,6 +21,8 @@ use std::sync::{Arc, Mutex};
 pub const RELEASES: &str = "https://github.com/Chris0Jeky/Loomward/releases/download";
 /// Prefs file inside the state directory, so it is copied and restored with the state.
 pub const PREFS_FILE: &str = "updates.json";
+/// Why the previous nightly is shown but not installed in-app (LW-122).
+pub const ROLLBACK_UNAVAILABLE: &str = "rolling back in the app is not available yet: an older build refuses state a newer build migrated, so the previous nightly is a manual download plus a restore of the matching state copy (RELEASING.md, Nightly)";
 pub const CONFIRM_TITLE: &str = "Install a Loomward update";
 /// Release notes longer than this are cut in the native box (MessageBoxW cannot scroll).
 const NOTES_IN_BOX: usize = 600;
@@ -79,16 +81,24 @@ pub fn channel_of(v: &Version) -> Option<Channel> {
     }
 }
 
-/// Whether `candidate` is offered to a build at `current` following `selected`. Inside one channel
-/// only a newer version is offered (semver: the nightly date and run number compare numerically).
-/// Switching channel, or asking for the previous nightly, is a deliberate move the owner confirms
-/// with the version in front of them, so any different version is offered: `nightly` sorts before
-/// `preview` in semver, which would otherwise hide every nightly from a preview build.
+/// Whether `candidate` is offered to a build at `current` following `selected`. Never an older
+/// build: an older binary refuses state a newer one migrated, and a rollback must restore the
+/// matching state snapshot (LW-122), which this updater does not do.
+/// - Inside one channel: semver-newer (the nightly date and run number compare numerically).
+/// - Switching to nightly: a nightly of the same or a newer core. Semver sorts `nightly` before
+///   `preview`, but nightlies are built from `main` after the preview of that core was cut.
+/// - Switching to preview (or from a local build): a newer core only; a preview of the same core
+///   is older than `main`'s nightly.
+/// - `previous`: any other version, shown so the owner can find it; [`Updates::install`] refuses it.
 pub fn is_offer(current: &Version, candidate: &Version, selected: Channel, previous: bool) -> bool {
-    if previous || channel_of(current) != Some(selected) {
-        candidate != current
-    } else {
-        candidate > current
+    let core = |v: &Version| (v.major, v.minor, v.patch);
+    if previous {
+        return candidate != current;
+    }
+    match (channel_of(current), selected) {
+        (Some(from), to) if from == to => candidate > current,
+        (Some(Channel::Preview), Channel::Nightly) => core(candidate) >= core(current),
+        _ => core(candidate) > core(current),
     }
 }
 
@@ -297,6 +307,11 @@ impl Updates {
         if offer.version != version {
             return Err("the offer changed; check again".into());
         }
+        if offer.previous {
+            // LW-122: a rollback restores the binary together with its matching pre-migration
+            // state snapshot. Until that drill exists the previous nightly is a manual download.
+            return Err(ROLLBACK_UNAVAILABLE.into());
+        }
         let text = confirm_text(&offer, &self.current.to_string());
         let ask = self.ask.clone();
         // The box is modal and blocking: off the async runtime, as `lw_call` runs its dialogs.
@@ -436,88 +451,59 @@ mod tests {
     #[test]
     fn version_comparison_with_nightly_suffixes() {
         let n = |s| v(&format!("0.3.0-nightly.{s}"));
-        assert_eq!(channel_of(&n("20261012.7")), Some(Channel::Nightly));
-        assert_eq!(channel_of(&v("0.3.0-preview.2")), Some(Channel::Preview));
+        let offer = |c: Version, d: Version, ch, prev| is_offer(&c, &d, ch, prev);
+        use Channel::{Nightly, Preview};
+        assert_eq!(channel_of(&n("20261012.7")), Some(Nightly));
+        assert_eq!(channel_of(&v("0.3.0-preview.2")), Some(Preview));
         assert_eq!(channel_of(&v("0.1.0")), None);
         // Numeric identifiers: run 10 is newer than run 9, a later day newer than an earlier one.
-        assert!(is_offer(
-            &n("20261012.9"),
-            &n("20261012.10"),
-            Channel::Nightly,
-            false
-        ));
-        assert!(is_offer(
-            &n("20261012.9"),
-            &n("20261013.1"),
-            Channel::Nightly,
-            false
-        ));
-        assert!(!is_offer(
-            &n("20261013.1"),
-            &n("20261012.9"),
-            Channel::Nightly,
-            false
-        ));
-        assert!(!is_offer(
-            &n("20261012.9"),
-            &n("20261012.9"),
-            Channel::Nightly,
-            false
-        ));
-        // A newer core version wins over any nightly suffix.
-        assert!(is_offer(
-            &n("20261012.9"),
-            &v("0.4.0-nightly.20261001.1"),
-            Channel::Nightly,
+        assert!(offer(n("20261012.9"), n("20261012.10"), Nightly, false));
+        assert!(offer(n("20261012.9"), n("20261013.1"), Nightly, false));
+        assert!(!offer(n("20261013.1"), n("20261012.9"), Nightly, false));
+        assert!(!offer(n("20261012.9"), n("20261012.9"), Nightly, false));
+        // A newer core wins over any nightly suffix.
+        assert!(offer(
+            n("20261012.9"),
+            v("0.4.0-nightly.20261001.1"),
+            Nightly,
             false
         ));
         // Previews compare by their number.
-        assert!(is_offer(
-            &v("0.3.0-preview.1"),
-            &v("0.3.0-preview.2"),
-            Channel::Preview,
+        assert!(offer(
+            v("0.3.0-preview.1"),
+            v("0.3.0-preview.2"),
+            Preview,
             false
         ));
-        assert!(!is_offer(
-            &v("0.3.0-preview.2"),
-            &v("0.3.0-preview.1"),
-            Channel::Preview,
+        assert!(!offer(
+            v("0.3.0-preview.2"),
+            v("0.3.0-preview.1"),
+            Preview,
             false
         ));
-        // Switching channel offers any other version, although `nightly` < `preview` in semver.
+        // Preview -> nightly of the same core is offered, although `nightly` < `preview` in semver.
         assert!(n("20261012.9") < v("0.3.0-preview.1"));
-        assert!(is_offer(
-            &v("0.3.0-preview.1"),
-            &n("20261012.9"),
-            Channel::Nightly,
+        assert!(offer(v("0.3.0-preview.1"), n("20261012.9"), Nightly, false));
+        assert!(!offer(
+            v("0.4.0-preview.1"),
+            n("20261012.9"),
+            Nightly,
             false
         ));
-        assert!(is_offer(
-            &n("20261012.9"),
-            &v("0.3.0-preview.1"),
-            Channel::Preview,
+        // Nightly -> preview only for a newer core: never a downgrade.
+        assert!(!offer(
+            n("20261012.9"),
+            v("0.3.0-preview.1"),
+            Preview,
             false
         ));
-        // The previous nightly is an older build, offered unless it is the one running.
-        assert!(is_offer(
-            &n("20261012.9"),
-            &n("20261012.8"),
-            Channel::Nightly,
-            true
-        ));
-        assert!(!is_offer(
-            &n("20261012.8"),
-            &n("20261012.8"),
-            Channel::Nightly,
-            true
-        ));
-        // A local build follows whichever channel is chosen.
-        assert!(is_offer(
-            &v("0.1.0"),
-            &v("0.3.0-preview.1"),
-            Channel::Preview,
-            false
-        ));
+        assert!(offer(n("20261012.9"), v("0.4.0-preview.1"), Preview, false));
+        // A local build: a newer core on either channel, never the same core.
+        assert!(offer(v("0.1.0"), v("0.3.0-preview.1"), Preview, false));
+        assert!(!offer(v("0.3.0"), n("20261012.9"), Nightly, false));
+        // The previous nightly is found (any other version) but never installed in-app.
+        assert!(offer(n("20261012.9"), n("20261012.8"), Nightly, true));
+        assert!(!offer(n("20261012.8"), n("20261012.8"), Nightly, true));
     }
 
     #[test]

@@ -71,6 +71,16 @@ describe('Updates view state', () => {
     expect(updates.message).toBe('No other previous nightly is published.');
   });
 
+  it('shows the previous nightly but never asks the desktop to install it', async () => {
+    const prev = { version: '0.3.0-nightly.20261012.3', channel: 'nightly' as const, notes: '', date: null, previous: true };
+    const { updates, calls } = desktop({ prefs: { check_on_start: false, channel: 'nightly' } }, prev);
+    await updates.load();
+    await updates.check(true);
+    expect(updates.message).toBe('Previous nightly 0.3.0-nightly.20261012.3 is available on the nightly channel.');
+    await updates.install();
+    expect(calls.some((c) => c.action === 'install')).toBe(false);
+  });
+
   it('an unconfigured build never sends a check', async () => {
     const { updates, calls } = desktop({ unavailable: 'updates are not configured in this build' });
     await updates.load();

@@ -1,7 +1,7 @@
 name: nightly
 # Rolling, unsigned nightly pre-release of the desktop shell (owner decisions HUMAN_TODO q-31, q-33;
 # AGENTS.md invariant 8). Every push to main whose CI run succeeded publishes `nightly`; the build it
-# replaces moves to `nightly-previous`, so a rollback is one download (RELEASING.md, "Nightly").
+# replaces moves to `nightly-previous`, so the previous installer stays one download away (RELEASING.md, "Nightly").
 # The build, self-test and install smoke test are release.yml's (.github/actions/desktop-installer).
 on:
   workflow_run:

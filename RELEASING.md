@@ -95,6 +95,13 @@ It builds, self-tests, installs and uninstalls exactly as a preview does (both u
 - **Tags:** `nightly` always holds the newest build. Before it moves, the build it held is republished
   as `nightly-previous` (its `latest.json` rewritten to point there), so the previous installer stays
   one download away. A re-run on the same commit replaces `nightly` and leaves `nightly-previous` alone.
+- **Rollback (manual for now, LW-122):** the app finds the previous nightly but does not install it,
+  because an older build refuses state that a newer build migrated, and a rollback has to restore
+  the matching state copy with the binary. By hand: close Loomward, install the `nightly-previous`
+  installer, and if it then refuses its state, move `state.db` aside in
+  `%LOCALAPPDATA%\Loomward Data\v3\personal` and put the newest `state.before-v<N>.db` copy (made by
+  the newer build before its migration) in its place. `catalog.db` is derived and is rebuilt by a
+  re-scan; it gets no copy before a catalogue migration.
 - **Body:** the preview notes behind a NIGHTLY banner (`.github/release/nightly-banner.md`): untested,
   may break, state is kept and copied before a schema change.
 - **Manual run:** `gh workflow run nightly.yml --repo Chris0Jeky/Loomward --ref main`. A run from a

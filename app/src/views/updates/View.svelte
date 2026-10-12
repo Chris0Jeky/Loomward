@@ -61,9 +61,13 @@
       <h2 id="updates-offer">{s.offer.previous ? 'Previous nightly' : 'Available update'}</h2>
       <p>Version <strong class="num">{s.offer.version}</strong> · {s.offer.channel} channel{#if s.offer.date} · published {s.offer.date}{/if}</p>
       {#if s.offer.notes}<pre class="notes">{s.offer.notes}</pre>{/if}
-      <div class="controls">
-        <button class="btn primary" disabled={!!updates.busy} onclick={() => updates.install()}>{s.offer.previous ? 'Reinstall this nightly…' : 'Install…'}</button>
-      </div>
+      {#if s.offer.previous}
+        <p class="note gated">Rolling back is not available in the app yet: an older build cannot open state a newer build has migrated. Download this installer from the <code>nightly-previous</code> pre-release and restore the matching state copy by hand (RELEASING.md, Nightly).</p>
+      {:else}
+        <div class="controls">
+          <button class="btn primary" disabled={!!updates.busy} onclick={() => updates.install()}>Install…</button>
+        </div>
+      {/if}
     </section>
   {/if}
 {/if}
