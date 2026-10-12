@@ -68,13 +68,21 @@ fn win32_normalised_components_keep_their_verbatim_identity() {
 
 #[test]
 fn ordinary_absolute_drive_paths_still_use_the_sqlite_workaround() {
-    for plain in [r"C:\fixture\state", r"d:\CONSOLE\COM10\state", r"C:\数\state"] {
+    for plain in [
+        r"C:\fixture\state",
+        r"d:\CONSOLE\COM10\state",
+        r"C:\数\state",
+    ] {
         assert_eq!(
             sqlite_dir(Path::new(&format!(r"\\?\{plain}"))),
             PathBuf::from(plain)
         );
     }
-    for path in [r"\\?\UNC\host\share", r"\\?\Volume{fixture}\state", r"C:\state"] {
+    for path in [
+        r"\\?\UNC\host\share",
+        r"\\?\Volume{fixture}\state",
+        r"C:\state",
+    ] {
         assert_eq!(sqlite_dir(Path::new(path)), PathBuf::from(path));
     }
 }
