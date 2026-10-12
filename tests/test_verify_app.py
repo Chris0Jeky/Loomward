@@ -1,4 +1,4 @@
-"""Hermetic orchestration test for scripts/verify.py --app (#154, #186).
+"""Hermetic orchestration test for scripts/verify.py --app (#154, #186, #431).
 
 Tool discovery, the subprocess runner and the Playwright probe are all stubbed, so no npm,
 node, cargo or browser runs here.
@@ -67,7 +67,7 @@ class VerifyAppOrchestrationTests(unittest.TestCase):
             with self.subTest(node=node, npm=npm):
                 run = Runner()
                 code, out = self.run_main(run, which=tools(node=node, npm=npm))
-                self.assertEqual(code, 0)
+                self.assertEqual(code, 2)
                 self.assertEqual(run.app_calls(), [])
                 self.assertIn("UNVERIFIED Svelte app: Node or npm is missing; no app success is claimed", out)
                 self.assertNotIn("RUN Svelte app", out)
@@ -75,7 +75,7 @@ class VerifyAppOrchestrationTests(unittest.TestCase):
     def test_node_modules_missing_is_unverified(self):
         run = Runner()
         code, out = self.run_main(run, isdir=lambda path: False)
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 2)
         self.assertEqual(run.app_calls(), [])
         self.assertIn("UNVERIFIED Svelte app: app/node_modules is missing", out)
         self.assertNotIn("RUN Svelte app", out)
@@ -107,11 +107,45 @@ class VerifyAppOrchestrationTests(unittest.TestCase):
         reason = "the Python playwright package is not installed (py -3 -m pip install playwright)"
         run = Runner()
         code, out = self.run_main(run, e2e_gap=lambda: reason)
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 2)
         self.assertEqual(run.app_calls(), [CHECK, UNIT, BUILD])
         self.assertNotIn(E2E, run.calls)
         self.assertIn(f"UNVERIFIED Svelte app e2e: {reason}; no e2e success is claimed", out)
         self.assertNotIn("RUN Svelte app Playwright e2e", out)
+
+    def test_chromium_or_probe_failure_is_nonzero_but_runs_available_app_legs(self):
+        for reason in ("Chromium is missing", "Playwright could not start"):
+            with self.subTest(reason=reason):
+                run = Runner()
+                code, out = self.run_main(run, e2e_gap=lambda: reason)
+                self.assertEqual(code, 2)
+                self.assertEqual(run.app_calls(), [CHECK, UNIT, BUILD])
+                self.assertIn("UNVERIFIED Svelte app e2e", out)
+
+    def test_an_executed_failure_takes_precedence_over_unverified(self):
+        for marker in ("unittest discover", "run check"):
+            with self.subTest(marker=marker):
+                code, out = self.run_main(Runner(fail_on=[marker]), e2e_gap=lambda: "missing browser")
+                self.assertEqual(code, 1)
+                self.assertIn("FAIL ", out)
+                self.assertIn("UNVERIFIED Svelte app e2e", out)
+
+    def test_plain_verify_keeps_app_tooling_optional(self):
+        run = Runner()
+        def unexpected_probe():
+            self.fail("plain verification must not probe optional app tooling")
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = verify.main([], which=tools(False, False), run=run,
+                               isdir=lambda path: False, e2e_gap=unexpected_probe)
+        self.assertEqual(code, 0)
+        self.assertEqual(run.app_calls(), [])
+        self.assertEqual(run.calls, [[sys.executable, "-m", "unittest", "discover", "-s", "tests"]])
+
+    def test_require_native_is_still_a_failure_when_app_is_unverified(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = verify.main(["--require-native", "--app"], which=tools(False, False),
+                               run=Runner(), isdir=lambda path: False, e2e_gap=e2e_ok)
+        self.assertEqual(code, 1)
 
 
 if __name__ == "__main__":
