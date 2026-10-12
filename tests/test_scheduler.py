@@ -1,6 +1,8 @@
 import concurrent.futures
 import copy
+import json
 import unittest
+from pathlib import Path
 from loomward.scheduler import admit_workloads, LeaseBroker
 
 DIMS = ('cpu_slots', 'memory_mib', 'gpu_mib', 'io_mib_s')
@@ -136,3 +138,13 @@ class LeaseBoundaryRegressionTests(unittest.TestCase):
         broker.capacity['cpu_slots']=100
         result=broker.acquire('owner','request',vector(cpu_slots=2))
         self.assertEqual(result['status'],'deferred')
+
+
+class AdmissionOracleFixtureTests(unittest.TestCase):
+    """The committed fixture is this oracle's own output; a future native port must reproduce it."""
+    def test_python_reference_reproduces_the_committed_fixture(self):
+        fixtures = json.loads((Path(__file__).resolve().parents[1] / 'fixtures' / 'v2' / 'admission-parity.json').read_text(encoding='utf-8'))
+        self.assertEqual(len(fixtures), 80)
+        for case in fixtures:
+            with self.subTest(case['name']):
+                self.assertEqual(json.loads(json.dumps(admit_workloads(case['input']))), case['expected'])
