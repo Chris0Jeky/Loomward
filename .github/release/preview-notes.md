@@ -7,9 +7,11 @@ early testers, built from commit `{{SHA}}`.
   ("Windows protected your PC"). Choose *More info*, then *Run anyway*, only after checking the
   SHA-256 below. Code signing is a later owner decision.
 - **It runs the real engine, on your machine.** The app opens a personal session on its own
-  engine. It starts with no folders. To give it one, open *Grants & health*, choose *Add a folder*,
-  pick it in the Windows folder picker and confirm (Cancel is the default); nothing is read until
-  you press *Scan* on that folder. A scan reads metadata only, never file contents: names, sizes,
+  engine. A fresh install starts with no folders (folders you added earlier come back while its state
+  folder is kept). To give it one, open *Grants & health*, choose *Add a folder*,
+  pick it in the Windows folder picker and confirm (Cancel is the default). Adding checks the folder
+  itself (its path, filesystem and identity); nothing inside it is listed until you press *Scan* on
+  that folder. A scan reads metadata only, never file contents: names, sizes,
   times and file identity. When you open the views that show them, it also reads your
   installed-applications list, where your known folders (Desktop, Documents and so on) are
   configured, and running-process and disk activity counters.
@@ -42,7 +44,8 @@ early testers, built from commit `{{SHA}}`.
   above). The only files it writes are its
   own: its state under `%LOCALAPPDATA%\Loomward Data\v3\` and the WebView2 browser data under
   `%LOCALAPPDATA%\dev.loomward.desktop\`. *Revoke* stops it reading a folder; *Forget* on a revoked
-  folder then removes its name and catalogue from Loomward's own database and backup copies. Your
+  folder then removes its name and catalogue from Loomward's own database and, where it can, from its
+  backup copies (a locked backup copy can keep the name). Your
   files are not touched, and traces may remain in unused disk space until it is overwritten.
   Uninstalling leaves the state folder; delete it to remove the app's state. One Loomward window
   runs at a time: a second start says so and exits.
