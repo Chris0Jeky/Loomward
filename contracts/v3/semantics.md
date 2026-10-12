@@ -71,6 +71,7 @@ re-send as stated.
 | `roots.request_grant` | Yes, if the owner already picked a folder | `request_id`, 10 min | `roots.list` | Never reopen the picker automatically |
 | `backups.import` | Yes, if the owner already picked a receipt | `request_id`, 10 min | `backups.list` | Never reopen the dialog automatically; a repeat import of the same label replaces its record |
 | `backups.forget` | Yes | `request_id`, 10 min | `backups.list` | Re-send is safe: an absent record is `not_found` and nothing else changes |
+| `diagnostics.save` | Yes, if the owner already picked a file | `request_id`, 10 min | the chosen file, outside Loomward | Never reopen the dialog automatically; a re-send of the same `request_id` returns the original outcome and never writes twice |
 | `grants.create_disclosure` | Yes | `preview_id`: a preview yields at most one grant, returned again | `grants.list` | Re-send with the same `preview_id` is safe |
 | `teacher.run` | Yes, and disclosure may already have happened | `grant_id`: returns the existing job, never a second request | `teacher.results`, `jobs.list` | MUST NOT create a new preview or grant to retry |
 | `scan.start` | Yes | One active scan per root: a second start is `busy` with `detail.job_id` | `jobs.list` for the root | Re-send is safe |
@@ -548,6 +549,35 @@ source and target is `same_volume`; different volumes are `unknown` with basis
 `different_volumes_device_unknown` until a physical device identity exists; an undeclared side is
 `unknown` / `undeclared`. `proposed_drill` is data with `executable: false`; no command executes it.
 No command runs restic, opens a backup repository or reads its configuration.
+
+## Diagnostic bundles (LW-055, q-15)
+
+`diagnostics.preview` exists on both adapters and in every dataset class. It writes nothing. It returns
+`bundle`, `bytes` and `digest`: `bytes` and `digest` are the length and SHA-256 of the canonical text, the
+bundle's wire value with its keys sorted, pretty-printed with a two-space indent (`serde_json` pretty, equal to
+`JSON.stringify(sortedKeys(bundle), null, 2)`; the bundle holds no floating-point number). The service keeps the
+last preview's bytes, one slot per session; a new preview replaces them. Past 262,144 bytes the preview is
+`resource_budget`, never cut.
+
+The bundle is an allowlist (`DiagnosticsBundle`, every object closed): build and session facts, the OS family and
+build number, logical processor count and installed RAM, `health.get` warning codes and sizes without messages,
+store versions, counts, jobs counted by kind and state over the newest 50, and each root by its opaque ID with
+origin, grant and scan state, coverage, filesystem family and identity mode. It never carries a path, file or
+folder name, volume label, serial or key, process name or argument, label, prompt, collection name, receipt or
+error message. A value the service could not read is `{"unknown": "<reason>"}` with a fixed snake_case reason,
+never omitted, `null` or zero; `recent_errors` is always `{"unknown": "not_retained"}`.
+
+`diagnostics.save {digest}` exists on the desktop adapter only (HTTP answers `capability_unavailable`), in every
+dataset class. A digest other than the held preview's is `refused` / `preview_changed` before any dialog opens.
+Rust opens the native save dialog (one dialog at a time with the pickers, 2 s cooldown: `busy`). When the
+chosen file exists, Loomward asks its own question naming it (Cancel the default) before replacing it. Cancel
+in either is `cancelled_by_user` and writes nothing. A relative,
+network, device or verbatim path, a device name, a stream name, a parent folder that is missing or resolves (through a junction or link) to a share, or an existing target
+that is not a regular file or is a link, reparse point or cloud placeholder is `unsupported_target`; a write
+that fails is `write_failed`. Neither writes anything: the bytes go to a temporary file beside the target that is
+renamed over it, or removed. `saved` reports `bytes_written`. The path is never returned. Send `deadline_ms`
+up to 60,000: the call waits on the owner. It is the only command whose `effects` is not `none`
+(`owner_picked_export`, docs/42 ADR-V3-24).
 
 ## Lazy meaning threads
 

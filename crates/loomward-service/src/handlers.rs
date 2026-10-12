@@ -141,6 +141,24 @@ fn binding(request: &RequestEnvelope) -> String {
     Value::Object(p).to_string()
 }
 
+/// A root's scan state and coverage as `roots.list` shows them; a root that is not active is stale.
+pub(crate) fn scan_view(r: &db::RootRow) -> (&'static str, &'static str) {
+    if r.grant_state != "active" {
+        return ("stale", "stale");
+    }
+    match r.state.as_str() {
+        "never_scanned" => ("never_scanned", "unscanned"),
+        "scanning" => ("scanning", "partial"),
+        // A finished traversal with excluded, denied or skipped entries is not complete
+        // coverage: the root reads partial, as its tree does.
+        "complete" if r.subtree_complete => ("complete", "complete"),
+        "complete" => ("complete", "partial"),
+        "partial" | "repairing" => ("partial", "partial"),
+        "stale" => ("stale", "stale"),
+        _ => ("failed", "unknown"),
+    }
+}
+
 fn stale(message: &str, reason: &str) -> ErrorBody {
     with_reason(fail(ErrorCode::StaleGeneration, message), reason)
 }
@@ -178,6 +196,8 @@ impl Inner {
             BackupsList => self.backups_list(),
             BackupsImport => self.backups_import(req, ctx),
             BackupsForget => self.backups_forget(req),
+            DiagnosticsPreview => self.diagnostics_preview(ctx),
+            DiagnosticsSave => self.diagnostics_save(req, ctx),
             RootsRevoke => {
                 let r: RootRevokeRequest = req.decode_payload()?;
                 let grant = self.grant_of_root(self.root_row(&r.root_id)?)?;
@@ -360,7 +380,7 @@ impl Inner {
         .map(drop)
     }
 
-    fn hello(&self, ctx: &CallContext) -> Handled {
+    pub(crate) fn hello(&self, ctx: &CallContext) -> Handled {
         let personal = self.dataset == DatasetClass::Personal;
         let f = false;
         Ok(out(
@@ -394,6 +414,8 @@ impl Inner {
                     "teacher_available": f,
                     "telemetry_available": personal,
                     "gpu_available": f,
+                    // Every session may save its redacted bundle where a native dialog exists.
+                    "diagnostics_save": ctx.dialogs.is_some(),
                 },
                 "limits": {
                     "max_request_bytes": limits::MAX_REQUEST_BYTES,
@@ -407,7 +429,7 @@ impl Inner {
 
     /// `Health.engine` is read now from the process itself (#163), never a retained telemetry
     /// sample under a fresh `observed_at`. Unknown stays `null`.
-    fn health(&self) -> Handled {
+    pub(crate) fn health(&self) -> Handled {
         let own = match loomward_telemetry::own_usage() {
             loomward_telemetry::Observation::Observed { value } => Some(value),
             _ => None,
@@ -474,17 +496,7 @@ impl Inner {
     }
 
     fn root_json(&self, r: &db::RootRow, reader: Option<&mut Reader>) -> Result<Value, ErrorBody> {
-        let (state, coverage) = match r.state.as_str() {
-            "never_scanned" => ("never_scanned", "unscanned"),
-            "scanning" => ("scanning", "partial"),
-            // A finished traversal with excluded, denied or skipped entries is not complete
-            // coverage: the root reads partial, as its tree does.
-            "complete" if r.subtree_complete => ("complete", "complete"),
-            "complete" => ("complete", "partial"),
-            "partial" | "repairing" => ("partial", "partial"),
-            "stale" => ("stale", "stale"),
-            _ => ("failed", "unknown"),
-        };
+        let (state, coverage) = scan_view(r);
         let active = r.grant_state == "active";
         let totals = match (reader, r.dir, active && r.state != "never_scanned") {
             (Some(reader), Some(dir), true) => match reader.inspect(NodeKey::Dir(dir)) {
@@ -509,11 +521,11 @@ impl Inner {
             "granted_via": r.granted_via,
             "grant_state": r.grant_state,
             "scan": {
-                "state": if active { state } else { "stale" },
+                "state": state,
                 "last_job_id": null,
                 "generation": r.generation.map(|g| g.to_string()),
                 "finished_at": r.finished_at_ns.map(ts_ns),
-                "coverage": if active { coverage } else { "stale" },
+                "coverage": coverage,
             },
             "totals": totals,
         }))

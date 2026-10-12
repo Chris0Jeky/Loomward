@@ -13,7 +13,8 @@ use serde_json::Value;
 
 macro_rules! commands {
     ($($var:ident = $wire:literal, $req:ident, $res:ident, [$($ad:ident),*], $wave:literal, [$($ev:ident),*];)*) => {
-        /// A command the service understands. Every command has `effects: none`.
+        /// A command the service understands. Every command has `effects: none` except
+        /// `diagnostics.save` (`owner_picked_export`, docs/42 ADR-V3-24).
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
         pub enum Command {
             $(#[serde(rename = $wire)] $var,)*
@@ -124,6 +125,8 @@ commands! {
     BackupsList = "backups.list", EmptyRequest, BackupEvidenceList, [Tauri, Http], 3, [];
     BackupsImport = "backups.import", BackupImportRequest, BackupImportResult, [Tauri], 3, [];
     BackupsForget = "backups.forget", BackupForgetRequest, BackupForgetResult, [Tauri, Http], 3, [];
+    DiagnosticsPreview = "diagnostics.preview", EmptyRequest, DiagnosticsPreviewResult, [Tauri, Http], 3, [];
+    DiagnosticsSave = "diagnostics.save", DiagnosticsSaveRequest, DiagnosticsSaveResult, [Tauri], 3, [];
 }
 
 impl Command {
