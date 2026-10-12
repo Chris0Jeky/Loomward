@@ -237,7 +237,7 @@ in wave 3; one `mod watch;` line in L7's `scan/mod.rs` to L16.
    **L15b** after L15 (authorised by the owner on 2026-10-10; elevated steps are the owner's).
 
 At every merge the coordinator runs `cargo fmt --all --check`, `cargo test --workspace`,
-`cargo clippy --workspace --all-targets -- -D warnings`, `py -3 scripts/verify.py --ui`, and once `app/` exists
+`cargo clippy --workspace --all-targets -- -D warnings`, `py -3 scripts/verify.py` (its `--ui` leg was removed with the legacy UI, q-40), and once `app/` exists
 `npm.cmd --prefix app run check`, `test` and `build` plus `py -3 scripts/test_app.py`, and keeps
 `docs/16-implementation-status.md` and `handoff/CHECKPOINT.json` current, with Python-reference and native results
 kept separate (invariant 9).

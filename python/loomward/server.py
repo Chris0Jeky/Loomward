@@ -19,8 +19,6 @@ from .telemetry import Telemetry
 from .teacher import strict_json
 
 PROJECT = Path(__file__).resolve().parents[2]
-ASSETS = {'/expansion.js': ('expansion.js', 'text/javascript; charset=utf-8'), '/': ('index.html', 'text/html; charset=utf-8'), '/app.js': ('app.js', 'text/javascript; charset=utf-8'),
-          '/styles.css': ('styles.css', 'text/css; charset=utf-8'), '/demo-data.js': ('demo-data.js', 'text/javascript; charset=utf-8')}
 MAX_BODY = 65536
 DRAIN_LIMIT = 1024 * 1024
 
@@ -213,13 +211,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, self.server.app.scoped_audit()); return
         if self.path == '/api/feedback':
             self._json(200, self.server.app.feedback_export()); return
-        asset = ASSETS.get(self.path)
-        if asset is None:
-            self._json(404, {'error': 'Not found'}); return
-        path = PROJECT / 'ui' / asset[0]
-        if not path.is_file():
-            self._json(503, {'error': 'UI assets are missing; run from the complete source checkout'}); return
-        self._send(200, path.read_bytes(), asset[1])
+        self._json(404, {'error': 'Not found'})
 
     def do_POST(self):
         chunked = bool(self.headers.get('Transfer-Encoding'))

@@ -21,12 +21,6 @@ jobs:
       - run: python -m unittest discover -s tests
         env:
           PYTHONPATH: python
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: '22'
-      - run: node --check ui/app.js
-      - run: node --check ui/expansion.js
-      - run: node tests/test_ui_logic.mjs
   native:
     strategy:
       fail-fast: false
@@ -99,8 +93,4 @@ jobs:
         run: python -m pip install playwright && python -m playwright install --with-deps chromium
       - if: runner.os == 'Linux'
         run: python scripts/test_app.py
-      - if: runner.os == 'Linux'
-        run: python scripts/test_ui.py
-        env:
-          PYTHONPATH: python
 # Hosted CI first ran green on 2026-10-09 (PR #2). Actions are pinned to full commit SHAs.
