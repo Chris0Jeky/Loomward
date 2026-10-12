@@ -115,7 +115,9 @@ fn ordinary_win32_component(component: &str) -> bool {
         .or_else(|| stem.strip_prefix("LPT"));
     !port.is_some_and(|suffix| {
         let mut chars = suffix.chars();
-        matches!(chars.next(), Some('1'..='9' | '¹' | '²' | '³')) && chars.next().is_none()
+        // RtlIsDosDeviceName_U recognises COMn/LPTn for a digit, including zero.
+        // https://learn.microsoft.com/windows/win32/devnotes/rtlisdosdevicename_u
+        matches!(chars.next(), Some('0'..='9' | '¹' | '²' | '³')) && chars.next().is_none()
     })
 }
 pub struct Catalog {
