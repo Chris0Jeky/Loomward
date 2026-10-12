@@ -10,6 +10,7 @@ The installer hash comes from the release's own SHA256SUMS.txt (downloaded unles
 microsoft/winget-pkgs checkout. Standard library only; nothing is published. See README.md here.
 """
 import argparse
+from datetime import date
 import json
 import re
 import sys
@@ -19,7 +20,7 @@ from pathlib import Path
 MANIFEST_VERSION = "1.12.0"  # newest schema with published JSON schemas and in use in winget-pkgs (README.md)
 PACKAGE_ID = "Chris0Jeky.Loomward"
 REPO = "https://github.com/Chris0Jeky/Loomward"
-VERSION_RE = re.compile(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?")
+VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?")
 SHA_RE = re.compile(r"[0-9A-Fa-f]{64}")
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
@@ -54,10 +55,15 @@ def dump(doc, indent=0):
 
 def sha_from_sums(text, filename):
     # sha256sum lines: "<hash>  <name>" (text mode) or "<hash> *<name>" (binary mode).
+    found = None
     for line in text.splitlines():
         m = re.fullmatch(r"([0-9A-Fa-f]{64}) [ *](.+?)\s*", line)
         if m and m.group(2) == filename:
-            return m.group(1).upper()
+            if found is not None:
+                raise SystemExit(f"duplicate SHA-256 lines for {filename} in SHA256SUMS.txt")
+            found = m.group(1).upper()
+    if found is not None:
+        return found
     raise SystemExit(f"no SHA-256 line for {filename} in SHA256SUMS.txt")
 
 
@@ -126,8 +132,13 @@ def main(argv=None):
 
     if not VERSION_RE.fullmatch(a.version):
         sys.exit(f"version must look like 0.3.0 or 0.3.0-preview.1 (got {a.version!r})")
-    if a.release_date and not DATE_RE.fullmatch(a.release_date):
-        sys.exit("--release-date must be YYYY-MM-DD")
+    if a.release_date:
+        if not DATE_RE.fullmatch(a.release_date):
+            sys.exit("--release-date must be YYYY-MM-DD")
+        try:
+            date.fromisoformat(a.release_date)
+        except ValueError:
+            sys.exit("--release-date must be a valid calendar date (YYYY-MM-DD)")
     if a.sha256:
         if not SHA_RE.fullmatch(a.sha256):
             sys.exit("--sha256 must be 64 hex characters")
