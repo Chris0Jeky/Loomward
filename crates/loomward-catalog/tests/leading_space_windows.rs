@@ -30,5 +30,8 @@ fn ordinary_win32_open_preserves_a_leading_space_component() {
         .unwrap();
     assert_eq!(marker, "leading-space");
     // A safe ordinary name must retain the WAL-lock workaround, not fall back to verbatim UNC.
-    assert_eq!(loomward_catalog::sqlite_dir(&leading), std::path::Path::new(plain));
+    assert_eq!(
+        loomward_catalog::sqlite_dir(&leading),
+        std::path::Path::new(plain)
+    );
 }
