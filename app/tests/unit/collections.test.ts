@@ -3,7 +3,7 @@ import { Client } from '../../src/lib/transport/client';
 import { createMockTransport } from '../../src/lib/transport/mock';
 import type { RequestEnvelope } from '../../src/lib/contracts.gen';
 const transport = () => createMockTransport({ now: () => new Date('2026-10-01T00:00:00Z') });
-const nodes = async (c: Client) => (await c.call('search.query', { root_id: null, text: '', extension: null, min_bytes: null, kind: 'file', limit: 10, cursor: null })).result.items;
+const nodes = async (c: Client) => (await c.call('search.query', { root_id: null, text: '', extension: null, min_bytes: null, max_bytes: null, modified_after: null, modified_before: null, kind: 'file', limit: 10, cursor: null })).result.hits.map((h) => h.row);
 
 describe('collections', () => {
   it('replays a create, refuses duplicate names and request-id conflicts', async () => {

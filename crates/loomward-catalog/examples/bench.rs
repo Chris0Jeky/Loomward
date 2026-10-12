@@ -310,10 +310,14 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         text: "no-such-synthetic-name".into(),
         extension: None,
         min_bytes: None,
+        max_bytes: None,
+        modified_after: None,
+        modified_before: None,
         kind: "file".into(),
         limit: 100,
         cursor: None,
         work_budget: 2_000_000,
+        time_budget: None,
     };
     // Warm each query once; measure 21 subsequent runs, including serialization for P6.
     reader.slice(&slice_request)?;
@@ -347,7 +351,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let page = reader.search(&search_request)?;
         search_ms.push(t.elapsed().as_secs_f64() * 1000.0);
         budget_hits += usize::from(page.budget_hit);
-        assert!(page.items.is_empty());
+        assert!(page.hits.is_empty());
     }
     drop(reader);
     drop(db);

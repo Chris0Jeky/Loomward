@@ -98,13 +98,17 @@ It builds, self-tests, installs and uninstalls exactly as a preview does (both u
 - **Rollback (manual for now, LW-122):** the app finds the previous nightly but does not install it,
   because an older build refuses state that a newer build migrated, and a rollback has to restore
   the matching state copy with the binary. By hand: close Loomward, install the `nightly-previous`
-  installer, and if it then refuses its state, in `%LOCALAPPDATA%\Loomward Data\v3\personal`:
-  1. Move `state.db` (with `state.db-wal` and `state.db-shm` if present) aside and put the newest
+  installer, and before you start it, in `%LOCALAPPDATA%\Loomward Data\v3\personal`:
+  1. If the newer build migrated `state.db` (the older build refuses it with `NewerDatabase`), move
+     `state.db` (with `state.db-wal` and `state.db-shm` if present) aside and put the newest
      `state.before-v<N>.db` copy (made by the newer build before its migration) in its place as
      `state.db`.
-  2. Move `catalog.db` aside too, with `catalog.db-wal` and `catalog.db-shm`. One schema version
-     covers both files, and the newer build migrated `catalog.db` in place without a copy, so the
-     older build refuses it (`NewerDatabase`). The older build creates an empty catalogue.
+  2. **Always** move `catalog.db` aside, with `catalog.db-wal` and `catalog.db-shm`, whether or not
+     the older build would refuse it. A newer build can change `catalog.db` in ways an older build
+     does not refuse but cannot handle: the search index (#438, LW-113) adds triggers on `dir` that a
+     build from before it copies onto its own first-scan tables, so that build indexes folders twice
+     and then fails on its next open ("already exists"). A schema bump instead gives `NewerDatabase`.
+     `catalog.db` is derived data: the older build creates an empty one.
 
   The cost: the new catalogue has a new `instance_id`, so every object reference in `state.db` is
   marked unresolved until its root is scanned again; sizes, trees and resolved references come back

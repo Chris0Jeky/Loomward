@@ -92,7 +92,7 @@ commands! {
     TreePath = "tree.path", NodeRefRequest, NodePath, [Tauri, Http], 2, [];
     NodeInspect = "node.inspect", NodeRefRequest, NodeDetail, [Tauri, Http], 2, [];
     ThreadsMeaning = "threads.meaning", MeaningRequest, MeaningResult, [Tauri, Http], 3, [];
-    SearchQuery = "search.query", SearchRequest, EntryPage, [Tauri, Http], 2, [];
+    SearchQuery = "search.query", SearchRequest, SearchPage, [Tauri, Http], 2, [];
     StatsBreakdown = "stats.breakdown", BreakdownRequest, Breakdown, [Tauri, Http], 2, [];
     TaxonomyGet = "taxonomy.get", EmptyRequest, Taxonomy, [Tauri, Http], 3, [];
     FeedbackRecord = "feedback.record", FeedbackRequest, FeedbackResult, [Tauri, Http], 3, [LearningUpdated];

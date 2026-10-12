@@ -1347,6 +1347,14 @@ pub(crate) fn purge_root(conn: &Connection, root: i64) -> Result<()> {
             }
         }
     }
+    // The triggers removed the root's search entries, but a contentless delete only records a
+    // tombstone: the name trigrams stay in the index segments until a merge. Merging everything
+    // now rewrites the index without them, and secure_delete zeroes the pages it frees.
+    // ponytail: rewrites the whole index (about 1 s per million names here); per-segment if forgets get frequent.
+    conn.execute(
+        "INSERT INTO search_name(search_name) VALUES('optimize')",
+        [],
+    )?;
     Ok(())
 }
 fn reference(conn: &mut Connection, node: NodeKey, reconcile: Option<i64>, at: i64) -> Result<i64> {

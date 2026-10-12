@@ -28,7 +28,7 @@ fn fresh_pair_has_strict_schema_and_separate_data_classes() {
                 .unwrap()
                 == "ok"
         );
-        assert_eq!(db.query_row("SELECT count(*) FROM pragma_table_list WHERE schema='main' AND name NOT LIKE 'sqlite_%' AND strict=0", [], |r| r.get::<_,i64>(0)).unwrap(), 0);
+        assert_eq!(db.query_row("SELECT count(*) FROM pragma_table_list WHERE schema='main' AND type='table' AND name NOT LIKE 'sqlite_%' AND strict=0", [], |r| r.get::<_,i64>(0)).unwrap(), 0);
     }
     assert!(matches!(
         Catalog::open(temp.path(), "personal"),

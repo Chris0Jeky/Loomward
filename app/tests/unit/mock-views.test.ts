@@ -188,7 +188,7 @@ describe('mock revocation', () => {
   it('binds paging cursors to catalog_rev: a cursor from before a purge is stale_generation (semantics 5)', async () => {
     const c = client();
     const kids = (cursor: string | null) => c.call('tree.children', { node_id: 'nd_1', sort: 'size_desc', basis: 'logical', limit: 2, cursor });
-    const hits = (cursor: string | null) => c.call('search.query', { root_id: null, text: 'a', extension: null, min_bytes: null, kind: 'any', limit: 2, cursor });
+    const hits = (cursor: string | null) => c.call('search.query', { root_id: null, text: '', extension: null, min_bytes: null, max_bytes: null, modified_after: null, modified_before: null, kind: 'any', limit: 2, cursor });
     const k = (await kids(null)).result.next_cursor!;
     const s = (await hits(null)).result.next_cursor!;
     expect((await kids(k)).result.items.length).toBeGreaterThan(0); // same revision: fine

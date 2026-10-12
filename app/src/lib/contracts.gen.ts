@@ -708,14 +708,48 @@ export interface NodeDetail {
   suggestion: Suggestion | null;
 }
 
+/** Owner-local and grant-scoped (LW-113): only active grants are searched. An empty text lists by filters only. Both size and time bounds are inclusive; an entry without a modified time never matches a time bound. */
 export interface SearchRequest {
   root_id: RootId | null;
   text: string;
   extension: string | null;
   min_bytes: NullableBytes;
+  max_bytes: NullableBytes;
+  modified_after: NullableTimestamp;
+  modified_before: NullableTimestamp;
   kind: "any" | "file" | "dir";
   limit: number;
   cursor: Cursor | null;
+}
+
+export interface SearchPage {
+  generation: NullableGeneration;
+  hits: SearchHit[];
+  next_cursor: Cursor | null;
+  budget_hit: boolean;
+  /** building: a searched root is being scanned; stale: a searched root is stale or failed. The index itself follows every catalogue commit. */
+  index_state: "current" | "building" | "stale";
+  /** A searched root does not have complete coverage: no hit is not proof of absence. */
+  partial: boolean;
+  /** False for texts too short for a trigram (or with a word under three characters): only whole names, name starts and word starts were searched. */
+  substring_searched: boolean;
+  roots: SearchRootCoverage[];
+}
+
+export interface SearchHit {
+  row: EntryRow;
+  root_id: RootId;
+  /** Root-relative path of the hit itself, display only. */
+  path: DisplayPath;
+  match_kind: "exact" | "prefix" | "token" | "substring" | "filter";
+  /** Half-open UTF-16 offsets into row.name; best effort and may be empty. */
+  highlights: number[][];
+}
+
+export interface SearchRootCoverage {
+  root_id: RootId;
+  scan_state: "never_scanned" | "scanning" | "complete" | "partial" | "stale" | "failed";
+  coverage: CoverageState;
 }
 
 export interface BreakdownRequest {
@@ -1838,7 +1872,7 @@ export interface CommandMap {
   "tree.path": { request: NodeRefRequest; result: NodePath };
   "node.inspect": { request: NodeRefRequest; result: NodeDetail };
   "threads.meaning": { request: MeaningRequest; result: MeaningResult };
-  "search.query": { request: SearchRequest; result: EntryPage };
+  "search.query": { request: SearchRequest; result: SearchPage };
   "stats.breakdown": { request: BreakdownRequest; result: Breakdown };
   "taxonomy.get": { request: EmptyRequest; result: Taxonomy };
   "feedback.record": { request: FeedbackRequest; result: FeedbackResult };

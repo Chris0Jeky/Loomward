@@ -62,7 +62,7 @@
       <p>Version <strong class="num">{s.offer.version}</strong> · {s.offer.channel} channel{#if s.offer.date} · published {s.offer.date}{/if}</p>
       {#if s.offer.notes}<pre class="notes">{s.offer.notes}</pre>{/if}
       {#if s.offer.previous}
-        <p class="note gated">Rolling back is not available in the app yet: an older build cannot open state a newer build has migrated. Download this installer from the <code>nightly-previous</code> pre-release, restore the matching <code>state.before-v*.db</code> copy as <code>state.db</code>, and move <code>catalog.db</code> with its <code>-wal</code> and <code>-shm</code> files aside. The older build then shows every root as needing a re-scan (RELEASING.md, Nightly).</p>
+        <p class="note gated">Rolling back is not available in the app yet: an older build cannot open state a newer build has migrated. Download this installer from the <code>nightly-previous</code> pre-release, restore the matching <code>state.before-v*.db</code> copy as <code>state.db</code> if the older build refuses it, and always move <code>catalog.db</code> with its <code>-wal</code> and <code>-shm</code> files aside: an older build can misread a newer catalogue without refusing it. The older build then shows every root as needing a re-scan (RELEASING.md, Nightly).</p>
       {:else}
         <div class="controls">
           <button class="btn primary" disabled={!!updates.busy} onclick={() => updates.install()}>Install…</button>

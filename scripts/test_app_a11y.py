@@ -349,7 +349,7 @@ def run_a11y(browser: Browser, base: str, check) -> None:
 
     # Load more hands focus on only while the reader is still there: one who moved on is not pulled back
     goto(page, base, 'explorer', 'Explorer')
-    page.get_by_label('Search names').fill('a')
+    page.get_by_label('Search names').fill('delta')
     page.get_by_role('button', name='Search', exact=True).click()
     expect(page.get_by_role('button', name='Load more')).to_be_visible()
     page.evaluate("""() => { const more = [...document.querySelectorAll('main button')].find((b) => b.textContent.trim() === 'Load more');
