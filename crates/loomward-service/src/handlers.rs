@@ -1089,8 +1089,8 @@ impl Inner {
                 extension: r.extension.as_ref().map(|e| e.to_string()),
                 min_bytes: r.min_bytes.map(|b| b.get()),
                 max_bytes: r.max_bytes.map(|b| b.get()),
-                modified_after: r.modified_after.as_ref().map(|t| ft(t)).transpose()?,
-                modified_before: r.modified_before.as_ref().map(|t| ft(t)).transpose()?,
+                modified_after: r.modified_after.as_ref().map(ft).transpose()?,
+                modified_before: r.modified_before.as_ref().map(ft).transpose()?,
                 kind: match r.kind {
                     SearchRequestKind::Any => "any",
                     SearchRequestKind::File => "file",

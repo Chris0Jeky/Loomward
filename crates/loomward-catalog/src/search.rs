@@ -240,13 +240,16 @@ fn statement(filter: bool, files: bool, by_size: bool) -> String {
 }
 }
 
+/// A keyset position: pass, last key, and the last size of a by-size listing.
+type Position = (u8, i64, Option<i64>);
+
 struct Walk<'r> {
     req: &'r SearchRequest,
     text: &'r str,
     pass: u8,
     key: i64,
     size: Option<i64>,
-    hits: Vec<(SearchHit, (u8, i64, Option<i64>))>,
+    hits: Vec<(SearchHit, Position)>,
     places: HashMap<i64, Place>,
 }
 impl Walk<'_> {
