@@ -122,7 +122,7 @@ names, paths or inventories in this public repository. Owner decisions of that d
 ## Pitfalls
 
 - `LW-*` IDs are the local backlog (`backlog/issues.json`, the source of truth), not GitHub numbers;
-  they are mirrored as issues #4-#105 and #120-#131 (`backlog/github-issues.json` maps them). New IDs mint there first.
+  they are mirrored as issues #4-#105, #120-#131 and #404-#421 (`backlog/github-issues.json` maps them). New IDs mint there first.
 - Licence: AGPL-3.0-only since #396; the owner may also license it commercially (HUMAN_TODO q-20 to q-23).
 - Taskdeck is proprietary: never copy its code into this repository.
 - Public repo: synthetic fixtures only; no real filenames, inventories or training exports.
