@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-10-12",
+  "repository": "Chris0Jeky/Loomward",
+  "followup_base": "dda691322f8e6ceafa021e18a017934ad47105dc",
+  "source_zip": {
+    "matched_main": "979380dd4d37162e8bbb315f6b24e852e3107a7d",
+    "matched_git_tree": "12819f412e660adf366077dd6401053dae57fa17",
+    "local_reference_tests": 227,
+    "historical_js_boundary_assertions": 9,
+    "cross_language_fixtures": 80,
+    "local_rust": "UNAVAILABLE",
+    "note": "Historical baseline only; #424 subsequently retired the legacy UI and JS checks."
+  },
+  "merged_work": [
+    {
+      "pr": 422,
+      "scope": "planning inventory; runtime gates unchanged",
+      "tested_head": "74a37228d28b56cb02c08994817d8be9a956eb72",
+      "ci_run": 38195652508,
+      "ci_successful_jobs": 9,
+      "merge": "a9299b420d794127ec94e34c39f7b062723dbf27",
+      "merged_by_this_session": true,
+      "remaining_contract_followup_pr": 429
+    },
+    {
+      "pr": 425,
+      "scope": "package generator rejects ambiguous checksum entries, impossible dates and non-ASCII numeric versions; normal-discovery regression suite",
+      "tested_head": "bbdcaa0a3a5b46011961870786115069ab33c01f",
+      "ci_run": 38307486818,
+      "ci_successful_jobs": 9,
+      "inspected_python_job": 115005369300,
+      "python_tests": 233,
+      "python_skips_in_inspected_ubuntu_job": 8,
+      "local_new_test_methods": 6,
+      "nested_original_generator_tests": 3,
+      "observed_pre_fix_failing_subcases": 9,
+      "fresh_review": "completed with no new findings",
+      "merge": "dc63ee012368271813c318749949645ec1c77968",
+      "merged_by_this_session": false,
+      "this_session_contribution": "generator fixes, regression tests and review-thread resolution",
+      "remaining_issue": 417
+    },
+    {
+      "pr": 430,
+      "scope": "completed root coverage requires a current aggregate witness",
+      "red_head": "a37d3035951de0650a3192fbd173d1bdaeb4ddbf",
+      "red_run": 38308484854,
+      "red_job": 115008187376,
+      "red_assertion": "totals.complete=false but scan.coverage=complete; expected partial",
+      "tested_head": "5f417d4940107264ff2ecd01b8cbbea3ba1988f8",
+      "ci_run": 38309264109,
+      "ci_successful_jobs": 9,
+      "inspected_windows_native_job": 115010859556,
+      "tested_merge": "b4e2c4942be3e4224840d447fc4f27ddbab04dab",
+      "tested_main_parent": "c93df6392115b381c35f7a4c5fdf4f06e481795b",
+      "subsequent_main_change_before_merge": "#426: documentation only, complete diff inspected",
+      "fresh_review": "completed with no findings",
+      "merge": "dda691322f8e6ceafa021e18a017934ad47105dc",
+      "merged_by_this_session": true,
+      "remaining_issue": 361,
+      "not_proven": ["explicit RepairRequired/null-totals path", "atomicity across separate service reads"]
+    }
+  ],
+  "sqlite_followup": {
+    "pr": 428,
+    "issue": 398,
+    "original_red_head": "7be8e946e5a4ebb012497e799c41c48e5207dde2",
+    "original_red_run": 38305901329,
+    "original_red_job": 114999762509,
+    "regressions_executed": 6,
+    "regressions_failed_before_fix": 4,
+    "earlier_green_head": "2d3e074e308a55ccedba304f7b1b3e79046948cb",
+    "latest_recorded_head": "8af6f5ee7f455f169da40ab1c5283a31cf673b17",
+    "latest_recorded_run": 38310451322,
+    "status_at_receipt": "additional native leading-space/SQLite-VFS regression under validation; not merge-qualified by the earlier green head",
+    "note": "Refresh live PR state before continuation; this receipt is an immutable checkpoint, not a live status feed."
+  },
+  "unexecuted": [
+    "clean-machine Windows installation and package registry submission",
+    "owner-key signing and authenticated update/rollback drill",
+    "manual WebView2/native-dialog qualification",
+    "upstream SQLite bug submission",
+    "driver append to docs/16-implementation-status.md and handoff/CHECKPOINT.json"
+  ],
+  "followup_plan": "docs/superpowers/plans/2026-10-12-maintenance-qualification-followup.md",
+  "capability_or_authority_changes": false,
+  "owner_data_used": false
+}
