@@ -48,8 +48,8 @@ mode `extract`, which finds the `sha256sum` line by file name).
 
 ## First release and every release after
 
-The committed manifest is a placeholder (`0.0.0-unreleased`, all-zero hash) that fails closed. With the owner's go-ahead and a release
-exists, with Scoop installed:
+The committed manifest is a placeholder (`0.0.0-unreleased`, all-zero hash) that fails closed. With the owner's go-ahead (a release now
+exists), with Scoop installed:
 
 ```powershell
 $scoop = "$env:USERPROFILE\scoop\apps\scoop\current\bin"
