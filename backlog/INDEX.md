@@ -118,3 +118,21 @@ The first eight manifest entries preserve the original native critical path. Pub
 | [LW-110](issues/LW-110.md) | Rust student port with Python parity fixtures | V3 | P0 | None |
 | [LW-111](issues/LW-111.md) | OS-enforced teacher confinement and enforcement canaries | V3 | P1 | LW-109 |
 | [LW-112](issues/LW-112.md) | Wave-3 service integration and grant policy | V3 | P1 | LW-103, LW-106 |
+| [LW-113](issues/LW-113.md) | Build the live full-text and substring search index over granted roots | M2 | P1 | LW-005, LW-008 |
+| [LW-114](issues/LW-114.md) | Integrate Everything as an optional whole-volume search backend | M2 | P1 | LW-113 |
+| [LW-115](issues/LW-115.md) | Design an optional elevated NTFS-metadata search helper behind its own gate | MX | P2 | LW-113, LW-007, LW-017 |
+| [LW-116](issues/LW-116.md) | Add a local semantic (embedding) search layer with consented model download | M2 | P2 | LW-113, LW-014, LW-024 |
+| [LW-117](issues/LW-117.md) | Define the Ask provider interface for local, cloud and bundled models | M2 | P1 | LW-017, LW-067 |
+| [LW-118](issues/LW-118.md) | Build the Ask chat panel with read-only tools and citations | M2 | P1 | LW-113, LW-117, LW-058 |
+| [LW-119](issues/LW-119.md) | Surface developer clutter: build outputs, package caches, model files and stale worktrees | M5 | P1 | LW-061, LW-076, LW-086, LW-087 |
+| [LW-120](issues/LW-120.md) | Add cloud and sync awareness without triggering recall | M5 | P1 | LW-003, LW-004, LW-071 |
+| [LW-121](issues/LW-121.md) | Add growth and low-space monitoring with alerts | M6 | P1 | LW-008, LW-051, LW-107 |
+| [LW-122](issues/LW-122.md) | Publish a rolling nightly channel and an opt-in updater | M1 | P1 | LW-057 |
+| [LW-123](issues/LW-123.md) | Define and evidence the daily-use readiness bar | M1 | P1 | LW-041, LW-056, LW-096 |
+| [LW-124](issues/LW-124.md) | Gate the first real effect: approved copy-and-verify | M3 | P0 | LW-036, LW-038, LW-039, LW-040 |
+| [LW-125](issues/LW-125.md) | Retire the legacy browser UI and freeze the Python reference | M1 | P1 | LW-018, LW-104 |
+| [LW-126](issues/LW-126.md) | Prepare package channels: winget, Scoop bucket, Microsoft Store and a signing hook | M1 | P1 | LW-057, LW-063 |
+| [LW-127](issues/LW-127.md) | Nice-to-have: NAS shares as granted roots | MX | P2 | LW-004, LW-006 |
+| [LW-128](issues/LW-128.md) | Nice-to-have: paired machines with a read-only LAN view | MX | P2 | LW-017, LW-058, LW-067 |
+| [LW-129](issues/LW-129.md) | Nice-to-have: cloud sync design (design only) | MX | P2 | LW-092, LW-067 |
+| [LW-130](issues/LW-130.md) | Observe-only Linux port after the Windows daily-use bar | MX | P2 | LW-123, LW-016 |
