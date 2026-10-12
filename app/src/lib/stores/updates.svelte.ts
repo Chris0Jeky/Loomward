@@ -53,7 +53,11 @@ export class Updates {
   async load(): Promise<void> {
     try {
       const s = (await this.send('loading', { action: 'status' })) as UpdateStatus | null;
-      if (s) this.status = s;
+      if (!s) return;
+      this.status = s;
+      // A failed check on start must not read as "no check happened".
+      if (s.last_error) this.message = `The last check failed: ${s.last_error}`;
+      else if (s.offer) this.message = `${s.offer.previous ? 'Previous nightly' : 'Update'} ${s.offer.version} is available on the ${s.offer.channel} channel.`;
     } catch (e) {
       this.message = `Could not read the update settings: ${reason(e)}`;
     }

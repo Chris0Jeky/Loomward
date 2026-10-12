@@ -88,6 +88,12 @@ describe('Updates view state', () => {
     expect(calls.map((c) => c.action)).toEqual(['status']);
   });
 
+  it('a failed check on start is shown when the view loads', async () => {
+    const { updates } = desktop({ prefs: { check_on_start: true, channel: 'nightly' }, last_error: 'error sending request' });
+    await updates.load();
+    expect(updates.message).toBe('The last check failed: error sending request');
+  });
+
   it('a failed check is reported, not swallowed', async () => {
     const updates = new Updates(async (_c, a) => {
       if ((a.request as { action: string }).action === 'check') throw 'error sending request';

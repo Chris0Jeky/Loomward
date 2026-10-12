@@ -44,15 +44,25 @@ jobs:
           fetch-depth: 0 # the reachability check below needs main's history
           persist-credentials: false # build scripts and npm never see the token; gh gets it by env below
       - name: Resolve the version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           git fetch -q origin main
           if ! git merge-base --is-ancestor "$SHA" origin/main; then
             echo "::error::$SHA is not reachable from origin/main"; exit 1
           fi
+          # Never publish older code over newer: a late CI run for an earlier push, or a dispatch from
+          # an old ref, would otherwise get a newer date and run number than the build it replaces.
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly" --jq .object.sha 2>/dev/null || true)
+          if [ -n "$current" ] && [ "$current" != "$SHA" ] && git merge-base --is-ancestor "$SHA" "$current" 2>/dev/null; then
+            echo "::notice::the nightly already holds $current, which contains $SHA: nothing to publish"
+            echo "SKIP=true" >> "$GITHUB_ENV"; exit 0
+          fi
           version=$(python scripts/release_meta.py nightly-version --date "$(date -u +%Y%m%d)" --run "$GITHUB_RUN_NUMBER")
           echo "VERSION=$version" >> "$GITHUB_ENV"
           echo "nightly $version from $SHA"
       - name: Build, self-test, install and uninstall
+        if: env.SKIP != 'true'
         id: build
         uses: ./.github/actions/desktop-installer
         with:
@@ -66,6 +76,7 @@ jobs:
             > release-assets/latest.json
           cat release-assets/latest.json
       - name: Keep the current nightly as nightly-previous
+        if: env.SKIP != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -89,6 +100,7 @@ jobs:
           gh release create nightly-previous prev/* --repo "$R" --target "$prev_sha" --prerelease --latest=false \
             --title "${title/ nightly/ previous nightly}" --notes-file "$RUNNER_TEMP/prev-notes.md"
       - name: Publish the nightly
+        if: env.SKIP != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
