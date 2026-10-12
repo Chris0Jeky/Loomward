@@ -1,9 +1,10 @@
 //! Command-layer tests: the self test, the refusals that guard both native dialogs, the
 //! disclosure dialog's text, and Tauri's own IPC + ACL (mock runtime) proving the webview can
-//! invoke `lw_call` and `lw_events` and nothing else.
+//! invoke `lw_call`, `lw_events` and `lw_update` and nothing else.
 
 use loomward_desktop::dialogs::{disclosure_text, visible, DesktopDialogs, DISCLOSURE_TITLE};
 use loomward_desktop::selftest::{self, envelope, fixture_desktop, wait_until};
+use loomward_desktop::updates::{self, Channel, Updates};
 use loomward_desktop::{shell, Desktop};
 use loomward_http::fixture::EXAMPLES_DIR;
 use loomward_protocol::{
@@ -282,14 +283,30 @@ fn invoke_body(
 }
 
 #[test]
-fn the_webview_may_invoke_exactly_lw_call_and_lw_events() {
+fn the_webview_may_invoke_exactly_lw_call_lw_events_and_lw_update() {
     let (service, desktop) = fixture_desktop(Duration::from_millis(300)).unwrap();
     let desktop = Arc::new(desktop);
+    let prefs = tempfile::tempdir().unwrap();
     // The real context (tauri.conf.json and the compiled capability ACL), minus the configured
     // window, which the test creates itself under the same label.
     let mut context = tauri::generate_context!();
     context.config_mut().app.windows.clear();
-    let app = shell::configure(tauri::test::mock_builder(), desktop.clone())
+    // The checked-in config has no updater public key yet: the build must say so, not fail.
+    let configured = updates::configured(context.config());
+    // The manifest's version must match the version inside the signed artifact (no downgrade by
+    // an edited latest.json pairing a new number with an older signed installer).
+    assert_eq!(
+        context.config().plugins.0["updater"]["requireSignedVersion"],
+        json!(true)
+    );
+    let current = context.package_info().version.to_string();
+    let updates = Arc::new(Updates::with_prompt(
+        Some(prefs.path().into()),
+        configured,
+        &current,
+        |_, _, _| panic!("no install confirmation in this test"),
+    ));
+    let app = shell::configure(tauri::test::mock_builder().manage(updates), desktop.clone())
         .build(context)
         .unwrap();
     let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
@@ -316,7 +333,51 @@ fn the_webview_may_invoke_exactly_lw_call_and_lw_events() {
     assert!(opened.is_ok(), "lw_events is allowed: {opened:?}");
     assert_eq!(desktop.open_streams("main"), 1);
 
+    let update = |request: Value| {
+        invoke(&webview, "lw_update", json!({ "request": request }))
+            .map(|r| r.deserialize::<Value>().unwrap())
+    };
+    let status = update(json!({ "action": "status" })).expect("lw_update is allowed");
+    assert_eq!(
+        status["prefs"],
+        json!({ "check_on_start": false, "channel": "preview" })
+    );
+    assert_eq!(status["offer"], Value::Null);
+    if !configured {
+        assert_eq!(
+            status["unavailable"],
+            json!("updates are not configured in this build")
+        );
+        // Refused before any request is built.
+        let checked = update(json!({ "action": "check", "previous": false }));
+        assert_eq!(
+            checked.unwrap_err(),
+            json!("updates are not configured in this build")
+        );
+    }
+    let set =
+        update(json!({ "action": "set_prefs", "check_on_start": true, "channel": "nightly" }))
+            .unwrap();
+    assert_eq!(
+        set["prefs"],
+        json!({ "check_on_start": true, "channel": "nightly" })
+    );
+    assert_eq!(updates::load_prefs(prefs.path()).channel, Channel::Nightly);
+    for bad in [
+        json!({ "action": "check", "previous": false, "endpoint": "https://example.invalid" }),
+        json!({ "action": "set_prefs", "check_on_start": true, "channel": "beta" }),
+        json!({ "action": "install" }),
+    ] {
+        assert!(update(bad.clone()).is_err(), "{bad} was accepted");
+    }
+    assert!(
+        update(json!({ "action": "install", "version": "9.9.9" })).is_err(),
+        "install without a checked offer"
+    );
+
     for (cmd, body) in [
+        ("plugin:updater|check", json!({})),
+        ("plugin:updater|download_and_install", json!({ "rid": 1 })),
         (
             "plugin:event|listen",
             json!({ "event": "x", "target": { "kind": "Any" }, "handler": 3 }),
@@ -1335,7 +1396,7 @@ impl NativeDialogs for FilePicker {
 /// The picked path is used by the service in-process and never crosses IPC: neither the import
 /// answer nor the list carries the path, the file name or anything the receipt held beyond
 /// normalised evidence. The webview has no dialog permission of its own (`plugin:dialog|open`
-/// is refused in `the_webview_may_invoke_exactly_lw_call_and_lw_events`).
+/// is refused in `the_webview_may_invoke_exactly_lw_call_lw_events_and_lw_update`).
 #[test]
 fn the_picked_receipt_path_stays_in_rust() {
     let base = tempfile::tempdir().unwrap();

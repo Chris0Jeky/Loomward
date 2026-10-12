@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-lw-update"
+description = "Enables the lw_update command without any pre-configured scope."
+commands.allow = ["lw_update"]
+
+[[permission]]
+identifier = "deny-lw-update"
+description = "Denies the lw_update command without any pre-configured scope."
+commands.deny = ["lw_update"]

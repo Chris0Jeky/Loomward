@@ -6,6 +6,7 @@
 
 use loomward_desktop::dialogs::{error_box, DesktopDialogs};
 use loomward_desktop::launch::{self, Launch, USAGE};
+use loomward_desktop::updates::{self, Updates};
 use loomward_desktop::{selftest, shell, Desktop};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -60,8 +61,15 @@ fn main() -> ExitCode {
     };
     let dialogs = Arc::new(DesktopDialogs::new(launch.dataset));
     let desktop = Arc::new(Desktop::new(service, launch.dataset, dialogs.clone()));
-    let result = shell::configure(tauri::Builder::default().manage(dialogs), desktop)
-        .run(tauri::generate_context!());
+    let context = tauri::generate_context!();
+    // The update prefs live beside the state (none in --fixtures mode); off by default.
+    let updates = Arc::new(Updates::new(
+        launch::state_dir(&launch, std::env::var_os("LOCALAPPDATA")),
+        updates::configured(context.config()),
+        &context.package_info().version.to_string(),
+    ));
+    let builder = tauri::Builder::default().manage(dialogs).manage(updates);
+    let result = shell::configure(builder, desktop).run(context);
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => fail(&e.to_string(), 1),
