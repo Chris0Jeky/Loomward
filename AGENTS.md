@@ -84,7 +84,7 @@ disable, skip or weaken a failing test to advance a milestone.
    authorisation. LeaseBroker/admission is accounting, not OS enforcement.
 8. **No theatre.** No releases or packages, source retirement, backup pruning or process-policy
    changes merely to demonstrate completion. Pushes, PRs, issues and merges of reviewed work are
-   normal (T2); an unsigned preview pre-release is owner-authorised (HUMAN_TODO q-17); any other release
+   normal (T2); unsigned preview pre-releases and a rolling nightly pre-release are owner-authorised (HUMAN_TODO q-17, q-31, q-33); any other release
    or package is a tier re-review trigger.
 9. **No false claims.** Never blur the Python reference and the native engine in a report, and
    never claim native compilation, backup verification, memory optimisation, learned heat, live
