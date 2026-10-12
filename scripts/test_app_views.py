@@ -260,7 +260,10 @@ class FakeEngine:
             if text == 'slow':
                 time.sleep(1.5)
             name = 'SLOW-RESULT.txt' if text == 'slow' else 'FAST-RESULT.txt'
-            return {'anchor': None, 'generation': '7', 'items': [{**row(name, 1), 'location_hint': {'text': 'Fake Root', 'truncated': False}}], 'next_cursor': None, 'total': 1, 'budget_hit': False}
+            hit = {'row': {**row(name, 1), 'location_hint': {'text': 'Fake Root', 'truncated': False}}, 'root_id': 'rt_fake', 'path': {'text': name, 'truncated': False},
+                   'match_kind': 'substring', 'highlights': [[0, 4]]}
+            return {'generation': '7', 'hits': [hit], 'next_cursor': None, 'budget_hit': False, 'index_state': 'building', 'partial': True, 'substring_searched': True,
+                    'roots': [{'root_id': 'rt_fake', 'scan_state': 'scanning', 'coverage': 'partial'}]}
         return ('capability_unavailable', f'fake engine: {cmd} not implemented')
 
     def start(self) -> None:
@@ -371,13 +374,30 @@ def check_explorer_mock(page: Page, base: str, shoot) -> None:
     print('PASS size basis toggles and marks its column')
 
     # search filters
-    page.get_by_placeholder('Search names').fill('a')
+    page.get_by_placeholder('Search names').fill('delta')
     page.get_by_label('Kind').select_option('dir')
     page.get_by_role('button', name='Search', exact=True).click()
     expect(page.get_by_text('Search results for')).to_be_visible()
     expect(page.locator('main .tbl-wrap')).to_have_attribute('aria-busy', 'false')
     kinds = rows(page).locator('td:nth-child(2)').all_inner_texts()
     ok(len(kinds) > 0 and set(kinds) == {'dir'}, 'kind filter keeps folders only')
+    # tiers, highlights and the keyboard: Down from the box walks the Inspect buttons, Escape returns
+    marks = rows(page).locator('th mark').all_inner_texts()
+    ok(len(marks) > 0 and all(m.lower() == 'delta' for m in marks), 'search highlights mark the matched text')
+    ok(rows(page).first.locator('td').nth(5).inner_text().startswith('prefix'), 'each hit names its match tier')
+    box = page.get_by_placeholder('Search names')
+    box.focus()
+    box.press('ArrowDown')
+    first = rows(page).nth(0).get_by_role('button', name='Inspect')
+    expect(first).to_be_focused()
+    first.press('ArrowDown')
+    expect(rows(page).nth(1).get_by_role('button', name='Inspect')).to_be_focused()
+    page.keyboard.press('Escape')
+    expect(box).to_be_focused()
+    page.get_by_placeholder('Search names').fill('d')
+    page.get_by_role('button', name='Search', exact=True).click()
+    expect(page.get_by_role('list', name='Search coverage')).to_contain_text('Type three characters')
+    print('PASS search tiers, highlights, short-text notice and keyboard walk')
     page.get_by_label('Kind').select_option('any')
     page.get_by_placeholder('Search names').fill('')
     page.get_by_label('Extension').fill('pdf')
@@ -403,6 +423,9 @@ def check_explorer_engine(page: Page, engine: FakeEngine) -> None:
     box.fill('fast')
     page.get_by_role('button', name='Search', exact=True).click()
     expect(page.get_by_text('FAST-RESULT.txt')).to_be_visible()
+    coverage = page.get_by_role('list', name='Search coverage')
+    expect(coverage).to_contain_text('still being scanned')
+    expect(coverage).to_contain_text('not proof of absence')
     page.wait_for_timeout(2000)
     ok(page.get_by_text('SLOW-RESULT.txt').count() == 0 and page.get_by_text('FAST-RESULT.txt').count() == 1, 'a slow reply for an older search is dropped')
     page.get_by_role('button', name='Clear search').click()

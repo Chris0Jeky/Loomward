@@ -13,7 +13,7 @@
   import NodeMeaning from '../../lib/ui/NodeMeaning.svelte';
   import AddToCollection from '../../lib/ui/AddToCollection.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
-  import type { Basis, EntryPage, EntryRow, NodeId, NodeDetail } from '../../lib/contracts.gen';
+  import type { Basis, EntryPage, EntryRow, NodeId, NodeDetail, SearchHit, SearchPage } from '../../lib/contracts.gen';
 
   type Sort = 'size_desc' | 'name_asc' | 'modified_desc';
   interface Crumb { id: NodeId; name: string }
@@ -51,6 +51,11 @@
   let extension = $state('');
   let minBytes = $state('');
   let searching = $state(false);
+  /** Per-row search facts (match tier, highlights, root-relative path), by node ID. */
+  let found = $state(new Map<NodeId, SearchHit>());
+  /** The honesty flags of the last search page: never an empty page passed off as proof of absence. */
+  let scope = $state<Pick<SearchPage, 'index_state' | 'partial' | 'substring_searched'> | null>(null);
+  let tableEl = $state<HTMLTableElement>();
   let error = $state('');
   let notice = $state('');
   /** A saved folder vanished from the catalogue (#198): its name, and where the view moved to (null: the top level). */
@@ -73,13 +78,50 @@
 
   const here = $derived(trail[trail.length - 1]);
 
-  function fetchPage(cursor: string | null, signal: AbortSignal): Promise<{ result: EntryPage }> {
+  type Page = Pick<EntryPage, 'generation' | 'items' | 'next_cursor' | 'total' | 'budget_hit'> & { search?: SearchPage };
+  async function fetchPage(cursor: string | null, signal: AbortSignal): Promise<{ result: Page }> {
     const c = session.client!;
     if (searching) {
       const ext = extension.trim().replace(/^\./, '').toLowerCase();
-      return c.call('search.query', { root_id: null, text: query.trim(), extension: ext || null, min_bytes: minBytes || null, kind, limit: PAGE, cursor }, { signal });
+      const { result } = await c.call('search.query', {
+        root_id: null, text: query.trim(), extension: ext || null, min_bytes: minBytes || null, max_bytes: null,
+        modified_after: null, modified_before: null, kind, limit: PAGE, cursor,
+      }, { signal });
+      return { result: { generation: result.generation, items: result.hits.map((h) => h.row), next_cursor: result.next_cursor, total: null, budget_hit: result.budget_hit, search: result } };
     }
     return c.call('tree.children', { node_id: here!.id, sort, basis, limit: PAGE, cursor }, { signal });
+  }
+
+  /** The name split at the match highlights; null when there are none or the name needs the hidden-character view. */
+  function marked(r: EntryRow): { text: string; hit: boolean }[] | null {
+    const h = found.get(r.node_id);
+    if (!h?.highlights.length || hasHiddenCharacters(r.name)) return null;
+    const out: { text: string; hit: boolean }[] = [];
+    let at = 0;
+    for (const [from, to] of h.highlights) {
+      if (from === undefined || to === undefined || from < at || to > r.name.length) return null;
+      if (from > at) out.push({ text: r.name.slice(at, from), hit: false });
+      out.push({ text: r.name.slice(from, to), hit: true });
+      at = to;
+    }
+    if (at < r.name.length) out.push({ text: r.name.slice(at), hit: false });
+    return out;
+  }
+
+  /** Arrow keys walk the result rows' Inspect buttons; Escape goes back to the search box. */
+  function rowKeys(e: KeyboardEvent): void {
+    if (!['ArrowDown', 'ArrowUp', 'Escape'].includes(e.key)) return;
+    const buttons = [...(tableEl?.querySelectorAll<HTMLButtonElement>('button[data-inspect]') ?? [])];
+    const i = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    if (i < 0) return;
+    e.preventDefault();
+    if (e.key === 'Escape') return searchEl?.focus();
+    buttons[Math.max(0, Math.min(buttons.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))]?.focus();
+  }
+  function searchKeys(e: KeyboardEvent): void {
+    if (e.key !== 'ArrowDown' || !searching) return;
+    const first = tableEl?.querySelector<HTMLButtonElement>('button[data-inspect]');
+    if (first) { e.preventDefault(); first.focus(); }
   }
 
   async function show(append = false, restarted = false, lost?: string): Promise<void> {
@@ -113,6 +155,15 @@
       // The fallback's notice is true only once the ancestor has listed: a failed one shows just its error.
       if (lost && here) gone = { lost, now: here.name };
       rows = append ? [...rows, ...page.items] : page.items;
+      if (page.search) {
+        const seen = append ? new Map(found) : new Map<NodeId, SearchHit>();
+        for (const h of page.search.hits) seen.set(h.row.node_id, h);
+        found = seen;
+        scope = { index_state: page.search.index_state, partial: page.search.partial, substring_searched: page.search.substring_searched };
+      } else if (!append) {
+        found = new Map();
+        scope = null;
+      }
       total = page.total;
       next = page.next_cursor;
       budgetHit = page.budget_hit;
@@ -239,7 +290,7 @@
 <section class="panel">
   <form class="bar form" onsubmit={(e) => { e.preventDefault(); search(); }}>
     <label class="field stack grow"><span class="lbl">Search names</span>
-      <input type="search" placeholder="Search names" bind:value={query} bind:this={searchEl} maxlength="256" />
+      <input type="search" placeholder="Search names" bind:value={query} bind:this={searchEl} maxlength="256" onkeydown={searchKeys} />
     </label>
     <label class="field stack"><span class="lbl">Extension</span>
       <input type="text" placeholder="ext" bind:value={extension} maxlength="32" size="6" />
@@ -277,6 +328,14 @@
 
   {#if searching}
     <p class="where">Search results {#if query.trim()}for <q><VisibleName name={query.trim()} /></q>{/if}</p>
+    {#if scope && (scope.index_state !== 'current' || scope.partial || !scope.substring_searched)}
+      <ul class="scope muted small" aria-label="Search coverage">
+        {#if scope.index_state === 'building'}<li class="bad">A searched folder is still being scanned, so more results may appear.</li>{/if}
+        {#if scope.index_state === 'stale'}<li class="bad">A searched folder's catalogue is stale or failed: results may be out of date.</li>{/if}
+        {#if scope.partial}<li>Not every searched folder is fully scanned, so a missing result is not proof of absence.</li>{/if}
+        {#if !scope.substring_searched}<li>Short text: whole names, name starts and word starts only. Type three characters to match inside names.</li>{/if}
+      </ul>
+    {/if}
   {:else}
     <nav class="crumbs" aria-label="Location">
       {#each trail as c, i (c.id)}
@@ -292,7 +351,7 @@
   <p id="explorer-notice" class="muted live" class:has={!!notice || !!gone} role="status">{#if gone}<q><VisibleName name={gone.lost} /></q> is no longer in the catalogue, so the view {#if gone.now}moved up to <q><VisibleName name={gone.now} /></q>, the nearest folder still there.{:else}went back to the top level.{/if}{:else}{notice}{/if}</p>
 
   <div class="tbl-wrap" aria-busy={busy}>
-    <table class="tbl">
+    <table class="tbl" bind:this={tableEl}>
       <caption class="sr-only">{searching ? 'Search results' : 'Folder contents'}</caption>
       <thead>
         <tr>
@@ -308,6 +367,8 @@
             <th scope="row">
               {#if r.kind === 'dir' && !searching && r.coverage !== 'denied'}
                 <button class="crumb" type="button" onclick={() => go([...trail, { id: r.node_id, name: r.name }])}><VisibleName name={r.name} /></button>
+              {:else if searching && marked(r)}
+                <span>{#each marked(r) ?? [] as part, k (k)}{#if part.hit}<mark>{part.text}</mark>{:else}{part.text}{/if}{/each}</span>
               {:else}
                 <VisibleName name={r.name} />
               {/if}
@@ -319,14 +380,15 @@
             <td class="r num">{r.kind === 'file' ? '–' : formatCount(r.files)}</td>
             <td class="nowrap">{formatTime(r.modified_at)}</td>
             <td>
+              {#if found.get(r.node_id)}<span class="tag">{found.get(r.node_id)?.match_kind}</span>{/if}
               {#if hasHiddenCharacters(r.name)}<span class="tag warn">hidden characters</span>{/if}
               {#if r.coverage !== 'complete'}<span class="tag warn">{r.coverage}</span>{/if}
               {#each r.flags as f (f)}<span class="tag">{f.replaceAll('_', ' ')}</span>{/each}
             </td>
-            <td><button class="btn" type="button" aria-label={`Inspect ${escapedName(r.name)}`} onclick={() => void inspect(r)}>Inspect</button></td>
+            <td><button class="btn" type="button" data-inspect onkeydown={rowKeys} aria-label={`Inspect ${escapedName(r.name)}`} onclick={() => void inspect(r)}>Inspect</button></td>
           </tr>
         {:else}
-          <tr><td colspan="8" class="muted">{busy ? 'Loading' : error ? 'Nothing is shown because the last request failed.' : 'Nothing to show.'}</td></tr>
+          <tr><td colspan="8" class="muted">{busy ? 'Loading' : error ? 'Nothing is shown because the last request failed.' : searching && scope?.partial ? 'No matches in what is catalogued so far; coverage is partial, so this is not proof of absence.' : searching ? 'No matches.' : 'Nothing to show.'}</td></tr>
         {/each}
       </tbody>
     </table>
@@ -361,6 +423,9 @@
   .grow input { width: 100%; }
   .starts { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
   .where { margin: 0 0 8px; }
+  .scope { margin: 0 0 8px; padding-left: 1.2rem; }
+  mark { background: color-mix(in srgb, var(--accent) 25%, transparent); color: inherit; border-radius: 2px; }
+  @media (forced-colors: active) { mark { background: Mark; color: MarkText; } }
   .crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 0 0 8px; }
   .crumb { font: inherit; color: var(--accent); background: none; border: 0; padding: 0 2px; cursor: pointer; text-align: left; overflow-wrap: anywhere; }
   .crumb[aria-current='location'] { color: var(--text); cursor: default; }

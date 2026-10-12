@@ -1,6 +1,6 @@
 import type {
   EventKey, EventMap, Basis, DatasetClass, EntryPage, EntryRow, ErrorCode, EventEnvelope, GrantList, GrantRevokeResult, RootRevokeResult, Health, RequestEnvelope,
-  ResponseEnvelope, Root, RootList, SearchRequest, SessionInfo, SliceNode, TreeChildrenRequest, TreeSlice,
+  ResponseEnvelope, Root, RootList, SearchHit, SearchPage, SearchRequest, SessionInfo, SliceNode, TreeChildrenRequest, TreeSlice,
   TreeSliceRequest, Threads,
 } from '../contracts.gen';
 import type { TelemetrySample } from '../contracts.gen';
@@ -175,16 +175,65 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     return page(n.id, kids, offsetOf(p.cursor), int(p.limit, 'limit', 1, 200), false);
   };
 
-  const search = (p: SearchRequest): EntryPage => {
-    const text = str(p.text, 'text').toLowerCase();
+  // The engine's tiers (semantics.md section 5, LW-113): exact, prefix, token (after a separator), substring; then
+  // every word at a word start, every word anywhere. Folders before files inside a tier, then node order.
+  const SEPARATORS = " _-.([{,+&@#~'=!";
+  const at = (name: string, q: string, word: boolean): number => {
+    for (let i = name.indexOf(q); i >= 0; i = name.indexOf(q, i + 1)) if (!word || i === 0 || SEPARATORS.includes(name[i - 1]!)) return i;
+    return -1;
+  };
+  type SearchHitMatchKind = SearchHit['match_kind'];
+  const classify = (name: string, q: string): [SearchHitMatchKind, number[][]] | null => {
+    const n = name.toLowerCase();
+    if (n === q || n.startsWith(`${q}.`)) return ['exact', [[0, q.length]]];
+    if (q.length >= 2 && n.startsWith(q)) return ['prefix', [[0, q.length]]];
+    const tok = q.length >= 2 ? at(n, q, true) : -1;
+    if (tok >= 0) return ['token', [[tok, tok + q.length]]];
+    const sub = q.length >= 3 ? n.indexOf(q) : -1;
+    if (sub >= 0) return ['substring', [[sub, sub + q.length]]];
+    const words = q.split(/\s+/);
+    if (words.length < 2) return null;
+    for (const word of [true, false]) {
+      const spans = words.map((w) => (w.length >= (word ? 2 : 3) ? at(n, w, word) : -1));
+      if (spans.every((s) => s >= 0)) return [word ? 'token' : 'substring', spans.map((s, i) => [s, s + words[i]!.length]).sort((x, y) => x[0]! - y[0]!)];
+    }
+    return null;
+  };
+  const TIER: Record<SearchHitMatchKind, number> = { exact: 0, prefix: 1, token: 2, substring: 3, filter: 4 };
+  const search = (p: SearchRequest): SearchPage => {
+    const text = str(p.text, 'text').trim().toLowerCase();
     const limit = int(p.limit, 'limit', 1, 100);
     const ext = typeof p.extension === 'string' ? p.extension.toLowerCase() : null;
-    const min = typeof p.min_bytes === 'string' && /^\d{1,19}$/.test(p.min_bytes) ? BigInt(p.min_bytes) : 0n;
-    const hits = tree.nodes.filter(
-      (n) => n.kind !== 'atlas' && n.kind !== 'root' && n.name.toLowerCase().includes(text) && (p.kind === 'any' || p.kind === (n.kind === 'file' ? 'file' : 'dir'))
-        && (ext === null || n.extension?.toLowerCase() === ext) && n.logical >= min,
-    );
-    return page(null, hits, offsetOf(p.cursor), limit, true);
+    const bytes = (v: unknown) => (typeof v === 'string' && /^\d{1,19}$/.test(v) ? BigInt(v) : null);
+    const min = bytes(p.min_bytes) ?? 0n, max = bytes(p.max_bytes);
+    const after = typeof p.modified_after === 'string' ? p.modified_after : null, before = typeof p.modified_before === 'string' ? p.modified_before : null;
+    const root = p.root_id === null || p.root_id === undefined ? null : str(p.root_id, 'root_id');
+    const live = (n: SynthNode) => { const r = topOf(n)[0]; return !!r && !views.revokedRoots.has(rootId(r)) && (root === null || rootId(r) === root); };
+    const hits: [SynthNode, SearchHitMatchKind, number[][]][] = [];
+    for (const n of tree.nodes) {
+      if (n.kind === 'atlas' || n.kind === 'root' || !live(n)) continue;
+      if (!(p.kind === 'any' || p.kind === (n.kind === 'file' ? 'file' : 'dir')) || (ext !== null && n.extension?.toLowerCase() !== ext)) continue;
+      if (n.logical < min || (max !== null && n.logical > max)) continue;
+      if ((after !== null || before !== null) && (n.modified === null || (after !== null && n.modified < after) || (before !== null && n.modified > before))) continue;
+      const c: [SearchHitMatchKind, number[][]] | null = text ? classify(n.name, text) : ['filter', []];
+      if (c) hits.push([n, c[0], c[1]]);
+    }
+    const byKind = (x: SynthNode, y: SynthNode) => Number(x.kind === 'file') - Number(y.kind === 'file') || x.index - y.index;
+    hits.sort(([x, a], [y, b]) => TIER[a] - TIER[b] || (text || ext === null ? byKind(x, y) : y.logical > x.logical ? 1 : y.logical < x.logical ? -1 : x.index - y.index));
+    const offset = offsetOf(p.cursor);
+    const shown = hits.slice(offset, offset + limit);
+    const end = offset + shown.length;
+    const roots = (root === null ? tree.rootIndexes.map((i) => tree.nodes[i]!) : tree.rootIndexes.map((i) => tree.nodes[i]!).filter((r) => rootId(r) === root))
+      .filter((r) => !views.revokedRoots.has(rootId(r)));
+    const relative = (n: SynthNode) => topOf(n).slice(1).map((a) => a.name).join('\\');
+    return {
+      generation: '1',
+      hits: shown.map(([n, match_kind, highlights]) => ({ row: entryRow(n, true), root_id: rootId(topOf(n)[0]!), path: { text: relative(n), truncated: false }, match_kind, highlights })),
+      next_cursor: end < hits.length ? cursorOf(end) : null, budget_hit: false,
+      index_state: 'current', partial: roots.some((r) => r.coverage !== 'complete'),
+      substring_searched: text === '' || text.split(/\s+/).every((w) => w.length >= 3),
+      roots: roots.map((r) => ({ root_id: rootId(r), scan_state: r.coverage === 'complete' ? 'complete' : 'partial', coverage: r.coverage })),
+    };
   };
 
   const views = createViewMock(now, fail);

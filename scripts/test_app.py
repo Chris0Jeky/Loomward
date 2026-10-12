@@ -848,8 +848,8 @@ def main() -> None:
         print('PASS duplicates: verified sizes, link sets, skip reasons, evidence, focus and cancellation')
         nav.get_by_role('link', name='Explorer', exact=True).click()
 
-        # search pages with a keyset cursor: 'a' matches far more than one page
-        page.get_by_placeholder('Search names').fill('a')
+        # search pages with a keyset cursor: 'delta' matches far more than one page
+        page.get_by_placeholder('Search names').fill('delta')
         page.get_by_role('button', name='Search', exact=True).click()
         expect(page.get_by_text('Search results for')).to_be_visible()
         expect(page.locator('main table tbody tr')).to_have_count(50)

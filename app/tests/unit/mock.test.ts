@@ -61,9 +61,25 @@ describe('mock transport', () => {
   });
 
   it('searches names with a location hint', async () => {
-    const { result } = await client().call('search.query', { root_id: null, text: 'SCRIPT', extension: null, min_bytes: null, kind: 'any', limit: 10, cursor: null });
-    expect(result.items.some((r) => r.name.startsWith('<script>'))).toBe(true);
-    expect(result.items[0]!.location_hint).not.toBeNull();
+    const { result } = await client().call('search.query', { root_id: null, text: 'SCRIPT', extension: null, min_bytes: null, max_bytes: null, modified_after: null, modified_before: null, kind: 'any', limit: 10, cursor: null });
+    expect(result.hits.some((h) => h.row.name.startsWith('<script>'))).toBe(true);
+    expect(result.hits[0]!.row.location_hint).not.toBeNull();
+    expect(result.index_state).toBe('current');
+  });
+
+  it('ranks search tiers like the engine: exact, prefix, token, substring, each folders first', async () => {
+    const { result } = await client().call('search.query', { root_id: null, text: 'a', extension: null, min_bytes: null, max_bytes: null, modified_after: null, modified_before: null, kind: 'any', limit: 100, cursor: null });
+    // One character: whole names and word starts only, said so.
+    expect(result.substring_searched).toBe(false);
+    expect(result.hits.every((h) => h.match_kind !== 'substring')).toBe(true);
+    const page = (await client().call('search.query', { root_id: null, text: 'doc', extension: null, min_bytes: null, max_bytes: null, modified_after: null, modified_before: null, kind: 'any', limit: 100, cursor: null })).result;
+    const tiers = page.hits.map((h) => ['exact', 'prefix', 'token', 'substring', 'filter'].indexOf(h.match_kind));
+    expect(tiers).toEqual([...tiers].sort((x, y) => x - y));
+    for (const h of page.hits) {
+      const [from, to] = h.highlights[0]!;
+      expect(h.row.name.slice(from, to).toLowerCase()).toBe('doc');
+      expect(h.path.text.endsWith(h.row.name)).toBe(true);
+    }
   });
 
   it('reports dataset class synthetic, all effects off, and no pretend features', async () => {
