@@ -101,7 +101,7 @@ describe('unexpected scan failures remain visible without inventing job outcomes
     reject(new Error('failure from the old generation'));
     await expect(pending).resolves.toBeUndefined();
     expect(scans.problems).toEqual({});
-    expect(scans.book.rt_fixture.job_id).toBe('jb_next');
+    expect(scans.book.rt_fixture?.job_id).toBe('jb_next');
     expect(session.state).toBe('connected');
   });
 
