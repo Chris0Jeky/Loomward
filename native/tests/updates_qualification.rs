@@ -26,7 +26,11 @@ fn malformed_running_versions_refuse_before_planning_a_request() {
 
 #[test]
 fn valid_configured_version_can_plan_without_side_effects() {
-    for current in ["0.0.0", "0.3.0-preview.1", "0.3.0-nightly.20261013.7+fixture"] {
+    for current in [
+        "0.0.0",
+        "0.3.0-preview.1",
+        "0.3.0-nightly.20261013.7+fixture",
+    ] {
         let tmp = tempfile::tempdir().unwrap();
         let updates =
             Updates::with_prompt(Some(tmp.path().to_path_buf()), true, current, |_, _, _| {
@@ -73,7 +77,10 @@ fn opting_in_or_switching_channel_cannot_rehabilitate_an_invalid_version() {
         assert_eq!(status["unavailable"], INVALID_VERSION);
         for trigger in [Trigger::Startup, Trigger::User] {
             for previous in [false, true] {
-                assert_eq!(updates.plan(trigger, previous).unwrap_err(), INVALID_VERSION);
+                assert_eq!(
+                    updates.plan(trigger, previous).unwrap_err(),
+                    INVALID_VERSION
+                );
             }
         }
     }
