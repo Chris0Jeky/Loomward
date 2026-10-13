@@ -1,6 +1,6 @@
 import type { EventEnvelope, Job, JobResult, ScanProgressEvent } from '../contracts.gen';
 import { applyJob, applyProgress, announcement, isActive, lostJob, refusalText, viewOf, type Book, type ScanView } from '../scan/model';
-import { LoomwardError } from '../transport/client';
+import { LoomwardError, TransportError } from '../transport/client';
 import { session } from './session.svelte';
 
 /** What the Grants & health view announces: the root, and the sentence for it (no name; the view adds it). */
@@ -112,7 +112,7 @@ class Scans {
         this.clearConfirmationProblem(job.root_id!);
       } catch (e) {
         if (!(e instanceof LoomwardError)) {
-          session.handle(e);
+          this.reportUnexpected(job.root_id!, e, "Could not confirm this scan's state", currentJob);
           return;
         }
         if (!currentJob()) return;
@@ -141,7 +141,7 @@ class Scans {
       this.apply(result.job);
     } catch (e) {
       if (!(e instanceof LoomwardError)) {
-        session.handle(e);
+        this.reportUnexpected(rootId, e, 'Could not start this scan', current);
         return;
       }
       if (!current()) return;
@@ -150,7 +150,7 @@ class Scans {
         try {
           await this.adopt(busyJob);
         } catch (adoptError) {
-          session.handle(adoptError);
+          this.reportUnexpected(rootId, adoptError, "Could not confirm this scan's state", current);
           return;
         }
       }
@@ -174,7 +174,7 @@ class Scans {
       this.apply(result.job);
     } catch (e) {
       if (!(e instanceof LoomwardError)) {
-        session.handle(e);
+        this.reportUnexpected(rootId, e, 'Could not cancel this scan', current);
         return;
       }
       if (!current()) return;
@@ -197,6 +197,12 @@ class Scans {
       if (!(e instanceof LoomwardError)) throw e;
       if (!current()) return;
     }
+  }
+
+  /** Transport faults still reach the shell; other failures describe uncertainty, never a job outcome. */
+  private reportUnexpected(rootId: string, error: unknown, context: string, current: () => boolean): void {
+    const message = session.handle(error);
+    if (!(error instanceof TransportError) && current()) this.setProblem(rootId, `${context}: ${message}`);
   }
 
   private clearConfirmationProblem(rootId: string): void {
