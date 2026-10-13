@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Duplicates } from '../../src/lib/stores/duplicates.svelte';
 import { session } from '../../src/lib/stores/session.svelte';
 import { Client } from '../../src/lib/transport/client';
+import { TransportError } from '../../src/lib/transport/transport';
 import { createMockTransport } from '../../src/lib/transport/mock';
 import { DUPLICATES_FIXTURE } from '../../src/lib/transport/mock-scan';
 import type { EventEnvelope, Job } from '../../src/lib/contracts.gen';
@@ -81,5 +82,32 @@ describe('duplicates jobs', () => {
     expect(store.problem).toBe('a personal session scans the folders you granted only');
     expect(store.book).toEqual({});
     expect('gated' in store).toBe(false);
+  });
+  it('keeps a busy follow-up failure as a problem without rejecting', async () => {
+    vi.useFakeTimers();
+    try {
+      session.state = 'connected';
+      session.client = new Client({ call: async (r: { request_id: string; command: string }) => {
+        if (r.command === 'jobs.get') throw new TransportError('engine went away');
+        return { protocol: 'loomward/3', request_id: r.request_id, ok: false, error: { code: 'busy', message: 'already running', retryable: false, detail: { job_id: 'jb_9' } } };
+      } } as unknown as Transport);
+      const store = new Duplicates();
+      await store.start('rt_fixture');
+      expect(store.problem).toBe('engine went away');
+      expect(session.state).toBe('unavailable');
+      expect(store.pending).toBe(false);
+
+      session.state = 'connected';
+      session.client = new Client({ call: async (r: { request_id: string; command: string }) => {
+        if (r.command === 'jobs.get') return { protocol: 'loomward/3', request_id: r.request_id, ok: false, error: { code: 'not_found', message: 'job gone', retryable: false, detail: null } };
+        return { protocol: 'loomward/3', request_id: r.request_id, ok: false, error: { code: 'busy', message: 'already running', retryable: false, detail: { job_id: 'jb_9' } } };
+      } } as unknown as Transport);
+      const retry = new Duplicates();
+      await retry.start('rt_fixture');
+      expect(retry.problem).toBe('job gone');
+      expect(session.state).toBe('connected');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

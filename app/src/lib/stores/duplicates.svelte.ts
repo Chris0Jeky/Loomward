@@ -41,7 +41,11 @@ export class Duplicates {
     } catch (e) {
       this.problem = session.handle(e);
       if (e instanceof LoomwardError && e.code === 'busy' && typeof e.detail?.job_id === 'string') {
-        this.apply((await session.client.call('jobs.get', { job_id: e.detail.job_id })).result.job);
+        try {
+          this.apply((await session.client.call('jobs.get', { job_id: e.detail.job_id })).result.job);
+        } catch (follow) {
+          this.problem = session.handle(follow);
+        }
       }
     } finally { this.pending = false; }
   }
