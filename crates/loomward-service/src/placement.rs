@@ -496,40 +496,79 @@ impl PlacementInput for Input<'_> {
             UNION ALL SELECT d.id FROM main.dir d JOIN visible v ON d.parent_id=v.id WHERE d.listing_state NOT IN ('excluded','absent_pending') AND d.flags & ?2=0)
             SELECT d.id,d.root_id,d.parent_id,d.name,d.born_run,d.file_id,d.sub_files,d.sub_dirs,d.sub_logical,d.sub_allocated,d.sub_alloc_unknown,d.sub_skipped,d.sub_errors,d.sub_complete AND d.agg_valid_rev>=d.dirty_rev,d.sub_newest_ft,d.flags
             FROM main.dir d JOIN visible v ON v.id=d.id ORDER BY d.id LIMIT 10001").map_err(sql)?;
-        let dirs = stmt
+        struct RawDir {
+            id: i64,
+            root: i64,
+            parent: Option<i64>,
+            name: String,
+            file_id: Option<Vec<u8>>,
+            files: u64,
+            sub_dirs: u64,
+            logical: u64,
+            allocated: u64,
+            unknown: u64,
+            skipped: u64,
+            failed: u64,
+            complete: bool,
+            newest: Option<i64>,
+            flags: u32,
+        }
+        let rows = stmt
             .query_map(params![volume, loomward_catalog::EXCLUDED_FLAGS], |r| {
-                let unknown = uint(r, 10)?;
-                Ok(Dir {
+                Ok(RawDir {
                     id: r.get(0)?,
                     root: r.get(1)?,
                     parent: r.get(2)?,
                     name: r.get(3)?,
                     file_id: r.get(5)?,
-                    totals: SubtreeTotals {
-                        files: Count::new(uint(r, 6)?).unwrap(),
-                        dirs: Count::new(uint(r, 7)?).unwrap(),
-                        logical_bytes: Bytes(uint(r, 8)?),
-                        allocated_bytes: if unknown == 0 {
-                            Some(Bytes(uint(r, 9)?))
-                        } else {
-                            None
-                        },
-                        allocation_unknown_files: Count::new(unknown).unwrap(),
-                        skipped: Count::new(uint(r, 11)?).unwrap(),
-                        failed: Count::new(uint(r, 12)?).unwrap(),
-                        complete: r.get(13)?,
-                        stream_coverage: Default::default(),
-                        unique_objects: None,
-                        unique_allocated_bytes: None,
-                        multi_link_entries: Count::ZERO,
-                    },
+                    files: uint(r, 6)?,
+                    sub_dirs: uint(r, 7)?,
+                    logical: uint(r, 8)?,
+                    allocated: uint(r, 9)?,
+                    unknown: uint(r, 10)?,
+                    skipped: uint(r, 11)?,
+                    failed: uint(r, 12)?,
+                    complete: r.get(13)?,
                     newest: r.get(14)?,
-                    unverified: r.get::<_, u32>(15)? & loomward_catalog::IDENTITY_UNVERIFIED != 0,
+                    flags: r.get(15)?,
                 })
             })
             .map_err(sql)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(sql)?;
+        let budget = || EngineError::ResourceBudget {
+            message: "placement directory bounds".into(),
+        };
+        let mut dirs = Vec::with_capacity(rows.len());
+        for row in rows {
+            dirs.push(Dir {
+                id: row.id,
+                root: row.root,
+                parent: row.parent,
+                name: row.name,
+                file_id: row.file_id,
+                totals: SubtreeTotals {
+                    files: Count::new(row.files).map_err(|_| budget())?,
+                    dirs: Count::new(row.sub_dirs).map_err(|_| budget())?,
+                    logical_bytes: Bytes(row.logical),
+                    allocated_bytes: if row.unknown == 0 {
+                        Some(Bytes(row.allocated))
+                    } else {
+                        None
+                    },
+                    allocation_unknown_files: Count::new(row.unknown).map_err(|_| budget())?,
+                    skipped: Count::new(row.skipped).map_err(|_| budget())?,
+                    failed: Count::new(row.failed).map_err(|_| budget())?,
+                    complete: row.complete,
+                    stream_coverage: Default::default(),
+                    unique_objects: None,
+                    unique_allocated_bytes: None,
+                    multi_link_entries: Count::ZERO,
+                },
+                newest: row.newest,
+                unverified: row.flags & loomward_catalog::IDENTITY_UNVERIFIED != 0,
+            });
+        }
         if dirs.len() > 10000 {
             return Err(EngineError::ResourceBudget {
                 message: "placement directory bounds".into(),
