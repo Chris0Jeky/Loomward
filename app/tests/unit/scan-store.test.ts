@@ -88,7 +88,7 @@ describe('scan requests stay inside their engine generation', () => {
     scans.onEvent(hello('old_epoch'));
     scans.apply(oldJob);
   });
-  afterEach(() => { session.client = null; session.info = null; });
+  afterEach(() => { session.client = null; session.info = null; session.state = 'connecting'; vi.clearAllTimers(); vi.useRealTimers(); });
 
   it.each(['sync', 'start', 'adopt'] as const)('clears old ordering on %s after HTTP hello and before SSE hello', async (operation) => {
     session.client = clientWith((c) => c === 'jobs.list' ? { jobs: [newJob] } :
@@ -166,14 +166,30 @@ describe('scan requests stay inside their engine generation', () => {
   });
 
   it.each(['sync', 'start', 'cancel'] as const)('still hands a transport fault to the shell after a new epoch (%s)', async (operation) => {
+    session.state = 'connected';
     let fail!: (e: Error) => void;
     session.client = clientWith((c) => c === 'jobs.list' && operation !== 'sync' ? { jobs: [] } :
       new Promise<Reply>((_, reject) => { fail = reject; })).client;
     const pending = operation === 'sync' ? scans.sync() : operation === 'cancel' ? scans.cancel('rt_a') : scans.start('rt_a', 'full');
     await vi.waitFor(() => expect(fail).toBeTypeOf('function'));
+    vi.useFakeTimers();
     scans.onEvent(hello('new_epoch'));
     fail(new TransportError('engine went away'));
-    await expect(pending).rejects.toBeInstanceOf(TransportError);
+    await expect(pending).resolves.toBeUndefined();
+    expect(session.state).toBe('unavailable');
+  });
+
+  it('hands a transport fault from adopt to the shell without a busy refusal', async () => {
+    vi.useFakeTimers();
+    session.state = 'connected';
+    session.client = clientWith((c) => {
+      if (c === 'scan.start') return { error: { code: 'busy', message: 'already scanning', detail: { job_id: 'jb_9' } } };
+      if (c === 'jobs.get') throw new TransportError('engine went away');
+      return { jobs: [] };
+    }).client;
+    await expect(scans.start('rt_a', 'full')).resolves.toBeUndefined();
+    expect(session.state).toBe('unavailable');
+    expect(scans.pending.rt_a).toBe(false);
   });
 
   it('does not let an old start clear the pending flag of a new-engine start', async () => {

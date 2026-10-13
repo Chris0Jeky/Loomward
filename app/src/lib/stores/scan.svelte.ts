@@ -91,7 +91,11 @@ class Scans {
     try {
       ({ result } = await c.call('jobs.list', { kinds: ['scan'], limit: 50 }));
     } catch (e) {
-      if (!current() && e instanceof LoomwardError) return;
+      if (!(e instanceof LoomwardError)) {
+        session.handle(e);
+        return;
+      }
+      if (!current()) return;
       throw e;
     }
     if (!current()) return;
@@ -107,9 +111,12 @@ class Scans {
         this.apply(result.job);
         this.clearConfirmationProblem(job.root_id!);
       } catch (e) {
-        if (!currentJob() && e instanceof LoomwardError) return;
-        if (!currentJob()) throw e;
-        if (e instanceof LoomwardError && e.code === 'not_found') {
+        if (!(e instanceof LoomwardError)) {
+          session.handle(e);
+          return;
+        }
+        if (!currentJob()) return;
+        if (e.code === 'not_found') {
           // This is a local observation, not a new engine revision; don't overwrite a newer snapshot.
           if (this.book[job.root_id!]?.job_id === job.job_id && this.book[job.root_id!]?.rev === job.rev) {
             this.commit({ ...this.book, [job.root_id!]: lostJob(job, new Date().toISOString()) });
@@ -117,7 +124,6 @@ class Scans {
           this.clearConfirmationProblem(job.root_id!);
         } else {
           this.setProblem(job.root_id!, `Could not confirm this scan's state: ${e instanceof Error ? e.message : 'unexpected failure'}`);
-          if (!(e instanceof LoomwardError)) throw e;
         }
       }
     }
@@ -134,10 +140,20 @@ class Scans {
       if (!current()) return;
       this.apply(result.job);
     } catch (e) {
-      if (!(e instanceof LoomwardError)) throw e; // a transport fault belongs to the shell
+      if (!(e instanceof LoomwardError)) {
+        session.handle(e);
+        return;
+      }
       if (!current()) return;
       const busyJob = e.code === 'busy' && typeof e.detail?.job_id === 'string' ? e.detail.job_id : null;
-      if (busyJob) await this.adopt(busyJob);
+      if (busyJob) {
+        try {
+          await this.adopt(busyJob);
+        } catch (adoptError) {
+          session.handle(adoptError);
+          return;
+        }
+      }
       if (!current()) return;
       this.setProblem(rootId, refusalText(e.code, e.detail, e.message));
     } finally {
@@ -157,7 +173,10 @@ class Scans {
       if (!current()) return;
       this.apply(result.job);
     } catch (e) {
-      if (!(e instanceof LoomwardError)) throw e;
+      if (!(e instanceof LoomwardError)) {
+        session.handle(e);
+        return;
+      }
       if (!current()) return;
       this.setProblem(rootId, `The scan could not be cancelled: ${e.message}`);
     } finally {
