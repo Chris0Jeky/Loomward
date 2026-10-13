@@ -56,11 +56,41 @@ pub(crate) fn raw(r: &rusqlite::Row<'_>) -> rusqlite::Result<Raw> {
         },
         name: r.get(2)?,
         totals: Totals {
-            logical: r.get::<_, i64>(3)? as u64,
-            allocated: r.get::<_, i64>(4)? as u64,
-            allocation_unknown: r.get::<_, i64>(5)? as u64,
-            files: r.get::<_, i64>(6)? as u64,
-            dirs: r.get::<_, i64>(7)? as u64,
+            logical: u64::try_from(r.get::<_, i64>(3)?).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    3,
+                    rusqlite::types::Type::Integer,
+                    Box::new(e),
+                )
+            })?,
+            allocated: u64::try_from(r.get::<_, i64>(4)?).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    4,
+                    rusqlite::types::Type::Integer,
+                    Box::new(e),
+                )
+            })?,
+            allocation_unknown: u64::try_from(r.get::<_, i64>(5)?).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    5,
+                    rusqlite::types::Type::Integer,
+                    Box::new(e),
+                )
+            })?,
+            files: u64::try_from(r.get::<_, i64>(6)?).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    6,
+                    rusqlite::types::Type::Integer,
+                    Box::new(e),
+                )
+            })?,
+            dirs: u64::try_from(r.get::<_, i64>(7)?).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    7,
+                    rusqlite::types::Type::Integer,
+                    Box::new(e),
+                )
+            })?,
             complete: r.get(14)?,
             ..Totals::default()
         },
@@ -453,7 +483,7 @@ impl Reader {
                 let mut s=conn.prepare("SELECT c.id,c.name FROM st.collection c JOIN st.collection_member m ON m.collection_id=c.id JOIN st.object_ref o ON o.id=m.object_ref_id LEFT JOIN st.pending_reference p ON p.object_ref_id=o.id AND p.catalog_instance=?3 AND p.publication_token=(SELECT value FROM meta WHERE key='reference_publication') WHERE o.volume_key=?1 AND o.file_id=?2 AND o.state='resolved' AND o.retired=0 AND o.catalog_instance=?3 AND ((o.row_id=?4 AND o.born_run=?5) OR (p.row_id=?4 AND p.born_run=?5)) AND o.kind=?6 LIMIT 32")?;
                 memberships=s.query_map(params![v,id,instance(conn)?,match r.key{NodeKey::Dir(id)|NodeKey::File(id)=>id,_=>0},r.born_run,if matches!(r.key,NodeKey::Dir(_)){"dir"}else{"file"}],|r|Ok(CollectionRef{collection_id:format!("cl_{}",r.get::<_,i64>(0)?),name:r.get(1)?}))?.collect::<rusqlite::Result<Vec<_>>>()?;
             }
-            let subtree=if matches!(key,NodeKey::Dir(_)) {let (skipped,failed):(i64,i64)=conn.query_row("SELECT sub_skipped,sub_errors FROM dir WHERE id=?1",[match key{NodeKey::Dir(id)=>id,_=>unreachable!()}],|r|Ok((r.get(0)?,r.get(1)?)))?;let(unique_objects,unique_allocated_bytes,multi_link_entries)=unique_totals(conn,&r)?;Some(SubtreeTotals{files:r.totals.files,dirs:r.totals.dirs,logical_bytes:r.totals.logical.to_string(),allocated_bytes:r.entry().allocated_bytes,allocation_unknown_files:r.totals.allocation_unknown,skipped:skipped as u64,failed:failed as u64,complete:r.totals.complete,stream_coverage:"default_stream_only".into(),unique_objects,unique_allocated_bytes,multi_link_entries})}else{None};
+            let subtree=if matches!(key,NodeKey::Dir(_)) {let (skipped_raw,failed_raw):(i64,i64)=conn.query_row("SELECT sub_skipped,sub_errors FROM dir WHERE id=?1",[match key{NodeKey::Dir(id)=>id,_=>unreachable!()}],|r|Ok((r.get(0)?,r.get(1)?)))?;let skipped=u64::try_from(skipped_raw).map_err(|e|rusqlite::Error::FromSqlConversionFailure(0,rusqlite::types::Type::Integer,Box::new(e)))?;let failed=u64::try_from(failed_raw).map_err(|e|rusqlite::Error::FromSqlConversionFailure(1,rusqlite::types::Type::Integer,Box::new(e)))?;let(unique_objects,unique_allocated_bytes,multi_link_entries)=unique_totals(conn,&r)?;Some(SubtreeTotals{files:r.totals.files,dirs:r.totals.dirs,logical_bytes:r.totals.logical.to_string(),allocated_bytes:r.entry().allocated_bytes,allocation_unknown_files:r.totals.allocation_unknown,skipped,failed,complete:r.totals.complete,stream_coverage:"default_stream_only".into(),unique_objects,unique_allocated_bytes,multi_link_entries})}else{None};
             let exclusions=flags(r.flags).into_iter().filter(|s|s!="hardlink_suspected").map(|code|Exclusion{explanation:code.replace('_'," "),code}).collect();
             let denied_capabilities=["file_move","file_delete","file_rename","content_read","teacher_disclosure","training"].into_iter().map(|capability|DeniedCapability{capability:capability.into(),reason:if r.flags&1!=0 && matches!(capability,"teacher_disclosure"|"training"){"sensitive_name"}else{"not_implemented_in_v03"}.into()}).collect();
             Ok(NodeDetail{row:r.entry(),root_id:format!("rt_{}",r.grant),volume_id:volume.map(|v|format!("vo_{v}")),display_path:DisplayPath::bounded(display_path,path.truncated),identity,timestamps:Timestamps{created_at:timestamp(r.created),modified_at:timestamp(r.modified),changed_at:timestamp(r.changed),accessed_at:timestamp(r.accessed),accessed_note:"Last access may be disabled or delayed; it is not usage evidence.".into()},subtree,threads:threads(conn,r.grant,&r.coverage(),r.flags)?,exclusions,denied_capabilities,memberships,suggestion:None})
@@ -531,8 +561,20 @@ impl Reader {
             };
             while let Some(row) = iter.next()? {
                 let key: String = row.get(0)?;
-                let bytes = row.get::<_, i64>(1)? as u64;
-                let files = row.get::<_, i64>(2)? as u64;
+                let bytes = u64::try_from(row.get::<_, i64>(1)?).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Integer,
+                        Box::new(e),
+                    )
+                })?;
+                let files = u64::try_from(row.get::<_, i64>(2)?).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        2,
+                        rusqlite::types::Type::Integer,
+                        Box::new(e),
+                    )
+                })?;
                 let unknown: bool = row.get(3)?;
                 if unknown {
                     unknown_bytes += bytes;

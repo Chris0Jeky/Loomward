@@ -350,6 +350,38 @@ fn identity_unverified_rows_are_stored_exposed_and_never_duplicate_candidates() 
 }
 
 #[test]
+fn negative_catalogue_counters_are_errors() {
+    let (tmp, c, _grant, dir) = setup_with_files(vec![sized_flagged("synthetic-plain", 60, 0)]);
+    let db = Connection::open(tmp.path().join("catalog.db")).unwrap();
+    db.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+    let mut reader = c.reader().unwrap();
+    let children_req = ChildrenRequest {
+        dir_id: dir,
+        sort: Sort::SizeDesc,
+        basis: Basis::Logical,
+        limit: 100,
+        cursor: None,
+    };
+    assert!(reader.children(&children_req).is_ok());
+    db.execute("UPDATE file SET logical=-5", []).unwrap();
+    assert!(matches!(reader.children(&children_req), Err(Error::Sql(_))));
+    db.execute("UPDATE file SET logical=60", []).unwrap();
+    db.execute("UPDATE dir SET sub_skipped=-1 WHERE id=?1", [dir])
+        .unwrap();
+    assert!(matches!(
+        reader.inspect(NodeKey::Dir(dir)),
+        Err(Error::Sql(_))
+    ));
+    db.execute("UPDATE dir SET sub_skipped=0 WHERE id=?1", [dir])
+        .unwrap();
+    db.execute("UPDATE file SET logical=-5", []).unwrap();
+    assert!(matches!(
+        reader.breakdown(dir, "extension", Basis::Logical, 8, 1_000_000),
+        Err(Error::Sql(_))
+    ));
+}
+
+#[test]
 fn inspect_refuses_display_path_beyond_limit_on_overlong_chain() {
     let (tmp, c, _grant, dir) = setup_with_files(vec![]);
     let db = Connection::open(tmp.path().join("catalog.db")).unwrap();
