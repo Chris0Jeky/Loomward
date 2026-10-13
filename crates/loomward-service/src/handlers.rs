@@ -14,6 +14,8 @@ use loomward_protocol::*;
 use serde::Serialize;
 use serde_json::{json, Value};
 
+mod root_view;
+
 type Handled = Result<Out, ErrorBody>;
 
 fn out(result: Value, revs: Option<(i64, i64)>) -> Out {
@@ -501,42 +503,6 @@ impl Inner {
         ))
     }
 
-    fn root_json(&self, r: &db::RootRow, reader: Option<&mut Reader>) -> Result<Value, ErrorBody> {
-        let (state, coverage) = scan_view(r);
-        let active = r.grant_state == "active";
-        let totals = match (reader, r.dir, active && r.state != "never_scanned") {
-            (Some(reader), Some(dir), true) => match reader.inspect(NodeKey::Dir(dir)) {
-                // Mid-scan or awaiting repair, the aggregates are unsettled: unknown, not an error.
-                Err(loomward_catalog::Error::RepairRequired) => None,
-                result => result
-                    .map_err(catalog_error)?
-                    .subtree
-                    .map(|s| encode(&s))
-                    .transpose()?,
-            },
-            _ => None,
-        };
-        let display: String = r.display_path.chars().take(1024).collect();
-        Ok(json!({
-            "root_id": self.root_id(r.root),
-            "display_path": {"text": display, "truncated": r.display_path.chars().count() > 1024},
-            "origin": r.origin,
-            "dataset_class": self.dataset,
-            "volume_id": r.volume.map(|v| self.volume_id(v)),
-            "granted_at": ts_ns(r.granted_at_ns),
-            "granted_via": r.granted_via,
-            "grant_state": r.grant_state,
-            "scan": {
-                "state": state,
-                "last_job_id": null,
-                "generation": r.generation.map(|g| g.to_string()),
-                "finished_at": r.finished_at_ns.map(ts_ns),
-                "coverage": coverage,
-            },
-            "totals": totals,
-        }))
-    }
-
     fn root_list(&self, work: Option<&crate::ReadWork>) -> Result<Value, ErrorBody> {
         let rows = db::roots(&self.db(), None).map_err(sql_error)?;
         let mut reader = self.read_reader(work)?;
@@ -662,7 +628,6 @@ impl Inner {
             Some(revs),
         ))
     }
-
     /// The granted folder no longer has the grant's identity (docs/41 section 7 step 1): the
     /// grant ends `identity_changed`, committed in `state.db` first as a revocation is; then the
     /// root's jobs are cancelled and its writer fenced, and `roots.changed` stops the UI from
