@@ -180,7 +180,10 @@ fn import_reads_the_picked_receipt_and_stores_only_normalised_evidence() {
     let age = listed[0]["snapshot_age_seconds"].as_i64().unwrap();
     let earliest = before_list.min(after_list) - observed_ns / 1_000_000_000;
     let latest = before_list.max(after_list) - observed_ns / 1_000_000_000;
-    assert!((earliest..=latest).contains(&age), "age outside its read window");
+    assert!(
+        (earliest..=latest).contains(&age),
+        "age outside its read window"
+    );
     let mut expected = e.clone();
     expected["snapshot_age_seconds"] = json!(age);
     assert_eq!(listed, vec![expected]);
