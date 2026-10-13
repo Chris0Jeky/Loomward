@@ -521,6 +521,23 @@ fn placement_wire_preserves_unknowns_and_exclusions() {
 }
 
 #[test]
+fn placement_oversized_catalogue_count_is_a_budget_error() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (_, _, volume) = placement_fixture(&svc);
+    svc.inner
+        .db()
+        .execute("UPDATE main.dir SET sub_files=9007199254740992", [])
+        .unwrap();
+    let response = call(
+        &svc,
+        "placement.simulate",
+        placement_request(&volume, false),
+    );
+    assert_eq!(err(response).code, ErrorCode::ResourceBudget);
+}
+
+#[test]
 fn placement_saved_scenarios_survive_restart_and_hide_revoked_roots() {
     let tmp = temp_root();
     let svc = open(tmp.path(), DatasetClass::Synthetic);
