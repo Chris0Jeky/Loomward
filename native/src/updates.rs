@@ -177,7 +177,8 @@ pub struct Updates {
     dir: Option<PathBuf>,
     /// `plugins.updater.pubkey` is set: without it no signature can be checked, so no request.
     configured: bool,
-    current: Version,
+    /// Preserve the reported identity; malformed versions make the updater unavailable.
+    current: String,
     prefs: Mutex<Prefs>,
     pending: Mutex<Option<(Offer, tauri_plugin_updater::Update)>>,
     /// The native confirmation, `true` only on an explicit OK ([`crate::dialogs::message_box`]).
@@ -200,7 +201,7 @@ impl Updates {
         Self {
             dir,
             configured,
-            current: Version::parse(current).unwrap_or_else(|_| Version::new(0, 0, 0)),
+            current: current.into(),
             prefs: Mutex::new(prefs),
             pending: Mutex::new(None),
             ask: Arc::new(ask),
@@ -217,6 +218,8 @@ impl Updates {
             Some("updates are off in --fixtures mode")
         } else if !self.configured {
             Some("updates are not configured in this build")
+        } else if Version::parse(&self.current).is_err() {
+            Some("the running version is invalid; updates are unavailable")
         } else {
             None
         }
@@ -225,7 +228,7 @@ impl Updates {
     pub fn status(&self) -> Value {
         let offer = lock(&self.pending).as_ref().map(|(o, _)| o.clone());
         json!({
-            "current_version": self.current.to_string(),
+            "current_version": self.current,
             "unavailable": self.usable(),
             "prefs": self.prefs(),
             "offer": offer,
@@ -311,7 +314,7 @@ impl Updates {
             // state snapshot. Until that drill exists the previous nightly is a manual download.
             return Err(ROLLBACK_UNAVAILABLE.into());
         }
-        let text = confirm_text(&offer, &self.current.to_string());
+        let text = confirm_text(&offer, &self.current);
         let ask = self.ask.clone();
         // The box is modal and blocking: off the async runtime, as `lw_call` runs its dialogs.
         let accepted =
