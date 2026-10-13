@@ -163,7 +163,27 @@ fn import_reads_the_picked_receipt_and_stores_only_normalised_evidence() {
         );
     }
     assert!(svc.inner.revisions().unwrap().1 > before, "state_rev moves");
-    assert_eq!(list(&svc), vec![e.clone()]);
+    // #449: identity is stable, but age belongs to each read, not the earlier import reply.
+    let observed_ns: i64 = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT snapshot_observed_ns FROM st.backup_evidence WHERE id=1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let before_list = crate::now_ns() / 1_000_000_000;
+    let listed = list(&svc);
+    let after_list = crate::now_ns() / 1_000_000_000;
+    assert_eq!(listed.len(), 1);
+    let age = listed[0]["snapshot_age_seconds"].as_i64().unwrap();
+    let earliest = before_list.min(after_list) - observed_ns / 1_000_000_000;
+    let latest = before_list.max(after_list) - observed_ns / 1_000_000_000;
+    assert!((earliest..=latest).contains(&age), "age outside its read window");
+    let mut expected = e.clone();
+    expected["snapshot_age_seconds"] = json!(age);
+    assert_eq!(listed, vec![expected]);
     let stored: String = svc
         .inner
         .db()
