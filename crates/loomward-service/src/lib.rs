@@ -924,8 +924,8 @@ impl Inner {
             let _ = self.engine.publish_event(
                 event,
                 map,
-                catalog_rev.map(|r| Generation(r as u64)),
-                state_rev.map(|r| Generation(r as u64)),
+                catalog_rev.map(|r| Generation(r.max(0) as u64)),
+                state_rev.map(|r| Generation(r.max(0) as u64)),
             );
         }
     }
