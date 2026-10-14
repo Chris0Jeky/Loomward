@@ -2742,6 +2742,51 @@ fn grants_past_64_active_roots_are_refused_by_rule() {
     assert!(svc.inner.grant(&dirs[64], "cli_flag", false).unwrap().1);
 }
 
+/// Invalid revisions stay unknown in both events and responses.
+#[test]
+fn publish_clamps_negative_revision_to_unknown() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let mut events = svc.subscribe(None);
+    match events.recv_timeout(Duration::from_secs(5)) {
+        RecvOutcome::Event(e) => assert_eq!(e.event, EventName::StreamHello),
+        other => panic!("expected hello, got {other:?}"),
+    }
+    let warning =
+        || json!({"code": "scan_throttled", "message": "test", "at": "2026-01-01T00:00:00Z"});
+    let next_warning = |events: &mut Box<dyn EventStream>| loop {
+        match events.recv_timeout(Duration::from_secs(5)) {
+            RecvOutcome::Event(e) if e.event == EventName::HealthWarning => break e,
+            RecvOutcome::Event(_) => continue,
+            other => panic!("{other:?}"),
+        }
+    };
+    svc.inner
+        .publish(EventName::HealthWarning, warning(), Some(-1), Some(-1));
+    let event = next_warning(&mut events);
+    event.validate().unwrap();
+    assert_eq!(event.catalog_rev, None);
+    assert_eq!(event.state_rev, None);
+    // ResponseMeta agrees on the same negative input.
+    let meta = svc.inner.meta(
+        std::time::Instant::now(),
+        &Payload::new(),
+        Some(-1),
+        Some(-1),
+    );
+    assert_eq!(meta.catalog_rev, None);
+    assert_eq!(meta.state_rev, None);
+    assert_eq!(event.catalog_rev, meta.catalog_rev);
+    assert_eq!(event.state_rev, meta.state_rev);
+    // Non-negative values pass through unchanged.
+    svc.inner
+        .publish(EventName::HealthWarning, warning(), Some(3), Some(7));
+    let event = next_warning(&mut events);
+    event.validate().unwrap();
+    assert_eq!(event.catalog_rev, Some(Generation(3)));
+    assert_eq!(event.state_rev, Some(Generation(7)));
+}
+
 fn native_identity_available() -> bool {
     #[cfg(windows)]
     if loomward_windows::enumerate::running_elevated() {
