@@ -2414,3 +2414,40 @@ fn followup_grant_gate_cancels_and_fences_every_wire_alias() {
         ));
     }
 }
+
+#[test]
+fn pre_epoch_clock_fails_closed_to_epoch_zero() {
+    use std::time::{Duration, UNIX_EPOCH};
+    // Simulate a SystemTime before UNIX_EPOCH: duration_since errs.
+    let pre_epoch = UNIX_EPOCH.checked_sub(Duration::from_secs(1)).unwrap();
+    let seconds = pre_epoch
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    assert_eq!(seconds, 0);
+    // Same epoch-zero fallback as timestamp_ns, which clamps negatives.
+    assert_eq!(
+        crate::events::timestamp_ns(-1).as_str(),
+        "1970-01-01T00:00:00Z"
+    );
+    assert_eq!(
+        crate::events::timestamp_ns(0).as_str(),
+        "1970-01-01T00:00:00Z"
+    );
+    // The fail-closed timestamp() constructor must not unwrap a pre-epoch duration.
+    let src = include_str!("../events.rs");
+    let start = src
+        .find("pub(crate) fn timestamp()")
+        .expect("timestamp constructor");
+    let rest = &src[start..];
+    let end = rest.find("\n}\n").expect("timestamp body end") + 3;
+    let body = &rest[..end];
+    assert!(
+        !body.contains(".unwrap()"),
+        "timestamp() must not unwrap pre-epoch duration"
+    );
+    // Normal wall-clock output still yields a valid timestamp without panicking.
+    let now = crate::events::timestamp();
+    assert!(now.as_str().contains('T'));
+    assert!(now.as_str().ends_with('Z'));
+}
