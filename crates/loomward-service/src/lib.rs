@@ -899,8 +899,8 @@ impl Inner {
                 .get("budget_hit")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
-            catalog_rev: catalog_rev.map(|r| Generation(r.max(0) as u64)),
-            state_rev: state_rev.map(|r| Generation(r.max(0) as u64)),
+            catalog_rev: catalog_rev.and_then(|r| u64::try_from(r).ok().map(Generation)),
+            state_rev: state_rev.and_then(|r| u64::try_from(r).ok().map(Generation)),
         }
     }
 
@@ -924,8 +924,8 @@ impl Inner {
             let _ = self.engine.publish_event(
                 event,
                 map,
-                catalog_rev.map(|r| Generation(r.max(0) as u64)),
-                state_rev.map(|r| Generation(r.max(0) as u64)),
+                catalog_rev.and_then(|r| u64::try_from(r).ok().map(Generation)),
+                state_rev.and_then(|r| u64::try_from(r).ok().map(Generation)),
             );
         }
     }
