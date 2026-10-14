@@ -59,7 +59,13 @@
       error = session.handle(e); evidence = [];
     } finally { if (mine === generation) loading = false; }
     if (desktop && personal) {
-      try { volumes = (await session.client.call('volumes.list', {})).result.volumes; } catch { volumes = []; }
+      try {
+        volumes = (await session.client.call('volumes.list', {})).result.volumes;
+      } catch (e) {
+        if (mine !== generation) return;
+        error = session.handle(e);
+        volumes = [];
+      }
     }
   }
 
