@@ -367,6 +367,10 @@ impl Sampler {
     }
 
     /// The engine's own row before display truncation; no new OS observation is performed.
+    ///
+    /// Its CPU rate divides by the gap between the two counter reads. On a refresh sample the own
+    /// row inside `Snapshot::processes` is rated by the 15 s walk-to-walk window like every other
+    /// process, so the two can differ; the engine reads this one.
     pub fn own_process(&self) -> Option<&Process> {
         self.own.as_ref().map(|(_, own)| own)
     }
@@ -892,6 +896,36 @@ mod tests {
         assert!(rates.cpu_fraction.is_none());
         assert!(rates.working_set_delta_bytes.is_none());
         assert_eq!(rates.unknowns.len(), 3);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn own_cpu_rate_divides_by_the_counter_read_gap_not_the_sample_start_gap() {
+        // #467/#469: seed `own` with a known (read instant, zero CPU) pair 100 s back and push the
+        // previous sample start 400 s back. The own rate must be this process's total CPU over the
+        // ~100 s read gap; the old start-to-start denominator would give a quarter of that.
+        let mut sampler = Sampler::default();
+        sampler.sample_leased(1024, SampleChannels::ALL);
+        let mut seed = sampler.own_process().unwrap().clone();
+        seed.cpu_user_100ns = Some(0);
+        seed.cpu_kernel_100ns = Some(0);
+        let read_gap = std::time::Duration::from_secs(100);
+        let start_gap = std::time::Duration::from_secs(400);
+        sampler.own = Some((Instant::now() - read_gap, seed));
+        sampler.previous.as_mut().unwrap().0 = Instant::now() - start_gap;
+        let snapshot = sampler.sample_leased(1024, SampleChannels::ALL);
+        let own = sampler.own_process().unwrap();
+        let cpu_seconds =
+            (own.cpu_user_100ns.unwrap() + own.cpu_kernel_100ns.unwrap()) as f64 / 10_000_000.0;
+        let cores = snapshot.logical_processor_count.unwrap() as f64;
+        let by_read_gap = cpu_seconds / read_gap.as_secs_f64() / cores;
+        let got = own.rates.cpu_fraction.expect("a valid own cpu fraction");
+        // The real gap is the seeded 100 s plus the milliseconds the sample took before the read.
+        assert!(
+            (got - by_read_gap).abs() <= by_read_gap * 0.02,
+            "got {got}, expected {by_read_gap} (read gap); start gap would give {}",
+            by_read_gap / 4.0
+        );
     }
 
     #[test]
