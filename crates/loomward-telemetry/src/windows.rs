@@ -297,6 +297,7 @@ pub(super) fn collect(
     channels: SampleChannels,
     refresh_processes: bool,
     image_name_buffer: &mut Vec<u16>,
+    own_read_at: &mut Option<Instant>,
 ) -> Snapshot {
     let mut snapshot = unsupported_snapshot();
     snapshot.status = "observed".into();
@@ -341,6 +342,7 @@ pub(super) fn collect(
     if !channels.processes || !refresh_processes {
         if channels.engine {
             let query_started = Instant::now();
+            *own_read_at = Some(query_started);
             let (own, _) = process(
                 &PROCESSENTRY32W {
                     th32ProcessID: std::process::id(),
@@ -377,6 +379,9 @@ pub(super) fn collect(
     while has_entry != 0 && snapshot.process_totals.enumerated < MAX_ENUMERATED_PROCESSES {
         snapshot.process_totals.enumerated += 1;
         let query_started = Instant::now();
+        if entry.th32ProcessID == std::process::id() {
+            *own_read_at = Some(query_started);
+        }
         let (row, opened) = process(&entry, image_name_buffer);
         costs.process_queries_ms += query_started.elapsed().as_secs_f64() * 1000.0;
         snapshot.process_totals.observe(&row, opened);
