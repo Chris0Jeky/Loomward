@@ -25,8 +25,29 @@ fn start() -> (Handle, Arc<FixtureService>) {
     start_with(fixture(), Options::default())
 }
 
+/// #441: a `Connection: close` reply makes the server close first, so every exchange leaves a
+/// server-side TIME_WAIT for its address pair, for minutes. Windows picks connect-time client
+/// ports out of order (measured against one server: 19042, 19055, ..., 32899, 52954) and can repeat
+/// one within a test's hundred connections; the SYN then matches that TIME_WAIT, is dropped, and
+/// connect fails after its 21 s of retries (10060). So bind a port not yet used against `addr`.
 fn connect(addr: SocketAddr) -> TcpStream {
-    let s = TcpStream::connect(addr).unwrap();
+    static USED: std::sync::Mutex<std::collections::BTreeSet<(SocketAddr, u16)>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    // Rejected sockets stay bound until a fresh port turns up, so the next bind cannot repeat them.
+    let mut rejected = Vec::new();
+    let s: TcpStream = loop {
+        let socket =
+            socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
+        socket
+            .bind(&SocketAddr::from(([127, 0, 0, 1], 0)).into())
+            .unwrap();
+        let port = socket.local_addr().unwrap().as_socket().unwrap().port();
+        if USED.lock().unwrap().insert((addr, port)) {
+            socket.connect(&addr.into()).unwrap();
+            break socket.into();
+        }
+        rejected.push(socket);
+    };
     s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     s
 }
