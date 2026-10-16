@@ -911,8 +911,16 @@ mod tests {
         seed.cpu_kernel_100ns = Some(0);
         let read_gap = std::time::Duration::from_secs(100);
         let start_gap = std::time::Duration::from_secs(400);
-        sampler.own = Some((Instant::now() - read_gap, seed));
-        sampler.previous.as_mut().unwrap().0 = Instant::now() - start_gap;
+        // `Instant - Duration` panics when the monotonic clock is younger than the gap (a fresh runner).
+        let now = Instant::now();
+        let (Some(read_at), Some(start_at)) =
+            (now.checked_sub(read_gap), now.checked_sub(start_gap))
+        else {
+            eprintln!("skipped: monotonic clock younger than {start_gap:?}");
+            return;
+        };
+        sampler.own = Some((read_at, seed));
+        sampler.previous.as_mut().unwrap().0 = start_at;
         let snapshot = sampler.sample_leased(1024, SampleChannels::ALL);
         let own = sampler.own_process().unwrap();
         let cpu_seconds =
