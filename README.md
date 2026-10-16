@@ -74,7 +74,8 @@ What is built, with the caveats that matter. Anything not in this table is not b
 | Diagnostic bundle | Desktop only. | Previewed, redacted and typed. Saved only to a file you pick in a native save dialog. |
 | Forget a revoked root | Built. | Deletes Loomward's own records of a root you revoked, never your files. |
 | Accessibility | Checked. | The Playwright suite has a `--a11y` leg for names, focus, announcements, zoom reflow and contrast. |
-| Find and Ask (search index, chat over read-only tools) | Planned. Not built. | [docs/46](docs/46-find-and-ask.md) |
+| Find (search index over granted roots) | Built. | Owner-local FTS5 name index behind `search.query`. Receipts in [evidence/v3/search-v1.md](evidence/v3/search-v1.md). |
+| Ask (chat over read-only tools) | Planned. Not built. | [docs/46](docs/46-find-and-ask.md) |
 | Copy-and-verify (first file effect) | Planned. Not built. | Behind its own safety gate ([LW-124](backlog/issues/LW-124.md)). |
 
 ## Architecture
@@ -266,7 +267,7 @@ Run from the repository root. Missing tooling is reported as UNVERIFIED, never a
 | Rust workspace | `cargo fmt --all --check`, `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`; add `--all-features` for the Windows fixture lab |
 | Svelte app | `npm --prefix app run check`, `... run test`, `... run build`, then `python3 scripts/test_app.py` |
 | Everything | `python3 scripts/verify.py --app`. It reports UNVERIFIED when Node, npm, `app/node_modules` or Playwright is missing, and an explicit `--app` request then exits 2 ([#431](https://github.com/Chris0Jeky/Loomward/issues/431)). |
-| Desktop shell (Windows) | `cargo test --manifest-path native/Cargo.toml`, then `native/target/debug/loomward-desktop.exe --self-test` |
+| Desktop shell (Windows) | `cargo build --manifest-path native/Cargo.toml`, `cargo clippy --manifest-path native/Cargo.toml --all-targets -- -D warnings`, `cargo test --manifest-path native/Cargo.toml`, then `native/target/debug/loomward-desktop.exe --self-test` |
 | Prototype | `python3 app/prototype/check.py`. It rewrites the screenshots under `evidence/v3/ui-prototype/`. Revert them with `git checkout --` unless you mean to update them. |
 | Docs only | `git diff --check` plus the links you touched |
 
@@ -336,7 +337,7 @@ The four strategies agreed exactly on 23 of 24 final-build sweeps. The exception
 
 **Next, decided but not built:**
 
-- Find and Ask: a search index over granted roots ([LW-113](backlog/issues/LW-113.md)), Everything integration ([LW-114](backlog/issues/LW-114.md)), a semantic layer ([LW-116](backlog/issues/LW-116.md)), and an Ask provider interface with read-only tools ([LW-117](backlog/issues/LW-117.md), [LW-118](backlog/issues/LW-118.md)). Design: [docs/46](docs/46-find-and-ask.md).
+- Ask: an Ask provider interface with read-only tools ([LW-117](backlog/issues/LW-117.md), [LW-118](backlog/issues/LW-118.md)), Everything integration ([LW-114](backlog/issues/LW-114.md)), and a semantic layer ([LW-116](backlog/issues/LW-116.md)). Design: [docs/46](docs/46-find-and-ask.md).
 - Copy-and-verify as the first file effect, behind its own gate ([LW-124](backlog/issues/LW-124.md)). Until that gate passes, the invariant stays in force: no move, delete or copy of your files.
 - Package channels: winget, a Scoop bucket and the Microsoft Store ([LW-126](backlog/issues/LW-126.md), [packaging/README.md](packaging/README.md)). Code signing is a later owner decision.
 - An observe-only Linux port, after the Windows bar ([LW-130](backlog/issues/LW-130.md)).
