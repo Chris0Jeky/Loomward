@@ -83,21 +83,19 @@ fn open(dir: &Path, dataset: DatasetClass) -> Service {
 }
 
 pub(crate) fn temp_root() -> tempfile::TempDir {
-    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-roots");
-    std::fs::create_dir_all(&target).unwrap();
-    tempfile::tempdir_in(target.canonicalize().unwrap()).unwrap()
+    tempfile::tempdir_in(crate::paths::test_roots_base()).unwrap()
 }
 
+/// Fixtures stay outside the source tree and inside the profile fence wherever the checkout is
+/// (#465: a `%TEMP%` worktree sits under the protected `AppData` store).
 #[test]
 fn followup_test_roots_are_outside_source() {
     let tmp = temp_root();
-    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-roots");
-    std::fs::create_dir_all(&target).unwrap();
-    assert!(tmp
-        .path()
-        .canonicalize()
-        .unwrap()
-        .starts_with(target.canonicalize().unwrap()));
+    let path = tmp.path().canonicalize().unwrap();
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    assert!(!path.starts_with(crates.canonicalize().unwrap()));
+    assert!(path.starts_with(crate::paths::test_roots_base()));
+    assert_eq!(crate::paths::check_profile(&path), Ok(()));
 }
 
 #[test]
