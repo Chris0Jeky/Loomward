@@ -1134,7 +1134,7 @@ fn sse_connections_outlive_the_non_sse_lifetime_cap() {
 /// `loomward-serve`'s real configuration: the engine service behind the same boundary.
 #[test]
 fn the_engine_service_answers_through_the_adapter() {
-    let tmp = tempfile::tempdir_in(".").unwrap();
+    let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
     let service = loomward_service::Service::open(loomward_service::Config {
         state_dir: tmp.path().into(),
         dataset: DatasetClass::Synthetic,
@@ -1343,7 +1343,7 @@ fn followup_refused_start(
 fn followup_stored_grants_refuse_static_without_recording_new_grants() {
     if loomward_windows::enumerate::running_elevated() {
         // Native identity refuses elevation (invariant 2, #217), so no lab root can be registered.
-        let tmp = tempfile::tempdir_in(".").unwrap();
+        let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
         let err = loomward_service::lab::register(
             &tmp.path().join("state"),
             &tmp.path().join("lab"),
@@ -1357,7 +1357,7 @@ fn followup_stored_grants_refuse_static_without_recording_new_grants() {
     }
     use loomward_protocol::{CallContext, RequestEnvelope, ViewService};
     use loomward_service::{lab, Config, Service};
-    let tmp = tempfile::tempdir_in(".").unwrap();
+    let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
     let state = tmp.path().join("state");
     let dist = tmp.path().join("dist");
     let old = dist.join("stored-lab");
@@ -1407,7 +1407,7 @@ fn followup_stored_grants_refuse_static_without_recording_new_grants() {
 fn followup_proposed_static_overlap_leaves_no_active_grant() {
     if loomward_windows::enumerate::running_elevated() {
         // Native identity refuses elevation (invariant 2, #217), so no lab root can be registered.
-        let tmp = tempfile::tempdir_in(".").unwrap();
+        let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
         let err = loomward_service::lab::register(
             &tmp.path().join("state"),
             &tmp.path().join("lab"),
@@ -1421,7 +1421,7 @@ fn followup_proposed_static_overlap_leaves_no_active_grant() {
     }
     use loomward_protocol::{CallContext, RequestEnvelope, ViewService};
     use loomward_service::{lab, Config, Service};
-    let tmp = tempfile::tempdir_in(".").unwrap();
+    let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
     let state = tmp.path().join("state");
     let grant = tmp.path().join("dist/lab");
     lab::register(
@@ -1464,7 +1464,7 @@ fn followup_stored_picker_grant_refuses_static() {
             Ok(false)
         }
     }
-    let tmp = tempfile::tempdir_in(".").unwrap();
+    let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
     let state = tmp.path().join("state");
     let dist = tmp.path().join("dist");
     let root = dist.join("picked-fixture");
@@ -2033,7 +2033,7 @@ fn revoked_duplicates_are_redacted_from_last_event_id_replay_and_cancel_receipts
     if loomward_windows::enumerate::running_elevated() {
         return;
     }
-    let tmp = tempfile::tempdir_in(".").unwrap();
+    let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
     let state = tmp.path().join("state");
     let root = tmp.path().join("fixture");
     loomward_service::lab::register(

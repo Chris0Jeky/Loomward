@@ -26,3 +26,7 @@ getrandom = "0.4"
 loomward-windows = { path = "../loomward-windows", features = ["fixtures"] }
 loomward-catalog = { path = "../loomward-catalog", features = ["test-hooks"] }
 tempfile.workspace = true
+
+[features]
+# `paths::test_roots_base` for other crates' tests (#465); never enabled by a normal build.
+test-support = []

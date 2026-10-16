@@ -421,10 +421,20 @@ fn unsupported_targets_are_refused_before_anything_is_written() {
     // the test's working directory, and the `\\.\` device namespace naming a local drive.
     let local = out.to_string_lossy();
     let local = local.strip_prefix(r"\\?\").unwrap_or(&local);
-    let relative = Path::new("../../target/test-roots")
-        .join(tmp.path().file_name().unwrap())
-        .join("out")
-        .join("relative.json");
+    // Up from the working directory to the volume, then down to `out`, wherever the fixture base
+    // is (#465).
+    let normal = |p: &Path| {
+        p.components()
+            .filter(|c| matches!(c, std::path::Component::Normal(_)))
+            .map(|c| c.as_os_str().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let mut relative: PathBuf = normal(&std::env::current_dir().unwrap())
+        .iter()
+        .map(|_| "..")
+        .collect();
+    relative.extend(normal(&out));
+    let relative = relative.join("relative.json");
     assert!(relative.parent().unwrap().is_dir(), "{relative:?}");
     let mut refused: Vec<PathBuf> = vec![
         relative,

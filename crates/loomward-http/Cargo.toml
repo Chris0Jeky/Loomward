@@ -21,6 +21,7 @@ subtle = "2.6"
 socket2 = "=0.6.5"
 
 [dev-dependencies]
+loomward-service = { path = "../loomward-service", features = ["test-support"] }
 tempfile.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]
