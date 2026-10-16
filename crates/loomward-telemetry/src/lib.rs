@@ -352,7 +352,9 @@ pub struct Sampler {
     costs: SamplingCosts,
     channels: Option<SampleChannels>,
     process_sample_at: Option<Instant>,
-    own: Option<Process>,
+    /// The engine's own row and when its counters were read, which is not the sample start: a
+    /// cadence sample reads it straight after PDH, a refresh somewhere inside the process walk.
+    own: Option<(Instant, Process)>,
     #[cfg(windows)]
     pdh: windows::PdhSampler,
     #[cfg(windows)]
@@ -366,7 +368,7 @@ impl Sampler {
 
     /// The engine's own row before display truncation; no new OS observation is performed.
     pub fn own_process(&self) -> Option<&Process> {
-        self.own.as_ref()
+        self.own.as_ref().map(|(_, own)| own)
     }
 
     pub fn sample(&mut self, max_processes: usize) -> Snapshot {
@@ -410,6 +412,8 @@ impl Sampler {
         let refresh_processes = self
             .process_sample_at
             .is_none_or(|at| now.duration_since(at) >= process_interval);
+        #[allow(unused_mut)] // only the Windows collector reads the own row
+        let mut own_read_at = None;
         #[cfg(windows)]
         let mut current = windows::collect(
             &mut self.pdh,
@@ -417,6 +421,7 @@ impl Sampler {
             channels,
             refresh_processes,
             &mut self.image_name_buffer,
+            &mut own_read_at,
         );
         #[cfg(not(windows))]
         let mut current = unsupported_snapshot();
@@ -439,13 +444,18 @@ impl Sampler {
             let seconds = now.duration_since(*previous_at).as_secs_f64();
             current.sample_interval_seconds = Some(seconds);
             if let Some(own) = &mut own {
+                // #446: divide by the time between the two counter reads. Start-to-start time
+                // undercounts by the process walk whenever a refresh follows a cadence sample.
                 own.rates = self.own.as_ref().map_or_else(
                     || unknown_rates("requires_two_samples"),
-                    |old| {
+                    |(old_at, old)| {
                         derive_rates(
                             own,
                             old,
-                            seconds,
+                            own_read_at
+                                .unwrap_or(now)
+                                .duration_since(*old_at)
+                                .as_secs_f64(),
                             current.logical_processor_count.unwrap_or(0),
                         )
                     },
@@ -493,7 +503,7 @@ impl Sampler {
         if refresh_processes {
             self.process_sample_at = Some(now);
         }
-        self.own = own;
+        self.own = own.map(|own| (own_read_at.unwrap_or(now), own));
         self.previous = Some((now, current.clone()));
         current
             .processes
@@ -755,9 +765,17 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn leased_process_cadence_preserves_rows_time_and_resets_on_union_change() {
+        // #446: Windows charges CPU time in whole clock ticks (15.625 ms by default), so a thread
+        // can be charged up to one tick more than it ran. Sleeping two ticks between the own-row
+        // reads means this thread runs at most `interval - 2 ticks` and is charged at most
+        // `interval - 1 tick`: under one core even on a one-core host (measured here without the
+        // sleep: reads 7 ms apart, so one tick alone is 2.2 cores' worth). Other tests sharing the
+        // process add only what they really ran, give or take a tick each.
+        let two_ticks = std::time::Duration::from_micros(2 * 15_625);
         let mut sampler = Sampler::default();
         let first = sampler.sample_leased(1024, SampleChannels::ALL);
         assert!(sampler.phase_costs().process_snapshot_ms > 0.0);
+        std::thread::sleep(two_ticks);
         let second = sampler.sample_leased(1024, SampleChannels::ALL);
         assert_eq!(sampler.phase_costs().process_snapshot_ms, 0.0);
         assert_eq!(sampler.phase_costs().process_walk_ms, 0.0);
@@ -773,10 +791,13 @@ mod tests {
         assert!(own.private_commit_bytes.is_some());
         assert!(own.rates.cpu_fraction.is_some());
         assert!(own.thread_count.is_none());
+        std::thread::sleep(two_ticks);
         sampler.process_sample_at = Some(Instant::now() - std::time::Duration::from_secs(16));
         let refreshed = sampler.sample_leased(1024, SampleChannels::ALL);
         assert!(sampler.phase_costs().process_snapshot_ms > 0.0);
         assert!(refreshed.processes_observed_at_unix_ms >= second.processes_observed_at_unix_ms);
+        // The own rate's interval runs from counter read to counter read, not from sample start.
+        assert!(sampler.own.as_ref().unwrap().0 > sampler.previous.as_ref().unwrap().0);
         let own = sampler.own_process().unwrap();
         assert!(own.thread_count.is_some());
         assert!(own.rates.cpu_fraction.is_some());
