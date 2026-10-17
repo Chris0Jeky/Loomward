@@ -114,7 +114,7 @@ fn codes_and_preflight_flags_match_the_doc_table() {
         .map(|&c| (wire(c), c.preflight()))
         .collect();
     assert_eq!(ours, from_doc);
-    assert_eq!(Code::ALL.iter().filter(|c| c.preflight()).count(), 21);
+    assert_eq!(Code::ALL.iter().filter(|c| c.preflight()).count(), 22);
 }
 
 /// G4 at unit level: every code with a P or S entry is produced by a fixture before any handle exists.
@@ -173,7 +173,13 @@ fn every_preflight_code_is_refused_by_a_fixture() {
             .unwrap_err(),
     );
 
-    let want: BTreeSet<_> = Code::ALL.into_iter().filter(|c| c.preflight()).collect();
+    // `destination_changed` is an S check of the executor (the pinned destination reopened at run
+    // start), produced by the loomward-windows lab tests `a_replaced_destination_parent_is_refused_with_
+    // destination_changed` and `a_destination_outside_its_grant_identity_is_refused_before_any_write`.
+    let want: BTreeSet<_> = Code::ALL
+        .into_iter()
+        .filter(|c| c.preflight() && *c != Code::DestinationChanged)
+        .collect();
     let got: BTreeSet<_> = got.into_iter().collect();
     assert_eq!(got, want);
 }

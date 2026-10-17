@@ -99,6 +99,8 @@
     }
     untrack(() => {
       t.setSlice(s);
+      hovered = null;
+      tip = null;
       if (!revealed) { revealed = true; t.reveal(); }
       // the selection follows the new slice: re-read it from the renderer (its old info is from the previous slice)
       selected = selected ? t.info(selected.id) : null;

@@ -470,8 +470,11 @@ through pinned, revalidated, non-elevated handles opened without recall: cloud p
 offline files are skipped (placeholder, offline) and never hydrated or downloaded, reparse points are
 never followed, and a row without a 128-bit native file identity is never read (unsupported).
 Nothing leaves the machine, no file is written, moved or deleted, and the job's byte and time budgets
-bound all of it. `Capabilities.effects.content_read` stays false, as it already was for synthetic
-inspection: no command returns file content; inspection returns equality evidence, never bytes.
+bound all of it. `Capabilities.observation.duplicate_content_read` reports whether local,
+read-only duplicate inspection is available on explicit request (Windows only). It does not grant
+access to any root. `Capabilities.effects.content_read` is the legacy, always-false file-content
+return flag: no command returns file content; inspection returns equality evidence, never bytes.
+The UI shows the observation separately from file and process effects; mocks report it unavailable.
 Scan file identity, size, attributes and creation/write/change ticks must match
 fresh root-relative metadata before the existing handle reader compares content. Root revocation
 uses the existing root cancellation fence and refuses the report: after revocation `jobs.get` and
@@ -628,7 +631,11 @@ new folder name, every exact item name in sorted order, bytes, identities and pr
 owner approves. An approval is single use and expires after 30 minutes. `copy.start` rebuilds the manifest from
 fresh observations and is refused unless it has no refusal and exactly the approved digest: another membership
 or destination is `digest_mismatch`, other bytes or identities under the same membership are `source_changed`,
-a revocation since approval is `grant_revoked`. v1 always creates one new folder inside the destination parent
+a revocation since approval is `grant_revoked`, and a destination parent that no longer opens as its pinned
+identity under its grant's root (renamed, replaced, removed or moved) is `destination_changed`, before any effect.
+A refusal's `node_id` names the refused entry's catalogue node when the catalogue holds that source path with the
+same native file ID; it is null for an operation-wide refusal and for an entry the catalogue does not hold under
+that identity, never a guessed node. v1 always creates one new folder inside the destination parent
 (" (2)", " (3)" when the name is taken) and never writes into an existing folder (docs/47 Q3 open).
 
 ## Lazy meaning threads
@@ -784,3 +791,28 @@ Alerts are advice, never an action, and never an approval.
   entry no longer reads for the owner. `unverified` lists handles the answer names that the ledger does not hold.
 - **No authority.** The answer is text. A suggestion in it is a proposal for the owner to act on elsewhere; no Ask
   command executes, approves or drafts anything.
+
+## Developer clutter (LW-119)
+
+`clutter.developer` answers advice for one active granted root from the catalogue alone (recorded names and
+recorded aggregates; no live path is read, no manifest is opened). It is advice, never an action and never a claim
+that anything is safe to remove.
+
+- **Who may call.** The owner. A client principal is refused `permission_denied` (it reaches `search.query` and
+  `node.inspect` only). An unknown, revoked or forgotten root is `not_found` or `permission_denied` as for the
+  other root reads.
+- **What qualifies.** An exact-case conventional output directory directly beside a recorded manifest: Cargo
+  `target`; npm `node_modules`; Python `.venv`, `venv`, `__pycache__`; .NET `bin`, `obj`; Gradle `build`, `.gradle`.
+  Nested outputs inside a candidate are not listed again. Source folders, datasets, model files and a manifest with
+  no adjacent output name are never candidates. `kind` reads the directory name (`build_output`,
+  `dependency_install`, `environment`, `bytecode_cache`, `build_cache`), not its contents.
+- **Sizes.** `logical_bytes` and `allocated_bytes` are what the catalogue observed under the directory, or `null`
+  (unknown) when the directory is partial, stale, unscanned or has an unknown allocation: never zero. Observed bytes
+  are not reclaimable bytes (a shared store, hard links or unique content change what a removal would free), so the
+  report carries no total. Candidates are ordered by known logical size, largest first, then unknown sizes.
+- **Honest limits.** `partial` is true when the root is mid-scan, stale or not fully covered, or any listed size is
+  not fully known: projects may be missing. `truncated` is true when more than `limit` candidates exist.
+  `budget_hit` is true when the detector reached its work budget; `candidates` is then empty and means nothing
+  about the root (`budget_note` says so). A deadline expiry is still `deadline_exceeded`.
+- **Not assessed.** `not_assessed` names what no provider supplies yet: regeneration cost (LW-087), model-host
+  lifecycle (LW-086) and stale worktrees (LW-076). Each candidate's `regeneration_cost` is `unknown`.

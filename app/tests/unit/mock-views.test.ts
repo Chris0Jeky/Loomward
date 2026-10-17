@@ -38,6 +38,16 @@ describe('mock tiers and placement', () => {
     expect(by['F:']!.tier.basis).toBe('unknown');
   });
 
+  it('discloses the same excluded targets in candidates and simulations, until their tier is declared', async () => {
+    const c = client();
+    const candidates = () => c.call('placement.candidates', { source_volume_id: 'vo_c', basis: 'largest_dirs', max_groups: 50, min_bytes: '0' });
+    expect((await candidates()).result.excluded_volumes).toEqual([{ volume_id: 'vo_f', reason: 'tier_unknown' }]);
+    expect((await candidates()).result.excluded_volumes).toEqual((await sim(c)).result.excluded_volumes);
+    await c.call('volumes.declare_tier', { volume_id: 'vo_f', tier: 3 });
+    expect((await candidates()).result.excluded_volumes).toEqual([]);
+    expect((await sim(c)).result.excluded_volumes).toEqual([]);
+  });
+
   it('never makes a simulation executable or a filesystem change', async () => {
     const c = client();
     for (const heat_policy of ['unknown_is_ineligible', 'mtime_proxy_whatif', 'assumed_only'] as const) {
@@ -69,6 +79,61 @@ describe('mock tiers and placement', () => {
     expect(p.satisfied).toBe(true);
     expect(p.assumptions.join(' ')).toContain('assumed 0.1');
     expect(BigInt(p.projected_free_bytes.vo_g!)).toBeLessThan(BigInt(Math.round(0.58 * 1024 * GiB)));
+  });
+
+  it.each([0, 1])('honours a search budget of %i and reports an incomplete, nonexecutable incumbent', async (node_budget) => {
+    const { result: p } = await sim(client(), { node_budget, overrides: [{ group_id: 'cg_models', heat: 0.1 }, { group_id: 'cg_render', heat: 0.1 }] });
+    expect(p.search).toMatchObject({ complete: false, reason: 'node_budget', nodes_visited: node_budget, node_budget });
+    expect(p.optimality_claim).toBe(false);
+    expect(p.shortfall_optimal).toBe(p.shortfall_bytes === '0');
+    expect(BigInt(p.search.lower_bound_shortfall_bytes)).toBeLessThanOrEqual(BigInt(p.shortfall_bytes));
+    expect(p.filesystem_changed).toBe(false);
+    expect(p.proposals.every(x => !x.executable && x.requires_consent)).toBe(true);
+    const full = (await sim(client(), { overrides: [{ group_id: 'cg_models', heat: 0.1 }, { group_id: 'cg_render', heat: 0.1 }] })).result;
+    expect(full.search.complete).toBe(true);
+    expect(full.satisfied).toBe(true);
+  });
+
+  it('reuses identical saved inputs without a revision, but separates changed inputs and declarations', async () => {
+    const c = client();
+    const first = await sim(c, { save: true, overrides: [{ group_id: 'cg_models', heat: 0.1, pinned: false }] });
+    const replay = await sim(c, { save: true, overrides: [{ group_id: 'cg_models', pinned: false, heat: 0.1 }] });
+    expect(replay.result).toEqual(first.result);
+    expect(replay.meta.state_rev).toBe(first.meta.state_rev);
+    expect((await c.call('proposals.list', {})).result.proposals).toHaveLength(1);
+    const detail = (await c.call('proposals.get', { proposal_id: first.result.proposal_id! })).result;
+    expect(detail.inputs_digest).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(detail.inputs_digest).not.toBe(`sha256:${'0'.repeat(64)}`);
+
+    const changed = await sim(c, { save: true, node_budget: 0 });
+    expect(changed.result.proposal_id).not.toBe(first.result.proposal_id);
+    const changedDetail = (await c.call('proposals.get', { proposal_id: changed.result.proposal_id! })).result;
+    expect(changedDetail.inputs_digest).not.toBe(detail.inputs_digest);
+    await c.call('volumes.declare_tier', { volume_id: 'vo_f', tier: 3 });
+    const declared = await sim(c, { save: true, node_budget: 0 });
+    expect(declared.result.proposal_id).not.toBe(changed.result.proposal_id);
+    expect((await c.call('proposals.get', { proposal_id: changed.result.proposal_id! })).result.summary.status).toBe('stale');
+    expect((await c.call('proposals.list', {})).result.proposals).toHaveLength(3);
+    const again = await sim(c, { save: true, node_budget: 0 });
+    expect(again.result).toEqual(declared.result);
+    expect(again.meta.state_rev).toBe(declared.meta.state_rev);
+  });
+
+  it('deduplicates concurrent save retries', async () => {
+    const c = client();
+    const replies = await Promise.all([sim(c, { save: true }), sim(c, { save: true })]);
+    expect(replies[0]!.result).toEqual(replies[1]!.result);
+    expect(replies[0]!.meta.state_rev).toBe(replies[1]!.meta.state_rev);
+    expect((await c.call('proposals.list', {})).result.proposals).toHaveLength(1);
+  });
+
+  it('refuses to save inputs changed while their digest is being computed', async () => {
+    const c = client();
+    const pending = sim(c, { save: true });
+    const refusal = expect(pending).rejects.toMatchObject({ code: 'stale_generation' });
+    await c.call('volumes.declare_tier', { volume_id: 'vo_f', tier: 3 });
+    await refusal;
+    expect((await c.call('proposals.list', {})).result.proposals).toHaveLength(0);
   });
 
   it('keeps unknown relief out of a verified-only plan and lets the what-if policy in, labelled', async () => {

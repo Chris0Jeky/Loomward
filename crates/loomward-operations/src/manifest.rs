@@ -59,6 +59,7 @@ pub enum Code {
     DestinationCloudSynced,
     DestinationUnsupportedVolume,
     DestinationProtected,
+    DestinationChanged,
     CaseCollision,
     NameUnrepresentable,
     PathTooLong,
@@ -72,7 +73,7 @@ pub enum Code {
 }
 
 impl Code {
-    pub const ALL: [Code; 29] = {
+    pub const ALL: [Code; 30] = {
         use Code::*;
         [
             IdentityUnverified,
@@ -94,6 +95,7 @@ impl Code {
             DestinationCloudSynced,
             DestinationUnsupportedVolume,
             DestinationProtected,
+            DestinationChanged,
             CaseCollision,
             NameUnrepresentable,
             PathTooLong,

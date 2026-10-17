@@ -36,6 +36,9 @@ runs:
       run: npm ci --prefix app
     - shell: bash
       run: npm --prefix app run build
+    - name: Build and stage the Ask broker
+      shell: bash
+      run: python scripts/build_broker.py --release
     - name: Build the NSIS installer
       shell: bash
       working-directory: native
@@ -85,7 +88,12 @@ runs:
         if (-not $uninstall) { throw 'no per-user install found under LOCALAPPDATA' }
         $dir = $uninstall.Directory.FullName
         Get-ChildItem $dir -Recurse -Depth 1 | ForEach-Object { $_.FullName }
-        $exe = Get-ChildItem $dir -Filter '*.exe' | Where-Object Name -ne 'uninstall.exe' | Select-Object -First 1
+        $exe = Get-Item (Join-Path $dir 'loomward-desktop.exe') -ErrorAction Stop
+        $broker = Get-Item (Join-Path $dir 'loomward-broker.exe') -ErrorAction Stop
+        $stagedBroker = Get-Item 'native/binaries/loomward-broker-x86_64-pc-windows-msvc.exe'
+        if ((Get-FileHash $broker.FullName).Hash -ne (Get-FileHash $stagedBroker.FullName).Hash) { throw 'installed broker differs from the packaged broker' }
+        $reply = (& $broker.FullName | ConvertFrom-Json)
+        if ($LASTEXITCODE -ne 0 -or $reply.Err.kind -ne 'invalid_request') { throw 'installed broker did not answer the offline protocol probe' }
         $examples = @(Get-ChildItem (Join-Path $dir 'contracts/v3/examples/commands') -Filter '*.result.json' -ErrorAction SilentlyContinue)
         if (-not $exe) { throw 'installed app exe missing' }
         if ($examples.Count -eq 0) { throw 'bundled contract examples missing from the install' }

@@ -23,6 +23,7 @@ const REASONS: Record<CopyRefusalCode, string> = {
   destination_cloud_synced: 'The destination is cloud synced; this operation requires a local destination.',
   destination_unsupported_volume: 'The destination is removable, networked, or not on a supported NTFS or ReFS volume.',
   destination_protected: 'The destination is protected or belongs to Loomward’s state.',
+  destination_changed: 'The destination folder was moved, replaced or removed after approval. Nothing was written. Choose the destination again and make a new preview.',
   case_collision: 'Two source names collide under the destination’s case rules.',
   name_unrepresentable: 'A source name cannot be represented safely at the destination.',
   path_too_long: 'A final destination path exceeds the supported path length.',
