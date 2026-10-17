@@ -459,3 +459,25 @@ fn skip_elevated() -> bool {
     eprintln!("skipped: elevated token; the native scan refuses elevation (invariant 2)");
     true
 }
+
+#[test]
+fn a_supplied_identity_mismatch_is_identity_changed_on_every_open_path() {
+    // #553: the journal and the watch both report a mismatch as IdentityChanged, never Refused.
+    let at = |n: u8, serial: Option<u64>| OpenedIdentity {
+        id: Some(FileIdObs::Id128([n; 16])),
+        basis: IdBasis::Listed,
+        volume_serial: serial,
+        attributes: 0,
+        reparse_tag: None,
+    };
+    let expected = at(1, Some(7));
+    assert_eq!(expected_identity_matches(at(1, Some(7)), expected), Ok(()));
+    assert_eq!(
+        expected_identity_matches(at(2, Some(7)), expected),
+        Err(SourceError::IdentityChanged)
+    );
+    assert_eq!(
+        expected_identity_matches(at(1, Some(8)), expected),
+        Err(SourceError::IdentityChanged)
+    );
+}
