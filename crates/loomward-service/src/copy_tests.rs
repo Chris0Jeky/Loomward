@@ -270,6 +270,43 @@ mod lab_copy {
             }
         }
     }
+
+    /// #526 revocation wiring: revoking the lab root a copy uses fences it in the journal and cancels a
+    /// waiting run (docs/47 section 5: blocked -> cancelling), reported `grant_revoked`; the Q1 default
+    /// leaves the staging. A running run stops at its next effect step (the windows lab suite).
+    #[test]
+    fn revoking_the_root_cancels_a_blocked_copy() {
+        let Some((lab, a, b)) = scanned() else { return };
+        let svc = &lab.svc;
+        let p = preview(svc, &a, &b);
+        let op = p["operation_id"].as_str().unwrap().to_owned();
+        let consent = json!({"operation_id": op, "digest": digest(&p)});
+        ok("copy.approve", call(svc, "copy.approve", consent.clone()));
+        let writer = std::fs::OpenOptions::new()
+            .append(true)
+            .open(lab.path.join("a").join("deep").join("x.bin"))
+            .unwrap();
+        ok("copy.start", call(svc, "copy.start", consent));
+        assert_eq!(settle_copy(svc, &op)["state"], "blocked");
+        drop(writer);
+        ok(
+            "roots.revoke",
+            call(
+                svc,
+                "roots.revoke",
+                json!({"root_id": lab.root, "purge_catalog": false}),
+            ),
+        );
+        let (s, _) = ok(
+            "copy.status",
+            call(svc, "copy.status", json!({"operation_id": op})),
+        );
+        assert_eq!(s["state"], "cancelled", "{s:?}");
+        assert_eq!(s["refusal"]["code"], "grant_revoked", "{s:?}");
+        let left: Vec<_> = std::fs::read_dir(lab.path.join("b")).unwrap().collect();
+        assert_eq!(left.len(), 1, "staging left (Q1 default)");
+        assert!(s["staging_folder"].as_str().is_some(), "{s:?}");
+    }
 }
 
 /// Every command whose contract declares an effect is a mutation: a ticketed, retained, serialised

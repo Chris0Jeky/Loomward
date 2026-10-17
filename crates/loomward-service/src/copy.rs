@@ -315,7 +315,72 @@ impl Inner {
             ));
         }
         plan.operation_id.clear();
+        plan.grants = vec![first.root.grant, dest.root.grant];
         Ok((preview, plan))
+    }
+
+    /// docs/47 section 5: called once a grant's revocation is durable. Every copy using the grant is
+    /// fenced in the journal. A running one is stopped at its next effect step (at most the step in
+    /// flight completes, waited for up to 30 s) and joined: before the rename it cancels itself, after
+    /// it commits annotated `grant_revoked`. A run left waiting (blocked, interrupted, publishing) is
+    /// then cancelled through the abandon path; `needs_attention` stays for the owner. Q1 applies.
+    pub(crate) fn copies_fence(&self, grant: i64) {
+        #[cfg(windows)]
+        {
+            use loomward_windows::effects::exec;
+            let Some(store) = &self.copies.store else {
+                return;
+            };
+            let ops: Vec<u64> = self.copies.ops.lock().unwrap().values().copied().collect();
+            for op in ops {
+                let plan: Option<exec::Plan> = store
+                    .lock()
+                    .unwrap()
+                    .plan(op)
+                    .ok()
+                    .flatten()
+                    .and_then(|p| serde_json::from_str(&p).ok());
+                let Some(plan) = plan.filter(|p| p.grants.contains(&grant)) else {
+                    continue;
+                };
+                let removal = self
+                    .copies
+                    .removal
+                    .load(std::sync::atomic::Ordering::SeqCst);
+                let running = self.copies.running.lock().unwrap().remove(&op);
+                let control = running.as_ref().map_or_else(
+                    || Arc::new(exec::Control::new(removal)),
+                    |r| r.control.clone(),
+                );
+                let cause = loomward_operations::FenceCause::GrantRevoked;
+                if !matches!(
+                    exec::fence(store, op, &control, cause),
+                    Ok(exec::Ack::StoppedBeforePublish | exec::Ack::Published)
+                ) {
+                    // Settled, a journal fault, or a step stuck past the wait: the fence (if any) is
+                    // durable and read by every later step; nothing more to do here.
+                    if let Some(run) = running {
+                        self.copies.running.lock().unwrap().insert(op, run);
+                    }
+                    continue;
+                }
+                if let Some(run) = running {
+                    let _ = run.thread.join();
+                }
+                let waiting = exec::status(store, op).map(|s| s.state);
+                if !matches!(
+                    waiting,
+                    Ok(loomward_operations::OpState::NeedsAttention
+                        | loomward_operations::OpState::Cancelled
+                        | loomward_operations::OpState::Committed)
+                        | Err(_)
+                ) {
+                    let _ = exec::cancel(store, op, &plan, &exec::Control::new(removal));
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = grant;
     }
 
     fn copies_store(&self) -> Result<&Arc<Mutex<loomward_operations::Store>>, ErrorBody> {

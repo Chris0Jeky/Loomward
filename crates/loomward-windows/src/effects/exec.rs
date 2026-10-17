@@ -35,6 +35,10 @@ pub struct Plan {
     /// The destination grant's verified root: (volume serial, file ID). The pinned destination's
     /// ancestry must contain it at preview and again at run (lab roots only, invariant 2).
     pub destination_root: (u64, [u8; 16]),
+    /// The service's grant numbers for the source and destination roots: revoking either fences the
+    /// run (docs/47 section 5). Empty for plans journaled before #526 and in the lab suite.
+    #[serde(default)]
+    pub grants: Vec<i64>,
     pub manifest: Manifest,
     /// Per manifest item, in order: the path relative to `source_root` and the observed identity whose
     /// signature `Source::open` re-checks through pinned handles.
@@ -264,6 +268,7 @@ pub fn prepare(request: &Request) -> io::Result<(loomward_operations::Preview, P
         destination: request.destination.to_path_buf(),
         destination_key: dest_observed.object,
         destination_root: request.destination_root,
+        grants: Vec::new(),
         manifest: preview.manifest.clone(),
         sources,
     };

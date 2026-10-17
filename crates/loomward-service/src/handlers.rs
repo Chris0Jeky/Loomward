@@ -585,6 +585,8 @@ impl Inner {
                 revoked_at_ns: at,
             })
             .map_err(catalog_error)?;
+        // Copies using the grant are fenced next (docs/47 section 5): no effect step starts after.
+        self.copies_fence(grant);
         if let Some(root) = db::root_for_grant(&self.db(), grant).map_err(sql_error)? {
             let id = RootId::new(self.root_id(root)).expect("rt_ id");
             // The revocation is durable whatever happens next; a missing scan writer or job only
