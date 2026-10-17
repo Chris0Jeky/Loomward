@@ -94,6 +94,23 @@ mod lab_copy {
         }
     }
 
+    fn reap_copy(svc: &Service, op: &str) {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !svc.inner.copies.running.lock().unwrap().is_empty() {
+            assert!(
+                Instant::now() < deadline,
+                "the settled run was never dropped"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+            settle_copy(svc, op);
+        }
+        settle_copy(svc, op);
+        assert!(
+            svc.inner.copies.ops.lock().unwrap().is_empty(),
+            "settled operation IDs must not accumulate in memory"
+        );
+    }
+
     /// Scan the lab root and return the lab with the nodes of its folders `a` and `b`.
     fn scanned() -> Option<(Lab, String, String)> {
         let lab = lab()?;
@@ -194,6 +211,10 @@ mod lab_copy {
             grant_roots: vec![],
         })
         .unwrap();
+        assert!(
+            svc.inner.copies.ops.lock().unwrap().is_empty(),
+            "reopening must not reload historical operation IDs into memory"
+        );
         let (s, _) = ok(
             "copy.status",
             call(&svc, "copy.status", json!({"operation_id": op})),
@@ -341,16 +362,16 @@ mod lab_copy {
         ok("copy.start", call(svc, "copy.start", consent));
         assert_eq!(settle_copy(svc, &op)["state"], "committed");
         // The worker returns just after its last record; every status call reaps what has finished.
-        let deadline = Instant::now() + Duration::from_secs(60);
-        while !svc.inner.copies.running.lock().unwrap().is_empty() {
-            assert!(
-                Instant::now() < deadline,
-                "the settled run was never dropped"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-            settle_copy(svc, &op);
-        }
+        // A status call reaps both the worker and its resident wire-ID entry. Historical status and
+        // start-once still come from the durable plan after the entry has gone.
+        reap_copy(svc, &op);
         assert_eq!(settle_copy(svc, &op)["state"], "committed");
+        let e = err(call(
+            svc,
+            "copy.start",
+            json!({"operation_id": op, "digest": digest(&p)}),
+        ));
+        assert_eq!(reason(&e), Some("copy_already_started"));
     }
 
     /// #569 item 2: shutdown cancels the workers and waits a bounded time; a worker stuck in a blocking
@@ -462,6 +483,7 @@ mod lab_copy {
             let stopped = settle_copy(svc, &op);
             assert_eq!(stopped["state"], "blocked", "{stopped:?}");
             assert_eq!(stopped["refusal"]["code"], "source_in_use");
+            reap_copy(svc, &op);
             drop(writer);
             let (gone, _) = ok(
                 "copy.abandon",
@@ -735,6 +757,7 @@ mod lab_copy {
             .unwrap();
         ok("copy.start", call(svc, "copy.start", consent));
         assert_eq!(settle_copy(svc, &op)["state"], "blocked");
+        reap_copy(svc, &op);
         drop(writer);
         ok(
             "roots.revoke",
