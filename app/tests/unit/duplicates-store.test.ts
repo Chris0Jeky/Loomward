@@ -94,6 +94,28 @@ describe('duplicates jobs', () => {
     await syncing;
     expect(store.book).toEqual({});
   });
+  it('drops inspect and cancel answers that arrive after the engine restarted', async () => {
+    for (const command of ['duplicates.inspect', 'duplicates.cancel']) {
+      let asked = false;
+      let answer!: () => void;
+      const answered = new Promise<void>((resolve) => { answer = resolve; });
+      session.client = new Client({ call: async (r: { request_id: string; command: string }) => {
+        asked = true;
+        await answered;
+        return { protocol: 'loomward/3', request_id: r.request_id, ok: true, result: { job: job({ rev: 9, state: 'running' }) }, meta: {} };
+      } } as unknown as Transport);
+      const store = new Duplicates();
+      store.onEvent({ event: 'stream.hello', epoch: 'one' } as EventEnvelope);
+      if (command === 'duplicates.cancel') store.book = { [job().root_id as string]: job({ rev: 1, state: 'running' }) };
+      const pending = command === 'duplicates.inspect' ? store.start(job().root_id as string) : store.cancel(job().root_id as string);
+      await vi.waitFor(() => expect(asked).toBe(true));
+      store.onEvent({ event: 'stream.hello', epoch: 'two' } as EventEnvelope); // the engine restarted: the old lifetime is gone
+      answer();
+      await pending;
+      expect(store.book, command).toEqual({});
+      expect(store.pending).toBe(false);
+    }
+  });
   it('shows a root refusal as a problem without inventing a result', async () => {
     // q-10: personal reads are open, so no refusal is a special gated state any more.
     session.client = new Client({ call: async (r: { request_id: string }) => ({ protocol: 'loomward/3', request_id: r.request_id, ok: false, error: { code: 'permission_denied', message: 'a personal session scans the folders you granted only', retryable: false, detail: { reason: 'personal_session_requires_owner_grant' } } }) } as unknown as Transport);

@@ -49,15 +49,21 @@ export class Duplicates {
   async start(rootId: string): Promise<void> {
     if (!session.client || this.pending) return;
     this.pending = true; this.problem = '';
+    const generation = this.generation; // answers from a previous engine lifetime are dropped, as in sync()
+    const current = () => generation === this.generation;
     try {
-      this.apply((await session.client.call('duplicates.inspect', { root_id: rootId, budget: { max_candidates: 200, max_bytes: '67108864', max_ms: 10000 } })).result.job);
+      const { result } = await session.client.call('duplicates.inspect', { root_id: rootId, budget: { max_candidates: 200, max_bytes: '67108864', max_ms: 10000 } });
+      if (current()) this.apply(result.job);
     } catch (e) {
-      this.problem = session.handle(e);
-      if (e instanceof LoomwardError && e.code === 'busy' && typeof e.detail?.job_id === 'string') {
+      const message = session.handle(e);
+      if (current()) this.problem = message;
+      if (current() && e instanceof LoomwardError && e.code === 'busy' && typeof e.detail?.job_id === 'string') {
         try {
-          this.apply((await session.client.call('jobs.get', { job_id: e.detail.job_id })).result.job);
+          const { result } = await session.client.call('jobs.get', { job_id: e.detail.job_id });
+          if (current()) this.apply(result.job);
         } catch (follow) {
-          this.problem = session.handle(follow);
+          const followMessage = session.handle(follow);
+          if (current()) this.problem = followMessage;
         }
       }
     } finally { this.pending = false; }
@@ -66,8 +72,13 @@ export class Duplicates {
     const job = this.book[rootId];
     if (!session.client || !job || this.pending || !isActive(job.state)) return;
     this.pending = true; this.problem = '';
-    try { this.apply((await session.client.call('duplicates.cancel', { job_id: job.job_id })).result.job); }
-    catch (e) { this.problem = session.handle(e); }
-    finally { this.pending = false; }
+    const generation = this.generation;
+    try {
+      const { result } = await session.client.call('duplicates.cancel', { job_id: job.job_id });
+      if (generation === this.generation) this.apply(result.job);
+    } catch (e) {
+      const message = session.handle(e);
+      if (generation === this.generation) this.problem = message;
+    } finally { this.pending = false; }
   }
 }
