@@ -10,6 +10,11 @@ use windows_sys::{
     Win32::Security::*,
 };
 
+/// Most entries one tree read may list (the root, every listed directory and every listed file).
+const MAX_TREE_ENTRIES: usize = 200_000;
+
+/// One entry budget: the root and every listed child, files and directories alike, count once.
+/// A request above `MAX_TREE_ENTRIES` is refused as `entry_budget` rather than clamped.
 pub(crate) fn read_tree(
     root: &Path,
     expected: &OpenedIdentity,
@@ -43,7 +48,7 @@ fn read_tree_from(
         tree.nodes.insert(PathBuf::new(), Err(reason.as_str()));
         return Ok((tree, 0));
     }
-    if max_entries == 0 {
+    if max_entries == 0 || max_entries > MAX_TREE_ENTRIES {
         tree.nodes.insert(PathBuf::new(), Err("entry_budget"));
         return Ok((tree, 0));
     }
@@ -79,7 +84,7 @@ fn read_tree_from(
         let mut node = metadata(dir.file(), &before, security.as_ref().ok(), Kind::Directory);
         let mut children = Vec::new();
         let outcome = source.list(&dir, &mut |raw| {
-            if meter.check().is_err() || reserved >= max_entries.min(200_000) {
+            if meter.check().is_err() || reserved >= max_entries {
                 return Flow::Stop;
             }
             reserved += 1;
@@ -94,16 +99,17 @@ fn read_tree_from(
             ));
             Flow::Continue
         });
-        node.children = match outcome {
-            ListOutcome::Complete => Ok(()),
-            _ => Err(meter.check().err().map(Reason::as_str).unwrap_or(
-                if reserved >= max_entries.min(200_000) {
-                    "entry_budget"
-                } else {
-                    "incomplete_listing"
-                },
-            )),
-        };
+        node.children =
+            match outcome {
+                ListOutcome::Complete => Ok(()),
+                _ => Err(meter.check().err().map(Reason::as_str).unwrap_or(
+                    if reserved >= max_entries {
+                        "entry_budget"
+                    } else {
+                        "incomplete_listing"
+                    },
+                )),
+            };
         tree.nodes.insert(path.clone(), Ok(node));
         for (name, id, attributes, size, creation, write, change) in children {
             let relative = path.join(std::ffi::OsString::from_wide(&name));
@@ -858,7 +864,10 @@ mod tests {
             .0
         };
         let whole = run(5);
-        assert_eq!(whole.nodes[Path::new("sub")].as_ref().unwrap().children, Ok(()));
+        assert_eq!(
+            whole.nodes[Path::new("sub")].as_ref().unwrap().children,
+            Ok(())
+        );
         let short = run(4);
         assert_eq!(
             short.nodes[Path::new("sub")].as_ref().unwrap().children,
@@ -888,7 +897,10 @@ mod tests {
             .unwrap()
             .0
         };
-        assert_eq!(run(200_000).nodes[Path::new("")].as_ref().unwrap().children, Ok(()));
+        assert_eq!(
+            run(200_000).nodes[Path::new("")].as_ref().unwrap().children,
+            Ok(())
+        );
         assert_eq!(
             run(200_001).nodes[Path::new("")].as_ref().err(),
             Some(&"entry_budget")
