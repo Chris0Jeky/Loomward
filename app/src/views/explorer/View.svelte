@@ -74,6 +74,8 @@
   // back for an older generation is dropped (and its request aborted), so a slow answer can never
   // overwrite a newer search, folder or basis.
   let gen = 0;
+  let startsRequest = 0;
+  let startsAbort: AbortController | null = null;
   let abort: AbortController | null = null;
   /** `EntryPage.generation` of the first page of the current view; a later page from another one means the folder changed. */
   let pageGen: string | null = null;
@@ -171,7 +173,7 @@
       if (!append) pageGen = page.generation;
       // The fallback's notice is true only once the ancestor has listed: a failed one shows just its error.
       if (recovery && here) gone = { lost: recovery.lost, now: here.name };
-      rows = append ? [...rows, ...page.items] : page.items;
+      rows = append ? [...new Map([...rows, ...page.items].map(r => [r.node_id, r])).values()] : page.items;
       if (page.search) {
         const seen = append ? new Map(found) : new Map<NodeId, SearchHit>();
         for (const h of page.search.hits) seen.set(h.row.node_id, h);
@@ -256,23 +258,28 @@
   }
 
   /** True when this request completed and its view is still the newest one. */
-  async function loadStarts(recovery?: Recovery): Promise<boolean> {
+  async function loadStarts(recovery?: Recovery, refreshOnly = false): Promise<boolean> {
     const c = session.client!;
-    // Same guard as show(): a newer view or a newer starting-point request supersedes this one.
-    abort?.abort();
-    const mine = ++gen;
-    const ctl = (abort = new AbortController());
+    // A background root refresh must survive a newer search without changing its rows or trail.
+    if (!refreshOnly) abort?.abort();
+    const mine = refreshOnly ? gen : ++gen;
+    const starting = ++startsRequest;
+    startsAbort?.abort();
+    const ctl = (startsAbort = new AbortController());
+    if (!refreshOnly) abort = ctl;
     try {
       const { result } = await c.call('tree.slice', { anchor: { kind: 'atlas' }, depth: 1, max_nodes: 16, min_share: 0, basis: 'logical', include_files: false }, { signal: ctl.signal });
-      if (mine !== gen) return false;
+      if (starting !== startsRequest) return false;
       const fresh = result.nodes.filter((n) => n.parent === 0).map((n) => ({ id: n.node_id, name: n.name }));
+      starts = fresh;
+      if (refreshOnly) return true;
+      if (mine !== gen) return false;
       const resolved = recovery ? await resolveTrail(recovery.saved, fresh, async (node_id, cursor) => {
         ctl.signal.throwIfAborted();
         return (await c.call('tree.children', { node_id, cursor, sort: 'name_asc', basis, limit: PAGE }, { signal: ctl.signal })).result;
       }) : [];
       if (mine !== gen) return false;
       for (const crumb of resolved) seenIds.add(crumb.id);
-      starts = fresh;
       trail = resolved.length ? resolved : starts[0] ? [starts[0]] : [];
       error = '';
       if (!trail.length) {
@@ -295,23 +302,26 @@
       }
       return gen === mine + 1;
     } catch (e) {
-      if (mine !== gen) return false;
-      rows = [];
-      total = null;
-      next = null;
+      if (starting !== startsRequest) return false;
+      starts = [];
+      if (!refreshOnly && mine !== gen) return false;
+      if (!refreshOnly) { rows = []; total = null; next = null; }
       error = session.handle(e);
       return false;
     }
   }
 
-  $effect(() => () => { inspection++; inspectAbort?.abort(); abort?.abort(); });
+  $effect(() => () => { startsRequest++; startsAbort?.abort(); inspection++; inspectAbort?.abort(); abort?.abort(); });
 
   // The session starts, or the engine says data may be stale (reconnect, tree.invalidated, roots.changed):
   // keep the user's place and ask again; the first time, find the starting points.
   $effect(() => {
     void session.epoch;
     if (!session.client) return;
-    untrack(() => void (trail.length ? show() : loadStarts()));
+    untrack(() => {
+      if (trail.length || searching) { void loadStarts(undefined, true); void show(); }
+      else void loadStarts();
+    });
   });
 </script>
 

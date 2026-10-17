@@ -211,7 +211,7 @@ export class SliceNav {
     return this.go(this.trail.slice(0, i + 1));
   }
   setBasis(b: Basis): Promise<boolean> {
-    if (b === this.basis) return Promise.resolve(true);
+    if (b === this.basis && !this.busy) return Promise.resolve(true);
     return this.go(this.trail, b);
   }
 }
