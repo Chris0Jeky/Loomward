@@ -3904,6 +3904,8 @@ fn f3_explicit_scan_preempts_a_running_watcher_refresh() {
         .record(1, vec![loomward_windows::watch::Change::RootDirty]);
     svc.inner.freshness.ready_targeted_hint(1);
     svc.inner.scan.gate.wait_reached();
+    let held = (Command::ScanStart, "full_catalogue_published");
+    svc.inner.hooks.closed.lock().unwrap().push(held);
     let (jobs, _) = ok("jobs.list", call(svc, "jobs.list", json!({"limit":50})));
     let auto = jobs["jobs"]
         .as_array()
@@ -3940,6 +3942,21 @@ fn f3_explicit_scan_preempts_a_running_watcher_refresh() {
     assert_ne!(explicit, auto);
     assert!(stale_in_hand_over, "the hand-over must stay visibly stale");
     assert_eq!(settle(svc, &auto)["state"], "cancelled");
+    // The cancelled run has ended and the explicit pass has not yet reported: still stale.
+    svc.inner
+        .hooks
+        .until("explicit pass held before freshness", |h| {
+            h.arrived.lock().unwrap().contains(&held)
+        });
+    let stale_between = svc.inner.freshness.stale(1);
+    let hits_between = f3_hits(svc);
+    svc.inner.hooks.open(held.0, held.1);
+    assert!(stale_between, "a cancelled run must not make the root live");
+    assert!(hits_between["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|h| h["freshness"]["state"] == "stale"));
     assert_eq!(settle(svc, &explicit)["coverage"], "complete");
     f3_wait_live(svc);
 
@@ -3954,6 +3971,66 @@ fn f3_explicit_scan_preempts_a_running_watcher_refresh() {
     svc.inner.scan.gate.release();
     assert_eq!(err(second).code, ErrorCode::Busy);
     assert_eq!(settle(svc, &first)["state"], "completed");
+    f3_wait_live(svc);
+}
+
+/// #565 review: a scan that started just past its request deadline reports the real job, and a
+/// retry with the same request_id gets that job, never `deadline_exceeded` for an effect that ran.
+#[cfg(windows)]
+#[test]
+fn a_scan_started_past_its_deadline_reports_the_started_job() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    let after = (Command::ScanStart, "after");
+    svc.inner.hooks.closed.lock().unwrap().push(after);
+    let mut req = request("scan.start", json!({"root_id": lab.root, "mode": "full"}));
+    req.deadline_ms = Some(Int::new(200).unwrap());
+    let sent = Instant::now();
+    let first = std::thread::scope(|s| {
+        let asking = s.spawn(|| svc.call(req.clone(), &CallContext::http()));
+        svc.inner.hooks.until("started, past the deadline", |h| {
+            h.arrived.lock().unwrap().contains(&after)
+                && sent.elapsed() > Duration::from_millis(250)
+        });
+        svc.inner.hooks.open(after.0, after.1);
+        asking.join().unwrap()
+    });
+    assert_eq!(err(first).code, ErrorCode::DeadlineExceeded);
+    let (job, _) = ok("scan.start", svc.call(req, &CallContext::http()));
+    let job = job["job"]["job_id"].as_str().unwrap().to_owned();
+    assert_eq!(settle(svc, &job)["state"], "completed");
+}
+
+/// #565 review: a request that gives up at its deadline releases its claim, so an automatic
+/// refresh can run again and the root returns to live.
+#[cfg(windows)]
+#[test]
+fn an_expired_explicit_request_releases_the_automatic_refresh_fence() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    svc.inner.scan.gate.arm();
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    svc.inner.freshness.ready_targeted_hint(1);
+    svc.inner.scan.gate.wait_reached();
+    // The held refresh cannot observe its cancel, so the explicit request runs out of time.
+    let mut req = request("scan.start", json!({"root_id": lab.root, "mode": "full"}));
+    req.deadline_ms = Some(Int::new(300).unwrap());
+    let refused = err(svc.call(req, &CallContext::http())).code;
+    svc.inner
+        .hooks
+        .until("the request settled", |_| svc.inner.freshness.unclaimed(1));
+    svc.inner.scan.gate.release();
+    assert!(matches!(
+        refused,
+        ErrorCode::Busy | ErrorCode::DeadlineExceeded
+    ));
+    // The cancelled refresh leaves the root stale; only a new automatic pass makes it live.
     f3_wait_live(svc);
 }
 

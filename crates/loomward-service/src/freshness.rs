@@ -104,6 +104,10 @@ impl Tracker {
         root.changed = Instant::now() - Duration::from_secs(1);
     }
     #[cfg(all(test, windows))]
+    pub(crate) fn unclaimed(&self, row: i64) -> bool {
+        !self.explicit.lock().unwrap().contains_key(&row)
+    }
+    #[cfg(all(test, windows))]
     pub(crate) fn exhaust_budget(&self, row: i64) {
         self.roots.lock().unwrap().get_mut(&row).unwrap().attempts = 3;
     }
