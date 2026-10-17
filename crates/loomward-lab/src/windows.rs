@@ -1340,6 +1340,17 @@ pub fn run() -> io::Result<()> {
 mod tests {
     use super::*;
 
+    /// Hosted runners are elevated and the validated log handle refuses an elevated token
+    /// (invariant 2): prove the refusal, then skip the rest of the test with the reason.
+    fn skip_elevated(scope: &LogScope) -> bool {
+        if !loomward_windows::enumerate::running_elevated() {
+            return false;
+        }
+        assert!(validated_root_log(&scope.root(), &scope.0.join("elevated.log")).is_err());
+        eprintln!("skipped: elevated token; the root log refuses elevation (invariant 2)");
+        true
+    }
+
     #[test]
     fn m_tier_stays_one_million_n6() {
         assert_eq!(scan_tier_files("M").unwrap(), 1_000_000);
@@ -1460,6 +1471,9 @@ mod tests {
     #[test]
     fn root_log_writes_through_validated_handle() {
         let scope = LogScope::new();
+        if skip_elevated(&scope) {
+            return;
+        }
         let path = scope.0.join("scope.log");
         for _ in 0..2 {
             let mut log = validated_root_log(&scope.root(), &path).unwrap();
@@ -1553,6 +1567,9 @@ mod tests {
     #[test]
     fn root_log_accepts_external_sibling_with_shared_prefix() {
         let scope = LogScope::new();
+        if skip_elevated(&scope) {
+            return;
+        }
         let sibling = scope.0.join("scanroot-long-name-sibling");
         fs::create_dir(&sibling).unwrap();
         assert!(validated_root_log(&scope.root(), &sibling.join("safe.log")).is_ok());
