@@ -1057,6 +1057,7 @@ fn auto_rollback_never_commits_a_failed_receipt_or_acknowledges_lost_rows() {
 
 #[test]
 fn auto_rollback_keeps_the_failing_callers_original_error() {
+    // All three listings must share one transaction; a loaded host must not close the window early.
     super::hold_batch_window_open();
     let (temp, conn, _) = fixture();
     conn.execute_batch(

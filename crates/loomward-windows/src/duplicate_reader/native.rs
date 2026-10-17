@@ -381,6 +381,7 @@ impl<F: FnMut(Event, usize)> ContentReader for Reader<F> {
     }
 }
 
+#[cfg(feature = "content-read")]
 pub(super) fn observe_candidate(
     root: &Path,
     expected: &OpenedIdentity,
