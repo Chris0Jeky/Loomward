@@ -107,9 +107,15 @@ then require the scan plus reconciliation to equal a fresh scan exactly.
 store usable (`grant_survives_a_crash_between_precious_and_derived_commits`, `invalid_listing_rolls_back_and_...`);
 the corrupt-database paths in `tests/open.rs`; `evidence/v3/backups-import.md` refusals.
 
-**Gap.** No read-error, access-denied-mid-scan or short-write injection below SQLite; no full disk. SQLite
-returns `SQLITE_FULL` under `PRAGMA max_page_count`, which can drive the full-disk case with no OS support:
-write until full, require a clean error, free space, require the store to recover (extend `crash_sweep.rs`).
+**Gap.** No read-error, access-denied-mid-scan or short-write injection below SQLite (still open). Full disk is
+covered only per command: `writer/publication_tests.rs` (`auto_rollback_never_commits_a_failed_receipt_...` and
+`real_disk_full_auto_rollback_also_allows_a_new_implicit_transaction`) caps the writer connection's `max_page_count`
+from an in-crate unit test, so one listing fails with `DiskFull` while its neighbours commit and the old listing
+survives. There is no whole-store case yet: write until full, require a clean error and no partial commit visible
+to a reader, free space, reopen, and require the final state to equal a fresh store given the same successful
+writes. That case can live beside those unit tests; an integration test under `tests/` cannot cap the
+connection, because `db::open_pair` hands it to the writer thread (`Writer::start` is `pub(crate)`), and the
+existing unit test caps `main` only (state.db unchecked). Checked 2026-10-17 (#414).
 
 ## 6. Fuzzing every parser and contract: UNVERIFIED
 
@@ -173,3 +179,5 @@ The sweep found no recovery defect other than the window F1's marker closes.
 | 2026-10-12 | same | same | default mode of the same command | 9 passed in 53 s (cold, parallel with a warm build): lifecycle 149 of 272, migration 14 of 14, 191 double crashes |
 | 2026-10-12 | same, with the marker recovery removed (mutant, reverted) | same | `LOOMWARD_CRASH_SWEEP=full ... -- every_write_of_scan` | failed: 10 of 272 crash points (N=261 to 267, after the catalogue half of the forget committed), names left in the live store files |
 | 2026-10-12 | same | same | `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --no-fail-fast`; `py -3 scripts/verify.py`; `git diff --check` | fmt and clippy clean; 951 passed, 0 ignored, 0 failed; verify.py exit 0; diff check clean |
+| 2026-10-17 | 89df386 (docs-only branch; code at this commit) | KRASPYON, Windows 11 Home, debug build | `LOOMWARD_CRASH_SWEEP=full cargo test -p loomward-catalog --features test-hooks --test crash_sweep` | 9 passed in 3690 s, exit 0, no violation. The harness prints per-scenario counts only on failure, so they were recovered by replaying the sweep's child runs with the same env vars: lifecycle 334 of 334 boundaries (all 334 first crashes exited 86), 6,652 double crashes |
+| 2026-10-17 | same | same | `LOOMWARD_CRASH_SWEEP=full cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- every_write_of_a_schema_migration_recovers --exact --nocapture` | 1 passed in 6.4 s: migrate 14 boundaries, killing at 14 of them |
