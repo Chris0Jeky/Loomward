@@ -22,6 +22,10 @@ def _check_answer(page, unverified: str) -> None:
     cite = answer.get_by_role('button', name=re.compile(r'^Citation h1: ')).first
     expect(cite).to_be_visible()
     expect(answer.get_by_text(f'{unverified} · unverified reference')).to_be_visible()
+    expect(answer.get_by_text('Unsupported · no citation', exact=True).first).to_be_visible()
+    # A citation qualifies its own sentence only; uncited advice and invented references stay marked.
+    assert 'Unsupported' not in cite.locator('..').inner_text()
+    expect(answer.locator('span', has_text=f'{unverified} · unverified reference').filter(has=page.get_by_text('Unsupported · no citation', exact=True)).first).to_be_visible()
     # Suggestions are text: no control in the answer but citation chips.
     assert answer.get_by_role('button').count() == answer.get_by_role('button', name=re.compile('^Citation ')).count()
     name = cite.get_attribute('aria-label').split(': ', 1)[1]

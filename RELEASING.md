@@ -89,6 +89,15 @@ rolling, unsigned **nightly** pre-release ([`.github/workflows/nightly.yml`](.gi
 It builds, self-tests, installs and uninstalls exactly as a preview does (both use
 [`.github/actions/desktop-installer`](.github/actions/desktop-installer/action.yml)).
 
+The shared action first runs `python scripts/build_broker.py --release`, then builds the desktop
+with `--locked`. The helper builds the Ask broker into the desktop's Cargo target directory and
+stages it in ignored `native/binaries/` with Tauri's required host-triple suffix.
+[`bundle.externalBin`](https://v2.tauri.app/develop/sidecar/) installs it as `loomward-broker.exe`
+beside `loomward-desktop.exe`; the install smoke test checks its hash and offline protocol reply.
+For a local build without publishing, run the helper, then from `native/` run
+`node ../app/node_modules/@tauri-apps/cli/tauri.js build --ci --bundles nsis -- --locked`
+after building `app/dist` (see [native/README.md](native/README.md)).
+
 - **Version:** `<app version>-nightly.<YYYYMMDD>.<run number>`, for example `0.3.0-nightly.20261012.7`
   (`scripts/release_meta.py nightly-version`). The core comes from `app/package.json`, the same core
   the previews use; the date is UTC; semver compares the two numbers numerically.

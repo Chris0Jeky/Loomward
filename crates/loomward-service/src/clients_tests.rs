@@ -647,6 +647,181 @@ fn a_client_path_starts_at_the_granted_root_and_the_owner_keeps_the_absolute_one
 
 const ALL_FIELDS: [&str; 4] = ["path", "size", "modified", "attributes"];
 
+/// Rescan the root recovered for an existing grant, without issuing a new owner grant.
+fn rescan(svc: &Service, grant: i64, files: &[(&str, u64)]) -> RootId {
+    let (root, dir): (i64, i64) = svc.inner.db().query_row(
+        "SELECT r.id,d.id FROM main.root r JOIN main.dir d ON d.root_id=r.id WHERE r.grant_id=?1 AND d.parent_id IS NULL",
+        [grant], |r| Ok((r.get(0)?, r.get(1)?)),
+    ).unwrap();
+    let w = svc.inner.catalog.writer();
+    let WriteReply::Run(run) = w
+        .call(WriteCommand::BeginRun {
+            grant_id: grant,
+            mode: "full".into(),
+            strategy: "fixture".into(),
+            started_at_ns: 0,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    w.call(WriteCommand::DirListing(DirListing {
+        run_id: run,
+        dir_id: dir,
+        files: files.iter().map(|(n, b)| file(n, *b)).collect(),
+        dirs: vec![],
+        state: "complete".into(),
+        skipped: 0,
+        errors: 0,
+    }))
+    .unwrap();
+    w.call(WriteCommand::EndRun {
+        run_id: run,
+        state: "completed".into(),
+        finished_at_ns: 1,
+    })
+    .unwrap();
+    RootId::new(svc.inner.root_id(root)).unwrap()
+}
+
+#[test]
+fn client_grants_keep_their_roots_across_catalogue_recovery() {
+    let tmp = temp_root();
+    let svc = open(tmp.path());
+    let alpha = root(&svc, "Alpha", 1, None);
+    let beta = root(&svc, "Beta", 2, Some(BETA));
+    root(&svc, "Gamma", 3, Some(&[("gamma secret.txt", 42)]));
+    svc.grant_client("mcp:beta", &[beta], &ALL_FIELDS, None)
+        .unwrap();
+    ok(as_owner(
+        &svc,
+        "roots.revoke",
+        json!({"root_id": alpha.as_ref(), "purge_catalog": false}),
+    ));
+    drop(svc);
+    // Recovery retains state.db but rebuilds catalogue roots from only the active grants.
+    std::fs::write(
+        tmp.path().join("catalog.db"),
+        b"synthetic corrupt catalogue",
+    )
+    .unwrap();
+    let svc = open(tmp.path());
+    let beta = rescan(&svc, 2, BETA);
+    let gamma = rescan(&svc, 3, &[("gamma secret.txt", 42)]);
+    assert_eq!(svc.inner.root_row(beta.as_ref()).unwrap(), 1);
+    assert_eq!(svc.inner.root_row(gamma.as_ref()).unwrap(), 2);
+    let query = |client| {
+        ok(as_client(
+            &svc,
+            client,
+            "search.query",
+            search("secret", 100, Value::Null),
+        ))
+    };
+    let page = query("mcp:beta");
+    assert_eq!(names(&page), ["beta report secret.txt"]);
+    assert_eq!(page["roots"].as_array().unwrap().len(), 1);
+    assert_eq!(page["roots"][0]["root_id"], json!(beta.as_ref()));
+    let node = page["hits"][0]["row"]["node_id"].clone();
+    ok(as_client(
+        &svc,
+        "mcp:beta",
+        "node.inspect",
+        json!({"node_id": node}),
+    ));
+    let owner = ok(as_owner(
+        &svc,
+        "search.query",
+        search("gamma secret", 10, Value::Null),
+    ));
+    let node = owner["hits"][0]["row"]["node_id"].clone();
+    assert_eq!(
+        err(as_client(
+            &svc,
+            "mcp:beta",
+            "node.inspect",
+            json!({"node_id": node})
+        ))
+        .code,
+        ErrorCode::NotFound
+    );
+    // New grants also translate catalogue IDs to durable grants after the IDs have diverged.
+    svc.grant_client("mcp:new", std::slice::from_ref(&beta), &ALL_FIELDS, None)
+        .unwrap();
+    assert_eq!(names(&query("mcp:new")), ["beta report secret.txt"]);
+    ok(as_owner(
+        &svc,
+        "roots.revoke",
+        json!({"root_id": beta.as_ref(), "purge_catalog": false}),
+    ));
+    assert!(names(&query("mcp:beta")).is_empty());
+    assert!(names(&query("mcp:new")).is_empty());
+}
+
+#[test]
+fn legacy_client_grants_are_invalidated_on_upgrade_even_after_catalogue_recovery() {
+    for corrupt in [false, true] {
+        let tmp = temp_root();
+        let svc = open(tmp.path());
+        let alpha = root(&svc, "Alpha", 1, None);
+        root(&svc, "Beta", 2, Some(BETA));
+        root(&svc, "Gamma", 3, Some(&[("gamma secret.txt", 42)]));
+        ok(as_owner(
+            &svc,
+            "roots.revoke",
+            json!({"root_id": alpha.as_ref(), "purge_catalog": false}),
+        ));
+        drop(svc);
+        let db = rusqlite::Connection::open(tmp.path().join("state.db")).unwrap();
+        // Recreate the pre-upgrade schema and its persisted catalogue root ID for Beta.
+        let versioned: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('client_grant') WHERE name='durable_roots')", [], |r| r.get(0)).unwrap();
+        if versioned {
+            db.execute_batch("ALTER TABLE client_grant DROP COLUMN durable_roots")
+                .unwrap();
+        }
+        db.execute("INSERT INTO client_grant(client,roots_json,fields_json,created_at_ns) VALUES('mcp:legacy','[2]','[]',0)", []).unwrap();
+        drop(db);
+        if corrupt {
+            std::fs::write(
+                tmp.path().join("catalog.db"),
+                b"synthetic corrupt catalogue",
+            )
+            .unwrap();
+        }
+        let svc = open(tmp.path());
+        rescan(&svc, 2, BETA);
+        rescan(&svc, 3, &[("gamma secret.txt", 42)]);
+        let refused = err(as_client(
+            &svc,
+            "mcp:legacy",
+            "search.query",
+            search("secret", 10, Value::Null),
+        ));
+        assert_eq!(
+            refused.code,
+            ErrorCode::PermissionDenied,
+            "corrupt={corrupt}"
+        );
+        let revoked: bool = svc
+            .inner
+            .db()
+            .query_row(
+                "SELECT revoked_at_ns IS NOT NULL FROM st.client_grant WHERE client='mcp:legacy'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(revoked);
+        // The invalidation and new format survive a second startup.
+        drop(svc);
+        let svc = open(tmp.path());
+        assert_eq!(
+            svc.inner.client_grant("mcp:legacy").unwrap_err().code,
+            ErrorCode::PermissionDenied
+        );
+    }
+}
+
 #[test]
 fn an_owner_revoked_root_leaves_a_multi_root_grant_and_cannot_be_granted() {
     let tmp = temp_root();

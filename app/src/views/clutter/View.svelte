@@ -24,9 +24,9 @@
   /** Reads the report for `id`; a reply for an older request or root is dropped, so it cannot show another root's folders. */
   async function read(id: string): Promise<void> {
     const c = session.client;
-    if (!c || !id) { report = null; return; }
+    if (!c || !id) { generation++; report = null; loading = false; return; }
     const mine = ++generation;
-    loading = true; error = '';
+    loading = true; error = ''; report = null;
     try {
       const { result } = await c.call('clutter.developer', { root_id: id, limit: 50 });
       if (mine === generation) report = result;

@@ -154,6 +154,7 @@ fn candidates_carry_anchor_kind_and_recorded_sizes_ranked_largest_first() {
     assert_eq!(r["root_id"], root);
     assert_eq!(r["rules_version"], 1);
     assert_eq!(r["budget_hit"], false);
+    assert_eq!(r["partial"], false);
     assert!(r["budget_note"].is_null());
     assert_eq!(r["truncated"], false);
     let rows = r["candidates"].as_array().unwrap();
@@ -225,6 +226,7 @@ fn a_limit_truncates_and_an_unknown_allocation_stays_unknown() {
     });
     let root = scanned(&svc, 1, &tree);
     let all = clutter(&svc, &root, 50);
+    assert_eq!(all["partial"], true);
     let venv = all["candidates"]
         .as_array()
         .unwrap()

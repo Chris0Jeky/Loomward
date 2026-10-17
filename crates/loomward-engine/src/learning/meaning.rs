@@ -23,6 +23,7 @@ impl Engine {
         }
         let store = self.learning_store()?;
         let db = store.db.lock().unwrap();
+        Store::redact(&db)?;
         let state: i64 = db
             .query_row("SELECT state_rev FROM st.revision", [], |r| r.get(0))
             .map_err(super::internal)?;
