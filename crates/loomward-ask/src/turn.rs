@@ -231,10 +231,19 @@ impl Tools<'_> {
         let content = if self.calls > MAX_TOOL_CALLS {
             tool_error("tool call budget spent")
         } else {
+            // Handles minted for a result the model never sees must not enter the ledger, or an
+            // invented handle would resolve as a verified citation (review of #582).
+            let ledger = self.handles.len();
             let out = self.dispatch(call).unwrap_or_else(|e| tool_error(&e));
             let text = out.to_string();
-            if self.output_bytes + text.len() > MAX_TOOL_OUTPUT_BYTES {
-                tool_error("tool output budget spent")
+            if out.get("error").is_some() || self.output_bytes + text.len() > MAX_TOOL_OUTPUT_BYTES
+            {
+                self.handles.truncate(ledger);
+                if out.get("error").is_some() {
+                    out
+                } else {
+                    tool_error("tool output budget spent")
+                }
             } else {
                 self.output_bytes += text.len();
                 out

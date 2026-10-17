@@ -340,3 +340,50 @@ fn cited_finds_handle_tokens_only() {
     );
     assert!(cited("no handles here, h").is_empty());
 }
+
+/// Every find answers 20 long rows with fresh node IDs, so three finds overrun the output budget.
+#[derive(Default)]
+struct BigView(Mutex<usize>);
+impl ViewService for BigView {
+    fn call(&self, _: RequestEnvelope, _: &CallContext) -> ResponseEnvelope {
+        let mut n = self.0.lock().unwrap();
+        *n += 1;
+        let hits: Vec<Value> = (0..20)
+            .map(|i| {
+                let name = format!("{}{i}", "x".repeat(250));
+                json!({"row": row(&format!("n_{n}_{i}"), &name), "root_id": "rt_1",
+                       "path": {"text": format!("{}/{name}", "p".repeat(250)), "truncated": false},
+                       "match_kind": "name"})
+            })
+            .collect();
+        ok(json!({"hits": hits, "next_cursor": null, "roots": [], "generation": "g1"}))
+    }
+    fn subscribe(&self, _: Option<(String, u64)>) -> Box<dyn EventStream> {
+        unimplemented!()
+    }
+}
+
+#[test]
+fn rows_dropped_by_the_output_budget_never_enter_the_ledger() {
+    let view = BigView::default();
+    let find = |id: &str| call(id, "find", r#"{"text":"x"}"#);
+    let (p, answer, _) = run(
+        &view,
+        vec![
+            Upstream::Reply(calls(vec![find("a"), find("b"), find("c")])),
+            Upstream::Reply(text("h41 is it.")),
+        ],
+    );
+    let answer = answer.unwrap();
+    let Message::Tool { content, .. } = p.seen.lock().unwrap()[1].messages.last().unwrap().clone()
+    else {
+        panic!()
+    };
+    assert_eq!(content, r#"{"error":"tool output budget spent"}"#);
+    // Only the rows the model actually saw have handles: 20 per find that fitted the budget.
+    let fitted = answer.tools.iter().filter(|t| t.ok).count();
+    assert!(fitted >= 1 && fitted < 3, "{fitted}");
+    assert_eq!(answer.handles.len(), 20 * fitted);
+    let dropped = format!("h{}", 20 * fitted + 1);
+    assert!(answer.handles.iter().all(|(h, _)| *h != dropped));
+}
