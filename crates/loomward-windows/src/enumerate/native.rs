@@ -33,6 +33,25 @@ use windows_sys::{
     },
 };
 
+#[cfg(test)]
+thread_local! {
+    static OPEN_ACCESSES: std::cell::RefCell<Option<Vec<u32>>> = const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+pub(crate) fn record_open_accesses(run: impl FnOnce()) -> Vec<u32> {
+    OPEN_ACCESSES.with(|v| *v.borrow_mut() = Some(Vec::new()));
+    run();
+    OPEN_ACCESSES.with(|v| v.borrow_mut().take().unwrap())
+}
+#[cfg(test)]
+fn record_access(access: u32) {
+    OPEN_ACCESSES.with(|v| {
+        if let Some(v) = v.borrow_mut().as_mut() {
+            v.push(access);
+        }
+    });
+}
+
 /// Cancellation owns thread handles, never closes handles used by an outstanding call.
 #[derive(Clone, Default, Debug)]
 pub struct IoCancellation {
@@ -146,6 +165,10 @@ pub struct NativeDir {
     strategy: Mutex<Strategy>,
 }
 impl NativeDir {
+    #[cfg(any(feature = "content-read", test))]
+    pub(crate) fn file(&self) -> &File {
+        &self.file
+    }
     /// Actual class last used for this directory.
     pub fn strategy(&self) -> Strategy {
         *self.strategy.lock().unwrap()
@@ -204,6 +227,52 @@ fn open_relative_with_attributes(
 ) -> Result<File, SourceError> {
     non_elevated()?;
     checked_child(name)?;
+    open_relative_checked(parent, name, access, share, asynchronous, object_attributes)
+}
+
+/// Only enumerated named $DATA streams; fixed read-only access and no-recall open.
+#[cfg(any(feature = "content-read", test))]
+pub(crate) fn open_data_stream(
+    parent: &File,
+    name: &[u16],
+    stream: &[u16],
+) -> Result<File, SourceError> {
+    non_elevated()?;
+    checked_child(name)?;
+    let suffix: Vec<_> = ":$DATA".encode_utf16().collect();
+    if stream.first() != Some(&58)
+        || !stream.ends_with(&suffix)
+        || stream.len() <= suffix.len() + 1
+        || stream[1..stream.len() - suffix.len()]
+            .iter()
+            .any(|c| matches!(*c, 0 | 47 | 58 | 92))
+    {
+        return Err(SourceError::Refused);
+    }
+    let combined: Vec<_> = name.iter().chain(stream).copied().collect();
+    if combined.len() > 32767 {
+        return Err(SourceError::Refused);
+    }
+    open_relative_checked(
+        parent,
+        &combined,
+        FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_DELETE,
+        true,
+        0,
+    )
+}
+
+fn open_relative_checked(
+    parent: &File,
+    name: &[u16],
+    access: u32,
+    share: u32,
+    asynchronous: bool,
+    object_attributes: u32,
+) -> Result<File, SourceError> {
+    #[cfg(test)]
+    record_access(access);
     let mut name = name.to_vec();
     let unicode = UNICODE_STRING {
         Length: (name.len() * 2) as u16,
@@ -399,6 +468,12 @@ fn root_handles_mode(
         .chain(Some(0))
         .collect();
     let _profile = profile::OPEN.start();
+    #[cfg(test)]
+    record_access(if components.peek().is_none() {
+        access
+    } else {
+        metadata_access
+    });
     let handle = unsafe {
         CreateFileW(
             anchor.as_ptr(),
