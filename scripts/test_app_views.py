@@ -374,7 +374,7 @@ def check_explorer_mock(page: Page, base: str, shoot) -> None:
     shoot('explorer')
 
     # sort
-    first = lambda: rows(page).first.locator('th').first.inner_text()
+    first = lambda: rows(page).first.locator('th').first.inner_text().strip()  # the copy checkbox precedes the name
     by_size = first()
     page.get_by_label('Sort').select_option('name_asc')
     expect(rows(page).first.locator('th').first).not_to_have_text(by_size)

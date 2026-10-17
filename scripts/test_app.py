@@ -42,6 +42,7 @@ from playwright.sync_api import Page, expect, sync_playwright
 from test_app_collections import run_collections, run_live_collections
 from test_app_a11y import run_a11y
 from test_app_views import run_views, wait_until
+from test_app_copy import run_copy
 from test_app_inventory import run_inventory
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1007,6 +1008,7 @@ def main() -> None:
         run_collections(page, base)
         run_views(page, base, a.view_shots)
         run_inventory(page, base, check, shots=a.view_shots)
+        run_copy(page, base, a.view_shots)
 
         # --- hygiene -------------------------------------------------------------------------------
         check(hosts <= {'127.0.0.1'}, f'every request stayed on loopback: {sorted(hosts)}')

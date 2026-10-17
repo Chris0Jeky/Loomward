@@ -19,7 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 _STUB_NAMES = ('playwright', 'playwright.sync_api', 'test_app_collections',
-               'test_app_a11y', 'test_app_views', 'test_app_inventory')
+               'test_app_a11y', 'test_app_views', 'test_app_inventory', 'test_app_copy')
 
 
 def _load_test_app():
@@ -43,6 +43,7 @@ def _load_test_app():
         stub('test_app_views', run_views=lambda *a, **k: None,
              wait_until=lambda *a, **k: None)
         stub('test_app_inventory', run_inventory=lambda *a, **k: None)
+        stub('test_app_copy', run_copy=lambda *a, **k: None)
         spec = importlib.util.spec_from_file_location(
             'test_app_under_test', ROOT / 'scripts' / 'test_app.py')
         module = importlib.util.module_from_spec(spec)
