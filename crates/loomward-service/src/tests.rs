@@ -1194,6 +1194,8 @@ fn placement_registered_lab_simulation_preserves_every_file_and_mtime() {
         settle(&lab.svc, &start(&lab.svc, &lab.root, "full"))["state"],
         "completed"
     );
+    // #561: a background watcher publication would otherwise race the saved simulation.
+    f3_wait_live(&lab.svc);
     fn contents(
         root: &Path,
     ) -> std::collections::BTreeMap<std::path::PathBuf, (Vec<u8>, std::time::SystemTime)> {
@@ -3944,7 +3946,11 @@ fn f3_explicit_scan_preempts_a_running_watcher_refresh() {
     // An explicit scan is never pre-empted: a second one is refused at once.
     svc.inner.scan.gate.arm();
     let first = start(svc, &lab.root, "full");
-    let second = call(svc, "scan.start", json!({"root_id": lab.root, "mode": "full"}));
+    let second = call(
+        svc,
+        "scan.start",
+        json!({"root_id": lab.root, "mode": "full"}),
+    );
     svc.inner.scan.gate.release();
     assert_eq!(err(second).code, ErrorCode::Busy);
     assert_eq!(settle(svc, &first)["state"], "completed");
@@ -5163,6 +5169,8 @@ fn label_and_collect_live(svc: &Service, root: &str, file: &str) {
     );
     let job = settle(svc, &start(svc, root, "full"));
     assert_eq!(job["state"], "completed", "{job:?}");
+    // #561: a background watcher publication would otherwise race the collection read below.
+    f3_wait_live(svc);
     let node = child_named(&lab_slice(svc, root), file).unwrap();
     let (inspected, _) = ok(
         "node.inspect",
