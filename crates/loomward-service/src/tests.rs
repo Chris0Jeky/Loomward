@@ -1789,7 +1789,7 @@ fn file(name: &str, bytes: u64) -> Observation {
 }
 
 /// A fixture root (origin `fixture`, no path) with one listing of `files` files and a subdir.
-fn fixture(svc: &Service, files: u64) -> (i64, i64) {
+pub(super) fn fixture(svc: &Service, files: u64) -> (i64, i64) {
     let w = svc.inner.catalog.writer();
     let WriteReply::Root {
         grant_id,
