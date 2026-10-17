@@ -614,6 +614,115 @@ fn cloud_placeholder_attributes_are_recognised() {
     assert!(!placeholder_bits(REPARSE_POINT));
 }
 
+#[cfg(windows)]
+#[test]
+fn an_existing_diagnostic_target_is_found_with_windows_name_casing() {
+    let tmp = temp_root();
+    let original = tmp.path().join("report.json");
+    std::fs::write(&original, b"chosen").unwrap();
+    let checked = check_target(&tmp.path().join("REPORT.JSON")).unwrap();
+    assert!(
+        checked.exists,
+        "an existing file must require replacement consent"
+    );
+    assert_eq!(write_to(&checked, b"previewed"), Ok(()));
+    assert_eq!(std::fs::read(original).unwrap(), b"previewed");
+    assert_eq!(names(tmp.path()).len(), 1);
+}
+
+/// A parent or ancestor replaced during confirmation cannot redirect either kind of export.
+#[cfg(windows)]
+#[test]
+fn diagnostic_export_stays_in_the_pinned_folder_after_a_junction_swap() {
+    for (existing, readonly) in [(true, false), (false, false), (true, true)] {
+        for ancestor in [false, true] {
+            let tmp = temp_root();
+            let selected = tmp.path().join("selected");
+            let moved = tmp.path().join("moved");
+            let other = tmp.path().join("other");
+            let suffix = if ancestor { "nested" } else { "" };
+            let folder = selected.join(suffix);
+            let unrelated = other.join(suffix);
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::create_dir_all(&unrelated).unwrap();
+            if existing {
+                std::fs::write(folder.join("report.json"), b"chosen").unwrap();
+                std::fs::write(unrelated.join("report.json"), b"unrelated").unwrap();
+            }
+            let checked = check_target(&folder.join("report.json")).unwrap();
+            assert_eq!(checked.exists, existing);
+            // The swap happens while the owner's replace confirmation could be open.
+            let relocated = match std::fs::rename(&selected, &moved) {
+                Ok(()) => {
+                    let made = std::process::Command::new("cmd")
+                        .args(["/C", "mklink", "/J"])
+                        .arg(&selected)
+                        .arg(&other)
+                        .output()
+                        .unwrap();
+                    assert!(made.status.success(), "{made:?}");
+                    true
+                }
+                Err(e) => {
+                    // Windows refuses to rename an ancestor with an open descendant directory.
+                    assert!(
+                        ancestor,
+                        "the direct parent swap must exercise a real junction"
+                    );
+                    assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied);
+                    false
+                }
+            };
+            let pinned = if relocated { &moved } else { &selected }.join(suffix);
+            if readonly {
+                let mut perms = std::fs::metadata(pinned.join("report.json"))
+                    .unwrap()
+                    .permissions();
+                perms.set_readonly(true);
+                std::fs::set_permissions(pinned.join("report.json"), perms).unwrap();
+            }
+            let result = write_to(&checked, b"previewed");
+            let other_names = names(&unrelated);
+            let other_bytes = std::fs::read(unrelated.join("report.json")).ok();
+            // Remove only the synthetic junction before the fixture cleans up its directories.
+            if relocated {
+                std::fs::remove_dir(&selected).unwrap();
+            }
+            if readonly {
+                let mut perms = std::fs::metadata(pinned.join("report.json"))
+                    .unwrap()
+                    .permissions();
+                #[allow(clippy::permissions_set_readonly_false)]
+                perms.set_readonly(false);
+                std::fs::set_permissions(pinned.join("report.json"), perms).unwrap();
+            }
+            assert_eq!(
+                other_bytes.as_deref(),
+                existing.then_some(b"unrelated".as_slice()),
+                "export escaped the chosen folder (existing={existing}, ancestor={ancestor})"
+            );
+            assert_eq!(other_names.len(), usize::from(existing));
+            assert_eq!(
+                result,
+                if readonly {
+                    Err(DiagnosticsSaveRefusal::WriteFailed)
+                } else {
+                    Ok(())
+                }
+            );
+            assert_eq!(
+                std::fs::read(pinned.join("report.json")).unwrap(),
+                if readonly {
+                    b"chosen".as_slice()
+                } else {
+                    b"previewed".as_slice()
+                }
+            );
+            assert_eq!(names(&pinned), ["report.json"]);
+        }
+    }
+}
+
 /// A file that appears between the replace check and the rename was never confirmed: it is left
 /// as it was and no temporary file survives (#437).
 #[test]
