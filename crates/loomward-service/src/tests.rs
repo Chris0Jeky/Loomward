@@ -586,10 +586,10 @@ fn volumes_list_space_is_unknown_not_zero_when_the_personal_root_is_unobservable
 }
 
 /// #519 review: one stalled personal volume degrades alone. `volumes.list` and the alerts view still
-/// answer, the healthy volume is observed, and repeated refreshes never exhaust the space readers.
+/// answer, the healthy volume is observed, and changing grant roots never exhausts the space readers.
 #[cfg(windows)]
 #[test]
-fn a_stalled_personal_volume_degrades_alone_and_never_exhausts_the_readers() {
+fn a_stalled_personal_volume_shares_one_reader_across_distinct_grant_roots() {
     let tmp = temp_root();
     let Some((svc, _folder)) = personal_grant_session(&tmp) else {
         return;
@@ -659,6 +659,12 @@ fn a_stalled_personal_volume_degrades_alone_and_never_exhausts_the_readers() {
     };
     let (stalled_id, healthy_id) = (wire_id(stalled_key), wire_id("vsn_healthy"));
     for round in 0..10 {
+        let root = tmp.path().join(format!("replacement-folder-{round}"));
+        std::fs::create_dir_all(&root).unwrap();
+        svc.inner.db().execute(
+            "UPDATE st.root_grant SET display_path=?1 WHERE id=(SELECT r.grant_id FROM main.root r JOIN main.volume v ON v.id=r.volume_id WHERE v.volume_key='vsn_stalled')",
+            [root.display().to_string()],
+        ).unwrap();
         let (volumes, _) = ok("volumes.list", call(&svc, "volumes.list", json!({})));
         let rows = volumes["volumes"].as_array().unwrap();
         let row = |id: &str| {
@@ -697,9 +703,9 @@ fn a_stalled_personal_volume_degrades_alone_and_never_exhausts_the_readers() {
             .filter(|g| **g == (Command::VolumesList, "space_read"))
             .count(),
         1,
-        "refreshes must share the same stalled reader"
+        "distinct grant roots must share the same stalled volume reader"
     );
-    // A different grant root on the same volume must not inherit the stalled root's unknown.
+    // A replacement root shares the stall, but can retry once the volume's reader finishes.
     let replacement = tmp.path().join("replacement-folder");
     std::fs::create_dir_all(&replacement).unwrap();
     svc.inner.db().execute(
@@ -717,8 +723,22 @@ fn a_stalled_personal_volume_degrades_alone_and_never_exhausts_the_readers() {
         .iter()
         .find(|r| r["volume_id"] == stalled_id)
         .unwrap();
-    assert_eq!(replacement["capacity_bytes"], "4096");
-    assert_eq!(replacement["free_bytes"], "1024");
+    assert!(replacement["capacity_bytes"].is_null());
+    assert!(replacement["free_bytes"].is_null());
+    svc.inner.hooks.open(Command::VolumesList, "space_read");
+    svc.inner.hooks.until(
+        "replacement root observes space after the stalled read finishes",
+        |_| {
+            let (volumes, _) = ok("volumes.list", call(&svc, "volumes.list", json!({})));
+            let replacement = volumes["volumes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["volume_id"] == stalled_id)
+                .unwrap();
+            replacement["capacity_bytes"] == "4096" && replacement["free_bytes"] == "1024"
+        },
+    );
 }
 
 #[test]
