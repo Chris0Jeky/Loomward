@@ -6,6 +6,7 @@ use super::*;
 #[serde(deny_unknown_fields)]
 pub struct CapabilitiesObservation {
     pub metadata_scan: bool,
+    pub duplicate_content_read: bool,
     pub process_observation: bool,
     pub gpu_observation: bool,
     pub disk_io_observation: bool,
@@ -19,6 +20,7 @@ pub struct CapabilitiesEffects {
     pub file_delete: ConstFalse,
     pub file_rename: ConstFalse,
     pub file_write: ConstFalse,
+    /// Legacy file-content return flag; duplicate reads are reported under observation.
     pub content_read: ConstFalse,
     pub process_kill: ConstFalse,
     pub process_suspend: ConstFalse,

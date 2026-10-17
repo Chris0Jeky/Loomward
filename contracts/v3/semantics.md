@@ -470,8 +470,11 @@ through pinned, revalidated, non-elevated handles opened without recall: cloud p
 offline files are skipped (placeholder, offline) and never hydrated or downloaded, reparse points are
 never followed, and a row without a 128-bit native file identity is never read (unsupported).
 Nothing leaves the machine, no file is written, moved or deleted, and the job's byte and time budgets
-bound all of it. `Capabilities.effects.content_read` stays false, as it already was for synthetic
-inspection: no command returns file content; inspection returns equality evidence, never bytes.
+bound all of it. `Capabilities.observation.duplicate_content_read` reports whether local,
+read-only duplicate inspection is available on explicit request (Windows only). It does not grant
+access to any root. `Capabilities.effects.content_read` is the legacy, always-false file-content
+return flag: no command returns file content; inspection returns equality evidence, never bytes.
+The UI shows the observation separately from file and process effects; mocks report it unavailable.
 Scan file identity, size, attributes and creation/write/change ticks must match
 fresh root-relative metadata before the existing handle reader compares content. Root revocation
 uses the existing root cancellation fence and refuses the report: after revocation `jobs.get` and

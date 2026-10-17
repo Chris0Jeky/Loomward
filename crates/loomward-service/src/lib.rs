@@ -169,6 +169,7 @@ impl Service {
             return Err("a personal session requires --allow-personal".into());
         }
         let destination = paths::prospective_dir(&config.state_dir)?;
+        let sqlite_destination = loomward_catalog::sqlite_dir(&destination);
         paths::validate_roots(&config.grant_roots, Some(&destination))?;
         Catalog::validate_stores(&destination, class_name(config.dataset))
             .map_err(|e| format!("state store: {e}"))?;
@@ -180,7 +181,7 @@ impl Service {
                     return Err(refusal_name(Refusal::IdentityUnavailable));
                 }
                 let existing = rusqlite::Connection::open_with_flags(
-                    destination.join("state.db"),
+                    sqlite_destination.join("state.db"),
                     rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
                 )
                 .map_err(|_| refusal_name(Refusal::SyntheticSessionRequiresLabRoot))?;
@@ -196,7 +197,7 @@ impl Service {
                 continue;
             }
             let existing = rusqlite::Connection::open_with_flags(
-                destination.join(name),
+                sqlite_destination.join(name),
                 rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
             )
             .map_err(|_| "cannot inspect stored grants")?;

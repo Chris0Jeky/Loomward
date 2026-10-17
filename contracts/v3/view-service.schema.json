@@ -153,9 +153,10 @@
         "observation": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["metadata_scan", "process_observation", "gpu_observation", "disk_io_observation", "teacher_disclosure"],
+          "required": ["metadata_scan", "duplicate_content_read", "process_observation", "gpu_observation", "disk_io_observation", "teacher_disclosure"],
           "properties": {
             "metadata_scan": { "type": "boolean" },
+            "duplicate_content_read": { "type": "boolean", "description": "Local read-only duplicate inspection, on explicit request within an active grant and job budgets; never returns file bytes." },
             "process_observation": { "type": "boolean" },
             "gpu_observation": { "type": "boolean" },
             "disk_io_observation": { "type": "boolean" },
