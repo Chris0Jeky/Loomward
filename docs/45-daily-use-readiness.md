@@ -93,7 +93,8 @@ The engine integration tests exercise the real engine through the service's exis
 no fixture sink substitutes for durable publication/query/forget. Generation uses isolated temporary
 directories under `CARGO_TARGET_DIR` (the system temporary directory when unset), outside the worktree.
 Elevated hosts report native cases UNVERIFIED, as do hosts missing symlink privilege; the recorded
-KRASPYON run was non-elevated and both link types actually ran.
+KRASPYON run was non-elevated and both link types actually ran. With `LOOMWARD_REQUIRE_NATIVE=1` those
+skips fail instead, so a host that cannot run a native case cannot pass it vacuously.
 
 ## 4. Churn during scans: PASS
 
@@ -103,10 +104,11 @@ oracle), `evidence/v3/l16-change-tracking.md` and `change-tracking.json` (watch,
 `evidence/v3/pending-publication-356.md` (references bound mid-publication).
 `crates/loomward-engine/tests/pathological.rs` adds
 `concurrent_create_delete_rename_grow_reconciles_exactly_to_fresh_scan`: a lab-generated tree,
-a concurrent thread performing 128 create/delete/rename/grow batches (asserting overlap with a running
-engine job), followed by a quiescent refresh/reconciliation. Every stable file observation, relative
-topology and directory count/byte/allocation/coverage rollup must equal an independent fresh catalogue
-scan of the final tree. Catalogue IDs, run/revision counters and enumeration-sensitive access times
+a concurrent thread performing 128 create/delete/rename/grow batches (at least 8 must overlap enumeration:
+the job is running and has published no file rows yet), followed by a quiescent refresh/reconciliation. Every stable file observation, relative topology and
+directory count/byte/allocation/coverage rollup must equal a fresh scan by the same engine plus a filesystem
+walk: the fresh scan goes into an empty catalogue, and the file paths and logical lengths must also equal a
+`std::fs` walk of the final tree (reparse points not followed). Catalogue IDs, run/revision counters and enumeration-sensitive access times
 are excluded from that comparison. Both stores register the same empty fixture before generation.
 
 **Gap.** No remaining gap for this scenario on KRASPYON: the 100,000-file run passed (see record).
