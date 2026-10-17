@@ -4,8 +4,9 @@
 //! store equals a fresh store given the same successful writes.
 //!
 //! The writer owns its connection, so the page limit can only be set before the writer starts
-//! and only lifted by a new connection. Each reopen runs the same recovery (#356, `db.rs`) in the
-//! capped store and in the fresh replay, which therefore reopens at the same log positions.
+//! and only lifted by a new connection. Each reopen runs the same recovery (`open_pair` in `db.rs`,
+//! which fails any run left open) in the capped store and in the fresh replay, so the replay
+//! reopens at the same log positions.
 use super::*;
 use crate::{Basis, Catalog, ChildrenRequest, ListingOutcome, NodeKey, Sort};
 use rusqlite::{params, types::Value, OpenFlags};
