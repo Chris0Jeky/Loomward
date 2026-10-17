@@ -12,7 +12,10 @@ use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{atomic::AtomicBool, Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, AtomicU64},
+        Arc, Mutex,
+    },
 };
 
 /// docs/47 Q1, OPEN (agent-hq#461): may cancel and abandon delete Loomward's own unpublished staging?
@@ -21,24 +24,33 @@ use std::{
 /// one-line flip.
 pub(crate) const LOOMWARD_COPY_STAGING_REMOVAL: bool = false;
 
-struct Pending {
+pub(crate) struct Pending {
     sources: Vec<String>,
     destination: String,
     preview: loomward_operations::Preview,
     approval: Option<loomward_operations::Approval>,
+    /// Unix ms after which the entry is evicted (#569): the preview's TTL, extended to the approval's
+    /// own expiry once approved. `copy.start` re-observes everything, so a lapsed entry loses nothing.
+    pub(crate) expires_ms: i64,
 }
+
+/// How long an unapproved preview is kept: as long as an approval lives.
+const PREVIEW_TTL_MS: i64 = loomward_operations::manifest::APPROVAL_TTL_MS;
 
 pub(crate) struct Copies {
     /// The journal in `state.db`; `None` for personal sessions and off Windows.
     #[cfg(windows)]
     pub(crate) store: Option<Arc<Mutex<loomward_operations::Store>>>,
-    pending: Mutex<HashMap<String, Pending>>,
+    pub(crate) pending: Mutex<HashMap<String, Pending>>,
     /// Wire ID to journal operation.
     ops: Mutex<HashMap<String, u64>>,
     #[cfg(windows)]
-    running: Mutex<HashMap<u64, Run>>,
+    pub(crate) running: Mutex<HashMap<u64, Run>>,
     /// The Q1 setting for this service (tests flip it; production reads the constant).
     pub(crate) removal: AtomicBool,
+    /// How long `Drop` waits, in total, for cancelled workers (#569). A worker stuck in a blocking OS
+    /// call is detached after that; its journal is left to recovery.
+    pub(crate) shutdown_wait_ms: AtomicU64,
     /// Test seams: `copy.start` calls the gate at "prepared" (tree walked, nothing registered) and
     /// "spawned" (worker running, not yet in `running`); new runs get the hook on their control.
     #[cfg(all(test, windows))]
@@ -63,7 +75,7 @@ pub(crate) type RunHook = Arc<
 >;
 
 #[cfg(windows)]
-struct Run {
+pub(crate) struct Run {
     control: Arc<loomward_windows::effects::exec::Control>,
     thread: std::thread::JoinHandle<()>,
     done: std::sync::mpsc::Receiver<()>,
@@ -125,6 +137,7 @@ impl Copies {
     /// decides, and only its decisions run, through the C2 primitives. Nothing resumes by itself.
     pub(crate) fn open(state_dir: &Path, dataset: DatasetClass) -> Copies {
         let removal = AtomicBool::new(LOOMWARD_COPY_STAGING_REMOVAL);
+        let shutdown_wait_ms = AtomicU64::new(30_000);
         #[cfg(windows)]
         {
             let store = (dataset == DatasetClass::Synthetic)
@@ -158,6 +171,7 @@ impl Copies {
                 ops: Mutex::new(ops),
                 running: Mutex::default(),
                 removal,
+                shutdown_wait_ms,
                 #[cfg(test)]
                 gate: Mutex::default(),
                 #[cfg(test)]
@@ -171,6 +185,7 @@ impl Copies {
                 pending: Mutex::default(),
                 ops: Mutex::default(),
                 removal,
+                shutdown_wait_ms,
             }
         }
     }
@@ -186,9 +201,11 @@ impl Copies {
     }
 }
 
-/// Shutdown never detaches a copy: every running worker is cancelled (it stops at its next item or
-/// 1 MiB chunk, before publish) and joined, so no effect or journal write outlives the service and a
-/// reopened service never recovers alongside an old executor (review of #522).
+/// Shutdown cancels every running worker (it stops at its next item or 1 MiB chunk, before publish)
+/// and waits for each, so no effect or journal write outlives the service and a reopened service never
+/// recovers alongside an old executor (review of #522). The wait is bounded (`shutdown_wait_ms` in
+/// total, #569): a worker stuck in a blocking OS call is detached, still cancelled, and its journal is
+/// left to the recovery of the next open.
 #[cfg(windows)]
 impl Drop for Copies {
     fn drop(&mut self) {
@@ -202,9 +219,44 @@ impl Drop for Copies {
         for run in &runs {
             run.control.cancel();
         }
+        let until = std::time::Instant::now()
+            + std::time::Duration::from_millis(
+                self.shutdown_wait_ms
+                    .load(std::sync::atomic::Ordering::SeqCst),
+            );
         for run in runs {
-            let _ = run.thread.join();
+            // `Disconnected` is a worker that already ended; only `Timeout` leaves one behind.
+            let wait = until.saturating_duration_since(std::time::Instant::now());
+            if !matches!(
+                run.done.recv_timeout(wait),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ) {
+                let _ = run.thread.join();
+            }
         }
+    }
+}
+
+impl Copies {
+    /// Drop previews whose time has run out (#569): a service that stays up would otherwise keep every
+    /// preview that was never started.
+    fn evict_expired(&self, now_ms: i64) {
+        self.pending
+            .lock()
+            .unwrap()
+            .retain(|_, p| now_ms < p.expires_ms);
+    }
+
+    /// Drop the runs whose worker has returned (#569). Its last journal record is durable by then, so
+    /// the journal answers `copy.status` and nothing needs the handle; a finished thread has no effect
+    /// left. `ops` keeps its one small entry per operation: it mirrors the journal, which `open` reloads
+    /// wholesale, and status and start-once need the wire ID.
+    #[cfg(windows)]
+    fn reap(&self) {
+        self.running
+            .lock()
+            .unwrap()
+            .retain(|_, r| !r.thread.is_finished());
     }
 }
 
@@ -455,6 +507,8 @@ impl Inner {
             let sources: Vec<String> = request.sources.iter().map(|s| s.to_string()).collect();
             let destination = request.destination_node_id.to_string();
             let (preview, _) = self.copy_prepare(&sources, &destination)?;
+            self.copies.reap();
+            self.copies.evict_expired(now_ns() / 1_000_000);
             let mut id = [0u8; 9];
             getrandom::fill(&mut id)
                 .map_err(|_| fail(ErrorCode::InternalError, "no randomness"))?;
@@ -481,6 +535,7 @@ impl Inner {
                 "refusals": refusals,
                 "refusal_count": preview.refusals.len(),
             });
+            let now_ms = now_ns() / 1_000_000;
             self.copies.pending.lock().unwrap().insert(
                 operation_id,
                 Pending {
@@ -488,6 +543,7 @@ impl Inner {
                     destination,
                     preview,
                     approval: None,
+                    expires_ms: now_ms.saturating_add(PREVIEW_TTL_MS),
                 },
             );
             Ok(Out {
@@ -526,6 +582,7 @@ impl Inner {
             "approved_at": ts_ns(approval.approved_at_ms() * 1_000_000),
             "expires_at": ts_ns(approval.expires_at_ms() * 1_000_000),
         });
+        p.expires_ms = p.expires_ms.max(approval.expires_at_ms());
         p.approval = Some(approval);
         Ok(Out {
             result,
@@ -541,6 +598,7 @@ impl Inner {
         {
             use loomward_windows::effects::exec;
             let id = request.operation_id.to_string();
+            self.copies.reap();
             if self.copies.ops.lock().unwrap().contains_key(&id) {
                 return Err(with_reason(
                     fail(
@@ -731,6 +789,7 @@ impl Inner {
     fn copy_status_of(&self, id: &str, op: u64) -> Result<Out, ErrorBody> {
         #[cfg(windows)]
         {
+            self.copies.reap();
             let store = self.copies_store()?;
             let outcome = loomward_windows::effects::exec::status(store, op)
                 .map_err(|_| fail(ErrorCode::InternalError, "the journal does not replay"))?;

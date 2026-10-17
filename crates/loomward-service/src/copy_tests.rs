@@ -240,6 +240,126 @@ mod lab_copy {
         );
     }
 
+    /// #569 item 1: a preview nobody approved is evicted once its TTL has passed (the next preview
+    /// sweeps), so a long-lived service does not keep every abandoned preview.
+    #[test]
+    fn an_expired_preview_is_evicted() {
+        let Some((lab, a, b)) = scanned() else { return };
+        let svc = &lab.svc;
+        let old = preview(svc, &a, &b);
+        let (old_id, old_digest) = (
+            old["operation_id"].as_str().unwrap().to_owned(),
+            digest(&old),
+        );
+        let live = preview(svc, &a, &b);
+        let live_id = live["operation_id"].as_str().unwrap().to_owned();
+        svc.inner
+            .copies
+            .pending
+            .lock()
+            .unwrap()
+            .get_mut(&old_id)
+            .unwrap()
+            .expires_ms = 0;
+        let last = preview(svc, &a, &b)["operation_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        {
+            let pending = svc.inner.copies.pending.lock().unwrap();
+            assert!(!pending.contains_key(&old_id), "the expired preview stayed");
+            assert!(pending.contains_key(&live_id) && pending.contains_key(&last));
+        }
+        let e = err(call(
+            svc,
+            "copy.approve",
+            json!({"operation_id": old_id, "digest": old_digest}),
+        ));
+        assert_eq!(e.code, ErrorCode::NotFound, "{e:?}");
+    }
+
+    /// #569 item 1: a settled run is dropped from `running` (its status is durable in the journal; a
+    /// finished worker holds nothing), while `copy.status` keeps answering from the journal.
+    #[test]
+    fn a_settled_run_is_dropped_from_the_running_map() {
+        let Some((lab, a, b)) = scanned() else { return };
+        let svc = &lab.svc;
+        let p = preview(svc, &a, &b);
+        let op = p["operation_id"].as_str().unwrap().to_owned();
+        let consent = json!({"operation_id": op, "digest": digest(&p)});
+        ok("copy.approve", call(svc, "copy.approve", consent.clone()));
+        ok("copy.start", call(svc, "copy.start", consent));
+        assert_eq!(settle_copy(svc, &op)["state"], "committed");
+        // The worker returns just after its last record; every status call reaps what has finished.
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !svc.inner.copies.running.lock().unwrap().is_empty() {
+            assert!(
+                Instant::now() < deadline,
+                "the settled run was never dropped"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+            settle_copy(svc, &op);
+        }
+        assert_eq!(settle_copy(svc, &op)["state"], "committed");
+    }
+
+    /// #569 item 2: shutdown cancels the workers and waits a bounded time; a worker stuck in a blocking
+    /// call is detached (its journal left to recovery), never joined forever.
+    #[test]
+    fn dropping_the_service_does_not_wait_forever_for_a_stuck_worker() {
+        use crate::copy::{Flow, Point};
+        let Some((lab, a, b)) = scanned() else { return };
+        let p = preview(&lab.svc, &a, &b);
+        let op = p["operation_id"].as_str().unwrap().to_owned();
+        let consent = json!({"operation_id": op, "digest": digest(&p)});
+        ok(
+            "copy.approve",
+            call(&lab.svc, "copy.approve", consent.clone()),
+        );
+        let (reached, wait) = std::sync::mpsc::channel();
+        let (release, resume) = std::sync::mpsc::channel::<()>();
+        let (alive, gone) = std::sync::mpsc::channel::<()>();
+        let (resume, alive) = (Mutex::new(resume), Mutex::new(alive));
+        let fired = std::sync::atomic::AtomicBool::new(false);
+        *lab.svc.inner.copies.hook.lock().unwrap() = Some(Arc::new(move |p, _| {
+            // `alive` lives as long as the control, i.e. until the detached worker is done with it.
+            let _ = &alive;
+            if matches!(p, Point::Chunk(_))
+                && !fired.swap(true, std::sync::atomic::Ordering::SeqCst)
+            {
+                reached.send(()).unwrap();
+                let _ = resume
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(120));
+            }
+            Flow::Continue
+        }));
+        lab.svc
+            .inner
+            .copies
+            .shutdown_wait_ms
+            .store(300, std::sync::atomic::Ordering::SeqCst);
+        ok("copy.start", call(&lab.svc, "copy.start", consent));
+        wait.recv_timeout(Duration::from_secs(60)).unwrap();
+        let Lab { _tmp, svc, .. } = lab;
+        let (dropped, finished) = std::sync::mpsc::channel();
+        let closer = std::thread::spawn(move || {
+            drop(svc);
+            let _ = dropped.send(());
+        });
+        let bounded = finished.recv_timeout(Duration::from_secs(20));
+        // Always release the worker before asserting, including against the unbounded implementation.
+        release.send(()).unwrap();
+        closer.join().unwrap();
+        bounded.expect("dropping the service waited for the stuck worker");
+        // The detached worker stops at its next chunk; wait for it before the temp folder goes.
+        assert!(matches!(
+            gone.recv_timeout(Duration::from_secs(60)),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+        ));
+    }
+
     #[test]
     fn a_source_changed_after_approval_refuses_the_start() {
         let Some((lab, a, b)) = scanned() else { return };
