@@ -1315,7 +1315,13 @@ fn spawn_backup_scrub_retry(inner: Weak<Inner>) {
                 std::thread::sleep(delay);
                 let Some(inner) = inner.upgrade() else { return };
                 if inner.backup_scrub_pending().is_ok_and(|p| p.is_some()) {
-                    if let Ok(_mutation) = inner.mutation.try_lock() {
+                    // A poisoned lock is recovered as revoke and forget do; only real contention waits.
+                    let guard = match inner.mutation.try_lock() {
+                        Ok(g) => Some(g),
+                        Err(std::sync::TryLockError::Poisoned(p)) => Some(p.into_inner()),
+                        Err(std::sync::TryLockError::WouldBlock) => None,
+                    };
+                    if let Some(_mutation) = guard {
                         let _ = inner.scrub_backups(None);
                         delay = (delay * 2).min(Duration::from_secs(30));
                     }
