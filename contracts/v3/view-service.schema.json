@@ -185,14 +185,15 @@
     "SessionInfoFeatures": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["grant_picker", "disclosure_dialog", "teacher_available", "telemetry_available", "gpu_available", "diagnostics_save"],
+      "required": ["grant_picker", "disclosure_dialog", "teacher_available", "telemetry_available", "gpu_available", "diagnostics_save", "federated_search"],
       "properties": {
         "grant_picker": { "type": "boolean" },
         "disclosure_dialog": { "type": "boolean" },
         "teacher_available": { "type": "boolean" },
         "telemetry_available": { "type": "boolean" },
         "gpu_available": { "type": "boolean" },
-        "diagnostics_save": { "type": "boolean", "$comment": "The desktop adapter's Rust-side save dialog for diagnostics.save (docs/42 ADR-V3-24)." }
+        "diagnostics_save": { "type": "boolean", "$comment": "The desktop adapter's Rust-side save dialog for diagnostics.save (docs/42 ADR-V3-24)." },
+        "federated_search": { "type": "boolean", "$comment": "The engine honours the federated search extension of search.query (docs/46 section 4, F1): sources, terms, extensions, collection_id, under_node_id and the per-hit source, freshness and score. False: search.query serves the v1 fields only and answers any extension field with capability_unavailable." }
       }
     },
     "HealthWarningCode": { "enum": ["catalog_writer_backlog", "low_state_disk", "scan_throttled", "telemetry_unavailable", "teacher_failed", "root_identity_changed", "event_stream_lagging"] },
@@ -1064,9 +1065,56 @@
         "modified_before": { "$ref": "#/$defs/NullableTimestamp" },
         "kind": { "enum": ["any", "file", "dir"] },
         "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
-        "cursor": { "anyOf": [{ "$ref": "#/$defs/Cursor" }, { "type": "null" }] }
+        "cursor": { "anyOf": [{ "$ref": "#/$defs/Cursor" }, { "type": "null" }] },
+        "sources": { "type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": true, "items": { "$ref": "#/$defs/SearchSource" }, "$comment": "Federated extension (docs/46 section 4, F1); absent means [own]. Only an engine advertising features.federated_search honours the fields from here on; every other engine answers them with capability_unavailable." },
+        "terms": { "type": "array", "maxItems": 8, "items": { "$ref": "#/$defs/SearchTerm" }, "$comment": "Structured name terms (the parsed query grammar). Every term narrows, together with text." },
+        "extensions": { "type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 32 }, "$comment": "Extension set, lower case, no leading dot. Narrows together with extension." },
+        "collection_id": { "$ref": "#/$defs/CollectionId", "$comment": "Only members of this collection." },
+        "under_node_id": { "$ref": "#/$defs/NodeId", "$comment": "Only entries below this directory node. Browse identity; never an operand." }
       }
     },
+    "SearchSource": { "enum": ["own", "everything", "semantic"], "$comment": "own: the catalogue name index; everything: the optional Everything adapter (docs/46 section 5.3); semantic: the derived embedding index (section 6)." },
+    "SearchTerm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "mode", "negated"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "mode": { "enum": ["token", "substring"], "$comment": "token: the text starts a word of the name; substring: it occurs anywhere in the name." },
+        "negated": { "type": "boolean", "$comment": "True: names matching the term are excluded." }
+      }
+    },
+    "SearchFreshness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "at"],
+      "properties": {
+        "state": { "enum": ["live", "caught_up", "stale", "everything_live", "verified", "semantic_stale"], "$comment": "docs/46 section 7: live (watched now), caught_up (journal catch-up at at), stale (since at), everything_live (Everything's own journal, not yet verified), verified (checked natively at at), semantic_stale (the name changed after embedding)." },
+        "at": { "$ref": "#/$defs/NullableTimestamp", "$comment": "Required for caught_up, stale and verified; null for the other states." }
+      },
+      "allOf": [{
+        "if": { "additionalProperties": false, "properties": { "state": { "enum": ["caught_up", "stale", "verified"] }, "at": true } },
+        "then": { "additionalProperties": false, "properties": { "state": true, "at": { "$ref": "#/$defs/Timestamp" } } },
+        "else": { "additionalProperties": false, "properties": { "state": true, "at": { "type": "null" } } }
+      }]
+    },
+    "SearchUnverifiedHit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "path", "root_id", "kind", "source", "freshness", "match_kind", "score"],
+      "$comment": "A hit from an adapter that is not yet a catalogue row (docs/46 section 5.3): display only, and deliberately without a node_id. Native verification mints one; until then no command accepts this hit.",
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "path": { "$ref": "#/$defs/DisplayPath", "$comment": "Root-relative path under a granted root, display only." },
+        "root_id": { "$ref": "#/$defs/RootId" },
+        "kind": { "enum": ["file", "dir"] },
+        "source": { "enum": ["everything"] },
+        "freshness": { "$ref": "#/$defs/SearchFreshness" },
+        "match_kind": { "$ref": "#/$defs/SearchMatchKind" },
+        "score": { "$ref": "#/$defs/Fraction" }
+      }
+    },
+    "SearchMatchKind": { "enum": ["exact", "prefix", "token", "substring", "filter", "semantic"] },
     "SearchPage": {
       "type": "object",
       "additionalProperties": false,
@@ -1079,7 +1127,8 @@
         "index_state": { "enum": ["current", "building", "stale"], "$comment": "building: a searched root is being scanned; stale: a searched root is stale or failed. The index itself follows every catalogue commit." },
         "partial": { "type": "boolean", "$comment": "A searched root does not have complete coverage: no hit is not proof of absence." },
         "substring_searched": { "type": "boolean", "$comment": "False for texts too short for a trigram (or with a word under three characters): only whole names, name starts and word starts were searched." },
-        "roots": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/SearchRootCoverage" } }
+        "roots": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/SearchRootCoverage" } },
+        "unverified_hits": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/SearchUnverifiedHit" }, "$comment": "Federated extension: hits that are not yet catalogue rows, kept apart from hits. Omitted when features.federated_search is false." }
       }
     },
     "SearchHit": {
@@ -1090,7 +1139,10 @@
         "row": { "$ref": "#/$defs/EntryRow" },
         "root_id": { "$ref": "#/$defs/RootId" },
         "path": { "$ref": "#/$defs/DisplayPath", "$comment": "Root-relative path of the hit itself, display only." },
-        "match_kind": { "enum": ["exact", "prefix", "token", "substring", "filter"] },
+        "match_kind": { "$ref": "#/$defs/SearchMatchKind" },
+        "source": { "$ref": "#/$defs/SearchSource", "$comment": "Federated extension; absent means own." },
+        "freshness": { "$ref": "#/$defs/SearchFreshness", "$comment": "Federated extension: how fresh this hit's root is (docs/46 section 7)." },
+        "score": { "$ref": "#/$defs/Fraction", "$comment": "Federated extension: a relative rank signal in 0..1, never a probability and not comparable across sources." },
         "highlights": {
           "type": "array",
           "maxItems": 8,

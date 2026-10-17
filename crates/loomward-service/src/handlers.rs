@@ -422,6 +422,9 @@ impl Inner {
                     "gpu_available": f,
                     // Every session may save its redacted bundle where a native dialog exists.
                     "diagnostics_save": ctx.dialogs.is_some(),
+                    // docs/46 F1 is the contract only; the lane that serves the federated
+                    // fields (F2 to F4) flips this, and the guard in `search` goes with it.
+                    "federated_search": f,
                 },
                 "limits": {
                     "max_request_bytes": limits::MAX_REQUEST_BYTES,
@@ -1069,6 +1072,12 @@ impl Inner {
 
     fn search(&self, req: &RequestEnvelope, work: Option<&crate::ReadWork>) -> Handled {
         let r: SearchRequest = req.decode_payload()?;
+        if r.uses_federated_fields() {
+            return Err(fail(
+                ErrorCode::CapabilityUnavailable,
+                "federated search fields are not served by this engine (features.federated_search is false)",
+            ));
+        }
         let revs = self.revisions()?;
         let root = r.root_id.as_ref().map(|id| self.root_row(id)).transpose()?;
         let bind = binding(req);
