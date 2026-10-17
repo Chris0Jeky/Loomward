@@ -199,6 +199,7 @@
     if (!s) { untrack(() => { b.clear(); hovered = null; selected = null; shownKey = null; }); return; }
     untrack(() => {
       b.setSlice(s);
+      hovered = null;
       selected = selected ? b.info(selected.id) : null; // the old info is from the previous slice
       const a = announceSlice(shownKey, s, nav.here?.name ?? '');
       shownKey = a.key;

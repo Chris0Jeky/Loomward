@@ -562,7 +562,8 @@ def check_explorer_fallback(page: Page, engine: FakeEngine) -> None:
     expect(page.locator('main .tbl-wrap')).to_have_attribute('aria-busy', 'false')
     # no ancestor lists any more (an engine restart): the view returns to the starting points, and says so
     engine.gone = {'nd_Fake_Root', 'nd_dir_1', 'nd_dir_2', 'nd_dir_3'}
-    engine.slice_queue = [(0.0, 'New Root')]
+    # The epoch refresh and breadcrumb recovery both read the replacement starting points.
+    engine.slice_queue = [(0.0, 'New Root'), (0.0, 'New Root')]
     current.focus()
     page.keyboard.press('Shift+Tab')
     page.keyboard.press('Tab')
