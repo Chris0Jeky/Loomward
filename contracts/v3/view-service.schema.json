@@ -667,7 +667,8 @@
         "writer_queue_depth": { "$ref": "#/$defs/Count" },
         "entries_per_second": { "type": "number", "minimum": 0 },
         "elapsed_ms": { "$ref": "#/$defs/Count" },
-        "limit_hit": { "type": "boolean" }
+        "limit_hit": { "type": "boolean" },
+        "limit_reason": { "enum": ["depth_limit"] }
       }
     },
     "Job": {

@@ -460,6 +460,7 @@ export interface ScanProgress {
   entries_per_second: number;
   elapsed_ms: Count;
   limit_hit: boolean;
+  limit_reason?: "depth_limit";
 }
 
 export interface Job {

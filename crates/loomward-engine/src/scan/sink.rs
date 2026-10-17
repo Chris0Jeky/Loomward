@@ -616,7 +616,7 @@ impl ScanSink for MemorySink {
                     let mut parent = r.dirs[id].parent;
                     while let Some(p) = parent {
                         depth += 1;
-                        if depth > 128 {
+                        if depth >= loomward_catalog::MAX_DIRECTORY_CHAIN_LENGTH {
                             break;
                         }
                         parent = r.dirs.get(&p).and_then(|d| d.parent);

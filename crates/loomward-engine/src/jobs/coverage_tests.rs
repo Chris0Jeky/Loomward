@@ -25,6 +25,7 @@ fn counters(strategy: ScanStrategy, allocated: Option<u64>) -> ScanReport {
         complete: true,
         strategy,
         limit_hit: true,
+        limit_reason: None,
         examined: 7,
         enumeration_attempts: 9,
         duplicate_identity: 0,

@@ -178,19 +178,48 @@ impl Lab {
 }
 
 #[test]
-#[ignore = "#483: pipeline MAX_DEPTH=128 truncates the writer's 512-directory chain; raising the scan safety cap needs its own fix"]
 fn writer_depth_limit_512_scanned_end_to_end() {
     let Some(lab) = lab(Profile::DepthLimit) else {
         return;
     };
     let done = lab.scan("full");
     assert_eq!(done["coverage"], "complete", "{done}");
+    assert_eq!(done["progress"]["limit_hit"], false, "{done}");
+    eprintln!(
+        "DEPTH 512: scan elapsed_ms={}",
+        done["progress"]["elapsed_ms"]
+    );
     let depth: i64 = lab
         .db()
         .query_row("SELECT max(depth) FROM dir", [], |r| r.get(0))
         .unwrap();
     assert_eq!(depth, 511); // The writer's 512-directory chain includes the root.
     assert_eq!(lab.slice()["nodes"][0]["files"], 1);
+    lab.forget();
+}
+
+#[test]
+fn past_writer_depth_limit_513_is_partial_with_depth_limit_reason() {
+    let Some(lab) = lab(Profile::DepthLimit) else {
+        return;
+    };
+    let extra = lab.tree.leaf.parent().unwrap().join("beyond-limit");
+    fs::create_dir(&extra).unwrap();
+    fs::write(extra.join("unscanned.bin"), b"synthetic").unwrap();
+    let done = lab.scan("full");
+    assert_eq!(done["coverage"], "partial", "{done}");
+    assert_eq!(done["progress"]["limit_hit"], true, "{done}");
+    assert_eq!(done["progress"]["limit_reason"], "depth_limit", "{done}");
+    let db = lab.db();
+    let (count, depth): (i64, i64) = db
+        .query_row("SELECT count(*),max(depth) FROM dir", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert_eq!((count, depth), (512, 511));
+    assert_eq!(lab.slice()["nodes"][0]["files"], 1);
+    assert!(extra.join("unscanned.bin").exists());
+    drop(db);
     lab.forget();
 }
 
