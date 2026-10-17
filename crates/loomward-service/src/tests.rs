@@ -3111,6 +3111,350 @@ fn scan_start_publishes_a_lab_tree_matching_an_independent_walk_with_live_events
     assert_eq!(slice_totals(&lab_slice(svc, &lab.root)), (5, 3, 165));
 }
 
+#[cfg(windows)]
+#[test]
+fn f3_search_reports_freshness_without_enabling_federated_search() {
+    let Some(lab) = lab() else { return };
+    assert_eq!(
+        settle(&lab.svc, &start(&lab.svc, &lab.root, "full"))["state"],
+        "completed"
+    );
+    let (page, _) = ok(
+        "search.query",
+        call(
+            &lab.svc,
+            "search.query",
+            json!({"root_id":null,"text":"top","extension":null,"min_bytes":null,"max_bytes":null,"modified_after":null,"modified_before":null,"kind":"any","limit":20,"cursor":null}),
+        ),
+    );
+    assert_eq!(page["hits"].as_array().unwrap().len(), 1);
+    let freshness = &page["hits"][0]["freshness"];
+    assert!(freshness.is_object(), "missing per-hit freshness: {page:?}");
+    serde_json::from_value::<SearchFreshness>(freshness.clone()).unwrap();
+    let (hello, _) = ok("session.hello", call(&lab.svc, "session.hello", json!({})));
+    assert_eq!(hello["features"]["federated_search"], false);
+}
+
+#[cfg(windows)]
+fn f3_hits(svc: &Service) -> Value {
+    let (page, _) = ok(
+        "search.query",
+        call(
+            svc,
+            "search.query",
+            json!({"root_id":null,"text":"bin","extension":null,"min_bytes":null,"max_bytes":null,"modified_after":null,"modified_before":null,"kind":"file","limit":100,"cursor":null}),
+        ),
+    );
+    Value::Object(page)
+}
+
+#[cfg(windows)]
+fn f3_wait_live(svc: &Service) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let page = f3_hits(svc);
+        let (jobs, _) = ok("jobs.list", call(svc, "jobs.list", json!({"limit":50})));
+        let settled = jobs["jobs"].as_array().unwrap().iter().all(|j| {
+            !matches!(
+                j["state"].as_str(),
+                Some("queued" | "running" | "cancel_requested")
+            )
+        });
+        if !svc.inner.freshness.stale(1)
+            && settled
+            && page["hits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|h| h["freshness"]["state"] != "stale")
+        {
+            return page;
+        }
+        assert!(Instant::now() < deadline, "never caught up: {page:?}; tracker={}; runs={:?}",svc.inner.freshness.debug(1),svc.inner.db().query_row("SELECT group_concat(mode||':'||state||':'||coalesce(counters_json,''),';') FROM main.scan_run WHERE root_id=1",[],|r|r.get::<_,Option<String>>(0)));
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[cfg(windows)]
+fn f3_names(page: &Value) -> std::collections::BTreeSet<String> {
+    page["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["path"]["text"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_restart_rename_delete_and_create_catch_up_matches_fresh_scan() {
+    let Some(lab) = lab() else { return };
+    let Lab {
+        _tmp,
+        path,
+        svc,
+        root,
+    } = lab;
+    assert_eq!(
+        settle(&svc, &start(&svc, &root, "full"))["coverage"],
+        "complete"
+    );
+    f3_wait_live(&svc);
+    let saved: (Vec<u8>, i64) = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT journal_id,next_usn FROM st.root_freshness",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(saved.0.len(), 8);
+    drop(svc);
+    std::fs::rename(path.join("top.bin"), path.join("renamed.bin")).unwrap();
+    std::fs::remove_file(path.join("a/deep/x.bin")).unwrap();
+    std::fs::create_dir(path.join("new-directory")).unwrap();
+    std::fs::write(path.join("new-directory/created.bin"), [1; 12]).unwrap();
+    // A same-volume sibling is not a granted search scope.
+    std::fs::create_dir(_tmp.path().join("sibling")).unwrap();
+    std::fs::write(_tmp.path().join("sibling/outside.bin"), [2; 7]).unwrap();
+    let svc = open(&_tmp.path().join("state"), DatasetClass::Synthetic);
+    let caught = f3_wait_live(&svc);
+    assert_eq!(
+        slice_totals(&lab_slice(&svc, &svc.inner.root_id(1))),
+        walk(&path)
+    );
+    let names = f3_names(&caught);
+    assert!(names.contains("renamed.bin"), "{caught:?}");
+    assert!(
+        names.contains("new-directory\\created.bin") || names.contains("new-directory/created.bin"),
+        "{caught:?}"
+    );
+    assert!(!names
+        .iter()
+        .any(|n| n.ends_with("x.bin") || n.ends_with("outside.bin") || n.ends_with("top.bin")));
+    let targeted: i64 = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT count(*) FROM main.scan_run WHERE mode='targeted'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        targeted > 0,
+        "journal hints never selected targeted refresh scopes"
+    );
+    let root = svc.inner.root_id(1);
+    settle(&svc, &start(&svc, &root, "full"));
+    assert_eq!(names, f3_names(&f3_hits(&svc)));
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_watch_survives_scan_completion_and_reconciles() {
+    let Some(lab) = lab() else { return };
+    settle(&lab.svc, &start(&lab.svc, &lab.root, "full"));
+    std::fs::rename(lab.path.join("top.bin"), lab.path.join("live.bin")).unwrap();
+    std::fs::remove_file(lab.path.join("a/3.bin")).unwrap();
+    let stale = f3_hits(&lab.svc);
+    assert_eq!(stale["hits"][0]["freshness"]["state"], "stale", "{stale:?}");
+    assert!(stale["hits"][0]["freshness"]["at"].is_string());
+    let live = f3_wait_live(&lab.svc);
+    assert!(f3_names(&live).contains("live.bin"), "{live:?}");
+    assert!(
+        !f3_names(&live).iter().any(|n| n.ends_with("3.bin")),
+        "{live:?}"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_journal_wrap_dirties_scope_until_explicit_full_refresh() {
+    for gap in [
+        "UPDATE st.root_freshness SET journal_id=zeroblob(8)",
+        "UPDATE st.root_freshness SET next_usn=-1",
+    ] {
+        let Some(lab) = lab() else { return };
+        let Lab {
+            _tmp,
+            path: _,
+            svc,
+            root,
+        } = lab;
+        settle(&svc, &start(&svc, &root, "full"));
+        f3_wait_live(&svc);
+        assert_eq!(svc.inner.db().execute(gap, []).unwrap(), 1);
+        drop(svc);
+        let svc = open(&_tmp.path().join("state"), DatasetClass::Synthetic);
+        let page = f3_hits(&svc);
+        assert!(page["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|h| h["freshness"]["state"] == "stale"));
+        assert!(svc.inner.freshness.stale(1));
+        let root = svc.inner.root_id(1);
+        settle(&svc, &start(&svc, &root, "full"));
+        f3_wait_live(&svc);
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_overflow_marks_hits_and_root_stale_until_full_refresh() {
+    let Some(lab) = lab() else { return };
+    settle(&lab.svc, &start(&lab.svc, &lab.root, "full"));
+    f3_wait_live(&lab.svc);
+    // Same root-dirty hint as a zero-byte/1022 kernel completion or a dropped batch.
+    lab.svc
+        .inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    let page = f3_hits(&lab.svc);
+    assert_eq!(page["index_state"], "stale");
+    assert_eq!(page["partial"], true);
+    assert!(page["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|h| h["freshness"]["state"] == "stale" && h["freshness"]["at"].is_string()));
+    let before = f3_names(&page);
+    assert_eq!(before, f3_names(&f3_wait_live(&lab.svc)));
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_unchanged_restart_reports_caught_up_and_revoke_stops_watch() {
+    let Some(lab) = lab() else { return };
+    let Lab {
+        _tmp,
+        path: _,
+        svc,
+        root,
+    } = lab;
+    settle(&svc, &start(&svc, &root, "full"));
+    let names = f3_names(&f3_wait_live(&svc));
+    drop(svc);
+    let svc = open(&_tmp.path().join("state"), DatasetClass::Synthetic);
+    let page = f3_wait_live(&svc);
+    assert_eq!(names, f3_names(&page));
+    assert!(
+        page["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|h| h["freshness"]["state"] == "caught_up" && h["freshness"]["at"].is_string()),
+        "{page:?}"
+    );
+    let root = svc.inner.root_id(1);
+    ok(
+        "roots.revoke",
+        call(
+            &svc,
+            "roots.revoke",
+            json!({"root_id":root,"purge_catalog":false}),
+        ),
+    );
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    assert!(!svc.inner.freshness.stale(1));
+    assert!(f3_hits(&svc)["hits"].as_array().unwrap().is_empty());
+    ok(
+        "roots.forget",
+        call(&svc, "roots.forget", json!({"root_id":root})),
+    );
+    let remaining: i64 = svc
+        .inner
+        .db()
+        .query_row("SELECT count(*) FROM st.root_freshness", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(remaining, 0);
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_revoke_fences_a_watch_still_being_armed() {
+    let Some(lab) = lab() else { return };
+    let Lab {
+        _tmp,
+        path: _,
+        svc,
+        root: _,
+    } = lab;
+    let svc = Arc::new(svc);
+    let phase = (Command::ScanStart, "persistent_watch_resolved");
+    svc.inner.hooks.arrived.lock().unwrap().clear();
+    svc.inner.hooks.closed.lock().unwrap().push(phase);
+    svc.inner.freshness.remove(1);
+    let opening = {
+        let svc = svc.clone();
+        std::thread::spawn(move || crate::freshness::ensure_roots(&svc.inner))
+    };
+    svc.inner
+        .hooks
+        .until("persistent watch root resolved", |h| {
+            h.arrived.lock().unwrap().contains(&phase)
+        });
+    let grant = crate::db::roots(&svc.inner.db(), Some(1)).unwrap()[0].grant;
+    let (sent, ack) = std::sync::mpsc::channel();
+    let revoking = {
+        let svc = svc.clone();
+        std::thread::spawn(move || {
+            sent.send(svc.inner.revoke(grant)).unwrap();
+        })
+    };
+    svc.inner.hooks.until("durable revocation", |_| {
+        svc.inner
+            .db()
+            .query_row(
+                "SELECT state='revoked' FROM st.root_grant WHERE id=?1",
+                [grant],
+                |r| r.get::<_, bool>(0),
+            )
+            .unwrap()
+    });
+    // Release the test gate before asserting, so a red regression cannot strand a native thread.
+    let early = ack.try_recv().ok();
+    svc.inner.hooks.open(phase.0, phase.1);
+    if early.is_none() {
+        ack.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+    }
+    let opened = opening.join();
+    revoking.join().unwrap();
+    assert!(
+        early.is_none(),
+        "revoke acknowledged before the in-flight watch was stopped"
+    );
+    opened.unwrap();
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    assert!(!svc.inner.freshness.stale(1));
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_successful_full_scan_with_late_hints_restarts_refresh_budget() {
+    let Some(lab) = lab() else { return };
+    settle(&lab.svc, &start(&lab.svc, &lab.root, "full"));
+    f3_wait_live(&lab.svc);
+    lab.svc.inner.scan.gate.arm();
+    let job = start(&lab.svc, &lab.root, "full");
+    lab.svc.inner.scan.gate.wait_reached();
+    // Simulate three earlier refresh attempts, then a buffered hint during a successful scan.
+    lab.svc.inner.freshness.exhaust_budget(1);
+    lab.svc
+        .inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    lab.svc.inner.scan.gate.release();
+    assert_eq!(settle(&lab.svc, &job)["coverage"], "complete");
+    f3_wait_live(&lab.svc);
+}
+
 /// #184 MEDIUM-1 for the durable writer: a directory deleted and recreated under the same name
 /// (same creation time, new file ID) is a new row; the old row and its subtree are absent.
 #[cfg(windows)]

@@ -454,6 +454,9 @@ impl ScanSink for CatalogScanSink {
             }
             r.grant
         };
+        if let Some(inner) = self.inner.upgrade() {
+            inner.freshness_begin(grant, scope);
+        }
         let reply = self
             .call(WriteCommand::BeginRun {
                 grant_id: grant,
@@ -684,7 +687,7 @@ impl ScanSink for CatalogScanSink {
         &self,
         root: &RootId,
         run: u64,
-        _scope: &RunScope,
+        scope: &RunScope,
         complete: bool,
     ) -> EngineResult<()> {
         let catalog_run = {
@@ -709,6 +712,16 @@ impl ScanSink for CatalogScanSink {
             // Throttling may have held back the last publication's event: announce it now.
             self.invalidated(root, true);
             return Err(listing_error(e));
+        }
+        let grant = self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .roots
+            .get(root)
+            .map(|r| r.grant);
+        if let (Some(inner), Some(grant)) = (self.inner.upgrade(), grant) {
+            inner.freshness_finish(grant, scope, complete);
         }
         self.invalidated(root, true);
         if std::env::var_os("LOOMWARD_SCAN_PROFILE").is_some() {

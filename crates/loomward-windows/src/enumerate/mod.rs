@@ -306,6 +306,8 @@ mod native;
 mod profile;
 #[cfg(all(test, windows))]
 pub(crate) use native::force_elevation_for_test;
+#[cfg(windows)]
+pub(crate) use native::open_journal_root;
 #[cfg(all(windows, feature = "shortcut-read"))]
 pub use native::read_capped_regular_file;
 #[cfg(all(test, windows))]
