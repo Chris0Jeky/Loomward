@@ -72,6 +72,16 @@ def main():
             'labels_and_snapshot_time_are_restricted_charsets')
     replace('trailing-space-stem', ".trim_end_matches(' ')", '',
             'traversal_and_windows_ambiguous_names_are_refused')
+    replace('read-all-data', 'integrity_checked && source.integrity.as_ref().is_some_and(|c| c.read_all_data)',
+            'integrity_checked', 'integrity_summary_errors_and_structure_only_check_do_not_verify_recovery')
+    replace('credential-deadline', 'until > source.now', 'until >= source.now',
+            'expired_or_missing_credentials_are_not_recovery')
+    replace('maximum-age', '*age > source.max_age_seconds', '*age >= source.max_age_seconds',
+            'stale_and_future_observations_are_not_recovery')
+    replace('per-file-metadata', '.all(|m| got.compared_metadata.contains(m))', '.all(|_| true)',
+            'unsupported_metadata_is_not_recovery')
+    replace('complete-paths', '.all(|f| r.files.iter().any(|got| same_path(&got.file.path, &f.path)))',
+            '.all(|_| true)', 'partial_restore_is_not_recovery')
     pattern = r'observation.repository_id == source.repository_id\s*&& observation.snapshot_id == source.snapshot_id\s*&& observation.exit_code == 0'
     bypassed, count = re.subn(pattern, 'true', text)
     assert count == 1, 'binding seam moved'

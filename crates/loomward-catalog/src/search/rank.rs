@@ -22,7 +22,8 @@
 //! catalogue revision: after any publication it is refused with `StaleGeneration`. Continuity is
 //! not promised across a `budget_hit` page (a later page's pool may be cut elsewhere).
 //! `search_ranked` returns `RankedIndexDisabled` on a store opened without
-//! `CatalogOptions::ranked_index`.
+//! `CatalogOptions::ranked_index`, and `RankedIndexBuilding` while the writer backfills a store
+//! that has just opted in.
 use super::analyze::{query_tokens, shape, tokens};
 use super::*;
 use crate::query::Raw;
@@ -332,6 +333,9 @@ impl Reader {
         let text = clean(req, deadline)?;
         if !self.read(super::tokens::enabled)? {
             return Err(Error::RankedIndexDisabled);
+        }
+        if self.read(super::tokens::backfilling)? {
+            return Err(Error::RankedIndexBuilding);
         }
         if text.is_empty() {
             return self.search(req);

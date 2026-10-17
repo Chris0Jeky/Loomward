@@ -319,7 +319,9 @@ fn a_three_round_turn_spawns_a_fresh_broker_for_each_round() {
     // An outage mid-turn ends it; nothing else is tried.
     let p = provider(&format!("http://127.0.0.1:{}", closed_port()), "m");
     let mut log = Vec::new();
-    let e = ask(&view, &p, &profile, "again", &mut log).unwrap_err();
+    let e = ask(&view, &p, &profile, "again", &mut log)
+        .unwrap_err()
+        .error;
     assert_eq!((e.kind, e.dispatched), (ErrorKind::Unreachable, false));
     assert_eq!(log.len(), 1);
 }

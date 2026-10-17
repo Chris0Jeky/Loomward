@@ -178,6 +178,7 @@ export type EmptyRequest = Record<string, never>;
 export interface Capabilities {
   observation: {
     metadata_scan: boolean;
+    duplicate_content_read: boolean;
     process_observation: boolean;
     gpu_observation: boolean;
     disk_io_observation: boolean;
@@ -1951,11 +1952,11 @@ export type CopyOperationId = string;
 export type CopyState = "draft" | "refused" | "approved" | "expired" | "preparing" | "copying" | "staged" | "blocked" | "needs_attention" | "publishing" | "committed" | "cancelling" | "cancelled";
 
 /** docs/47 section 7. Codes with a P or S entry are refused before any write handle exists. */
-export type CopyRefusalCode = "identity_unverified" | "cloud_placeholder" | "reparse_point" | "unsupported_attribute" | "extended_attributes" | "alternate_streams_unsupported" | "too_many_streams" | "special_file" | "source_changed" | "staging_name_taken" | "staging_in_use" | "changed_after_verification" | "source_in_use" | "access_denied" | "insufficient_space" | "destination_inside_source" | "destination_cloud_synced" | "destination_unsupported_volume" | "destination_protected" | "case_collision" | "name_unrepresentable" | "path_too_long" | "publish_in_use" | "verification_mismatch" | "grant_revoked" | "elevated" | "approval_expired" | "digest_mismatch" | "manifest_limit";
+export type CopyRefusalCode = "identity_unverified" | "cloud_placeholder" | "reparse_point" | "unsupported_attribute" | "extended_attributes" | "alternate_streams_unsupported" | "too_many_streams" | "special_file" | "source_changed" | "staging_name_taken" | "staging_in_use" | "changed_after_verification" | "source_in_use" | "access_denied" | "insufficient_space" | "destination_inside_source" | "destination_cloud_synced" | "destination_unsupported_volume" | "destination_protected" | "destination_changed" | "case_collision" | "name_unrepresentable" | "path_too_long" | "publish_in_use" | "verification_mismatch" | "grant_revoked" | "elevated" | "approval_expired" | "digest_mismatch" | "manifest_limit";
 
 export interface CopyRefusal {
   code: CopyRefusalCode;
-  /** null: operation-wide. */
+  /** The refused entry's catalogue node, matched by its source path and native file ID. null: an operation-wide refusal, or an entry the catalogue does not hold under that identity (never a guessed node). */
   node_id: NodeId | null;
 }
 

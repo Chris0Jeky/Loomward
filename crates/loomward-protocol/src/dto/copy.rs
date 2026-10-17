@@ -48,6 +48,7 @@ pub enum CopyRefusalCode {
     DestinationCloudSynced,
     DestinationUnsupportedVolume,
     DestinationProtected,
+    DestinationChanged,
     CaseCollision,
     NameUnrepresentable,
     PathTooLong,

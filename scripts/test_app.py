@@ -79,7 +79,7 @@ def fake_result(command: str):
         return {
             'protocol': 'loomward/3', 'engine_version': 'fake-engine', 'adapter': 'http', 'dataset_class': engine.dataset,
             'session_started_at': '2026-10-01T00:00:00Z', 'enumeration_strategy': 'std_read_dir',
-            'capabilities': {'observation': {}, 'effects': effects},
+            'capabilities': {'observation': {'duplicate_content_read': False}, 'effects': effects},
             'features': {k: False for k in ('grant_picker', 'disclosure_dialog', 'teacher_available', 'telemetry_available', 'gpu_available', 'diagnostics_save', 'federated_search')},
             'limits': {'max_request_bytes': 65536, 'max_slice_nodes': 6000, 'max_page_items': 200},
         }
@@ -927,7 +927,8 @@ def main() -> None:
         page.get_by_role('navigation', name='Views').get_by_role('link', name='Grants & health').click()
         expect(page.get_by_role('heading', name='Grants & health', level=1)).to_be_visible()
         expect(page.get_by_text('Synthetic Alpha', exact=False).first).to_be_visible()
-        check(page.get_by_text('off', exact=True).count() == 11, 'all 11 effect capabilities show as off')
+        check(page.get_by_text('off', exact=True).count() == 10, 'all 10 file/process effect capabilities show as off')
+        expect(page.locator('.caps li').filter(has_text='Content read: duplicates only, on request')).to_contain_text('not available')
         check(page.get_by_text('unknown').count() >= 3, 'engine figures the mock cannot know are shown as unknown')
         page.evaluate("location.hash = '#/nope'")
         expect(page.get_by_role('heading', name='No such view')).to_be_visible()

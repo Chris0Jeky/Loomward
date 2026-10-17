@@ -27,6 +27,10 @@ describe('chooseTransport', () => {
     expect(chooseTransport(env({ hash, search: '?api=https://evil.example' })).mode).toBe('none');
     expect(chooseTransport(env({ hash, search: '?api=http://127.0.0.1.evil.example' })).mode).toBe('none');
   });
+  it.each([':8765', ''])('normalizes an accepted localhost API address for the exact Host gate (port: %s)', (port) => {
+    expect(chooseTransport(env({ hash: `#token=${TOKEN}`, search: `?api=http://localhost${port}` })))
+      .toEqual({ mode: 'http', base: `http://127.0.0.1${port}`, token: TOKEN });
+  });
   it('rejects malformed tokens', () => {
     expect(tokenFromHash('#token=short')).toBeNull();
     expect(tokenFromHash('#/explorer')).toBeNull();

@@ -54,8 +54,8 @@ pub(crate) struct Copies {
     #[cfg(windows)]
     pub(crate) store: Option<Arc<Mutex<loomward_operations::Store>>>,
     pub(crate) pending: Mutex<HashMap<String, Pending>>,
-    /// Wire ID to journal operation.
-    ops: Mutex<HashMap<String, u64>>,
+    /// Wire ID to journal operation for active workers only; history stays in the store.
+    pub(crate) ops: Mutex<HashMap<String, u64>>,
     #[cfg(windows)]
     pub(crate) running: Mutex<HashMap<u64, Run>>,
     /// The Q1 setting for this service (tests flip it; production reads the constant).
@@ -130,6 +130,72 @@ fn code_name<T: serde::Serialize>(code: T) -> Value {
     serde_json::to_value(code).unwrap_or(Value::Null)
 }
 
+/// Each manifest entry by its name below the selection's parent: its path below the source root and its
+/// native file ID. The new folder's own source (a single selected folder) is included.
+#[cfg(windows)]
+fn source_entries(
+    plan: &loomward_windows::effects::exec::Plan,
+) -> HashMap<String, (PathBuf, [u8; 16])> {
+    let m = &plan.manifest;
+    let full = |name: &str| match &m.root {
+        Some(top) => format!("{}/{name}", top.name),
+        None => name.to_string(),
+    };
+    let mut out: HashMap<_, _> = m
+        .items
+        .iter()
+        .zip(&plan.sources)
+        .map(|(i, (rel, _))| (full(&i.name), (rel.clone(), i.identity.file_id)))
+        .collect();
+    if let (Some(top), Some(first), Some((rel, _))) =
+        (&m.root, m.items.first(), plan.sources.first())
+    {
+        if let Some(rel) = rel.ancestors().nth(first.name.split('/').count()) {
+            out.insert(top.name.clone(), (rel.to_path_buf(), top.identity.file_id));
+        }
+    }
+    out
+}
+
+/// #526: the catalogue node of the entry at `names` (relative to the root folder `root_dir`), only
+/// when every name matches exactly one live catalogue row and the last row carries `file_id`. A
+/// refusal never names a guessed node: any other answer is `None`.
+pub(crate) fn catalogue_node(
+    conn: &rusqlite::Connection,
+    root_dir: i64,
+    names: &[&str],
+    file_id: [u8; 16],
+) -> Option<(NodeKey, i64)> {
+    const DIRS: &str = "SELECT id,born_run,file_id FROM main.dir WHERE parent_id=?1 AND name=?2 AND listing_state!='absent_pending' LIMIT 2";
+    const FILES: &str =
+        "SELECT id,born_run,file_id FROM main.file WHERE dir_id=?1 AND name=?2 LIMIT 2";
+    type Row = (i64, i64, Option<Vec<u8>>);
+    let rows = |sql: &str, parent: i64, name: &str| -> Option<Vec<Row>> {
+        let mut stmt = conn.prepare_cached(sql).ok()?;
+        let rows = stmt
+            .query_map(rusqlite::params![parent, name], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .ok()?;
+        rows.collect::<rusqlite::Result<Vec<Row>>>().ok()
+    };
+    let (last, parents) = names.split_last()?;
+    let mut dir = root_dir;
+    for name in parents {
+        match rows(DIRS, dir, name)?.as_slice() {
+            [(id, _, _)] => dir = *id,
+            _ => return None,
+        }
+    }
+    let dirs = rows(DIRS, dir, last)?;
+    let files = rows(FILES, dir, last)?;
+    match (dirs.as_slice(), files.as_slice()) {
+        ([(id, born, Some(fid))], []) if fid[..] == file_id => Some((NodeKey::Dir(*id), *born)),
+        ([], [(id, born, Some(fid))]) if fid[..] == file_id => Some((NodeKey::File(*id), *born)),
+        _ => None,
+    }
+}
+
 fn not_open() -> ErrorBody {
     with_reason(
         fail(
@@ -161,17 +227,10 @@ impl Copies {
                 })
                 .flatten()
                 .map(|s| Arc::new(Mutex::new(s)));
-            let mut ops = HashMap::new();
             if let Some(store) = &store {
                 use loomward_windows::effects::exec;
                 let listed = store.lock().unwrap().operations().unwrap_or_default();
                 for op in listed {
-                    let plan = store.lock().unwrap().plan(op).ok().flatten();
-                    if let Some(plan) =
-                        plan.and_then(|p| serde_json::from_str::<exec::Plan>(&p).ok())
-                    {
-                        ops.insert(plan.operation_id, op);
-                    }
                     let control =
                         exec::Control::new(removal.load(std::sync::atomic::Ordering::SeqCst));
                     let _ = exec::recover(store, op, &control);
@@ -180,7 +239,7 @@ impl Copies {
             Copies {
                 store,
                 pending: Mutex::default(),
-                ops: Mutex::new(ops),
+                ops: Mutex::default(),
                 running: Mutex::default(),
                 removal,
                 shutdown_wait_ms,
@@ -261,14 +320,15 @@ impl Copies {
 
     /// Drop the runs whose worker has returned (#569). Its last journal record is durable by then, so
     /// the journal answers `copy.status` and nothing needs the handle; a finished thread has no effect
-    /// left. `ops` keeps its one small entry per operation: it mirrors the journal, which `open` reloads
-    /// wholesale, and status and start-once need the wire ID.
+    /// left. Evict its wire ID too; historical lookups use the durable plan.
     #[cfg(windows)]
     fn reap(&self) {
-        self.running
+        let mut running = self.running.lock().unwrap();
+        running.retain(|_, r| !r.thread.is_finished());
+        self.ops
             .lock()
             .unwrap()
-            .retain(|_, r| !r.thread.is_finished());
+            .retain(|_, op| running.contains_key(op));
     }
 }
 
@@ -445,7 +505,8 @@ impl Inner {
             let Some(store) = &self.copies.store else {
                 return;
             };
-            let ops: Vec<u64> = self.copies.ops.lock().unwrap().values().copied().collect();
+            // Blocked/recovered operations may have no resident worker, but still need fencing.
+            let ops = store.lock().unwrap().operations().unwrap_or_default();
             for op in ops {
                 let plan: Option<exec::Plan> = store
                     .lock()
@@ -495,6 +556,7 @@ impl Inner {
                     let _ = exec::cancel(store, op, &plan, &exec::Control::new(removal));
                 }
             }
+            self.copies.reap();
         }
         #[cfg(not(windows))]
         let _ = grant;
@@ -511,6 +573,32 @@ impl Inner {
         }
     }
 
+    /// #526: a refusal's `node_id` for the source entry at `relative` (below the plan's source root)
+    /// with native `file_id`, or null when the catalogue does not hold it under that identity.
+    #[cfg(windows)]
+    fn refusal_node(
+        &self,
+        plan: &loomward_windows::effects::exec::Plan,
+        relative: &Path,
+        file_id: [u8; 16],
+    ) -> Value {
+        let conn = self.db();
+        let root_dir = plan.grants.first().and_then(|&grant| {
+            db::roots(&conn, None)
+                .ok()?
+                .into_iter()
+                .find(|r| r.grant == grant && r.grant_state == "active")?
+                .dir
+        });
+        let names: Option<Vec<&str>> = relative.iter().map(|c| c.to_str()).collect();
+        root_dir
+            .zip(names)
+            .and_then(|(dir, names)| catalogue_node(&conn, dir, &names, file_id))
+            .map_or(Value::Null, |(key, born)| {
+                json!(self.ids.seal(key, born, &self.instance))
+            })
+    }
+
     pub(crate) fn copy_preview(&self, req: &RequestEnvelope) -> Result<Out, ErrorBody> {
         let request: CopyPreviewRequest = req.decode_payload()?;
         self.copies_store()?;
@@ -518,18 +606,35 @@ impl Inner {
         {
             let sources: Vec<String> = request.sources.iter().map(|s| s.to_string()).collect();
             let destination = request.destination_node_id.to_string();
-            let (preview, _) = self.copy_prepare(&sources, &destination)?;
+            let (preview, plan) = self.copy_prepare(&sources, &destination)?;
             self.copies.reap();
             self.copies.evict_expired(now_ns() / 1_000_000);
             let mut id = [0u8; 9];
             getrandom::fill(&mut id)
                 .map_err(|_| fail(ErrorCode::InternalError, "no randomness"))?;
             let operation_id = format!("cp_{}", hex(&id));
+            // Item refusals name a manifest entry by its name below the selection's parent, except the
+            // two checks made on names inside the new folder (case collision, path length).
+            let mut entries = None;
             let refusals: Vec<Value> = preview
                 .refusals
                 .iter()
                 .take(256)
-                .map(|r| json!({"code": code_name(r.code), "node_id": null}))
+                .map(|r| {
+                    use loomward_operations::Code;
+                    let node = r.item.as_deref().and_then(|item| {
+                        let key = match (&preview.manifest.root, r.code) {
+                            (Some(top), Code::CaseCollision | Code::PathTooLong) => {
+                                format!("{}/{item}", top.name)
+                            }
+                            _ => item.to_string(),
+                        };
+                        let entries = entries.get_or_insert_with(|| source_entries(&plan));
+                        let (relative, file_id) = entries.get(&key)?;
+                        Some(self.refusal_node(&plan, relative, *file_id))
+                    });
+                    json!({"code": code_name(r.code), "node_id": node.unwrap_or(Value::Null)})
+                })
                 .collect();
             let result = json!({
                 "operation_id": operation_id,
@@ -617,7 +722,7 @@ impl Inner {
             use loomward_windows::effects::exec;
             let id = request.operation_id.to_string();
             self.copies.reap();
-            if self.copies.ops.lock().unwrap().contains_key(&id) {
+            if self.copy_op(&id)?.is_some() {
                 return Err(with_reason(
                     fail(
                         ErrorCode::InvalidRequest,
@@ -694,7 +799,6 @@ impl Inner {
                 op
             };
             self.copies.pending.lock().unwrap().remove(&id);
-            self.copies.ops.lock().unwrap().insert(id.clone(), op);
             let control = exec::Control::new(
                 self.copies
                     .removal
@@ -721,14 +825,19 @@ impl Inner {
                 })?;
             #[cfg(test)]
             self.copies.at("spawned");
-            self.copies.running.lock().unwrap().insert(
-                op,
-                Run {
-                    control,
-                    thread,
-                    done,
-                },
-            );
+            {
+                // Register both maps under the reaper's lock so it cannot evict a registering ID.
+                let mut running = self.copies.running.lock().unwrap();
+                running.insert(
+                    op,
+                    Run {
+                        control,
+                        thread,
+                        done,
+                    },
+                );
+                self.copies.ops.lock().unwrap().insert(id.clone(), op);
+            }
             self.copy_status_of(&id, op)
         }
         #[cfg(not(windows))]
@@ -738,14 +847,25 @@ impl Inner {
         }
     }
 
-    fn copy_op(&self, id: &str) -> Result<u64, ErrorBody> {
-        self.copies
-            .ops
-            .lock()
-            .unwrap()
-            .get(id)
-            .copied()
-            .ok_or_else(unknown)
+    fn copy_op(&self, id: &str) -> Result<Option<u64>, ErrorBody> {
+        if let Some(op) = self.copies.ops.lock().unwrap().get(id).copied() {
+            return Ok(Some(op));
+        }
+        #[cfg(windows)]
+        {
+            use loomward_windows::effects::exec;
+            let store = self.copies_store()?.lock().unwrap();
+            for op in store.operations().map_err(crate::sql_error)? {
+                let plan = store
+                    .plan(op)
+                    .map_err(crate::sql_error)?
+                    .and_then(|p| serde_json::from_str::<exec::Plan>(&p).ok());
+                if plan.is_some_and(|p| p.operation_id == id) {
+                    return Ok(Some(op));
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// Cancel (before publish) and abandon (blocked, needs_attention, interrupted) share one path: stop
@@ -754,7 +874,7 @@ impl Inner {
         let request: CopyOperationRequest = req.decode_payload()?;
         let store = self.copies_store()?.clone();
         let id = request.operation_id.to_string();
-        let op = self.copy_op(&id)?;
+        let op = self.copy_op(&id)?.ok_or_else(unknown)?;
         #[cfg(windows)]
         {
             use loomward_windows::effects::exec;
@@ -800,7 +920,7 @@ impl Inner {
         let request: CopyOperationRequest = req.decode_payload()?;
         self.copies_store()?;
         let id = request.operation_id.to_string();
-        let op = self.copy_op(&id)?;
+        let op = self.copy_op(&id)?.ok_or_else(unknown)?;
         self.copy_status_of(&id, op)
     }
 
@@ -828,8 +948,21 @@ impl Inner {
                     "items_verified": outcome.items_verified,
                     "staging_folder": outcome.staging_left,
                     "leftover_staging_folders": outcome.leftover_staging.iter().take(64).collect::<Vec<_>>(),
-                    // Item refusals name a manifest entry, not a catalogue node: node_id stays null.
-                    "refusal": outcome.refusal.map(|(code, _)| json!({"code": code_name(code), "node_id": null})),
+                    "refusal": outcome.refusal.map(|(code, item)| {
+                        let node = item.and_then(|i| {
+                            let plan: loomward_windows::effects::exec::Plan = store
+                                .lock()
+                                .unwrap()
+                                .plan(op)
+                                .ok()
+                                .flatten()
+                                .and_then(|p| serde_json::from_str(&p).ok())?;
+                            let item = plan.manifest.items.get(i as usize)?;
+                            let (relative, _) = plan.sources.get(i as usize)?;
+                            Some(self.refusal_node(&plan, relative, item.identity.file_id))
+                        });
+                        json!({"code": code_name(code), "node_id": node.unwrap_or(Value::Null)})
+                    }),
                 }),
                 catalog_rev: None,
                 state_rev: None,
