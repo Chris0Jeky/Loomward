@@ -43,6 +43,7 @@ pub(crate) struct Hooks {
 /// What a personal space read answers in tests: stall past the caller's deadline, or report fixed
 /// space. Runs on the worker thread, as the OS read does.
 #[derive(Clone, Copy)]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) enum SpaceFake {
     Stall(Duration),
     Fixed { capacity: u64, free: u64 },
