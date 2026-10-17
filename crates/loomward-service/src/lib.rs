@@ -25,6 +25,7 @@ mod db;
 mod desktop;
 mod diagnostics;
 mod duplicates;
+mod freshness;
 mod handlers;
 mod idem;
 mod ids;
@@ -73,6 +74,9 @@ pub struct Service {
 }
 
 pub(crate) struct Inner {
+    #[cfg(windows)]
+    weak: Weak<Inner>,
+    freshness: freshness::Tracker,
     dataset: DatasetClass,
     state_dir: PathBuf,
     started_at: Timestamp,
@@ -105,7 +109,7 @@ pub(crate) struct Inner {
     metadata: Arc<dyn inventory::Provider>,
     metadata_cursors: cursors::Cursors,
     #[cfg(test)]
-    pub(crate) hooks: tests::Hooks,
+    pub(crate) hooks: Arc<tests::Hooks>,
 }
 
 /// Detached workers (reads, mutations, a telemetry sampling turn) hold the shared state, hence
@@ -114,6 +118,7 @@ pub(crate) struct Inner {
 /// Bounded, so a worker stuck in a blocking native call cannot hang the owner's shutdown.
 impl Drop for Service {
     fn drop(&mut self) {
+        self.inner.freshness.stop();
         let give_up = Instant::now() + Duration::from_secs(10);
         while Arc::strong_count(&self.inner) > 1 && Instant::now() < give_up {
             std::thread::sleep(Duration::from_millis(1));
@@ -233,6 +238,9 @@ impl Service {
         let instance = db::instance(&conn).map_err(|e| format!("state store: {e}"))?;
         let lookups = db::open(&state_dir).map_err(|e| format!("state store: {e}"))?;
         let inner = Arc::new_cyclic(|weak| Inner {
+            #[cfg(windows)]
+            weak: weak.clone(),
+            freshness: Default::default(),
             scan: Arc::new(sink::CatalogScanSink::new(weak.clone(), lookups)),
             dataset: config.dataset,
             state_dir,
@@ -278,6 +286,9 @@ impl Service {
                 };
                 format!("grant root #{} refused: {rule}", i + 1)
             })?;
+        }
+        if scan_writer {
+            freshness::start(&inner);
         }
         spawn_telemetry_pump(Arc::downgrade(&inner));
         Ok(Service { inner })

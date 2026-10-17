@@ -20,6 +20,21 @@ pub fn open(dir: &Path) -> Sql<Connection> {
     conn.execute_batch(
         "PRAGMA foreign_keys=ON;PRAGMA st.synchronous=FULL;PRAGMA st.foreign_keys=ON",
     )?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS st.root_freshness (
+        grant_id INTEGER PRIMARY KEY REFERENCES root_grant(id),
+        catalog_instance TEXT NOT NULL,
+        journal_id BLOB CHECK(journal_id IS NULL OR length(journal_id)=8),
+        next_usn INTEGER,
+        at_ns INTEGER NOT NULL,
+        CHECK((journal_id IS NULL)=(next_usn IS NULL))
+    )",
+    )?;
+    // Repeat an interrupted forget's derived-state cleanup before serving this session.
+    conn.execute(
+        "DELETE FROM st.root_freshness WHERE grant_id IN (SELECT grant_id FROM st.root_forgotten)",
+        [],
+    )?;
     Ok(conn)
 }
 
