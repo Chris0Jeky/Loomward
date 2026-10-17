@@ -466,19 +466,11 @@ impl Sampler {
             if let Some(own) = &mut own {
                 // #446: divide by the time between the two counter reads. Start-to-start time
                 // undercounts by the process walk whenever a refresh follows a cadence sample.
-                own.rates = self.own.as_ref().map_or_else(
-                    || unknown_rates("requires_two_samples"),
-                    |(old_at, old)| {
-                        derive_rates(
-                            own,
-                            old,
-                            own_read_at
-                                .unwrap_or(now)
-                                .duration_since(*old_at)
-                                .as_secs_f64(),
-                            current.logical_processor_count.unwrap_or(0),
-                        )
-                    },
+                own.rates = own_rates(
+                    own,
+                    self.own.as_ref(),
+                    own_read_at.unwrap_or(now),
+                    current.logical_processor_count.unwrap_or(0),
                 );
             }
             if refresh_processes {
@@ -554,6 +546,27 @@ fn unknown_rates(reason: &str) -> Rates {
         unknowns: vec![unknown("all_rates", reason)],
         ..Rates::default()
     }
+}
+
+/// Own-row rate over the gap between the previous and current counter reads (#446, #467). Pure,
+/// so the denominator can be pinned without sampling the OS.
+fn own_rates(
+    own: &Process,
+    previous: Option<&(Instant, Process)>,
+    read_at: Instant,
+    cores: u32,
+) -> Rates {
+    previous.map_or_else(
+        || unknown_rates("requires_two_samples"),
+        |(old_at, old)| {
+            derive_rates(
+                own,
+                old,
+                read_at.duration_since(*old_at).as_secs_f64(),
+                cores,
+            )
+        },
+    )
 }
 
 fn derive_rates(current: &Process, previous: &Process, seconds: f64, cores: u32) -> Rates {
@@ -962,6 +975,37 @@ mod tests {
             "got {got}, expected {by_read_gap} (read gap); start gap would give {}",
             by_read_gap / 4.0
         );
+    }
+
+    #[test]
+    fn own_cpu_rate_denominator_is_the_read_to_read_gap_over_all_cores() {
+        // #469: synthetic instants only, no sleep and no OS read. 40 s of CPU over a 100 s
+        // read-to-read gap on 4 logical cores is 0.1; a start-to-start gap of 400 s would give
+        // 0.025, and dropping the core count would give 0.4.
+        let base = Instant::now();
+        let seed = Process {
+            pid: 7,
+            start_time_windows_100ns: Some("123".into()),
+            cpu_user_100ns: Some(0),
+            cpu_kernel_100ns: Some(0),
+            ..Process::default()
+        };
+        let own = Process {
+            cpu_user_100ns: Some(300_000_000),
+            cpu_kernel_100ns: Some(100_000_000),
+            ..seed.clone()
+        };
+        let previous = (base, seed);
+        let read_at = base + std::time::Duration::from_secs(100);
+        let rates = own_rates(&own, Some(&previous), read_at, 4);
+        let got = rates.cpu_fraction.expect("a valid own cpu fraction");
+        assert!((got - 0.1).abs() < 1e-12, "got {got}, expected 0.1");
+        let no_previous = own_rates(&own, None, read_at, 4);
+        assert!(no_previous.cpu_fraction.is_none());
+        assert!(no_previous
+            .unknowns
+            .iter()
+            .any(|u| u.reason == "requires_two_samples"));
     }
 
     #[test]
