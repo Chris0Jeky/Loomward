@@ -38,9 +38,60 @@ These are low-level primitives: the later journal/executor must durably record
 identities before preallocation/writes, withdraw publish intent before cleanup,
 and fence publish with consent and grant epochs. Creation-time preservation
 changes `ObjectKey.creation_time`: journal the planned metadata timestamp before
-setting it and use the resulting identity afterwards, including crash recovery.
+setting it. Crash recovery attaches only by the journaled file ID, accepting the original or journaled
+planned creation time, and checks that the journaled name still resolves to that identity. A same-name
+replacement is never adopted.
 This lane does not implement that journal, consent, recovery, destination
 cloud/protected-root policy, retry scheduling, or post-publish tree confirmation.
+
+### Recovery and post-publish API follow-up (#506)
+
+The C5 integration already added `Staging::attach`, `attach_published`, `resolve`, post-publish
+`verify`, and `VerifiedFile::streams`/`ea_size`. Published attachments permit reads only: creates,
+metadata writes, cleanup and another publish are refused. The regression tests now directly exercise
+fresh post-publish default/named-stream hashes, stream enumeration, and these refusals. The existing
+attachment regression accepts only the original or journaled planned creation time and refuses a
+same-path replacement.
+
+`Staging::entries` completes the missing listing seam. It lists immediate names through identity-pinned
+directory handles with `FileIdExtdDirectoryInfo`, reuses the validated enumeration decoder, and refuses
+incomplete, unsupported, unrepresentable or over-limit listings. It has no path fallback and never
+descends into a reparse entry. Each call restarts its own listing. C5's pre-publish, post-publish and
+crash-confirmation tree checks now list only manifest directories through this API instead of walking
+reconstructed paths with `read_dir`; extra names still fail confirmation. Metadata checks continue to
+bind every manifest name to its recorded identity.
+
+The listing regression first failed at the unimplemented API (3 controls passed, 1 failed), then passed
+with the implementation. It exercises multiple native buffers, empty folders, repeated reads after
+publish, an extra entry, and replaced root/child folders. All native tests retain the existing
+`skip_elevated` refusal-and-skip pattern. Personal copying stays `copy_effect_gated`, Q1 removal stays
+off by default, and no new effect kind or owner decision is introduced. The LOW suggestions in #506
+about a source-typed writer, a unified stream-name convention and API-order/type-state remain open;
+this recovery/listing follow-up does not design those contracts.
+
+Follow-up verification on Windows/NTFS, uncommitted changes over
+`5db9090783b6ff73def07899a06d4e9ee087c8a4`, in `C:/lw/wt/c2-506`. Every Cargo command uses
+`CARGO_BUILD_JOBS=3` and `CARGO_TARGET_DIR=C:\lw\target\c2-506`. No crash-sweep environment
+override is set. Local raw logs stay in the worktree's ignored `.loomward/` directory.
+The workspace service tests also leave synthetic fixtures in ignored `target/test-roots/`
+(`loomward-service::paths::test_roots_base`); this is not the Cargo build directory. Both ignored
+directories remain in the uncommitted worktree for the driver's handoff.
+
+- `cargo test --manifest-path C:/lw/wt/c2-506/Cargo.toml -p loomward-windows --all-features -- --test-threads=2`:
+  188 unit tests and 8 decoder/property tests passed, 0 failed; the existing throughput test is ignored.
+  This includes all 8 C6 default fault/crash tests and the nested-extra regression at pre-publish,
+  post-publish and crash-confirmation boundaries. Native effects ran without elevated-token skips.
+- `cargo fmt --manifest-path C:/lw/wt/c2-506/Cargo.toml --all --check`: passed.
+- `cargo clippy --manifest-path C:/lw/wt/c2-506/Cargo.toml --workspace --all-targets -- -D warnings`: passed.
+- `cargo clippy --manifest-path C:/lw/wt/c2-506/Cargo.toml -p loomward-windows --all-targets --all-features -- -D warnings`:
+  passed.
+- `cargo test --manifest-path C:/lw/wt/c2-506/Cargo.toml --workspace --no-fail-fast -- --test-threads=2`:
+  1,426 passed, 0 failed, 2 existing ignored tests (including doctests and integration tests).
+- `git -C C:/lw/wt/c2-506 diff --check`: passed. The relative HUMAN_TODO link resolves locally.
+
+Not verified by this follow-up: ReFS, hosted elevated runners, physical power loss (G5), proven restore
+(G9), or C5 resume (still unimplemented). No personal copying gate opens. Owner questions Q1-Q3 remain
+in [HUMAN_TODO.md q-47](../../HUMAN_TODO.md).
 
 ## Hypotheses measured
 

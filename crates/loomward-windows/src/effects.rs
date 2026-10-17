@@ -517,6 +517,55 @@ impl Staging<'_> {
             sector: self.destination.sector,
         })
     }
+    /// Immediate entry names under identity-pinned staging or published parents; never follows links.
+    pub fn entries(&self, path: &[(&str, ObjectKey)]) -> io::Result<Vec<String>> {
+        let pins = self.pins(path, false)?;
+        let folder = pins.last().unwrap();
+        let mut buffer = vec![0u64; 8192];
+        let mut names = Vec::new();
+        let mut first = true;
+        loop {
+            buffer.fill(0);
+            if unsafe {
+                GetFileInformationByHandleEx(
+                    folder.as_raw_handle(),
+                    if first {
+                        FileIdExtdDirectoryRestartInfo
+                    } else {
+                        FileIdExtdDirectoryInfo
+                    },
+                    buffer.as_mut_ptr().cast(),
+                    (buffer.len() * 8) as u32,
+                )
+            } == 0
+            {
+                let error = io::Error::last_os_error();
+                return if error.raw_os_error() == Some(ERROR_NO_MORE_FILES as i32) {
+                    Ok(names)
+                } else {
+                    Err(error)
+                };
+            }
+            let bytes = unsafe {
+                std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), buffer.len() * 8)
+            };
+            enumerate::decode_buffer(bytes, enumerate::Strategy::Extended, &mut |entry| {
+                let name = String::from_utf16(entry.name)
+                    .ok()
+                    .filter(|n| component(n).is_ok());
+                if let Some(name) =
+                    name.filter(|_| names.len() < loomward_operations::MAX_ITEMS as usize)
+                {
+                    names.push(name);
+                    enumerate::Flow::Continue
+                } else {
+                    enumerate::Flow::Stop
+                }
+            })
+            .map_err(|_| refused("incomplete staging listing"))?;
+            first = false;
+        }
+    }
     /// Caller must durably record publish intent and check the grant epoch first.
     /// This one-shot syscall never replaces an entry or retries a refused rename.
     pub fn publish(&mut self, final_name: &str) -> io::Result<()> {
@@ -971,8 +1020,9 @@ impl StagedFile {
     pub fn identity(&self) -> io::Result<ObjectKey> {
         Ok(identity::from_file(&self.file)?.object)
     }
-    /// Journal the planned creation time before changing it; re-query `identity`
-    /// afterwards for verification and cleanup, including recovery after a crash.
+    /// Journal the planned creation time before changing it; re-query `identity` after success.
+    /// After a crash, reopen by journaled file ID with the original or journaled planned creation
+    /// time, never by name.
     pub fn set_metadata(&self, metadata: BasicMetadata) -> io::Result<()> {
         metadata.apply(&self.file)
     }
