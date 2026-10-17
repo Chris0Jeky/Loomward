@@ -244,17 +244,17 @@ impl Destination {
         }
         // This host rejects directory hints for OpenFileById (ERROR_NOT_SUPPORTED).
         // A zero-access volume handle supplies ID lookup and geometry, never raw disk I/O.
-        let drive = match path.components().next() {
-            Some(std::path::Component::Prefix(prefix)) => match prefix.kind() {
-                std::path::Prefix::Disk(drive) | std::path::Prefix::VerbatimDisk(drive) => drive,
-                _ => return Err(refused("local drive required")),
-            },
+        // The hint is the volume the pinned parent lives on, not the one the path's drive letter names: a
+        // mounted folder, junction or subst alias reaches another volume through a different letter.
+        match path.components().next() {
+            Some(std::path::Component::Prefix(prefix))
+                if matches!(
+                    prefix.kind(),
+                    std::path::Prefix::Disk(_) | std::path::Prefix::VerbatimDisk(_)
+                ) => {}
             _ => return Err(refused("local drive required")),
-        };
-        let volume_path: Vec<_> = format!(r"\\.\{}:", char::from(drive))
-            .encode_utf16()
-            .chain(Some(0))
-            .collect();
+        }
+        let volume_path = enumerate::volume_device(parent).map_err(source_error)?;
         let handle = unsafe {
             CreateFileW(
                 volume_path.as_ptr(),
@@ -694,7 +694,9 @@ impl Staging<'_> {
         BasicMetadata::read(&self.pin(false)?)
     }
     /// Caller must first withdraw any journaled publish intent. No adoption by name.
-    /// The exclusive delete share binds identity, link count and disposition to one handle.
+    /// The by-ID pin below shares delete, so it excludes nothing. Identity, link count and disposition are
+    /// checked, and the removal made, on the name-opened handle, which shares READ only: no other handle
+    /// can open the name for delete or write while it is held.
     pub fn cleanup_file(
         &self,
         path: &[(&str, ObjectKey)],

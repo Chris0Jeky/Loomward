@@ -853,8 +853,9 @@ fn open_by_id(hint: &File, descriptor: &FILE_ID_DESCRIPTOR) -> Result<File, Sour
     Ok(unsafe { File::from_raw_handle(handle) })
 }
 
-/// A metadata handle on the root directory of the volume `file` lives on, by volume GUID.
-fn volume_root(file: &File) -> Result<File, SourceError> {
+/// The `\\?\Volume{GUID}` device path of the volume `file` lives on, NUL-terminated and without the root
+/// separator: a handle opened on it is the volume device itself, not the volume's root directory.
+pub(crate) fn volume_device(file: &File) -> Result<Vec<u16>, SourceError> {
     let mut path = vec![0u16; 32768];
     let n = unsafe {
         GetFinalPathNameByHandleW(
@@ -870,11 +871,20 @@ fn volume_root(file: &File) -> Result<File, SourceError> {
     if n >= path.len() {
         return Err(SourceError::Io(ERROR_FILENAME_EXCED_RANGE as i32));
     }
-    // `\\?\Volume{GUID}\rest`: keep through the separator after the GUID, then terminate.
+    // `\\?\Volume{GUID}\rest`: the device name ends at the first separator after the GUID.
     let end = (4..n)
         .find(|&i| path[i] == u16::from(b'\\'))
         .ok_or(SourceError::Refused)?;
-    path[end + 1] = 0;
+    path.truncate(end);
+    path.push(0);
+    Ok(path)
+}
+
+/// A metadata handle on the root directory of the volume `file` lives on, by volume GUID.
+fn volume_root(file: &File) -> Result<File, SourceError> {
+    let mut path = volume_device(file)?;
+    path.pop();
+    path.extend([u16::from(b'\\'), 0]);
     let handle = unsafe {
         CreateFileW(
             path.as_ptr(),

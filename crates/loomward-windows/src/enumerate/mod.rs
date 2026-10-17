@@ -310,6 +310,8 @@ pub(crate) use native::force_elevation_for_test;
 pub use native::read_capped_regular_file;
 #[cfg(all(test, windows))]
 pub(crate) use native::record_open_accesses;
+#[cfg(all(windows, feature = "copy-primitives"))]
+pub(crate) use native::volume_device;
 #[cfg(windows)]
 pub(crate) use native::{non_elevated, open_watch_root};
 #[cfg(all(windows, any(feature = "content-read", test)))]
