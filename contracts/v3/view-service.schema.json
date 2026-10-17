@@ -46,7 +46,7 @@
     "Basis": { "enum": ["logical", "allocated"] },
     "CoverageState": { "enum": ["complete", "partial", "stale", "unscanned", "denied", "excluded", "cancelled", "unknown"] },
     "EnumerationStrategy": {
-      "enum": ["file_id_extd_directory_info", "nt_query_directory_file_ex", "find_first_file_ex_large_fetch", "std_read_dir"],
+      "enum": ["file_id_extd_directory_info", "nt_query_directory_file_ex", "find_first_file_ex_large_fetch", "std_read_dir", "file_id_both_directory_info"],
       "$comment": "Default pending the LW-101 spike: file_id_extd_directory_info (ADR-V3-05)."
     },
     "ExtFamily": { "enum": ["document", "spreadsheet", "presentation", "image", "video", "audio", "archive", "code", "data", "model", "executable", "system", "font", "other", "none"] },
