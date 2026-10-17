@@ -2326,6 +2326,8 @@ pub(crate) fn rollup(conn: &Connection, root: i64, clean: bool) -> Result<()> {
 #[cfg(test)]
 mod bulk_tests;
 #[cfg(test)]
+mod full_disk_tests;
+#[cfg(test)]
 mod publication_tests;
 #[cfg(test)]
 mod tests {
