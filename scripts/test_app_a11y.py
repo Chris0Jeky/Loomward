@@ -267,6 +267,18 @@ def run_a11y(browser: Browser, base: str, check) -> None:
     check(ring['focusVisible'] and ring['style'] != 'none' and ring['width'] != '0px', f'2.4.7 after Skip to content the keyboard focus on main shows a ring: {ring}')
     page.context.close()
 
+    # Forget record by keyboard moves focus to the Backups heading; that focus must show the ring too.
+    page = new_page()
+    goto(page, base, 'backups', 'Backups')
+    forget = page.get_by_role('button', name=re.compile('^Forget the evidence for'))
+    expect(forget.first).to_be_visible()
+    forget.first.focus()
+    page.keyboard.press('Enter')
+    expect(page.get_by_role('heading', name='Backups', level=1)).to_be_focused()
+    ring = page.evaluate("() => { const h = document.activeElement, s = getComputedStyle(h); return { tag: h.tagName, focusVisible: h.matches(':focus-visible'), style: s.outlineStyle, width: s.outlineWidth }; }")
+    check(ring['tag'] == 'H1' and ring['focusVisible'] and ring['style'] != 'none' and ring['width'] != '0px', f'2.4.7 after Forget record by keyboard the heading that takes focus shows a ring: {ring}')
+    page.context.close()
+
     # --- 1.4.11: control edges ---------------------------------------------------------------------------------------
     toks = tokens()
     for theme, v in toks.items():

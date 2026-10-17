@@ -196,5 +196,6 @@
   .facts dd { margin: 0; }
   .drill summary { cursor: pointer; min-height: 24px; }
   .foot { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3); margin-top: var(--sp-3); }
-  h1:focus { outline: none; }
+  /* the heading takes focus after Forget record: keyboard users get the focus ring (2.4.7) */
+  h1:focus:not(:focus-visible) { outline: none; }
 </style>
