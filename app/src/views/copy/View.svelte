@@ -160,8 +160,15 @@
       <p role="status">{copy.status.state.replaceAll('_', ' ')} · {formatCount(copy.status.items_verified)} of {formatCount(copy.status.items_total)} items verified</p>
       {#if copy.status.refusal}<p class="bad"><VisibleName name={nodeName(copy.status.refusal.node_id)} /> · <code>{copy.status.refusal.code}</code>: {refusalReason(copy.status.refusal.code)}</p>{/if}
       {#if copy.status.state === 'committed'}<p>No space was freed on the source. Read-back does not prove persistence beyond the device’s own cache.</p>
-      {:else if copy.status.state === 'cancelled'}<p>The source was not changed. No space was freed on the source. A detailed cleanup receipt is not supplied by this contract.</p>
-      {:else if ['blocked', 'needs_attention'].includes(copy.status.state)}<p>Not completed and verified. Sources stay untouched; staged or published entries may remain. Detailed leftover identities are not supplied by this contract. Nothing resumes automatically.</p>{/if}
+      {:else if copy.status.state === 'cancelled'}<p>The source was not changed. No space was freed on the source.</p>
+      {:else if ['blocked', 'needs_attention'].includes(copy.status.state)}<p>Not completed and verified. Sources stay untouched; staged or published entries may remain. Nothing resumes automatically.</p>{/if}
+      {#if copy.status.staging_folder}
+        <p class="unknown">The staging folder <VisibleName name={copy.status.staging_folder} /> was left in place in <VisibleName name={copy.parent?.name ?? 'the destination parent'} />; remove it in Explorer if you no longer need it (Loomward does not delete it until you allow it).</p>
+      {/if}
+      {#if copy.status.leftover_staging_folders?.length}
+        <p class="unknown">Loomward intended to create these staging folders but never recorded them, so they may be empty leftovers. Loomward does not adopt or remove them; look for them in Explorer under the destination parent.</p>
+        <ul class="folders" aria-label="Leftover staging folder names">{#each (copy.status.leftover_staging_folders ?? []) as name, i (i)}<li><VisibleName name={name} /></li>{/each}</ul>
+      {/if}
       <p class="muted">Byte progress and transfer rate: unknown — the status contract reports verified item counts only.</p>
     {/if}
     <div class="actions">
