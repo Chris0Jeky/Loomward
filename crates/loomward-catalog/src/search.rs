@@ -230,17 +230,22 @@ fn root_states(conn: &Connection, root: Option<i64>) -> Result<Vec<SearchRootSta
 
 /// The visibility and filter condition of one hit's row (`d` is its folder): an active grant, the
 /// requested root, no pending absence, and the request's filters. NULL reads as false.
-fn visible(files: bool) -> String {
+fn visible(files: bool, scope: Option<&[i64]>) -> String {
     let filters = if files {
         "(?4 IS NULL OR e.ext=?4) AND (?5 IS NULL OR f.logical>=?5) AND (?6 IS NULL OR f.logical<=?6) AND (?7 IS NULL OR f.modified_ft>=?7) AND (?8 IS NULL OR f.modified_ft<=?8)"
     } else {
         "?4 IS NULL AND (?5 IS NULL OR d.sub_logical>=?5) AND (?6 IS NULL OR d.sub_logical<=?6) AND (?7 IS NULL OR d.modified_ft>=?7) AND (?8 IS NULL OR d.modified_ft<=?8)"
     };
-    format!("d.root_id IN (SELECT id FROM root_grant WHERE state='active') AND d.listing_state!='absent_pending' AND (?3 IS NULL OR d.root_id=?3) AND {filters}")
+    // Root ids are integers from the store, so the scope is inlined; `IN ()` matches nothing.
+    let scope = scope.map_or(String::new(), |ids| {
+        let ids: Vec<String> = ids.iter().map(i64::to_string).collect();
+        format!(" AND d.root_id IN ({})", ids.join(","))
+    });
+    format!("d.root_id IN (SELECT id FROM root_grant WHERE state='active') AND d.listing_state!='absent_pending' AND (?3 IS NULL OR d.root_id=?3){scope} AND {filters}")
 }
 /// The SQL of one batch: a pass's folders or files, or a filter-only listing of either.
-fn statement(filter: bool, files: bool, by_size: bool) -> String {
-    let matched = format!("coalesce({},0)", visible(files));
+fn statement(filter: bool, files: bool, by_size: bool, scope: Option<&[i64]>) -> String {
+    let matched = format!("coalesce({},0)", visible(files, scope));
     match (filter, files) {
         (false, false) => format!("SELECT {DIR_COLUMNS},{matched},s.rowid FROM search_name s JOIN dir d ON d.id=s.rowid WHERE search_name MATCH ?1 AND s.rowid>?2 AND s.rowid<{FILE_KEY} ORDER BY s.rowid LIMIT {BATCH}"),
         (false, true) => format!("SELECT {FILE_COLUMNS},{matched},s.rowid FROM search_name s JOIN file f ON f.id=s.rowid-{FILE_KEY} JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id WHERE search_name MATCH ?1 AND s.rowid>?2 ORDER BY s.rowid LIMIT {BATCH}"),
@@ -271,7 +276,7 @@ impl Walk<'_> {
     fn batch(&mut self, conn: &Connection, expr: &str, files: bool) -> Result<bool> {
         let r = self.req;
         let by_size = files && self.pass == FILTER_PASS && r.extension.is_some();
-        let sql = statement(self.pass == FILTER_PASS, files, by_size);
+        let sql = statement(self.pass == FILTER_PASS, files, by_size, r.scope.as_deref());
         let mut stmt = conn.prepare_cached(&sql)?;
         let values = [
             Value::Text(expr.into()),
@@ -392,6 +397,14 @@ fn clean(req: &SearchRequest, deadline: Option<std::time::Instant>) -> Result<St
     {
         return Err(Error::Invalid("search bounds"));
     }
+    // A root outside a client's scope is unknown, before anything about it is read.
+    if req
+        .scope
+        .as_ref()
+        .is_some_and(|s| req.root_id.is_some_and(|r| !s.contains(&r)))
+    {
+        return Err(Error::NotFound);
+    }
     let text: String = req
         .text
         .trim()
@@ -412,9 +425,20 @@ fn filters_key(req: &SearchRequest, text: &str) -> String {
             req.max_bytes,
             req.modified_after,
             req.modified_before,
-            &req.kind
+            &req.kind,
+            &req.scope
         )
     )
+}
+/// Root states and revisions narrowed to a client's scope.
+pub(crate) fn in_scope<T>(req: &SearchRequest, rows: Vec<T>, root: impl Fn(&T) -> i64) -> Vec<T> {
+    match &req.scope {
+        Some(scope) => rows
+            .into_iter()
+            .filter(|r| scope.contains(&root(r)))
+            .collect(),
+        None => rows,
+    }
 }
 /// The page's `index_state` and `partial` from the searched roots.
 fn index_meta(roots: &[SearchRootState]) -> (&'static str, bool) {
@@ -438,7 +462,7 @@ impl Reader {
         let filters = filters_key(req, &text);
         let plan = plan(&text);
         self.read(|conn| {
-            let revisions = revisions(conn, req.root_id)?;
+            let revisions = in_scope(req, revisions(conn, req.root_id)?, |r| r.0);
             let catalog_instance = instance(conn)?;
             if let Some(c) = &req.cursor {
                 if c.filters != filters {
@@ -448,7 +472,7 @@ impl Reader {
                     return Err(Error::StaleGeneration);
                 }
             }
-            let roots = root_states(conn, req.root_id)?;
+            let roots = in_scope(req, root_states(conn, req.root_id)?, |r| r.root_id);
             // Prepare afresh and before the budget: preparing the FTS table runs SQL, and a schema
             // error raised there under the progress handler would read as a budget cut.
             conn.flush_prepared_statement_cache();
@@ -456,7 +480,12 @@ impl Reader {
                 let filter = *pass == FILTER_PASS;
                 for (files, by_size) in [(false, false), (true, false), (true, true)] {
                     if !by_size || filter {
-                        conn.prepare_cached(&statement(filter, files, by_size))?;
+                        conn.prepare_cached(&statement(
+                            filter,
+                            files,
+                            by_size,
+                            req.scope.as_deref(),
+                        ))?;
                     }
                 }
             }
