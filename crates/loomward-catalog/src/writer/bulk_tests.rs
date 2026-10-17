@@ -1,32 +1,8 @@
 //! First-scan bulk build (#148): atomic publication, crash and revocation discard, cancellation,
 //! the incremental second scan, and row-for-row equivalence with the incremental path.
 use super::*;
+use crate::test_watchdog::watchdog;
 use std::path::Path;
-
-/// Ends the test process with a message once the calling test outlives five minutes: these tests
-/// take seconds, and a hang must fail CI quickly instead of stalling the job for an hour (#495).
-/// Drop the returned sender when the test ends.
-#[must_use]
-fn watchdog() -> Sender<()> {
-    let name = std::thread::current()
-        .name()
-        .unwrap_or("bulk test")
-        .to_owned();
-    let (done, wait) = bounded::<()>(0);
-    std::thread::spawn(move || {
-        if wait.recv_timeout(Duration::from_secs(300))
-            == Err(crossbeam_channel::RecvTimeoutError::Timeout)
-        {
-            // Straight to stderr: test output capture would swallow `eprintln!` from this thread.
-            let _ = std::io::Write::write_all(
-                &mut std::io::stderr(),
-                format!("{name} hung for 5 minutes (#495); aborting the test process\n").as_bytes(),
-            );
-            std::process::abort();
-        }
-    });
-    done
-}
 
 fn open(path: &Path, bulk: bool) -> crate::Catalog {
     let catalog = crate::Catalog::open(path, "synthetic").unwrap();
