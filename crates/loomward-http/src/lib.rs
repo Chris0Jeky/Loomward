@@ -239,6 +239,8 @@ pub fn serve(service: Arc<dyn ViewService>, options: Options) -> io::Result<Hand
         .build()?;
     let (stop_tx, stop_rx) = watch::channel(false);
     let connections = Arc::new(Semaphore::new(options.max_connections.max(1)));
+    // Service teardown may wait for native workers; keep the final owner outside Tokio.
+    let service = shared.service.clone();
     let thread = std::thread::Builder::new()
         .name("loomward-serve".into())
         .spawn(move || {
@@ -249,6 +251,7 @@ pub fn serve(service: Arc<dyn ViewService>, options: Options) -> io::Result<Hand
                 }
             });
             runtime.shutdown_timeout(Duration::from_secs(2));
+            drop(service);
         })?;
     Ok(Handle {
         addr,
@@ -1010,6 +1013,34 @@ mod tests {
             Drained::TooLarge
         ));
         assert_eq!(read.load(Ordering::SeqCst), 5);
+    }
+
+    #[test]
+    fn shutdown_drops_the_service_outside_the_runtime() {
+        struct DropProbe(std::sync::mpsc::Sender<bool>);
+        impl ViewService for DropProbe {
+            fn call(&self, _: RequestEnvelope, _: &CallContext) -> ResponseEnvelope {
+                unreachable!()
+            }
+            fn subscribe(&self, _: Option<(String, u64)>) -> Box<dyn EventStream> {
+                unreachable!()
+            }
+        }
+        impl Drop for DropProbe {
+            fn drop(&mut self) {
+                self.0
+                    .send(tokio::runtime::Handle::try_current().is_ok())
+                    .unwrap();
+            }
+        }
+        let (dropped, received) = std::sync::mpsc::channel();
+        serve(Arc::new(DropProbe(dropped)), Options::default())
+            .unwrap()
+            .shutdown();
+        assert!(
+            !received.recv_timeout(Duration::from_secs(5)).unwrap(),
+            "a blocking service destructor ran inside the Tokio runtime"
+        );
     }
 
     #[test]

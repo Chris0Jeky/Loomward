@@ -91,6 +91,7 @@ describe('copy UI lifecycle (scripted transport only; no file effects)', () => {
     expect(call).toHaveBeenCalledTimes(1); expect(f.canApprove).toBe(false);
     expect(refusalReason('cloud_placeholder')).toContain('download');
     expect(refusalReason('source_changed')).toContain('new preview');
+    expect(refusalReason('destination_changed')).toContain('Nothing was written');
   });
 
   it('rejects approval for a different digest or operation and expired approval', async () => {

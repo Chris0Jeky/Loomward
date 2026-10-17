@@ -4,6 +4,9 @@
 //! relists 100 directories as a watcher would (renames and removals), then times first pages of a
 //! fixed query set. `--no-index` drops the index and its triggers right after open, for an A/B of
 //! the write path; queries are skipped in that mode. `--no-token-index` keeps the trigram index and opens the catalogue without the ranked-search token index.
+//! `--publish-only` stops after the first-scan EndRun (the #520 publish baseline). `--migrate`
+//! builds without the token index, then times reopening with `ranked_index: true` (the #520
+//! migration) and reports the WAL left behind by that open.
 use loomward_catalog::*;
 use rusqlite::Connection;
 use serde_json::json;
@@ -82,7 +85,7 @@ fn summary(mut ms: Vec<f64>) -> serde_json::Value {
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() < 2 || args[0] != "--rows" {
-        return Err("usage: search_bench --rows 1000000 [--no-index|--no-token-index]".into());
+        return Err("usage: search_bench --rows 1000000 [--no-index|--no-token-index] [--publish-only|--migrate]".into());
     }
     let rows: usize = args[1].parse()?;
     let indexed = !args.iter().any(|a| a == "--no-index");
@@ -91,7 +94,9 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     }
     let temp = tempfile::tempdir()?;
     // The ranked-search token index is on unless `--no-token-index` (or `--no-index`) asks for the v1 write path.
-    let ranked = indexed && !args.iter().any(|a| a == "--no-token-index");
+    let flag = |f: &str| args.iter().any(|a| a == f);
+    let migrate = flag("--migrate");
+    let ranked = indexed && !migrate && !flag("--no-token-index");
     let c = Catalog::open_with(
         temp.path(),
         "synthetic",
@@ -209,6 +214,71 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     })?;
     let end_run_s = started.elapsed().as_secs_f64();
     eprintln!("EndRun: {end_run_s:.3} s");
+    if flag("--publish-only") || migrate {
+        let wal = |p: &std::path::Path| {
+            std::fs::metadata(p.join("catalog.db-wal")).map_or(0, |m| m.len())
+        };
+        let mut receipt = json!({
+            "scope": "in-process generated synthetic names; first-scan publish only",
+            "ranked_index": ranked, "files": rows, "directories": directories + 1,
+            "publish_seconds": publish_s, "end_run_seconds": end_run_s,
+            "catalog_bytes": std::fs::metadata(temp.path().join("catalog.db"))?.len(),
+        });
+        drop(db);
+        drop(c);
+        if migrate {
+            let before = std::fs::metadata(temp.path().join("catalog.db"))?.len();
+            // The same open without the option, for the share of the migrated open that is not the index.
+            let started = Instant::now();
+            drop(Catalog::open(temp.path(), "synthetic")?);
+            receipt["plain_reopen_seconds"] = json!(started.elapsed().as_secs_f64());
+            let started = Instant::now();
+            let c = Catalog::open_with(
+                temp.path(),
+                "synthetic",
+                &CatalogOptions { ranked_index: true },
+            )?;
+            receipt["migrate_open_seconds"] = json!(started.elapsed().as_secs_f64());
+            receipt["migrate_wal_bytes_after_open"] = json!(wal(temp.path()));
+            receipt["migrate_catalog_bytes_before"] = json!(before);
+            eprintln!("migrate open: {} s", receipt["migrate_open_seconds"]);
+            // The writer backfills in the background (#520): a command sent meanwhile waits for
+            // at most one round, and ranked search refuses until the backfill is done.
+            let started = Instant::now();
+            c.writer().call(WriteCommand::BeginRun {
+                grant_id,
+                mode: "targeted".into(),
+                strategy: "in_process_synthetic".into(),
+                started_at_ns: 3,
+            })?;
+            receipt["command_during_backfill_seconds"] = json!(started.elapsed().as_secs_f64());
+            let mut reader = c.reader()?;
+            let request = SearchRequest {
+                text: "budget".into(),
+                kind: "any".into(),
+                limit: 10,
+                work_budget: 50_000_000,
+                ..Default::default()
+            };
+            loop {
+                match reader.search_ranked(&request, &RankOptions::default()) {
+                    Err(Error::RankedIndexBuilding) => {
+                        std::thread::sleep(std::time::Duration::from_millis(50))
+                    }
+                    other => break drop(other?),
+                }
+            }
+            receipt["backfill_done_seconds_after_open"] = json!(started.elapsed().as_secs_f64());
+            receipt["migrate_wal_bytes_after_backfill"] = json!(wal(temp.path()));
+            eprintln!(
+                "backfill done: {} s",
+                receipt["backfill_done_seconds_after_open"]
+            );
+            drop(c);
+        }
+        println!("{}", serde_json::to_string_pretty(&receipt)?);
+        return Ok(());
+    }
     // A watcher's targeted relist of 100 directories: 10 renames and 10 removals in each.
     let run = begin("targeted")?;
     let started = Instant::now();

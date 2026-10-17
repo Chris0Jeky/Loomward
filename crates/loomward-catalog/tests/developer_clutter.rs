@@ -104,6 +104,16 @@ fn only_manifest_and_adjacent_output_pairs_qualify_and_sizes_rank() {
         assert_eq!(row.anchor, NodeKey::File(anchor));
         assert_eq!(row.anchor_name, *manifest);
         assert_eq!(row.provider, *provider);
+        assert_eq!(
+            row.kind,
+            match *output {
+                "node_modules" => "dependency_install",
+                ".venv" | "venv" => "environment",
+                "__pycache__" => "bytecode_cache",
+                ".gradle" => "build_cache",
+                _ => "build_output",
+            }
+        );
         assert_eq!(row.regeneration_cost, "unknown");
         assert!(!row.regeneration_hint.is_empty());
         assert!(row.reason.contains("conventional"));
@@ -137,8 +147,10 @@ fn incomplete_and_unknown_allocations_do_not_become_exact_or_zero() {
     lab.db
         .execute("UPDATE dir SET sub_alloc_unknown=1 WHERE id=?1", [target])
         .unwrap();
-    assert_eq!(lab.report(200).candidates[0].logical_bytes, Some(42));
-    assert_eq!(lab.report(200).candidates[0].allocated_bytes, None);
+    let report = lab.report(200);
+    assert!(report.partial);
+    assert_eq!(report.candidates[0].logical_bytes, Some(42));
+    assert_eq!(report.candidates[0].allocated_bytes, None);
     lab.db
         .execute(
             "UPDATE dir SET sub_complete=0,listing_state='incomplete' WHERE id=?1",

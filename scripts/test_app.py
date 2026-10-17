@@ -46,6 +46,7 @@ from test_app_views import run_views, wait_until
 from test_app_copy import run_copy
 from test_app_inventory import run_inventory
 from test_app_ask import live_ask_isolated, run_ask
+from test_app_clutter import live_clutter, run_clutter
 
 ROOT = Path(__file__).resolve().parents[1]
 TOKEN = 'a1b2c3d4e5f60718293a4b5c6d7e8f90'
@@ -78,7 +79,7 @@ def fake_result(command: str):
         return {
             'protocol': 'loomward/3', 'engine_version': 'fake-engine', 'adapter': 'http', 'dataset_class': engine.dataset,
             'session_started_at': '2026-10-01T00:00:00Z', 'enumeration_strategy': 'std_read_dir',
-            'capabilities': {'observation': {}, 'effects': effects},
+            'capabilities': {'observation': {'duplicate_content_read': False}, 'effects': effects},
             'features': {k: False for k in ('grant_picker', 'disclosure_dialog', 'teacher_available', 'telemetry_available', 'gpu_available', 'diagnostics_save', 'federated_search')},
             'limits': {'max_request_bytes': 65536, 'max_slice_nodes': 6000, 'max_page_items': 200},
         }
@@ -765,6 +766,7 @@ def run_live_serve(browser_path: str | None) -> None:
             run_inventory(page, base, check, live=True)
             live_backups(page, token)
             live_alerts(page, token)
+            live_clutter(page, token, check, live_call)
             live_diagnostics(page, token)
             live_scan_refusals(browser, exe)
             live_personal_scan(browser, exe)
@@ -925,7 +927,8 @@ def main() -> None:
         page.get_by_role('navigation', name='Views').get_by_role('link', name='Grants & health').click()
         expect(page.get_by_role('heading', name='Grants & health', level=1)).to_be_visible()
         expect(page.get_by_text('Synthetic Alpha', exact=False).first).to_be_visible()
-        check(page.get_by_text('off', exact=True).count() == 11, 'all 11 effect capabilities show as off')
+        check(page.get_by_text('off', exact=True).count() == 10, 'all 10 file/process effect capabilities show as off')
+        expect(page.locator('.caps li').filter(has_text='Content read: duplicates only, on request')).to_contain_text('not available')
         check(page.get_by_text('unknown').count() >= 3, 'engine figures the mock cannot know are shown as unknown')
         page.evaluate("location.hash = '#/nope'")
         expect(page.get_by_role('heading', name='No such view')).to_be_visible()
@@ -1038,6 +1041,7 @@ def main() -> None:
         run_inventory(page, base, check, shots=a.view_shots)
         run_copy(page, base, a.view_shots)
         run_ask(page, base)
+        run_clutter(page, base)
 
         # --- hygiene -------------------------------------------------------------------------------
         check(hosts <= {'127.0.0.1'}, f'every request stayed on loopback: {sorted(hosts)}')

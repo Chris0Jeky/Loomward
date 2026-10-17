@@ -60,7 +60,10 @@ struct Peer(Weak<Inner>);
 
 impl Peer {
     fn service(&self) -> Option<Service> {
-        self.0.upgrade().map(|inner| Service { inner, peer: true })
+        self.0.upgrade().map(|inner| Service {
+            inner: crate::OwnedInner(Some(inner)),
+            peer: true,
+        })
     }
 }
 
@@ -269,6 +272,10 @@ impl Inner {
                 let view = Peer(weak.clone());
                 let mut log = Vec::new();
                 let result = factory(&profile)
+                    .map_err(|error| turn::Failure {
+                        error,
+                        tools: Vec::new(),
+                    })
                     .and_then(|p| turn::ask(&view, &*p, &profile, &question, &mut log));
                 if let Some(inner) = weak.upgrade() {
                     let done = settle(&view, base, result, &log);
@@ -292,7 +299,7 @@ impl Inner {
 fn settle(
     view: &Peer,
     mut t: Value,
-    result: Result<Answer, ProviderError>,
+    result: Result<Answer, turn::Failure>,
     log: &[OutboundRecord],
 ) -> Value {
     t["finished_at"] = json!(now());
@@ -304,12 +311,23 @@ fn settle(
                    "outcome": cut(&r.outcome, 32)})
         })
         .collect();
+    let tools = match &result {
+        Ok(a) => &a.tools,
+        Err(e) => &e.tools,
+    };
+    t["tool_calls_total"] = json!(tools.len());
+    t["tool_calls"] = tools
+        .iter()
+        .take(LIST_CAP)
+        .map(|u| json!({"name": u.name, "ok": u.ok, "rows": u.rows, "detail": u.detail}))
+        .collect();
     let answer = match result {
         Ok(a) => a,
-        Err(e) => {
+        Err(f) => {
+            let e = f.error;
             t["state"] = json!("failed");
             t["failure"] = json!({"kind": kind_name(e.kind), "message": cut(&e.message, 256),
-                                  "dispatched": e.dispatched});
+                                  "dispatched": e.dispatched || log.iter().any(|r| r.dispatched)});
             return t;
         }
     };
@@ -328,13 +346,6 @@ fn settle(
     t["answer"] = json!(shown);
     t["citations"] = json!(citations);
     t["unverified"] = json!(unverified);
-    t["tool_calls_total"] = json!(answer.tools.len());
-    t["tool_calls"] = answer
-        .tools
-        .iter()
-        .take(LIST_CAP)
-        .map(|u| json!({"name": u.name, "ok": u.ok, "rows": u.rows, "detail": u.detail}))
-        .collect();
     t
 }
 

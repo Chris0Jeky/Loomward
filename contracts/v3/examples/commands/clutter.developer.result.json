@@ -1,0 +1,46 @@
+{
+  "root_id": "rt_1",
+  "generation": "12",
+  "rules_version": 1,
+  "partial": true,
+  "truncated": false,
+  "budget_hit": false,
+  "budget_note": null,
+  "candidates": [
+    {
+      "node_id": "nd_0101",
+      "name": "target",
+      "anchor_node_id": "nd_0100",
+      "anchor_name": "Cargo.toml",
+      "provider": "cargo",
+      "kind": "build_output",
+      "logical_bytes": "2147483648",
+      "allocated_bytes": "2151677952",
+      "coverage": "complete",
+      "regeneration_cost": "unknown",
+      "regeneration_hint": "Rebuild with Cargo; toolchain, dependencies and build-script inputs are unverified.",
+      "reason": "Cargo conventional target directory beside a recorded Cargo.toml.",
+      "uncertainty": "Names only: contents may contain unique source or datasets. Prerequisites, offline availability, active builds and rebuild cost are unknown. This is advice, never a disposability claim."
+    },
+    {
+      "node_id": "nd_0111",
+      "name": "node_modules",
+      "anchor_node_id": "nd_0110",
+      "anchor_name": "package.json",
+      "provider": "npm",
+      "kind": "dependency_install",
+      "logical_bytes": null,
+      "allocated_bytes": null,
+      "coverage": "partial",
+      "regeneration_cost": "unknown",
+      "regeneration_hint": "Restore dependencies using the project's package manager and lockfile, if available; network and credentials are unverified.",
+      "reason": "Node conventional dependency directory beside a recorded package.json.",
+      "uncertainty": "Names only: contents may contain unique source or datasets. Prerequisites, offline availability, active builds and rebuild cost are unknown. This is advice, never a disposability claim."
+    }
+  ],
+  "not_assessed": [
+    { "topic": "regeneration_cost", "note": "Rebuild cost and time are not measured yet (LW-087)." },
+    { "topic": "model_host_lifecycle", "note": "Model files and model-host state are not assessed yet (LW-086)." },
+    { "topic": "stale_worktrees", "note": "Stale worktrees need lease and dirty-state evidence, which is not collected yet (LW-076)." }
+  ]
+}
