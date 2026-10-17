@@ -578,6 +578,8 @@ impl Engine {
     }
 }
 #[cfg(test)]
+mod coverage_tests;
+#[cfg(test)]
 #[path = "followups.rs"]
 mod followups;
 #[cfg(test)]

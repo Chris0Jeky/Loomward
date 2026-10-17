@@ -289,7 +289,7 @@ Every command has `effects: none` except `diagnostics.save` (`owner_picked_expor
 | Roots | `roots.list` | `EmptyRequest` | `RootList` | |
 | | **`roots.request_grant`** | `RootGrantRequest` | `RootGrantResult` | Personal sessions only; synthetic sessions refuse with `synthetic_session_requires_lab_root` |
 | | `roots.revoke` | `RootRevokeRequest` | `RootRevokeResult` | Cancels observation of the root first; `purge_catalog` deletes Loomward's rows only |
-| | `roots.forget` | `RootForgetRequest` | `RootForgetResult` | Revoked roots only (owner decision q-9): purges the display path, catalogue rows and the learning and collection rows that belong only to the root, from `state.db` and its backup copies alike (start-up copies are dropped, migration copies scrubbed in place or removed when they cannot be); keeps an anonymised grant record (dates, no name) |
+| | `roots.forget` | `RootForgetRequest` | `RootForgetResult` | Revoked roots only (owner decision q-9): purges the display path, catalogue rows and the learning and collection rows that belong only to the root, from `state.db` and its backup copies alike (start-up copies are dropped; migration copies are scrubbed in place, or removed if a successful scrub leaves the name; a failed scrub keeps the copy and reports an error after the live forget commits); keeps an anonymised grant record (dates, no name) |
 | Volumes | `volumes.list` | `EmptyRequest` | `VolumeList` | Device hints are hints, not speeds |
 | | `volumes.declare_tier` | `DeclareTierRequest` | `DeclareTierResult` | Human preference (append-only) |
 | Scan | `scan.start` | `ScanStartRequest` | `JobResult` | `full` or `refresh`; optional budget |

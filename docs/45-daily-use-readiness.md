@@ -22,7 +22,7 @@ Rules for this file:
 | 4 | Churn during scans | PARTIAL |
 | 5 | Injected I/O faults and a full disk | PARTIAL |
 | 6 | Fuzzing every parser and contract | PARTIAL |
-| 7 | 72-hour soak | UNVERIFIED |
+| 7 | 72-hour soak | PARTIAL |
 | 8 | Power-cut simulation, per effect | UNVERIFIED |
 | 9 | Proven restore, per effect | UNVERIFIED |
 
@@ -107,9 +107,15 @@ then require the scan plus reconciliation to equal a fresh scan exactly.
 store usable (`grant_survives_a_crash_between_precious_and_derived_commits`, `invalid_listing_rolls_back_and_...`);
 the corrupt-database paths in `tests/open.rs`; `evidence/v3/backups-import.md` refusals.
 
-**Gap.** No read-error, access-denied-mid-scan or short-write injection below SQLite; no full disk. SQLite
-returns `SQLITE_FULL` under `PRAGMA max_page_count`, which can drive the full-disk case with no OS support:
-write until full, require a clean error, free space, require the store to recover (extend `crash_sweep.rs`).
+**Gap.** No read-error, access-denied-mid-scan or short-write injection below SQLite (still open). Full disk is
+covered only per command: `writer/publication_tests.rs` (`auto_rollback_never_commits_a_failed_receipt_...` and
+`real_disk_full_auto_rollback_also_allows_a_new_implicit_transaction`) caps the writer connection's `max_page_count`
+from an in-crate unit test, so one listing fails with `DiskFull` while its neighbours commit and the old listing
+survives. There is no whole-store case yet: write until full, require a clean error and no partial commit visible
+to a reader, free space, reopen, and require the final state to equal a fresh store given the same successful
+writes. That case can live beside those unit tests; an integration test under `tests/` cannot cap the
+connection, because `db::open_pair` hands it to the writer thread (`Writer::start` is `pub(crate)`), and the
+existing unit test caps `main` only (state.db unchecked). Checked 2026-10-17 (#414).
 
 ## 6. Fuzzing every parser and contract: PARTIAL
 
@@ -163,11 +169,44 @@ Finding: none in this wave. No target found a defect at the default counts, at 1
 1,000,000 cases for the two decoders. One behaviour noted, not a defect: `parse_last_event_id` accepts leading zeros
 in the sequence (`id.007` resumes at 7); the value means the same number and the server only ever emits canonical ids.
 
-## 7. 72-hour soak: UNVERIFIED
+## 7. 72-hour soak: PARTIAL
 
-Nothing runs for hours. `evidence/v3/telemetry*.md` are short samplers, not a soak. Needs a harness that cycles
-scan, query, revoke, forget, restart and watch against a lab tree for 72 hours, recording handles, RSS, WAL size
-and rows, with a pass rule fixed first.
+**Pass rule (fixed before the run, 2026-10-17, #414).** A continuous run must last at least 72 hours,
+with no unexpected error or missing lifecycle operation. Each full scan and watch-triggered refresh must
+match the generated manifest's file, directory and logical-byte totals, including SQLite row counts;
+each forget must leave zero root, directory, file, scan-run and staged-listing rows and no identifiable
+root grants. The existing fully anonymised, revoked grant audit (zero identity, no lab binding) is allowed.
+The sum of both WAL files must stay <=64 MiB at every sample, and both live database files together
+<=64 MiB for this fixed 128-file lab. At the same post-restart phase of each cycle, compare medians
+of the first hour after a five-minute warm-up with the last hour: handles may grow by at most
+max(32, 10%), private bytes by max(32 MiB, 10%), and RSS by max(64 MiB, 20%). Both windows must be
+non-overlapping and contain at least 12 cycles. A sample gap over 60 seconds fails continuity.
+These are shared-host bounds, not a claim of zero allocation or cold-cache performance.
+
+A 15-minute smoke uses the identical correctness/size bounds and resource-growth limits, with a
+one-minute warm-up and first/last three-minute windows (at least 12 cycles each). It can establish
+SMOKE PASS only; row 7 stays PARTIAL until a qualifying 72-hour run. Interrupted or short input
+cannot pass. JSONL and generated state stay outside Git. The service catalogue sink currently does
+not support live watch reconciliation: exercise the real native watcher and a service refresh after
+the hint; this does not prove automatic service watch integration.
+
+**Exists.** `loomward-lab soak --hours N --root <new-lab-child> --out <private-JSONL>` drives
+the real in-process service and native Windows watcher against the deterministic 128-file dev plan
+(seed 42, 41 descendant directories, 1,078,433 logical bytes). Every operation records current
+handles, RSS/private bytes, both DB/WAL sizes, catalogue rows, logical bytes, latency and error.
+The process stays alive across graceful service restarts. Existing roots/outputs, reparse/offline
+ancestors, elevation, profile/credential roots and output inside Git are refused. No existing tree
+is scanned. The CLI and detached 72-hour command are in `crates/loomward-lab/README.md`.
+
+**Prove.** `cargo test -p loomward-lab`; `py -3 -m unittest discover -s crates/loomward-lab -p test_soak_summary.py`;
+`loomward-lab soak --hours 72 --root <new-lab-child> --out <private-JSONL>`, then
+`py -3 crates/loomward-lab/soak_summary.py <private-JSONL>`. Add `--smoke` only to evaluate a 15-minute smoke.
+The evaluator checks completeness, all operation stages, continuity, manifest rows/bytes, forget,
+DB/WAL limits and resource medians, and returns nonzero on failure. Tests plant defects in receipts;
+a synthetic full-duration receipt tests the evaluator only, never qualifies as a real soak.
+
+**Gap.** No measured 72-hour run. Native watch plus explicit refresh does not establish automatic
+service watch reconciliation; graceful teardown/reopen does not establish process crash recovery.
 
 ## 8. Power-cut simulation, per effect: UNVERIFIED
 
@@ -204,8 +243,17 @@ The sweep found no recovery defect other than the window F1's marker closes.
 
 ## Run record
 
+The 2026-10-17 soak-r7 checks use `CARGO_BUILD_JOBS=4`,
+`CARGO_TARGET_DIR=C:\lw\target\soak-r7` and `RUST_TEST_THREADS=4`. The smoke binary's SHA-256 is
+`355af2271d682e871f42b250b4f877399ca4abe0085d70e40e3cdad5c4ef6347`.
+
 | Date | Commit | Host | Command | Result |
 |---|---|---|---|---|
+| 2026-10-17 | 89df386 + soak-r7 working diff | KRASPYON, Windows 11 Home, shared host | `cargo test --manifest-path C:\lw\wt\soak-r7\Cargo.toml --workspace --no-fail-fast`; retry with `-j 1` | Final completed run: exit 101, **989 passed, 6 failed, 0 ignored**. Five are the known #292 host failures: three `scan::tests::followups::native_relist_containment_*`, `scan::tests::native_dirty_epoch_relists_by_verified_identity`, and `enumerate::tests::reopen_follows_identity_after_rename_and_rejects_changed_volume_or_root`. The sixth is the unchanged service test below. Initial builds failed with MSVC LNK1201, then LNK1285 identifying a corrupt `root_coverage` PDB; only that generated PDB in this lane's target directory was removed, and the serial rebuild completed. No tests disabled or weakened. |
+| 2026-10-17 | same | same | `C:\lw\target\soak-r7\debug\deps\loomward_service-2cd7cfb8d03ab454.exe --exact inventory::tests::wrong_dataset_and_timed_out_providers_never_publish_fallback --nocapture --test-threads=1` | Exit 101: 0 passed, 1 failed, 179 filtered. Reproduces the full-run failure at `inventory/tests.rs:166`: the API returned the expected `deadline_exceeded`, but the test expected the provider to have started within its 20 ms deadline (observed calls 0, expected 1). Service sources are unchanged; this additional timing assertion remains unresolved, not dismissed as flaky. No repair in the soak lane. |
+| 2026-10-17 | 89df386 + soak-r7 working diff | KRASPYON, Windows 11 Home, shared host | `cargo fmt --manifest-path C:\lw\wt\soak-r7\Cargo.toml --all --check`; `cargo clippy --manifest-path C:\lw\wt\soak-r7\Cargo.toml -p loomward-lab --all-targets -- -D warnings`; `cargo clippy --manifest-path C:\lw\wt\soak-r7\Cargo.toml --workspace --all-targets -- -D warnings`; `git -C C:\lw\wt\soak-r7 diff --check` | All exit 0; formatting and both clippy scopes clean. |
+| 2026-10-17 | 89df386 + soak-r7 working diff | KRASPYON, Windows 11 Home, debug build, shared host | `cargo test --manifest-path C:\lw\wt\soak-r7\Cargo.toml -p loomward-lab`; `py -3 -m unittest discover -s C:\lw\wt\soak-r7\crates\loomward-lab -p test_soak_summary.py` | 29 Rust tests passed (includes three service lifecycle cycles in 17.76 s); 3 evaluator tests passed, including planted failures and a synthetic 72-hour receipt. No 72-hour runtime claim. |
+| 2026-10-17 | same | same, 02:29-02:44 BST | `C:\lw\target\soak-r7\debug\loomward-lab.exe soak --hours 0.25 --root C:\lw\lab\soak --out C:\lw\soak\smoke.jsonl`; `py -3 C:\lw\wt\soak-r7\crates\loomward-lab\soak_summary.py C:\lw\soak\smoke.jsonl --smoke` | **SMOKE PASS**, evaluator exit 0: 900.039 s, 114 cycles, 1,026 operation samples, zero errors; all 228 scans/refreshes match the manifest, all 114 forgets leave zero root data/identifiable grants. Comparison windows: 27 and 19 cycles; median handles 202 to 202, private growth 3,457,024 bytes (bound 33,554,432), RSS growth 1,802,240 bytes (bound 67,108,864). Maximum sampled combined WAL 168,984 bytes, live DBs 438,272 bytes. Row stays PARTIAL; 72 hours unverified. Private raw JSONL and stdout/stderr remain outside Git under the given output directory. |
 | 2026-10-12 | 00c3d1f + this PR (before merging main) | DESKTOP-IHKOOJS, Windows 11, debug build | `LOOMWARD_CRASH_SWEEP=full cargo test -p loomward-catalog --features test-hooks --test crash_sweep` | 7 passed in 355 s: lifecycle 240 of 240 boundaries, migration 13 of 13, 3,045 double crashes, no violation |
 | 2026-10-12 | same | same | default mode of the same command | 7 passed in 29 s: lifecycle 132 of 240, migration 13 of 13, 143 double crashes |
 | 2026-10-12 | same, with `purge_root` removed from the open-time forget completion (mutant, reverted) | same | `LOOMWARD_CRASH_SWEEP=full ... -- every_write_of_scan` | failed: 13 of 240 crash points (N=223 and later, the state half of the forget committed) |
@@ -215,6 +263,8 @@ The sweep found no recovery defect other than the window F1's marker closes.
 | 2026-10-12 | same | same | default mode of the same command | 9 passed in 53 s (cold, parallel with a warm build): lifecycle 149 of 272, migration 14 of 14, 191 double crashes |
 | 2026-10-12 | same, with the marker recovery removed (mutant, reverted) | same | `LOOMWARD_CRASH_SWEEP=full ... -- every_write_of_scan` | failed: 10 of 272 crash points (N=261 to 267, after the catalogue half of the forget committed), names left in the live store files |
 | 2026-10-12 | same | same | `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --no-fail-fast`; `py -3 scripts/verify.py`; `git diff --check` | fmt and clippy clean; 951 passed, 0 ignored, 0 failed; verify.py exit 0; diff check clean |
+| 2026-10-17 | 89df386 (docs-only branch; code at this commit) | KRASPYON, Windows 11 Home, debug build | `LOOMWARD_CRASH_SWEEP=full cargo test -p loomward-catalog --features test-hooks --test crash_sweep` | 9 passed in 3690 s, exit 0, no violation. The harness prints per-scenario counts only on failure, so they were recovered by replaying the sweep's child runs with the same env vars: lifecycle 334 of 334 boundaries (all 334 first crashes exited 86), 6,652 double crashes |
+| 2026-10-17 | same | same | `LOOMWARD_CRASH_SWEEP=full cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- every_write_of_a_schema_migration_recovers --exact --nocapture` | 1 passed in 6.4 s: migrate 14 boundaries, killing at 14 of them |
 | 2026-10-17 | 912a491 (row 6 targets) | KRASPYON, Windows 11, debug build, stable MSVC 1.97.1 | default mode: `cargo test -p loomward-windows --test fuzz_decoders`, `-p loomward-lab --test fuzz_records`, `-p loomward-backup --test fuzz_receipt`, `-p loomward-protocol --test fuzz_envelope`, `-p loomward-http --test fuzz_http`, `-p loomward-shell --test fuzz_shortcut`, `-p loomward-service --lib cursors` | 8, 6, 9, 10, 7, 4 and 8 (3 new) passed in 2.4, 1.7, 7.7, 4.5, 6.5, 1.9 and 7.3 s on a loaded host |
 | 2026-10-17 | 912a491 | same | `LOOMWARD_FUZZ_CASES=100000 cargo test -p loomward-windows --test fuzz_decoders` (`enumerate::decode_buffer` Extended and Both, `watch::decode`) | 8 properties x 100,000 cases passed in 39 s; no panic, no reference disagreement |
 | 2026-10-17 | 912a491 | same | `LOOMWARD_FUZZ_CASES=1000000 cargo test -p loomward-windows --test fuzz_decoders` | 8 properties x 1,000,000 cases passed in 538 s |

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Duplicates } from '../../src/lib/stores/duplicates.svelte';
 import { session } from '../../src/lib/stores/session.svelte';
@@ -75,6 +76,46 @@ describe('duplicates jobs', () => {
       expect((await client.call('jobs.list', { kinds: ['duplicates'], limit: 50 })).result.jobs[0]?.duplicates).toBeUndefined();
     }
   });
+  it('drops a jobs.list answer that arrives after the engine restarted', async () => {
+    let requestId = '';
+    let answer!: () => void;
+    const listed = new Promise<void>((resolve) => { answer = resolve; });
+    session.client = new Client({ call: async (r: { request_id: string; command: string }) => {
+      requestId = r.request_id;
+      await listed;
+      return { protocol: 'loomward/3', request_id: r.request_id, ok: true, result: { jobs: [job({ rev: 3, state: 'completed', duplicates: DUPLICATES_FIXTURE })] }, meta: {} };
+    } } as unknown as Transport);
+    const store = new Duplicates();
+    store.onEvent({ event: 'stream.hello', epoch: 'one' } as EventEnvelope);
+    const syncing = store.sync();
+    await vi.waitFor(() => expect(requestId).not.toBe(''));
+    store.onEvent({ event: 'stream.hello', epoch: 'two' } as EventEnvelope); // the engine restarted: the old lifetime is gone
+    answer();
+    await syncing;
+    expect(store.book).toEqual({});
+  });
+  it('drops inspect and cancel answers that arrive after the engine restarted', async () => {
+    for (const command of ['duplicates.inspect', 'duplicates.cancel']) {
+      let asked = false;
+      let answer!: () => void;
+      const answered = new Promise<void>((resolve) => { answer = resolve; });
+      session.client = new Client({ call: async (r: { request_id: string; command: string }) => {
+        asked = true;
+        await answered;
+        return { protocol: 'loomward/3', request_id: r.request_id, ok: true, result: { job: job({ rev: 9, state: 'running' }) }, meta: {} };
+      } } as unknown as Transport);
+      const store = new Duplicates();
+      store.onEvent({ event: 'stream.hello', epoch: 'one' } as EventEnvelope);
+      if (command === 'duplicates.cancel') store.book = { [job().root_id as string]: job({ rev: 1, state: 'running' }) };
+      const pending = command === 'duplicates.inspect' ? store.start(job().root_id as string) : store.cancel(job().root_id as string);
+      await vi.waitFor(() => expect(asked).toBe(true));
+      store.onEvent({ event: 'stream.hello', epoch: 'two' } as EventEnvelope); // the engine restarted: the old lifetime is gone
+      answer();
+      await pending;
+      expect(store.book, command).toEqual({});
+      expect(store.pending).toBe(false);
+    }
+  });
   it('shows a root refusal as a problem without inventing a result', async () => {
     // q-10: personal reads are open, so no refusal is a special gated state any more.
     session.client = new Client({ call: async (r: { request_id: string }) => ({ protocol: 'loomward/3', request_id: r.request_id, ok: false, error: { code: 'permission_denied', message: 'a personal session scans the folders you granted only', retryable: false, detail: { reason: 'personal_session_requires_owner_grant' } } }) } as unknown as Transport);
@@ -110,6 +151,15 @@ describe('duplicates jobs', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('duplicates root picker', () => {
+  it('names each root through the hidden-character helper, never the raw display path', () => {
+    // A native <option> holds text only, so the badge component cannot go in it: escapedName spells the hidden characters out.
+    const source = readFileSync(new URL('../../src/views/duplicates/View.svelte', import.meta.url), 'utf8');
+    expect(source).toContain('escapedName(r.display_path.text)');
+    expect(source).not.toMatch(/<option[^>]*>\{r\.display_path\.text\}<\/option>/);
   });
 });
 

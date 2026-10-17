@@ -11,6 +11,7 @@ description = "Loomward v0.3 engine: jobs, scan, events, telemetry, placement, l
 lab = []
 
 [dependencies]
+loomward-operations = { path = "../loomward-operations" }
 loomward-catalog = { path = "../loomward-catalog" }
 loomward-protocol = { path = "../loomward-protocol" }
 loomward-core = { path = "../loomward-core" }

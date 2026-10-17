@@ -179,6 +179,75 @@ fn native_source(
     }
 }
 impl Engine {
+    /// Read-only C1 evidence. Both roots must pass the existing q-10 admission gate.
+    /// No service, HTTP, IPC or MCP command is exposed.
+    pub fn compare_trees(
+        &self,
+        source: &GrantedRoot,
+        destination: &GrantedRoot,
+        budget: loomward_windows::duplicate_reader::Budget,
+        max_entries: usize,
+    ) -> EngineResult<loomward_operations::tree::Report> {
+        use loomward_windows::duplicate_reader::{read_tree, Budget};
+        use std::time::Instant;
+        let left_cancel = self.duplicate_read_admission(source)?;
+        let right_cancel = self.duplicate_read_admission(destination)?;
+        let started = Instant::now();
+        let mut remaining_bytes = budget.bytes;
+        let mut read = |root: &GrantedRoot, cancel| {
+            let (tree, bytes) = read_tree(
+                root.path(),
+                root.expected.as_ref().unwrap(),
+                Budget {
+                    bytes: remaining_bytes,
+                    time: budget.time.saturating_sub(started.elapsed()),
+                },
+                max_entries,
+                cancel,
+            )
+            .map_err(|reason| EngineError::PermissionDenied {
+                message: reason.as_str().into(),
+            })?;
+            remaining_bytes = remaining_bytes.saturating_sub(bytes);
+            Ok::<_, EngineError>(tree)
+        };
+        let left = read(source, left_cancel.clone())?;
+        let right = read(destination, right_cancel.clone())?;
+        let report = loomward_operations::tree::compare(&left, &right);
+        // Recheck both durable grants and cancellation after both observations, as in q-10.
+        for (root, cancel) in [(source, left_cancel), (destination, right_cancel)] {
+            self.duplicate_read_admission(root)?;
+            if cancel.load(Ordering::Acquire) {
+                return Err(EngineError::PermissionDenied {
+                    message: "cancelled".into(),
+                });
+            }
+        }
+        let mut gates = vec![
+            self.scan_root_gate(source.key()),
+            self.scan_root_gate(destination.key()),
+        ];
+        // The same root may appear twice; crossed pairs must take locks in the same order.
+        gates.sort_by_key(Arc::as_ptr);
+        gates.dedup_by(|a, b| Arc::ptr_eq(a, b));
+        let guards: Vec<_> = gates
+            .iter()
+            .map(|gate| {
+                gate.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+            })
+            .collect();
+        if guards
+            .iter()
+            .any(|gate| gate.revoked || gate.duplicate_cancel.load(Ordering::Acquire))
+        {
+            return Err(EngineError::PermissionDenied {
+                message: "cancelled".into(),
+            });
+        }
+        Ok(report)
+    }
+
     /// Content equality evidence under a freshly checked active grant of this engine's dataset
     /// class (personal reads opened by owner decision q-10); a session never reads the other
     /// class's roots. Root revocation requests content-read cancellation.
