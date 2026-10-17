@@ -66,6 +66,21 @@ pub(crate) type RunHook = Arc<
 struct Run {
     control: Arc<loomward_windows::effects::exec::Control>,
     thread: std::thread::JoinHandle<()>,
+    done: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(windows)]
+impl Run {
+    fn join(self) -> Result<(), Self> {
+        if matches!(
+            self.done.recv_timeout(std::time::Duration::from_secs(30)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ) {
+            return Err(self);
+        }
+        let _ = self.thread.join();
+        Ok(())
+    }
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -400,7 +415,10 @@ impl Inner {
                     continue;
                 }
                 if let Some(run) = running {
-                    let _ = run.thread.join();
+                    if let Err(run) = run.join() {
+                        self.copies.running.lock().unwrap().insert(op, run);
+                        continue;
+                    }
                 }
                 let waiting = exec::status(store, op).map(|s| s.state);
                 if !matches!(
@@ -613,10 +631,12 @@ impl Inner {
             };
             let control = Arc::new(control);
             let (worker_store, worker_control) = (store.clone(), control.clone());
+            let (completed, done) = std::sync::mpsc::channel();
             let thread = std::thread::Builder::new()
                 .name("lw-copy".into())
                 .spawn(move || {
                     let _ = exec::run(&worker_store, op, &worker_control);
+                    let _ = completed.send(());
                 })
                 .map_err(|_| {
                     // Nothing was created: settle the started operation as cancelled, never stuck.
@@ -625,11 +645,14 @@ impl Inner {
                 })?;
             #[cfg(test)]
             self.copies.at("spawned");
-            self.copies
-                .running
-                .lock()
-                .unwrap()
-                .insert(op, Run { control, thread });
+            self.copies.running.lock().unwrap().insert(
+                op,
+                Run {
+                    control,
+                    thread,
+                    done,
+                },
+            );
             self.copy_status_of(&id, op)
         }
         #[cfg(not(windows))]
@@ -665,7 +688,16 @@ impl Inner {
             let running = self.copies.running.lock().unwrap().remove(&op);
             if let Some(run) = running {
                 run.control.cancel();
-                let _ = run.thread.join();
+                if let Err(run) = run.join() {
+                    self.copies.running.lock().unwrap().insert(op, run);
+                    return Err(with_reason(
+                        fail(
+                            ErrorCode::Busy,
+                            "copy cancellation is pending an in-flight step",
+                        ),
+                        "pending_in_flight_step",
+                    ));
+                }
             }
             let plan: exec::Plan = store
                 .lock()
