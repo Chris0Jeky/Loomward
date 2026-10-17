@@ -974,6 +974,150 @@ fn a_leftover_staging_token_is_reported_in_status() {
     assert_eq!(s.leftover_staging, vec!["~lw-staging-orphan".to_string()]);
 }
 
+#[test]
+fn recovery_records_unjournaled_batch_damage() {
+    for blocked in [false, true] {
+        let Some(mut lab) = Lab::new() else { return };
+        fs::write(lab.src().join("f"), b"payload").unwrap();
+        let op = lab.start(&["f"]);
+        let crash = Control::new(false).with_hook(|p, _| {
+            if p == Point::StagingCreated {
+                Flow::Crash
+            } else {
+                Flow::Continue
+            }
+        });
+        assert!(matches!(run(&lab.store, op, &crash), Err(Fault::Crashed)));
+        let r = replay(&lab.store, op).unwrap();
+        lab.store
+            .lock()
+            .unwrap()
+            .append(
+                op,
+                r.epoch,
+                Record::CreateBatch {
+                    items: vec![(0, "f".into())],
+                },
+            )
+            .unwrap();
+        let leftover = lab.dest().join(r.staging_tokens.last().unwrap()).join("f");
+        fs::write(&leftover, b"").unwrap();
+        if blocked {
+            lab.store
+                .lock()
+                .unwrap()
+                .append(
+                    op,
+                    r.epoch,
+                    Record::Transition {
+                        to: OpState::Blocked,
+                        code: Some(Refusal::SourceInUse),
+                    },
+                )
+                .unwrap();
+        }
+        lab.reopen();
+        let recovered = recover(&lab.store, op, &Control::new(true)).unwrap();
+        assert_eq!(recovered.state, OpState::NeedsAttention, "{recovered:?}");
+        assert_eq!(
+            status(&lab.store, op).unwrap().state,
+            OpState::NeedsAttention
+        );
+        assert_eq!(recovered.unjournaled_items, ["f"]);
+        lab.reopen();
+        assert_eq!(status(&lab.store, op).unwrap().unjournaled_items, ["f"]);
+        assert_eq!(
+            replay(&lab.store, op).unwrap().state,
+            if blocked {
+                OpState::Blocked
+            } else {
+                OpState::NeedsAttention
+            }
+        );
+        assert!(
+            leftover.exists(),
+            "unjournaled entries must never be removed"
+        );
+    }
+}
+
+#[test]
+fn explicit_destination_aces_prevent_normal_commit() {
+    destination_aces_prevent_commit(false);
+}
+
+#[test]
+fn explicit_destination_aces_prevent_recovery_commit() {
+    destination_aces_prevent_commit(true);
+}
+
+fn destination_aces_prevent_commit(recovery: bool) {
+    for selection in [&["top"][..], &["top/sub", "top/g"][..]] {
+        for target in ["", "sub", "sub/f"] {
+            let Some(mut lab) = Lab::new() else { return };
+            fs::create_dir_all(lab.src().join("top/sub")).unwrap();
+            fs::write(lab.src().join("top/sub/f"), b"payload").unwrap();
+            fs::write(lab.src().join("top/g"), b"another file").unwrap();
+            let before = source_snapshot(&lab.src());
+            let op = lab.start(selection);
+            let published = lab
+                .dest()
+                .join(&lab.plan(op).manifest.destination.folder_name);
+            let changed = published.join(target);
+            let inject = move || {
+                assert!(std::process::Command::new("icacls")
+                    .arg(&changed)
+                    .args(["/grant", "*S-1-1-0:(R)"])
+                    .output()
+                    .unwrap()
+                    .status
+                    .success());
+            };
+            let control = Control::new(false).with_hook(move |p, _| {
+                if p == Point::AfterPublish {
+                    if recovery {
+                        return Flow::Crash;
+                    }
+                    inject();
+                }
+                Flow::Continue
+            });
+            let result = run(&lab.store, op, &control);
+            let outcome = if recovery {
+                assert!(matches!(result, Err(Fault::Crashed)));
+                assert!(std::process::Command::new("icacls")
+                    .arg(published.join(target))
+                    .args(["/grant", "*S-1-1-0:(R)"])
+                    .output()
+                    .unwrap()
+                    .status
+                    .success());
+                lab.reopen();
+                recover(&lab.store, op, &Control::new(false)).unwrap()
+            } else {
+                result.unwrap()
+            };
+            let report = tree::compare(&c1(&lab.src().join("top")), &c1(&published));
+            assert!(
+                report.differences.iter().any(|d| d.kind
+                    == tree::DifferenceKind::Metadata(tree::MetadataClass::SecurityDescriptor)),
+                "C1 must reject the explicit ACE: {report:?}"
+            );
+            assert_eq!(
+                outcome.state,
+                OpState::NeedsAttention,
+                "recovery={recovery}, target={target}: {outcome:?}"
+            );
+            assert_eq!(
+                outcome.refusal,
+                Some((Refusal::ChangedAfterVerification, None))
+            );
+            assert_eq!(fs::read(published.join("sub/f")).unwrap(), b"payload");
+            assert_eq!(source_snapshot(&lab.src()), before);
+        }
+    }
+}
+
 /// #526: the bounded publish retry (10 x 3 s) ends at once when the owner cancels or the service shuts
 /// down: the run waits `blocked` (`publish_in_use`, resumable) with the intent kept, never ~30 s later.
 #[test]
