@@ -1772,6 +1772,26 @@ fn every_command_answers_a_complete_envelope_and_core_reads_serve_the_catalogue(
         .unwrap()
         .values()
         .all(|v| v == false));
+    // docs/46 F1: the federated search fields are contract only; the engine says so and refuses them
+    // rather than ignoring them (every field alone, even `sources: ["own"]`).
+    assert_eq!(hello["features"]["federated_search"], false);
+    for extra in [
+        json!({"sources": ["own"]}),
+        json!({"terms": [{"text": "report", "mode": "token", "negated": false}]}),
+        json!({"extensions": ["docx"]}),
+        json!({"collection_id": "co_synth1"}),
+        json!({"under_node_id": anchor}),
+    ] {
+        let mut payload = json!({"root_id": svc.inner.root_id(root), "text": "report", "extension": null, "min_bytes": null, "max_bytes": null, "modified_after": null, "modified_before": null, "kind": "file", "limit": 10, "cursor": null});
+        payload
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        assert_eq!(
+            err(call(&svc, "search.query", payload)).code,
+            ErrorCode::CapabilityUnavailable
+        );
+    }
     // Synthetic sessions scan registered lab roots on Windows; personal sessions their own owner grants.
     assert_eq!(
         hello["capabilities"]["observation"]["metadata_scan"],

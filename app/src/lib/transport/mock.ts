@@ -200,8 +200,12 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     }
     return null;
   };
-  const TIER: Record<SearchHitMatchKind, number> = { exact: 0, prefix: 1, token: 2, substring: 3, filter: 4 };
+  const TIER: Record<SearchHitMatchKind, number> = { exact: 0, prefix: 1, token: 2, substring: 3, filter: 4, semantic: 5 };
   const search = (p: SearchRequest): SearchPage => {
+    // Like the engine (docs/46 F1): the federated fields are contract only until features.federated_search.
+    if (p.sources !== undefined || p.terms !== undefined || p.extensions !== undefined || p.collection_id !== undefined || p.under_node_id !== undefined) {
+      fail('capability_unavailable', 'federated search fields are not served (features.federated_search is false)');
+    }
     const text = str(p.text, 'text').trim().toLowerCase();
     const limit = int(p.limit, 'limit', 1, 100);
     const ext = typeof p.extension === 'string' ? p.extension.toLowerCase() : null;
@@ -304,7 +308,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
         observation: { metadata_scan: true, process_observation: true, gpu_observation: false, disk_io_observation: false, teacher_disclosure: false },
         effects: { file_move: false, file_delete: false, file_rename: false, file_write: false, content_read: false, process_kill: false, process_suspend: false, process_priority: false, memory_trim: false, uninstall: false, elevation: false },
       },
-      features: { grant_picker: false, disclosure_dialog: false, teacher_available: false, telemetry_available: true, gpu_available: true, diagnostics_save: false },
+      features: { grant_picker: false, disclosure_dialog: false, teacher_available: false, telemetry_available: true, gpu_available: true, diagnostics_save: false, federated_search: false },
       limits: { max_request_bytes: 65536, max_slice_nodes: 6000, max_page_items: 200 },
     }),
     'health.get': (): Health => ({

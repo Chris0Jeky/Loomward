@@ -521,6 +521,145 @@ pub struct SearchRequest {
     pub limit: Int<1, 100>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub cursor: Option<Cursor>,
+    /// Federated extension (docs/46 section 4, F1): absent means `[own]`. The fields from here
+    /// on are honoured only when `features.federated_search` is true; each narrows, none replaces.
+    #[serde(
+        default,
+        deserialize_with = "crate::types::optional_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub sources: Option<UniqueVec<SearchSource, 1, 3>>,
+    #[serde(
+        default,
+        deserialize_with = "crate::types::optional_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub terms: Option<BoundedVec<SearchTerm, 0, 8>>,
+    #[serde(
+        default,
+        deserialize_with = "crate::types::optional_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub extensions: Option<UniqueVec<BoundedStr<1, 32>, 1, 16>>,
+    #[serde(
+        default,
+        deserialize_with = "crate::types::optional_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub collection_id: Option<CollectionId>,
+    #[serde(
+        default,
+        deserialize_with = "crate::types::optional_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub under_node_id: Option<NodeId>,
+}
+
+impl SearchRequest {
+    /// True when the request uses any federated field (even `sources: ["own"]`).
+    pub fn uses_federated_fields(&self) -> bool {
+        self.sources.is_some()
+            || self.terms.is_some()
+            || self.extensions.is_some()
+            || self.collection_id.is_some()
+            || self.under_node_id.is_some()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchSource {
+    Own,
+    Everything,
+    Semantic,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchTermMode {
+    Token,
+    Substring,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SearchTerm {
+    pub text: BoundedStr<1, 64>,
+    pub mode: SearchTermMode,
+    pub negated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchFreshnessState {
+    Live,
+    CaughtUp,
+    Stale,
+    EverythingLive,
+    Verified,
+    SemanticStale,
+}
+
+/// How fresh a hit is (docs/46 section 7). `at` is present exactly for the states that name a time.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SearchFreshness {
+    pub state: SearchFreshnessState,
+    pub at: Option<Timestamp>,
+}
+
+impl<'de> Deserialize<'de> for SearchFreshness {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            state: SearchFreshnessState,
+            #[serde(deserialize_with = "crate::types::required_nullable")]
+            at: Option<Timestamp>,
+        }
+        let f = Fields::deserialize(deserializer)?;
+        let timed = matches!(
+            f.state,
+            SearchFreshnessState::CaughtUp
+                | SearchFreshnessState::Stale
+                | SearchFreshnessState::Verified
+        );
+        if timed != f.at.is_some() {
+            return Err(serde::de::Error::custom(
+                "at must be present exactly for caught_up, stale and verified",
+            ));
+        }
+        Ok(Self {
+            state: f.state,
+            at: f.at,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchUnverifiedHitKind {
+    File,
+    Dir,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchUnverifiedHitSource {
+    Everything,
+}
+
+/// A hit that is not yet a catalogue row: display only, deliberately without a `NodeId`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SearchUnverifiedHit {
+    pub name: BoundedStr<1, 255>,
+    pub path: DisplayPath,
+    pub root_id: RootId,
+    pub kind: SearchUnverifiedHitKind,
+    pub source: SearchUnverifiedHitSource,
+    pub freshness: SearchFreshness,
+    pub match_kind: SearchMatchKind,
+    pub score: Fraction,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -533,12 +672,13 @@ pub enum SearchPageIndexState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SearchHitMatchKind {
+pub enum SearchMatchKind {
     Exact,
     Prefix,
     Token,
     Substring,
     Filter,
+    Semantic,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -548,7 +688,27 @@ pub struct SearchHit {
     pub root_id: RootId,
     /// Root-relative path of the hit itself, display only.
     pub path: DisplayPath,
-    pub match_kind: SearchHitMatchKind,
+    pub match_kind: SearchMatchKind,
+    /// Federated extension; absent means `own`.
+    #[serde(
+        default,
+        deserialize_with = "crate::types::optional_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub source: Option<SearchSource>,
+    #[serde(
+        default,
+        deserialize_with = "crate::types::optional_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub freshness: Option<SearchFreshness>,
+    /// A relative rank signal, never a probability; not comparable across sources.
+    #[serde(
+        default,
+        deserialize_with = "crate::types::optional_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub score: Option<Fraction>,
     /// Half-open UTF-16 offsets into row.name; best effort and may be empty.
     pub highlights: BoundedVec<BoundedVec<Int<0, 1024>, 2, 2>, 0, 8>,
 }
@@ -577,6 +737,13 @@ pub struct SearchPage {
     /// False when the text was too short for a trigram: inner substrings were not searched.
     pub substring_searched: bool,
     pub roots: BoundedVec<SearchRootCoverage, 0, 64>,
+    /// Federated extension: hits that are not yet catalogue rows, kept apart from `hits`.
+    #[serde(
+        default,
+        deserialize_with = "crate::types::optional_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub unverified_hits: Option<BoundedVec<SearchUnverifiedHit, 0, 100>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
