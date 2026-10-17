@@ -90,7 +90,7 @@ class FakeEngine:
         self.diagnostics_answers: list[dict] | None = None  # set: hello offers diagnostics_save, diagnostics.save pops these
         self.diagnostics_calls: list[dict] = []
         self.roots: list[dict] = []  # roots.list
-        self.grant_mode = 'granted'  # roots.request_grant: granted, cancelled, refused, busy, deadline (the root lands before the reply) or deadline_late (after it)
+        self.grant_mode = 'granted'  # deadline lands before the reply; deadline_late is delivered explicitly by the test
         self.grant_delay = 0.0
         self.grant_calls: list[dict] = []
         self.trend_mode: str | None = None
@@ -169,7 +169,6 @@ class FakeEngine:
                 self.land('E:\\Picked At The Deadline')
                 return ('deadline_exceeded', 'the dialog outlived the deadline')
             if self.grant_mode == 'deadline_late':
-                threading.Timer(0.8, self.land, ['E:\\Picked After The Deadline']).start()
                 return ('deadline_exceeded', 'the dialog outlived the deadline')
             self.land('E:\\Picked Folder')
             return {'outcome': 'granted', 'root': self.roots[-1], 'refusal': None}
@@ -1393,6 +1392,17 @@ def check_add_folder(page: Page, engine: FakeEngine) -> None:
     expect(table).to_contain_text('Picked Folder')
     ok(status.inner_text() == '' and cards.filter(has_text='just added').count() == 0, 'leaving Health and coming back does not repeat "Added" or the just-added tag')
 
+    # A reply completed while another view was open is still a new receipt on returning.
+    fresh()
+    add.click()
+    expect(status).to_contain_text('Waiting for you')
+    page.evaluate("location.hash = '#/explorer'")
+    expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
+    wait_until(page, lambda: len(engine.roots) == 1)
+    page.evaluate("location.hash = '#/health'")
+    expect(status).to_contain_text('Added E:\\Picked Folder')
+    expect(cards.filter(has_text='Picked Folder')).to_contain_text('just added')
+
     # cancelled: quiet and neutral, no root
     engine.grant_mode, engine.grant_delay = 'cancelled', 0.0
     fresh()
@@ -1412,7 +1422,7 @@ def check_add_folder(page: Page, engine: FakeEngine) -> None:
     engine.grant_mode = 'busy'
     fresh()
     add.click()
-    expect(status).to_have_text('A Windows folder dialog is still open. Choose a folder there and it will appear below.')
+    expect(status).to_have_text('A Windows folder dialog may still be open. Check it, then refresh the folder list.')
     expect(add).to_be_focused()
 
     # deadline, the grant landed: the roots are read again and the new one is reported; the dialog is not reopened
@@ -1427,6 +1437,8 @@ def check_add_folder(page: Page, engine: FakeEngine) -> None:
     fresh()
     add.click()
     expect(status).to_contain_text('No folder was added yet')
+    expect(table).to_contain_text('No roots granted')
+    engine.land('E:\\Picked After The Deadline')
     expect(table).to_contain_text('Picked After The Deadline', timeout=5000)
     expect(status).to_contain_text('Added E:\\Picked After The Deadline')  # the late grant is worded as added, not left at the deadline text
     ok(len(engine.grant_calls) == 1, 'a grant that lands after the deadline shows up from roots.changed without a second request')

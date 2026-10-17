@@ -124,6 +124,22 @@ pub fn migrate_legacy_state(base: &Path) -> Result<(), String> {
     }
 }
 
+/// A legacy state home that was retained rather than merged into the current one.
+pub fn legacy_state_notice(launch: &Launch, local_app_data: Option<OsString>) -> Option<String> {
+    if launch.fixtures || launch.state_dir.is_some() {
+        return None;
+    }
+    let base = local_base(local_app_data).ok()?;
+    let old = base.join("Loomward").join("v3");
+    let new = base.join(DATA_DIR).join("v3");
+    (old.is_dir() && new.is_dir()).then(|| {
+        format!(
+            "Loomward is using the state in {}.\n\nThe older state in {} was left untouched. No state was merged or deleted.",
+            new.display(), old.display()
+        )
+    })
+}
+
 /// The exclusive lock file of docs/41 section 3, created in `state_dir` and held until the service
 /// drops. It is an OS lock on an open handle, so a crashed instance leaves no stale lock behind.
 pub fn lock_state_dir(state_dir: &Path) -> Result<File, String> {

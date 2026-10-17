@@ -1045,7 +1045,7 @@ impl Inner {
             )
         })?;
         let _dialog = self.dialog_turn()?;
-        let Some(picked) = dialogs.pick_folder() else {
+        let Some(picked) = dialogs.try_pick_folder()? else {
             return Ok(out(
                 json!({"outcome": "cancelled_by_user", "root": null, "refusal": null}),
                 None,

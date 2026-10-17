@@ -59,6 +59,13 @@ fn main() -> ExitCode {
         Ok(s) => s,
         Err(e) => return fail(&e, 1),
     };
+    if let Some(notice) = launch::legacy_state_notice(&launch, std::env::var_os("LOCALAPPDATA")) {
+        if attach_console() {
+            eprintln!("loomward-desktop: {notice}");
+        } else {
+            error_box("Loomward: older state retained", &notice);
+        }
+    }
     let dialogs = Arc::new(DesktopDialogs::new(launch.dataset));
     let desktop = Arc::new(Desktop::new(service, launch.dataset, dialogs.clone()));
     let context = tauri::generate_context!();

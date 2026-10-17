@@ -1871,6 +1871,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "loomward-ask"
+version = "0.1.0"
+dependencies = [
+ "loomward-protocol",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "loomward-backup"
 version = "0.1.0"
 dependencies = [
@@ -1986,6 +1996,7 @@ version = "0.1.0"
 dependencies = [
  "getrandom 0.4.3",
  "loomward-apps",
+ "loomward-ask",
  "loomward-backup",
  "loomward-catalog",
  "loomward-engine",
