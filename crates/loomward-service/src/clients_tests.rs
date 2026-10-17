@@ -556,6 +556,18 @@ fn a_revocation_between_list_and_explain_refuses_the_explain_and_the_next_page()
         (other.message, other.detail),
         (unknown.message, unknown.detail)
     );
+    // ...even with a wrong expected generation, which would otherwise answer stale for a real node.
+    let stale_explain = |id: &str| {
+        let mut r = request("node.inspect", json!({"node_id": id}));
+        r.expected_generation = Some(Generation(999));
+        err(svc.call(r, &CallContext::client("ask:local")))
+    };
+    let (other, unknown) = (stale_explain(&theirs), stale_explain(&tampered));
+    assert_eq!(other.code, ErrorCode::NotFound);
+    assert_eq!(
+        (other.message, other.detail),
+        (unknown.message, unknown.detail)
+    );
     // Revoke between the list and the explain: both the explain and the next page are refused.
     assert!(svc.revoke_client("ask:local").unwrap());
     assert_eq!(err(explain()).code, ErrorCode::PermissionDenied);

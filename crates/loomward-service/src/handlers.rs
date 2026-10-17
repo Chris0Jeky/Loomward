@@ -1211,7 +1211,7 @@ impl Inner {
         self.sealed(encode(&b)?, revs)
     }
 
-    fn read_reader(&self, work: Option<&crate::ReadWork>) -> Result<Reader, ErrorBody> {
+    pub(crate) fn read_reader(&self, work: Option<&crate::ReadWork>) -> Result<Reader, ErrorBody> {
         match work {
             Some(work) => work.reader(&self.catalog),
             None => self.catalog.reader().map_err(catalog_error),

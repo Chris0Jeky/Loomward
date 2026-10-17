@@ -15,7 +15,10 @@
 
 use crate::handlers::encode;
 use crate::{bare_row, fail, now_ns, sql_error, Inner, Out, Service};
-use loomward_protocol::{Command, ErrorBody, ErrorCode, RequestEnvelope, RootId, SearchRequest};
+use loomward_catalog::NodeKey;
+use loomward_protocol::{
+    Command, ErrorBody, ErrorCode, NodeRefRequest, RequestEnvelope, RootId, SearchRequest,
+};
 use rusqlite::{OptionalExtension, TransactionBehavior};
 use serde_json::{Map, Value};
 
@@ -207,21 +210,59 @@ impl Inner {
     ) -> Handled {
         match command {
             Command::SearchQuery => self.search(req, work, Some(grant)),
-            Command::NodeInspect => self.node_read(req, work, |reader, key| {
-                reader.inspect(key).map(|d| {
-                    if bare_row(&d.root_id, "rt_").is_some_and(|r| grant.roots.contains(&r)) {
-                        encode(&d)
-                    } else {
-                        // As an unknown node: nothing says the node exists.
-                        Err(fail(ErrorCode::NotFound, "unknown node"))
-                    }
-                })
-            }),
+            Command::NodeInspect => {
+                // Scope first: a node outside the grant answers as an unknown one before a
+                // generation check or a read could tell it apart (Codex review of #541).
+                let r: NodeRefRequest = req.decode_payload()?;
+                let key = self.node(&r.node_id, &mut self.read_reader(work)?)?;
+                if !self
+                    .node_root(key)?
+                    .is_some_and(|root| grant.roots.contains(&root))
+                {
+                    return Err(fail(ErrorCode::NotFound, "unknown node"));
+                }
+                self.client_inspect(req, work, grant)
+            }
             _ => Err(fail(
                 ErrorCode::PermissionDenied,
                 "this command is not open to a client",
             )),
         }
+    }
+
+    /// The catalogue root a directory or file lies under.
+    fn node_root(&self, key: NodeKey) -> Result<Option<i64>, ErrorBody> {
+        let (sql, id) = match key {
+            NodeKey::Dir(id) => ("SELECT root_id FROM main.dir WHERE id=?1", id),
+            NodeKey::File(id) => (
+                "SELECT d.root_id FROM main.file f JOIN main.dir d ON d.id=f.dir_id WHERE f.id=?1",
+                id,
+            ),
+            _ => return Ok(None),
+        };
+        self.db()
+            .query_row(sql, [id], |r| r.get(0))
+            .optional()
+            .map_err(sql_error)
+    }
+
+    fn client_inspect(
+        &self,
+        req: &RequestEnvelope,
+        work: Option<&crate::ReadWork>,
+        grant: &ClientGrant,
+    ) -> Handled {
+        // The root is checked again on the read itself: the row may have moved in between.
+        self.node_read(req, work, |reader, key| {
+            reader.inspect(key).map(|d| {
+                if bare_row(&d.root_id, "rt_").is_some_and(|r| grant.roots.contains(&r)) {
+                    encode(&d)
+                } else {
+                    // As an unknown node: nothing says the node exists.
+                    Err(fail(ErrorCode::NotFound, "unknown node"))
+                }
+            })
+        })
     }
 }
 
