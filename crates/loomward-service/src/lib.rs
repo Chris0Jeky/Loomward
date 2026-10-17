@@ -18,6 +18,7 @@
 mod apps;
 mod backups;
 mod collections;
+mod copy;
 mod cursors;
 mod db;
 mod desktop;
@@ -97,6 +98,8 @@ pub(crate) struct Inner {
     picker_last: Mutex<Option<Instant>>,
     /// The last diagnostic preview's digest and exact bytes (one slot, ADR-V3-24).
     preview: Mutex<diagnostics::Held>,
+    /// docs/47 C5: copy-and-verify for synthetic sessions on lab roots (copy.rs).
+    pub(crate) copies: copy::Copies,
     reads: Mutex<usize>,
     metadata: Arc<dyn inventory::Provider>,
     metadata_cursors: cursors::Cursors,
@@ -245,6 +248,7 @@ impl Service {
             dialog: Mutex::new(()),
             picker_last: Mutex::new(None),
             preview: Mutex::new(None),
+            copies: copy::Copies::open(&config.state_dir, config.dataset),
             reads: Mutex::new(0),
             metadata: metadata
                 .clone()
@@ -500,10 +504,11 @@ impl ViewService for Service {
             );
             return ResponseEnvelope::error(Some(id), e, None);
         }
-        // docs/47: copy-and-verify is contract only until lane C8 opens its effect gate (AGENTS.md
-        // invariant 1). Nothing below this point ever sees a copy command. A personal approval over
-        // HTTP is refused by its own rule (G6), which stays when the synthetic lab path opens (C5).
-        if command.as_str().starts_with("copy.") {
+        // docs/47: copy-and-verify is served for synthetic sessions on registered lab roots (lane C5,
+        // copy.rs). A personal session never gets past this point with a copy command until lane C8
+        // opens its effect gate (AGENTS.md invariant 1). A personal approval over HTTP is refused by its
+        // own rule (G6).
+        if command.as_str().starts_with("copy.") && self.inner.dataset == DatasetClass::Personal {
             let personal_http = command == Command::CopyApprove
                 && ctx.adapter == loomward_protocol::Adapter::Http
                 && self.inner.dataset == DatasetClass::Personal;
@@ -562,6 +567,12 @@ impl ViewService for Service {
                     | Command::BackupsForget
                     | Command::DiagnosticsPreview
                     | Command::DiagnosticsSave
+                    | Command::CopyPreview
+                    | Command::CopyApprove
+                    | Command::CopyStart
+                    | Command::CopyCancel
+                    | Command::CopyAbandon
+                    | Command::CopyStatus
             )
         {
             let e = fail(

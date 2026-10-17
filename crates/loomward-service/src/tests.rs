@@ -1712,7 +1712,9 @@ fn every_command_answers_a_complete_envelope_and_core_reads_serve_the_catalogue(
                     | Command::BackupsForget
                     | Command::DiagnosticsPreview
                     | Command::DiagnosticsSave
-            ))
+            )
+            // docs/47 C5: synthetic sessions serve copy on Windows (copy_tests.rs pins both classes).
+            && !(cfg!(windows) && command.as_str().starts_with("copy.")))
             || command == Command::RootsRequestGrant
         {
             assert_eq!(

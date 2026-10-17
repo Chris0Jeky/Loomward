@@ -221,6 +221,12 @@ impl Inner {
             BackupsForget => self.backups_forget(req),
             DiagnosticsPreview => self.diagnostics_preview(ctx),
             DiagnosticsSave => self.diagnostics_save(req, ctx),
+            // docs/47 C5: only synthetic sessions reach here (personal ones are refused in `call`).
+            CopyPreview => self.copy_preview(req),
+            CopyApprove => self.copy_approve(req),
+            CopyStart => self.copy_start(req),
+            CopyCancel | CopyAbandon => self.copy_cancel(req),
+            CopyStatus => self.copy_status(req),
             RootsRevoke => {
                 let r: RootRevokeRequest = req.decode_payload()?;
                 let grant = self.grant_of_root(self.root_row(&r.root_id)?)?;

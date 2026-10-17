@@ -1964,6 +1964,8 @@ export interface CopyStatus {
   digest: Digest;
   items_total: Count;
   items_verified: Count;
+  /** docs/47 Q1 default: the name (never a path) of the staging folder Loomward left in the destination parent on cancel or abandon, for the owner to remove; null otherwise. */
+  staging_folder: string | null;
   refusal: CopyRefusal | null;
 }
 

@@ -4,6 +4,7 @@
   "digest": "sha256:5ce0591058a0177bddc74b27b2c9112cb19f70fbf8cc335841231638aec983c8",
   "items_total": 3,
   "items_verified": 1,
+  "staging_folder": null,
   "refusal": {
     "code": "source_changed",
     "node_id": "nd_s1_402"
