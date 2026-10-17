@@ -3,6 +3,31 @@
 use super::*;
 use std::path::Path;
 
+/// Ends the test process with a message once the calling test outlives five minutes: these tests
+/// take seconds, and a hang must fail CI quickly instead of stalling the job for an hour (#495).
+/// Drop the returned sender when the test ends.
+#[must_use]
+fn watchdog() -> Sender<()> {
+    let name = std::thread::current()
+        .name()
+        .unwrap_or("bulk test")
+        .to_owned();
+    let (done, wait) = bounded::<()>(0);
+    std::thread::spawn(move || {
+        if wait.recv_timeout(Duration::from_secs(300))
+            == Err(crossbeam_channel::RecvTimeoutError::Timeout)
+        {
+            // Straight to stderr: test output capture would swallow `eprintln!` from this thread.
+            let _ = std::io::Write::write_all(
+                &mut std::io::stderr(),
+                format!("{name} hung for 5 minutes (#495); aborting the test process\n").as_bytes(),
+            );
+            std::process::abort();
+        }
+    });
+    done
+}
+
 fn open(path: &Path, bulk: bool) -> crate::Catalog {
     let catalog = crate::Catalog::open(path, "synthetic").unwrap();
     catalog.writer().set_bulk_first_scan(bulk);
@@ -416,6 +441,7 @@ fn equivalent_catalogue(bulk: bool, state: &str, neighbour: &str) -> (Vec<String
 
 #[test]
 fn bulk_first_scan_matches_the_incremental_path_row_for_row_and_query_for_query() {
+    let _hang = watchdog();
     for state in ["completed", "cancelled"] {
         for neighbour in ["none", "live", "bulk"] {
             let (normal_replies, normal) = equivalent_catalogue(false, state, neighbour);
@@ -433,6 +459,7 @@ fn bulk_first_scan_matches_the_incremental_path_row_for_row_and_query_for_query(
 
 #[test]
 fn readers_see_the_empty_root_until_end_run_commits_the_whole_build() {
+    let _hang = watchdog();
     let temp = tempfile::tempdir().unwrap();
     let catalog = open(temp.path(), true);
     let w = catalog.writer();
@@ -511,6 +538,7 @@ fn assert_discarded(path: &Path, root_dir: i64) {
 
 #[test]
 fn a_crash_between_build_and_swap_leaves_nothing_visible_and_reopen_discards_the_build() {
+    let _hang = watchdog();
     let temp = tempfile::tempdir().unwrap();
     let catalog = open(temp.path(), true);
     let (grant, root_dir) = register(catalog.writer(), 1);
@@ -532,6 +560,7 @@ fn a_crash_between_build_and_swap_leaves_nothing_visible_and_reopen_discards_the
 
 #[test]
 fn a_failed_swap_commit_rolls_back_the_whole_publication() {
+    let _hang = watchdog();
     let temp = tempfile::tempdir().unwrap();
     let catalog = open(temp.path(), true);
     let (grant, root_dir) = register(catalog.writer(), 1);
@@ -555,6 +584,7 @@ fn a_failed_swap_commit_rolls_back_the_whole_publication() {
 
 #[test]
 fn revocation_mid_build_discards_the_build() {
+    let _hang = watchdog();
     let temp = tempfile::tempdir().unwrap();
     let catalog = open(temp.path(), true);
     let w = catalog.writer();
@@ -584,6 +614,7 @@ fn revocation_mid_build_discards_the_build() {
 
 #[test]
 fn a_failed_run_discards_the_build_and_the_next_scan_is_incremental() {
+    let _hang = watchdog();
     for first in ["failed", "completed"] {
         let temp = tempfile::tempdir().unwrap();
         let catalog = open(temp.path(), true);
@@ -637,6 +668,7 @@ fn a_failed_run_discards_the_build_and_the_next_scan_is_incremental() {
 /// accepts and ends it each way. Raising the limit past the cap fails here, not in a user's revoke.
 #[test]
 fn the_deepest_build_the_writer_accepts_is_discarded_or_swapped_in_one_cascade() {
+    let _hang = watchdog();
     for ending in ["revoke", "failed", "completed"] {
         let temp = tempfile::tempdir().unwrap();
         let catalog = open(temp.path(), true);
