@@ -6,12 +6,16 @@
   export function sanitizeDuplicatesReport(report: DuplicateReport | undefined | null): {
     report: DuplicateReport | undefined;
     problem: string;
+    withheldGroups: number;
+    unreadableSkipped: number;
   } {
-    if (!report) return { report: undefined, problem: '' };
+    if (!report) return { report: undefined, problem: '', withheldGroups: 0, unreadableSkipped: 0 };
     const count = Array.isArray(report.entries) ? report.entries.length : 0;
     const valid = (i: unknown): i is number =>
       typeof i === 'number' && Number.isInteger(i) && i >= 0 && i < count;
     let malformed = false;
+    let withheldGroups = 0;
+    let unreadableSkipped = 0;
     const cleanLists = (lists: unknown): number[][] => {
       if (!Array.isArray(lists)) {
         malformed = true;
@@ -32,22 +36,63 @@
       }
       return out;
     };
-    const groups = cleanLists(report.groups);
+    // A verified group is shown only whole: losing any member, or ending with fewer than two, withholds it.
+    const cleanGroups = (lists: unknown): number[][] => {
+      if (!Array.isArray(lists)) {
+        malformed = true;
+        return [];
+      }
+      const out: number[][] = [];
+      for (const list of lists) {
+        if (!Array.isArray(list)) {
+          malformed = true;
+          withheldGroups += 1;
+          continue;
+        }
+        const kept = (list as unknown[]).filter(valid);
+        if (kept.length !== list.length || kept.length < 2) {
+          malformed = true;
+          withheldGroups += 1;
+          continue;
+        }
+        out.push(kept);
+      }
+      return out;
+    };
+    const groups = cleanGroups(report.groups);
     const links = cleanLists(report.links);
     const skipped = Array.isArray(report.skipped)
       ? report.skipped.filter((skip) => {
           const ok = !!skip && valid(skip.entry);
-          if (!ok) malformed = true;
+          if (!ok) {
+            malformed = true;
+            unreadableSkipped += 1;
+          }
           return ok;
         })
       : [];
     if (!Array.isArray(report.groups) || !Array.isArray(report.links) || !Array.isArray(report.skipped)) {
       malformed = true;
     }
+    let problem = '';
+    if (malformed) {
+      problem = 'Some inspection references were invalid and were skipped.';
+      if (withheldGroups === 1) problem += ' 1 verified group was withheld as incomplete.';
+      else if (withheldGroups > 1) problem += ` ${withheldGroups} verified groups were withheld as incomplete.`;
+    }
     return {
       report: { ...report, groups, links, skipped },
-      problem: malformed ? 'Some inspection references were invalid and were skipped.' : '',
+      problem,
+      withheldGroups,
+      unreadableSkipped,
     };
+  }
+
+  // Wording for skipped evidence that could not be read. Empty string means the list itself says enough.
+  export function skippedNotice(unreadable: number, listed: number): string {
+    if (unreadable === 1) return '1 skipped record could not be read, so its reason is unknown.';
+    if (unreadable > 1) return `${unreadable} skipped records could not be read, so their reasons are unknown.`;
+    return listed > 0 ? '' : 'No listed entries were skipped.';
   }
 </script>
 
@@ -71,6 +116,7 @@
   const guarded = $derived(sanitizeDuplicatesReport(report));
   const safeReport = $derived(guarded.report);
   const indexProblem = $derived(guarded.problem);
+  const skippedText = $derived(safeReport ? skippedNotice(guarded.unreadableSkipped, safeReport.skipped.length) : '');
   const active = $derived(job ? isActive(job.state) : false);
   // A session reads its own class of root only: lab roots when synthetic, folders you granted when personal (q-10).
   const origin = $derived(session.datasetClass === 'personal' ? 'owner_granted' : 'lab_generated');
@@ -159,7 +205,8 @@
         <thead><tr><th scope="col">Name</th><th scope="col">Reason</th></tr></thead>
         <tbody>{#each safeReport.skipped as skip}<tr><th scope="row"><VisibleName name={safeReport.entries[skip.entry]!.relative_path} /></th><td>{skip.reason}</td></tr>{/each}</tbody>
       </table></div>
-    {:else}<p class="empty">No listed entries were skipped.</p>{/if}
+    {/if}
+    {#if skippedText}<p class={safeReport.skipped.length ? 'muted' : 'empty'}>{skippedText}</p>{/if}
   {:else}<p class="empty">{active ? 'Inspection is running; verified evidence will appear when it ends.' : 'Start an inspection to see its evidence.'}</p>{/if}
 </section>
 
