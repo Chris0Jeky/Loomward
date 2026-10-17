@@ -45,7 +45,8 @@ it is not a simulated success substituted for the measurement.
 - Kernel overflow/failed-watch hints use the existing native `RootDirty` classification and the
   engine's full-root refresh path. Journal wrap/recreation, unsupported records, missing bookmarks
   or failed journal access leave a dirty full-root scope; a successful explicit full scan repairs it.
-- Ordinary `search.query` hits carry F1's `freshness: {state, at}`. `federated_search` and the ranked
+- Ordinary `search.query` hits carry F1's `freshness: {state, at}`; `at` is `null` for a `live`
+  hit (no catch-up time yet), while stale and caught-up hits carry it (#553). `federated_search` and the ranked
   index stay off. Search page coverage also exposes tracked stale roots using its existing state
   fields; `roots.list` retains the historical scan state. No protocol or frontend extension is needed.
 
@@ -382,7 +383,7 @@ not removal-ready while these edits are uncommitted.
 ## Issue #545: NULL-directory identity catch-up (2026-10-17)
 
 KRASPYON / Windows 11, `fix/545-f3-null-file-id`, base `origin/main`
-`4acd744393bbe6e1970c6bd4967d59006085026b`; uncommitted for the driver.
+`4acd744393bbe6e1970c6bd4967d59006085026b`; committed in #548 (merge `28e5752`).
 
 **Reachable:** the production catalogue writer fixture creates a verified NTFS grant,
 root state `complete`, current complete aggregates, `sub_noid=0` and one NULL-id
