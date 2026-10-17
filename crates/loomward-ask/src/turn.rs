@@ -365,6 +365,16 @@ impl Tools<'_> {
             "coverage",
             "name",
         ] {
+            // Not every null means unknown: a folder or an extensionless file has no extension
+            // (family "none"), and a file has no child counts. Those nulls stay absent.
+            let not_applicable = match key {
+                "extension" | "ext_family" => true,
+                "files" | "dirs" => row.get("kind").and_then(Value::as_str) != Some("dir"),
+                _ => false,
+            };
+            if not_applicable && row.get(key).is_some_and(Value::is_null) {
+                continue;
+            }
             if let Some(v) = row.get(key).and_then(model_value) {
                 out.insert(key.into(), v);
             }

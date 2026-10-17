@@ -454,8 +454,15 @@ impl ViewService for NullView {
     fn call(&self, _: RequestEnvelope, _: &CallContext) -> ResponseEnvelope {
         let mut r = row("n_1", "report.pdf");
         r.as_object_mut().unwrap().remove("modified_at");
+        // A folder: no extension and no family (not unknown), child counts unknown.
+        let mut d = row("d_1", "Reports");
+        let o = d.as_object_mut().unwrap();
+        o.insert("kind".into(), "dir".into());
+        o.insert("extension".into(), Value::Null);
+        o.insert("ext_family".into(), Value::Null);
         ok(json!({
-            "hits": [{"row": r, "root_id": "rt_1",
+            "hits": [{"row": d, "root_id": "rt_1", "match_kind": "name"},
+                     {"row": r, "root_id": "rt_1",
                       "path": {"text": "Alpha\\report.pdf", "truncated": false}, "match_kind": "name"}],
             "next_cursor": null, "roots": [], "generation": "g1"
         }))
@@ -480,13 +487,23 @@ fn a_null_reaches_the_model_as_unknown_and_a_withheld_field_stays_absent() {
         panic!()
     };
     let v: Value = serde_json::from_str(content).unwrap();
-    let row = &v["rows"][0];
+    let dir = &v["rows"][0];
+    assert_eq!(dir["files"], "unknown");
+    assert_eq!(dir["dirs"], "unknown");
+    assert!(
+        dir.get("extension").is_none() && dir.get("ext_family").is_none(),
+        "{dir}"
+    );
+    let row = &v["rows"][1];
     assert_eq!(row["allocated_bytes"], "unknown");
-    assert_eq!(row["files"], "unknown");
-    assert_eq!(row["dirs"], "unknown");
+    // A file has no child counts: those nulls are "not applicable", not unknown.
+    assert!(
+        row.get("files").is_none() && row.get("dirs").is_none(),
+        "{row}"
+    );
     assert_eq!(row["logical_bytes"], 4000);
     assert!(row.get("modified_at").is_none(), "{row}");
-    assert_eq!(row["handle"], "h1");
+    assert_eq!(row["handle"], "h2");
 }
 
 /// Every character of `range` must come out as its `\u{..}` escape, as the bidi and zero-width
