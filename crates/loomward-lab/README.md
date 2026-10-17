@@ -19,6 +19,19 @@ file/directory/logical-byte oracle and measured allocation before marking its ma
 Control files are siblings of `data/`; enumeration counts only `data/` descendants, excluding
 that directory itself.
 
+Windows regression fixtures also expose `loomward_lab::pathological::{generate, Profile}`.
+These explicit test profiles require a caller-owned empty, plain, non-root directory:
+`DepthLimit` (512 directories including the root), `LongPath` (past MAX_PATH),
+`UnpairedSurrogate`, `JunctionCycle`, `SymlinkCycle`, `HardLinks` (4,096 names across eight
+identities), `DeniedDirectory` and `Churn { files }` (1..=100,000 files in 100-file buckets).
+They are separate from the scale CLI and do not relax its G:/E: guards. Keep the returned
+`GeneratedTree` alive until before removing the temporary directory: its destructor restores
+the current user's fixture-only listing-deny ACE and removes the cycle link. Symlink privilege
+failure (1314) is UNVERIFIED; do not elevate. The engine integration test defaults to 4,000
+churn files; set `LOOMWARD_CHURN_FILES=100000` for the full row-4 run.
+Elevated hosts also report these native cases UNVERIFIED: the generator's elevation refusal
+is asserted, and native fixture/scan proof requires a non-elevated run.
+
 Synthetic generation/bench roots must be **direct children of G:\loomward-lab\scale or E:\loomward-lab\scale**, with ASCII letters/digits/hyphens/
 underscores and no device names. Relative, UNC, device, ADS and traversal paths are refused.
 Generation never overwrites an existing root. It reserves 20 GB (decimal) free space, limits a G: tree to

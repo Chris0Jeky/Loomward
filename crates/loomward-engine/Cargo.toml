@@ -24,6 +24,8 @@ getrandom = "0.4"
 rusqlite = { version = "0.38.0", features = ["bundled"] }
 
 [dev-dependencies]
+loomward-lab = { path = "../loomward-lab" }
+loomward-service = { path = "../loomward-service" }
 loomward-catalog = { path = "../loomward-catalog" }
 loomward-windows = { path = "../loomward-windows", features = ["fixtures"] }
 jsonschema = { version = "0.58.6", default-features = false }
