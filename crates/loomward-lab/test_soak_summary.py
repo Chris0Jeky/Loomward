@@ -1,7 +1,31 @@
 import copy
 import unittest
 
-from soak_summary import evaluate
+from soak_summary import LEGACY_NOTE, evaluate
+
+BASE_MS = 1_790_000_000_000  # fixed epoch-millisecond origin for synthetic wall clocks
+WALL_GAP = "wall-clock continuity gap or divergence from monotonic time"
+MONO_GAP = "sample continuity gap or invalid timestamp"
+
+
+def with_wall_clock(records, shift_from=None, shift_s=0):
+    """Give the start, samples and end a wall clock that tracks elapsed_s.
+
+    From shift_from onwards the wall clock is stepped by shift_s while elapsed_s is left alone,
+    which is what a suspend looks like when the monotonic counter does not count it.
+    """
+    result = []
+    for record in records:
+        record = dict(record)
+        if record["kind"] == "start":
+            record["unix_seconds"] = BASE_MS // 1000
+        if record["kind"] in ("sample", "end"):
+            wall = BASE_MS + round(record["elapsed_s"] * 1000)
+            if shift_from is not None and record["elapsed_s"] >= shift_from:
+                wall += round(shift_s * 1000)
+            record["unix_ms"] = wall
+        result.append(record)
+    return result
 
 
 def fixture():
@@ -72,6 +96,72 @@ class SummaryTests(unittest.TestCase):
         for records in cases:
             with self.subTest(records=len(records)):
                 self.assertEqual(evaluate(records, smoke=True)["status"], "FAIL")
+
+
+class WallClockContinuityTests(unittest.TestCase):
+    def test_clean_wall_clock_receipt_passes_without_a_legacy_note(self):
+        result = evaluate(with_wall_clock(fixture()), smoke=True)
+        self.assertEqual(result["status"], "SMOKE PASS")
+        self.assertEqual(result["notes"], [])
+
+    def test_planted_sleep_gap_fails_when_only_the_wall_clock_jumps(self):
+        # A suspend: the wall clock advances an hour, the monotonic elapsed_s does not.
+        records = with_wall_clock(fixture(), shift_from=245, shift_s=3600)
+        result = evaluate(records, smoke=True)
+        self.assertEqual(result["status"], "FAIL")
+        self.assertIn(WALL_GAP, result["errors"])
+        self.assertNotIn(MONO_GAP, result["errors"])
+
+    def test_wall_clock_stepped_backwards_fails_even_within_the_gap_bound(self):
+        records = with_wall_clock(fixture(), shift_from=245, shift_s=-30)
+        result = evaluate(records, smoke=True)
+        self.assertEqual(result["status"], "FAIL")
+        self.assertIn("wall-clock went backwards", result["errors"])
+
+    def test_end_record_wall_clock_gap_fails(self):
+        records = with_wall_clock(fixture())
+        records[-1]["unix_ms"] += 3600 * 1000
+        self.assertIn(WALL_GAP, evaluate(records, smoke=True)["errors"])
+
+    def test_end_record_without_unix_ms_on_a_wall_clock_receipt_fails(self):
+        records = with_wall_clock(fixture())
+        del records[-1]["unix_ms"]
+        self.assertIn("end record lacks unix_ms", evaluate(records, smoke=True)["errors"])
+
+    def test_sample_missing_unix_ms_after_wall_clock_samples_fails(self):
+        records = with_wall_clock(fixture())
+        del records[5]["unix_ms"]
+        self.assertIn("wall-clock field missing or mixed across samples",
+                      evaluate(records, smoke=True)["errors"])
+
+    def test_unix_ms_on_some_samples_of_a_legacy_run_fails(self):
+        records = fixture()
+        records[3]["unix_ms"] = BASE_MS
+        self.assertIn("wall-clock field missing or mixed across samples",
+                      evaluate(records, smoke=True)["errors"])
+
+    def test_non_integer_wall_clock_fails(self):
+        records = with_wall_clock(fixture())
+        records[4]["unix_ms"] = "soon"
+        self.assertIn("invalid wall-clock timestamp", evaluate(records, smoke=True)["errors"])
+
+
+class LegacyReceiptTests(unittest.TestCase):
+    def test_legacy_receipt_is_evaluated_on_monotonic_time_with_a_note(self):
+        result = evaluate(fixture(), smoke=True)
+        self.assertEqual(result["status"], "SMOKE PASS")
+        self.assertEqual(result["notes"], ["wall-clock continuity not checked (legacy receipt)"])
+        self.assertEqual(LEGACY_NOTE, "wall-clock continuity not checked (legacy receipt)")
+
+    def test_legacy_receipt_still_fails_on_a_planted_monotonic_gap(self):
+        records = fixture()
+        for record in records[1:]:
+            if record["kind"] in ("sample", "end") and record["elapsed_s"] >= 245:
+                record["elapsed_s"] += 3600
+        result = evaluate(records, smoke=True)
+        self.assertEqual(result["status"], "FAIL")
+        self.assertIn(MONO_GAP, result["errors"])
+        self.assertEqual(result["notes"], [LEGACY_NOTE])
 
 
 if __name__ == "__main__":
