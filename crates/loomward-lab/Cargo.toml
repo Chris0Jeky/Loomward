@@ -9,6 +9,10 @@ license.workspace = true
 loomward-engine = { path = "../loomward-engine", features = ["lab"] }
 loomward-protocol = { path = "../loomward-protocol" }
 loomward-windows = { path = "../loomward-windows" }
+loomward-service = { path = "../loomward-service" }
+loomward-catalog = { path = "../loomward-catalog" }
+rusqlite = { version = "0.38.0", features = ["bundled"] }
+sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
