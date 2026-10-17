@@ -290,3 +290,53 @@ fn names_are_cut_and_escaped() {
     assert_eq!(clean(&"x".repeat(300)).len(), 255);
     assert_eq!(clean("ünïcode report.pdf"), "ünïcode report.pdf");
 }
+
+#[test]
+fn the_tool_log_shows_every_call_and_refuses_effects_by_name() {
+    let view = FakeView::default();
+    let (_, answer, _) = run(
+        &view,
+        vec![
+            Upstream::Reply(calls(vec![
+                call("a", "find", r#"{"text":"report"}"#),
+                call("b", "delete", r#"{"handle":"h1"}"#),
+                call("c", "describe", r#"{"handle":"h1"}"#),
+            ])),
+            Upstream::Reply(text("h1 is the report.")),
+        ],
+    );
+    let tools = answer.unwrap().tools;
+    let got: Vec<_> = tools
+        .iter()
+        .map(|t| (t.name.as_str(), t.ok, t.rows, t.detail.as_str()))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("find", true, Some(2), "ok"),
+            ("delete", false, None, "unknown tool"),
+            ("describe", true, Some(1), "ok")
+        ]
+    );
+}
+
+#[test]
+fn the_offered_tools_are_exactly_the_read_catalogue() {
+    let offered: Vec<String> = tool_schemas()
+        .iter()
+        .map(|t| t["function"]["name"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(offered, TOOLS.map(|(n, _)| n.to_owned()));
+    for (_, command) in TOOLS {
+        assert!(matches!(command, "search.query" | "node.inspect"));
+    }
+}
+
+#[test]
+fn cited_finds_handle_tokens_only() {
+    assert_eq!(
+        cited("h1 and (h12), h1 again; not ah3, h0, h3x, h12345 or sh2. End h9."),
+        ["h1", "h12", "h9"]
+    );
+    assert!(cited("no handles here, h").is_empty());
+}

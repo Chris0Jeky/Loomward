@@ -50,6 +50,48 @@ pub struct Answer {
     pub tool_calls: usize,
     /// Handle to node ID: the citation ledger's raw material.
     pub handles: Vec<(String, String)>,
+    /// Every tool call the model made, in order, with what came of it (LW-118: shown to the owner).
+    pub tools: Vec<ToolUse>,
+}
+
+/// One tool call as the owner sees it: the model's tool name (cleaned), whether it ran, and the
+/// row count or the reason it was refused. Never the arguments: they are the model's free text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ToolUse {
+    pub name: String,
+    pub ok: bool,
+    /// Rows returned by `find` (1 for `describe`); `None` when refused.
+    pub rows: Option<usize>,
+    /// `ok` or the tool error the model was given.
+    pub detail: String,
+}
+
+/// The tool catalogue offered to the model: its name and the read command behind it. Every entry
+/// is a read (docs/46 section 8.2); a name outside this list is refused as `unknown tool`.
+pub const TOOLS: [(&str, &str); 2] = [("find", "search.query"), ("describe", "node.inspect")];
+
+/// The handles (`h1`, `h2`, ...) an answer text mentions, unique, in order of first mention.
+/// Citations are resolved from these through the ledger, never from the text itself.
+pub fn cited(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let b = text.as_bytes();
+    let word = |i: usize| {
+        b.get(i)
+            .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_')
+    };
+    for (i, c) in b.iter().enumerate() {
+        if *c != b'h' || (i > 0 && word(i - 1)) {
+            continue;
+        }
+        let digits = b[i + 1..].iter().take_while(|d| d.is_ascii_digit()).count();
+        if (1..=4).contains(&digits) && b[i + 1] != b'0' && !word(i + 1 + digits) {
+            let h = &text[i..i + 1 + digits];
+            if !out.iter().any(|x| x == h) {
+                out.push(h.to_owned());
+            }
+        }
+    }
+    out
 }
 
 /// Runs one turn. Every round is appended to `log` before the provider is called.
@@ -76,6 +118,7 @@ pub fn ask(
         handles: Vec::new(),
         output_bytes: 0,
         calls: 0,
+        log: Vec::new(),
     };
     for round in 1..=MAX_ROUNDS {
         // The last round, or a spent call budget, offers no tools: the model must answer.
@@ -144,6 +187,7 @@ pub fn ask(
                 rounds: round,
                 tool_calls: tools.calls,
                 handles: tools.handles,
+                tools: tools.log,
             });
         }
         let results: Vec<Message> = tool_calls.iter().map(|c| tools.run(c)).collect();
@@ -177,6 +221,7 @@ struct Tools<'a> {
     handles: Vec<(String, String)>,
     output_bytes: usize,
     calls: usize,
+    log: Vec<ToolUse>,
 }
 
 impl Tools<'_> {
@@ -195,6 +240,16 @@ impl Tools<'_> {
                 out
             }
         };
+        let error = content.get("error").and_then(Value::as_str);
+        self.log.push(ToolUse {
+            name: clean(&call.function.name).chars().take(64).collect(),
+            ok: error.is_none(),
+            rows: match content.get("rows").and_then(Value::as_array) {
+                Some(rows) => Some(rows.len()),
+                None => error.is_none().then_some(1),
+            },
+            detail: error.unwrap_or("ok").chars().take(128).collect(),
+        });
         Message::Tool {
             tool_call_id: call.id.clone(),
             content: content.to_string(),
