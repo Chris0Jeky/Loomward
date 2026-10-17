@@ -13,6 +13,7 @@ scratch state directory (never the owner's state):
     of silence (real heartbeat);
   * core/plugin commands (event, window, webview, app, path, dialog, fs, shell) are refused by the ACL;
   * the CSP is in force (an injected inline script is refused);
+  * crypto.subtle is present and reproduces a diagnostic preview's bytes and digest (the panel's byte check);
   * a page reload and a window close each tear the window's event streams down (the shell logs it);
   * raw IPC bounds and duplicate keys, blocked navigation/popups, production mock denial, renderer lag.
   * P9: 2,500-node Atlas layout + first draw in a separate development fixture shell build (--fixtures).
@@ -469,6 +470,22 @@ def main() -> int:
                   setTimeout(() => resolve(window.__inline ? 'ran' : 'no violation reported'), 1000);
                 })""")
                 check(inline.startswith('script-src'), 'the CSP blocks an injected inline script', violated=inline)
+
+                # The Diagnostics panel's byte check needs crypto.subtle inside this origin (#437). Without it the
+                # preview errors and Save stays off, which fails safe, but the panel would then never save.
+                digest = page.evaluate("""async () => {
+                  if (!(globalThis.crypto && crypto.subtle && typeof crypto.subtle.digest === 'function')) return { subtle: false };
+                  const r = await window.__TAURI_INTERNALS__.invoke('lw_call', new TextEncoder().encode(JSON.stringify(
+                    { protocol: 'loomward/3', request_id: 'r_probe_diag', command: 'diagnostics.preview', payload: {} })));
+                  const sorted = (v) => Array.isArray(v) ? v.map(sorted)
+                    : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sorted(v[k])])) : v;
+                  const bytes = new TextEncoder().encode(JSON.stringify(sorted(r.result.bundle), null, 2));
+                  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+                  return { subtle: true, size: String(bytes.length) === r.result.bytes,
+                    digest: 'sha256:' + Array.from(hash, (b) => b.toString(16).padStart(2, '0')).join('') === r.result.digest };
+                }""")
+                check(digest.get('subtle') is True and digest.get('size') is True and digest.get('digest') is True,
+                      'crypto.subtle in the real window reproduces the previewed diagnostic bytes and digest', **digest)
 
                 hello = page.evaluate("""() => window.__TAURI_INTERNALS__.invoke('lw_call', new TextEncoder().encode(JSON.stringify(
                     { protocol: 'loomward/3', request_id: 'r_probe', command: 'session.hello', payload: {} })))""")

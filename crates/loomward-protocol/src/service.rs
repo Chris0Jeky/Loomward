@@ -9,6 +9,19 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// What a Rust-side save dialog came to. Only `Cancelled` is the owner's choice; the other two say the
+/// dialog never opened, so a report cannot call them a cancel (invariant 4). Nothing is written in any.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SaveDialog {
+    Chosen(PathBuf),
+    /// The owner closed the dialog without choosing a file.
+    Cancelled,
+    /// Another dialog is open, so this one was not stacked on it.
+    Busy,
+    /// There is no dialog to open: no owner window yet, no start folder, or an adapter without one.
+    Unavailable,
+}
+
 /// Native UI the Rust side owns. The webview never supplies a path or a confirmation.
 pub trait NativeDialogs: Send + Sync {
     /// Rust-side folder picker; the chosen path never crosses IPC.
@@ -22,9 +35,9 @@ pub trait NativeDialogs: Send + Sync {
     /// Rust-side save dialog for a diagnostic bundle (docs/42 ADR-V3-24); the chosen path never
     /// crosses IPC. Replacing an existing file needs [`NativeDialogs::confirm_replace`] too. An
     /// adapter without one never opens a dialog.
-    fn save_file(&self, title: &str, default_name: &str) -> Option<PathBuf> {
+    fn save_file(&self, title: &str, default_name: &str) -> SaveDialog {
         let _ = (title, default_name);
-        None
+        SaveDialog::Unavailable
     }
     /// Loomward's own confirmation before a diagnostic save replaces the existing file `name`.
     /// `true` only on explicit accept; Cancel is the default. Without one, nothing is replaced.

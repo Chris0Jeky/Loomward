@@ -1,0 +1,134 @@
+{
+  "issue": 386,
+  "dataset_class": "synthetic",
+  "platform": "Windows 11 KRASPYON",
+  "base_commit": "04cb397ee2604113acfa0babe29dc1b0827d9b27",
+  "source_state": "uncommitted fix/386-first-scan-bulk",
+  "build_jobs_on_continuation": 3,
+  "variants": {
+    "main_1m": {
+      "files": 1000000,
+      "directories": 1001,
+      "P14": {
+        "bytes_per_entry": 311.17702379917705,
+        "catalog_bytes": 311488512,
+        "dataset_scale_met": false,
+        "target_bytes_per_entry": 200,
+        "target_dataset_rows": 10000000
+      },
+      "P4": {
+        "insert_seconds": 15.0583713,
+        "met": false,
+        "met_basis": "through_end_run_rows_per_second",
+        "rows_per_second": 66474.71894918676,
+        "target_rows_per_second": 250000,
+        "through_end_run_rows_per_second": 24413.47085100099
+      },
+      "end_run_seconds": 25.9436233,
+      "maintenance_seconds": 0.1576956,
+      "process_memory": {
+        "peak_pagefile_bytes": 382324736,
+        "peak_working_set_bytes": 365641728,
+        "scope": "process high-water through publication/queries; before isolated index probe"
+      },
+      "oracle_matched": true,
+      "temporary_directory_removed": true
+    },
+    "compaction_1m": {
+      "files": 1000000,
+      "directories": 1001,
+      "P14": {
+        "bytes_per_entry": 228.0008911080009,
+        "catalog_bytes": 228229120,
+        "dataset_scale_met": false,
+        "target_bytes_per_entry": 200,
+        "target_dataset_rows": 10000000
+      },
+      "P4": {
+        "insert_seconds": 16.0116462,
+        "met": false,
+        "met_basis": "through_end_run_rows_per_second",
+        "rows_per_second": 62517.057115588774,
+        "target_rows_per_second": 250000,
+        "through_end_run_rows_per_second": 21394.791218219412
+      },
+      "end_run_seconds": 30.7754895,
+      "maintenance_seconds": 4.8245552,
+      "process_memory": {
+        "peak_pagefile_bytes": 588029952,
+        "peak_working_set_bytes": 574107648,
+        "scope": "process high-water through publication/queries; before isolated index probe"
+      },
+      "oracle_matched": true,
+      "temporary_directory_removed": true
+    },
+    "compaction_1m_instrumented": {
+      "files": 1000000,
+      "directories": 1001,
+      "P14": {
+        "bytes_per_entry": 228.0008911080009,
+        "catalog_bytes": 228229120,
+        "dataset_scale_met": false,
+        "freelist_pages": 0,
+        "search_index_bytes": 81403904,
+        "target_bytes_per_entry": 200,
+        "target_dataset_rows": 10000000
+      },
+      "P4": {
+        "insert_seconds": 5.475257,
+        "met": false,
+        "met_basis": "through_end_run_rows_per_second",
+        "rows_per_second": 182822.65106459844,
+        "target_rows_per_second": 250000,
+        "through_end_run_rows_per_second": 55675.167746443105
+      },
+      "end_run_seconds": 12.5040512,
+      "maintenance_seconds": 1.8299169,
+      "process_memory": {
+        "peak_pagefile_bytes": 587784192,
+        "peak_working_set_bytes": 573161472,
+        "scope": "process high-water through publication/queries; before isolated index probe"
+      },
+      "oracle_matched": true,
+      "temporary_directory_removed": true
+    },
+    "compaction_2m": {
+      "files": 2000000,
+      "directories": 2001,
+      "P14": {
+        "bytes_per_entry": 228.22196792109494,
+        "catalog_bytes": 456900608,
+        "dataset_scale_met": false,
+        "freelist_pages": 0,
+        "search_index_bytes": 162783232,
+        "target_bytes_per_entry": 200,
+        "target_dataset_rows": 10000000
+      },
+      "P4": {
+        "insert_seconds": 10.7072209,
+        "met": false,
+        "met_basis": "through_end_run_rows_per_second",
+        "rows_per_second": 186976.71587218306,
+        "target_rows_per_second": 250000,
+        "through_end_run_rows_per_second": 49024.79063412845
+      },
+      "end_run_seconds": 30.1292819,
+      "maintenance_seconds": 4.3298815,
+      "process_memory": {
+        "peak_pagefile_bytes": 857018368,
+        "peak_working_set_bytes": 835276800,
+        "scope": "process high-water through publication/queries; before isolated index probe"
+      },
+      "oracle_matched": true,
+      "temporary_directory_removed": true
+    }
+  },
+  "limitations": [
+    "shared host; uncontrolled load and cache; times are observations, not a causal speed comparison",
+    "2M is the existing benchmark row limit; 10M and cold cache unverified",
+    "native process high-water excludes isolated index probe; 500 ms external monitors covered both complete instrumented processes but can miss short peaks"
+  ],
+  "instrumented_1m_whole_process_sampled_peak_working_set_bytes": 573161472,
+  "instrumented_2m_whole_process_sampled_peak_working_set_bytes": 835276800,
+  "instrumented_2m_exit_code": 0
+}

@@ -1,0 +1,15 @@
+[package]
+name = "loomward-broker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The inference broker's chat profile (docs/46 section 8.1): one OpenAI-compatible Chat Completions call to an owner-configured loopback endpoint per process. The only Loomward crate with an HTTP client."
+
+[dependencies]
+loomward-ask = { path = "../loomward-ask" }
+serde_json.workspace = true
+
+[dev-dependencies]
+loomward-ask = { path = "../loomward-ask", features = ["testkit"] }
+loomward-protocol = { path = "../loomward-protocol" }

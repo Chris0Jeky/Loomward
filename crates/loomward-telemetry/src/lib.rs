@@ -460,6 +460,8 @@ impl Sampler {
                 own.parent_pid = walked.parent_pid;
             }
         }
+        // One instant for both the rate and the stored reference, so the two can never disagree.
+        let read_at = own_read_instant(own_read_at, now);
         if let Some((previous_at, previous)) = &self.previous {
             let seconds = now.duration_since(*previous_at).as_secs_f64();
             current.sample_interval_seconds = Some(seconds);
@@ -469,7 +471,7 @@ impl Sampler {
                 own.rates = own_rates(
                     own,
                     self.own.as_ref(),
-                    own_read_at.unwrap_or(now),
+                    read_at,
                     current.logical_processor_count.unwrap_or(0),
                 );
             }
@@ -515,7 +517,7 @@ impl Sampler {
         if refresh_processes {
             self.process_sample_at = Some(now);
         }
-        self.own = own.map(|own| (own_read_at.unwrap_or(now), own));
+        self.own = own.map(|own| (read_at, own));
         self.previous = Some((now, current.clone()));
         current
             .processes
@@ -546,6 +548,13 @@ fn unknown_rates(reason: &str) -> Rates {
         unknowns: vec![unknown("all_rates", reason)],
         ..Rates::default()
     }
+}
+
+/// The instant an own-row CPU reading was taken: its counter read when the collector made one,
+/// otherwise the sample start. The current rate and the stored previous read both use it, so every
+/// own rate divides by the gap between two counter reads (#446, #469).
+fn own_read_instant(own_read_at: Option<Instant>, sample_started: Instant) -> Instant {
+    own_read_at.unwrap_or(sample_started)
 }
 
 /// Own-row rate over the gap between the previous and current counter reads (#446, #467). Pure,
@@ -1006,6 +1015,19 @@ mod tests {
             .unknowns
             .iter()
             .any(|u| u.reason == "requires_two_samples"));
+    }
+
+    #[test]
+    fn own_read_instant_is_the_counter_read_and_falls_back_to_the_sample_start() {
+        // #469: the own rate and the stored previous read take the counter-read instant, never the
+        // call site's `now`. Synthetic instants (the read is 3 ms after the sample start), no OS read.
+        let sample_started = Instant::now();
+        let counter_read = sample_started + std::time::Duration::from_millis(3);
+        assert_eq!(
+            own_read_instant(Some(counter_read), sample_started),
+            counter_read
+        );
+        assert_eq!(own_read_instant(None, sample_started), sample_started);
     }
 
     #[test]

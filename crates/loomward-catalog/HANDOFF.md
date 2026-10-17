@@ -1996,3 +1996,9 @@ Residual risk: a swap rewrites the whole build in one EndRun transaction, so the
 checkpoint carry it at once; the root shows no rows during a long first scan; ctx bookkeeping for
 a build is not rolled back if a revocation's catalogue savepoint itself fails (orphaned bulk rows
 then wait for the next open).
+
+Update 2026-10-17 (#386): the writer now restores the bulk map after a failed command savepoint,
+including BeginRun, EndRun, revocation and identity change. Successful bulk EndRun also attempts
+post-commit compaction when at least 1 MiB and 10% of pages are free. The rollback regressions,
+reader/concurrent-build integrity check, size/time measurements and remaining P14 miss are in
+[the follow-up evidence](../../evidence/v3/first-scan-bulk-load-148.md#follow-ups-386--17-october-2026).

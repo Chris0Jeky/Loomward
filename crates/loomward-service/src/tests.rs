@@ -5281,17 +5281,92 @@ fn label_and_collect_live(svc: &Service, root: &str, file: &str) {
         "collections.update_members",
         svc.call(add, &CallContext::http()),
     );
-    let (members, _) = ok(
-        "collections.members",
-        call(
-            svc,
-            "collections.members",
-            json!({"collection_id": created["collection_id"], "limit": 10, "cursor": null}),
-        ),
-    );
+    let members = live_collection_members(svc, &created["collection_id"]);
     let items = members["items"].as_array().unwrap();
     assert_eq!(items.len(), 1, "{members:?}");
     assert_eq!(items[0]["status"], "resolved");
+}
+
+#[cfg(windows)]
+fn live_collection_members(svc: &Service, collection: &Value) -> Payload {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let response = call(
+            svc,
+            "collections.members",
+            json!({"collection_id": collection, "limit": 10, "cursor": null}),
+        );
+        match &response {
+            ResponseEnvelope::Err(e) if e.error.code == ErrorCode::StaleGeneration => {
+                checked("collections.members", &response);
+                assert!(
+                    Instant::now() < deadline,
+                    "live members never stabilised: {:?}",
+                    e.error
+                );
+                // A newer watcher publication invalidates this read, not the durable membership.
+                f3_wait_live(svc);
+            }
+            _ => return ok("collections.members", response).0,
+        }
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn live_collection_read_recovers_from_a_background_publication() {
+    let Some(lab) = lab() else { return };
+    let svc = Arc::new(lab.svc);
+    let hydrate = (Command::CollectionsMembers, "hydrate");
+    let published = (Command::ScanStart, "targeted_catalogue_published");
+    svc.inner
+        .hooks
+        .closed
+        .lock()
+        .unwrap()
+        .extend([hydrate, published]);
+    let reading = {
+        let svc = svc.clone();
+        let root = lab.root.clone();
+        std::thread::spawn(move || label_and_collect_live(&svc, &root, "top.bin"))
+    };
+    svc.inner.hooks.until("live members hydration", |h| {
+        h.arrived.lock().unwrap().contains(&hydrate)
+    });
+    let clean = svc.inner.hit_freshness(1);
+    let before = svc.inner.revisions().unwrap();
+    // A real change inside the grant, with the state/WAL files outside watcher reach.
+    std::fs::write(lab.path.join("a").join("new.bin"), b"synthetic").unwrap();
+    let stale = svc.inner.hit_freshness(1);
+    svc.inner.freshness.ready_targeted_hint(1);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !svc.inner.hooks.arrived.lock().unwrap().contains(&published) && Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let reached = svc.inner.hooks.arrived.lock().unwrap().contains(&published);
+    let after = svc.inner.revisions().unwrap();
+    // Release both workers before asserting, including when the reproduction fails.
+    svc.inner.hooks.open(published.0, published.1);
+    svc.inner.hooks.open(hydrate.0, hydrate.1);
+    let result = reading.join();
+    assert_ne!(
+        clean.state,
+        SearchFreshnessState::Stale,
+        "state writes and reads dirtied the grant"
+    );
+    assert_eq!(stale.state, SearchFreshnessState::Stale);
+    assert!(reached, "native change never caused a targeted publication");
+    assert!(
+        after.0 > before.0,
+        "background scan did not advance catalogue revision"
+    );
+    assert_eq!(
+        after.1, before.1,
+        "the race must be a catalogue publication, not a preference edit"
+    );
+    result.unwrap();
+    assert!(svc.inner.hooks.runs.lock().unwrap()[&Command::CollectionsMembers] >= 2);
 }
 
 #[cfg(windows)]
