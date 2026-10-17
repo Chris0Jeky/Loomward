@@ -379,8 +379,8 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
 
   const collections = createCollectionMock(now, failWith, nodeFor, entryRow,
     (n) => topOf(n).some((a) => views.revokedRoots.has(rootId(a))), views.stateRev);
-  const retained = new Map<string, { binding: string; at: number; response: ResponseEnvelope }>();
-  const respond = (req: RequestEnvelope): ResponseEnvelope => {
+  const retained = new Map<string, { binding: string; at: number; response: Promise<ResponseEnvelope> }>();
+  const respond = async (req: RequestEnvelope): Promise<ResponseEnvelope> => {
     const base = { protocol: 'loomward/3' as const, request_id: req.request_id };
     const err = (code: ErrorCode, message: string, detail: Record<string, unknown> | null = null): ResponseEnvelope => ({ ...base, ok: false, error: { code, message, retryable: code === 'busy', detail } });
     if (req.protocol !== 'loomward/3') return err('unsupported_protocol', 'expected loomward/3');
@@ -392,7 +392,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
       if (req.command === 'roots.forget' && req.expected_state_rev != null && String(req.expected_state_rev) !== collections.stateRev()) {
         failWith('stale_generation', 'state.db changed since your read; re-read and ask the owner again', { reason: 'state_rev_changed' });
       }
-      const result = (req.command.startsWith('collections.') ? collections.handle(req) : h!((req.payload ?? {}) as Record<string, unknown>)) as Record<string, unknown>;
+      const result = await (req.command.startsWith('collections.') ? collections.handle(req) : h!((req.payload ?? {}) as Record<string, unknown>)) as Record<string, unknown>;
       const scope = REVS[req.command] ?? '';
       // Read after the handler, so a mutation reports the revision it committed.
       const meta = {
@@ -413,13 +413,13 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
       const binding = JSON.stringify([req.command, req.payload, req.expected_state_rev]);
       const saved = retained.get(req.request_id);
       if (saved && now().getTime() - saved.at < 600_000) {
-        if (saved.binding === binding) return structuredClone(saved.response);
+        if (saved.binding === binding) return structuredClone(await saved.response);
         return { protocol: 'loomward/3', request_id: req.request_id, ok: false, error: { code: 'invalid_request', message: 'This request_id was used for a different request.', retryable: false, detail: { reason: 'idempotency_conflict' } } };
       }
       const response = respond(req);
       if (retained.size >= 2048) retained.delete(retained.keys().next().value!);
-      retained.set(req.request_id, { binding, at: now().getTime(), response: structuredClone(response) });
-      return response;
+      retained.set(req.request_id, { binding, at: now().getTime(), response });
+      return structuredClone(await response);
     },
     subscribe(onEvent, onState, resume) {
       let live = true;
