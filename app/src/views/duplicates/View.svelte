@@ -58,6 +58,7 @@
   import { Duplicates } from '../../lib/stores/duplicates.svelte';
   import { isActive } from '../../lib/scan/model';
   import { formatBytes } from '../../lib/format/bytes';
+  import { escapedName } from '../../lib/format/names';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
 
   const duplicates = new Duplicates();
@@ -120,7 +121,7 @@
     <div class="lw-field">
       <label class="lbl" for="duplicate-root">Root</label>
       <select id="duplicate-root" bind:value={selected} disabled={loading || active || duplicates.pending}>
-        {#each roots as r (r.root_id)}<option value={r.root_id}>{r.display_path.text}</option>{/each}
+        {#each roots as r (r.root_id)}<option value={r.root_id}>{escapedName(r.display_path.text)}</option>{/each}
       </select>
     </div>
     <button class="btn primary" disabled={loading || !canStart || active || duplicates.pending} onclick={() => duplicates.start(selected)}>Start inspection</button>
@@ -133,10 +134,10 @@
 
 <section class="panel" aria-labelledby="duplicate-results">
   <h2 id="duplicate-results" tabindex="-1" bind:this={resultHeading}>Inspection result</h2>
-  {#if job?.error}<p class="bad">{job.error.message}</p>{/if}
+  {#if job?.error}<p class="bad" role="alert">{job.error.message}</p>{/if}
   {#if safeReport}
     <p class="evidence">Bytes read <strong class="num">{formatBytes(safeReport.bytes_read)}</strong> · Partial <strong class:warn={safeReport.partial}>{safeReport.partial ? 'yes' : 'no'}</strong> · Truncated <strong class:warn={safeReport.truncated}>{safeReport.truncated ? 'yes' : 'no'}</strong> · Stop <strong>{safeReport.stop ?? 'none'}</strong></p>
-    {#if indexProblem}<p class="bad">{indexProblem}</p>{/if}
+    {#if indexProblem}<p class="bad" role="alert">{indexProblem}</p>{/if}
     <h3>Verified groups</h3>
     {#if safeReport.groups.length}
       <div class="tbl-wrap"><table class="tbl"><caption class="sr-only">Verified equal default streams</caption>

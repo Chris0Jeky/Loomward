@@ -294,6 +294,26 @@ pub fn resume(last_epoch: Option<String>, last_seq: Option<u64>) -> Option<(Stri
     }
 }
 
+/// Pins the bound behind the `lw_events` inputs: whatever text the webview sends, only a valid
+/// `StreamEpoch` (8-64 characters) reaches the service, and anything else resumes from "".
+#[test]
+fn resume_only_passes_a_valid_epoch_through() {
+    assert_eq!(resume(None, None), None);
+    assert_eq!(
+        resume(Some("abcdefgh".into()), Some(3)),
+        Some(("abcdefgh".into(), 3))
+    );
+    assert_eq!(resume(None, Some(7)), Some((String::new(), 7)));
+    assert_eq!(
+        resume(Some("a".repeat(1 << 20)), Some(7)),
+        Some((String::new(), 7))
+    );
+    assert_eq!(
+        resume(Some("bad epoch!".into()), None),
+        Some((String::new(), 0))
+    );
+}
+
 #[cfg(test)]
 #[test]
 fn failed_stream_open_releases_the_webview_entry_immediately() {

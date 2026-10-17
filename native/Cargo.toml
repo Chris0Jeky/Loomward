@@ -39,6 +39,8 @@ windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_UI_Wind
 
 [dev-dependencies]
 tempfile = "3"
+# test_roots_base(): synthetic fixtures outside the source tree and protected profile stores (#292, #465).
+loomward-service = { path = "../crates/loomward-service", features = ["test-support"] }
 # `test` adds Tauri's mock runtime, so tests drive the real IPC and ACL without a webview.
 tauri = { version = "2.10", default-features = false, features = ["wry", "compression", "common-controls-v6", "custom-protocol", "test"] }
 

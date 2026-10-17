@@ -180,3 +180,7 @@ mod tests {
         assert!(cursors.resume(&c, Command::TreeChildren, "b", None).is_ok());
     }
 }
+
+#[cfg(test)]
+#[path = "cursors_fuzz.rs"]
+mod fuzz;

@@ -46,7 +46,8 @@
         "teacher_available": false,
         "telemetry_available": false,
         "gpu_available": false,
-        "diagnostics_save": true
+        "diagnostics_save": true,
+        "federated_search": false
       }
     },
     "health": {
@@ -120,6 +121,6 @@
       "unknown": "not_retained"
     }
   },
-  "bytes": "2835",
-  "digest": "sha256:4b32c29314daac16c0c8cb2446a6027bb2e3d18056e976a659ba94296e76e96f"
+  "bytes": "2868",
+  "digest": "sha256:8187274109dca01b02036ee3836fb68504c1f18731450e8080888117a53c2628"
 }

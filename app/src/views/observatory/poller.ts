@@ -17,6 +17,8 @@ export interface PollerOptions<T> {
 export class Poller<T> {
   private timer: unknown = null;
   private inFlight = false;
+  /** A kick arrived while a call was in flight; the poll it asks for runs when that call settles. */
+  private kicked = false;
   private failures = 0;
   private stopped = true;
   private readonly set: (f: () => void, ms: number) => unknown;
@@ -35,8 +37,16 @@ export class Poller<T> {
   /**
    * Poll now and forget the backoff (a reconnect or a fresh session). With `keepBackoff`, a poller that
    * is failing is left on its backoff schedule (a stream event during an outage must not hammer it).
+   * A call in flight is never overlapped: a kick made during one polls as soon as that call settles.
    */
-  kick(keepBackoff = false): void { if (this.stopped || (keepBackoff && this.failures > 0)) return; this.failures = 0; if (this.timer !== null) this.clear(this.timer); this.timer = null; void this.tick(); }
+  kick(keepBackoff = false): void {
+    if (this.stopped || (keepBackoff && this.failures > 0)) return;
+    this.failures = 0;
+    if (this.timer !== null) this.clear(this.timer);
+    this.timer = null;
+    if (this.inFlight) this.kicked = true;
+    else void this.tick();
+  }
 
   private schedule(ms: number): void {
     if (this.stopped) return;
@@ -62,6 +72,14 @@ export class Poller<T> {
       this.schedule(b[Math.min(this.failures - 1, b.length - 1)] ?? this.o.intervalMs);
     } finally {
       this.inFlight = false;
+      if (this.kicked) {
+        this.kicked = false;
+        if (!this.stopped) {
+          if (this.timer !== null) this.clear(this.timer);
+          this.timer = null;
+          void this.tick();
+        }
+      }
     }
   }
 }

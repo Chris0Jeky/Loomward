@@ -39,6 +39,8 @@ use windows_sys::Win32::{
     },
 };
 
+mod soak;
+
 const MIN_FREE: u64 = RESERVE_BYTES;
 const REJECT_ATTRS: u32 = FILE_ATTRIBUTE_REPARSE_POINT
     | FILE_ATTRIBUTE_OFFLINE
@@ -1224,6 +1226,9 @@ fn summarize_scans(result: &mut serde_json::Value) {
 pub fn run() -> io::Result<()> {
     require_non_elevated()?;
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a == "soak") {
+        return soak::cli(&args[1..]);
+    }
     if args.first().is_some_and(|a| a == "bench") && args.get(1).is_some_and(|a| a == "scan") {
         return bench_scan(&args[2..]);
     }

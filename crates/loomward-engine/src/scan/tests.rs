@@ -224,14 +224,97 @@ fn duplicate_grant_returns_evidence(class: DatasetClass) {
     assert_eq!(err.to_body().message.as_str(), "grant_not_active");
 }
 
-fn duplicate_budget() -> loomward_windows::duplicate_reader::Budget {
+pub(super) fn duplicate_budget() -> loomward_windows::duplicate_reader::Budget {
     loomward_windows::duplicate_reader::Budget {
         bytes: 100,
         time: std::time::Duration::from_secs(10),
     }
 }
 
-fn duplicate_grant_store(state: &std::path::Path, root: &GrantedRoot) -> rusqlite::Connection {
+#[cfg(windows)]
+#[test]
+fn tree_comparison_requires_both_durable_grants_and_final_cancellation_gate() {
+    use loomward_windows::enumerate::{DirSource, NativeSource};
+    if skip_elevated() {
+        return;
+    }
+    let a = canonical_tempdir();
+    let b = canonical_tempdir();
+    let state = canonical_tempdir();
+    for root in [a.path(), b.path()] {
+        std::fs::write(root.join("fixture"), b"same").unwrap();
+    }
+    let grant = |name, path: &std::path::Path| {
+        GrantedRoot::new(
+            RootId::new(name).unwrap(),
+            path.into(),
+            DatasetClass::Synthetic,
+            NativeSource::default().open_root(path).unwrap().1,
+        )
+    };
+    let left = grant("rt_tree_left", a.path());
+    let right = grant("rt_tree_right", b.path());
+    let conn = duplicate_grant_store(state.path(), &left);
+    let engine = Engine::open(EngineConfig::new(
+        state.path().into(),
+        DatasetClass::Synthetic,
+    ))
+    .unwrap();
+    assert_eq!(
+        engine
+            .compare_trees(&left, &right, duplicate_budget(), 100)
+            .unwrap_err()
+            .to_body()
+            .message
+            .as_str(),
+        "grant_not_active"
+    );
+    let identity = right.expected.unwrap();
+    let FileIdObs::Id128(id) = identity.id.unwrap() else {
+        panic!("fixture needs native identity")
+    };
+    conn.execute("INSERT INTO root_grant(id,display_path,volume_key,root_file_id,state) VALUES(2,?1,?2,?3,'active')",
+        rusqlite::params![b.path().to_str().unwrap(), format!("vsn_{}", identity.volume_serial.unwrap()), id.as_slice()]).unwrap();
+    let report = engine
+        .compare_trees(&left, &right, duplicate_budget(), 100)
+        .unwrap();
+    assert!(!report.differences.iter().any(|d| matches!(
+        d.kind,
+        loomward_operations::tree::DifferenceKind::Content
+            | loomward_operations::tree::DifferenceKind::Missing
+            | loomward_operations::tree::DifferenceKind::Extra
+    )));
+    for root in [&left, &right] {
+        let cancel = engine.duplicate_read_admission(root).unwrap();
+        cancel.store(true, Ordering::Release);
+        assert_eq!(
+            engine
+                .compare_trees(&left, &right, duplicate_budget(), 100)
+                .unwrap_err()
+                .to_body()
+                .message
+                .as_str(),
+            "cancelled"
+        );
+        cancel.store(false, Ordering::Release);
+    }
+    conn.execute("UPDATE root_grant SET state='revoked' WHERE id=1", [])
+        .unwrap();
+    assert_eq!(
+        engine
+            .compare_trees(&left, &right, duplicate_budget(), 100)
+            .unwrap_err()
+            .to_body()
+            .message
+            .as_str(),
+        "grant_not_active"
+    );
+}
+
+pub(super) fn duplicate_grant_store(
+    state: &std::path::Path,
+    root: &GrantedRoot,
+) -> rusqlite::Connection {
     duplicate_grant_store_as(state, root, "synthetic")
 }
 
@@ -1926,7 +2009,7 @@ fn targeted_pipeline_never_establishes_absence_outside_scope() {
 /// Native roots are opened component by component and refuse reparse ancestors, so tests grant a
 /// canonical temp base (hosted runners may junction the temp folder), as a real grant would.
 #[cfg(windows)]
-fn canonical_tempdir() -> tempfile::TempDir {
+pub(super) fn canonical_tempdir() -> tempfile::TempDir {
     tempfile::tempdir_in(std::fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap()
 }
 
@@ -1948,7 +2031,7 @@ fn explain(path: &std::path::Path) -> String {
 /// Hosted CI runners hold an elevated token, and the native scan refuses elevation by design
 /// (AGENTS.md invariant 2). There, pin the refusal and skip; elsewhere run the native test.
 #[cfg(windows)]
-fn skip_elevated() -> bool {
+pub(super) fn skip_elevated() -> bool {
     if !loomward_windows::enumerate::running_elevated() {
         return false;
     }

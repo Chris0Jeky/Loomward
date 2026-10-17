@@ -1,0 +1,2130 @@
+{
+ "format": "loomward-query-grammar-parity/1",
+ "about": "Shared by the Rust parser (crates/loomward-protocol/src/query_grammar.rs) and the TypeScript parser (app/src/lib/search/grammar.ts). Synthetic inputs only. Each case: parse(input) must equal expected as JSON. Each bounds case: parse(input).modified_bounds(now_ms) must give after and before.",
+ "now_ms": 1792238400000,
+ "now": "2026-10-17T12:00:00.000Z",
+ "cases": [
+  {
+   "name": "empty",
+   "input": "",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "blank",
+   "input": "  \t\r\n ",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "bare terms are tokens",
+   "input": "report 2025",
+   "expected": {
+    "terms": [
+     {
+      "text": "report",
+      "mode": "token",
+      "negated": false
+     },
+     {
+      "text": "2025",
+      "mode": "token",
+      "negated": false
+     }
+    ],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "quoted is a substring",
+   "input": "\"annual report\"",
+   "expected": {
+    "terms": [
+     {
+      "text": "annual report",
+      "mode": "substring",
+      "negated": false
+     }
+    ],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "negated bare and quoted",
+   "input": "-draft -\"old copy\"",
+   "expected": {
+    "terms": [
+     {
+      "text": "draft",
+      "mode": "token",
+      "negated": true
+     },
+     {
+      "text": "old copy",
+      "mode": "substring",
+      "negated": true
+     }
+    ],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "a lone dash is a term",
+   "input": "- foo",
+   "expected": {
+    "terms": [
+     {
+      "text": "-",
+      "mode": "token",
+      "negated": false
+     },
+     {
+      "text": "foo",
+      "mode": "token",
+      "negated": false
+     }
+    ],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "a dash inside a word is part of it",
+   "input": "foo-bar",
+   "expected": {
+    "terms": [
+     {
+      "text": "foo-bar",
+      "mode": "token",
+      "negated": false
+     }
+    ],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "a quoted dash is not a negation",
+   "input": "\"-foo\"",
+   "expected": {
+    "terms": [
+     {
+      "text": "-foo",
+      "mode": "substring",
+      "negated": false
+     }
+    ],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "empty quotes make no term",
+   "input": "\"\" -\"\" x",
+   "expected": {
+    "terms": [
+     {
+      "text": "x",
+      "mode": "token",
+      "negated": false
+     }
+    ],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "a quote closes and the next word starts",
+   "input": "\"foo\"bar",
+   "expected": {
+    "terms": [
+     {
+      "text": "foo",
+      "mode": "substring",
+      "negated": false
+     },
+     {
+      "text": "bar",
+      "mode": "token",
+      "negated": false
+     }
+    ],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "unterminated quote runs to the end",
+   "input": "\"abc def",
+   "expected": {
+    "terms": [
+     {
+      "text": "abc def",
+      "mode": "substring",
+      "negated": false
+     }
+    ],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "unterminated_quote",
+      "token": "\"abc def"
+     }
+    ]
+   }
+  },
+  {
+   "name": "tab and newline separate",
+   "input": "a\tb\nc",
+   "expected": {
+    "terms": [
+     {
+      "text": "a",
+      "mode": "token",
+      "negated": false
+     },
+     {
+      "text": "b",
+      "mode": "token",
+      "negated": false
+     },
+     {
+      "text": "c",
+      "mode": "token",
+      "negated": false
+     }
+    ],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "no-break space is not a separator",
+   "input": "a b",
+   "expected": {
+    "terms": [
+     {
+      "text": "a b",
+      "mode": "token",
+      "negated": false
+     }
+    ],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "unknown key is a plain term",
+   "input": "foo:bar c:notes",
+   "expected": {
+    "terms": [
+     {
+      "text": "foo:bar",
+      "mode": "token",
+      "negated": false
+     },
+     {
+      "text": "c:notes",
+      "mode": "token",
+      "negated": false
+     }
+    ],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "keys are case-insensitive",
+   "input": "Kind:DIR EXT:PDF",
+   "expected": {
+    "terms": [],
+    "extensions": [
+     "pdf"
+    ],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "dir",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "ext set",
+   "input": "ext:pdf;docx",
+   "expected": {
+    "terms": [],
+    "extensions": [
+     "pdf",
+     "docx"
+    ],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "ext strips a dot and folds ASCII case",
+   "input": "ext:.PDF;.Docx",
+   "expected": {
+    "terms": [],
+    "extensions": [
+     "pdf",
+     "docx"
+    ],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "ext accumulates and dedupes",
+   "input": "ext:pdf ext:docx;pdf",
+   "expected": {
+    "terms": [],
+    "extensions": [
+     "pdf",
+     "docx"
+    ],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "ext keeps non-ASCII as typed",
+   "input": "ext:ÀB",
+   "expected": {
+    "terms": [],
+    "extensions": [
+     "Àb"
+    ],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "ext empty is bad",
+   "input": "ext:",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "ext:"
+     }
+    ]
+   }
+  },
+  {
+   "name": "ext of only separators is bad",
+   "input": "ext:;;",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "ext:;;"
+     }
+    ]
+   }
+  },
+  {
+   "name": "ext with a path character is bad",
+   "input": "ext:a/b ext:pdf",
+   "expected": {
+    "terms": [],
+    "extensions": [
+     "pdf"
+    ],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "ext:a/b"
+     }
+    ]
+   }
+  },
+  {
+   "name": "ext too long is bad",
+   "input": "ext:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "ext:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+     }
+    ]
+   }
+  },
+  {
+   "name": "ext of 32 characters is fine",
+   "input": "ext:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "expected": {
+    "terms": [],
+    "extensions": [
+     "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    ],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "seventeenth extension is refused",
+   "input": "ext:e00 ext:e01 ext:e02 ext:e03 ext:e04 ext:e05 ext:e06 ext:e07 ext:e08 ext:e09 ext:e10 ext:e11 ext:e12 ext:e13 ext:e14 ext:e15 ext:e16",
+   "expected": {
+    "terms": [],
+    "extensions": [
+     "e00",
+     "e01",
+     "e02",
+     "e03",
+     "e04",
+     "e05",
+     "e06",
+     "e07",
+     "e08",
+     "e09",
+     "e10",
+     "e11",
+     "e12",
+     "e13",
+     "e14",
+     "e15"
+    ],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "too_many_extensions",
+      "token": "ext:e16"
+     }
+    ]
+   }
+  },
+  {
+   "name": "size greater than",
+   "input": "size:>100mb",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": "104857601",
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "size at least",
+   "input": "size:>=100mb",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": "104857600",
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "size less than",
+   "input": "size:<1gb",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": "1073741823",
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "size at most",
+   "input": "size:<=1gb",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": "1073741824",
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "size equals",
+   "input": "size:5kb",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": "5120",
+    "max_bytes": "5120",
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "size without a unit is bytes",
+   "input": "size:1024",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": "1024",
+    "max_bytes": "1024",
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "size range from two tokens",
+   "input": "size:>1mb size:<2mb",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": "1048577",
+    "max_bytes": "2097151",
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "a later size token replaces its side",
+   "input": "size:>1mb size:>=2mb",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": "2097152",
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "size is case-insensitive",
+   "input": "SIZE:>1MB",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": "1048577",
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "size less than zero is bad",
+   "input": "size:<0",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "size:<0"
+     }
+    ]
+   }
+  },
+  {
+   "name": "size at most zero is fine",
+   "input": "size:<=0",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": "0",
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "size above u64 is bad",
+   "input": "size:18446744073709551616",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "size:18446744073709551616"
+     }
+    ]
+   }
+  },
+  {
+   "name": "size at u64 max is fine",
+   "input": "size:18446744073709551615",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": "18446744073709551615",
+    "max_bytes": "18446744073709551615",
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "size greater than u64 max cannot be named",
+   "input": "size:>18446744073709551615",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "size:>18446744073709551615"
+     }
+    ]
+   }
+  },
+  {
+   "name": "size shift overflow is bad",
+   "input": "size:16777216tb",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "size:16777216tb"
+     }
+    ]
+   }
+  },
+  {
+   "name": "size unknown unit is bad",
+   "input": "size:10pb",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "size:10pb"
+     }
+    ]
+   }
+  },
+  {
+   "name": "size decimals are not read",
+   "input": "size:1.5mb",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "size:1.5mb"
+     }
+    ]
+   }
+  },
+  {
+   "name": "size without a number is bad",
+   "input": "size:>",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "size:>"
+     }
+    ]
+   }
+  },
+  {
+   "name": "a bad token keeps the earlier bound",
+   "input": "size:>1kb size:>x",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": "1025",
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "size:>x"
+     }
+    ]
+   }
+  },
+  {
+   "name": "issue tokens are cut to 64 characters",
+   "input": "size:9999999999999999999999999999999999999999999999999999999999999999999999",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "size:99999999999999999999999999999999999999999999999999999999999"
+     }
+    ]
+   }
+  },
+  {
+   "name": "modified year",
+   "input": "modified:2025",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": {
+     "at": "2025-01-01T00:00:00.000Z"
+    },
+    "modified_before": {
+     "at": "2025-12-31T23:59:59.999Z"
+    },
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "modified month",
+   "input": "modified:2025-03",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": {
+     "at": "2025-03-01T00:00:00.000Z"
+    },
+    "modified_before": {
+     "at": "2025-03-31T23:59:59.999Z"
+    },
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "modified leap february",
+   "input": "modified:2024-02",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": {
+     "at": "2024-02-01T00:00:00.000Z"
+    },
+    "modified_before": {
+     "at": "2024-02-29T23:59:59.999Z"
+    },
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "modified december",
+   "input": "modified:2025-12",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": {
+     "at": "2025-12-01T00:00:00.000Z"
+    },
+    "modified_before": {
+     "at": "2025-12-31T23:59:59.999Z"
+    },
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "modified day",
+   "input": "modified:2025-03-14",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": {
+     "at": "2025-03-14T00:00:00.000Z"
+    },
+    "modified_before": {
+     "at": "2025-03-14T23:59:59.999Z"
+    },
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "modified after a day",
+   "input": "modified:>2025-03-14",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": {
+     "at": "2025-03-15T00:00:00.000Z"
+    },
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "modified from a day",
+   "input": "modified:>=2025-03-14",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": {
+     "at": "2025-03-14T00:00:00.000Z"
+    },
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "modified before a day",
+   "input": "modified:<2025-03-14",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": {
+     "at": "2025-03-13T23:59:59.999Z"
+    },
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "modified through a day",
+   "input": "modified:<=2025-03-14",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": {
+     "at": "2025-03-14T23:59:59.999Z"
+    },
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "modified equals spelled out",
+   "input": "modified:=2025",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": {
+     "at": "2025-01-01T00:00:00.000Z"
+    },
+    "modified_before": {
+     "at": "2025-12-31T23:59:59.999Z"
+    },
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "impossible day is bad",
+   "input": "modified:2025-02-29",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "modified:2025-02-29"
+     }
+    ]
+   }
+  },
+  {
+   "name": "month 13 is bad",
+   "input": "modified:2025-13",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "modified:2025-13"
+     }
+    ]
+   }
+  },
+  {
+   "name": "short year is bad",
+   "input": "modified:202",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "modified:202"
+     }
+    ]
+   }
+  },
+  {
+   "name": "year before 1601 is bad",
+   "input": "modified:1600",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "modified:1600"
+     }
+    ]
+   }
+  },
+  {
+   "name": "1601 is the oldest year",
+   "input": "modified:1601",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": {
+     "at": "1601-01-01T00:00:00.000Z"
+    },
+    "modified_before": {
+     "at": "1601-12-31T23:59:59.999Z"
+    },
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "before 1601 reaches into 1600",
+   "input": "modified:<1601",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": {
+     "at": "1600-12-31T23:59:59.999Z"
+    },
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "after 9999 cannot be named",
+   "input": "modified:>9999",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "modified:>9999"
+     }
+    ]
+   }
+  },
+  {
+   "name": "9999 is the newest year",
+   "input": "modified:9999",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": {
+     "at": "9999-01-01T00:00:00.000Z"
+    },
+    "modified_before": {
+     "at": "9999-12-31T23:59:59.999Z"
+    },
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "newer than 30 days",
+   "input": "modified:<30d",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": {
+     "ago": {
+      "n": 30,
+      "unit": "d"
+     }
+    },
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "newer than or equal is the same",
+   "input": "modified:<=30d",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": {
+     "ago": {
+      "n": 30,
+      "unit": "d"
+     }
+    },
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "older than 2 weeks",
+   "input": "modified:>2w",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": {
+     "ago": {
+      "n": 2,
+      "unit": "w"
+     }
+    },
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "older than or equal is the same",
+   "input": "modified:>=6mo",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": {
+     "ago": {
+      "n": 6,
+      "unit": "mo"
+     }
+    },
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "hours and years",
+   "input": "modified:<12h modified:>3y",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": {
+     "ago": {
+      "n": 12,
+      "unit": "h"
+     }
+    },
+    "modified_before": {
+     "ago": {
+      "n": 3,
+      "unit": "y"
+     }
+    },
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "unit case folds",
+   "input": "modified:<5D",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": {
+     "ago": {
+      "n": 5,
+      "unit": "d"
+     }
+    },
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "a bare relative value is ambiguous",
+   "input": "modified:30d",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "modified:30d"
+     }
+    ]
+   }
+  },
+  {
+   "name": "zero days is bad",
+   "input": "modified:<0d",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "modified:<0d"
+     }
+    ]
+   }
+  },
+  {
+   "name": "six digit relative is bad",
+   "input": "modified:<100000d",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "modified:<100000d"
+     }
+    ]
+   }
+  },
+  {
+   "name": "five digit relative is fine",
+   "input": "modified:<99999d",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": {
+     "ago": {
+      "n": 99999,
+      "unit": "d"
+     }
+    },
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "a later modified token replaces its side",
+   "input": "modified:<1d modified:<2d",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": {
+     "ago": {
+      "n": 2,
+      "unit": "d"
+     }
+    },
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "unknown unit is bad",
+   "input": "modified:<3q",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "modified:<3q"
+     }
+    ]
+   }
+  },
+  {
+   "name": "kind dir",
+   "input": "kind:dir",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "dir",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "kind file",
+   "input": "kind:file",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "file",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "the last kind wins",
+   "input": "kind:dir kind:file",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "file",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "kind other is bad",
+   "input": "kind:both",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "kind:both"
+     }
+    ]
+   }
+  },
+  {
+   "name": "in collection",
+   "input": "in:Taxes",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": "Taxes",
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "in with a quoted name",
+   "input": "in:\"Tax Papers\"",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": "Tax Papers",
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "under with a quoted name",
+   "input": "under:\"Pinned Folder\" x",
+   "expected": {
+    "terms": [
+     {
+      "text": "x",
+      "mode": "token",
+      "negated": false
+     }
+    ],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": "Pinned Folder",
+    "issues": []
+   }
+  },
+  {
+   "name": "empty in is bad",
+   "input": "in:",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "in:"
+     }
+    ]
+   }
+  },
+  {
+   "name": "empty quoted under is bad",
+   "input": "under:\"\"",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "under:\"\""
+     }
+    ]
+   }
+  },
+  {
+   "name": "the last under wins",
+   "input": "under:a under:b",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": "b",
+    "issues": []
+   }
+  },
+  {
+   "name": "unterminated quoted value",
+   "input": "in:\"Tax",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": "Tax",
+    "under": null,
+    "issues": [
+     {
+      "code": "unterminated_quote",
+      "token": "in:\"Tax"
+     }
+    ]
+   }
+  },
+  {
+   "name": "a negated filter is refused",
+   "input": "-ext:pdf x",
+   "expected": {
+    "terms": [
+     {
+      "text": "x",
+      "mode": "token",
+      "negated": false
+     }
+    ],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "negated_filter",
+      "token": "-ext:pdf"
+     }
+    ]
+   }
+  },
+  {
+   "name": "a negated quoted filter is refused",
+   "input": "-in:\"A B\"",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "negated_filter",
+      "token": "-in:\"A B\""
+     }
+    ]
+   }
+  },
+  {
+   "name": "every part together",
+   "input": "\"Q3 report\" -draft ext:xlsx;csv size:>10kb modified:2025 kind:file in:Finance under:\"Pinned 1\"",
+   "expected": {
+    "terms": [
+     {
+      "text": "Q3 report",
+      "mode": "substring",
+      "negated": false
+     },
+     {
+      "text": "draft",
+      "mode": "token",
+      "negated": true
+     }
+    ],
+    "extensions": [
+     "xlsx",
+     "csv"
+    ],
+    "min_bytes": "10241",
+    "max_bytes": null,
+    "modified_after": {
+     "at": "2025-01-01T00:00:00.000Z"
+    },
+    "modified_before": {
+     "at": "2025-12-31T23:59:59.999Z"
+    },
+    "kind": "file",
+    "in_collection": "Finance",
+    "under": "Pinned 1",
+    "issues": []
+   }
+  },
+  {
+   "name": "64 characters is the term limit",
+   "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "expected": {
+    "terms": [
+     {
+      "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "mode": "token",
+      "negated": false
+     }
+    ],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "65 characters is too long",
+   "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "term_too_long",
+      "token": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+     }
+    ]
+   }
+  },
+  {
+   "name": "the limit counts code points, not UTF-16 units",
+   "input": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+   "expected": {
+    "terms": [
+     {
+      "text": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+      "mode": "token",
+      "negated": false
+     }
+    ],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "one code point over the limit",
+   "input": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "term_too_long",
+      "token": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+     }
+    ]
+   }
+  },
+  {
+   "name": "non-ASCII terms stay as typed",
+   "input": "café \"naïve\" 日本語",
+   "expected": {
+    "terms": [
+     {
+      "text": "café",
+      "mode": "token",
+      "negated": false
+     },
+     {
+      "text": "naïve",
+      "mode": "substring",
+      "negated": false
+     },
+     {
+      "text": "日本語",
+      "mode": "token",
+      "negated": false
+     }
+    ],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": []
+   }
+  },
+  {
+   "name": "the ninth term is refused",
+   "input": "t0 t1 t2 t3 t4 t5 t6 t7 t8",
+   "expected": {
+    "terms": [
+     {
+      "text": "t0",
+      "mode": "token",
+      "negated": false
+     },
+     {
+      "text": "t1",
+      "mode": "token",
+      "negated": false
+     },
+     {
+      "text": "t2",
+      "mode": "token",
+      "negated": false
+     },
+     {
+      "text": "t3",
+      "mode": "token",
+      "negated": false
+     },
+     {
+      "text": "t4",
+      "mode": "token",
+      "negated": false
+     },
+     {
+      "text": "t5",
+      "mode": "token",
+      "negated": false
+     },
+     {
+      "text": "t6",
+      "mode": "token",
+      "negated": false
+     },
+     {
+      "text": "t7",
+      "mode": "token",
+      "negated": false
+     }
+    ],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "too_many_terms",
+      "token": "t8"
+     }
+    ]
+   }
+  },
+  {
+   "name": "size with a prototype-key unit (constructor) is bad",
+   "input": "size:1constructor",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "size:1constructor"
+     }
+    ]
+   }
+  },
+  {
+   "name": "size with a prototype-key unit (__proto__) is bad",
+   "input": "size:1__proto__",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "size:1__proto__"
+     }
+    ]
+   }
+  },
+  {
+   "name": "size with a prototype-key unit (toString) is bad",
+   "input": "size:1toString",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "size:1toString"
+     }
+    ]
+   }
+  }
+ ],
+ "bounds": [
+  {
+   "input": "modified:<30d",
+   "after": "2026-09-17T12:00:00.000Z",
+   "before": null
+  },
+  {
+   "input": "modified:>2w",
+   "after": null,
+   "before": "2026-10-03T12:00:00.000Z"
+  },
+  {
+   "input": "modified:<=12h",
+   "after": "2026-10-17T00:00:00.000Z",
+   "before": null
+  },
+  {
+   "input": "modified:>=6mo",
+   "after": null,
+   "before": "2026-04-20T12:00:00.000Z"
+  },
+  {
+   "input": "modified:<2y modified:>1y",
+   "after": "2024-10-17T12:00:00.000Z",
+   "before": "2025-10-17T12:00:00.000Z"
+  },
+  {
+   "input": "modified:2025-03",
+   "after": "2025-03-01T00:00:00.000Z",
+   "before": "2025-03-31T23:59:59.999Z"
+  },
+  {
+   "input": "modified:>=2025-03 modified:<30d",
+   "after": "2026-09-17T12:00:00.000Z",
+   "before": null
+  },
+  {
+   "input": "modified:>99999y",
+   "after": null,
+   "before": "1601-01-01T00:00:00.000Z"
+  },
+  {
+   "input": "report",
+   "after": null,
+   "before": null
+  }
+ ]
+}

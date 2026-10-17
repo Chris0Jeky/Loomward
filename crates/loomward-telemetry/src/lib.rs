@@ -444,6 +444,22 @@ impl Sampler {
             .iter()
             .find(|p| p.pid == std::process::id())
             .cloned();
+        if !refresh_processes {
+            // A leased own row is built from a fabricated entry, so its parent comes from the last walk.
+            let walked = self
+                .previous
+                .as_ref()
+                .filter(|(_, previous)| previous.processes_observed_at_unix_ms.is_some())
+                .and_then(|(_, previous)| {
+                    previous
+                        .processes
+                        .iter()
+                        .find(|p| p.pid == std::process::id())
+                });
+            if let (Some(own), Some(walked)) = (&mut own, walked) {
+                own.parent_pid = walked.parent_pid;
+            }
+        }
         if let Some((previous_at, previous)) = &self.previous {
             let seconds = now.duration_since(*previous_at).as_secs_f64();
             current.sample_interval_seconds = Some(seconds);
@@ -823,6 +839,18 @@ mod tests {
             .processes
             .iter()
             .all(|p| p.rates.cpu_fraction.is_none()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn leased_own_row_carries_the_walked_parent_pid_not_a_fabricated_zero() {
+        let mut sampler = Sampler::default();
+        sampler.sample_leased(1024, SampleChannels::ALL);
+        let walked = sampler.own_process().unwrap().parent_pid;
+        assert_ne!(walked, 0);
+        sampler.sample_leased(1024, SampleChannels::ALL);
+        assert_eq!(sampler.phase_costs().process_snapshot_ms, 0.0);
+        assert_eq!(sampler.own_process().unwrap().parent_pid, walked);
     }
 
     #[cfg(windows)]

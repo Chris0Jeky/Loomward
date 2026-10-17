@@ -157,7 +157,9 @@
   }
   .rail a:hover { color: var(--text); }
   .rail a[aria-current='page'] { color: var(--text); border-left-color: var(--accent); background: var(--surface); }
-  main { min-width: 0; outline: none; }
+  main { min-width: 0; }
+  /* the skip-link target takes focus: keyboard users get the focus ring (2.4.7); a pointer click gets none */
+  main:focus:not(:focus-visible) { outline: none; }
   .unavailable h1 { color: var(--danger); }
 
   .legend {

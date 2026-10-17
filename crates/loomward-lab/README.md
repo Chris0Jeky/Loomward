@@ -1,5 +1,50 @@
 # Loomward scale lab
 
+## Daily-use soak (#414)
+
+```powershell
+$env:CARGO_BUILD_JOBS='4'
+$env:CARGO_TARGET_DIR='C:\lw\target\soak-r7'
+cargo build --manifest-path C:\lw\wt\soak-r7\Cargo.toml -p loomward-lab
+C:\lw\target\soak-r7\debug\loomward-lab.exe soak --hours 0.25 --root C:\lw\lab\soak --out C:\lw\soak\smoke.jsonl
+py -3 C:\lw\wt\soak-r7\crates\loomward-lab\soak_summary.py C:\lw\soak\smoke.jsonl --smoke
+```
+
+The root must be a **new** direct child of a directory named `lab`; the existing real-root,
+resolved-path, non-elevated and reparse/offline guards apply. Ancestors remain pinned. Existing
+trees and existing outputs are refused. The generator uses the deterministic dev plan (seed 42,
+128 sparse files, including long paths); `manifest.json`, the disposable marker, registered synthetic
+`data/` root and service `state/` live under the new root. Nothing scans an existing folder.
+The absolute JSONL output must be outside Git and outside the generated tree. No automatic cleanup
+is performed; preserve the tree and log for diagnosis. This command does not loosen the scale
+generator's G:/E: scope or its destroy command.
+
+Each cycle opens the real in-process `Service`, grants the registered root, scans, calls `tree.slice`
+and `search.query`, arms the native recursive watcher, creates/removes one synthetic probe, refreshes
+through the service, revokes, forgets and closes/reopens the service against the same stores.
+Watch hints require an explicit refresh: the service catalogue sink does not yet support automatic
+watch reconciliation. Restart means graceful service teardown/reopen in the same process; process
+crash recovery is readiness row 1. The process stays alive throughout to expose allocation growth.
+Calls request the service's supported 30-second deadline on this shared host, with no error retries.
+There is at most one cycle per five seconds; slow cycles are not overlapped. The JSONL records each
+operation's latency/error, current Windows handle count, RSS/private bytes, live DB/WAL sizes,
+catalogue row counts and logical bytes. Forget permits only the existing fully anonymised audit.
+An operation/measurement error is recorded and stops the run with exit 1. Each cycle is flushed and
+synced; a missing clean end fails evaluation. The evaluator implements the bounds fixed in
+[readiness row 7](../../docs/45-daily-use-readiness.md), exits 1 for failure and accepts input incrementally.
+
+Start the full run detached (use fresh root/output names):
+
+```powershell
+Start-Process -WindowStyle Hidden -FilePath 'C:\lw\target\soak-r7\debug\loomward-lab.exe' -ArgumentList @('soak','--hours','72','--root','C:\lw\lab\soak72','--out','C:\lw\soak\72h.jsonl') -WorkingDirectory 'C:\lw\wt\soak-r7' -RedirectStandardOutput 'C:\lw\soak\72h.stdout.log' -RedirectStandardError 'C:\lw\soak\72h.stderr.log'
+py -3 C:\lw\wt\soak-r7\crates\loomward-lab\soak_summary.py C:\lw\soak\72h.jsonl
+```
+
+The evaluator must be run after the process exits. Sleep/reboot or a sample gap over 60 seconds fails
+continuity; a smoke success never closes the 72-hour row. No host power settings are changed.
+Tests: `cargo test -p loomward-lab` (includes three native service cycles on Windows), and
+`py -3 -m unittest discover -s crates/loomward-lab -p test_soak_summary.py` (pass plus planted failures).
+
 An isolated Windows NTFS experiment, not an engine executor. Uses std threads, the already
 locked windows-sys 0.61, and the workspace's serde dependencies; no new package dependency.
 The plan and directory-buffer decoder have platform-independent tests; execution here was on Windows. The binary's
@@ -18,6 +63,19 @@ bandwidth. Tiny resident NTFS files can still report allocation. Generation chec
 file/directory/logical-byte oracle and measured allocation before marking its manifest complete.
 Control files are siblings of `data/`; enumeration counts only `data/` descendants, excluding
 that directory itself.
+
+Windows regression fixtures also expose `loomward_lab::pathological::{generate, Profile}`.
+These explicit test profiles require a caller-owned empty, plain, non-root directory:
+`DepthLimit` (512 directories including the root), `LongPath` (past MAX_PATH),
+`UnpairedSurrogate`, `JunctionCycle`, `SymlinkCycle`, `HardLinks` (4,096 names across eight
+identities), `DeniedDirectory` and `Churn { files }` (1..=100,000 files in 100-file buckets).
+They are separate from the scale CLI and do not relax its G:/E: guards. Keep the returned
+`GeneratedTree` alive until before removing the temporary directory: its destructor restores
+the current user's fixture-only listing-deny ACE and removes the cycle link. Symlink privilege
+failure (1314) is UNVERIFIED; do not elevate. The engine integration test defaults to 4,000
+churn files; set `LOOMWARD_CHURN_FILES=100000` for the full row-4 run.
+Elevated hosts also report these native cases UNVERIFIED: the generator's elevation refusal
+is asserted, and native fixture/scan proof requires a non-elevated run.
 
 Synthetic generation/bench roots must be **direct children of G:\loomward-lab\scale or E:\loomward-lab\scale**, with ASCII letters/digits/hyphens/
 underscores and no device names. Relative, UNC, device, ADS and traversal paths are refused.

@@ -18,6 +18,8 @@ use windows_sys::Win32::{
     System::{Threading::*, IO::*},
 };
 
+pub(super) mod tree;
+
 const BLOCK: usize = 64 * 1024;
 const SHARE: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
 
