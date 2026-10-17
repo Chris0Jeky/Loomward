@@ -10,3 +10,10 @@ CREATE TRIGGER IF NOT EXISTS op_journal_no_update BEFORE UPDATE ON op_journal
   BEGIN SELECT RAISE(ABORT, 'op_journal is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS op_journal_no_delete BEFORE DELETE ON op_journal
   BEGIN SELECT RAISE(ABORT, 'op_journal is append-only'); END;
+-- Lane C5: the executor's plan for one operation (manifest plus the observed source signatures), written
+-- once right after `started` and before any effect. Immutable: recovery reads the plan the run used.
+CREATE TABLE IF NOT EXISTS op_plan (
+  op_id INTEGER PRIMARY KEY CHECK (op_id > 0),
+  plan TEXT NOT NULL) STRICT;
+CREATE TRIGGER IF NOT EXISTS op_plan_no_update BEFORE UPDATE ON op_plan
+  BEGIN SELECT RAISE(ABORT, 'op_plan is immutable'); END;

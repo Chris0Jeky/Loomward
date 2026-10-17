@@ -224,3 +224,27 @@ fn a_revoked_root_stops_being_evaluated() {
     svc.inner.revoke(grant).unwrap();
     assert!(report(&svc)["items"].as_array().unwrap().is_empty());
 }
+
+/// #519: a low-space alert evaluates for a personal volume that holds an active owner grant, from
+/// the space `volumes.list` observes through that grant. The threshold is set above any real free
+/// space, so the observed temp volume must trip it.
+#[cfg(windows)]
+#[test]
+fn low_space_alert_evaluates_for_an_active_personal_grant_volume() {
+    let tmp = temp_root();
+    let Some((svc, _folder)) = personal_grant_session(&tmp) else {
+        return;
+    };
+    let mut settings = report(&svc)["settings"].clone();
+    settings["low_space_free_bytes"] = json!((1u64 << 50).to_string());
+    ok("alerts.configure", call(&svc, "alerts.configure", settings));
+    let r = report(&svc);
+    let low = r["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["kind"] == "low_space")
+        .unwrap();
+    assert_eq!(low["status"], "alert", "{:?}", low);
+    assert!(low["measured_bytes"].is_string(), "{:?}", low);
+}

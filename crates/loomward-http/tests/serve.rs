@@ -2179,8 +2179,36 @@ fn revoked_duplicates_are_redacted_from_last_event_id_replay_and_cancel_receipts
     );
 }
 
+#[test]
+#[cfg(windows)]
+fn http_serves_copy_commands_to_synthetic_sessions() {
+    // docs/47 C5: a synthetic session reaches the copy handlers over HTTP; unknown IDs are just unknown.
+    let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
+    let service = loomward_service::Service::open(loomward_service::Config {
+        state_dir: tmp.path().join("state"),
+        dataset: DatasetClass::Synthetic,
+        allow_personal: false,
+        allow_identity_unverified: false,
+        grant_roots: vec![],
+    })
+    .unwrap();
+    let h = serve(Arc::new(service), Options::default()).unwrap();
+    for (command, payload) in [
+        (
+            "copy.approve",
+            json!({"operation_id": "cp_1", "digest": format!("sha256:{}", "a".repeat(64))}),
+        ),
+        ("copy.status", json!({"operation_id": "cp_1"})),
+    ] {
+        let body = json!({"protocol": "loomward/3", "request_id": "r_s", "command": command, "payload": payload})
+            .to_string();
+        let v = call(&h, &body).json();
+        assert_eq!(v["error"]["code"], "not_found", "{command}: {v}");
+    }
+}
+
 /// docs/47 G6 over the real adapter: a personal session refuses a copy approval on HTTP by its own
-/// rule, and every copy command is gated (lane C4 opens no effect).
+/// rule, and every copy command stays gated for personal sessions (C8 closed).
 #[test]
 fn http_refuses_personal_copy_approvals_and_gates_every_copy_command() {
     let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();

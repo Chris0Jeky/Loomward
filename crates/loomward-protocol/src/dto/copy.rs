@@ -1,7 +1,8 @@
-//! Copy-and-verify commands (docs/47 lane C4, LW-038): preview, approve, start, cancel, abandon, status.
-//! Contract only: every copy command answers `capability_unavailable` until the effect gate (docs/47
-//! lane C8) opens. Node IDs select what the engine observes; the approval binds the digest of the
-//! freshly observed native identities, never a node ID (invariant 5).
+//! Copy-and-verify commands (docs/47 lanes C4, C5; LW-038, LW-040): preview, approve, start, cancel,
+//! abandon, status. Served for synthetic sessions on registered lab roots only (C5); every personal
+//! session answers `capability_unavailable` until the effect gate (docs/47 lane C8) opens. Node IDs
+//! select what the engine observes; the approval binds the digest of the freshly observed native
+//! identities, never a node ID (invariant 5).
 
 use super::*;
 
@@ -131,6 +132,13 @@ pub struct CopyStatus {
     pub digest: Digest,
     pub items_total: Count,
     pub items_verified: Count,
+    /// docs/47 Q1 default: the name (never a path) of the staging folder left in the destination
+    /// parent on cancel or abandon, for the owner to remove; `null` otherwise.
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub staging_folder: Option<BoundedStr<1, 255>>,
+    /// Staging folders intended but never identity-journaled: possibly empty leftovers, never adopted
+    /// or removed by Loomward; names only.
+    pub leftover_staging_folders: BoundedVec<BoundedStr<1, 255>, 0, 64>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub refusal: Option<CopyRefusal>,
 }

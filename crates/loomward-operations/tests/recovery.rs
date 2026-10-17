@@ -157,6 +157,7 @@ fn si(item: u32, name: &str, n: u8) -> StagedItem {
         item,
         name: name.into(),
         id: id(n),
+        planned_ft: None,
     }
 }
 

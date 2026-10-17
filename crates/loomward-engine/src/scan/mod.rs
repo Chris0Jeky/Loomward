@@ -162,6 +162,10 @@ impl GrantedRoot {
     pub fn expected_identity(&self) -> Option<source::OpenedIdentity> {
         self.expected
     }
+    /// The identity the durable grant verified at admission (docs/47 C5 binds its observations to it).
+    pub fn expected(&self) -> Option<&source::OpenedIdentity> {
+        self.expected.as_ref()
+    }
     /// Dataset class of its durable grant.
     pub fn dataset_class(&self) -> DatasetClass {
         self.dataset_class

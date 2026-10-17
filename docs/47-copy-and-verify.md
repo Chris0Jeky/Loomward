@@ -489,6 +489,16 @@ named streams currently remain explicitly unsupported. This is observation-time 
 read-back, restore receipt or permission to retire a source. C1 exposes no service, HTTP, IPC or MCP command
 and opens no effect gate.
 
+**C5 implementation seam.** `loomward-windows::effects::exec` wires C2, C3 and C4; `loomward-service`
+serves the copy commands to synthetic sessions on registered lab roots only, and personal sessions keep
+`copy_effect_gated`. Q1 stays open: by default (`loomward-copy-staging-removal` off) cancel and abandon
+journal `staging_left` and report the staging folder's name; identity-bound removal is the opt-in.
+Creation times are journaled (`planned`) before they are set, and recovery attaches only by journaled
+file ID with the original or planned creation time. Measured in C5: a held named-stream handle blocks the
+ancestor rename (H2 negative for streams), so stream holds are released for publish and the streams
+re-hashed after it. No resume yet: a stopped run exits by Abandon. Evidence:
+`evidence/v3/copy-executor-lab.md`.
+
 **Gate evidence (what C8 must show, beside doc 45's bar and HUMAN_TODO q-39).**
 
 - **G1.** The lab suite (C5).
