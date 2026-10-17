@@ -400,6 +400,25 @@ pub(crate) fn unsafe_attributes(_: &std::fs::Metadata) -> bool {
     false
 }
 
+/// Whether file attributes mark an online-only cloud file: offline, or recalled on open or data access.
+pub(crate) fn placeholder_bits(attributes: u32) -> bool {
+    const OFFLINE: u32 = 0x1000;
+    const RECALL_ON_OPEN: u32 = 0x4_0000;
+    const RECALL_ON_DATA_ACCESS: u32 = 0x40_0000;
+    attributes & (OFFLINE | RECALL_ON_OPEN | RECALL_ON_DATA_ACCESS) != 0
+}
+
+#[cfg(windows)]
+pub(crate) fn cloud_placeholder(meta: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    placeholder_bits(meta.file_attributes())
+}
+
+#[cfg(not(windows))]
+pub(crate) fn cloud_placeholder(_: &std::fs::Metadata) -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

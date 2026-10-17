@@ -202,7 +202,13 @@ pub enum DiagnosticsSaveOutcome {
 pub enum DiagnosticsSaveRefusal {
     PreviewChanged,
     UnsupportedTarget,
+    /// An existing target that is a cloud placeholder (or other offline file): saving would recall it.
+    CloudPlaceholder,
     WriteFailed,
+    /// Another dialog was open, so the save dialog did not open.
+    DialogBusy,
+    /// The save dialog could not open (no owner window yet, no start folder, or no dialog on this adapter).
+    DialogUnavailable,
 }
 
 /// Never the chosen path: it stays in Rust.
