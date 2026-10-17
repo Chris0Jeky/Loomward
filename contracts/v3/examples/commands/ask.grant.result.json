@@ -1,0 +1,32 @@
+{
+  "provider": "local",
+  "profile": {
+    "base_url": "http://127.0.0.1:11434/v1",
+    "model": "synthetic-model:3b"
+  },
+  "profile_digest": "sha256:3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+  "principal": "ask:local",
+  "grant": {
+    "roots": [
+      "rt_1"
+    ],
+    "fields": [
+      "path",
+      "size"
+    ],
+    "granted_at": "2026-10-17T09:00:00.000Z"
+  },
+  "tools": [
+    {
+      "name": "find",
+      "backed_by": "search.query",
+      "read_only": true
+    },
+    {
+      "name": "describe",
+      "backed_by": "node.inspect",
+      "read_only": true
+    }
+  ],
+  "last_turn": null
+}

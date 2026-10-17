@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 
 mod alerts;
 pub use alerts::*;
+mod ask;
+pub use ask::*;
 mod backups;
 pub use backups::*;
 mod inventory;

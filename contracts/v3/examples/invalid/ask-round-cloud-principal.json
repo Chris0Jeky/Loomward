@@ -1,0 +1,13 @@
+{
+  "def": "AskRound",
+  "reason": "only the ask:local principal runs (q-5 not met)",
+  "value": {
+    "round": 1,
+    "profile_digest": "sha256:3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+    "principal": "ask:cloud",
+    "sha256": "sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "bytes": 10,
+    "dispatched": false,
+    "outcome": "pending"
+  }
+}

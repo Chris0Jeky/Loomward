@@ -2012,6 +2012,119 @@ export interface CopyStatus {
   refusal: CopyRefusal | null;
 }
 
+/** An Ask turn (LW-118), held in memory for this session only. */
+export type AskTurnId = string;
+
+/** Optional fields an Ask grant discloses to the model (LW-067). Name, kind, extension, coverage and match type are always part of a row. */
+export type AskField = "path" | "size" | "modified" | "attributes";
+
+/** local is the only class that runs; a cloud profile is refused when configured (q-5 not met). */
+export type AskProviderState = "not_configured" | "local";
+
+/** Owner-entered loopback endpoint (http on 127.0.0.1, [::1] or localhost, port required) and model. No default; nothing is discovered. */
+export interface AskProfile {
+  base_url: string;
+  model: string;
+}
+
+/** Tauri adapter only (docs/46 section 8.1). A cloud-class profile is refused with capability_unavailable, detail.reason ask_cloud_gated. null clears the profile. */
+export interface AskConfigureRequest {
+  profile: AskProfile | null;
+}
+
+/** Replaces the ask:local client grant (a new epoch). Every root must be an active granted root. */
+export interface AskGrantRequest {
+  roots: RootId[];
+  fields: AskField[];
+}
+
+export interface AskGrant {
+  roots: RootId[];
+  fields: AskField[];
+  granted_at: Timestamp;
+}
+
+export interface AskTool {
+  name: string;
+  backed_by: CommandName;
+  read_only: true;
+}
+
+/** Reading the status never contacts the model endpoint. */
+export interface AskStatus {
+  provider: AskProviderState;
+  profile: AskProfile | null;
+  profile_digest: Digest | null;
+  principal: "ask:local";
+  grant: AskGrant | null;
+  tools: AskTool[];
+  last_turn: AskTurnId | null;
+}
+
+export interface AskTurnRequest {
+  question: string;
+}
+
+export interface AskTurnRef {
+  turn_id: AskTurnId;
+}
+
+export type AskTurnState = "running" | "completed" | "failed";
+
+export type AskFailureKind = "consent_required" | "cloud_unavailable" | "not_local" | "invalid_request" | "unreachable" | "timeout" | "http_status" | "oversize" | "invalid_reply" | "broker_failed";
+
+export interface AskFailure {
+  kind: AskFailureKind;
+  message: string;
+  /** False only when the turn provably sent nothing. */
+  dispatched: boolean;
+}
+
+/** Resolved from the turn's handle ledger, never from the answer text. resolved false: the entry no longer reads (revoked, forgotten or gone). */
+export interface AskCitation {
+  handle: string;
+  node_id: NodeId;
+  resolved: boolean;
+  name: string | null;
+  root_id: RootId | null;
+}
+
+/** One tool call the model made: never its arguments. A name outside the read catalogue is refused (ok false, detail unknown tool). */
+export interface AskToolUse {
+  name: string;
+  ok: boolean;
+  rows: NullableCount;
+  detail: string;
+}
+
+/** One model round's disclosure record: the exact request body by digest and length, logged before it was sent. outcome is pending, ok or an AskFailureKind. */
+export interface AskRound {
+  round: number;
+  profile_digest: Digest;
+  principal: "ask:local";
+  sha256: Digest;
+  bytes: Count;
+  dispatched: boolean;
+  outcome: string;
+}
+
+/** The answer is the model's text: plain text, never an instruction, an approval or an effect. */
+export interface AskTurnRecord {
+  turn_id: AskTurnId;
+  state: AskTurnState;
+  question: string;
+  started_at: Timestamp;
+  finished_at: NullableTimestamp;
+  answer: string | null;
+  answer_truncated: boolean;
+  failure: AskFailure | null;
+  citations: AskCitation[];
+  unverified: string[];
+  tool_calls: AskToolUse[];
+  tool_calls_total: Count;
+  rounds: AskRound[];
+}
+
 // ---- commands (commands.json)
 
 export interface CommandMap {
@@ -2079,6 +2192,12 @@ export interface CommandMap {
   "copy.cancel": { request: CopyOperationRequest; result: CopyStatus };
   "copy.abandon": { request: CopyOperationRequest; result: CopyStatus };
   "copy.status": { request: CopyOperationRequest; result: CopyStatus };
+  "ask.status": { request: EmptyRequest; result: AskStatus };
+  "ask.configure": { request: AskConfigureRequest; result: AskStatus };
+  "ask.grant": { request: AskGrantRequest; result: AskStatus };
+  "ask.revoke": { request: EmptyRequest; result: AskStatus };
+  "ask.turn": { request: AskTurnRequest; result: AskTurnRecord };
+  "ask.result": { request: AskTurnRef; result: AskTurnRecord };
 }
 
 export type CommandKey = keyof CommandMap;
@@ -2149,6 +2268,12 @@ export const COMMANDS = {
   "copy.cancel": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "copy.abandon": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "copy.status": { adapters: ["tauri", "http"], wave: 3, events: [] },
+  "ask.status": { adapters: ["tauri", "http"], wave: 3, events: [] },
+  "ask.configure": { adapters: ["tauri"], wave: 3, events: [] },
+  "ask.grant": { adapters: ["tauri", "http"], wave: 3, events: [] },
+  "ask.revoke": { adapters: ["tauri", "http"], wave: 3, events: [] },
+  "ask.turn": { adapters: ["tauri", "http"], wave: 3, events: [] },
+  "ask.result": { adapters: ["tauri", "http"], wave: 3, events: [] },
 } as const satisfies Record<CommandKey, {
   adapters: readonly ("tauri" | "http")[];
   wave: number;

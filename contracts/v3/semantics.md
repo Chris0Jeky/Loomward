@@ -750,3 +750,30 @@ Alerts are advice, never an action, and never an approval.
   anything, `settings` equals `defaults`.
 - **Notifications** are off until the owner enables them. This slice records the setting and lists alerts in the
   app; it wires no operating-system notification channel, and `notifications_note` says so.
+
+## Ask (LW-118, docs/46 section 8)
+
+- **Who may call.** Every `ask.*` command is the owner's. A client principal (`ask:local`, `mcp:<name>`) reaches
+  `search.query` and `node.inspect` only and is refused `permission_denied` on these, whatever its grant says.
+- **Profile.** `ask.configure` exists on the Tauri adapter only (docs/46 section 8.1: profiles are created on the
+  desktop); HTTP answers `capability_unavailable`. A profile is `local` only for an `http` loopback endpoint with an
+  explicit port and a model name that is not remote (`:cloud`, `-cloud`); anything else is refused,
+  `capability_unavailable` with `detail.reason` `ask_cloud_gated`, because q-5's cloud conditions are not met. There
+  is no default profile and nothing is discovered: no endpoint is contacted until the owner configured one and asked
+  a question. `ask.status` never contacts it.
+- **Grant.** `ask.grant` replaces the standing `ask:local` client grant (LW-067) over active granted roots and the
+  optional fields `path`, `size`, `modified`, `attributes`; `ask.revoke` ends it. The grant is read on every tool
+  call, so a revocation holds from the next call and the next turn. For the local class there is **no per-round
+  preview**: the grant is the control (docs/46 section 11 Q3 recommendation; pending the owner's decision).
+- **Turns.** `ask.turn` returns at once with `state: running` (a turn may take up to 180 s, longer than any call
+  deadline) and `ask.result` reads it. One turn runs at a time (`busy`). It is refused before anything is sent when
+  no profile is stored (`capability_unavailable`, `ask_not_configured`) or no grant is live (`permission_denied`,
+  `ask_no_grant`). Turns are held in memory for the session only (no `ask.db` yet).
+- **What a turn reports.** `rounds` holds one disclosure record per model round, logged before the round is sent:
+  the SHA-256 and length of the exact request body, the profile digest and the principal; `dispatched` is false only
+  when nothing was sent. `tool_calls` lists every call the model made, never its arguments; a name outside the read
+  catalogue (`ask.status.tools`, every entry `read_only: true`) is refused as `unknown tool` and shown.
+  `citations` are resolved from the turn's handle ledger, never from the answer text; `resolved: false` means the
+  entry no longer reads for the owner. `unverified` lists handles the answer names that the ledger does not hold.
+- **No authority.** The answer is text. A suggestion in it is a proposal for the owner to act on elsewhere; no Ask
+  command executes, approves or drafts anything.

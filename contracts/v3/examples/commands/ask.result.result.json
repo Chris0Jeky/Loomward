@@ -1,0 +1,57 @@
+{
+  "turn_id": "at_1",
+  "state": "completed",
+  "question": "Where is the largest report?",
+  "started_at": "2026-10-17T09:01:00.000Z",
+  "finished_at": "2026-10-17T09:01:04.250Z",
+  "answer": "h1 (report.pdf, 4 KB) is the largest report I can see. You could move it to an archive; I cannot do that. h7 is not something I looked up.",
+  "answer_truncated": false,
+  "failure": null,
+  "citations": [
+    {
+      "handle": "h1",
+      "node_id": "nd_s1_f17",
+      "resolved": true,
+      "name": "report.pdf",
+      "root_id": "rt_1"
+    }
+  ],
+  "unverified": [
+    "h7"
+  ],
+  "tool_calls": [
+    {
+      "name": "find",
+      "ok": true,
+      "rows": 2,
+      "detail": "ok"
+    },
+    {
+      "name": "delete",
+      "ok": false,
+      "rows": null,
+      "detail": "unknown tool"
+    }
+  ],
+  "tool_calls_total": 2,
+  "rounds": [
+    {
+      "round": 1,
+      "profile_digest": "sha256:3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+      "principal": "ask:local",
+      "sha256": "sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "bytes": 1480,
+      "dispatched": true,
+      "outcome": "ok"
+    },
+    {
+      "round": 2,
+      "profile_digest": "sha256:3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+      "principal": "ask:local",
+      "sha256": "sha256:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "bytes": 2210,
+      "dispatched": true,
+      "outcome": "ok"
+    }
+  ]
+}
