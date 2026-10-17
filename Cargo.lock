@@ -640,6 +640,7 @@ dependencies = [
  "loomward-catalog",
  "loomward-core",
  "loomward-learn",
+ "loomward-operations",
  "loomward-protocol",
  "loomward-telemetry",
  "loomward-windows",
@@ -757,6 +758,7 @@ dependencies = [
 name = "loomward-windows"
 version = "0.1.0"
 dependencies = [
+ "loomward-operations",
  "serde",
  "serde_json",
  "sha2",

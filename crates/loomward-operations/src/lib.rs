@@ -1,4 +1,5 @@
-//! Copy-and-verify operation journal (doc 47 lane C3, LW-039, ADR-V3-25).
+//! Copy-and-verify operation journal (doc 47 lane C3, LW-039, ADR-V3-25) and the pure read-only tree
+//! comparison of lane C1 (`tree`, no operation or effect authority).
 //!
 //! The state machine of doc 47 section 5, the write-ahead journal records, their `state.db` storage and the
 //! recovery reader. This crate performs NO file effect: it never opens, creates, writes, renames or deletes a
@@ -15,6 +16,7 @@ pub mod journal;
 pub mod recovery;
 pub mod state;
 pub mod store;
+pub mod tree;
 
 pub use journal::{
     Entry, FenceCause, Invalid, ObjectId, Record, Refusal, Replay, Row, StagedItem, MAX_BATCH,

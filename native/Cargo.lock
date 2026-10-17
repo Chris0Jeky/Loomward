@@ -1924,6 +1924,7 @@ dependencies = [
  "loomward-catalog",
  "loomward-core",
  "loomward-learn",
+ "loomward-operations",
  "loomward-protocol",
  "loomward-telemetry",
  "loomward-windows",
@@ -1959,6 +1960,16 @@ dependencies = [
  "serde_json",
  "sha2",
  "unicode-general-category",
+]
+
+[[package]]
+name = "loomward-operations"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -2010,6 +2021,7 @@ dependencies = [
 name = "loomward-windows"
 version = "0.1.0"
 dependencies = [
+ "loomward-operations",
  "serde",
  "serde_json",
  "sha2",

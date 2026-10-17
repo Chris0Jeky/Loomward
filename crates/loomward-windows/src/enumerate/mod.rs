@@ -308,15 +308,17 @@ mod profile;
 pub(crate) use native::force_elevation_for_test;
 #[cfg(all(windows, feature = "shortcut-read"))]
 pub use native::read_capped_regular_file;
+#[cfg(all(test, windows))]
+pub(crate) use native::record_open_accesses;
 #[cfg(windows)]
 pub(crate) use native::{non_elevated, open_watch_root};
+#[cfg(all(windows, any(feature = "content-read", test)))]
+pub(crate) use native::{open_data_stream, open_relative_mode, root_handles};
 #[cfg(windows)]
 pub use native::{
     open_metadata_child, open_readonly_directory, running_elevated, IoCancellation, NativeDir,
     NativeSource,
 };
-#[cfg(all(windows, any(feature = "content-read", test)))]
-pub(crate) use native::{open_relative_mode, root_handles};
 #[cfg(windows)]
 pub use profile::scan_profile;
 #[cfg(test)]
