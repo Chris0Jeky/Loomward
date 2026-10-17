@@ -46,6 +46,7 @@ from test_app_views import run_views, wait_until
 from test_app_copy import run_copy
 from test_app_inventory import run_inventory
 from test_app_ask import live_ask_isolated, run_ask
+from test_app_clutter import live_clutter, run_clutter
 
 ROOT = Path(__file__).resolve().parents[1]
 TOKEN = 'a1b2c3d4e5f60718293a4b5c6d7e8f90'
@@ -765,6 +766,7 @@ def run_live_serve(browser_path: str | None) -> None:
             run_inventory(page, base, check, live=True)
             live_backups(page, token)
             live_alerts(page, token)
+            live_clutter(page, token, check, live_call)
             live_diagnostics(page, token)
             live_scan_refusals(browser, exe)
             live_personal_scan(browser, exe)
@@ -1038,6 +1040,7 @@ def main() -> None:
         run_inventory(page, base, check, shots=a.view_shots)
         run_copy(page, base, a.view_shots)
         run_ask(page, base)
+        run_clutter(page, base)
 
         # --- hygiene -------------------------------------------------------------------------------
         check(hosts <= {'127.0.0.1'}, f'every request stayed on loopback: {sorted(hosts)}')

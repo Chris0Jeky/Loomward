@@ -9,6 +9,7 @@ import { createScanMock } from './mock-scan';
 import { createViewMock } from './mock-views';
 import { createInventoryMock } from './mock-inventory';
 import { createAlertMock } from './mock-alerts';
+import { createClutterMock } from './mock-clutter';
 import { createAskMock } from './mock-ask';
 import { createBackupMock } from './mock-backups';
 import diagnosticsFixture from '../../../../contracts/v3/examples/commands/diagnostics.preview.result.json';
@@ -36,7 +37,7 @@ const REVS: Partial<Record<string, 'c' | 's' | 'cs'>> = {
   'health.get': 'c', 'tree.children': 'c', 'search.query': 'c',
   'roots.list': 'cs', 'tree.slice': 'cs', 'placement.candidates': 'cs', 'placement.simulate': 'cs',
   'proposals.list': 'cs', 'proposals.get': 'cs', 'volumes.declare_tier': 'cs',
-  'roots.revoke': 'cs', 'roots.forget': 'cs', 'backups.list': 's', 'backups.forget': 's', 'alerts.list': 's', 'alerts.configure': 's', 'grants.list': 's', 'grants.revoke': 's', 'volumes.list': 's', 'tiers.model': 's',
+  'roots.revoke': 'cs', 'roots.forget': 'cs', 'backups.list': 's', 'backups.forget': 's', 'alerts.list': 's', 'alerts.configure': 's', 'clutter.developer': 'cs', 'grants.list': 's', 'grants.revoke': 's', 'volumes.list': 's', 'tiers.model': 's',
 };
 
 class CommandFailure extends Error {
@@ -352,6 +353,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     ...createInventoryMock(now, fail),
     ...createBackupMock(now, fail),
     ...createAlertMock(now, fail),
+    ...createClutterMock(fail, () => (handlers['roots.list']!({}) as RootList).roots, HOSTILE_ROOT_ID),
     // The contract's synthetic bundle, whose size and digest are those of its canonical text. Like HTTP, the mock
     // has no Rust-owned save dialog, so diagnostics.save answers capability_unavailable.
     'diagnostics.preview': (p) => {
