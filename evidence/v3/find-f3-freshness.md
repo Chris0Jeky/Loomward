@@ -275,3 +275,105 @@ and checkpoint files are unchanged. No new owner decision is needed. The worktre
 `feat/404-f3-watchers-usn` at the starting HEAD with the three fixes and this receipt uncommitted
 for the driver; the new `src/freshness/reach.rs` module is untracked until the driver adds it.
 No commit, push, PR edit, merge or cleanup was performed. The worktree is not removal-ready.
+
+## Round 2: quiescent catalogue comparison (PR #531)
+
+2026-10-17, KRASPYON, Windows 11 Home/MSVC, uncommitted changes over `bab9d42`.
+The control uses local `origin/main` at `c8056bd8697eb2bfe7707e03822ea5610a2799fa`
+in a separate detached worktree. Every Cargo invocation sets `CARGO_BUILD_JOBS=4`.
+The branch, base and load build use separate external target directories; raw receipts
+below remain in the branch's external target directory, outside Git. Native churn runs
+set `LOOMWARD_REQUIRE_NATIVE=1`, so an unavailable native case cannot pass vacuously.
+
+### Finding and discriminating seam
+
+The comparison's assumption was too strong: a completed foreground job is not a
+quiescent service catalogue. The existing targeted pipeline deliberately leaves
+root coverage partial; F3 schedules a full-root fallback before clearing stale freshness.
+
+`f3_completed_foreground_job_does_not_mean_background_catalogue_is_quiescent`
+deterministically queues a name hint for a synthetic child directory through
+`Tracker::record`, then holds the resulting background targeted scan just after
+catalogue publication, before freshness completion. At that observation:
+
+- The earlier foreground job still reports `completed`, coverage `complete`.
+- The persisted root's `sub_complete` is **0**, reproducing the mismatching field.
+- The tracker is stale, and the public search response reports partial coverage
+  and stale hit freshness, rather than falsely reporting complete/live.
+- Releasing the gate and waiting through freshness plus job idleness lets the
+  full fallback finish; persisted root `sub_complete` is then **1**.
+
+The gate and fixture preparation compile only in tests. The latter clears completed
+fallback bookkeeping and ages the debounce clock on an idle fixture, forcing the
+targeted path rather than relying on native scheduling. Initial setup probes that
+waited for an arbitrary native/injected notification did not reach the targeted gate;
+their timeout receipts are `round2-overlap-seam.log` and `round2-overlap-seam-2.log`.
+The second reported `full=true`, `auto=false`, no pending scopes and a healthy watch.
+The controlled targeted setup passed (`round2-overlap-seam-3.log`); the final suite
+also checks the public partial/stale fields added after that initial seam receipt.
+
+This establishes the proposed background-publication overlap through the production
+SQLite sink. It does not reconstruct the exact scheduling of the earlier workspace
+failure: an instrumented unchanged comparison passed 10/10 here
+(`round2-instrumented.log`). The state directories are siblings of the synthetic scan
+root, so their catalogue/WAL writes are outside watcher reach. The watch filter excludes
+last-access notifications. No self-generated catalogue-write event or incorrect
+freshness claim was observed, and no production refresh behavior is changed.
+
+### Change and proof
+
+The churn test now waits for the service's **public search freshness/coverage and
+job-idle signals**, with a 300-second deadline and diagnostic failure, before
+observing either catalogue. It yields while checking those signals; it adds no
+sleep or fixed settling delay. The filesystem walk, exact file tuples, stable
+observation fields, row counts and root `sub_complete` comparison are unchanged.
+
+The load process repeatedly rebuilds `cargo build --workspace` in its own target,
+cleaning only its engine/service/lab/http build artifacts between builds so warm
+Cargo no-ops cannot stand in for compilation load. `round2-load-continuous.log`
+records build start/end timestamps spanning the base and fixed-test loops.
+
+All commands use the appropriate absolute `--manifest-path`; below it is omitted
+for readability. The control's manifest belongs to its detached worktree; every
+other command uses this branch. The repeated case is
+`concurrent_create_delete_rename_grow_reconciles_exactly_to_fresh_scan`.
+
+| Command / check | Result / receipt |
+|---|---|
+| Control: `cargo test -p loomward-engine --test pathological concurrent_create_delete_rename_grow_reconciles_exactly_to_fresh_scan -- --exact --nocapture`, 10 iterations under load | **10 passed, 0 failed**; `round2-base-load-10.log` |
+| Fixed branch: same command, 20 iterations under load | **20 passed, 0 failed**; `round2-fixed-load-20.log` |
+| `cargo fmt --all --check` | Exit 0; `round2-fmt.log` |
+| `cargo test -p loomward-engine -p loomward-service --no-fail-fast` | Exit 0: **474 passed, 0 failed, 0 ignored**, including the final deterministic seam; `round2-crates.log` |
+| `cargo clippy --workspace --all-targets -- -D warnings` | Exit 0, no warnings; `round2-clippy.log` |
+| Default catalogue crash sweep, within the workspace command | **9 passed, 0 failed**, 168.86 s; `round2-workspace.log`. `LOOMWARD_CRASH_SWEEP` was unset: this is the default sampled sweep, not the exhaustive `full` mode. |
+| `cargo test --workspace --no-fail-fast` | Exit 0: **1,308 passed, 0 failed, 1 ignored**, across 74 targets; `round2-workspace.log` |
+| `git diff --check` | Exit 0 |
+
+The base control ran from 11:41:30 to approximately 11:43:11 local time; the fixed
+loop ran from 11:43:28 to approximately 11:47:25. Each successful case reported
+4,041 exact catalogue observations and 4,000 files matching the independent
+filesystem walk. The detached base worktree's `git status --porcelain --ignored`
+was empty after its control completed; it was removed with plain `git worktree remove`.
+
+The broader gates set `RUST_TEST_THREADS=1` to limit pressure on the shared host;
+the separate build workload continued during their initial phase. The workspace
+service suite passed **232/232**, including the new deterministic overlap test.
+The existing ignored case is `effects::exec::tests::throughput_lab`; it was not
+enabled or changed. `round2-gates.json` records all three broad command exit codes
+as zero. The toolchain reports Rust 1.97.1, `x86_64-pc-windows-msvc`.
+
+### NOT verified / residual risk / driver handoff
+
+The historical natural failure's exact notification scheduling was not recaptured;
+the deterministic seam reproduces its partial-root observation and proves the
+freshness/idle condition needed before comparing. The 20-run load sample is bounded,
+not a sustained-churn soak. Hosted CI for the uncommitted change, non-Windows
+qualification and the existing ignored throughput lab remain unverified.
+
+`HUMAN_TODO.md` and all other protected files are unchanged; no new owner decision
+is needed. No commit, push, PR mutation or merge was performed. The branch remains
+`feat/404-f3-watchers-usn` at `bab9d4290c9f395e233c9f5ba761e152fd7713ca` with five
+modified files left for the driver. Suite-created synthetic fixtures remain under
+the ignored `target/test-roots/`; raw receipts are outside the worktree in
+`C:/lw/target/search-f3/`, so they survive later worktree removal. The worktree is
+not removal-ready while these edits are uncommitted.

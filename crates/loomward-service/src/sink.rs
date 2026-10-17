@@ -721,6 +721,13 @@ impl ScanSink for CatalogScanSink {
             .get(root)
             .map(|r| r.grant);
         if let (Some(inner), Some(grant)) = (self.inner.upgrade(), grant) {
+            #[cfg(test)]
+            if matches!(scope, RunScope::Targeted(_)) {
+                inner.hooks.gate(
+                    loomward_protocol::Command::ScanStart,
+                    "targeted_catalogue_published",
+                );
+            }
             inner.freshness_finish(grant, scope, complete);
         }
         self.invalidated(root, true);

@@ -3734,6 +3734,78 @@ fn f3_journal_replay_does_not_hold_db_or_watch_setup() {
 
 #[cfg(windows)]
 #[test]
+fn f3_completed_foreground_job_does_not_mean_background_catalogue_is_quiescent() {
+    let Some(lab) = lab() else { return };
+    let foreground = start(&lab.svc, &lab.root, "full");
+    assert_eq!(settle(&lab.svc, &foreground)["coverage"], "complete");
+    f3_wait_live(&lab.svc);
+    let phase = (Command::ScanStart, "targeted_catalogue_published");
+    lab.svc.inner.hooks.closed.lock().unwrap().push(phase);
+    lab.svc.inner.freshness.record(
+        1,
+        vec![loomward_windows::watch::Change::Name {
+            action: 1,
+            name: "a\\new.bin".encode_utf16().collect(),
+        }],
+    );
+    lab.svc.inner.freshness.ready_targeted_hint(1);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !lab.svc.inner.hooks.arrived.lock().unwrap().contains(&phase) {
+        assert!(
+            Instant::now() < deadline,
+            "no targeted publication: {}",
+            lab.svc.inner.freshness.debug(1)
+        );
+        std::thread::yield_now();
+    }
+    let complete: bool = lab
+        .svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT sub_complete FROM main.dir WHERE parent_id IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let stale = lab.svc.inner.freshness.stale(1);
+    let page = f3_hits(&lab.svc);
+    let (job, _) = ok(
+        "jobs.get",
+        call(&lab.svc, "jobs.get", json!({"job_id":foreground})),
+    );
+    // Release before asserting so a regression cannot strand the scan worker.
+    lab.svc.inner.hooks.open(phase.0, phase.1);
+    assert_eq!(job["job"]["state"], "completed");
+    assert_eq!(job["job"]["coverage"], "complete");
+    assert!(
+        !complete,
+        "targeted pass should honestly leave root coverage partial"
+    );
+    assert!(stale, "background publication must remain visibly stale");
+    assert_eq!(page["partial"], true);
+    assert!(page["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|hit| hit["freshness"]["state"] == "stale"));
+    f3_wait_live(&lab.svc);
+    assert!(
+        lab.svc
+            .inner
+            .db()
+            .query_row(
+                "SELECT sub_complete FROM main.dir WHERE parent_id IS NULL",
+                [],
+                |r| r.get::<_, bool>(0),
+            )
+            .unwrap(),
+        "freshness/idle signal preceded full-root fallback"
+    );
+}
+
+#[cfg(windows)]
+#[test]
 fn f3_successful_full_scan_with_late_hints_restarts_refresh_budget() {
     let Some(lab) = lab() else { return };
     settle(&lab.svc, &start(&lab.svc, &lab.root, "full"));

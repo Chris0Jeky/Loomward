@@ -66,6 +66,15 @@ impl Tracked {
 
 impl Tracker {
     #[cfg(all(test, windows))]
+    pub(crate) fn ready_targeted_hint(&self, row: i64) {
+        let mut roots = self.roots.lock().unwrap();
+        let root = roots.get_mut(&row).unwrap();
+        // The fixture starts idle; discard completed fallback bookkeeping, not newer events.
+        root.job = None;
+        root.full = false;
+        root.changed = Instant::now() - Duration::from_secs(1);
+    }
+    #[cfg(all(test, windows))]
     pub(crate) fn exhaust_budget(&self, row: i64) {
         self.roots.lock().unwrap().get_mut(&row).unwrap().attempts = 3;
     }
