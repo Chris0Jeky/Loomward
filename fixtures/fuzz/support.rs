@@ -54,13 +54,13 @@ const WORDS: [u32; 12] = [
 pub fn edit() -> impl Strategy<Value = Edit> {
     let at = any::<usize>();
     prop_oneof![
-        2 => (at.clone(), any::<u8>()).prop_map(|(a, b)| Edit::Set(a, b)),
-        2 => (at.clone(), prop::sample::select(b"a0_-9Zz1 ".to_vec())).prop_map(|(a, b)| Edit::Set(a, b)),
-        3 => (at.clone(), prop_oneof![prop::sample::select(WORDS.to_vec()), any::<u32>()])
+        2 => (at, any::<u8>()).prop_map(|(a, b)| Edit::Set(a, b)),
+        2 => (at, prop::sample::select(b"a0_-9Zz1 ".to_vec())).prop_map(|(a, b)| Edit::Set(a, b)),
+        3 => (at, prop_oneof![prop::sample::select(WORDS.to_vec()), any::<u32>()])
             .prop_map(|(a, w)| Edit::Word(a, w)),
-        1 => at.clone().prop_map(Edit::Truncate),
-        1 => (at.clone(), prop::collection::vec(any::<u8>(), 0..16)).prop_map(|(a, v)| Edit::Insert(a, v)),
-        1 => (at.clone(), 0usize..32).prop_map(|(a, n)| Edit::Delete(a, n)),
+        1 => at.prop_map(Edit::Truncate),
+        1 => (at, prop::collection::vec(any::<u8>(), 0..16)).prop_map(|(a, v)| Edit::Insert(a, v)),
+        1 => (at, 0usize..32).prop_map(|(a, n)| Edit::Delete(a, n)),
         1 => (at, 0usize..64).prop_map(|(a, n)| Edit::Dup(a, n)),
     ]
 }
