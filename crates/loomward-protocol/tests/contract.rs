@@ -523,8 +523,76 @@ fn mutants(v: &Value) -> Vec<(String, Value)> {
     out
 }
 
-/// The Rust DTOs accept exactly what the schema accepts, for every one-step corruption of
-/// every example: a gap either way is a contract bug (a schema loophole or a Rust loophole).
+/// Cross-field rules JSON Schema cannot state (the `rust_only` class of invalid examples), checked
+/// here directly on the JSON rather than through the DTO: true when `value` breaks one of them.
+/// Keyed by the def the Rust DTO is decoded as. Only DTOs that embed these types are listed:
+/// a `Job` carries `duplicates` (`JobResult.job`, each `JobList.jobs` item). A `ResponseEnvelope`
+/// `result` is an untyped payload that the envelope roundtrip does not decode, so it is not checked.
+fn cross_field_refusal(def: &str, value: &Value) -> bool {
+    match def {
+        "TreeSlice" => parents_break_order(&value["nodes"]),
+        "DuplicateReport" => report_dangles(value),
+        "CollectionMembersUpdate" => add_and_remove_overlap(value),
+        "JobResult" => report_in_job(&value["job"]),
+        "JobList" => value["jobs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(report_in_job),
+        _ => false,
+    }
+}
+
+fn report_in_job(job: &Value) -> bool {
+    job["duplicates"].is_object() && report_dangles(&job["duplicates"])
+}
+
+/// SliceNode.parent is null only at index 0, and every other parent names an earlier node.
+fn parents_break_order(nodes: &Value) -> bool {
+    nodes
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .any(|(index, node)| {
+            let parent = &node["parent"];
+            if index == 0 {
+                !parent.is_null()
+            } else {
+                parent.as_u64().is_none_or(|p| p >= index as u64)
+            }
+        })
+}
+
+/// Group, link and skipped indices refer to entries: each must be below `entries.len()`.
+fn report_dangles(report: &Value) -> bool {
+    let count = report["entries"].as_array().map_or(0, Vec::len) as u64;
+    let dangling = |index: &Value| index.as_u64().is_none_or(|i| i >= count);
+    let sets = |key: &str| {
+        report[key]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|set| set.as_array().into_iter().flatten())
+    };
+    sets("groups").chain(sets("links")).any(dangling)
+        || report["skipped"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|skip| dangling(&skip["entry"]))
+}
+
+/// A node may not be both added and removed in one update (semantics.md, Collections).
+fn add_and_remove_overlap(update: &Value) -> bool {
+    let members = |key: &str| update[key].as_array().cloned().unwrap_or_default();
+    let remove = members("remove");
+    members("add").iter().any(|id| remove.contains(id))
+}
+
+/// The Rust DTOs accept exactly what the schema accepts, less the cross-field refusals above, for
+/// every one-step corruption of every example: a gap either way is a contract bug (a schema
+/// loophole or a Rust loophole). A cross-field violation must be refused by Rust, never accepted.
 #[test]
 fn schema_and_dto_agree_on_corrupted_examples() {
     let mut schema = Schema::load();
@@ -534,8 +602,9 @@ fn schema_and_dto_agree_on_corrupted_examples() {
         for (what, mutant) in mutants(&value) {
             let schema_ok = schema.errors(&def, &mutant).is_empty();
             let rust_ok = roundtrip(&def, &mutant).unwrap().is_ok();
+            let expected_rust_ok = schema_ok && !cross_field_refusal(&def, &mutant);
             checked += 1;
-            if schema_ok != rust_ok {
+            if rust_ok != expected_rust_ok {
                 disagreements.push(format!(
                     "{label} {what}: schema {schema_ok}, rust {rust_ok}"
                 ));
