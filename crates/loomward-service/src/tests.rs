@@ -2420,6 +2420,20 @@ fn dropping_the_service_waits_for_workers_that_already_replied() {
     }
 }
 
+#[test]
+fn revoke_distinguishes_missing_grants_from_store_failures() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    assert_eq!(svc.inner.revoke(1).unwrap_err().code, ErrorCode::NotFound);
+    let (_, grant) = register(&svc, 1);
+    // Only this service connection loses the store; the catalogue writer remains intact.
+    svc.inner.db().execute_batch("DETACH DATABASE st").unwrap();
+    assert_eq!(
+        svc.inner.revoke(grant).unwrap_err().code,
+        ErrorCode::InternalError
+    );
+}
+
 /// H1: a rebuilt catalogue reassigns root and volume rows. An ID minted before the rebuild is
 /// refused with `catalog_instance_changed` and never selects the row that now has its number.
 #[test]
