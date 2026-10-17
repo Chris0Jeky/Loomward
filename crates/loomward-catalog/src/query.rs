@@ -879,6 +879,7 @@ mod wal_reader_tests {
     /// when two readers ended at once, so `wal_checkpoint(TRUNCATE)` stayed busy for good.
     #[test]
     fn concurrent_readers_never_pin_the_state_wal() {
+        let _hang = crate::test_watchdog::watchdog();
         let temp = tempfile::tempdir().unwrap();
         // Canonical, as the service opens it: on Windows this is the `\\?\C:\...` form.
         let dir = temp.path().canonicalize().unwrap();

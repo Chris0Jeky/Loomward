@@ -655,6 +655,7 @@ version = "0.3.0"
 dependencies = [
  "crossbeam-channel",
  "jsonschema",
+ "libc",
  "rusqlite",
  "serde",
  "serde_json",
