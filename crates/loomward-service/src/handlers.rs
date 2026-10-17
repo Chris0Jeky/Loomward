@@ -227,6 +227,8 @@ impl Inner {
             CopyStart => self.copy_start(req),
             CopyCancel | CopyAbandon => self.copy_cancel(req),
             CopyStatus => self.copy_status(req),
+            AlertsList => self.alerts_list(work),
+            AlertsConfigure => self.alerts_configure(req.decode_payload()?),
             RootsRevoke => {
                 let r: RootRevokeRequest = req.decode_payload()?;
                 let grant = self.grant_of_root(self.root_row(&r.root_id)?)?;

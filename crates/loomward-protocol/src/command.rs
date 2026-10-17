@@ -129,6 +129,8 @@ commands! {
     BackupsForget = "backups.forget", BackupForgetRequest, BackupForgetResult, [Tauri, Http], 3, [];
     DiagnosticsPreview = "diagnostics.preview", EmptyRequest, DiagnosticsPreviewResult, [Tauri, Http], 3, [];
     DiagnosticsSave = "diagnostics.save", DiagnosticsSaveRequest, DiagnosticsSaveResult, [Tauri], 3, [];
+    AlertsList = "alerts.list", EmptyRequest, AlertReport, [Tauri, Http], 2, [];
+    AlertsConfigure = "alerts.configure", AlertSettings, AlertReport, [Tauri, Http], 2, [];
     CopyPreview = "copy.preview", CopyPreviewRequest, CopyPreview, [Tauri, Http], 3, [];
     CopyApprove = "copy.approve", CopyConsentRequest, CopyApproval, [Tauri, Http], 3, [];
     CopyStart = "copy.start", CopyConsentRequest, CopyStatus, [Tauri, Http], 3, [];

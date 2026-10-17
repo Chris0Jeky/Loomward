@@ -221,6 +221,7 @@ fn only_the_listed_commands_change_state() {
         BackupsImport,
         BackupsForget,
         DiagnosticsSave,
+        AlertsConfigure,
         // Gated today (copy_effect_gated), mutations so the gate can never open onto the read path (#508).
         CopyStart,
         CopyCancel,

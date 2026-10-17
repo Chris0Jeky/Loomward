@@ -1,6 +1,6 @@
 <script lang="ts">
   // Evidence for one node: sizes, counts and the three threads, with every unknown named.
-  // Describes only: there is no effect control here, by design.
+  // Copy opens a separate preview; selecting a region never grants an effect.
   import { formatBytes } from '../../lib/format/bytes';
   import { formatCount, formatTime } from '../../lib/format/time';
   import type { Basis, MeaningThread } from '../../lib/contracts.gen';
@@ -10,6 +10,7 @@
   import type { Meaning } from '../../lib/stores/meaning.svelte';
   import NodeMeaning from '../../lib/ui/NodeMeaning.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
+  import CopyTo from '../../lib/ui/CopyTo.svelte';
 
   interface Props {
     node: NodeInfo | null;
@@ -75,6 +76,7 @@
     </div>
 
     {#if src}
+      {#if ['file', 'dir', 'root'].includes(src.kind) && status === 'Selected'}<CopyTo items={[{ node_id: src.node_id, name: src.name }]} />{/if}
       <dl class="facts">
         <div><dt>Kind</dt><dd>{src.kind}{#if src.ext_family} · {src.ext_family}{/if}</dd></div>
         <div><dt>Logical</dt><dd class="num">{#if sizeUnknown({ ...src, size_bytes: src.logical_bytes }, false)}<span class="unknown">unknown</span>{:else}{formatBytes(src.logical_bytes)}{/if}</dd></div>

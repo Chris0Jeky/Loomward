@@ -12,6 +12,8 @@
   import { session } from '../../lib/stores/session.svelte';
   import NodeMeaning from '../../lib/ui/NodeMeaning.svelte';
   import AddToCollection from '../../lib/ui/AddToCollection.svelte';
+  import CopyTo from '../../lib/ui/CopyTo.svelte';
+  import type { CopyItem } from '../../lib/stores/copy.svelte';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import type { Basis, EntryPage, EntryRow, NodeId, NodeDetail, SearchHit, SearchPage } from '../../lib/contracts.gen';
 
@@ -41,6 +43,7 @@
   let starts = $state<Crumb[]>([]);
   let trail = $state<Crumb[]>([]);
   let rows = $state<EntryRow[]>([]);
+  let selected = $state<CopyItem[]>([]);
   let total = $state<number | null>(null);
   let next = $state<string | null>(null);
   let budgetHit = $state(false);
@@ -352,6 +355,11 @@
   {/if}
   <p id="explorer-notice" class="muted live" class:has={!!notice || !!gone} role="status">{#if gone}<q><VisibleName name={gone.lost} /></q> is no longer in the catalogue, so the view {#if gone.now}moved up to <q><VisibleName name={gone.now} /></q>, the nearest folder still there.{:else}went back to the top level.{/if}{:else}{notice}{/if}</p>
 
+  <div class="bar" role="group" aria-label="Copy selection">
+    <CopyTo items={selected} />
+    <span class="muted num" role="status">{formatCount(selected.length)} selected across folders</span>
+    {#if selected.length}<button class="btn" type="button" onclick={() => { selected = []; }}>Clear copy selection</button>{/if}
+  </div>
   <div class="tbl-wrap" aria-busy={busy}>
     <table class="tbl" bind:this={tableEl}>
       <caption class="sr-only">{searching ? 'Search results' : 'Folder contents'}</caption>
@@ -367,6 +375,8 @@
         {#each rows as r (r.node_id)}
           <tr>
             <th scope="row">
+              <input class="copy-select" type="checkbox" aria-label={`Select ${escapedName(r.name)} for copy`} checked={selected.some(i => i.node_id === r.node_id)}
+                onchange={(e) => { selected = e.currentTarget.checked ? [...selected, { node_id: r.node_id, name: r.name }] : selected.filter(i => i.node_id !== r.node_id); }} />
               {#if r.kind === 'dir' && !searching && r.coverage !== 'denied'}
                 <button class="crumb" type="button" onclick={() => go([...trail, { id: r.node_id, name: r.name }])}><VisibleName name={r.name} /></button>
               {:else if searching && marked(r)}
@@ -416,6 +426,7 @@
 {/if}
 
 <style>
+  .copy-select { width: 24px; height: 24px; margin: 0 8px 0 0; vertical-align: middle; }
   .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
   .field { display: inline-flex; align-items: center; gap: 6px; }
   .stack { flex-direction: column; align-items: flex-start; gap: 2px; }

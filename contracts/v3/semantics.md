@@ -80,6 +80,7 @@ re-send as stated.
 | `jobs.cancel` | Yes | Re-cancelling a terminal job returns its unchanged state | `jobs.get` | Re-send is safe |
 
 | `placement.simulate` with `save: true` | Yes | `request_id`, 10 min | `proposals.list`; plans are deterministic for the same inputs digest | Re-send is safe (a duplicate digest returns the saved proposal) |
+| `alerts.configure` | Yes | `request_id`, 10 min | `alerts.list` | Re-send is safe: it replaces the whole threshold record with the same values |
 | `budgets.set` | Yes | `request_id`, 10 min | `budgets.get` | Loomward's own pools reset at restart. After cache expiry set a value only if the owner confirms it against the value read |
 | `telemetry.subscribe`, `telemetry.unsubscribe` | Yes | `subscription_id` | Unknown or expired IDs are `not_found` | Re-subscribe with a fresh lease |
 
@@ -721,3 +722,27 @@ section 4.1 left a reading open, this is the choice:
   (a range is `size:>1mb size:<2mb`); contradictions are left to the service.
 - `in:` and `under:` stay names: the find bar resolves them to `collection_id` and `under_node_id`
   (docs/46 section 4, "under:<pinned node>"), and an unresolved name is shown as an unmatched chip.
+
+## Growth and low-space alerts (LW-121)
+
+`alerts.list` evaluates on demand (no scheduler, no background service, no network) and `alerts.configure`
+replaces the owner's thresholds in `state.db` (`meta` key `alert_settings`; a preference, never a file effect).
+Alerts are advice, never an action, and never an approval.
+
+- **Low free space** is raised per volume that holds an active root grant, from the same observation
+  `volumes.list` reports. It is an alert when `free < max(capacity x low_space_free_percent / 100,
+  low_space_free_bytes)`. A volume whose capacity or free space is `null` (offline, or a personal volume
+  whose physics are not observed yet) is `unknown` with `coverage: unknown`: suppressed, never read as zero
+  free. Personal volumes stay `unknown` until a volume observation lane records their space.
+- **Fast growth** is raised per active root from the catalogue's completed scan history. Each completed run
+  keeps the root's logical size and a complete-coverage bit in `scan_run.counters_json`; a run without them
+  (older rows, cancelled or failed runs) is not a sample. Over the runs finished inside `growth_window_days`
+  the growth is the newest complete sample minus the oldest complete sample; it is an alert when that reaches
+  `growth_bytes`. Fewer than two complete samples is `insufficient_history`; a newest scan that is partial (or
+  complete scans bracketing only partial ones) is `incomplete_coverage`, and no growth is claimed. A shrinking
+  root reports `measured_bytes: "0"` with `ok`: net growth, measured, not missing.
+- **Defaults** (`AlertReport.defaults`): `notifications_enabled: false`, `low_space_free_percent: 10`,
+  `low_space_free_bytes: 10 GiB`, `growth_window_days: 7`, `growth_bytes: 5 GiB`. Before the owner configures
+  anything, `settings` equals `defaults`.
+- **Notifications** are off until the owner enables them. This slice records the setting and lists alerts in the
+  app; it wires no operating-system notification channel, and `notifications_note` says so.

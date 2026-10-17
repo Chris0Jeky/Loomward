@@ -1,0 +1,423 @@
+{
+  "host": "KRASPYON laptop, Windows 11 Home; shared host",
+  "base": "879c6ce2656928587219c3f25da15dbaeed288f2",
+  "profile": "release",
+  "runs": {
+    "before-100k": {
+      "bulk_end_s": 1.2550185,
+      "bulk_listing_s": 0.4501423,
+      "delete_200_then_optimize_rollback": {
+        "errors": [],
+        "max_ms": 131.2919,
+        "median_ms": 121.9335,
+        "min_ms": 100.1108,
+        "result": {
+          "optimize_only_ms": 110.73310000000001
+        }
+      },
+      "duplicates_200_small_root": {
+        "errors": [],
+        "max_ms": 32.2311,
+        "median_ms": 30.5088,
+        "min_ms": 27.9678,
+        "result": {
+          "candidates": 200,
+          "partial": false
+        }
+      },
+      "duplicates_2_small_root": {
+        "errors": [],
+        "max_ms": 3.8386,
+        "median_ms": 3.6525,
+        "min_ms": 3.3648,
+        "result": {
+          "candidates": 2
+        }
+      },
+      "duplicates_large_root": {
+        "errors": [
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget"
+        ],
+        "max_ms": 64.1791,
+        "median_ms": 42.9021,
+        "min_ms": 39.9493,
+        "result": {
+          "error": "ResourceBudget"
+        }
+      },
+      "files": 100000,
+      "forget_200_files_s": 0.4764122,
+      "profile": "release",
+      "refresh_1000": {
+        "errors": [],
+        "max_ms": 29.146600000000003,
+        "median_ms": 26.6723,
+        "min_ms": 20.641199999999998,
+        "result": {
+          "files": 1000
+        }
+      },
+      "scope": "synthetic metadata; warm shared host; 7 repeats per reader/refresh",
+      "search_100_distinct_parents": {
+        "errors": [],
+        "max_ms": 4.388999999999999,
+        "median_ms": 2.4929,
+        "min_ms": 2.3784,
+        "result": {
+          "bytes": 43688,
+          "hits": 100
+        }
+      },
+      "slice": {
+        "100": {
+          "errors": [],
+          "max_ms": 4.2139999999999995,
+          "median_ms": 3.3834999999999997,
+          "min_ms": 2.6302,
+          "result": {
+            "bytes": 54113,
+            "nodes": 100
+          }
+        },
+        "1000": {
+          "errors": [],
+          "max_ms": 42.325300000000006,
+          "median_ms": 32.6965,
+          "min_ms": 28.8158,
+          "result": {
+            "bytes": 541007,
+            "nodes": 1000
+          }
+        },
+        "6000": {
+          "errors": [],
+          "max_ms": 238.6962,
+          "median_ms": 209.8334,
+          "min_ms": 171.2263,
+          "result": {
+            "bytes": 3264614,
+            "nodes": 6000
+          }
+        }
+      }
+    },
+    "before-1m": {
+      "bulk_end_s": 16.9358926,
+      "bulk_listing_s": 4.5281348,
+      "delete_200_then_optimize_rollback": {
+        "errors": [],
+        "max_ms": 1229.4374,
+        "median_ms": 1084.1605000000002,
+        "min_ms": 1002.6344,
+        "result": {
+          "optimize_only_ms": 1217.9325000000001
+        }
+      },
+      "duplicates_200_small_root": {
+        "errors": [],
+        "max_ms": 38.6441,
+        "median_ms": 34.818799999999996,
+        "min_ms": 27.458099999999998,
+        "result": {
+          "candidates": 200,
+          "partial": false
+        }
+      },
+      "duplicates_2_small_root": {
+        "errors": [],
+        "max_ms": 7.6958,
+        "median_ms": 6.4832,
+        "min_ms": 4.8366,
+        "result": {
+          "candidates": 2
+        }
+      },
+      "duplicates_large_root": {
+        "errors": [
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget"
+        ],
+        "max_ms": 59.0388,
+        "median_ms": 49.7018,
+        "min_ms": 40.04280000000001,
+        "result": {
+          "error": "ResourceBudget"
+        }
+      },
+      "files": 1000000,
+      "forget_200_files_s": 4.2897793,
+      "profile": "release",
+      "refresh_1000": {
+        "errors": [],
+        "max_ms": 23.252599999999997,
+        "median_ms": 16.747,
+        "min_ms": 15.116900000000001,
+        "result": {
+          "files": 1000
+        }
+      },
+      "scope": "synthetic metadata; warm shared host; 7 repeats per reader/refresh",
+      "search_100_distinct_parents": {
+        "errors": [],
+        "max_ms": 3.5134,
+        "median_ms": 2.0831999999999997,
+        "min_ms": 1.613,
+        "result": {
+          "bytes": 43688,
+          "hits": 100
+        }
+      },
+      "slice": {
+        "100": {
+          "errors": [],
+          "max_ms": 4.9421,
+          "median_ms": 4.0196,
+          "min_ms": 3.0486,
+          "result": {
+            "bytes": 54131,
+            "nodes": 100
+          }
+        },
+        "1000": {
+          "errors": [],
+          "max_ms": 41.2915,
+          "median_ms": 36.2191,
+          "min_ms": 31.902100000000004,
+          "result": {
+            "bytes": 540118,
+            "nodes": 1000
+          }
+        },
+        "6000": {
+          "errors": [],
+          "max_ms": 290.4267,
+          "median_ms": 213.5003,
+          "min_ms": 171.88739999999999,
+          "result": {
+            "bytes": 3263108,
+            "nodes": 6000
+          }
+        }
+      }
+    },
+    "after-100k": {
+      "bulk_end_s": 1.6201181,
+      "bulk_listing_s": 0.7510324,
+      "delete_200_then_optimize_rollback": {
+        "errors": [],
+        "max_ms": 158.2664,
+        "median_ms": 133.11180000000002,
+        "min_ms": 120.4648,
+        "result": {
+          "optimize_only_ms": 143.3373
+        }
+      },
+      "duplicates_200_small_root": {
+        "errors": [],
+        "max_ms": 32.852,
+        "median_ms": 21.989,
+        "min_ms": 19.715799999999998,
+        "result": {
+          "candidates": 200,
+          "partial": false
+        }
+      },
+      "duplicates_2_small_root": {
+        "errors": [],
+        "max_ms": 7.1629,
+        "median_ms": 3.54,
+        "min_ms": 3.2452,
+        "result": {
+          "candidates": 2
+        }
+      },
+      "duplicates_large_root": {
+        "errors": [
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget"
+        ],
+        "max_ms": 80.6709,
+        "median_ms": 44.3067,
+        "min_ms": 38.871,
+        "result": {
+          "error": "ResourceBudget"
+        }
+      },
+      "files": 100000,
+      "forget_200_files_s": 0.7845091,
+      "profile": "release",
+      "refresh_1000": {
+        "errors": [],
+        "max_ms": 30.496100000000002,
+        "median_ms": 26.9023,
+        "min_ms": 22.8855,
+        "result": {
+          "files": 1000
+        }
+      },
+      "scope": "synthetic metadata; warm shared host; 7 repeats per reader/refresh",
+      "search_100_distinct_parents": {
+        "errors": [],
+        "max_ms": 4.1457999999999995,
+        "median_ms": 2.4729,
+        "min_ms": 1.8373,
+        "result": {
+          "bytes": 43688,
+          "hits": 100
+        }
+      },
+      "slice": {
+        "100": {
+          "errors": [],
+          "max_ms": 1.4612,
+          "median_ms": 1.1582999999999999,
+          "min_ms": 0.8864,
+          "result": {
+            "bytes": 54113,
+            "nodes": 100
+          }
+        },
+        "1000": {
+          "errors": [],
+          "max_ms": 12.8271,
+          "median_ms": 9.9696,
+          "min_ms": 7.8724,
+          "result": {
+            "bytes": 541007,
+            "nodes": 1000
+          }
+        },
+        "6000": {
+          "errors": [],
+          "max_ms": 51.0356,
+          "median_ms": 49.9721,
+          "min_ms": 44.502399999999994,
+          "result": {
+            "bytes": 3264614,
+            "nodes": 6000
+          }
+        }
+      }
+    },
+    "after-1m": {
+      "bulk_end_s": 16.04846,
+      "bulk_listing_s": 6.6091733999999995,
+      "delete_200_then_optimize_rollback": {
+        "errors": [],
+        "max_ms": 1899.0863,
+        "median_ms": 1636.1964,
+        "min_ms": 1475.0208,
+        "result": {
+          "optimize_only_ms": 1776.8663999999999
+        }
+      },
+      "duplicates_200_small_root": {
+        "errors": [],
+        "max_ms": 44.8958,
+        "median_ms": 28.578300000000002,
+        "min_ms": 23.412300000000002,
+        "result": {
+          "candidates": 200,
+          "partial": false
+        }
+      },
+      "duplicates_2_small_root": {
+        "errors": [],
+        "max_ms": 10.7738,
+        "median_ms": 7.9529000000000005,
+        "min_ms": 6.0796,
+        "result": {
+          "candidates": 2
+        }
+      },
+      "duplicates_large_root": {
+        "errors": [
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget",
+          "ResourceBudget"
+        ],
+        "max_ms": 92.6028,
+        "median_ms": 80.2314,
+        "min_ms": 62.581300000000006,
+        "result": {
+          "error": "ResourceBudget"
+        }
+      },
+      "files": 1000000,
+      "forget_200_files_s": 19.1812831,
+      "profile": "release",
+      "refresh_1000": {
+        "errors": [],
+        "max_ms": 31.9717,
+        "median_ms": 26.7775,
+        "min_ms": 23.3358,
+        "result": {
+          "files": 1000
+        }
+      },
+      "scope": "synthetic metadata; warm shared host; 7 repeats per reader/refresh",
+      "search_100_distinct_parents": {
+        "errors": [],
+        "max_ms": 2.7675,
+        "median_ms": 1.3477999999999999,
+        "min_ms": 1.3267000000000002,
+        "result": {
+          "bytes": 43688,
+          "hits": 100
+        }
+      },
+      "slice": {
+        "100": {
+          "errors": [],
+          "max_ms": 1.6244,
+          "median_ms": 1.0889,
+          "min_ms": 0.8862,
+          "result": {
+            "bytes": 54131,
+            "nodes": 100
+          }
+        },
+        "1000": {
+          "errors": [],
+          "max_ms": 9.0496,
+          "median_ms": 7.9206,
+          "min_ms": 5.67,
+          "result": {
+            "bytes": 540118,
+            "nodes": 1000
+          }
+        },
+        "6000": {
+          "errors": [],
+          "max_ms": 50.9623,
+          "median_ms": 44.4483,
+          "min_ms": 39.3407,
+          "result": {
+            "bytes": 3263108,
+            "nodes": 6000
+          }
+        }
+      }
+    }
+  }
+}

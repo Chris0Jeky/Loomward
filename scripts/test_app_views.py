@@ -374,7 +374,7 @@ def check_explorer_mock(page: Page, base: str, shoot) -> None:
     shoot('explorer')
 
     # sort
-    first = lambda: rows(page).first.locator('th').first.inner_text()
+    first = lambda: rows(page).first.locator('th').first.inner_text().strip()  # the copy checkbox precedes the name
     by_size = first()
     page.get_by_label('Sort').select_option('name_asc')
     expect(rows(page).first.locator('th').first).not_to_have_text(by_size)
@@ -747,6 +747,43 @@ def check_backups(page: Page, base: str, shoot) -> None:
     expect(page.get_by_role('heading', name='synthetic-usb')).to_have_count(0)
     expect(page.get_by_role('heading', name='Backups', level=1)).to_be_focused()
     print('PASS Backups: separate observations with plain refusals, honest coverage and topology, drill as data, forget')
+
+
+def check_alerts(page: Page, base: str, shoot) -> None:
+    page.goto(f'{base}/?transport=mock#/alerts')
+    expect(page.get_by_role('heading', name='Alerts', level=1)).to_be_visible()
+    main = page.locator('main')
+    expect(main.get_by_text('Unknown is not zero:')).to_be_visible()
+    expect(page.get_by_role('heading', name='Active alerts (1)', level=2)).to_be_visible()
+    table = main.get_by_role('table', name='Low-space and growth checks with their coverage')
+    ok(table.locator('tbody th').count() == 3, 'one row per check, the unobserved volume and the partial root included')
+    # an unobserved volume is listed as such: no zero free, no alert
+    unseen = table.get_by_role('row', name=re.compile('^Synthetic volume B'))
+    expect(unseen).to_contain_text('Not observed')
+    expect(unseen).to_contain_text('unknown')
+    # a partial scan qualifies the growth check instead of reading as a number
+    partial = table.get_by_role('row', name=re.compile('^Synthetic root 1'))
+    expect(partial).to_contain_text('Partial coverage')
+    ok('+' not in partial.inner_text(), 'a partial-coverage check shows no growth figure')
+    ok(not any(FORBIDDEN_BUTTONS.search(b.inner_text()) for b in main.get_by_role('button').all()), 'alerts: no effect control')
+    notify = main.get_by_label('Notify me when notifications arrive (stored now; no notification is sent yet)')
+    expect(notify).not_to_be_checked()
+    shoot('alerts')
+    # a bad threshold is named on its field and nothing is saved
+    main.get_by_label('Low space: percent of capacity').fill('0')
+    page.get_by_role('button', name='Save thresholds').click()
+    expect(page.get_by_role('alert').filter(has_text='whole percentage')).to_be_visible()
+    expect(main.get_by_label('Low space: percent of capacity')).to_have_attribute('aria-invalid', 'true')
+    main.get_by_label('Low space: percent of capacity').fill('15')
+    notify.check()
+    page.get_by_role('button', name='Save thresholds').click()
+    expect(page.get_by_role('status', name='Alert settings result')).to_contain_text('Thresholds saved.')
+    expect(main.get_by_label('Low space: percent of capacity')).to_have_value('15')
+    expect(main.get_by_text('Notifications are enabled, but no operating-system notification channel is wired yet')).to_be_visible()
+    page.get_by_role('button', name='Fill in defaults').click()
+    expect(main.get_by_label('Low space: percent of capacity')).to_have_value('10')
+    expect(notify).not_to_be_checked()
+    print('PASS Alerts: unknown and partial coverage are listed, never zero; thresholds validated and saved; notifications off by default')
 
 
 def check_backups_import(page: Page, engine: FakeEngine) -> None:
@@ -1481,6 +1518,7 @@ def run_views(page: Page, base: str, shots: Path | None) -> None:
     check_companion(page, base, shoot)
     check_health(page, base, shoot)
     check_backups(page, base, shoot)
+    check_alerts(page, base, shoot)
     check_scan_controls(page, base, shots)
     check_narrow(page, base)
     check_narrow_wide_fonts(page, base)

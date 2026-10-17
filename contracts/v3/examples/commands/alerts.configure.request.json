@@ -1,0 +1,7 @@
+{
+  "notifications_enabled": false,
+  "low_space_free_percent": 10,
+  "low_space_free_bytes": "10737418240",
+  "growth_window_days": 7,
+  "growth_bytes": "5368709120"
+}

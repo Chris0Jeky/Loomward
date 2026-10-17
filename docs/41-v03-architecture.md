@@ -313,6 +313,7 @@ Every command has `effects: none` except `diagnostics.save` (`owner_picked_expor
 | Companion | `telemetry.subscribe` / `.unsubscribe` / `.snapshot`, `processes.list` / `.explain`, `budgets.get` / `.set` | | | Leases; read-only; own pools only |
 | Diagnostics | `diagnostics.preview` | `EmptyRequest` | `DiagnosticsPreviewResult` | Redacted allowlist bundle with the size and SHA-256 of its exact text; writes nothing (LW-055, q-15) |
 | | **`diagnostics.save`** | `DiagnosticsSaveRequest` | `DiagnosticsSaveResult` | Writes exactly the previewed bytes, named by digest, to a file the owner picks in a Rust save dialog; the path never crosses IPC (ADR-V3-24) |
+| Alerts | `alerts.list` / `alerts.configure` | `EmptyRequest` / `AlertSettings` | `AlertReport` | Advice only (LW-121): low free space on volumes holding a granted root, and fast growth per root from completed-scan history; unknown, missing history and partial scans are statuses, never zero; thresholds are a `state.db` preference, notifications off by default |
 
 **Events.** `stream.hello`, `stream.lagged`, `job.state`, `scan.progress` (at most 4/s per job),
 `tree.invalidated` (at most 2/s per root), `telemetry.sample`, `learning.updated`, `roots.changed`,

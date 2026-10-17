@@ -25,6 +25,52 @@ The engine owns one `Catalog` and its dataset lock (ADR-V3-01), and retains at m
 four `Reader` handles. The crate records admitted observations; it does not enumerate
 paths, verify OS grants, open user files or perform effects.
 
+## Developer clutter advice (LW-119 first slice)
+
+`Reader::developer_clutter(root_id, cap)` reads recorded metadata in one snapshot,
+under the existing active-grant, deadline and SQLite work-budget rules. `cap` is
+1–200. The result ranks known logical aggregates largest first, then unknowns,
+with explicit `partial` and `truncated` flags. It never scans a project or reads
+manifest contents. Candidate and anchor `NodeKey`s are internal references.
+
+Rules version 1 requires an adjacent **recorded file**, using conservative,
+case-sensitive conventional names:
+
+| Manifest | Direct sibling output directories |
+|---|---|
+| `Cargo.toml` | `target` |
+| `package.json` | `node_modules` |
+| `pyproject.toml`, `requirements.txt` | `.venv`, `venv`, `__pycache__` |
+| `*.csproj`, `*.sln` | `bin`, `obj` |
+| `build.gradle`, `build.gradle.kts` | `build`, `.gradle` |
+
+`go.mod` alone has no universal local output directory, so there is no Go output
+rule. Names, extensions and sizes alone never identify a candidate. Source and
+dataset directories outside these explicit pairs are not listed. Multiple
+manifests do not duplicate a directory; nested outputs inside another candidate
+are omitted to avoid double counting. Excluded, denied, tombstoned, protected,
+lossy and reparse observations (including ancestors) cannot anchor candidates.
+Retained files missing from an incomplete relisting cannot anchor them either.
+
+Each candidate carries its manifest, provider, explanation and regeneration hint.
+The cost class is `unknown`: metadata does not establish dependency/toolchain
+availability, offline rebuilds, active builds or unique contents. These are
+**candidates for review, never a claim that every contained file is recreatable**.
+Logical and allocated sizes come only from valid, complete catalogue aggregates;
+partial/unscanned/stale or currently scanning sizes stay `None`. Unknown allocation
+also stays `None`; a known empty directory remains zero. Bytes are observed sizes,
+not a promise of reclaimable space.
+
+This slice is a library API only. A service command requires coordinated routing,
+DTO/schema/example, TypeScript generation and mock-transport work; no wire
+contract or capability flag is changed here. Follow-ups are that service surface,
+measured regeneration costs (LW-087), model lifecycle (LW-086) and stale worktrees
+with lease and dirty-state evidence (LW-076). No file/process effect is opened.
+
+The deterministic synthetic project lab in `tests/developer_clutter.rs` exercises
+the SQLite representation, including ordinary writer publication and aggregate
+calculation. Run `cargo test -p loomward-catalog --test developer_clutter`.
+
 ## Writer
 
 All writes use one actor. `RegisterRoot` returns distinct `grant_id`, derived
