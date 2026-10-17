@@ -74,6 +74,7 @@ impl Drop for Explicit<'_> {
 struct Tracked {
     #[cfg(windows)]
     watch: Option<Arc<loomward_windows::watch::Watcher>>,
+    checkpoint: Arc<Mutex<()>>,
     epoch: u64,
     stale_since: Option<i64>,
     at: i64,
@@ -83,6 +84,7 @@ struct Tracked {
     targets: BTreeSet<u64>,
     auto: bool,
     attempts: u8,
+    retry_after: Option<Instant>,
     changed: Instant,
     job: Option<loomward_protocol::JobId>,
     started: Option<(u64, Option<Bookmark>)>,
@@ -91,6 +93,11 @@ struct Tracked {
 #[cfg(windows)]
 impl Tracked {
     fn dirty(&mut self, full: bool) {
+        // Only a new hint after cooldown reopens an exhausted budget; a failing root cannot spin.
+        if self.attempts >= 3 && self.retry_after.is_some_and(|at| Instant::now() >= at) {
+            self.attempts = 0;
+            self.retry_after = None;
+        }
         self.epoch += 1;
         self.stale_since.get_or_insert(self.at);
         self.full |= full;
@@ -100,6 +107,13 @@ impl Tracked {
 }
 
 impl Tracker {
+    #[cfg(all(test, windows))]
+    pub(crate) fn pause_pump(&self) {
+        self.stopped.store(true, Ordering::Release);
+        if let Some(pump) = self.pump.lock().unwrap().take() {
+            pump.join().unwrap();
+        }
+    }
     #[cfg(all(test, windows))]
     pub(crate) fn ready_targeted_hint(&self, row: i64) {
         let mut roots = self.roots.lock().unwrap();
@@ -114,8 +128,34 @@ impl Tracker {
         !self.explicit.lock().unwrap().contains_key(&row)
     }
     #[cfg(all(test, windows))]
+    pub(crate) fn unclaimed_try(&self, row: i64) -> bool {
+        self.explicit
+            .try_lock()
+            .is_ok_and(|held| !held.contains_key(&row))
+    }
+    #[cfg(all(test, windows))]
+    pub(crate) fn checkpoint_fenced(&self, row: i64) -> bool {
+        self.roots.lock().unwrap()[&row]
+            .checkpoint
+            .try_lock()
+            .is_err()
+    }
+    #[cfg(all(test, windows))]
     pub(crate) fn exhaust_budget(&self, row: i64) {
         self.roots.lock().unwrap().get_mut(&row).unwrap().attempts = 3;
+    }
+    #[cfg(all(test, windows))]
+    pub(crate) fn attempts(&self, row: i64) -> u8 {
+        self.roots.lock().unwrap()[&row].attempts
+    }
+    #[cfg(all(test, windows))]
+    pub(crate) fn expire_retry(&self, row: i64) {
+        self.roots
+            .lock()
+            .unwrap()
+            .get_mut(&row)
+            .unwrap()
+            .retry_after = Some(Instant::now());
     }
     #[cfg(all(test, windows))]
     pub(crate) fn debug(&self, row: i64) -> String {
@@ -238,21 +278,36 @@ pub(crate) fn start(inner: &Arc<Inner>) {
 }
 
 impl Inner {
+    #[cfg(windows)]
+    fn freshness_checkpoint(&self, row: i64) -> Option<bool> {
+        let watched = self
+            .freshness
+            .roots
+            .lock()
+            .unwrap()
+            .get(&row)
+            .and_then(|r| r.watch.clone().map(|watch| (watch, r.checkpoint.clone())));
+        let (watch, checkpoint) = watched?;
+        #[cfg(test)]
+        self.hooks.gate(
+            loomward_protocol::Command::ScanStart,
+            "freshness_checkpoint_waiting",
+        );
+        // The native checkpoint queue has one slot; search and publication share this watch.
+        let _checkpoint = checkpoint.lock().unwrap();
+        #[cfg(test)]
+        self.hooks.gate(
+            loomward_protocol::Command::ScanStart,
+            "freshness_checkpoint_claimed",
+        );
+        Some(watch.checkpoint().is_ok() && !watch.failed())
+    }
     pub(crate) fn hit_freshness(&self, row: i64) -> SearchFreshness {
         #[cfg(windows)]
         {
-            let watch = self
-                .freshness
-                .roots
-                .lock()
-                .unwrap()
-                .get(&row)
-                .and_then(|r| r.watch.clone());
-            if let Some(watch) = watch {
-                if watch.checkpoint().is_err() {
-                    if let Some(root) = self.freshness.roots.lock().unwrap().get_mut(&row) {
-                        root.dirty(true);
-                    }
+            if self.freshness_checkpoint(row) == Some(false) {
+                if let Some(root) = self.freshness.roots.lock().unwrap().get_mut(&row) {
+                    root.dirty(true);
                 }
             }
         }
@@ -315,14 +370,7 @@ impl Inner {
                 return;
             };
             // Flush kernel notifications before comparing the scan's start epoch.
-            let watch = self
-                .freshness
-                .roots
-                .lock()
-                .unwrap()
-                .get(&row)
-                .and_then(|r| r.watch.clone());
-            let healthy = watch.is_some_and(|w| w.checkpoint().is_ok() && !w.failed());
+            let healthy = self.freshness_checkpoint(row).unwrap_or(false);
             let saved = {
                 let mut roots = self.freshness.roots.lock().unwrap();
                 let Some(root) = roots.get_mut(&row) else {
@@ -332,6 +380,7 @@ impl Inner {
                 // A successful scan followed by newer hints is new work, not a failed retry.
                 if complete && healthy && matches!(scope, RunScope::FullRoot) {
                     root.attempts = 0;
+                    root.retry_after = None;
                 }
                 if complete
                     && matches!(scope, RunScope::FullRoot)
@@ -443,6 +492,7 @@ pub(crate) fn ensure_roots(inner: &Arc<Inner>) {
             row.root,
             Tracked {
                 watch: None,
+                checkpoint: Arc::default(),
                 epoch,
                 stale_since: Some(row.finished_at_ns.unwrap_or_else(now_ns)),
                 at: row.finished_at_ns.unwrap_or_else(now_ns),
@@ -452,6 +502,7 @@ pub(crate) fn ensure_roots(inner: &Arc<Inner>) {
                 targets: BTreeSet::new(),
                 auto: false,
                 attempts: 0,
+                retry_after: None,
                 changed: Instant::now(),
                 job: None,
                 started: None,
@@ -605,15 +656,19 @@ pub(crate) fn refresh(inner: &Inner) {
                 continue;
             };
             if let Some(job) = &root.job {
-                if inner.engine.job_status(job).is_ok_and(|j| {
-                    matches!(
-                        j.state,
+                if let Ok(job) = inner.engine.job_status(job) {
+                    if matches!(
+                        job.state,
                         loomward_protocol::JobState::Queued
                             | loomward_protocol::JobState::Running
                             | loomward_protocol::JobState::CancelRequested
-                    )
-                }) {
-                    continue;
+                    ) {
+                        continue;
+                    }
+                    // Owner pre-emption is deferred work, not a failed automatic attempt.
+                    if job.state == loomward_protocol::JobState::Cancelled {
+                        root.attempts = root.attempts.saturating_sub(1);
+                    }
                 }
                 root.job = None;
                 // Targeted scans deliberately leave root coverage partial. One full fallback
@@ -648,22 +703,50 @@ pub(crate) fn refresh(inner: &Inner) {
         if claimed.contains_key(&row.root) {
             continue;
         }
-        let job = if full || targets.is_empty() {
+        #[cfg(test)]
+        inner.hooks.gate(
+            loomward_protocol::Command::ScanStart,
+            "automatic_claim_checked",
+        );
+        // Count before submission: a fast worker may finish and reset the budget before return.
+        if let Some(root) = inner.freshness.roots.lock().unwrap().get_mut(&row.root) {
+            root.attempts += 1;
+            if root.attempts >= 3 {
+                root.retry_after = Some(Instant::now() + Duration::from_secs(30));
+            }
+        }
+        #[cfg(test)]
+        let failed = inner
+            .hooks
+            .fail_automatic_start
+            .swap(false, Ordering::SeqCst);
+        #[cfg(not(test))]
+        let failed = false;
+        let job = if failed {
+            Err(loomward_engine::EngineError::Internal {
+                message: "synthetic automatic failure".into(),
+                detail: None,
+            })
+        } else if full || targets.is_empty() {
             inner.engine.scan_refresh(&grant, None)
         } else {
             inner
                 .engine
                 .scan_refresh_scopes(&grant, targets.into_iter().collect())
         };
+        #[cfg(test)]
+        inner
+            .hooks
+            .gate(loomward_protocol::Command::ScanStart, "automatic_submitted");
         if let Some(root) = inner.freshness.roots.lock().unwrap().get_mut(&row.root) {
             match job {
                 Ok(job) => {
                     root.job = Some(job.job_id);
-                    root.attempts += 1;
                 }
-                Err(loomward_engine::EngineError::Busy { .. }) => {}
+                Err(loomward_engine::EngineError::Busy { .. }) => {
+                    root.attempts = root.attempts.saturating_sub(1);
+                }
                 Err(_) => {
-                    root.attempts += 1;
                     root.changed = Instant::now();
                 }
             }
@@ -738,6 +821,7 @@ mod tests {
                 root_id,
                 Tracked {
                     watch: None,
+                    checkpoint: Arc::default(),
                     epoch: 0,
                     stale_since: Some(1),
                     at: 1,
@@ -747,6 +831,7 @@ mod tests {
                     targets: BTreeSet::new(),
                     auto: false,
                     attempts: 3,
+                    retry_after: None,
                     changed: Instant::now(),
                     job: None,
                     started: None,
