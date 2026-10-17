@@ -72,7 +72,7 @@ class FakeEngine:
         self.fail_proposals = False
         self.saved_scenarios = False
         self.served: dict[str, int] = {}  # command -> times answered, so a test can wait for a reload to be served
-        self.candidate_gate = None  # one (arrived, release) event pair
+        self.candidate_gate = None  # one (arrived, release[, source_volume_id]) gate; a named source gates only its own request
         self.tier_volumes: list[dict] | None = None
         self.candidate_sources: list[str] = []
         self.placement_groups: dict[str, list[dict]] = {}
@@ -254,7 +254,13 @@ class FakeEngine:
             g = {'group_id': 'cg_a', 'node_id': 'nd_a', 'root_id': 'rt_a', 'name': 'group-a', 'source_bytes': '5000', 'destination_bytes': '5000', 'transfer_bytes': '5000', 'estimate_basis': 'allocated_entries',
                  'estimated_relief_bytes': '5000', 'relief_basis': 'verified_unique_allocation', 'heat': None, 'heat_basis': 'unknown', 'newest_modified_at': None, 'pinned': False, 'active': False, 'protected': False, 'days_since_move': 30, 'coverage': 'complete'}
             groups = self.placement_groups.get(p['source_volume_id'], [g])
-            gate, self.candidate_gate = self.candidate_gate, None
+            gate = self.candidate_gate
+            # A gate naming a source waits for that source's request; an earlier request for another
+            # volume still in flight (slow runners) must not consume it.
+            if gate and (len(gate) < 3 or gate[2] == p['source_volume_id']):
+                self.candidate_gate = None
+            else:
+                gate = None
             if gate:
                 gate[0].set()
                 if not gate[1].wait(60):  # every user releases in finally; slow CI runners need the headroom
@@ -824,7 +830,7 @@ def check_tiers_assumption_refresh(page: Page, engine: FakeEngine) -> None:
 
         # Release an older source's response after the new candidates have been installed.
         arrived, release = threading.Event(), threading.Event()
-        engine.candidate_gate = (arrived, release)
+        engine.candidate_gate = (arrived, release, 'vo_x')
         page.get_by_role('button', name=re.compile(r'^Use as source\s*:\s*X:$')).click()
         wait_until(page, arrived.is_set)
         page.get_by_role('button', name=re.compile(r'^Use as source\s*:\s*Other$')).click()
