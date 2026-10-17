@@ -7,6 +7,7 @@ use loomward_ask::turn::ask;
 use loomward_ask::*;
 use loomward_protocol::{CallContext, EventStream, RequestEnvelope, ResponseEnvelope, ViewService};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -23,6 +24,8 @@ fn exe() -> PathBuf {
 struct Seen {
     head: String,
     body: Value,
+    /// The body bytes exactly as received.
+    raw: Vec<u8>,
 }
 
 /// Serves one scripted raw response per connection, then stops accepting.
@@ -47,8 +50,9 @@ fn read_request(s: &mut TcpStream) -> Seen {
                 .parse()
                 .unwrap();
             if raw.len() >= p + 4 + len {
-                let body = serde_json::from_slice(&raw[p + 4..p + 4 + len]).unwrap();
-                return Seen { head, body };
+                let raw = raw[p + 4..p + 4 + len].to_vec();
+                let body = serde_json::from_slice(&raw).unwrap();
+                return Seen { head, body, raw };
             }
         }
         assert!(n > 0, "request ended early");
@@ -201,6 +205,8 @@ fn remote_models_and_non_loopback_endpoints_send_nothing() {
     // Around the gate: the broker re-checks every call itself.
     for (endpoint, model) in [
         (url.as_str(), "big-model:cloud"),
+        (url.as_str(), "big-model:cloud "),
+        (url.as_str(), "big-model-cloud\t"),
         ("http://192.0.2.1:80/v1", "m"),
         ("https://127.0.0.1:443/v1", "m"),
         (url.as_str(), ""),
@@ -302,7 +308,11 @@ fn a_three_round_turn_spawns_a_fresh_broker_for_each_round() {
         *view.0.lock().unwrap(),
         [r#"Client("ask:local") search.query"#; 2]
     );
-    // The record's digest is of the round as the engine built it.
+    // The record's digest and length are of the exact body bytes the stub received (#560).
+    for (rec, got) in log.iter().zip(&seen) {
+        assert_eq!(rec.bytes, got.raw.len());
+        assert_eq!(rec.sha256, format!("sha256:{:x}", Sha256::digest(&got.raw)));
+    }
     assert!(log
         .iter()
         .all(|r| r.dispatched && r.outcome == "ok" && r.principal == "ask:local"));

@@ -12,7 +12,7 @@ use loomward_ask::{
     BrokerReply, BrokerRequest, ChatReply, ErrorKind, FunctionCall, Limits, LocalEndpoint,
     ProviderError, ToolCall, MAX_REPLY_BYTES, MAX_REQUEST_BYTES,
 };
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::io::{ErrorKind as IoKind, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
@@ -54,11 +54,7 @@ pub fn call(req: &BrokerRequest) -> BrokerReply {
         ));
     }
 
-    let mut body = json!({"model": req.model, "messages": req.request.messages, "stream": false});
-    if !req.request.tools.is_empty() {
-        body["tools"] = Value::from(req.request.tools.clone());
-    }
-    let body = body.to_string();
+    let body = loomward_ask::request_body(&req.model, &req.request);
     if body.len() > MAX_REQUEST_BYTES {
         return Err(err(ErrorKind::InvalidRequest, "request too large", false));
     }
@@ -256,6 +252,7 @@ fn parse_completion(body: &[u8]) -> Result<ChatReply, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn a_hostile_chunk_size_is_refused_without_panicking() {

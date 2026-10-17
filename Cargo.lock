@@ -647,6 +647,7 @@ dependencies = [
  "loomward-ask",
  "loomward-protocol",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

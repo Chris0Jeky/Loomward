@@ -149,11 +149,14 @@ fn tools_run_as_the_ask_client_and_the_model_sees_handles_not_node_ids() {
         assert_eq!(rec.profile_digest, local().digest());
         assert!(rec.dispatched);
         assert_eq!(rec.outcome, "ok");
-        let bytes = serde_json::to_vec(&ChatRequest {
-            messages: seen[i].messages.clone(),
-            tools: seen[i].tools.clone(),
-        })
-        .unwrap();
+        let bytes = crate::request_body(
+            &local().model,
+            &ChatRequest {
+                messages: seen[i].messages.clone(),
+                tools: seen[i].tools.clone(),
+            },
+        )
+        .into_bytes();
         assert_eq!(rec.bytes, bytes.len());
         assert_eq!(rec.sha256, format!("sha256:{:x}", Sha256::digest(&bytes)));
     }
@@ -232,6 +235,7 @@ fn bad_tool_calls_are_tool_errors_and_the_loop_goes_on() {
                 call("b", "find", "not json"),
                 call("c", "find", r#"{"text":"r","limit":100}"#),
                 call("d", "find", r#"{"text":7}"#),
+                call("e", "find", &format!(r#"{{"text":"{}"}}"#, "é".repeat(257))),
             ])),
             Upstream::Reply(text("sorry")),
         ],
@@ -251,7 +255,8 @@ fn bad_tool_calls_are_tool_errors_and_the_loop_goes_on() {
             r#"{"error":"unknown tool"}"#,
             r#"{"error":"arguments are not a JSON object"}"#,
             r#"{"error":"expected exactly the field `text`"}"#,
-            r#"{"error":"`text` must be a string"}"#
+            r#"{"error":"`text` must be a string"}"#,
+            r#"{"error":"`text` is longer than 256 characters"}"#
         ]
     );
 }
