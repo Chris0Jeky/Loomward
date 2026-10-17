@@ -17,8 +17,8 @@
       typeof i === 'number' && Number.isInteger(i) && i >= 0 && i < count;
     let malformed = false;
     let unreadableSkipped = 0;
-    // A verified group or a hard-link set is shown only whole: losing any member, or ending with fewer than two, withholds it.
-    const cleanWhole = (lists: unknown): { sets: number[][]; withheld: number } => {
+    // A verified group or a hard-link set is shown only whole: losing any member, or ending below its minimum (two for a group, one for a link set whose other names may lie outside the inspected set), withholds it.
+    const cleanWhole = (lists: unknown, min: number): { sets: number[][]; withheld: number } => {
       if (!Array.isArray(lists)) {
         malformed = true;
         return { sets: [], withheld: 0 };
@@ -32,7 +32,7 @@
           continue;
         }
         const kept = (list as unknown[]).filter(valid);
-        if (kept.length !== list.length || kept.length < 2) {
+        if (kept.length !== list.length || kept.length < min) {
           malformed = true;
           withheld += 1;
           continue;
@@ -41,8 +41,8 @@
       }
       return { sets, withheld };
     };
-    const { sets: groups, withheld: withheldGroups } = cleanWhole(report.groups);
-    const { sets: links, withheld: withheldLinks } = cleanWhole(report.links);
+    const { sets: groups, withheld: withheldGroups } = cleanWhole(report.groups, 2);
+    const { sets: links, withheld: withheldLinks } = cleanWhole(report.links, 1);
     const skipped = Array.isArray(report.skipped)
       ? report.skipped.filter((skip) => {
           const ok = !!skip && valid(skip.entry);

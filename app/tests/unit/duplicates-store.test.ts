@@ -256,11 +256,17 @@ describe('duplicates report index guard', () => {
     expect(guarded.withheldLinks).toBe(1);
     expect(guarded.problem).toContain('1 link set was withheld as incomplete.');
   });
-  it('withholds a link set that ends with fewer than two members, and a link set that is not a list', () => {
+  it('keeps a whole one-name link set (its other names lie outside the inspected set) and withholds a link set that is not a list', () => {
     const guarded = sanitizeDuplicatesReport(twoEntries({ links: [[0], 'x' as unknown as number[]] }));
-    expect(guarded.report?.links).toEqual([]);
-    expect(guarded.withheldLinks).toBe(2);
-    expect(guarded.problem).toContain('2 link sets were withheld as incomplete.');
+    expect(guarded.report?.links).toEqual([[0]]);
+    expect(guarded.withheldLinks).toBe(1);
+    expect(guarded.problem).toContain('1 link set was withheld as incomplete.');
+  });
+  it('a valid report with a one-name link set shows it and raises no warning', () => {
+    const guarded = sanitizeDuplicatesReport(twoEntries({ links: [[1]] }));
+    expect(guarded.report?.links).toEqual([[1]]);
+    expect(guarded.withheldLinks).toBe(0);
+    expect(guarded.problem).toBe('');
   });
   it('keeps all-valid link sets unchanged and withholds nothing', () => {
     const guarded = sanitizeDuplicatesReport(twoEntries({ links: [[0, 1]] }));
