@@ -48,7 +48,8 @@
         "teacher_available": false,
         "telemetry_available": false,
         "gpu_available": false,
-        "diagnostics_save": true
+        "diagnostics_save": true,
+        "federated_search": false
       }
     },
     "health": {

@@ -1,0 +1,79 @@
+{
+  "def": "SearchPage",
+  "value": {
+    "generation": "12",
+    "hits": [
+      {
+        "row": {
+          "node_id": "nd_0020",
+          "kind": "file",
+          "name": "report_final.docx",
+          "extension": "docx",
+          "ext_family": "document",
+          "logical_bytes": "48213",
+          "allocated_bytes": "49152",
+          "files": null,
+          "dirs": null,
+          "modified_at": "2026-10-09T11:58:30Z",
+          "attributes": [
+            "archive"
+          ],
+          "flags": [],
+          "coverage": "complete",
+          "location_hint": {
+            "text": "Lab\\S1\\Projects\\Alpha",
+            "truncated": false
+          }
+        },
+        "root_id": "rt_synth1",
+        "path": {
+          "text": "S1\\Projects\\Alpha\\report_final.docx",
+          "truncated": false
+        },
+        "match_kind": "token",
+        "source": "own",
+        "freshness": {
+          "state": "caught_up",
+          "at": "2026-10-09T11:00:00Z"
+        },
+        "score": 0.82,
+        "highlights": [
+          [
+            0,
+            6
+          ]
+        ]
+      }
+    ],
+    "next_cursor": null,
+    "budget_hit": false,
+    "index_state": "current",
+    "partial": false,
+    "substring_searched": true,
+    "roots": [
+      {
+        "root_id": "rt_synth1",
+        "scan_state": "complete",
+        "coverage": "complete"
+      }
+    ],
+    "unverified_hits": [
+      {
+        "name": "report_notes.txt",
+        "path": {
+          "text": "S1\\Projects\\Alpha\\report_notes.txt",
+          "truncated": false
+        },
+        "root_id": "rt_synth1",
+        "kind": "file",
+        "source": "everything",
+        "freshness": {
+          "state": "everything_live",
+          "at": null
+        },
+        "match_kind": "substring",
+        "score": 0.4
+      }
+    ]
+  }
+}

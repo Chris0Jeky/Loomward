@@ -1,5 +1,50 @@
 # Loomward scale lab
 
+## Daily-use soak (#414)
+
+```powershell
+$env:CARGO_BUILD_JOBS='4'
+$env:CARGO_TARGET_DIR='C:\lw\target\soak-r7'
+cargo build --manifest-path C:\lw\wt\soak-r7\Cargo.toml -p loomward-lab
+C:\lw\target\soak-r7\debug\loomward-lab.exe soak --hours 0.25 --root C:\lw\lab\soak --out C:\lw\soak\smoke.jsonl
+py -3 C:\lw\wt\soak-r7\crates\loomward-lab\soak_summary.py C:\lw\soak\smoke.jsonl --smoke
+```
+
+The root must be a **new** direct child of a directory named `lab`; the existing real-root,
+resolved-path, non-elevated and reparse/offline guards apply. Ancestors remain pinned. Existing
+trees and existing outputs are refused. The generator uses the deterministic dev plan (seed 42,
+128 sparse files, including long paths); `manifest.json`, the disposable marker, registered synthetic
+`data/` root and service `state/` live under the new root. Nothing scans an existing folder.
+The absolute JSONL output must be outside Git and outside the generated tree. No automatic cleanup
+is performed; preserve the tree and log for diagnosis. This command does not loosen the scale
+generator's G:/E: scope or its destroy command.
+
+Each cycle opens the real in-process `Service`, grants the registered root, scans, calls `tree.slice`
+and `search.query`, arms the native recursive watcher, creates/removes one synthetic probe, refreshes
+through the service, revokes, forgets and closes/reopens the service against the same stores.
+Watch hints require an explicit refresh: the service catalogue sink does not yet support automatic
+watch reconciliation. Restart means graceful service teardown/reopen in the same process; process
+crash recovery is readiness row 1. The process stays alive throughout to expose allocation growth.
+Calls request the service's supported 30-second deadline on this shared host, with no error retries.
+There is at most one cycle per five seconds; slow cycles are not overlapped. The JSONL records each
+operation's latency/error, current Windows handle count, RSS/private bytes, live DB/WAL sizes,
+catalogue row counts and logical bytes. Forget permits only the existing fully anonymised audit.
+An operation/measurement error is recorded and stops the run with exit 1. Each cycle is flushed and
+synced; a missing clean end fails evaluation. The evaluator implements the bounds fixed in
+[readiness row 7](../../docs/45-daily-use-readiness.md), exits 1 for failure and accepts input incrementally.
+
+Start the full run detached (use fresh root/output names):
+
+```powershell
+Start-Process -WindowStyle Hidden -FilePath 'C:\lw\target\soak-r7\debug\loomward-lab.exe' -ArgumentList @('soak','--hours','72','--root','C:\lw\lab\soak72','--out','C:\lw\soak\72h.jsonl') -WorkingDirectory 'C:\lw\wt\soak-r7' -RedirectStandardOutput 'C:\lw\soak\72h.stdout.log' -RedirectStandardError 'C:\lw\soak\72h.stderr.log'
+py -3 C:\lw\wt\soak-r7\crates\loomward-lab\soak_summary.py C:\lw\soak\72h.jsonl
+```
+
+The evaluator must be run after the process exits. Sleep/reboot or a sample gap over 60 seconds fails
+continuity; a smoke success never closes the 72-hour row. No host power settings are changed.
+Tests: `cargo test -p loomward-lab` (includes three native service cycles on Windows), and
+`py -3 -m unittest discover -s crates/loomward-lab -p test_soak_summary.py` (pass plus planted failures).
+
 An isolated Windows NTFS experiment, not an engine executor. Uses std threads, the already
 locked windows-sys 0.61, and the workspace's serde dependencies; no new package dependency.
 The plan and directory-buffer decoder have platform-independent tests; execution here was on Windows. The binary's

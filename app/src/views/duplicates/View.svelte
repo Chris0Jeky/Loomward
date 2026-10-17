@@ -58,6 +58,7 @@
   import { Duplicates } from '../../lib/stores/duplicates.svelte';
   import { isActive } from '../../lib/scan/model';
   import { formatBytes } from '../../lib/format/bytes';
+  import { escapedName } from '../../lib/format/names';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
 
   const duplicates = new Duplicates();
@@ -120,7 +121,7 @@
     <div class="lw-field">
       <label class="lbl" for="duplicate-root">Root</label>
       <select id="duplicate-root" bind:value={selected} disabled={loading || active || duplicates.pending}>
-        {#each roots as r (r.root_id)}<option value={r.root_id}>{r.display_path.text}</option>{/each}
+        {#each roots as r (r.root_id)}<option value={r.root_id}>{escapedName(r.display_path.text)}</option>{/each}
       </select>
     </div>
     <button class="btn primary" disabled={loading || !canStart || active || duplicates.pending} onclick={() => duplicates.start(selected)}>Start inspection</button>

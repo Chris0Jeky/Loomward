@@ -486,3 +486,37 @@ fn labels_and_snapshot_time_are_restricted_charsets() {
         Some("2026-01-01T00:00:00.123456789+01:00")
     );
 }
+
+/// Validation folds case for duplicate names, so coverage must use the same Windows-name identity:
+/// a case-variant restore or manifest entry names the same required file, while another version does not.
+#[test]
+fn case_variant_paths_name_the_same_required_file() {
+    let mut s = source();
+    for r in s.restore.as_mut().unwrap().files.iter_mut() {
+        r.file.path = r.file.path.to_uppercase();
+    }
+    let e = evidence(&s);
+    assert!(
+        e.reported_recovery_evidence && e.refusals.is_empty(),
+        "{e:?}"
+    );
+    assert_eq!(e.restore_coverage, source().required);
+
+    let mut s = source();
+    for f in s.snapshot_files.iter_mut() {
+        f.path = f.path.to_uppercase();
+    }
+    let e = evidence(&s);
+    assert!(
+        e.reported_recovery_evidence && e.refusals.is_empty(),
+        "{e:?}"
+    );
+    assert_eq!(e.restore_coverage, source().required);
+
+    let mut s = source();
+    for r in s.restore.as_mut().unwrap().files.iter_mut() {
+        r.file.path = r.file.path.to_uppercase();
+    }
+    s.restore.as_mut().unwrap().files[0].file.version = "d".repeat(64);
+    refused(&s, Refusal::VersionNotCovered);
+}

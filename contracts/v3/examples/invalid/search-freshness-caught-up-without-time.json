@@ -1,0 +1,8 @@
+{
+  "def": "SearchFreshness",
+  "reason": "caught_up names a time",
+  "value": {
+    "state": "caught_up",
+    "at": null
+  }
+}

@@ -641,6 +641,7 @@ dependencies = [
  "loomward-core",
  "loomward-lab",
  "loomward-learn",
+ "loomward-operations",
  "loomward-protocol",
  "loomward-service",
  "loomward-telemetry",
@@ -676,12 +677,14 @@ dependencies = [
 name = "loomward-lab"
 version = "0.1.0"
 dependencies = [
+ "loomward-catalog",
  "loomward-engine",
  "loomward-protocol",
+ "loomward-service",
  "loomward-windows",
+ "rusqlite",
  "serde",
  "serde_json",
- "sha2",
  "tempfile",
  "windows-sys",
 ]
@@ -695,6 +698,10 @@ dependencies = [
  "sha2",
  "unicode-general-category",
 ]
+
+[[package]]
+name = "loomward-operations"
+version = "0.1.0"
 
 [[package]]
 name = "loomward-protocol"
@@ -748,6 +755,7 @@ dependencies = [
 name = "loomward-windows"
 version = "0.1.0"
 dependencies = [
+ "loomward-operations",
  "serde",
  "serde_json",
  "sha2",
