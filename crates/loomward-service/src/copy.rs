@@ -54,8 +54,8 @@ pub(crate) struct Copies {
     #[cfg(windows)]
     pub(crate) store: Option<Arc<Mutex<loomward_operations::Store>>>,
     pub(crate) pending: Mutex<HashMap<String, Pending>>,
-    /// Wire ID to journal operation.
-    ops: Mutex<HashMap<String, u64>>,
+    /// Wire ID to journal operation for active workers only; history stays in the store.
+    pub(crate) ops: Mutex<HashMap<String, u64>>,
     #[cfg(windows)]
     pub(crate) running: Mutex<HashMap<u64, Run>>,
     /// The Q1 setting for this service (tests flip it; production reads the constant).
@@ -227,17 +227,10 @@ impl Copies {
                 })
                 .flatten()
                 .map(|s| Arc::new(Mutex::new(s)));
-            let mut ops = HashMap::new();
             if let Some(store) = &store {
                 use loomward_windows::effects::exec;
                 let listed = store.lock().unwrap().operations().unwrap_or_default();
                 for op in listed {
-                    let plan = store.lock().unwrap().plan(op).ok().flatten();
-                    if let Some(plan) =
-                        plan.and_then(|p| serde_json::from_str::<exec::Plan>(&p).ok())
-                    {
-                        ops.insert(plan.operation_id, op);
-                    }
                     let control =
                         exec::Control::new(removal.load(std::sync::atomic::Ordering::SeqCst));
                     let _ = exec::recover(store, op, &control);
@@ -246,7 +239,7 @@ impl Copies {
             Copies {
                 store,
                 pending: Mutex::default(),
-                ops: Mutex::new(ops),
+                ops: Mutex::default(),
                 running: Mutex::default(),
                 removal,
                 shutdown_wait_ms,
@@ -327,14 +320,15 @@ impl Copies {
 
     /// Drop the runs whose worker has returned (#569). Its last journal record is durable by then, so
     /// the journal answers `copy.status` and nothing needs the handle; a finished thread has no effect
-    /// left. `ops` keeps its one small entry per operation: it mirrors the journal, which `open` reloads
-    /// wholesale, and status and start-once need the wire ID.
+    /// left. Evict its wire ID too; historical lookups use the durable plan.
     #[cfg(windows)]
     fn reap(&self) {
-        self.running
+        let mut running = self.running.lock().unwrap();
+        running.retain(|_, r| !r.thread.is_finished());
+        self.ops
             .lock()
             .unwrap()
-            .retain(|_, r| !r.thread.is_finished());
+            .retain(|_, op| running.contains_key(op));
     }
 }
 
@@ -511,7 +505,8 @@ impl Inner {
             let Some(store) = &self.copies.store else {
                 return;
             };
-            let ops: Vec<u64> = self.copies.ops.lock().unwrap().values().copied().collect();
+            // Blocked/recovered operations may have no resident worker, but still need fencing.
+            let ops = store.lock().unwrap().operations().unwrap_or_default();
             for op in ops {
                 let plan: Option<exec::Plan> = store
                     .lock()
@@ -561,6 +556,7 @@ impl Inner {
                     let _ = exec::cancel(store, op, &plan, &exec::Control::new(removal));
                 }
             }
+            self.copies.reap();
         }
         #[cfg(not(windows))]
         let _ = grant;
@@ -726,7 +722,7 @@ impl Inner {
             use loomward_windows::effects::exec;
             let id = request.operation_id.to_string();
             self.copies.reap();
-            if self.copies.ops.lock().unwrap().contains_key(&id) {
+            if self.copy_op(&id)?.is_some() {
                 return Err(with_reason(
                     fail(
                         ErrorCode::InvalidRequest,
@@ -803,7 +799,6 @@ impl Inner {
                 op
             };
             self.copies.pending.lock().unwrap().remove(&id);
-            self.copies.ops.lock().unwrap().insert(id.clone(), op);
             let control = exec::Control::new(
                 self.copies
                     .removal
@@ -830,14 +825,19 @@ impl Inner {
                 })?;
             #[cfg(test)]
             self.copies.at("spawned");
-            self.copies.running.lock().unwrap().insert(
-                op,
-                Run {
-                    control,
-                    thread,
-                    done,
-                },
-            );
+            {
+                // Register both maps under the reaper's lock so it cannot evict a registering ID.
+                let mut running = self.copies.running.lock().unwrap();
+                running.insert(
+                    op,
+                    Run {
+                        control,
+                        thread,
+                        done,
+                    },
+                );
+                self.copies.ops.lock().unwrap().insert(id.clone(), op);
+            }
             self.copy_status_of(&id, op)
         }
         #[cfg(not(windows))]
@@ -847,14 +847,25 @@ impl Inner {
         }
     }
 
-    fn copy_op(&self, id: &str) -> Result<u64, ErrorBody> {
-        self.copies
-            .ops
-            .lock()
-            .unwrap()
-            .get(id)
-            .copied()
-            .ok_or_else(unknown)
+    fn copy_op(&self, id: &str) -> Result<Option<u64>, ErrorBody> {
+        if let Some(op) = self.copies.ops.lock().unwrap().get(id).copied() {
+            return Ok(Some(op));
+        }
+        #[cfg(windows)]
+        {
+            use loomward_windows::effects::exec;
+            let store = self.copies_store()?.lock().unwrap();
+            for op in store.operations().map_err(crate::sql_error)? {
+                let plan = store
+                    .plan(op)
+                    .map_err(crate::sql_error)?
+                    .and_then(|p| serde_json::from_str::<exec::Plan>(&p).ok());
+                if plan.is_some_and(|p| p.operation_id == id) {
+                    return Ok(Some(op));
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// Cancel (before publish) and abandon (blocked, needs_attention, interrupted) share one path: stop
@@ -863,7 +874,7 @@ impl Inner {
         let request: CopyOperationRequest = req.decode_payload()?;
         let store = self.copies_store()?.clone();
         let id = request.operation_id.to_string();
-        let op = self.copy_op(&id)?;
+        let op = self.copy_op(&id)?.ok_or_else(unknown)?;
         #[cfg(windows)]
         {
             use loomward_windows::effects::exec;
@@ -909,7 +920,7 @@ impl Inner {
         let request: CopyOperationRequest = req.decode_payload()?;
         self.copies_store()?;
         let id = request.operation_id.to_string();
-        let op = self.copy_op(&id)?;
+        let op = self.copy_op(&id)?.ok_or_else(unknown)?;
         self.copy_status_of(&id, op)
     }
 
