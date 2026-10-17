@@ -390,6 +390,12 @@ impl Inner {
             CopyStatus => self.copy_status(req),
             AlertsList => self.alerts_list(work),
             AlertsConfigure => self.alerts_configure(req.decode_payload()?),
+            AskStatus => self.ask_status(),
+            AskConfigure => self.ask_configure(req.decode_payload()?),
+            AskGrant => self.ask_grant(req.decode_payload()?),
+            AskRevoke => self.ask_revoke(),
+            AskTurn => self.ask_turn(req.decode_payload()?),
+            AskResult => self.ask_result(req.decode_payload()?),
             RootsRevoke => {
                 let r: RootRevokeRequest = req.decode_payload()?;
                 let grant = self.grant_of_root(self.root_row(&r.root_id)?)?;

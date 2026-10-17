@@ -226,6 +226,10 @@ fn only_the_listed_commands_change_state() {
         CopyStart,
         CopyCancel,
         CopyAbandon,
+        AskConfigure,
+        AskGrant,
+        AskRevoke,
+        AskTurn,
     ];
     for c in Command::ALL {
         assert_eq!(

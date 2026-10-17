@@ -8,7 +8,7 @@ use loomward_catalog::{DirListing, Observation, RootObservation, WriteCommand, W
 use loomward_protocol::*;
 use serde_json::{json, Value};
 
-fn open(dir: &std::path::Path) -> Service {
+pub(crate) fn open(dir: &std::path::Path) -> Service {
     Service::open(Config {
         state_dir: dir.to_path_buf(),
         dataset: DatasetClass::Synthetic,
@@ -29,7 +29,7 @@ fn file(name: &str, bytes: u64) -> Observation {
 
 /// A fixture root. With `files`, one complete run lists them and a `report drafts` folder holding
 /// one more; without, the root stays unscanned.
-fn root(svc: &Service, name: &str, id: u8, files: Option<&[(&str, u64)]>) -> RootId {
+pub(crate) fn root(svc: &Service, name: &str, id: u8, files: Option<&[(&str, u64)]>) -> RootId {
     let w = svc.inner.catalog.writer();
     let WriteReply::Root {
         grant_id,
@@ -101,7 +101,7 @@ fn root(svc: &Service, name: &str, id: u8, files: Option<&[(&str, u64)]>) -> Roo
     RootId::new(svc.inner.root_id(root_id)).unwrap()
 }
 
-const ALPHA: &[(&str, u64)] = &[
+pub(crate) const ALPHA: &[(&str, u64)] = &[
     ("report.pdf", 4000),
     ("annual report.docx", 3000),
     ("report-2024.xlsx", 2000),

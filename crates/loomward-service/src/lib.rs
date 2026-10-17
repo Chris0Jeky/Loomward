@@ -17,6 +17,7 @@
 
 mod alerts;
 mod apps;
+mod ask;
 mod backups;
 mod clients;
 mod collections;
@@ -73,10 +74,11 @@ pub struct Config {
 /// The engine service. Cheap to share; `call` may run on any thread.
 pub struct Service {
     inner: Arc<Inner>,
+    /// A handle an Ask turn borrows for its tool calls (ask.rs): dropping it shuts nothing down.
+    peer: bool,
 }
 
 pub(crate) struct Inner {
-    #[cfg(windows)]
     weak: Weak<Inner>,
     freshness: freshness::Tracker,
     dataset: DatasetClass,
@@ -110,6 +112,8 @@ pub(crate) struct Inner {
     reads: Mutex<usize>,
     metadata: Arc<dyn inventory::Provider>,
     metadata_cursors: cursors::Cursors,
+    /// LW-118: the latest Ask turn and the provider factory.
+    pub(crate) ask: ask::Asks,
     #[cfg(test)]
     pub(crate) hooks: Arc<tests::Hooks>,
 }
@@ -120,6 +124,9 @@ pub(crate) struct Inner {
 /// Bounded, so a worker stuck in a blocking native call cannot hang the owner's shutdown.
 impl Drop for Service {
     fn drop(&mut self) {
+        if self.peer {
+            return;
+        }
         self.inner.freshness.stop();
         let give_up = Instant::now() + Duration::from_secs(10);
         while Arc::strong_count(&self.inner) > 1 && Instant::now() < give_up {
@@ -245,7 +252,6 @@ impl Service {
         let instance = db::instance(&conn).map_err(|e| format!("state store: {e}"))?;
         let lookups = db::open(&state_dir).map_err(|e| format!("state store: {e}"))?;
         let inner = Arc::new_cyclic(|weak| Inner {
-            #[cfg(windows)]
             weak: weak.clone(),
             freshness: Default::default(),
             scan: Arc::new(sink::CatalogScanSink::new(weak.clone(), lookups)),
@@ -270,6 +276,7 @@ impl Service {
                 .clone()
                 .unwrap_or_else(|| inventory::provider(config.dataset)),
             metadata_cursors: cursors::Cursors::new(16),
+            ask: Default::default(),
             #[cfg(test)]
             hooks: Default::default(),
         });
@@ -302,7 +309,7 @@ impl Service {
         }
         spawn_telemetry_pump(Arc::downgrade(&inner));
         spawn_backup_scrub_retry(Arc::downgrade(&inner));
-        Ok(Service { inner })
+        Ok(Service { inner, peer: false })
     }
 
     pub fn dataset(&self) -> DatasetClass {
@@ -375,6 +382,10 @@ pub(crate) fn is_mutation(c: Command) -> bool {
             | CopyStart
             | CopyCancel
             | CopyAbandon
+            | AskConfigure
+            | AskGrant
+            | AskRevoke
+            | AskTurn
     )
 }
 
@@ -430,7 +441,10 @@ pub(crate) struct Queue {
 }
 
 fn is_revocation(c: Command) -> bool {
-    matches!(c, Command::RootsRevoke | Command::GrantsRevoke)
+    matches!(
+        c,
+        Command::RootsRevoke | Command::GrantsRevoke | Command::AskRevoke
+    )
 }
 
 /// Revocation must never wait behind other mutations (its state change is serialised by
@@ -605,6 +619,12 @@ impl ViewService for Service {
                     | Command::CopyCancel
                     | Command::CopyAbandon
                     | Command::CopyStatus
+                    | Command::AskStatus
+                    | Command::AskConfigure
+                    | Command::AskGrant
+                    | Command::AskRevoke
+                    | Command::AskTurn
+                    | Command::AskResult
             )
         {
             let e = fail(

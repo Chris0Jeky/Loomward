@@ -74,10 +74,29 @@ fn valid_client(client: &str) -> bool {
 }
 
 impl Service {
+    /// Owner-issued disclosure grant for `client`; see [`Inner::grant_client`].
+    pub fn grant_client(
+        &self,
+        client: &str,
+        roots: &[RootId],
+        fields: &[&str],
+        expires_at_ns: Option<i64>,
+    ) -> Result<String, ErrorBody> {
+        self.inner
+            .grant_client(client, roots, fields, expires_at_ns)
+    }
+
+    /// Revokes `client`'s live grant; see [`Inner::revoke_client`].
+    pub fn revoke_client(&self, client: &str) -> Result<bool, ErrorBody> {
+        self.inner.revoke_client(client)
+    }
+}
+
+impl Inner {
     /// Owner-issued disclosure grant for `client` over `roots` with the optional `fields`
     /// (from [`CLIENT_FIELDS`]); `expires_at_ns` is a Unix time in nanoseconds. It replaces the
     /// client's live grant, if any, in one transaction: a new epoch. Returns the grant ID.
-    pub fn grant_client(
+    pub(crate) fn grant_client(
         &self,
         client: &str,
         roots: &[RootId],
@@ -91,7 +110,7 @@ impl Service {
         {
             return Err(fail(ErrorCode::InvalidRequest, "invalid client grant"));
         }
-        let inner = &self.inner;
+        let inner = self;
         let mut rows = roots
             .iter()
             .map(|r| inner.root_row(r.as_ref()))
@@ -142,14 +161,9 @@ impl Service {
 
     /// Revokes `client`'s live grant; its next call and every cursor it holds are refused.
     /// Returns whether a live grant was revoked.
-    pub fn revoke_client(&self, client: &str) -> Result<bool, ErrorBody> {
-        let _m = self
-            .inner
-            .mutation
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+    pub(crate) fn revoke_client(&self, client: &str) -> Result<bool, ErrorBody> {
+        let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
         let n = self
-            .inner
             .db()
             .execute(
                 "UPDATE st.client_grant SET revoked_at_ns=?2 WHERE client=?1 AND revoked_at_ns IS NULL",
@@ -341,4 +355,4 @@ fn project_row(grant: &ClientGrant, row: &mut Map<String, Value>) {
 
 #[cfg(test)]
 #[path = "clients_tests.rs"]
-mod tests;
+pub(crate) mod tests;
