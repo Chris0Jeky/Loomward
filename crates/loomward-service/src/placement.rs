@@ -499,8 +499,25 @@ impl<'a> Input<'a> {
                         // A personal volume waits briefly and alone: an offline volume is not read, and a
                         // stall, a timeout or a busy reader leaves only that volume unknown (#519 review).
                         if v.online {
-                            let wait = deadline.min(Instant::now() + PERSONAL_SPACE_WAIT);
-                            match bounded_space(wait, Some(v.key.as_str()), read) {
+                            #[cfg(test)]
+                            let budget = self
+                                .inner
+                                .hooks
+                                .personal_space_wait
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .unwrap_or(PERSONAL_SPACE_WAIT);
+                            #[cfg(not(test))]
+                            let budget = PERSONAL_SPACE_WAIT;
+                            // #530: in tests each service has its own in-flight map. The process-wide one let a
+                            // concurrent test's read of the same disk answer this one, including a None from a root
+                            // that test had made unobservable.
+                            #[cfg(test)]
+                            let flight_key = format!("{:p}/{}", self.inner, v.key);
+                            #[cfg(not(test))]
+                            let flight_key = v.key.clone();
+                            let wait = deadline.min(Instant::now() + budget);
+                            match bounded_space(wait, Some(flight_key.as_str()), read) {
                                 Ok(observed) => observed,
                                 Err(
                                     EngineError::DeadlineExceeded { .. }
