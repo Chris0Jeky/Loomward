@@ -179,11 +179,18 @@ pub struct ProviderProfile {
     pub model: String,
 }
 
+/// A model a loopback server runs elsewhere: Ollama names them `name:cloud` or `name:tag-cloud`
+/// (docs/46 section 8.1). Case-insensitive, and erring towards remote: a false "remote" only refuses.
+pub fn is_remote_model(model: &str) -> bool {
+    let m = model.to_ascii_lowercase();
+    m.ends_with(":cloud") || m.ends_with("-cloud")
+}
+
 impl ProviderProfile {
     /// `local` needs a loopback `http` endpoint and a model that is not remote: a loopback Ollama
     /// serves `:cloud` models that run elsewhere (docs/46 section 8.1, remote-model trap).
     pub fn class(&self) -> ProviderClass {
-        if LocalEndpoint::parse(&self.base_url).is_some() && !self.model.ends_with(":cloud") {
+        if LocalEndpoint::parse(&self.base_url).is_some() && !is_remote_model(&self.model) {
             ProviderClass::Local
         } else {
             ProviderClass::Cloud
@@ -399,9 +406,21 @@ mod tests {
         ] {
             assert_eq!(profile(url, "m").class(), ProviderClass::Cloud, "{url}");
         }
+        for model in [
+            "gpt-oss:120b:cloud",
+            "gpt-oss:120b-cloud",
+            "qwen3-coder:480b-CLOUD",
+            "m:Cloud",
+        ] {
+            assert_eq!(
+                profile("http://127.0.0.1:11434", model).class(),
+                ProviderClass::Cloud,
+                "{model}"
+            );
+        }
         assert_eq!(
-            profile("http://127.0.0.1:11434", "gpt-oss:120b:cloud").class(),
-            ProviderClass::Cloud
+            profile("http://127.0.0.1:11434", "llama3.2:3b").class(),
+            ProviderClass::Local
         );
     }
 

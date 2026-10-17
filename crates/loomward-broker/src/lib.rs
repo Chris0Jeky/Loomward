@@ -39,7 +39,7 @@ pub fn call(req: &BrokerRequest) -> BrokerReply {
 
     let endpoint = LocalEndpoint::parse(&req.endpoint)
         .ok_or_else(|| err(ErrorKind::NotLocal, "not a loopback http endpoint", false))?;
-    if req.model.is_empty() || req.model.len() > 256 || req.model.ends_with(":cloud") {
+    if req.model.is_empty() || req.model.len() > 256 || loomward_ask::is_remote_model(&req.model) {
         return Err(err(ErrorKind::NotLocal, "not a local model name", false));
     }
     let addrs: Vec<SocketAddr> = (endpoint.host.trim_matches(['[', ']']), endpoint.port)
@@ -192,7 +192,8 @@ fn dechunk(mut raw: &[u8]) -> Option<Vec<u8>> {
         if size == 0 {
             return Some(out);
         }
-        if raw.len() < size + 2 || out.len() + size > MAX_REPLY_BYTES {
+        // Bound the size first: a hostile chunk size must not overflow `size + 2`.
+        if size > MAX_REPLY_BYTES || raw.len() < size + 2 || out.len() + size > MAX_REPLY_BYTES {
             return None;
         }
         out.extend_from_slice(&raw[..size]);
@@ -255,6 +256,12 @@ fn parse_completion(body: &[u8]) -> Result<ChatReply, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_hostile_chunk_size_is_refused_without_panicking() {
+        assert_eq!(dechunk(b"ffffffffffffffff\r\nab\r\n0\r\n\r\n"), None);
+        assert_eq!(dechunk(b"2\r\nab\r\n0\r\n\r\n"), Some(b"ab".to_vec()));
+    }
 
     #[test]
     fn http_bodies_are_framed_and_statuses_are_honest() {
