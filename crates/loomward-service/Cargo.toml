@@ -28,6 +28,8 @@ getrandom = "0.4"
 proptest.workspace = true
 loomward-windows = { path = "../loomward-windows", features = ["fixtures"] }
 loomward-catalog = { path = "../loomward-catalog", features = ["test-hooks"] }
+# #567: the journal append fault seam, to lose an acknowledgement under the service copy module.
+loomward-operations = { path = "../loomward-operations", features = ["fault-injection"] }
 tempfile.workspace = true
 
 [features]

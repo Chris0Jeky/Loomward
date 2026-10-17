@@ -199,6 +199,47 @@ mod lab_copy {
         assert!(path.join("b").join("a").join("deep").join("x.bin").exists());
     }
 
+    /// #567: a lost acknowledgement at `committed` makes the executor return `Fault::Journal` for a copy
+    /// that did commit (the journal is the truth, evidence/v3/copy-faults.md). The service reports the
+    /// journal's state, never a failure.
+    #[test]
+    fn a_lost_acknowledgement_at_committed_reports_committed() {
+        use loomward_operations::store::fault::{Kind, Stage};
+        use loomward_operations::Record;
+        let Some((lab, a, b)) = scanned() else { return };
+        let svc = &lab.svc;
+        let p = preview(svc, &a, &b);
+        let op = p["operation_id"].as_str().unwrap().to_owned();
+        let consent = json!({"operation_id": op, "digest": digest(&p)});
+        ok("copy.approve", call(svc, "copy.approve", consent.clone()));
+        let lost = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = lost.clone();
+        svc.inner
+            .copies
+            .store
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .set_fault(Some(Box::new(move |record, stage| {
+                let hit = matches!(record, Record::Committed) && stage == Stage::Ack;
+                flag.fetch_or(hit, std::sync::atomic::Ordering::SeqCst);
+                hit.then_some(Kind::Busy)
+            })));
+        ok("copy.start", call(svc, "copy.start", consent));
+        let done = settle_copy(svc, &op);
+        assert!(
+            lost.load(std::sync::atomic::Ordering::SeqCst),
+            "the acknowledgement was never lost: the test proves nothing"
+        );
+        assert_eq!(done["state"], "committed", "{done:?}");
+        assert_eq!(done["items_verified"], done["items_total"]);
+        assert_eq!(
+            contents(&lab.path.join("a")),
+            contents(&lab.path.join("b").join("a"))
+        );
+    }
+
     #[test]
     fn a_source_changed_after_approval_refuses_the_start() {
         let Some((lab, a, b)) = scanned() else { return };

@@ -31,7 +31,7 @@ struct Pending {
 pub(crate) struct Copies {
     /// The journal in `state.db`; `None` for personal sessions and off Windows.
     #[cfg(windows)]
-    store: Option<Arc<Mutex<loomward_operations::Store>>>,
+    pub(crate) store: Option<Arc<Mutex<loomward_operations::Store>>>,
     pending: Mutex<HashMap<String, Pending>>,
     /// Wire ID to journal operation.
     ops: Mutex<HashMap<String, u64>>,
