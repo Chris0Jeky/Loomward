@@ -37,6 +37,35 @@ const PRESERVED: u32 = FILE_ATTRIBUTE_READONLY
     | FILE_ATTRIBUTE_ARCHIVE
     | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED;
 
+/// A refused metadata class, retained inside `io::Error` for typed classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnsupportedAttribute {
+    pub attributes: u32,
+}
+impl std::fmt::Display for UnsupportedAttribute {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("unsupported_attribute")
+    }
+}
+impl std::error::Error for UnsupportedAttribute {}
+
+fn supported_attributes(attributes: u32) -> io::Result<()> {
+    let attributes = attributes
+        & (FILE_ATTRIBUTE_SYSTEM
+            | FILE_ATTRIBUTE_TEMPORARY
+            | FILE_ATTRIBUTE_COMPRESSED
+            | FILE_ATTRIBUTE_SPARSE_FILE
+            | FILE_ATTRIBUTE_ENCRYPTED
+            | FILE_ATTRIBUTE_INTEGRITY_STREAM);
+    if attributes != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            UnsupportedAttribute { attributes },
+        ));
+    }
+    Ok(())
+}
+
 fn refused(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
@@ -117,7 +146,7 @@ fn directory(file: &File) -> io::Result<()> {
     {
         return Err(refused("unsupported directory"));
     }
-    Ok(())
+    supported_attributes(current.attributes)
 }
 
 // FILE_DIRECTORY_FILE and FILE_OPEN_NO_RECALL are incompatible; validate directory
@@ -186,7 +215,7 @@ impl Destination {
     pub fn open(path: &Path, expected: &ObjectKey) -> io::Result<Self> {
         let pins = enumerate::root_handles(
             path,
-            FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
         )
         .map_err(source_error)?;
@@ -254,6 +283,7 @@ impl Destination {
     /// Create one new staging folder. Never adopt an existing name.
     pub fn stage(&self, name: &str) -> io::Result<Staging<'_>> {
         let name = component(name)?;
+        supported_attributes(identity::from_file(self.parent())?.attributes)?;
         let file = relative(
             self.parent(),
             &name,
@@ -303,7 +333,7 @@ impl Staging<'_> {
         self.recorded = identity::from_file(&file)?.object;
         Ok(())
     }
-    // Denying delete on the name-bound guard prevents a concurrent staging rename.
+    // LIST_DIRECTORY makes the deny-delete share effective; attributes alone do not.
     fn guard(&self) -> io::Result<File> {
         if self.published {
             return Err(refused("published staging is never cleaned or written"));
@@ -312,7 +342,7 @@ impl Staging<'_> {
         let guard = relative(
             self.destination.parent(),
             &self.name,
-            FILE_READ_ATTRIBUTES,
+            FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             false,
             0,
@@ -327,7 +357,7 @@ impl Staging<'_> {
             let file = relative(
                 pins.last().unwrap(),
                 &component(name)?,
-                FILE_READ_ATTRIBUTES,
+                FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
                 FILE_SHARE_READ | FILE_SHARE_WRITE,
                 false,
                 0,
@@ -365,6 +395,7 @@ impl Staging<'_> {
             true,
             FILE_NON_DIRECTORY_FILE,
         )?;
+        supported_attributes(identity::from_file(&file)?.attributes)?;
         Ok(StagedFile { file })
     }
     /// Reopen by recorded ID, check its current name binding, hash under a deny-write hold.
@@ -655,6 +686,7 @@ fn by_id(
     if enumerate::refused_attributes(current.attributes) {
         return Err(refused("unsupported staged attributes"));
     }
+    supported_attributes(current.attributes)?;
     Ok(file)
 }
 
@@ -668,6 +700,7 @@ pub struct BasicMetadata {
 impl BasicMetadata {
     fn read(file: &File) -> io::Result<Self> {
         let basic: FILE_BASIC_INFO = info(file, FileBasicInfo)?;
+        supported_attributes(basic.FileAttributes)?;
         Ok(Self {
             creation_time: basic.CreationTime,
             last_write_time: basic.LastWriteTime,
@@ -775,6 +808,7 @@ impl VerifiedFile {
             FILE_NON_DIRECTORY_FILE
                 | windows_sys::Wdk::Storage::FileSystem::FILE_NO_INTERMEDIATE_BUFFERING,
         )?;
+        supported_attributes(identity::from_file(&file)?.attributes)?;
         let (digest, size) = noncached_hash(&file, self.sector)?;
         Ok(VerifiedFile {
             file,
@@ -968,17 +1002,7 @@ impl Read for Source {
 }
 pub(crate) fn supported_file(file: &File) -> io::Result<()> {
     let current = identity::from_file(file)?;
-    if current.attributes
-        & (FILE_ATTRIBUTE_SYSTEM
-            | FILE_ATTRIBUTE_TEMPORARY
-            | FILE_ATTRIBUTE_COMPRESSED
-            | FILE_ATTRIBUTE_SPARSE_FILE
-            | FILE_ATTRIBUTE_ENCRYPTED
-            | FILE_ATTRIBUTE_INTEGRITY_STREAM)
-        != 0
-    {
-        return Err(refused("unsupported_attribute"));
-    }
+    supported_attributes(current.attributes)?;
     let mut ea = FILE_EA_INFORMATION::default();
     let mut status = IO_STATUS_BLOCK::default();
     let code = unsafe {

@@ -126,7 +126,8 @@ under the gitignored `.loomward/` directory, never in this public evidence.
   - `enumerate::tests::reopen_follows_identity_after_rename_and_rejects_changed_volume_or_root`
   The additional service failures are recorded below, not classified as #292.
 - `git diff --check`: PASS after the final source and evidence edits.
-- Hosted CI: not run. This is an uncommitted Sol peer handoff; no push or PR.
+- Initial implementation handoff: subsequently published as [PR #503](https://github.com/Chris0Jeky/Loomward/pull/503).
+  Hosted CI was not run by this Sol lane.
 
 ### Additional service failures, outside C2
 
@@ -162,6 +163,127 @@ the provider fixture remains a separate driver follow-up. Raw receipts are in
 `.loomward/c2-workspace-tests-serial.log`,
 `.loomward/c2-service-existing-binary-serial.log` and
 `.loomward/c2-service-provider-isolated.log`.
+
+## PR #503 fix round (2026-10-17)
+
+Applied to committed head `868d700`, in the same KRASPYON/NTFS laboratory.
+Changes remain uncommitted for the driver; this lane does not push or merge.
+
+### Reachability pin
+
+`duplicate_reader::tests::copy_primitives_are_unwired_outside_windows` walks the
+workspace, including `native/`. Only this crate's manifest may name
+`copy-primitives`, and Rust sources outside this crate must not mention
+`effects::` or `loomward_windows::effects`. Build outputs, dependency caches,
+Git internals and private laboratory state are excluded from the walk.
+
+Mutation proof: temporarily adding a `copy-primitives` comment to the root
+`Cargo.toml` made
+`cargo test -p loomward-windows --all-features copy_primitives_are_unwired_outside_windows -- --nocapture`
+fail **0 passed, 1 failed**, naming that manifest. Restoring its original bytes
+made the same command pass **1 passed, 0 failed**. The probe is not retained.
+
+### M1: effective directory rename guards
+
+Before the fix,
+`cargo test -p loomward-windows --all-features rename_is_blocked -- --nocapture`
+failed **0 passed, 3 failed**: another thread successfully renamed the staging
+folder while `guard()` was held, the destination parent while `Destination`
+was held, and a nested staged directory while its parent pin was held.
+
+The three opens now request `FILE_LIST_DIRECTORY` as well as attributes, and
+continue to omit `FILE_SHARE_DELETE`. All three regressions pass in the focused
+effects suite: the competing thread gets **32 (ERROR_SHARING_VIOLATION)**;
+dropping the relevant guard/pin permits the rename. No timing delay is used.
+This measures these three handles; it does not establish an ancestor-wide
+rename lock for attribute-only handles held by other modules.
+
+### M3: refuse inherited or subsequently changed attribute classes
+
+`FSCTL_SET_COMPRESSION` successfully set the compressed bit on the tests' own
+temporary directories and files on this volume. Before the fix,
+`cargo test -p loomward-windows --all-features compressed_ -- --nocapture`
+failed **0 passed, 4 failed**: a compressed destination parent permitted
+staging, a compressed staging root permitted child creation, a compressed
+staged file verified, and `BasicMetadata::read` masked away compression.
+
+Those four regressions now pass. The destination parent is checked before
+creating staging; the newly created staging directory, traversed staged
+directories, new files, ID-based reopens, stream verification and metadata
+reads check full attributes before returning success or applying the preserved
+mask. `UnsupportedAttribute` is a typed payload inside `io::Error`
+(`InvalidInput`, display code `unsupported_attribute`) carrying the refused
+bits. The same mask covers compressed, encrypted, integrity-stream, sparse,
+system and temporary attributes. The unit regression
+`unsupported_staged_attributes_have_a_typed_refusal` covers each flag and
+checks the downcastable payload, while preserved/normal/directory bits pass.
+Real encrypted, integrity-stream and sparse-object setup is **UNVERIFIED**;
+their attribute-classification seam is tested. Refused staging is retained;
+this adds no cleanup adoption or personal-file capability.
+
+`cargo test -p loomward-windows --all-features effects::tests -- --nocapture`:
+**32 passed, 0 failed** after both fixes, including all previous effects tests.
+Local red/green receipts are `.loomward/fix-reachability-{red,green}.log`,
+`.loomward/fix-rename-red.log`, `.loomward/fix-attributes-red.log` and
+`.loomward/fix-effects-green.log`.
+
+### Fix-round proving checks
+
+All commands below use the root `--manifest-path`, `CARGO_BUILD_JOBS=4` and
+`CARGO_TARGET_DIR=C:\lw\target\effects-c2`, as above.
+
+- `cargo fmt --all --check`: PASS.
+- `cargo check -p loomward-windows --features copy-primitives`: PASS,
+  **without** `fixtures` or `--all-features`.
+- `cargo clippy -p loomward-windows --all-targets --all-features -- -D warnings`:
+  PASS.
+- `cargo clippy -p loomward-windows --all-targets -- -D warnings`: PASS.
+- `cargo clippy --workspace --all-targets -- -D warnings`: PASS.
+- `cargo test -p loomward-windows --all-features`: **147 passed, 0 failed**
+  (139 library tests and 8 decoder integration tests). The previously recorded
+  #292 Windows failure did not reproduce on this head in this run.
+- `cargo test --workspace --no-fail-fast`: **1,124 passed, 2 failed, 2 existing
+  ignored**, exit 101, including integration and doc tests. The supplied five
+  #292 host failures did not reproduce. Failed targets were the catalogue and
+  service libraries, detailed below; the copy feature is not enabled in this
+  workspace run. Raw receipt: `.loomward/fix-test-workspace.log`.
+- One `gh-pulse.ps1 -Repo Chris0Jeky/Loomward -Numbers 503 -Json` snapshot:
+  PR #503 is non-draft, head `868d700`, CI rollup SUCCESS, no pending/failed
+  checks, two unresolved review threads. That hosted result covers the committed
+  head, **not these uncommitted fixes**; the driver owns push and thread closure.
+
+The workspace run reported an additional failure outside the supplied #292
+list: `writer::tests::end_run_checkpoint_does_not_wait_for_a_reader_and_restores_write_timeout`
+in unchanged `loomward-catalog/src/writer.rs:2395`. Its one-second
+`recv_timeout` returned `Timeout` rather than the `EndRun` receipt. The
+catalogue library target reported **54 passed, 1 failed**. This is not labelled
+a known baseline failure or a green workspace result. Catalogue code and its
+test deadlines are unchanged.
+
+One narrow replay using the exact already-built workspace binary:
+`C:/lw/target/effects-c2/debug/deps/loomward_catalog-a5f487d0e8a3d9a9.exe writer::tests::end_run_checkpoint_does_not_wait_for_a_reader_and_restores_write_timeout --exact --nocapture`
+passed **1 passed, 0 failed** (15.98 s total). The test and its one-second
+receipt deadline were not changed. This records a successful isolated replay;
+it does not erase the workspace failure or establish its root cause. Receipt:
+`.loomward/fix-catalog-isolated.log`.
+
+The service library reported **189 passed, 1 failed**:
+`inventory::tests::wrong_dataset_and_timed_out_providers_never_publish_fallback`
+at `src/inventory/tests.rs:166`, expected provider calls **1**, observed **0**.
+This matches the separately recorded initial implementation observation above:
+the request can expire before entering its slow provider. It is not one of the
+supplied #292 failures. Service code/tests remain unchanged; the provider fixture
+is still a driver follow-up, and the workspace run remains failed.
+
+Final `git diff --check`: PASS. The working tree contains only the reachability
+test, effects implementation/tests and this evidence update; no commit or push
+was made. `HUMAN_TODO.md` q-32/q-47 is unchanged and remains with the driver.
+
+The compression test uses Microsoft's documented
+[FSCTL_SET_COMPRESSION](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_set_compression)
+on test-owned objects only. Access and sharing constants follow
+[NtCreateFile](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntcreatefile);
+the rename outcomes above are host measurements.
 
 ## NOT verified and residual risk
 

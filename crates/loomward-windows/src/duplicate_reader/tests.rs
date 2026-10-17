@@ -118,6 +118,44 @@ fn content_reader_is_feature_gated_and_engine_only() {
 }
 
 #[test]
+fn copy_primitives_are_unwired_outside_windows() {
+    let windows = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace = windows.parent().unwrap().parent().unwrap();
+    fn check(path: &Path, windows: &Path) {
+        for entry in std::fs::read_dir(path).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                if !["target", ".git", ".loomward", "node_modules", "Resources"]
+                    .iter()
+                    .any(|name| path.ends_with(name))
+                {
+                    check(&path, windows);
+                }
+            } else if path.file_name().unwrap() == "Cargo.toml" {
+                if path != windows.join("Cargo.toml") {
+                    assert!(
+                        !std::fs::read_to_string(&path)
+                            .unwrap()
+                            .contains("copy-primitives"),
+                        "copy-primitives enabled outside windows: {}",
+                        path.display()
+                    );
+                }
+            } else if path.extension().is_some_and(|e| e == "rs") && !path.starts_with(windows) {
+                let text = std::fs::read_to_string(&path).unwrap();
+                assert!(
+                    !text.contains("effects::") && !text.contains("loomward_windows::effects"),
+                    "copy primitive reference outside windows: {}",
+                    path.display()
+                );
+            }
+        }
+    }
+    assert!(include_str!("../../Cargo.toml").contains("copy-primitives = [\"content-read\"]"));
+    check(workspace, windows);
+}
+
+#[test]
 fn core_hardlink_exclusions_make_coverage_partial() {
     let mut e = synthetic_entry(1, "1", 4);
     e.expected.link_count = 2;

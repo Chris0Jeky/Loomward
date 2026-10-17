@@ -9,6 +9,170 @@ fn lab() -> (tempfile::TempDir, Destination) {
 }
 
 #[test]
+fn staging_guard_rename_is_blocked() {
+    let (temp, destination) = lab();
+    let stage = destination.stage("staging").unwrap();
+    let guard = stage.guard().unwrap();
+    assert_rename_blocked(&temp.path().join("staging"));
+    drop(guard);
+    fs::rename(temp.path().join("staging"), temp.path().join("renamed")).unwrap();
+}
+
+#[test]
+fn destination_pin_rename_is_blocked() {
+    let temp = tempfile::tempdir().unwrap();
+    let parent = temp.path().join("parent");
+    fs::create_dir(&parent).unwrap();
+    let expected = identity::observe(&parent).unwrap().object;
+    let destination = Destination::open(&parent, &expected).unwrap();
+    assert_rename_blocked(&parent);
+    drop(destination);
+    fs::rename(&parent, temp.path().join("renamed")).unwrap();
+}
+
+#[test]
+fn nested_pin_rename_is_blocked() {
+    let (temp, destination) = lab();
+    let stage = destination.stage("staging").unwrap();
+    let child = stage.create_directory(&[], "child").unwrap();
+    let pins = stage.parents(&[("child", child)]).unwrap();
+    assert_rename_blocked(&temp.path().join("staging/child"));
+    drop(pins);
+    fs::rename(
+        temp.path().join("staging/child"),
+        temp.path().join("renamed"),
+    )
+    .unwrap();
+}
+
+fn assert_rename_blocked(from: &Path) {
+    let from = from.to_owned();
+    let to = from.with_file_name("renamed");
+    let result = std::thread::spawn(move || fs::rename(from, to))
+        .join()
+        .unwrap();
+    assert_eq!(result.unwrap_err().raw_os_error(), Some(32));
+}
+
+#[test]
+fn unsupported_staged_attributes_have_a_typed_refusal() {
+    for attribute in [
+        FILE_ATTRIBUTE_COMPRESSED,
+        FILE_ATTRIBUTE_ENCRYPTED,
+        FILE_ATTRIBUTE_INTEGRITY_STREAM,
+        FILE_ATTRIBUTE_SPARSE_FILE,
+        FILE_ATTRIBUTE_SYSTEM,
+        FILE_ATTRIBUTE_TEMPORARY,
+    ] {
+        let error = supported_attributes(attribute | FILE_ATTRIBUTE_ARCHIVE).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "unsupported_attribute");
+        assert_eq!(
+            error
+                .get_ref()
+                .unwrap()
+                .downcast_ref::<UnsupportedAttribute>()
+                .unwrap()
+                .attributes,
+            attribute
+        );
+    }
+    supported_attributes(PRESERVED | FILE_ATTRIBUTE_DIRECTORY).unwrap();
+    supported_attributes(FILE_ATTRIBUTE_NORMAL).unwrap();
+}
+
+#[test]
+fn compressed_destination_is_refused_before_staging() {
+    let (temp, destination) = lab();
+    compress_path(temp.path());
+    let error = destination
+        .stage("staging")
+        .err()
+        .expect("compressed parent accepted");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(error.to_string(), "unsupported_attribute");
+    assert!(!temp.path().join("staging").exists());
+}
+
+#[test]
+fn compressed_staged_directory_is_refused() {
+    let (temp, destination) = lab();
+    let stage = destination.stage("staging").unwrap();
+    compress_path(&temp.path().join("staging"));
+    let error = stage
+        .create_file(&[], "payload")
+        .err()
+        .expect("compressed staging accepted");
+    assert_eq!(error.to_string(), "unsupported_attribute");
+    assert!(!temp.path().join("staging/payload").exists());
+}
+
+#[test]
+fn compressed_staged_file_is_refused_by_verification() {
+    let (temp, destination) = lab();
+    let stage = destination.stage("staging").unwrap();
+    let file = stage.create_file(&[], "payload").unwrap();
+    let record = file.identity().unwrap();
+    file.write_and_flush(&mut &b"data"[..], 4).unwrap();
+    drop(file);
+    compress_path(&temp.path().join("staging/payload"));
+    let error = stage
+        .verify(&[], "payload", &record)
+        .err()
+        .expect("compressed file verified");
+    assert_eq!(error.to_string(), "unsupported_attribute");
+    assert_eq!(
+        fs::read(temp.path().join("staging/payload")).unwrap(),
+        b"data"
+    );
+}
+
+#[test]
+fn compressed_metadata_is_refused_before_masking() {
+    let (temp, destination) = lab();
+    let stage = destination.stage("staging").unwrap();
+    let file = stage.create_file(&[], "payload").unwrap();
+    compress_path(&temp.path().join("staging/payload"));
+    let error = BasicMetadata::read(&file.file).unwrap_err();
+    assert_eq!(error.to_string(), "unsupported_attribute");
+}
+
+fn compress_path(path: &Path) {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::System::{Ioctl::FSCTL_SET_COMPRESSION, IO::DeviceIoControl};
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .share_mode(SHARE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .unwrap();
+    let format: u16 = 1; // COMPRESSION_FORMAT_DEFAULT
+    let mut returned = 0;
+    assert_ne!(
+        unsafe {
+            DeviceIoControl(
+                file.as_raw_handle(),
+                FSCTL_SET_COMPRESSION,
+                ptr::from_ref(&format).cast(),
+                size_of::<u16>() as u32,
+                ptr::null_mut(),
+                0,
+                &mut returned,
+                ptr::null_mut(),
+            )
+        },
+        0,
+        "FSCTL_SET_COMPRESSION: {}",
+        io::Error::last_os_error()
+    );
+    assert_ne!(
+        identity::from_file(&file).unwrap().attributes & FILE_ATTRIBUTE_COMPRESSED,
+        0
+    );
+}
+
+#[test]
 fn create_new_and_publish_never_replace() {
     let (temp, destination) = lab();
     fs::write(temp.path().join("taken"), b"keep").unwrap();
