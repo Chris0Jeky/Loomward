@@ -67,6 +67,16 @@ it('parses needed files strictly and names the refused lines', () => {
   expect(parseRequired(Array.from({ length: 65 }, (_, i) => `f${i} ${'a'.repeat(64)}`).join('\n')).errors).toEqual(['At most 64 files per repository.']);
 });
 
+it('refuses names that are not relative: a root, a drive or a `..` segment', () => {
+  const hash = 'a'.repeat(64);
+  for (const name of ['/etc/shadow', '\\\\server\\share\\x', 'C:/Windows/x', 'C:x', 'fixture/../../secret', '../secret', '..', 'fixture\\..\\up']) {
+    const parsed = parseRequired(`${name} ${hash}`);
+    expect(parsed.required, name).toEqual([]);
+    expect(parsed.errors, name).toEqual(['Line 1: expected a relative name, a space and a 64-digit SHA-256.']);
+  }
+  expect(parseRequired(`..notes/a.txt ${hash}`)).toEqual({ required: [{ relative_name: '..notes/a.txt', version: `sha256:${hash}` }], errors: [] });
+});
+
 it('the mock forgets a record, refuses an unknown one and has no file dialog to import with', async () => {
   const c = new Client(createMockTransport());
   const forgot = await c.call('backups.forget', { evidence_id: 'be_2' });

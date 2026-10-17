@@ -87,6 +87,9 @@ export function coverage(e: BackupEvidence): string {
   return `${e.restore_coverage.length} of ${e.required_versions.length} needed versions covered by a restore`;
 }
 
+/** A needed name is relative: no root, no drive letter and no `..` segment, whichever separator it uses. */
+const relativeName = (name: string): boolean => !/^([\\/]|[A-Za-z]:)/.test(name) && !name.split(/[\\/]/).includes('..');
+
 /**
  * One needed file per line: `relative/name sha256` (the hash may carry a `sha256:` prefix).
  * Returns the lines it refused, by number, instead of guessing.
@@ -98,7 +101,7 @@ export function parseRequired(text: string): { required: RequiredVersion[]; erro
     const line = raw.trim();
     if (!line) return;
     const m = /^(.+?)\s+(?:sha256:)?([0-9a-fA-F]{64})$/.exec(line);
-    if (!m || [...m[1]!].length > 1024) {
+    if (!m || !relativeName(m[1]!) || [...m[1]!].length > 1024) {
       errors.push(`Line ${i + 1}: expected a relative name, a space and a 64-digit SHA-256.`);
       return;
     }
