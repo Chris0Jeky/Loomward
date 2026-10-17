@@ -49,7 +49,7 @@ describe('telemetry poller', () => {
       onSample: () => {}, onError: () => {}, intervalMs: 1000, backoffMs: [30000],
     });
     p.start();
-    p.kick(); p.kick(); // a busy poller ignores kicks while a call is in flight
+    p.kick(); p.kick(); // a busy poller never overlaps: kicks made in flight coalesce into one poll once it settles
     await vi.advanceTimersByTimeAsync(5000);
     expect(calls).toBe(1);
     release!();
@@ -60,6 +60,25 @@ describe('telemetry poller', () => {
     expect(calls).toBe(2);
     expect(maxInFlight).toBe(1);
     release!();
+    p.stop();
+  });
+
+  it('a kick made during a call polls again as soon as that call settles, not one interval later', async () => {
+    let calls = 0;
+    const settle: Array<() => void> = [];
+    const p = new Poller<number>({
+      call: () => new Promise<number>((resolve) => { calls++; settle.push(() => resolve(calls)); }),
+      onSample: () => {}, onError: () => {}, intervalMs: 1000, backoffMs: [30000],
+    });
+    p.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toBe(1);
+    p.kick(); // e.g. the process lens changed while a poll was in flight: its answer is already superseded
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toBe(1); // still never overlapped
+    settle[0]!();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toBe(2); // no 1 s wait for the next interval
     p.stop();
   });
 
