@@ -86,7 +86,10 @@
     if (!c || !v?.source_eligible) return;
     try {
       const { result } = await c.call('placement.candidates', { source_volume_id: v.volume_id, basis: 'largest_dirs', max_groups: 50, min_bytes: '0' });
-      if (mine === candTicket) cands = result;
+      if (mine === candTicket) {
+        assume = Object.fromEntries(Object.entries(assume).filter(([id]) => result.groups.some((g) => g.group_id === id)));
+        cands = result;
+      }
     } catch (e) {
       if (mine === candTicket) error = session.handle(e);
     }
@@ -145,6 +148,7 @@
       const { result } = await c.call('proposals.get', { proposal_id: id });
       if (mine !== savedTicket) return;
       if (volume(result.summary.source_volume_id)?.source_eligible) {
+        if (source !== result.summary.source_volume_id) assume = {};
         source = result.summary.source_volume_id;
         await loadCandidates();
       }

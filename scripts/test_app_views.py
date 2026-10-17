@@ -75,8 +75,10 @@ class FakeEngine:
         self.candidate_gate = None  # one (arrived, release) event pair
         self.tier_volumes: list[dict] | None = None
         self.candidate_sources: list[str] = []
+        self.placement_groups: dict[str, list[dict]] = {}
+        self.saved_source = 'vo_x'
         self.simulate_overrides: list = []
-        self.plan_mode = 'executable'  # 'executable' or 'malformed': how placement.simulate misbehaves
+        self.plan_mode = 'executable'  # 'executable', 'malformed', or a 'safe' nonexecutable reply
         self.slice_queue: list[tuple[float, str]] = []  # (delay, root name) per tree.slice call, then the default
         self.events: queue.Queue[dict] = queue.Queue()
         self.seq = 0
@@ -249,19 +251,20 @@ class FakeEngine:
                     'policy': {'watch_free_fraction': 0.2, 'pressure_free_fraction': 0.1, 'reserve_note': 'r', 'note': 'n'}}
         if cmd == 'placement.candidates':
             self.candidate_sources.append(p['source_volume_id'])
+            g = {'group_id': 'cg_a', 'node_id': 'nd_a', 'root_id': 'rt_a', 'name': 'group-a', 'source_bytes': '5000', 'destination_bytes': '5000', 'transfer_bytes': '5000', 'estimate_basis': 'allocated_entries',
+                 'estimated_relief_bytes': '5000', 'relief_basis': 'verified_unique_allocation', 'heat': None, 'heat_basis': 'unknown', 'newest_modified_at': None, 'pinned': False, 'active': False, 'protected': False, 'days_since_move': 30, 'coverage': 'complete'}
+            groups = self.placement_groups.get(p['source_volume_id'], [g])
             gate, self.candidate_gate = self.candidate_gate, None
             if gate:
                 gate[0].set()
-                if not gate[1].wait(9):
+                if not gate[1].wait(60):  # every user releases in finally; slow CI runners need the headroom
                     return ('deadline_exceeded', 'synthetic candidate gate expired')
-            g = {'group_id': 'cg_a', 'node_id': 'nd_a', 'root_id': 'rt_a', 'name': 'group-a', 'source_bytes': '5000', 'destination_bytes': '5000', 'transfer_bytes': '5000', 'estimate_basis': 'allocated_entries',
-                 'estimated_relief_bytes': '5000', 'relief_basis': 'verified_unique_allocation', 'heat': None, 'heat_basis': 'unknown', 'newest_modified_at': None, 'pinned': False, 'active': False, 'protected': False, 'days_since_move': 30, 'coverage': 'complete'}
-            return {'source_volume_id': 'vo_x', 'root_generations': [], 'groups': [g], 'excluded_volumes': [], 'note': 'n'}
+            return {'source_volume_id': p['source_volume_id'], 'root_generations': [], 'groups': groups, 'excluded_volumes': [], 'note': 'n'}
         if cmd == 'volumes.declare_tier':
             return {'volume': json.loads((ROOT / 'contracts/v3/examples/commands/volumes.declare_tier.result.json').read_text())['volume'], 'preference_recorded_at': '2026-10-01T00:00:00Z'}
         if cmd == 'proposals.get':
             detail = json.loads((ROOT / 'contracts/v3/examples/commands/proposals.get.result.json').read_text())
-            detail['summary']['source_volume_id'] = 'vo_x'
+            detail['summary']['source_volume_id'] = self.saved_source
             return detail
         if cmd == 'proposals.list':
             if self.fail_proposals:
@@ -277,6 +280,12 @@ class FakeEngine:
                     'assumptions': [], 'root_generations': [], 'proposal_id': None}
             if self.plan_mode == 'malformed':
                 plan['proposals'] = 'none'
+            elif self.plan_mode == 'safe':
+                allowed = {g['group_id'] for g in self.result({'command': 'placement.candidates', 'payload': p})['groups']}
+                if any(o['group_id'] not in allowed for o in p.get('overrides', [])):
+                    return ('invalid_request', 'duplicate_or_unknown_group_override')
+                plan['proposals'][0]['group_id'] = next(iter(allowed))
+                plan['proposals'][0]['executable'] = False
             return plan
         if cmd == 'search.query':
             text = p.get('text', '')
@@ -771,6 +780,73 @@ def check_tiers_source_eligibility(page: Page, engine: FakeEngine) -> None:
     ok(engine.simulate_overrides and engine.simulate_overrides[-1] == [],
        f'a source replaced on refresh sends no stale group overrides ({engine.simulate_overrides[-1:] if engine.simulate_overrides else None})')
     engine.tier_volumes = None
+
+
+def check_tiers_assumption_refresh(page: Page, engine: FakeEngine) -> None:
+    template = engine.result({'command': 'tiers.model'})['volumes'][0]
+    a = engine.result({'command': 'placement.candidates', 'payload': {'source_volume_id': 'vo_x'}})['groups'][0]
+    b = {**a, 'group_id': 'cg_b', 'node_id': 'nd_b', 'name': 'group-b'}
+    engine.tier_volumes = [template, {**template, 'volume_id': 'vo_other', 'display_name': 'Other'}]
+    engine.placement_groups = {'vo_x': [a, b], 'vo_other': [a]}
+    engine.saved_scenarios = True
+    engine.plan_mode = 'safe'
+    page.goto(f'{engine.base}/#token={TOKEN}')
+    page.evaluate("location.hash = '#/tiers'")
+    panel = page.locator('section[aria-labelledby="h-vol"]')
+
+    def simulate(expected):
+        engine.simulate_overrides.clear()
+        page.get_by_role('button', name='Simulate', exact=True).click()
+        expect(page.get_by_role('heading', name='Alternatives')).to_be_visible()
+        expect(page.get_by_role('heading', name='Placement plan', level=2)).to_be_visible()
+        ok(len(engine.simulate_overrides) == 3 and all(o == expected for o in engine.simulate_overrides),
+           f'Tiers sends only current assumptions and all simulations succeed: {expected}')
+
+    release = None
+    try:
+        page.get_by_label('Assumed heat for group-a').select_option('0.9')
+        page.get_by_label('Assumed heat for group-b').select_option('0.1')
+        engine.placement_groups['vo_x'] = [b]
+        declare_tier(page, engine, panel, '2')
+        expect(page.get_by_label('Assumed heat for group-a')).to_have_count(0)
+        expect(page.get_by_label('Assumed heat for group-b')).to_have_value('0.1')
+        simulate([{'group_id': 'cg_b', 'heat': 0.1}])
+        # A vanished group's assumption must not return if its ID reappears later.
+        engine.placement_groups['vo_x'] = [a, b]
+        declare_tier(page, engine, panel, '3')
+        expect(page.get_by_label('Assumed heat for group-a')).to_have_value('')
+        page.get_by_label('Assumed heat for group-a').select_option('0.9')
+        engine.saved_source = 'vo_other'
+        page.get_by_role('button', name=re.compile('Show saved scenario')).click()
+        expect(panel.get_by_role('button', name=re.compile('^Source volume'))).to_contain_text('Other')
+        expect(page.get_by_label('Assumed heat for group-a')).to_have_value('')
+        simulate([])  # Even an ID shared across sources must lose the old assumption.
+
+        # Release an older source's response after the new candidates have been installed.
+        arrived, release = threading.Event(), threading.Event()
+        engine.candidate_gate = (arrived, release)
+        page.get_by_role('button', name=re.compile(r'^Use as source\s*:\s*X:$')).click()
+        wait_until(page, arrived.is_set)
+        page.get_by_role('button', name=re.compile(r'^Use as source\s*:\s*Other$')).click()
+        expect(page.get_by_label('Assumed heat for group-a')).to_be_visible()
+        page.get_by_label('Assumed heat for group-a').select_option('0.5')
+        with page.expect_request_finished(lambda r: r.method == 'POST' and
+                                          r.post_data_json.get('command') == 'placement.candidates' and
+                                          r.post_data_json['payload']['source_volume_id'] == 'vo_x'):
+            release.set()
+        page.evaluate('() => new Promise(requestAnimationFrame)')
+        expect(page.get_by_label('Assumed heat for group-b')).to_have_count(0)
+        expect(page.get_by_label('Assumed heat for group-a')).to_have_value('0.5')
+        simulate([{'group_id': 'cg_a', 'heat': 0.5}])
+    finally:
+        if release:
+            release.set()
+        engine.placement_groups = {}
+        engine.tier_volumes = None
+        engine.saved_source = 'vo_x'
+        engine.saved_scenarios = False
+        engine.plan_mode = 'executable'
+
 
 def check_tiers(page: Page, base: str, shoot) -> None:
     page.goto(f'{base}/?transport=mock#/tiers')
@@ -1622,6 +1698,7 @@ def run_views(page: Page, base: str, shots: Path | None) -> None:
         check_explorer_reissued_ids(page, engine)
         check_tiers_loading_followups(page, engine)
         check_tiers_source_eligibility(page, engine)
+        check_tiers_assumption_refresh(page, engine)
         check_tiers_refused(page, engine)
         check_backups_import(page, engine)
         check_diagnostics_save(page, engine)
