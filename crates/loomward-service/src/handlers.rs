@@ -131,9 +131,10 @@ fn pin_backup(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     {
         use std::os::windows::fs::OpenOptionsExt;
         options
-            .access_mode(0x80)
+            // READ_DATA makes Windows enforce the share restriction; no content is read here.
+            .access_mode(0x81)
             .share_mode(3)
-            .custom_flags(0x00300000); // READ_ATTRIBUTES; no DELETE sharing; OPEN_REPARSE_POINT|OPEN_NO_RECALL
+            .custom_flags(0x00300000); // no DELETE sharing; OPEN_REPARSE_POINT|OPEN_NO_RECALL
     }
     let file = options.open(path)?;
     let meta = file.metadata()?;
@@ -143,7 +144,7 @@ fn pin_backup(path: &std::path::Path) -> std::io::Result<std::fs::File> {
         ));
     }
     #[cfg(windows)]
-    if loomward_windows::identity::observe(path)?.link_count != 1 {
+    if loomward_windows::linkcount::from_file(&file)? != 1 {
         return Err(std::io::Error::other("backup has aliases"));
     }
     #[cfg(unix)]
@@ -1407,6 +1408,43 @@ impl Inner {
 
 #[cfg(test)]
 mod scrub_copy_tests {
+
+    #[cfg(windows)]
+    #[test]
+    fn backup_pin_accepts_owned_files_and_refuses_aliases_without_an_elevation_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        let copy = dir.path().join("synthetic-copy.db");
+        std::fs::write(&copy, b"synthetic backup").unwrap();
+        let pin = super::pin_backup(&copy).unwrap();
+        assert!(
+            std::fs::remove_file(&copy).is_err(),
+            "pin must deny deletion"
+        );
+        assert!(std::fs::rename(&copy, dir.path().join("replacement.db")).is_err());
+        drop(pin);
+
+        let alias = dir.path().join("synthetic-alias.db");
+        std::fs::hard_link(&copy, &alias).unwrap();
+        assert!(super::pin_backup(&copy).is_err());
+        assert!(super::pin_backup(&alias).is_err());
+        std::fs::remove_file(&alias).unwrap();
+        drop(super::pin_backup(&copy).unwrap());
+
+        let directory = dir.path().join("synthetic-directory");
+        std::fs::create_dir(&directory).unwrap();
+        assert!(super::pin_backup(&directory).is_err());
+        let junction = dir.path().join("synthetic-junction");
+        let made = std::process::Command::new("cmd.exe")
+            .args(["/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&directory)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "{made:?}");
+        assert!(super::pin_backup(&junction).is_err());
+        std::fs::remove_dir(&junction).unwrap();
+        std::fs::remove_file(&copy).unwrap();
+    }
 
     /// Explicit resource probe, kept out of the ordinary suite's I/O budget.
     #[test]
