@@ -699,9 +699,9 @@ impl Inner {
                     "gpu_available": f,
                     // Every session may save its redacted bundle where a native dialog exists.
                     "diagnostics_save": ctx.dialogs.is_some(),
-                    // docs/46 F1 is the contract only; the lane that serves the federated
-                    // fields (F2 to F4) flips this, and the guard in `search` goes with it.
-                    "federated_search": f,
+                    // The lane that serves the federated fields (F2 to F4) flips this constant,
+                    // and the guard in `search` goes with it.
+                    "federated_search": crate::FEDERATED_SEARCH,
                 },
                 "limits": {
                     "max_request_bytes": limits::MAX_REQUEST_BYTES,

@@ -43,7 +43,14 @@ mod sink;
 mod tests;
 
 pub use clients::CLIENT_FIELDS;
-use loomward_catalog::{Catalog, NodeKey, RootObservation, WriteCommand, WriteReply};
+use loomward_catalog::{
+    Catalog, CatalogOptions, NodeKey, RootObservation, WriteCommand, WriteReply,
+};
+
+/// `features.federated_search`, and with it the catalogue's ranked token index (#520): the lane
+/// that serves ranked search flips this one constant, so the open-time backfill never runs for a
+/// store the owner has not opted into. docs/46 F1 is the contract only.
+pub(crate) const FEDERATED_SEARCH: bool = false;
 use loomward_engine::{Engine, EngineConfig};
 use loomward_protocol::{
     CallContext, Command, DatasetClass, Detail, ErrorBody, ErrorCode, EventName, EventStream,
@@ -253,8 +260,15 @@ impl Service {
             .state_dir
             .canonicalize()
             .map_err(|_| "cannot resolve the state directory".to_string())?;
-        let catalog = Catalog::open(&state_dir, class_name(config.dataset))
-            .map_err(|e| format!("catalogue refused to open: {e}"))?;
+        // The ranked token index exists only where ranked search is served (#520).
+        let catalog = Catalog::open_with(
+            &state_dir,
+            class_name(config.dataset),
+            &CatalogOptions {
+                ranked_index: FEDERATED_SEARCH,
+            },
+        )
+        .map_err(|e| format!("catalogue refused to open: {e}"))?;
         // A root's first full scan publishes once, atomically, with its file indexes built once (#148).
         catalog.writer().set_bulk_first_scan(true);
         let engine = Engine::open(EngineConfig::new(state_dir.clone(), config.dataset))

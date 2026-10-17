@@ -22,7 +22,11 @@ mod analyze;
 mod rank;
 mod tokens;
 pub use rank::{RankOptions, ALL_TIERS, TIER_CONTEXT, TIER_TOKEN, TIER_TRIGRAM};
-pub(crate) use tokens::{drain_tokens, enabled as token_index_enabled};
+pub(crate) use tokens::{
+    backfill_round, backfilling, drain_tokens, enabled as token_index_enabled,
+    index_new as index_new_tokens, restore_insert_triggers, start_backfill,
+    suspend_insert_triggers,
+};
 
 /// A file's index key is its id plus this; a folder's is its id.
 pub(crate) const FILE_KEY: i64 = 1 << 48;

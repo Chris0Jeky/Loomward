@@ -3626,6 +3626,16 @@ fn f3_search_reports_freshness_without_enabling_federated_search() {
     serde_json::from_value::<SearchFreshness>(freshness.clone()).unwrap();
     let (hello, _) = ok("session.hello", call(&lab.svc, "session.hello", json!({})));
     assert_eq!(hello["features"]["federated_search"], false);
+    // The ranked token index follows the same switch (#520): no index, no backfill, until it flips.
+    let ranked: bool = rusqlite::Connection::open(lab._tmp.path().join("state").join("catalog.db"))
+        .unwrap()
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name IN ('search_token','search_dirty','search_backfill'))",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(ranked, crate::FEDERATED_SEARCH);
 }
 
 #[cfg(windows)]
