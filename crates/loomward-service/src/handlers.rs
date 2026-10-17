@@ -833,6 +833,10 @@ impl Inner {
             .map_err(sql_error)?
             .ok_or_else(|| fail(ErrorCode::NotFound, "unknown grant"))?;
         if state != "active" {
+            // A prior revoke may have committed its grant but failed feature cleanup.
+            self.engine
+                .learning_redact_revoked()
+                .map_err(ErrorBody::from)?;
             let at = revoked_at.ok_or_else(|| {
                 fail(
                     ErrorCode::PermissionDenied,
@@ -864,12 +868,15 @@ impl Inner {
                 .engine
                 .scan_writer_fence(&loomward_engine::scan::RootKey::Grant(grant), &id);
         }
-        // Durable already; a failed sweep is repeated at the next refit and at startup.
-        let _ = self.engine.learning_redact_revoked();
+        let redaction = self
+            .engine
+            .learning_redact_revoked()
+            .map_err(ErrorBody::from);
         let revs = self.revisions()?;
         if let Ok(list) = self.root_list(None) {
             self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));
         }
+        redaction?;
         Ok((ts_ns(at), revs))
     }
 
@@ -967,7 +974,12 @@ impl Inner {
         let _ = self
             .engine
             .scan_writer_fence(&loomward_engine::scan::RootKey::Grant(grant), id);
-        let _ = self.engine.learning_redact_revoked();
+        // This callback has no reply channel; model reads retry cleanup and fail if it still fails.
+        if self.engine.learning_redact_revoked().is_err() {
+            eprintln!(
+                "learning redaction failed after root identity changed; advice reads will retry"
+            );
+        }
         if let (Ok(revs), Ok(list)) = (self.revisions(), self.root_list(None)) {
             self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));
         }
