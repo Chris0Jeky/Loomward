@@ -41,7 +41,7 @@ G9 proven-restore runs have not happened. MCP has no copy command. HTTP still re
 | Attach (#506) | by journaled file ID with the original or planned creation time only; a different object under the journaled name is refused; publish refuses the staging name or a case-only variant |
 
 Service level (`cargo test -p loomward-service copy_tests`): preview, approve over HTTP and start on a
-scanned lab root, committed, C1 equal, status survives a restart; start without approval, a reused
+scanned lab root, committed with names and bytes equal (C1 agreement is the windows suite above), status survives a restart; start without approval, a reused
 approval, a wrong digest, and a source changed after approval are refused; abandon of a `blocked`
 (`source_in_use`) run applies both Q1 settings. Personal sessions: every copy command gated on both
 adapters, the HTTP approval refused as `copy_personal_approval_http`.

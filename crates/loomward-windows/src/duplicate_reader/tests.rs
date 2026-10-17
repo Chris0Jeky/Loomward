@@ -118,10 +118,16 @@ fn content_reader_is_feature_gated_and_engine_only() {
 }
 
 #[test]
-fn copy_primitives_are_unwired_outside_windows() {
+fn copy_primitives_are_wired_only_into_the_service_copy_module() {
+    // docs/47 C5: the one consumer is loomward-service (Cargo.toml and src/copy.rs), which serves
+    // synthetic sessions on lab roots only. Nothing else may enable or reference the primitives.
+    let allowed = |path: &Path| {
+        path.ends_with("crates/loomward-service/Cargo.toml")
+            || path.ends_with("crates/loomward-service/src/copy.rs")
+    };
     let windows = Path::new(env!("CARGO_MANIFEST_DIR"));
     let workspace = windows.parent().unwrap().parent().unwrap();
-    fn check(path: &Path, windows: &Path) {
+    fn check(path: &Path, windows: &Path, allowed: &dyn Fn(&Path) -> bool) {
         for entry in std::fs::read_dir(path).unwrap() {
             let path = entry.unwrap().path();
             if path.is_dir() {
@@ -129,10 +135,10 @@ fn copy_primitives_are_unwired_outside_windows() {
                     .iter()
                     .any(|name| path.ends_with(name))
                 {
-                    check(&path, windows);
+                    check(&path, windows, allowed);
                 }
             } else if path.file_name().unwrap() == "Cargo.toml" {
-                if path != windows.join("Cargo.toml") {
+                if path != windows.join("Cargo.toml") && !allowed(&path) {
                     assert!(
                         !std::fs::read_to_string(&path)
                             .unwrap()
@@ -141,7 +147,10 @@ fn copy_primitives_are_unwired_outside_windows() {
                         path.display()
                     );
                 }
-            } else if path.extension().is_some_and(|e| e == "rs") && !path.starts_with(windows) {
+            } else if path.extension().is_some_and(|e| e == "rs")
+                && !path.starts_with(windows)
+                && !allowed(&path)
+            {
                 let text = std::fs::read_to_string(&path).unwrap();
                 assert!(
                     !text.contains("effects::") && !text.contains("loomward_windows::effects"),
@@ -152,7 +161,12 @@ fn copy_primitives_are_unwired_outside_windows() {
         }
     }
     assert!(include_str!("../../Cargo.toml").contains("copy-primitives = [\"content-read\"]"));
-    check(workspace, windows);
+    check(workspace, windows, &allowed);
+    assert!(
+        std::fs::read_to_string(workspace.join("crates/loomward-service/Cargo.toml"))
+            .unwrap()
+            .contains("features = [\"copy-primitives\"]")
+    );
 }
 
 #[test]

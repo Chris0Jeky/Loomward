@@ -117,25 +117,28 @@ mod lab_copy {
         .0
     }
 
-    fn c1(p: &Path) -> loomward_operations::tree::Tree {
-        use loomward_windows::enumerate::{DirSource, NativeSource};
-        let (_, expected) = NativeSource::default().open_root(p).unwrap();
-        loomward_windows::duplicate_reader::read_tree(
-            p,
-            &expected,
-            loomward_windows::duplicate_reader::Budget {
-                bytes: 1 << 20,
-                time: Duration::from_secs(30),
-            },
-            1000,
-            Default::default(),
-        )
-        .unwrap()
-        .0
+    /// Relative names and bytes under `p`. The C1 verifier's agreement is proven in the windows lab
+    /// suite; the content reader stays engine-only here (`content_reader_is_feature_gated_and_engine_only`).
+    fn contents(p: &Path) -> std::collections::BTreeMap<PathBuf, Option<Vec<u8>>> {
+        let mut out = std::collections::BTreeMap::new();
+        let mut pending = vec![p.to_path_buf()];
+        while let Some(dir) = pending.pop() {
+            for e in std::fs::read_dir(&dir).unwrap() {
+                let path = e.unwrap().path();
+                let key = path.strip_prefix(p).unwrap().to_path_buf();
+                if path.is_dir() {
+                    pending.push(path);
+                    out.insert(key, None);
+                } else {
+                    out.insert(key, Some(std::fs::read(&path).unwrap()));
+                }
+            }
+        }
+        out
     }
 
     #[test]
-    fn synthetic_lab_copy_previews_approves_over_http_commits_and_c1_agrees() {
+    fn synthetic_lab_copy_previews_approves_over_http_and_commits() {
         let Some((lab, a, b)) = scanned() else { return };
         let svc = &lab.svc;
         let p = preview(svc, &a, &b);
@@ -159,12 +162,10 @@ mod lab_copy {
         // A started operation never starts again, approved or not.
         let e = err(call(svc, "copy.start", consent));
         assert_eq!(reason(&e), Some("copy_already_started"));
-        // The receipt agrees with the independent C1 verifier.
-        let report = loomward_operations::tree::compare(
-            &c1(&lab.path.join("a")),
-            &c1(&lab.path.join("b").join("a")),
+        assert_eq!(
+            contents(&lab.path.join("a")),
+            contents(&lab.path.join("b").join("a"))
         );
-        assert!(report.equal(), "{report:#?}");
         // The journal and the wire ID survive a restart; recovery leaves a committed copy alone.
         let state = lab.path.parent().unwrap().join("state");
         let Lab {
