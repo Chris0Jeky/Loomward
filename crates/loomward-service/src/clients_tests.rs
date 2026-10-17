@@ -39,7 +39,7 @@ fn root(svc: &Service, name: &str, id: u8, files: Option<&[(&str, u64)]>) -> Roo
         .call(WriteCommand::RegisterRoot(RootObservation {
             volume_key: "fixture".into(),
             display_name: name.into(),
-            display_path: format!("Synthetic {name}"),
+            display_path: format!(r"Synthetic Parent\Synthetic Owner\{name}"),
             root_file_id: Some(vec![id; 16]),
             filesystem: Some("NTFS".into()),
             origin: "fixture".into(),
@@ -600,4 +600,47 @@ fn a_revocation_between_list_and_explain_refuses_the_explain_and_the_next_page()
     assert_eq!(page["hits"], json!([]));
     assert_eq!(page["roots"], json!([]));
     assert_eq!(err(explain()).code, ErrorCode::NotFound);
+}
+
+/// A client's paths start at the granted root's own name: never the owner's absolute path above it.
+#[test]
+fn a_client_path_starts_at_the_granted_root_and_the_owner_keeps_the_absolute_one() {
+    let tmp = temp_root();
+    let svc = open(tmp.path());
+    let alpha = root(&svc, "Alpha", 1, Some(ALPHA));
+    svc.grant_client("ask:local", &[alpha], &["path"], None)
+        .unwrap();
+    let list = ok(as_client(
+        &svc,
+        "ask:local",
+        "search.query",
+        search("outline", 1, Value::Null),
+    ));
+    assert_eq!(
+        list["hits"][0]["path"]["text"],
+        json!(r"report drafts\report outline.txt")
+    );
+    let node = list["hits"][0]["row"]["node_id"].clone();
+    let client = ok(as_client(
+        &svc,
+        "ask:local",
+        "node.inspect",
+        json!({"node_id": node}),
+    ));
+    assert_eq!(
+        client["display_path"]["text"],
+        json!(r"Alpha\report drafts\report outline.txt")
+    );
+    for page in [&list, &client] {
+        let text = page.to_string();
+        assert!(
+            !text.contains("Synthetic Parent") && !text.contains("Synthetic Owner"),
+            "{text}"
+        );
+    }
+    let owner = ok(as_owner(&svc, "node.inspect", json!({"node_id": node})));
+    assert_eq!(
+        owner["display_path"]["text"],
+        json!(r"Synthetic Parent\Synthetic Owner\Alpha\report drafts\report outline.txt")
+    );
 }

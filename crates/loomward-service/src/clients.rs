@@ -254,14 +254,27 @@ impl Inner {
     ) -> Handled {
         // The root is checked again on the read itself: the row may have moved in between.
         self.node_read(req, work, |reader, key| {
-            reader.inspect(key).map(|d| {
+            let mut d = reader.inspect(key)?;
+            // The owner's display path is the grant's absolute path; a client's starts at the
+            // granted root's own name, as search's paths do, never at the folders above it.
+            let path = reader.path(key)?;
+            let text = path
+                .ancestors
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>()
+                .join("\\");
+            // Bounded as every display path is (1,024 characters).
+            d.display_path.truncated |= path.truncated || text.chars().count() > 1024;
+            d.display_path.text = text.chars().take(1024).collect();
+            Ok(
                 if bare_row(&d.root_id, "rt_").is_some_and(|r| grant.roots.contains(&r)) {
                     encode(&d)
                 } else {
                     // As an unknown node: nothing says the node exists.
                     Err(fail(ErrorCode::NotFound, "unknown node"))
-                }
-            })
+                },
+            )
         })
     }
 }
