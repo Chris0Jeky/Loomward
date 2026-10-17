@@ -1091,12 +1091,13 @@
       "required": ["state", "at"],
       "properties": {
         "state": { "enum": ["live", "caught_up", "stale", "everything_live", "verified", "semantic_stale"], "$comment": "docs/46 section 7: live (watched now), caught_up (journal catch-up at at), stale (since at), everything_live (Everything's own journal, not yet verified), verified (checked natively at at), semantic_stale (the name changed after embedding)." },
-        "at": { "$ref": "#/$defs/NullableTimestamp", "$comment": "Required for caught_up, stale and verified; null for the other states." }
+        "at": { "$ref": "#/$defs/NullableTimestamp", "$comment": "Required for caught_up, stale and verified; null for the other states." },
+        "reason": { "$ref": "#/$defs/UnknownReason", "$comment": "Optional fixed service token explaining stale coverage, e.g. watch_restarting." }
       },
       "allOf": [{
-        "if": { "additionalProperties": false, "properties": { "state": { "enum": ["caught_up", "stale", "verified"] }, "at": true } },
-        "then": { "additionalProperties": false, "properties": { "state": true, "at": { "$ref": "#/$defs/Timestamp" } } },
-        "else": { "additionalProperties": false, "properties": { "state": true, "at": { "type": "null" } } }
+        "if": { "additionalProperties": false, "properties": { "state": { "enum": ["caught_up", "stale", "verified"] }, "at": true, "reason": true } },
+        "then": { "additionalProperties": false, "properties": { "state": true, "reason": true, "at": { "$ref": "#/$defs/Timestamp" } } },
+        "else": { "additionalProperties": false, "properties": { "state": true, "reason": true, "at": { "type": "null" } } }
       }]
     },
     "SearchUnverifiedHit": {

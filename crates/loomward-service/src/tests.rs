@@ -44,6 +44,8 @@ pub(crate) struct Hooks {
     pub fail_explicit_retry: std::sync::atomic::AtomicBool,
     #[cfg(windows)]
     pub fail_automatic_start: std::sync::atomic::AtomicBool,
+    #[cfg(windows)]
+    pub fail_watch_start: std::sync::atomic::AtomicBool,
 }
 
 /// What a personal space read answers in tests: wait on an explicit gate, or report fixed space.
@@ -3302,15 +3304,15 @@ impl Gate {
 /// A registered, granted lab root filled with a small synthetic tree:
 /// `top.bin` (100), `a/{1,2,3}.bin` (10, 20, 30), `a/deep/x.bin` (5), and an empty `b`.
 #[cfg(windows)]
-struct Lab {
+pub(crate) struct Lab {
     _tmp: tempfile::TempDir,
-    path: std::path::PathBuf,
-    svc: Service,
-    root: String,
+    pub(crate) path: std::path::PathBuf,
+    pub(crate) svc: Service,
+    pub(crate) root: String,
 }
 
 #[cfg(windows)]
-fn lab() -> Option<Lab> {
+pub(crate) fn lab() -> Option<Lab> {
     if loomward_windows::enumerate::running_elevated() {
         eprintln!("skipped: elevated token; the native scan refuses elevation (invariant 2)");
         return None;
@@ -3399,7 +3401,7 @@ fn walk(dir: &Path) -> (u64, u64, u64) {
 }
 
 #[cfg(windows)]
-fn start(svc: &Service, root: &str, mode: &str) -> String {
+pub(crate) fn start(svc: &Service, root: &str, mode: &str) -> String {
     let (job, _) = ok(
         "scan.start",
         call(svc, "scan.start", json!({"root_id": root, "mode": mode})),
@@ -3408,7 +3410,7 @@ fn start(svc: &Service, root: &str, mode: &str) -> String {
 }
 
 #[cfg(windows)]
-fn settle(svc: &Service, job: &str) -> Payload {
+pub(crate) fn settle(svc: &Service, job: &str) -> Payload {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let (j, _) = ok("jobs.get", call(svc, "jobs.get", json!({"job_id": job})));
