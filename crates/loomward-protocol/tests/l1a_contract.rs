@@ -656,3 +656,127 @@ fn nesting_beyond_the_parser_bound_is_refused_not_overflowed() {
         ErrorCode::InvalidRequest
     );
 }
+
+/// Muse finding (protocol-w2): a node may not be both added and removed in one update, since the
+/// result would depend on operation order (semantics.md, Collections). The request path must refuse it.
+#[test]
+fn collection_adds_and_removes_must_be_disjoint() {
+    let overlap = br#"{"protocol":"loomward/3","request_id":"r_1","command":"collections.update_members","payload":{"collection_id":"co_a","add":["nd_1","nd_2"],"remove":["nd_2"]}}"#;
+    assert_eq!(rejected(overlap).error.code, ErrorCode::InvalidRequest);
+    let disjoint = br#"{"protocol":"loomward/3","request_id":"r_1","command":"collections.update_members","payload":{"collection_id":"co_a","add":["nd_1"],"remove":["nd_2"]}}"#;
+    assert!(RequestEnvelope::from_slice(disjoint).is_ok());
+}
+
+fn duplicate_report(entry_count: usize, groups: Value, links: Value, skipped: Value) -> Value {
+    let entries: Vec<Value> = (0..entry_count)
+        .map(|i| json!({"relative_path": format!("f{i}.txt"), "logical_bytes": "4"}))
+        .collect();
+    json!({
+        "entries": entries,
+        "groups": groups,
+        "links": links,
+        "links_not_compared": 0,
+        "skipped": skipped,
+        "bytes_read": "8",
+        "partial": false,
+        "truncated": false,
+        "stop": null
+    })
+}
+
+/// Muse finding (protocol-w2): group, link and skipped indices refer to `entries` (semantics.md,
+/// Duplicate inspection), so an index at or past `entries.len()` must not validate.
+#[test]
+fn duplicate_report_indices_must_refer_to_entries() {
+    let ok = duplicate_report(
+        3,
+        json!([[0, 2]]),
+        json!([[1]]),
+        json!([{"entry": 2, "reason": "changed_during_read"}]),
+    );
+    assert!(serde_json::from_value::<DuplicateReport>(ok).is_ok());
+    for (name, report) in [
+        (
+            "group past entries",
+            duplicate_report(2, json!([[0, 2]]), json!([]), json!([])),
+        ),
+        (
+            "link past entries",
+            duplicate_report(2, json!([]), json!([[1, 5]]), json!([])),
+        ),
+        (
+            "skipped past entries",
+            duplicate_report(
+                2,
+                json!([]),
+                json!([]),
+                json!([{"entry": 2, "reason": "x"}]),
+            ),
+        ),
+        (
+            "indices with no entries",
+            duplicate_report(0, json!([[0, 1]]), json!([]), json!([])),
+        ),
+    ] {
+        assert!(
+            serde_json::from_value::<DuplicateReport>(report).is_err(),
+            "{name} must be refused"
+        );
+    }
+}
+
+fn tree_slice_example() -> Value {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../contracts/v3/examples/commands/tree.slice.result.json"
+    );
+    serde_json::from_str(&std::fs::read_to_string(path).expect("tree.slice.result.json"))
+        .expect("valid JSON")
+}
+
+/// Muse finding (protocol-w2): SliceNode.parent is null only for the anchor at index 0, and parents
+/// always precede children (contracts/v3 $comment; the DTO doc comment). A dangling or forward
+/// parent index must not validate.
+#[test]
+fn tree_slice_parents_precede_children_and_only_the_anchor_has_none() {
+    let valid = tree_slice_example();
+    assert!(serde_json::from_value::<TreeSlice>(valid.clone()).is_ok());
+    let with_parent = |index: usize, parent: Value| {
+        let mut v = valid.clone();
+        v["nodes"][index]["parent"] = parent;
+        v
+    };
+    for (name, slice) in [
+        ("anchor with a parent", with_parent(0, json!(0))),
+        ("child without a parent", with_parent(1, Value::Null)),
+        ("parent is a later node", with_parent(1, json!(2))),
+        ("parent is itself", with_parent(2, json!(2))),
+    ] {
+        assert!(
+            serde_json::from_value::<TreeSlice>(slice).is_err(),
+            "{name} must be refused"
+        );
+    }
+}
+
+/// Muse finding (protocol-w2): the response path collapsed duplicate members silently while the
+/// request path refuses them. A response must fail closed the same way.
+#[test]
+fn duplicate_json_members_are_refused_in_responses_too() {
+    let meta = r#""meta":{"served_at":"2026-10-09T12:00:00Z","elapsed_ms":3,"dataset_class":"synthetic","budget_hit":false,"catalog_rev":null,"state_rev":null}"#;
+    let dup_flag = format!(
+        r#"{{"protocol":"loomward/3","request_id":"r_1","ok":true,"ok":false,"result":{{}},{meta}}}"#
+    );
+    let dup_result = format!(
+        r#"{{"protocol":"loomward/3","request_id":"r_1","ok":true,"result":{{"a":1,"a":2}},{meta}}}"#
+    );
+    let clean = format!(
+        r#"{{"protocol":"loomward/3","request_id":"r_1","ok":true,"result":{{"a":1}},{meta}}}"#
+    );
+    for body in [dup_flag, dup_result] {
+        let err = serde_json::from_slice::<ResponseEnvelope>(body.as_bytes())
+            .expect_err("a duplicate member must fail");
+        assert!(err.to_string().contains("duplicate"), "{err}");
+    }
+    assert!(serde_json::from_slice::<ResponseEnvelope>(clean.as_bytes()).is_ok());
+}

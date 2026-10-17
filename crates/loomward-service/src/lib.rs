@@ -626,7 +626,16 @@ impl ViewService for Service {
                     None,
                 );
             }
-            match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            // Tests hold the receiver here and run its clock ahead, so a read whose worker is
+            // parked inside a provider expires exactly there instead of racing a short deadline.
+            #[cfg(test)]
+            let now = {
+                self.inner.hooks.gate(command, "read_wait");
+                Instant::now() + *self.inner.hooks.read_ahead.lock().unwrap()
+            };
+            #[cfg(not(test))]
+            let now = Instant::now();
+            match rx.recv_timeout(deadline.saturating_duration_since(now)) {
                 Ok(mut r) => {
                     if let ResponseEnvelope::Ok(ref mut response) = r {
                         if let Some(position) = metadata_cursor

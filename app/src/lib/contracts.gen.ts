@@ -93,7 +93,7 @@ export type Basis = "logical" | "allocated";
 export type CoverageState = "complete" | "partial" | "stale" | "unscanned" | "denied" | "excluded" | "cancelled" | "unknown";
 
 /** Default pending the LW-101 spike: file_id_extd_directory_info (ADR-V3-05). */
-export type EnumerationStrategy = "file_id_extd_directory_info" | "nt_query_directory_file_ex" | "find_first_file_ex_large_fetch" | "std_read_dir";
+export type EnumerationStrategy = "file_id_extd_directory_info" | "nt_query_directory_file_ex" | "find_first_file_ex_large_fetch" | "std_read_dir" | "file_id_both_directory_info";
 
 export type ExtFamily = "document" | "spreadsheet" | "presentation" | "image" | "video" | "audio" | "archive" | "code" | "data" | "model" | "executable" | "system" | "font" | "other" | "none";
 

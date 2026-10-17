@@ -12,6 +12,8 @@ fixtures = []
 content-read = []
 # Capped shortcut bytes: only loomward-shell enables this in the workspace.
 shortcut-read = []
+# Unwired copy laboratory primitives; no service, transport or desktop enables this.
+copy-primitives = ["content-read"]
 
 [dependencies]
 loomward-operations = { path = "../loomward-operations" }
@@ -23,6 +25,7 @@ sha2.workspace = true
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_SystemServices", "Win32_System_WindowsProgramming", "Win32_Security", "Win32_System_Threading", "Wdk_Storage_FileSystem", "Wdk_Foundation", "Win32_System_Pipes"] }
 
 [dev-dependencies]
+proptest.workspace = true
 tempfile.workspace = true
 
 [[bin]]

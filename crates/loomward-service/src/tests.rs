@@ -29,6 +29,8 @@ pub(crate) struct Hooks {
     pub opened: std::sync::Condvar,
     /// How far ahead of the wall clock the collection page loop reads time (`Inner::past`).
     pub skew: Mutex<Duration>,
+    /// How far ahead of the wall clock a read's receiver reads time once it starts waiting.
+    pub read_ahead: Mutex<Duration>,
     /// (profile, profiles directory) for the scan-time fence instead of the OS folders (#312).
     pub profile: Mutex<Option<(std::path::PathBuf, std::path::PathBuf)>>,
     /// #219: the filesystem name grant-time probes observe instead of the volume's.
@@ -1420,10 +1422,13 @@ fn hardening_grant_checks_the_registered_digest_before_writes() {
     assert!(svc.inner.grant(&root, "cli_flag", false).is_ok());
 }
 
+/// Requests carry the protocol maximum deadline: a test that pins a deadline sets its own, and the
+/// 2 to 5 s defaults turned every handler into a race on a loaded host (#320).
 fn request(command: &str, payload: Value) -> RequestEnvelope {
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     serde_json::from_value(json!({
-        "protocol": "loomward/3", "request_id": format!("r{n}"), "command": command, "payload": payload
+        "protocol": "loomward/3", "request_id": format!("r{n}"), "command": command, "payload": payload,
+        "deadline_ms": 60_000
     }))
     .unwrap()
 }
@@ -4391,3 +4396,5 @@ mod diagnostics_tests;
 #[cfg(test)]
 #[path = "copy_tests.rs"]
 mod copy_tests;
+#[path = "gap_tests.rs"]
+mod gap_tests;

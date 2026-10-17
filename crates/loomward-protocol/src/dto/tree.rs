@@ -210,7 +210,32 @@ pub struct TreeSlice {
     pub aggregate_state: TreeSliceAggregateState,
     pub ordering: TreeSliceOrdering,
     pub truncated: bool,
+    #[serde(deserialize_with = "deserialize_slice_nodes")]
     pub nodes: BoundedVec<SliceNode, 1, 6000>,
+}
+
+/// SliceNode.parent is null only for the anchor at index 0, and every other node names an earlier
+/// index: parents always precede children (contracts/v3 `SliceNode.parent`). A single node cannot
+/// check this, so the rule is applied to the whole array as it is read.
+fn deserialize_slice_nodes<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BoundedVec<SliceNode, 1, 6000>, D::Error> {
+    let nodes = BoundedVec::<SliceNode, 1, 6000>::deserialize(deserializer)?;
+    let parents_precede_children =
+        nodes
+            .iter()
+            .enumerate()
+            .all(|(index, node)| match node.parent {
+                None => index == 0,
+                Some(parent) => index != 0 && (parent.get() as usize) < index,
+            });
+    if parents_precede_children {
+        Ok(nodes)
+    } else {
+        Err(serde::de::Error::custom(
+            "parent must be null only for the anchor at index 0 and name an earlier node",
+        ))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
