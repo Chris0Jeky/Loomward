@@ -3,6 +3,8 @@
 //! dispatch (AGENTS.md invariant 1; the C8 gate stays closed until the G5 power-cut and G9 restore runs).
 //! A synthetic session's grants exist only for registered lab roots (ADR-V3-15), and the session root
 //! gate is re-run here for every source and the destination. MCP has no copy command.
+// The executor is Windows-only; other targets build the module but never serve a copy.
+#![cfg_attr(not(windows), allow(dead_code))]
 use crate::{catalog_error, db, fail, now_ns, ts_ns, with_reason, Inner, Out};
 use loomward_catalog::NodeKey;
 use loomward_protocol::*;
