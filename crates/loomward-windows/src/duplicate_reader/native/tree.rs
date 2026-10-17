@@ -17,6 +17,25 @@ pub(crate) fn read_tree(
     max_entries: usize,
     cancel: Arc<AtomicBool>,
 ) -> Result<(Tree, u64), Reason> {
+    read_tree_from(
+        &NativeSource::default(),
+        root,
+        expected,
+        budget,
+        max_entries,
+        cancel,
+    )
+}
+
+/// `read_tree` over an explicit listing source, so the tests can force a listing class.
+fn read_tree_from(
+    source: &NativeSource,
+    root: &Path,
+    expected: &OpenedIdentity,
+    budget: Budget,
+    max_entries: usize,
+    cancel: Arc<AtomicBool>,
+) -> Result<(Tree, u64), Reason> {
     let mut meter = Meter::new(budget);
     meter.cancel = Some(cancel);
     let mut tree = Tree::default();
@@ -29,7 +48,6 @@ pub(crate) fn read_tree(
         return Ok((tree, 0));
     }
     let mut reader = Reader::new(root, expected, |_, _| {})?;
-    let source = NativeSource::default();
     let (dir, identity) = source.open_root(root).map_err(super::source)?;
     if identity.id != expected.id
         || identity.volume_serial != expected.volume_serial
@@ -507,6 +525,7 @@ fn stream_hashes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::enumerate::Strategy;
     use loomward_operations::tree::{compare, DifferenceKind, Field};
     fn snapshot(path: &Path) -> Tree {
         let source = NativeSource::default();
@@ -708,5 +727,143 @@ mod tests {
             "{report:?}"
         );
         drop(writer);
+    }
+
+    fn budget() -> Budget {
+        Budget {
+            bytes: 1024 * 1024,
+            time: Duration::from_secs(30),
+        }
+    }
+
+    /// Find lists no file ID and Both a 64-bit one; neither may read as `changed_during_read`.
+    #[test]
+    fn listing_classes_without_a_128_bit_id_still_read_every_file() {
+        if crate::enumerate::running_elevated() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("sub")).unwrap();
+        std::fs::write(temp.path().join("sub").join("inner"), b"same bytes").unwrap();
+        std::fs::write(temp.path().join("outer"), b"other bytes").unwrap();
+        let run = |source: &NativeSource| {
+            let (_, expected) = source.open_root(temp.path()).unwrap();
+            read_tree_from(
+                source,
+                temp.path(),
+                &expected,
+                budget(),
+                100,
+                Default::default(),
+            )
+            .unwrap()
+            .0
+        };
+        let extended = run(&NativeSource::default());
+        for strategy in [Strategy::Find, Strategy::Both] {
+            let forced = run(&NativeSource::with_strategy(strategy));
+            for file in ["outer", "sub/inner"] {
+                let key = PathBuf::from(file);
+                let node = forced.nodes[&key].as_ref().unwrap_or_else(|reason| {
+                    panic!("{strategy:?} {file}: {reason}");
+                });
+                assert_eq!(
+                    node.content,
+                    extended.nodes[&key].as_ref().unwrap().content,
+                    "{strategy:?} {file}"
+                );
+            }
+        }
+    }
+
+    /// A 64-bit listing on ReFS is non-unique (N3): it binds nothing, so the honest answer is an
+    /// unknown `identity_unverified`, never `changed_during_read` and never equal.
+    #[test]
+    fn both_listing_on_refs_is_identity_unverified_not_changed() {
+        if crate::enumerate::running_elevated() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("outer"), b"other bytes").unwrap();
+        let source = NativeSource::with_strategy(Strategy::Both).with_filesystem("ReFS");
+        let (_, expected) = source.open_root(temp.path()).unwrap();
+        let tree = read_tree_from(
+            &source,
+            temp.path(),
+            &expected,
+            budget(),
+            100,
+            Default::default(),
+        )
+        .unwrap()
+        .0;
+        assert_eq!(
+            tree.nodes[Path::new("outer")].as_ref().err(),
+            Some(&"identity_unverified")
+        );
+    }
+
+    /// One budget counts the root, every listed directory and every listed file. With four entries
+    /// the directory `sub` cannot finish; with five the whole tree lists.
+    #[test]
+    fn entry_budget_counts_directories_and_files_alike() {
+        if crate::enumerate::running_elevated() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("sub")).unwrap();
+        std::fs::write(temp.path().join("sub").join("a"), b"a").unwrap();
+        std::fs::write(temp.path().join("sub").join("b"), b"b").unwrap();
+        std::fs::write(temp.path().join("top"), b"t").unwrap();
+        let source = NativeSource::default();
+        let (_, expected) = source.open_root(temp.path()).unwrap();
+        let run = |max| {
+            read_tree_from(
+                &source,
+                temp.path(),
+                &expected,
+                budget(),
+                max,
+                Default::default(),
+            )
+            .unwrap()
+            .0
+        };
+        let whole = run(5);
+        assert_eq!(whole.nodes[Path::new("sub")].as_ref().unwrap().children, Ok(()));
+        let short = run(4);
+        assert_eq!(
+            short.nodes[Path::new("sub")].as_ref().unwrap().children,
+            Err("entry_budget")
+        );
+    }
+
+    /// A ceiling is a refusal, not a silent clamp: 200,000 is honoured, one more is refused.
+    #[test]
+    fn entry_budget_above_the_ceiling_is_refused_not_clamped() {
+        if crate::enumerate::running_elevated() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("only"), b"x").unwrap();
+        let source = NativeSource::default();
+        let (_, expected) = source.open_root(temp.path()).unwrap();
+        let run = |max| {
+            read_tree_from(
+                &source,
+                temp.path(),
+                &expected,
+                budget(),
+                max,
+                Default::default(),
+            )
+            .unwrap()
+            .0
+        };
+        assert_eq!(run(200_000).nodes[Path::new("")].as_ref().unwrap().children, Ok(()));
+        assert_eq!(
+            run(200_001).nodes[Path::new("")].as_ref().err(),
+            Some(&"entry_budget")
+        );
     }
 }
