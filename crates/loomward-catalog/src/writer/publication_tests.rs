@@ -953,8 +953,9 @@ fn auto_rollback_never_commits_a_failed_receipt_or_acknowledges_lost_rows() {
     super::hold_batch_window_open();
     for full in [true, false] {
         let (temp, conn, _) = fixture();
+        // This fault probe uses direct listings, not the fixture's queued staged payload.
         conn.execute_batch(
-            "DELETE FROM st.collection_member; DELETE FROM st.object_ref;
+            "DELETE FROM st.collection_member; DELETE FROM st.object_ref; DELETE FROM stage_entry;
         CREATE TRIGGER auto_rollback BEFORE INSERT ON file WHEN NEW.name='fault'
         BEGIN SELECT RAISE(ROLLBACK,'injected transaction rollback'); END;",
         )
@@ -1056,6 +1057,7 @@ fn auto_rollback_never_commits_a_failed_receipt_or_acknowledges_lost_rows() {
 
 #[test]
 fn auto_rollback_keeps_the_failing_callers_original_error() {
+    super::hold_batch_window_open();
     let (temp, conn, _) = fixture();
     conn.execute_batch(
         "DELETE FROM st.collection_member; DELETE FROM st.object_ref;

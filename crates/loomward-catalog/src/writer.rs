@@ -1227,10 +1227,10 @@ fn forget_state(conn: &mut Connection, grant: i64, at: i64, expected: Option<i64
         tx.execute_batch("CREATE TEMP TABLE forget_ref(id INTEGER PRIMARY KEY)")?;
         tx.execute(&format!("INSERT OR IGNORE INTO forget_ref SELECT o.id FROM st.object_ref o WHERE o.volume_key=?2 AND (
               ({bound})
-              OR EXISTS(SELECT 1 FROM main.file f JOIN main.dir d ON d.id=f.dir_id WHERE f.file_id=o.file_id AND d.root_id=?1)
-              OR EXISTS(SELECT 1 FROM main.dir d WHERE d.root_id=?1 AND d.file_id=o.file_id))
-            AND NOT EXISTS(SELECT 1 FROM main.file f JOIN main.dir d ON d.id=f.dir_id WHERE f.file_id=o.file_id AND d.root_id IN {elsewhere})
-            AND NOT EXISTS(SELECT 1 FROM main.dir d WHERE d.file_id=o.file_id AND d.root_id IN {elsewhere})"), params![root, volume])?;
+              OR EXISTS(SELECT 1 FROM main.file f JOIN main.dir d ON d.id=f.dir_id WHERE o.kind='file' AND f.file_id=o.file_id AND f.created_ft IS o.creation_ft AND d.root_id=?1)
+              OR EXISTS(SELECT 1 FROM main.dir d WHERE o.kind='dir' AND d.root_id=?1 AND d.file_id=o.file_id AND d.created_ft IS o.creation_ft))
+            AND NOT EXISTS(SELECT 1 FROM main.file f JOIN main.dir d ON d.id=f.dir_id WHERE o.kind='file' AND f.file_id=o.file_id AND f.created_ft IS o.creation_ft AND d.root_id IN {elsewhere})
+            AND NOT EXISTS(SELECT 1 FROM main.dir d WHERE o.kind='dir' AND d.file_id=o.file_id AND d.created_ft IS o.creation_ft AND d.root_id IN {elsewhere})"), params![root, volume])?;
         // A kept object bound to one of this root's rows loses the row: unresolved, as after a rebuild.
         tx.execute(&format!("UPDATE st.object_ref AS o SET state='unresolved',retired=1 WHERE o.state='resolved' AND {bound} AND o.id NOT IN (SELECT id FROM forget_ref)"), params![root])?;
         let has = |table: &str| {
@@ -1826,7 +1826,13 @@ fn publish(
     let (depth,fs):(i64,Option<String>)=conn.query_row(&format!("SELECT d.depth,v.filesystem FROM {d} d JOIN root r ON r.id=d.root_id LEFT JOIN volume v ON v.id=r.volume_id WHERE d.id=?1"),[dir],|r|Ok((r.get(0)?,r.get(1)?)))?;
     let complete = matches!(outcome, ListingOutcome::Complete);
     let coverage = outcome.coverage()?;
-    let is_direct = direct.is_some();
+    // Direct payloads are prevalidated, but staged entries still need the cross-entry guard.
+    let is_direct = direct.is_some()
+        && !conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM stage_entry WHERE run_id=?1 AND dir_id=?2)",
+            params![run, dir],
+            |r| r.get::<_, bool>(0),
+        )?;
     let has_old = if prepared {
         conn.query_row("SELECT EXISTS(SELECT 1 FROM old_file)", [], |r| r.get(0))?
     } else {
