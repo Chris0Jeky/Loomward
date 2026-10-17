@@ -13,3 +13,4 @@ serde_json.workspace = true
 [dev-dependencies]
 loomward-ask = { path = "../loomward-ask", features = ["testkit"] }
 loomward-protocol = { path = "../loomward-protocol" }
+sha2.workspace = true

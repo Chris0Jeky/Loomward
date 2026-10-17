@@ -34,7 +34,7 @@ pub struct OutboundRecord {
     pub class: ProviderClass,
     /// The client principal whose grant scoped every tool result in this round's history.
     pub principal: String,
-    /// The exact request bytes, by digest and length.
+    /// The exact HTTP request body bytes the broker writes (not the head), by digest and length.
     pub sha256: String,
     pub bytes: usize,
     /// False only when the round provably sent nothing.
@@ -84,7 +84,8 @@ pub fn ask(
             messages: messages.clone(),
             tools: if offer { tool_schemas() } else { Vec::new() },
         };
-        let bytes = serde_json::to_vec(&req).expect("serialisable");
+        // The broker's exact body, not the engine-side struct: the record digests what is sent.
+        let bytes = crate::request_body(&profile.model, &req).into_bytes();
         if bytes.len() > MAX_REQUEST_BYTES {
             return Err(ProviderError::new(
                 ErrorKind::InvalidRequest,

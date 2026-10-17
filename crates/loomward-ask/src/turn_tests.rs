@@ -149,11 +149,14 @@ fn tools_run_as_the_ask_client_and_the_model_sees_handles_not_node_ids() {
         assert_eq!(rec.profile_digest, local().digest());
         assert!(rec.dispatched);
         assert_eq!(rec.outcome, "ok");
-        let bytes = serde_json::to_vec(&ChatRequest {
-            messages: seen[i].messages.clone(),
-            tools: seen[i].tools.clone(),
-        })
-        .unwrap();
+        let bytes = crate::request_body(
+            &local().model,
+            &ChatRequest {
+                messages: seen[i].messages.clone(),
+                tools: seen[i].tools.clone(),
+            },
+        )
+        .into_bytes();
         assert_eq!(rec.bytes, bytes.len());
         assert_eq!(rec.sha256, format!("sha256:{:x}", Sha256::digest(&bytes)));
     }

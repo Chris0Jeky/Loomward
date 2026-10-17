@@ -76,6 +76,16 @@ pub struct ChatRequest {
     pub tools: Vec<serde_json::Value>,
 }
 
+/// The exact HTTP request body of one round. The broker writes these bytes and the turn loop
+/// digests them for its outbound record, so the record cannot describe anything else (#560).
+pub fn request_body(model: &str, req: &ChatRequest) -> String {
+    let mut body = serde_json::json!({"model": model, "messages": req.messages, "stream": false});
+    if !req.tools.is_empty() {
+        body["tools"] = serde_json::Value::from(req.tools.clone());
+    }
+    body.to_string()
+}
+
 /// The model's reply to one round.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatReply {
