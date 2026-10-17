@@ -178,6 +178,7 @@ export type EmptyRequest = Record<string, never>;
 export interface Capabilities {
   observation: {
     metadata_scan: boolean;
+    duplicate_content_read: boolean;
     process_observation: boolean;
     gpu_observation: boolean;
     disk_io_observation: boolean;

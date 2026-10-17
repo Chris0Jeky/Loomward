@@ -24,6 +24,7 @@
   const leaf = (path: string) => path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || path;
 
   const OBSERVATION: Record<string, string> = {
+    duplicate_content_read: 'Content read: duplicates only, on request',
     metadata_scan: 'Metadata scan', process_observation: 'Process observation', gpu_observation: 'GPU observation',
     disk_io_observation: 'Disk I/O observation', teacher_disclosure: 'Teacher disclosure',
   };
@@ -180,7 +181,7 @@
     return 'This build reports that it cannot scan here. The service declines a scan and says why.';
   });
   const grantActive = (g: Grant) => g.revoked_at === null;
-  const effects = $derived(Object.entries(session.info?.capabilities.effects ?? {}));
+  const effects = $derived(Object.entries(session.info?.capabilities.effects ?? {}).filter(([name]) => name !== 'content_read'));
   const observation = $derived(Object.entries(session.info?.capabilities.observation ?? {}));
   const queueShare = $derived(health && health.catalog.writer_queue_capacity > 0 ? Math.min(100, (health.catalog.writer_queue_depth / health.catalog.writer_queue_capacity) * 100) : null);
 </script>
@@ -351,7 +352,7 @@
 
 <section class="panel" aria-labelledby="h-caps">
   <h2 id="h-caps">What this build can do</h2>
-  <p class="muted">Every effect below is off, fixed by the contract: Loomward v0.3 observes and simulates only. The one exception is a diagnostic bundle you save yourself (above), written only to a file you pick and confirm.</p>
+  <p class="muted">Every file and process effect below is off. Duplicate inspection reads file contents locally, read-only, within its budgets and only for a folder you granted when you press Start inspection. The one exception is a diagnostic bundle you save yourself (above), written only to a file you pick and confirm.</p>
   <h3>Effects</h3>
   <ul class="caps">
     {#each effects as [name, on] (name)}

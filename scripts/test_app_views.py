@@ -124,7 +124,7 @@ class FakeEngine:
             return {
                 'protocol': 'loomward/3', 'engine_version': 'view-fake', 'adapter': 'tauri' if desktop else 'http',
                 'dataset_class': 'personal' if desktop else 'synthetic', 'session_started_at': '2026-10-01T00:00:00Z',
-                'enumeration_strategy': 'std_read_dir', 'capabilities': {'observation': {'process_observation': self.process_error is not None}, 'effects': effects},
+                'enumeration_strategy': 'std_read_dir', 'capabilities': {'observation': {'duplicate_content_read': True, 'process_observation': self.process_error is not None}, 'effects': effects},
                 'features': {**{k: k == 'grant_picker' and self.grant_picker for k in ('grant_picker', 'disclosure_dialog', 'teacher_available', 'telemetry_available', 'gpu_available')},
                              'diagnostics_save': self.diagnostics_answers is not None},
                 'limits': {'max_request_bytes': 65536, 'max_slice_nodes': 6000, 'max_page_items': 200},
@@ -1179,7 +1179,11 @@ def check_health(page: Page, base: str, shoot) -> None:
     expect(main.get_by_role('heading', name="Loomward's own health")).to_be_visible()
     expect(main.get_by_text('Private commit')).to_be_visible()
     expect(main.get_by_text('Writer queue')).to_be_visible()
-    ok(main.get_by_text('off', exact=True).count() == 11, 'the capability matrix shows all 11 effects off')
+    ok(main.get_by_text('off', exact=True).count() == 10, 'the capability matrix shows all 10 file/process effects off')
+    reads = main.locator('.caps li').filter(has_text='Content read: duplicates only, on request')
+    expect(reads).to_contain_text('not available')
+    ok(main.locator('.caps li').filter(has_text=re.compile(r'\boff\s+content read\b', re.I)).count() == 0,
+       'content reads are separate from file/process effects')
     expect(main.get_by_text('The one exception is a diagnostic bundle you save yourself')).to_be_visible()
     ok(main.get_by_text('ON', exact=True).count() == 0, 'no effect is on')
     expect(main.get_by_text('not available').first).to_be_visible()
@@ -1357,6 +1361,10 @@ def check_add_folder(page: Page, engine: FakeEngine) -> None:
         page.evaluate("location.hash = '#/health'")
         expect(page.get_by_role('status', name='Session status')).to_contain_text('Connected')
         expect(page.get_by_role('heading', name='Grants & health', level=1)).to_be_visible()
+
+        reads = page.locator('.caps li').filter(has_text='Content read: duplicates only, on request')
+        expect(reads).to_contain_text('available')
+        expect(reads).not_to_contain_text('not available')
 
     add = page.get_by_role('button', name='Add a folder…', exact=True)
     status = page.locator('main section[aria-labelledby="h-roots"] .add p.live')

@@ -12,6 +12,25 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+#[test]
+fn hello_reports_duplicate_content_reads_separately_from_effects() {
+    let dir = temp_root();
+    for dataset in [DatasetClass::Synthetic, DatasetClass::Personal] {
+        let state = dir.path().join(format!("{dataset:?}"));
+        let svc = open(&state, dataset);
+        let (hello, _) = ok("session.hello", call(&svc, "session.hello", json!({})));
+        assert_eq!(
+            hello["capabilities"]["observation"]["duplicate_content_read"],
+            cfg!(windows)
+        );
+        assert!(hello["capabilities"]["effects"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|v| v == false));
+    }
+}
+
 /// Test seams inside the service: a delay before one command runs, a run counter, the order
 /// commands finished their delay in, a one-shot forced mutation-thread spawn failure, an injected
 /// profile resolver for the scan-time grant fence, and named

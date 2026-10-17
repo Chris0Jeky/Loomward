@@ -307,7 +307,7 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
       protocol: 'loomward/3', engine_version: 'mock-0.3 (no engine)', adapter: 'http', dataset_class: DATASET, session_started_at: t0,
       enumeration_strategy: 'std_read_dir',
       capabilities: {
-        observation: { metadata_scan: true, process_observation: true, gpu_observation: false, disk_io_observation: false, teacher_disclosure: false },
+        observation: { metadata_scan: true, duplicate_content_read: false, process_observation: true, gpu_observation: false, disk_io_observation: false, teacher_disclosure: false },
         effects: { file_move: false, file_delete: false, file_rename: false, file_write: false, content_read: false, process_kill: false, process_suspend: false, process_priority: false, memory_trim: false, uninstall: false, elevation: false },
       },
       features: { grant_picker: false, disclosure_dialog: false, teacher_available: false, telemetry_available: true, gpu_available: true, diagnostics_save: false, federated_search: false },
