@@ -14,12 +14,27 @@ pub fn cases(default: u32) -> u32 {
         .unwrap_or(default)
 }
 
+/// `LOOMWARD_FUZZ_SEED`: a number fixes the seed, `random` draws a fresh one; unset is a fixed seed, so
+/// CI on an unrelated change never meets a new input. Long exploratory runs set `random`.
+pub fn seed() -> proptest::test_runner::RngSeed {
+    use proptest::test_runner::RngSeed;
+    match std::env::var("LOOMWARD_FUZZ_SEED").ok().as_deref() {
+        Some("random") => RngSeed::Random,
+        Some(v) => RngSeed::Fixed(
+            v.parse()
+                .expect("LOOMWARD_FUZZ_SEED must be a u64 or `random`"),
+        ),
+        None => RngSeed::Fixed(0x4c4f_4f4d_5741_5244),
+    }
+}
+
 /// No regression files in the tree: a failing input is printed in full and minimised.
 pub fn config(default: u32) -> ProptestConfig {
     ProptestConfig {
         cases: cases(default),
         failure_persistence: None,
         max_shrink_iters: 4096,
+        rng_seed: seed(),
         ..ProptestConfig::default()
     }
 }

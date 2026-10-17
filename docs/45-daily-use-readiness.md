@@ -129,7 +129,8 @@ persistent corpus (regression files are off; a failing input is printed in full 
 from the existing fixtures (the `contracts/v3/examples` requests, the synthetic restic documents of `receipts.rs`,
 the synthetic links of `shell.rs`) and from record builders for the binary decoders. Default case counts keep every
 target under about 10 s in a debug build; `LOOMWARD_FUZZ_CASES=100000` (any positive integer) runs every property
-that many cases. Shared helpers: `fixtures/fuzz/support.rs` (`#[path]`-included by each test, not a crate).
+that many cases. The seed is fixed by default so CI never meets a new input on an unrelated change;
+`LOOMWARD_FUZZ_SEED=random` (or a number) explores further. Shared helpers: `fixtures/fuzz/support.rs` (`#[path]`-included by each test, not a crate).
 
 Properties, per target: never panics on arbitrary bytes or JSON; a valid input round-trips; a mutated valid input is
 refused with a typed error or accepted with exactly the semantics an independent reading gives it (no silent
