@@ -68,7 +68,10 @@ pub enum Decision {
     Cleanup(Cleanup),
     /// The final name carries the staging identity: reacquire holds, run the post-publish confirmation with a
     /// full re-hash, then `committed` or `needs_attention`. Never cleanup.
-    Confirm { staging: ObjectId, final_name: String },
+    Confirm {
+        staging: ObjectId,
+        final_name: String,
+    },
     NeedsAttention(Attention),
 }
 
@@ -147,7 +150,10 @@ fn decide(r: &Replay, disk: &impl Disk) -> Decision {
             ..Cleanup::default()
         });
     }
-    let token = r.staging_tokens.last().expect("staging identity has a token");
+    let token = r
+        .staging_tokens
+        .last()
+        .expect("staging identity has a token");
     if disk.in_parent(token) != Some(staging) {
         return attention(Attention::StagingMismatch);
     }

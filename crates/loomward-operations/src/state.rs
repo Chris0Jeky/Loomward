@@ -53,7 +53,10 @@ impl OpState {
                 | (Copying, Staged | Blocked | NeedsAttention | Cancelling)
                 | (Blocked, Copying | Cancelling)
                 | (Staged, Cancelling | Publishing)
-                | (Publishing, Cancelling | Committed | Blocked | NeedsAttention)
+                | (
+                    Publishing,
+                    Cancelling | Committed | Blocked | NeedsAttention
+                )
                 | (NeedsAttention, Copying | Cancelling)
                 | (Cancelling, Cancelled | NeedsAttention)
         )
@@ -163,7 +166,11 @@ mod tests {
     #[test]
     fn every_pair_matches_the_doc_diagram() {
         let edges = doc_edges();
-        assert_eq!(edges.len(), 23, "diagram edge count changed: review the state machine");
+        assert_eq!(
+            edges.len(),
+            23,
+            "diagram edge count changed: review the state machine"
+        );
         for from in OpState::ALL {
             for to in OpState::ALL {
                 let legal = edges.contains(&(from, to));
@@ -179,11 +186,17 @@ mod tests {
     #[test]
     fn terminal_states_have_no_exit_and_committed_is_never_left() {
         for from in OpState::ALL.into_iter().filter(|s| s.is_terminal()) {
-            assert!(OpState::ALL.iter().all(|&to| !from.can_transition(to)), "{from:?}");
+            assert!(
+                OpState::ALL.iter().all(|&to| !from.can_transition(to)),
+                "{from:?}"
+            );
         }
         // No path reaches committed except from publishing.
         for from in OpState::ALL {
-            assert_eq!(from.can_transition(OpState::Committed), from == OpState::Publishing);
+            assert_eq!(
+                from.can_transition(OpState::Committed),
+                from == OpState::Publishing
+            );
         }
     }
 
@@ -206,7 +219,11 @@ mod tests {
         ];
         for a in ItemState::ALL {
             for b in ItemState::ALL {
-                assert_eq!(a.can_transition(b), legal.contains(&(a, b)), "{a:?} -> {b:?}");
+                assert_eq!(
+                    a.can_transition(b),
+                    legal.contains(&(a, b)),
+                    "{a:?} -> {b:?}"
+                );
             }
         }
         // Verification cannot be skipped and a verified item is final.

@@ -66,11 +66,9 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let op: i64 = tx.query_row(
-            "SELECT coalesce(max(op_id),0)+1 FROM op_journal",
-            [],
-            |r| r.get(0),
-        )?;
+        let op: i64 = tx.query_row("SELECT coalesce(max(op_id),0)+1 FROM op_journal", [], |r| {
+            r.get(0)
+        })?;
         let op = op as u64;
         let mut replay = Replay::new(op);
         let row = replay.row_for(&Entry {
@@ -111,6 +109,11 @@ impl Store {
         tx.commit()?;
         self.cache.insert(op, replay);
         Ok(row.seq)
+    }
+
+    /// The connection's `synchronous` level (2 = FULL, required for precious state, ADR-V3-22).
+    pub fn synchronous(&self) -> rusqlite::Result<i64> {
+        self.conn.query_row("PRAGMA synchronous", [], |r| r.get(0))
     }
 
     pub fn rows(&self, op: u64) -> rusqlite::Result<Vec<Row>> {
