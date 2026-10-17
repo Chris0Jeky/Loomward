@@ -10,7 +10,7 @@
 
 use loomward_protocol::limits::EVENT_QUEUE_CAPACITY;
 use loomward_protocol::{
-    CallContext, CloseReason, Command, DatasetClass, ErrorBody, ErrorCode, EventEnvelope,
+    CallContext, CloseReason, Command, DatasetClass, Detail, ErrorBody, ErrorCode, EventEnvelope,
     EventName, EventStream, Payload, RecvOutcome, RequestEnvelope, ResponseEnvelope, ResponseMeta,
     ViewService,
 };
@@ -171,6 +171,22 @@ impl FixtureService {
 
 impl ViewService for FixtureService {
     fn call(&self, request: RequestEnvelope, ctx: &CallContext) -> ResponseEnvelope {
+        // Answer copy commands exactly like the engine service (docs/47 C4): the effect gate is closed,
+        // so the contract examples are never replayed as if an operation existed. The fixture is
+        // synthetic only, so the personal-approval rule (G6) never arises here.
+        if request.command.starts_with("copy.") {
+            let mut e = ErrorBody::new(
+                ErrorCode::CapabilityUnavailable,
+                "copy-and-verify is not open: its effect gate (docs/47 lane C8) is closed",
+                false,
+            );
+            e.detail = Detail::new(std::collections::BTreeMap::from([(
+                "reason".to_string(),
+                json!("copy_effect_gated"),
+            )]))
+            .ok();
+            return ResponseEnvelope::error(Some(request.request_id), e, None);
+        }
         let result = Command::from_name(&request.command).and_then(|c| {
             let mut r = self.results.get(&c)?.clone();
             if c == Command::SessionHello {
@@ -394,7 +410,23 @@ mod tests {
                 "protocol": "loomward/3", "request_id": "r_1", "command": command.as_str(), "payload": {}
             }))
             .unwrap();
-            match service.call(request, &CallContext::http()) {
+            let response = service.call(request, &CallContext::http());
+            if command.as_str().starts_with("copy.") {
+                // Like the engine service (docs/47 C4): no copy command is answered.
+                let ResponseEnvelope::Err(e) = response else {
+                    panic!("{} answered", command.as_str())
+                };
+                assert_eq!(e.error.code, ErrorCode::CapabilityUnavailable);
+                let reason = e.error.detail.as_ref().and_then(|d| d.get("reason"));
+                assert_eq!(
+                    reason,
+                    Some(&json!("copy_effect_gated")),
+                    "{}",
+                    command.as_str()
+                );
+                continue;
+            }
+            match response {
                 ResponseEnvelope::Ok(ok) => {
                     ok.validate_for(command)
                         .unwrap_or_else(|e| panic!("{}: {e:?}", command.as_str()));

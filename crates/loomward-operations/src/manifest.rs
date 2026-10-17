@@ -184,7 +184,7 @@ pub struct DestinationFacts {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Context {
     pub elevated: bool,
-    /// Every source grant the selection came through is still active.
+    /// Every source grant the selection came through, and the destination's grant, is still active.
     pub grants_active: bool,
     /// H1 measured positive: named streams can be copied. Until then files with named streams are refused.
     pub named_streams: bool,
@@ -287,19 +287,22 @@ pub fn name_unrepresentable(component: &str) -> bool {
         || units(component) > MAX_COMPONENT_UNITS
 }
 
-/// Case folding for collisions under a case-insensitive destination.
-// ponytail: one-to-one Unicode uppercase approximates NTFS's $UpCase table (CompareStringOrdinal,
-// ignore case); a native fold from C2 replaces it if a fixture ever disagrees.
-fn fold(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            let mut up = c.to_uppercase();
-            match (up.next(), up.next()) {
-                (Some(u), None) => u,
-                _ => c,
-            }
-        })
-        .collect()
+/// Collision key under a case-insensitive destination: simple (one-to-one) uppercase, and separately
+/// simple lowercase. Two names collide when either key matches, so a pair NTFS might fold together is
+/// refused at preview rather than found at create time (over-refusal is the safe side).
+// ponytail: per-char simple Unicode case mappings approximate NTFS's $UpCase table (CompareStringOrdinal,
+// ignore case); reading the volume's $UpCase in C2 is the upgrade path if a fixture ever disagrees.
+fn folds(s: &str) -> [String; 2] {
+    fn simple<I: Iterator<Item = char>>(c: char, mut m: I) -> char {
+        match (m.next(), m.next()) {
+            (Some(u), None) => u,
+            _ => c,
+        }
+    }
+    [
+        s.chars().map(|c| simple(c, c.to_uppercase())).collect(),
+        s.chars().map(|c| simple(c, c.to_lowercase())).collect(),
+    ]
 }
 
 fn round_up(n: u64, cluster: u64) -> u64 {
@@ -307,21 +310,21 @@ fn round_up(n: u64, cluster: u64) -> u64 {
 }
 
 fn propose_name(base: &str, dest: &DestinationFacts) -> String {
-    let key = |s: &str| {
+    let keys = |s: &str| -> Vec<String> {
         if dest.case_sensitive {
-            s.to_string()
+            vec![s.to_string()]
         } else {
-            fold(s)
+            folds(s).into()
         }
     };
-    let taken: HashSet<String> = dest.existing_names.iter().map(|n| key(n)).collect();
-    // `taken` is finite, so a free suffix exists within len + 2 tries.
+    let taken: HashSet<String> = dest.existing_names.iter().flat_map(|n| keys(n)).collect();
+    // `taken` is finite, so a free suffix exists within a bounded number of tries.
     (1..)
         .map(|n| match n {
             1 => base.to_string(),
             n => format!("{base} ({n})"),
         })
-        .find(|name| !taken.contains(&key(name)))
+        .find(|name| keys(name).iter().all(|k| !taken.contains(k)))
         .expect("a free name exists")
 }
 
@@ -383,7 +386,9 @@ pub fn preview(entries: Vec<SourceEntry>, dest: &DestinationFacts, ctx: &Context
     let (mut acl, mut links, mut same_volume) = (0u64, 0u64, false);
     let cluster = dest.cluster_bytes.max(1);
     let inside: HashSet<Identity> = dest.ancestors.iter().copied().collect();
-    for e in entries {
+    for mut e in entries {
+        // Canonical: stream enumeration order never reaches the digest.
+        e.streams.sort();
         let shown = e.name.clone();
         let item = Some(shown.as_str());
         if !e.verified_volume {
@@ -457,16 +462,16 @@ pub fn preview(entries: Vec<SourceEntry>, dest: &DestinationFacts, ctx: &Context
     need = need.saturating_add(FOLDER_BYTES.saturating_mul(folders - u64::from(root.is_some())));
     items.sort_by(|a, b| a.name.cmp(&b.name));
 
-    let fold_key = |s: &str| {
-        if dest.case_sensitive {
-            s.to_string()
-        } else {
-            fold(s)
-        }
-    };
-    let mut seen = HashSet::new();
+    let (mut upper, mut lower) = (HashSet::new(), HashSet::new());
     for it in &items {
-        if !seen.insert(fold_key(&it.name)) {
+        let [u, l] = if dest.case_sensitive {
+            [it.name.clone(), it.name.clone()]
+        } else {
+            folds(&it.name)
+        };
+        // Both inserts run: a name is recorded under both keys whatever the first one found.
+        let (new_u, new_l) = (upper.insert(u), lower.insert(l));
+        if !(new_u && new_l) {
             refuse(Code::CaseCollision, Some(&it.name));
         }
         if dest.parent_path_units + 1 + units(&folder_name) + 1 + units(&it.name) > MAX_PATH_UNITS {
@@ -586,10 +591,21 @@ pub struct Approval {
 }
 
 /// What `start` hands the journal (`Store::start`): the consumed approval's digest and item count.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Only [`Approval::admit`] constructs one, and it is neither `Clone` nor `Copy`: `Store::start` takes it
+/// by value, so one consumed approval starts at most one journal.
+#[derive(Debug, PartialEq, Eq)]
 pub struct Admitted {
-    pub digest: [u8; 32],
-    pub items: u32,
+    digest: [u8; 32],
+    items: u32,
+}
+
+impl Admitted {
+    pub fn digest(&self) -> [u8; 32] {
+        self.digest
+    }
+    pub fn items(&self) -> u32 {
+        self.items
+    }
 }
 
 /// `draft -> approved`: the owner confirmed `shown`, the digest rendered from the stored manifest.

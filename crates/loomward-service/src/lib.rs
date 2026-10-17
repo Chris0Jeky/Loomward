@@ -343,6 +343,10 @@ pub(crate) fn is_mutation(c: Command) -> bool {
             | BackupsImport
             | BackupsForget
             | DiagnosticsSave
+            // docs/47: refused before dispatch while the gate is closed; mutations when it opens.
+            | CopyStart
+            | CopyCancel
+            | CopyAbandon
     )
 }
 

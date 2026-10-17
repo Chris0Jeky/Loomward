@@ -1,6 +1,7 @@
 //! Journal storage in `state.db`. Every append validates the record against the replayed journal inside one
 //! `BEGIN IMMEDIATE` transaction, so a rejected record (stale epoch, illegal step) is never stored.
 use crate::journal::{Entry, Invalid, Record, Replay, Row};
+use crate::manifest::Admitted;
 use crate::recovery::{recover, Disk, Recovery};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use std::{collections::HashMap, path::Path, time::Duration};
@@ -65,8 +66,10 @@ impl Store {
         })
     }
 
-    /// Start a journal: the approval was consumed. Returns the new operation id.
-    pub fn start(&mut self, epoch: u64, digest: [u8; 32], items: u32) -> Result<u64, AppendError> {
+    /// Start a journal from a consumed approval (only `Approval::admit` makes an `Admitted`, and this
+    /// takes it by value). Returns the new operation id.
+    pub fn start(&mut self, epoch: u64, admitted: Admitted) -> Result<u64, AppendError> {
+        let (digest, items) = (admitted.digest(), admitted.items());
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;

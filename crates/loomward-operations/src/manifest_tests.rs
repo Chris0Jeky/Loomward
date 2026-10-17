@@ -403,3 +403,44 @@ fn contract_enums_equal_the_state_machine_and_refusal_codes() {
         .collect();
     assert_eq!(names("CopyState"), states);
 }
+
+#[test]
+fn stream_enumeration_order_never_changes_the_digest() {
+    let with = |streams: Vec<(&str, u64)>| {
+        let mut e = sample();
+        e[1].streams = streams.into_iter().map(|(n, s)| (n.into(), s)).collect();
+        preview(e, &dest(), &ctx()).manifest.digest()
+    };
+    assert_eq!(
+        with(vec![("Zone.Identifier", 26), ("b", 1)]),
+        with(vec![("b", 1), ("Zone.Identifier", 26)])
+    );
+}
+
+#[test]
+fn case_collisions_are_refused_conservatively_at_preview() {
+    let collides = |a: &str, b: &str, sensitive: bool| {
+        let d = DestinationFacts {
+            case_sensitive: sensitive,
+            ..dest()
+        };
+        codes(&preview(vec![file(a, 1, 1), file(b, 2, 1)], &d, &ctx()))
+            .contains(&Code::CaseCollision)
+    };
+    assert!(collides("Report.TXT", "report.txt", false));
+    assert!(!collides("Report.TXT", "report.txt", true));
+    // U+1FB3 uppercases to two characters, but U+1FBC lowercases to U+1FB3: the lowercase key catches it.
+    assert!(collides("\u{1fb3}", "\u{1fbc}", false));
+    assert!(!collides("a", "b", false));
+    // The proposed folder name avoids both keys too.
+    let d = DestinationFacts {
+        existing_names: vec!["\u{1fb3}".into()],
+        ..dest()
+    };
+    let p = preview(
+        vec![dir("\u{1fbc}", 1), file("\u{1fbc}/x", 2, 1)],
+        &d,
+        &ctx(),
+    );
+    assert_eq!(p.manifest.destination.folder_name, "\u{1fbc} (2)");
+}

@@ -59,3 +59,26 @@ fn every_copy_command_is_gated_on_every_adapter_and_dataset() {
         }
     }
 }
+
+/// Every command whose contract declares an effect is a mutation: a ticketed, retained, serialised
+/// call, so opening the copy gate (docs/47 C5) can never route an effect onto the concurrent read path.
+#[test]
+fn every_effectful_command_is_a_mutation() {
+    let path = format!(
+        "{}/../../contracts/v3/commands.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let doc: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let mut effectful = 0;
+    for (name, row) in doc["commands"].as_object().unwrap() {
+        if row["effects"] != "none" {
+            effectful += 1;
+            let c = Command::from_name(name).unwrap();
+            assert!(
+                crate::is_mutation(c),
+                "{name} declares effects but is not a mutation"
+            );
+        }
+    }
+    assert_eq!(effectful, 4);
+}
