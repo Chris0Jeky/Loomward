@@ -116,7 +116,10 @@ fn decide(r: &Replay, disk: &impl Disk) -> Decision {
     }
     // A pending publish whose final name now carries the staging identity was renamed: confirm, never clean.
     if let (Some(s), Some(final_name)) = (r.staging, &r.publish) {
-        if disk.in_parent(final_name) == Some(s) {
+        if disk
+            .in_parent(final_name)
+            .is_some_and(|o| s.matches(&o, r.staging_planned))
+        {
             return if r.state == Publishing {
                 Decision::Confirm {
                     staging: s,
@@ -144,7 +147,7 @@ fn decide(r: &Replay, disk: &impl Disk) -> Decision {
             })
         };
     };
-    if r.staging_removed {
+    if r.staging_removed || r.staging_left {
         return Decision::Cleanup(Cleanup {
             staging: Some(staging),
             ..Cleanup::default()
@@ -154,7 +157,10 @@ fn decide(r: &Replay, disk: &impl Disk) -> Decision {
         .staging_tokens
         .last()
         .expect("staging identity has a token");
-    if disk.in_parent(token) != Some(staging) {
+    if !disk
+        .in_parent(token)
+        .is_some_and(|o| staging.matches(&o, r.staging_planned))
+    {
         return attention(Attention::StagingMismatch);
     }
     // Names never identity-committed must be absent: never adopted, never deleted (row 3).
@@ -172,7 +178,7 @@ fn decide(r: &Replay, disk: &impl Disk) -> Decision {
     for held in r.held() {
         let verified = r.items[held.item as usize].verified;
         match disk.in_staging(staging, &held.name) {
-            Some(o) if o.id == held.id && o.links == 1 => present.push(held),
+            Some(o) if held.id.matches(&o.id, held.planned_ft) && o.links == 1 => present.push(held),
             None if !verified || cancel => gone.push(held),
             _ => mismatched.push(held.item),
         }

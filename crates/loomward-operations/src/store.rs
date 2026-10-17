@@ -118,6 +118,26 @@ impl Store {
         Ok(row.seq)
     }
 
+    /// Record the executor's plan for `op`, once. Written after `started` and before any effect; a second
+    /// write is refused, so recovery always reads the plan the run used.
+    pub fn set_plan(&mut self, op: u64, plan: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO op_plan(op_id,plan) VALUES(?1,?2)",
+            params![op as i64, plan],
+        )?;
+        Ok(())
+    }
+
+    pub fn plan(&self, op: u64) -> rusqlite::Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT plan FROM op_plan WHERE op_id=?1",
+                [op as i64],
+                |r| r.get(0),
+            )
+            .optional()
+    }
+
     /// The connection's `synchronous` level (2 = FULL, required for precious state, ADR-V3-22).
     pub fn synchronous(&self) -> rusqlite::Result<i64> {
         self.conn.query_row("PRAGMA synchronous", [], |r| r.get(0))

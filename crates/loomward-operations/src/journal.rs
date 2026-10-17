@@ -22,6 +22,16 @@ pub struct ObjectId {
     pub creation_ft: i64,
 }
 
+impl ObjectId {
+    /// `observed` is this journaled object: the same file ID with the journaled creation time, or with
+    /// the planned creation time journaled (`Record::Planned`) before metadata preservation changed it.
+    /// Never a name: a name only ever confirms an identity found this way.
+    pub fn matches(&self, observed: &ObjectId, planned: Option<i64>) -> bool {
+        self.file_id == observed.file_id
+            && (observed.creation_ft == self.creation_ft || Some(observed.creation_ft) == planned)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FenceCause {
@@ -128,6 +138,19 @@ pub enum Record {
     StagingRemoved {
         id: ObjectId,
     },
+    /// Intent (lane C5, #506): set these creation times next, on items (and on the staging folder when
+    /// `staging` is set). Creation-time preservation changes the identity record, so recovery must accept
+    /// the journaled ID with either its original or its planned creation time.
+    Planned {
+        items: Vec<(u32, i64)>,
+        staging: Option<i64>,
+    },
+    /// Cleanup outcome under the docs/47 Q1 default (`loomward-copy-staging-removal` off): nothing was
+    /// removed; the journaled staging folder, with whatever it holds, is left for the owner. `-> cancelled`
+    /// may follow. Loomward keeps no cleanup authority over it afterwards.
+    StagingLeft {
+        id: ObjectId,
+    },
 }
 
 impl Record {
@@ -139,6 +162,7 @@ impl Record {
                 | Record::PublishWithdrawn
                 | Record::ItemRemoved { .. }
                 | Record::StagingRemoved { .. }
+                | Record::StagingLeft { .. }
                 | Record::Transition {
                     to: OpState::Cancelling | OpState::Cancelled,
                     ..
@@ -174,6 +198,8 @@ pub struct Item {
     pub id: Option<ObjectId>,
     pub verified: bool,
     pub mismatches: u8,
+    /// Creation time journaled by `Record::Planned` for the current identity.
+    pub planned_ft: Option<i64>,
 }
 
 /// An item as recovery names it: always a journaled identity under a journaled staging-relative name.
@@ -182,6 +208,7 @@ pub struct StagedItem {
     pub item: u32,
     pub name: String,
     pub id: ObjectId,
+    pub planned_ft: Option<i64>,
 }
 
 /// The state a journal replays to.
@@ -198,7 +225,11 @@ pub struct Replay {
     /// Every staging token ever intended, in order; only the last can carry the staging identity.
     pub staging_tokens: Vec<String>,
     pub staging: Option<ObjectId>,
+    /// Creation time journaled by `Record::Planned` for the staging folder.
+    pub staging_planned: Option<i64>,
     pub staging_removed: bool,
+    /// `Record::StagingLeft`: the staging folder was left for the owner (Q1 default).
+    pub staging_left: bool,
     pub open_batch: Vec<u32>,
     /// Final name of a publish intent that is neither withdrawn nor superseded.
     pub publish: Option<String>,
@@ -245,7 +276,9 @@ impl Replay {
             items: Vec::new(),
             staging_tokens: Vec::new(),
             staging: None,
+            staging_planned: None,
             staging_removed: false,
+            staging_left: false,
             open_batch: Vec::new(),
             publish: None,
             seq: 0,
@@ -363,6 +396,7 @@ impl Replay {
             | Record::Identities { .. }
             | Record::Verified { .. }
             | Record::ItemFailed { .. }
+            | Record::Planned { .. }
             | Record::PublishIntent { .. } => true,
             Record::Transition { to, .. } => matches!(to, Copying | Staged | Blocked),
             _ => false,
@@ -443,7 +477,12 @@ impl Replay {
                 let mut open = std::mem::take(&mut self.open_batch);
                 covered.sort_unstable();
                 open.sort_unstable();
-                if covered != open {
+                // After an item failure the executor stops creating: the commit covers the items it
+                // created, and the never-attempted rest leave the batch with their names journaled and no
+                // identity (never adopted, reported if something appears there). Otherwise: exactly.
+                let partial = self.state != Copying
+                    && covered.iter().all(|i| open.binary_search(i).is_ok());
+                if covered.windows(2).any(|w| w[0] == w[1]) || (covered != open && !partial) {
                     return Err("identity commit does not cover the open batch exactly");
                 }
                 for (i, id) in items {
@@ -492,6 +531,9 @@ impl Replay {
                 if !(cancelling || self.state == Copying) || self.publish.is_some() {
                     return Err("removal outside copying or cancelling");
                 }
+                if self.staging_left {
+                    return Err("removal after the staging was left to the owner");
+                }
                 let item = self.item(i)?;
                 if item.id != Some(id) {
                     return Err("removal of an identity the item does not hold");
@@ -501,6 +543,34 @@ impl Replay {
                 }
                 item.id = None;
                 item.verified = false;
+                item.planned_ft = None;
+            }
+            Record::Planned { items, staging } => {
+                if self.state != Copying || (items.is_empty() && staging.is_none()) {
+                    return Err("planned metadata outside copying");
+                }
+                if staging.is_some() && self.staging.is_none() {
+                    return Err("planned staging metadata without a staging identity");
+                }
+                for (i, ft) in items {
+                    let item = self.item(i)?;
+                    if item.id.is_none() || item.verified {
+                        return Err("planned metadata without identity, or after verification");
+                    }
+                    item.planned_ft = Some(ft);
+                }
+                if staging.is_some() {
+                    self.staging_planned = staging;
+                }
+            }
+            Record::StagingLeft { id } => {
+                if self.state != Cancelling || self.publish.is_some() {
+                    return Err("staging left outside cancelling");
+                }
+                if self.staging != Some(id) || self.staging_removed || self.staging_left {
+                    return Err("staging left of an unjournaled identity");
+                }
+                self.staging_left = true;
             }
             Record::Transition { to, code } => {
                 match to {
@@ -522,7 +592,7 @@ impl Replay {
                     Cancelling if self.publish.is_some() => {
                         return Err("cancel with a publish intent not withdrawn")
                     }
-                    Cancelled => {
+                    Cancelled if !self.staging_left => {
                         let held = self.items.iter().any(|i| i.id.is_some());
                         if held || (self.staging.is_some() && !self.staging_removed) {
                             return Err("cancelled with journaled staging left");
@@ -558,7 +628,7 @@ impl Replay {
                 if self.state != Cancelling || self.publish.is_some() {
                     return Err("staging removal outside cancelling");
                 }
-                if self.staging != Some(id) || self.staging_removed {
+                if self.staging != Some(id) || self.staging_removed || self.staging_left {
                     return Err("staging removal of an unjournaled identity");
                 }
                 if self.items.iter().any(|i| i.id.is_some()) {
@@ -577,6 +647,7 @@ impl Replay {
                 item: i as u32,
                 name: it.name.clone()?,
                 id: it.id?,
+                planned_ft: it.planned_ft,
             })
         })
     }
