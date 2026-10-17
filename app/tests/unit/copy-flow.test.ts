@@ -271,4 +271,15 @@ describe('copy UI lifecycle (scripted transport only; no file effects)', () => {
     await f.abandon(client);
     expect(f.status).toBeNull(); expect(f.gated).toBe(true);
   });
+
+  it('keeps the left-in-place staging folder and the leftover staging names a cancel reports, for the receipt', async () => {
+    const f = selected(), { client, call } = scripted();
+    await f.review(client); await f.approve(client); await f.start(client);
+    call.mockResolvedValueOnce({ result: { ...status('cancelled'), staging_folder: '~lw-staging-cp_demo', leftover_staging_folders: ['~lw-staging-cp_old'] } } as never);
+    await f.cancel(client);
+    expect(f.status?.state).toBe('cancelled');
+    expect(f.status?.staging_folder).toBe('~lw-staging-cp_demo');
+    expect(f.status?.leftover_staging_folders).toEqual(['~lw-staging-cp_old']);
+    expect(f.canCancel).toBe(false);
+  });
 });
