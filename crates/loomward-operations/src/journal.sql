@@ -6,6 +6,15 @@ CREATE TABLE IF NOT EXISTS op_journal (
   body TEXT NOT NULL,                              -- JSON entry: fence epoch plus one record
   chain BLOB NOT NULL CHECK (length(chain) = 32),  -- SHA-256(previous chain, op_id, seq, body)
   PRIMARY KEY (op_id, seq)) STRICT, WITHOUT ROWID;
+-- Independent tail anchor; Store writes it in the journal append's transaction.
+CREATE TABLE IF NOT EXISTS op_journal_head (
+  op_id INTEGER PRIMARY KEY CHECK (op_id > 0),
+  seq INTEGER NOT NULL CHECK (seq > 0),
+  chain BLOB NOT NULL CHECK (length(chain) = 32)) STRICT;
+-- REPLACE's implicit delete need not run the delete trigger (recursive_triggers defaults to off).
+CREATE TRIGGER IF NOT EXISTS op_journal_no_replace BEFORE INSERT ON op_journal
+  WHEN EXISTS (SELECT 1 FROM op_journal WHERE op_id=NEW.op_id AND seq=NEW.seq)
+  BEGIN SELECT RAISE(ABORT, 'op_journal is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS op_journal_no_update BEFORE UPDATE ON op_journal
   BEGIN SELECT RAISE(ABORT, 'op_journal is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS op_journal_no_delete BEFORE DELETE ON op_journal
