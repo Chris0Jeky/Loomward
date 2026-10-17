@@ -9,6 +9,7 @@
 use super::source::FileIdObs;
 #[cfg(windows)]
 use super::tests::{canonical_tempdir, duplicate_budget, duplicate_grant_store, skip_elevated};
+#[cfg(windows)]
 use super::*;
 #[cfg(windows)]
 use crate::EngineConfig;
