@@ -122,6 +122,13 @@ fn filesystem(path: &Path) -> io::Result<String> {
 /// handle with write access, no content read. Called at `copy.preview` and again at `copy.start`,
 /// whose digest must equal the approved one.
 pub fn prepare(request: &Request) -> io::Result<(loomward_operations::Preview, Plan)> {
+    prepare_with_limit(request, loomward_operations::MAX_ITEMS as usize)
+}
+
+fn prepare_with_limit(
+    request: &Request,
+    limit: usize,
+) -> io::Result<(loomward_operations::Preview, Plan)> {
     use loomward_operations::{DestinationFacts, Identity, SourceEntry};
     let (_, root) = <enumerate::NativeSource as enumerate::DirSource>::open_root(
         &enumerate::NativeSource::default(),
@@ -148,6 +155,9 @@ pub fn prepare(request: &Request) -> io::Result<(loomward_operations::Preview, P
     };
     let mut entries = Vec::new();
     let mut observed: HashMap<String, (PathBuf, identity::ObservedIdentity)> = HashMap::new();
+    if request.selected.len() > limit {
+        return Err(invalid("manifest_limit"));
+    }
     let mut pending: Vec<(PathBuf, String)> = request
         .selected
         .iter()
@@ -160,7 +170,7 @@ pub fn prepare(request: &Request) -> io::Result<(loomward_operations::Preview, P
         })
         .collect::<io::Result<_>>()?;
     while let Some((relative, name)) = pending.pop() {
-        if entries.len() >= loomward_operations::MAX_ITEMS as usize {
+        if entries.len() >= limit {
             return Err(invalid("manifest_limit"));
         }
         let path = request.source_root.join(&relative);
@@ -173,6 +183,10 @@ pub fn prepare(request: &Request) -> io::Result<(loomward_operations::Preview, P
         let reparse = o.attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0;
         if directory && !reparse {
             for child in std::fs::read_dir(&path)? {
+                // Include the current directory, which has not entered `entries` yet.
+                if entries.len() + pending.len() + 1 >= limit {
+                    return Err(invalid("manifest_limit"));
+                }
                 let child = child?.file_name();
                 let child = child
                     .to_str()

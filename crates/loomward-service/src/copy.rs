@@ -30,8 +30,20 @@ pub(crate) struct Pending {
     preview: loomward_operations::Preview,
     approval: Option<loomward_operations::Approval>,
     /// Unix ms after which the entry is evicted (#569): the preview's TTL, extended to the approval's
-    /// own expiry once approved. `copy.start` re-observes everything, so a lapsed entry loses nothing.
+    /// own expiry once approved. A lapsed preview cannot be approved; `copy.start` also checks the
+    /// approval's expiry after re-observing everything.
     pub(crate) expires_ms: i64,
+}
+
+#[cfg(all(test, windows))]
+impl Pending {
+    pub(crate) fn expire_approval(&mut self) {
+        let approval =
+            loomward_operations::approve(&self.preview, self.preview.manifest.digest(), 0, 0)
+                .unwrap();
+        self.expires_ms = approval.expires_at_ms();
+        self.approval = Some(approval);
+    }
 }
 
 /// How long an unapproved preview is kept: as long as an approval lives.
@@ -569,6 +581,12 @@ impl Inner {
             .get_mut(request.operation_id.as_str())
             .ok_or_else(unknown)?;
         let now_ms = now_ns() / 1_000_000;
+        if now_ms >= p.expires_ms {
+            return Err(with_reason(
+                fail(ErrorCode::PermissionDenied, "the copy preview has expired"),
+                "preview_expired",
+            ));
+        }
         let approval =
             loomward_operations::approve(&p.preview, shown, 0, now_ms).map_err(|code| {
                 with_reason(

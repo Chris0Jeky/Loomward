@@ -281,6 +281,53 @@ mod lab_copy {
         assert_eq!(e.code, ErrorCode::NotFound, "{e:?}");
     }
 
+    #[test]
+    fn an_expired_copy_preview_cannot_be_approved_without_an_eviction_sweep() {
+        let Some((lab, a, b)) = scanned() else { return };
+        let svc = &lab.svc;
+        let p = preview(svc, &a, &b);
+        let op = p["operation_id"].as_str().unwrap();
+        svc.inner
+            .copies
+            .pending
+            .lock()
+            .unwrap()
+            .get_mut(op)
+            .unwrap()
+            .expires_ms = 0;
+        let consent = json!({"operation_id": op, "digest": digest(&p)});
+        let e = err(call(svc, "copy.approve", consent));
+        assert_eq!(reason(&e), Some("preview_expired"));
+        assert!(std::fs::read_dir(lab.path.join("b"))
+            .unwrap()
+            .next()
+            .is_none());
+    }
+
+    #[test]
+    fn an_expired_approved_copy_cannot_start_without_an_eviction_sweep() {
+        let Some((lab, a, b)) = scanned() else { return };
+        let svc = &lab.svc;
+        let p = preview(svc, &a, &b);
+        let op = p["operation_id"].as_str().unwrap();
+        let consent = json!({"operation_id": op, "digest": digest(&p)});
+        ok("copy.approve", call(svc, "copy.approve", consent.clone()));
+        svc.inner
+            .copies
+            .pending
+            .lock()
+            .unwrap()
+            .get_mut(op)
+            .unwrap()
+            .expire_approval();
+        let e = err(call(svc, "copy.start", consent));
+        assert_eq!(reason(&e), Some("approval_expired"));
+        assert!(std::fs::read_dir(lab.path.join("b"))
+            .unwrap()
+            .next()
+            .is_none());
+    }
+
     /// #569 item 1: a settled run is dropped from `running` (its status is durable in the journal; a
     /// finished worker holds nothing), while `copy.status` keeps answering from the journal.
     #[test]
