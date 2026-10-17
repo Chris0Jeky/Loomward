@@ -74,9 +74,11 @@ unclassified label fails the run, so the map cannot fall behind the executor.
 | CP-22 | C5 refused at `preparing` | `... transition:refused` |
 | CP-F | refusal records reached by fault scenarios | `item_failed`, `transition:blocked`, `transition:needs_attention` |
 
-C5 has no admission lock or fence epoch read at the rename (revocation is not wired into the executor).
-CP-16 is the point immediately before the rename call: the place that read will take. The revocation
-cases of section 10 (publish barrier, revoke at each boundary) wait for that wiring.
+C5 has the per-run admission lock and a fence epoch read at every effect step, the rename included
+(`crates/loomward-windows/src/effects/exec.rs`, `admit`; docs/47 section 5; #544). A revocation or an identity
+change fences a running copy (#564). CP-16 is the point immediately before the rename call, where the rename
+step takes the admission lock and reads the epoch. The revocation cases of section 10 are only partly covered;
+see "Not covered here".
 
 ## Scenarios
 
@@ -173,8 +175,10 @@ at 7.5 GB and at 9.1 GB free.
 
 - Real power cuts (G5) and the proven restore (G9): open, owner method pending (Q2).
 - Resume after a crash: C5 has none.
-- Revocation at each boundary, the publish barrier and the publish TOCTOU regression: they need the admission
-  lock and fence wiring, which C5 does not have.
+- Revocation at each boundary: `exec_tests.rs` fences at staging creation, identity commit, before and after
+  the rename, and mid-file at the 1 MiB chunk. Not fenced there: the `Writing`, `Written` and `Verified`
+  boundaries, and mid-file offsets other than 1 MiB. The publish barrier test and the publish TOCTOU regression
+  (docs/47 section 10) are not written.
 - A kill between `started` and the plan record (the service writes both): `recover` handles it as
   cancelled-before-plan, but no kill exercises it here.
 - Journal write failure injection (`state.db` full or locked).
