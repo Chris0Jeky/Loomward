@@ -401,6 +401,7 @@ pub(crate) fn unsafe_attributes(_: &std::fs::Metadata) -> bool {
 }
 
 /// Whether file attributes mark an online-only cloud file: offline, or recalled on open or data access.
+#[cfg_attr(not(windows), allow(dead_code))] // only the Windows caller and the platform-independent test use it
 pub(crate) fn placeholder_bits(attributes: u32) -> bool {
     const OFFLINE: u32 = 0x1000;
     const RECALL_ON_OPEN: u32 = 0x4_0000;

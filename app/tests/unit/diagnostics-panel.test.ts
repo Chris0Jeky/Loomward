@@ -1,5 +1,5 @@
 // The diagnostic panel keeps its state outside the component and coalesces reloads (#437).
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { Client } from '../../src/lib/transport/client';
 import { createMockTransport } from '../../src/lib/transport/mock';
 import type { DiagnosticsPreviewResult, RequestEnvelope, ResponseEnvelope } from '../../src/lib/contracts.gen';
@@ -40,22 +40,24 @@ async function setup(saves: Array<'deadline' | 'saved'> = []) {
       return { protocol: 'loomward/3', request_id: rid, ok: true, result: (await preview(base, n)) as unknown as Record<string, unknown>, meta: META };
     },
   });
-  const settle = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); await new Promise((r) => setTimeout(r, 5)); };
-  return { client, state, release: async () => { waiting.shift()?.(); await settle(); }, settle, auto: () => { state.auto = true; waiting.splice(0).forEach((r) => r()); } };
+  // Nothing here waits on the clock: a held call resolves only when the test releases it.
+  const release = () => { const next = waiting.shift(); if (!next) throw new Error('no preview call is waiting'); next(); };
+  return { client, state, release, waiting: () => waiting.length, auto: () => { state.auto = true; waiting.splice(0).forEach((r) => r()); } };
 }
 
 it('answers a burst of invalidations with one call running and one more, never one each', async () => {
-  const { client, state, release, settle } = await setup();
+  const { client, state, release, waiting } = await setup();
   const p = new DiagnosticsPanel();
   const first = p.refresh(client, String);
-  for (let i = 0; i < 100; i++) void p.refresh(client, String); // 100 scan invalidations while the first call is slow
-  await settle();
+  await vi.waitFor(() => expect(waiting()).toBe(1)); // the first call is now held in flight
+  for (let i = 0; i < 100; i++) void p.refresh(client, String); // 100 scan invalidations while it is slow
   expect(state.started).toBe(1);
-  await release(); // the first answer is older than the next ask: it is never shown
+  release(); // the first answer is older than the next ask: it is never shown
+  await vi.waitFor(() => expect(waiting()).toBe(1)); // the one follow-up call is now held
+  expect(state.started).toBe(2);
   expect(p.preview).toBeNull();
   expect(p.verified).toBeNull();
-  expect(state.started).toBe(2);
-  await release();
+  release();
   await first;
   expect(state.started).toBe(2);
   expect(state.maxInFlight).toBe(1);
@@ -65,7 +67,7 @@ it('answers a burst of invalidations with one call running and one more, never o
 });
 
 it('keeps a pending save and its frozen preview across the component, and reloads once afterwards', async () => {
-  const { client, state, auto, settle } = await setup(['deadline', 'saved']);
+  const { client, state, auto } = await setup(['deadline', 'saved']);
   auto();
   const p = new DiagnosticsPanel();
   await p.refresh(client, String);
@@ -75,12 +77,11 @@ it('keeps a pending save and its frozen preview across the component, and reload
   expect(p.problem).toContain('still pending');
   // the view is left and re-entered (a new component asks again) while the save is unknown
   for (let i = 0; i < 5; i++) void p.refresh(client, String);
-  await settle();
-  expect(state.started).toBe(1); // nothing reloaded under the open dialog
+  expect(state.started).toBe(1); // nothing reloaded under the open dialog (the asks are answered synchronously)
   expect(p.preview?.digest).toBe(shown); // and the text shown is still the text being saved
   await p.save(client, String);
   expect(p.notice).toContain('Saved 2,835 bytes');
-  await settle();
+  await vi.waitFor(() => expect(p.loading).toBe(false));
   expect(state.started).toBe(2); // one reload for the five asks
   expect(p.preview?.digest).not.toBe(shown);
 });
