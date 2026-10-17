@@ -603,11 +603,17 @@ up to 60,000: the call waits on the owner. It is the only open command whose `ef
 | `copy.cancel`, `copy.abandon` | `operation_id` | `CopyStatus` | `copy_and_verify` (own staging only) |
 | `copy.status` | `operation_id` | `CopyStatus` | none |
 
-Every copy command answers `capability_unavailable` with `detail.reason` `copy_effect_gated`, on both adapters
-and in every dataset class, until docs/47 lane C8 opens the gate; `capabilities.effects` stays all false. A
+Synthetic sessions are served on registered lab roots only (docs/47 lane C5): every source and the destination
+must sit under a lab-root grant. A personal session answers every copy command with `capability_unavailable`,
+`detail.reason` `copy_effect_gated`, on both adapters, until docs/47 lane C8 opens the gate. `capabilities.effects`
+has no flag that can say "synthetic only", so it stays all false and serving is decided by dataset class. A
 personal session's `copy.approve` over HTTP is refused by its own rule, `copy_personal_approval_http` (docs/47
-G6): personal approvals come only from the desktop's native confirmation. When the lab path opens (C5), the
-rules are these. A node ID only selects what the engine observes afresh; the manifest records the native
+G6): personal approvals come only from the desktop's native confirmation. MCP has no copy command. `copy.cancel`
+and `copy.abandon` stop the run; by default (docs/47 Q1 open, setting `loomward-copy-staging-removal` off) they
+leave the staging folder in the destination parent and return its name in `staging_folder`; with the setting on,
+Loomward removes only its own journaled staging, by identity. In C5 a `blocked`, `needs_attention` or interrupted
+operation's only exit is `copy.abandon` (no resume yet); `copy.start` on a started operation is refused. The rules
+for the lab path are these. A node ID only selects what the engine observes afresh; the manifest records the native
 identities, sizes and metadata observed, and its `digest` (SHA-256 over the destination grant, parent identity and
 new folder name, every exact item name in sorted order, bytes, identities and preserved metadata) is what the
 owner approves. An approval is single use and expires after 30 minutes. `copy.start` rebuilds the manifest from

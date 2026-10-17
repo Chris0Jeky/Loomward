@@ -126,7 +126,7 @@ impl Code {
 }
 
 /// A native object identity: volume serial number plus the 128-bit file ID.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Identity {
     pub volume: u64,
     pub file_id: [u8; 16],
@@ -192,7 +192,7 @@ pub struct Context {
     pub date: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManifestItem {
     /// Exact name relative to the new folder, `/`-joined.
     pub name: String,
@@ -207,7 +207,7 @@ pub struct ManifestItem {
     pub streams: Vec<(String, u64)>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Destination {
     pub grant: u64,
     pub parent: Identity,
@@ -216,7 +216,7 @@ pub struct Destination {
 }
 
 /// The canonical manifest: items sorted by exact name.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
     pub destination: Destination,
     /// When exactly one non-empty folder is selected, the new folder is its copy: this is that folder

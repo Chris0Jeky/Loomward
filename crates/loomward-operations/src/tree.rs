@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 pub type Observation<T> = Result<T, &'static str>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Kind {
     File,
     Directory,

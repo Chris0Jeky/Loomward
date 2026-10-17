@@ -1,6 +1,21 @@
 use super::*;
 use std::{fs, io::Write};
 
+/// Hosted runners are elevated, and every primitive refuses an elevated token (invariant 2): prove the
+/// refusal, then skip the rest of the test with the reason.
+fn skip_elevated() -> bool {
+    if !crate::enumerate::running_elevated() {
+        return false;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    assert!(
+        crate::identity::observe(temp.path()).is_err(),
+        "an elevated token must be refused before any identity is observed"
+    );
+    eprintln!("skipped: elevated token; copy primitives refuse elevation (invariant 2)");
+    true
+}
+
 fn lab() -> (tempfile::TempDir, Destination) {
     let temp = tempfile::tempdir().unwrap();
     let expected = crate::identity::observe(temp.path()).unwrap().object;
@@ -10,6 +25,9 @@ fn lab() -> (tempfile::TempDir, Destination) {
 
 #[test]
 fn staging_guard_rename_is_blocked() {
+    if skip_elevated() {
+        return;
+    }
     let (temp, destination) = lab();
     let stage = destination.stage("staging").unwrap();
     let guard = stage.guard().unwrap();
@@ -20,6 +38,9 @@ fn staging_guard_rename_is_blocked() {
 
 #[test]
 fn destination_pin_rename_is_blocked() {
+    if skip_elevated() {
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     let parent = temp.path().join("parent");
     fs::create_dir(&parent).unwrap();
@@ -32,6 +53,9 @@ fn destination_pin_rename_is_blocked() {
 
 #[test]
 fn nested_pin_rename_is_blocked() {
+    if skip_elevated() {
+        return;
+    }
     let (temp, destination) = lab();
     let stage = destination.stage("staging").unwrap();
     let child = stage.create_directory(&[], "child").unwrap();
@@ -56,6 +80,9 @@ fn assert_rename_blocked(from: &Path) {
 
 #[test]
 fn unsupported_staged_attributes_have_a_typed_refusal() {
+    if skip_elevated() {
+        return;
+    }
     for attribute in [
         FILE_ATTRIBUTE_COMPRESSED,
         FILE_ATTRIBUTE_ENCRYPTED,
@@ -83,6 +110,9 @@ fn unsupported_staged_attributes_have_a_typed_refusal() {
 
 #[test]
 fn compressed_destination_is_refused_before_staging() {
+    if skip_elevated() {
+        return;
+    }
     let (temp, destination) = lab();
     compress_path(temp.path());
     let error = destination
@@ -96,6 +126,9 @@ fn compressed_destination_is_refused_before_staging() {
 
 #[test]
 fn compressed_staged_directory_is_refused() {
+    if skip_elevated() {
+        return;
+    }
     let (temp, destination) = lab();
     let stage = destination.stage("staging").unwrap();
     compress_path(&temp.path().join("staging"));
@@ -109,6 +142,9 @@ fn compressed_staged_directory_is_refused() {
 
 #[test]
 fn compressed_staged_file_is_refused_by_verification() {
+    if skip_elevated() {
+        return;
+    }
     let (temp, destination) = lab();
     let stage = destination.stage("staging").unwrap();
     let file = stage.create_file(&[], "payload").unwrap();
@@ -129,6 +165,9 @@ fn compressed_staged_file_is_refused_by_verification() {
 
 #[test]
 fn compressed_metadata_is_refused_before_masking() {
+    if skip_elevated() {
+        return;
+    }
     let (temp, destination) = lab();
     let stage = destination.stage("staging").unwrap();
     let file = stage.create_file(&[], "payload").unwrap();
@@ -174,6 +213,9 @@ fn compress_path(path: &Path) {
 
 #[test]
 fn create_new_and_publish_never_replace() {
+    if skip_elevated() {
+        return;
+    }
     let (temp, destination) = lab();
     fs::write(temp.path().join("taken"), b"keep").unwrap();
     assert!(destination.stage("taken").is_err());
@@ -201,6 +243,9 @@ fn create_new_and_publish_never_replace() {
 
 #[test]
 fn noncached_partial_sector_sizes() {
+    if skip_elevated() {
+        return;
+    }
     let (_temp, destination) = lab();
     println!(
         "H3 IOCTL physical-sector alignment: {} bytes",
@@ -226,6 +271,9 @@ fn noncached_partial_sector_sizes() {
 
 #[test]
 fn cleanup_refuses_replacement_hardlink_and_renamed_staging() {
+    if skip_elevated() {
+        return;
+    }
     let (temp, destination) = lab();
     let stage = destination.stage("staging").unwrap();
     let file = stage.create_file(&[], "payload").unwrap();
@@ -256,6 +304,9 @@ fn cleanup_refuses_replacement_hardlink_and_renamed_staging() {
 
 #[test]
 fn invalid_components_never_escape_staging() {
+    if skip_elevated() {
+        return;
+    }
     let (_temp, destination) = lab();
     let stage = destination.stage("staging").unwrap();
     for name in [
@@ -277,6 +328,9 @@ fn invalid_components_never_escape_staging() {
 
 #[test]
 fn metadata_survives_reopen_and_readonly_cleanup() {
+    if skip_elevated() {
+        return;
+    }
     let (_temp, destination) = lab();
     let stage = destination.stage("staging").unwrap();
     let file = stage.create_file(&[], "payload").unwrap();
@@ -297,6 +351,9 @@ fn metadata_survives_reopen_and_readonly_cleanup() {
 
 #[test]
 fn verification_holds_deny_writers_and_detects_corruption() {
+    if skip_elevated() {
+        return;
+    }
     let (temp, destination) = lab();
     let stage = destination.stage("staging").unwrap();
     let file = stage.create_file(&[], "payload").unwrap();
@@ -325,6 +382,9 @@ fn verification_holds_deny_writers_and_detects_corruption() {
 
 #[test]
 fn h1_relative_named_stream_open_measurement() {
+    if skip_elevated() {
+        return;
+    }
     let (temp, destination) = lab();
     let stage = destination.stage("staging").unwrap();
     let file = stage.create_file(&[], "payload").unwrap();
@@ -361,6 +421,9 @@ fn h1_relative_named_stream_open_measurement() {
 
 #[test]
 fn h2_child_handle_without_delete_share_blocks_publish() {
+    if skip_elevated() {
+        return;
+    }
     use std::{
         io::{BufRead, BufReader},
         process::{Command, Stdio},
@@ -401,6 +464,9 @@ fn h2_child_handle_without_delete_share_blocks_publish() {
 
 #[test]
 fn held_child_process() {
+    if skip_elevated() {
+        return;
+    }
     use std::os::windows::fs::OpenOptionsExt;
     let Some(path) = std::env::var_os("LOOMWARD_C2_HELD_FIXTURE") else {
         return;
@@ -417,6 +483,9 @@ fn held_child_process() {
 
 #[test]
 fn h5_null_descriptor_inherits_all_aces() {
+    if skip_elevated() {
+        return;
+    }
     use windows_sys::Win32::Security::*;
     let (_temp, destination) = lab();
     let stage = destination.stage("staging").unwrap();
@@ -476,6 +545,9 @@ fn h5_null_descriptor_inherits_all_aces() {
 
 #[test]
 fn nested_parents_are_identity_bound() {
+    if skip_elevated() {
+        return;
+    }
     let (temp, destination) = lab();
     let stage = destination.stage("staging").unwrap();
     let dir = stage.create_directory(&[], "nested").unwrap();
@@ -520,6 +592,9 @@ fn budget() -> duplicate_reader::Budget {
 
 #[test]
 fn source_pins_signatures_denies_writers_and_never_changes_source() {
+    if skip_elevated() {
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     fs::write(temp.path().join("source"), b"untouched").unwrap();
     let (root, entry) = source_fixture(&temp);
@@ -552,6 +627,9 @@ fn source_pins_signatures_denies_writers_and_never_changes_source() {
 
 #[test]
 fn named_stream_source_keeps_bytes_and_deny_write_holds() {
+    if skip_elevated() {
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     fs::write(temp.path().join("source"), b"data").unwrap();
     fs::write(temp.path().join("source:synthetic"), b"must survive").unwrap();
@@ -574,6 +652,9 @@ fn named_stream_source_keeps_bytes_and_deny_write_holds() {
 
 #[test]
 fn by_id_flag_measurement() {
+    if skip_elevated() {
+        return;
+    }
     let (_temp, destination) = lab();
     let stage = destination.stage("staging").unwrap();
     let file = stage.create_file(&[], "payload").unwrap();
@@ -647,6 +728,9 @@ fn by_id_flag_measurement() {
 
 #[test]
 fn named_stream_create_new_write_and_noncached_verify() {
+    if skip_elevated() {
+        return;
+    }
     let (_temp, destination) = lab();
     let stage = destination.stage("staging").unwrap();
     let file = stage.create_file(&[], "payload").unwrap();
@@ -666,6 +750,9 @@ fn named_stream_create_new_write_and_noncached_verify() {
 
 #[test]
 fn bottom_up_directory_metadata_and_identity_bound_cleanup() {
+    if skip_elevated() {
+        return;
+    }
     let (temp, destination) = lab();
     let stage = destination.stage("staging").unwrap();
     let original = stage.create_directory(&[], "nested").unwrap();
@@ -699,6 +786,9 @@ fn bottom_up_directory_metadata_and_identity_bound_cleanup() {
 
 #[test]
 fn cleanup_rejects_forged_creation_time_and_preserves_unrecorded_entries() {
+    if skip_elevated() {
+        return;
+    }
     let (temp, destination) = lab();
     let stage = destination.stage("staging").unwrap();
     let file = stage.create_file(&[], "payload").unwrap();
@@ -717,6 +807,9 @@ fn cleanup_rejects_forged_creation_time_and_preserves_unrecorded_entries() {
 
 #[test]
 fn partial_write_is_kept_and_cannot_be_appended_as_a_new_copy() {
+    if skip_elevated() {
+        return;
+    }
     let (temp, destination) = lab();
     let stage = destination.stage("staging").unwrap();
     let file = stage.create_file(&[], "payload").unwrap();
@@ -733,6 +826,9 @@ fn partial_write_is_kept_and_cannot_be_appended_as_a_new_copy() {
 
 #[test]
 fn elevation_and_reparse_parents_refuse() {
+    if skip_elevated() {
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     let expected = identity::observe(temp.path()).unwrap().object;
     {
@@ -756,6 +852,9 @@ fn elevation_and_reparse_parents_refuse() {
 
 #[test]
 fn unsupported_source_attribute_refuses_before_copy() {
+    if skip_elevated() {
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     fs::write(temp.path().join("source"), b"data").unwrap();
     let file = fs::OpenOptions::new()
@@ -781,6 +880,9 @@ fn unsupported_source_attribute_refuses_before_copy() {
 
 #[test]
 fn staging_root_metadata_remains_bound_through_publish() {
+    if skip_elevated() {
+        return;
+    }
     let (temp, destination) = lab();
     let mut stage = destination.stage("staging").unwrap();
     let metadata = BasicMetadata {
@@ -801,6 +903,9 @@ fn staging_root_metadata_remains_bound_through_publish() {
 
 #[test]
 fn too_many_streams_refuse() {
+    if skip_elevated() {
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     fs::write(temp.path().join("source"), b"data").unwrap();
     for i in 0..65 {
@@ -815,6 +920,9 @@ fn too_many_streams_refuse() {
 
 #[test]
 fn existing_named_stream_writer_is_source_in_use() {
+    if skip_elevated() {
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     fs::write(temp.path().join("source"), b"data").unwrap();
     fs::write(temp.path().join("source:synthetic"), b"stream").unwrap();
@@ -832,6 +940,9 @@ fn existing_named_stream_writer_is_source_in_use() {
 
 #[test]
 fn physical_sector_geometry_requires_known_compatible_powers_of_two() {
+    if skip_elevated() {
+        return;
+    }
     assert_eq!(sector_alignment(512, 4096).unwrap(), 4096);
     assert_eq!(sector_alignment(512, 512).unwrap(), 512);
     for (logical, physical) in [

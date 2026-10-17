@@ -12,7 +12,7 @@ const manifest: CopyPreview = {
 };
 const status = (state: CopyStatus['state']): CopyStatus => ({
   operation_id: manifest.operation_id, digest, state, items_total: 3,
-  items_verified: state === 'committed' ? 3 : 0, refusal: null,
+  items_verified: state === 'committed' ? 3 : 0, staging_folder: null, leftover_staging_folders: [], refusal: null,
 });
 function scripted() {
   const call = vi.fn(async (command: string) => {

@@ -760,6 +760,7 @@ dependencies = [
  "loomward-backup",
  "loomward-catalog",
  "loomward-engine",
+ "loomward-operations",
  "loomward-protocol",
  "loomward-shell",
  "loomward-telemetry",
