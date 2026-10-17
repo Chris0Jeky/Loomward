@@ -884,7 +884,7 @@
         "name": { "type": "string", "maxLength": 260 },
         "extension": { "type": ["string", "null"], "maxLength": 32 },
         "ext_family": { "anyOf": [{ "$ref": "#/$defs/ExtFamily" }, { "type": "null" }] },
-        "logical_bytes": { "$ref": "#/$defs/ByteCount" },
+        "logical_bytes": { "$ref": "#/$defs/NullableBytes", "$comment": "Null for a search folder whose aggregate is unsettled; never present its old aggregate as a current size." },
         "allocated_bytes": { "$ref": "#/$defs/NullableBytes" },
         "files": { "$ref": "#/$defs/NullableCount" },
         "dirs": { "$ref": "#/$defs/NullableCount" },
@@ -1127,7 +1127,7 @@
         "budget_hit": { "type": "boolean" },
         "index_state": { "enum": ["current", "building", "stale"], "$comment": "building: a searched root is being scanned; stale: a searched root is stale or failed. The index itself follows every catalogue commit." },
         "partial": { "type": "boolean", "$comment": "A searched root does not have complete coverage: no hit is not proof of absence." },
-        "substring_searched": { "type": "boolean", "$comment": "False for texts too short for a trigram (or with a word under three characters): only whole names, name starts and word starts were searched." },
+        "substring_searched": { "type": "boolean", "$comment": "False when full inner-substring matching was unavailable. In v1, one character searches whole names (including the name up to a dot) only; two characters also search name and word starts. Matching words separately requires at least two characters per word for starts and three for inner matches. Ranked search can also use short token prefixes." },
         "roots": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/SearchRootCoverage" } },
         "unverified_hits": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/SearchUnverifiedHit" }, "$comment": "Federated extension: hits that are not yet catalogue rows, kept apart from hits. Omitted when features.federated_search is false." }
       }

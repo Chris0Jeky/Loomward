@@ -416,7 +416,7 @@ def check_explorer_mock(page: Page, base: str, shoot) -> None:
     expect(box).to_be_focused()
     page.get_by_placeholder('Search names').fill('d')
     page.get_by_role('button', name='Search', exact=True).click()
-    expect(page.get_by_role('list', name='Search coverage')).to_contain_text('Type three characters')
+    expect(page.get_by_role('list', name='Search coverage')).to_contain_text('one character searches whole names (or the name before a dot); two also search name and word starts.')
     print('PASS search tiers, highlights, short-text notice and keyboard walk')
     page.get_by_label('Kind').select_option('any')
     page.get_by_placeholder('Search names').fill('')

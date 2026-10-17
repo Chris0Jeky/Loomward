@@ -607,7 +607,8 @@ export interface EntryRow {
   name: string;
   extension: string | null;
   ext_family: ExtFamily | null;
-  logical_bytes: ByteCount;
+  /** Null for a search folder whose aggregate is unsettled; never present its old aggregate as a current size. */
+  logical_bytes: NullableBytes;
   allocated_bytes: NullableBytes;
   files: NullableCount;
   dirs: NullableCount;
@@ -777,7 +778,7 @@ export interface SearchPage {
   index_state: "current" | "building" | "stale";
   /** A searched root does not have complete coverage: no hit is not proof of absence. */
   partial: boolean;
-  /** False for texts too short for a trigram (or with a word under three characters): only whole names, name starts and word starts were searched. */
+  /** False when full inner-substring matching was unavailable. In v1, one character searches whole names (including the name up to a dot) only; two characters also search name and word starts. Matching words separately requires at least two characters per word for starts and three for inner matches. Ranked search can also use short token prefixes. */
   substring_searched: boolean;
   roots: SearchRootCoverage[];
   /** Federated extension: hits that are not yet catalogue rows, kept apart from hits. Omitted when features.federated_search is false. */

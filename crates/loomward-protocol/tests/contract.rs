@@ -18,6 +18,24 @@ fn contracts() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contracts/v3")
 }
 
+#[test]
+fn an_unsettled_search_row_has_required_nullable_sizes() {
+    let mut row = read(&contracts().join("examples/commands/search.query.result.json"))["hits"][0]
+        ["row"]
+        .clone();
+    row["kind"] = json!("dir");
+    row["coverage"] = json!("unknown");
+    for field in ["logical_bytes", "allocated_bytes", "files", "dirs"] {
+        row[field] = Value::Null;
+    }
+    let mut schema = Schema::load();
+    assert!(schema.errors("EntryRow", &row).is_empty());
+    assert_eq!(roundtrip("EntryRow", &row).unwrap().unwrap(), row);
+    row.as_object_mut().unwrap().remove("logical_bytes");
+    assert!(!schema.errors("EntryRow", &row).is_empty());
+    assert!(roundtrip("EntryRow", &row).unwrap().is_err());
+}
+
 fn read(path: &Path) -> Value {
     let text = fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()))

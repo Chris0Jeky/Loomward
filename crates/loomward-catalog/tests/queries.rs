@@ -616,8 +616,13 @@ fn budget_hit_is_visible_and_progress_handler_does_not_poison_later_queries() {
         time_budget: None,
         scope: None,
     };
+    assert!(matches!(r.search(&req), Err(Error::ResourceBudget)));
+    // Skipping the folder range advances a file-only cursor even with this tiny budget.
+    req.kind = "file".into();
     let p = r.search(&req).unwrap();
     assert!(p.budget_hit);
+    assert!(p.next_cursor.unwrap().last_key > i64::MIN);
+    req.kind = "any".into();
     req.text = "synthetic".into();
     req.work_budget = 1_000_000;
     let p = r.search(&req).unwrap();
@@ -1369,24 +1374,22 @@ fn breakdown_sql_error_survives_exhausted_budget() {
 fn pure_budget_interrupt_still_reports_budget_cut() {
     let (_tmp, c, grant, root, _) = setup();
     let mut reader = c.reader().unwrap();
-    let page = reader
-        .search(&SearchRequest {
-            root_id: Some(grant),
-            text: "no match".into(),
-            extension: None,
-            min_bytes: None,
-            max_bytes: None,
-            modified_after: None,
-            modified_before: None,
-            kind: "any".into(),
-            limit: 10,
-            cursor: None,
-            work_budget: 1,
-            time_budget: None,
-            scope: None,
-        })
-        .unwrap();
-    assert!(page.budget_hit);
+    let page = reader.search(&SearchRequest {
+        root_id: Some(grant),
+        text: "no match".into(),
+        extension: None,
+        min_bytes: None,
+        max_bytes: None,
+        modified_after: None,
+        modified_before: None,
+        kind: "any".into(),
+        limit: 10,
+        cursor: None,
+        work_budget: 1,
+        time_budget: None,
+        scope: None,
+    });
+    assert!(matches!(page, Err(Error::ResourceBudget)));
     let b = reader
         .breakdown(root, "extension", Basis::Allocated, 10, 1)
         .unwrap();
