@@ -7,7 +7,7 @@
   import { formatBytes } from '../../lib/format/bytes';
   import VisibleName from '../../lib/ui/VisibleName.svelte';
   import type { AskField, AskStatus, AskTurnRecord, AskCitation, NodeDetail, Root } from '../../lib/contracts.gen';
-  import { FAILURE_WORDS, piecesOf, providerOf, scopeOf, scopeSentence, shortDigest } from './model';
+  import { FAILURE_WORDS, sentencesOf, providerOf, scopeOf, scopeSentence, shortDigest } from './model';
 
   const FIELD_WORDS: Record<AskField, string> = { path: 'Paths inside the folder', size: 'Sizes', modified: 'Modified dates', attributes: 'Attributes' };
   const POLL_MS = 400;
@@ -44,7 +44,7 @@
       const [s, r] = await Promise.all([session.client.call('ask.status', {}), session.client.call('roots.list', {})]);
       if (mine !== generation) return;
       status = s.result; roots = r.result.roots;
-      if (s.result.last_turn && turn?.turn_id !== s.result.last_turn) await read(s.result.last_turn, mine);
+      if (s.result.last_turn && (turn?.turn_id !== s.result.last_turn || turn?.state === 'running')) await read(s.result.last_turn, mine);
     } catch (e) {
       if (mine === generation) { error = session.handle(e); status = null; }
     } finally { if (mine === generation) loading = false; }
@@ -182,7 +182,7 @@
     {:else if turn.failure}
       <p class="bad" data-testid="ask-failure">{FAILURE_WORDS[turn.failure.kind] ?? turn.failure.message} <span class="muted small">({turn.failure.kind}{turn.failure.dispatched ? '; the request may have been sent' : '; nothing was sent'})</span></p>
     {:else}
-      <p class="answer" data-testid="ask-answer">{#each piecesOf(turn) as p, i (i)}{#if 'text' in p}{p.text}{:else if p.citation}<button class="cite" type="button" aria-label={`Citation ${p.handle}: ${p.citation.name ?? 'entry no longer readable'}`} onclick={() => void open(p.citation!)}><span class="h">{p.handle}</span>{#if p.citation.name}<VisibleName name={p.citation.name} />{:else}<span class="unknown">no longer readable</span>{/if}</button>{:else}<span class="tag warn" title="The model named this handle, but it never looked it up">{p.handle} · unverified reference</span>{/if}{/each}</p>
+      <p class="answer" data-testid="ask-answer">{#each sentencesOf(turn) as sentence, s (s)}<span>{#if sentence.unsupported}<span class="tag warn">Unsupported · no citation</span> {/if}{#each sentence.pieces as p, i (i)}{#if 'text' in p}{p.text}{:else if p.citation}<button class="cite" type="button" aria-label={`Citation ${p.handle}: ${p.citation.name ?? 'entry no longer readable'}`} onclick={() => void open(p.citation!)}><span class="h">{p.handle}</span>{#if p.citation.name}<VisibleName name={p.citation.name} />{:else}<span class="unknown">no longer readable</span>{/if}</button>{:else}<span class="tag warn" title="The model named this handle, but it never looked it up">{p.handle} · unverified reference</span>{/if}{/each}</span>{/each}</p>
       {#if turn.answer_truncated}<p class="muted small">The answer was cut at 16,000 characters.</p>{/if}
       <p class="muted small">Plain text from the model. Suggestions are not actions: nothing here runs, moves or approves anything.</p>
     {/if}
