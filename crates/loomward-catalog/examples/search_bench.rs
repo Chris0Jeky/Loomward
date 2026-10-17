@@ -228,6 +228,10 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         drop(c);
         if migrate {
             let before = std::fs::metadata(temp.path().join("catalog.db"))?.len();
+            // The same open without the option, for the share of the migrated open that is not the index.
+            let started = Instant::now();
+            drop(Catalog::open(temp.path(), "synthetic")?);
+            receipt["plain_reopen_seconds"] = json!(started.elapsed().as_secs_f64());
             let started = Instant::now();
             let c = Catalog::open_with(
                 temp.path(),

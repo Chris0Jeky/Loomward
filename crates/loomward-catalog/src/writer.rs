@@ -622,6 +622,7 @@ fn serve(
     // A store that has just opted into the ranked token index is backfilled here, one bounded
     // round per transaction, only while no command is waiting (#520).
     let mut backfill = crate::search::backfilling(&conn).unwrap_or(false);
+    let mut backfill_after = Instant::now();
     loop {
         let first = loop {
             if cut_pending && Instant::now() >= next_retry {
@@ -629,13 +630,15 @@ fn serve(
                 retry_delay = (retry_delay * 2).min(Duration::from_secs(30));
                 next_retry = Instant::now() + retry_delay;
             }
-            if backfill && pending.is_none() {
+            if backfill && pending.is_none() && Instant::now() >= backfill_after {
                 match rx.try_recv() {
                     Ok(p) => pending = Some(p),
                     Err(crossbeam_channel::TryRecvError::Empty) => {
-                        // ponytail: an error stops the backfill until the next open resumes it; the
-                        // reader keeps saying "building" meanwhile. Retry here if that proves too slow.
-                        backfill = backfill_step(&mut conn).unwrap_or(false);
+                        // A failed round (a lock held elsewhere) rolls back and is retried a second later.
+                        match backfill_step(&mut conn) {
+                            Ok(more) => backfill = more,
+                            Err(_) => backfill_after = Instant::now() + Duration::from_secs(1),
+                        }
                         continue;
                     }
                     Err(crossbeam_channel::TryRecvError::Disconnected) => {}
@@ -644,10 +647,15 @@ fn serve(
             if let Some(p) = pending.take() {
                 break Some(p);
             }
-            if !cut_pending {
+            if !cut_pending && !backfill {
                 break rx.recv().ok();
             }
-            match rx.recv_timeout(next_retry.saturating_duration_since(Instant::now())) {
+            let wake = match (cut_pending, backfill) {
+                (true, true) => next_retry.min(backfill_after),
+                (true, false) => next_retry,
+                _ => backfill_after,
+            };
+            match rx.recv_timeout(wake.saturating_duration_since(Instant::now())) {
                 Ok(p) => break Some(p),
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
                 Err(_) => break None,
