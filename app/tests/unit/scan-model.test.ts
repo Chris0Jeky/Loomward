@@ -14,6 +14,21 @@ const job = (state: JobState, over: Partial<Job> = {}): Job => ({
 });
 const done = (over: Partial<Job> = {}) => job('completed', { finished_at: '2026-10-10T10:00:05Z', coverage: 'complete', progress: progress(), ...over });
 
+it('names a depth-limited scan and keeps its lower-bound warning', () => {
+  const p = { ...progress({ limit_hit: true }), limit_reason: 'depth_limit' as const };
+  const view = viewOf(done({ coverage: 'partial', progress: p }), T0);
+  expect(view.activity).toBe('partial');
+  expect(view.headline).toBe('Stopped at its directory depth limit');
+  expect(view.detail).toContain('Totals are lower bounds');
+});
+
+it('retains the depth-limit reason when merging legacy progress', () => {
+  const p = { ...progress({ limit_hit: true }), limit_reason: 'depth_limit' as const };
+  const book = applyJob({}, done({ rev: LEGACY_REV, coverage: 'partial', progress: p }));
+  const merged = applyJob(book, done({ rev: LEGACY_REV, coverage: 'partial', progress: progress() }));
+  expect(viewOf(merged.rt_a!, T0).headline).toBe('Stopped at its directory depth limit');
+});
+
 describe('applying job snapshots', () => {
   it('follows queued, running, cancel requested, cancelled', () => {
     let b: Book = {};

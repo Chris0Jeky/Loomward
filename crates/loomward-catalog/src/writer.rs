@@ -411,12 +411,12 @@ impl Context {
                 break;
             }
             path.push(id);
-            if path.len() > 512 {
+            if path.len() > MAX_DIRECTORY_CHAIN_LENGTH {
                 return Err(Error::Invalid("tree depth limit"));
             }
             current = self.parent(conn, t, id)?;
         }
-        if path.len() + length > 512 {
+        if path.len() + length > MAX_DIRECTORY_CHAIN_LENGTH {
             return Err(Error::Invalid("tree depth limit"));
         }
         for id in path.into_iter().rev() {
@@ -456,7 +456,7 @@ impl Context {
                 current = self.parent(conn, t, id)?;
                 count += 1;
                 // Backstop only: check_chains already bounded every seed inside its savepoint.
-                if count > 512 {
+                if count > MAX_DIRECTORY_CHAIN_LENGTH {
                     return Err(Error::Invalid("directory identity cycle"));
                 }
             }
@@ -2103,7 +2103,7 @@ fn publish(
         for id in moved {
             let too_deep: bool = conn.prepare_cached(
                 &format!("WITH RECURSIVE subtree(id,height) AS (SELECT ?1,0 UNION ALL SELECT d.id,s.height+1 FROM {d} d JOIN subtree s ON d.parent_id=s.id WHERE s.height<?2) SELECT EXISTS(SELECT 1 FROM subtree WHERE height=?2)"),
-            )?.query_row(params![id, 512 - destination as i64], |r| r.get(0))?;
+            )?.query_row(params![id, MAX_DIRECTORY_CHAIN_LENGTH as i64 - destination as i64], |r| r.get(0))?;
             if too_deep {
                 return Err(Error::Invalid("tree depth limit"));
             }

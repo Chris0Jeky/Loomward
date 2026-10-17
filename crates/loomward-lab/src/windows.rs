@@ -1363,6 +1363,7 @@ mod tests {
             complete: true,
             strategy: Strategy::Portable,
             limit_hit: false,
+            limit_reason: None,
             examined: 12,
             enumeration_attempts: 12,
             skipped: 0,

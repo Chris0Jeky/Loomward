@@ -78,6 +78,12 @@ pub enum ScanProgressPhase {
     Done,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScanLimitReason {
+    DepthLimit,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScanProgress {
@@ -96,6 +102,13 @@ pub struct ScanProgress {
     pub entries_per_second: Rate,
     pub elapsed_ms: Count,
     pub limit_hit: bool,
+    /// Absent when the scan did not hit the depth cap (including older responses).
+    #[serde(
+        default,
+        deserialize_with = "crate::types::optional_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub limit_reason: Option<ScanLimitReason>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
