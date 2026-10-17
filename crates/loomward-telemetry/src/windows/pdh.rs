@@ -171,6 +171,19 @@ fn reconcile_instances<T>(array: &mut CounterArray<T>, expanded: CounterArray<()
     array.malformed += expanded.malformed;
 }
 
+/// Seconds since the baseline timestamp. The baseline moves only when this sample's timestamp
+/// advanced: a non-advancing sample has no interval and must not lengthen the next one.
+fn advance_baseline(previous_at: &mut Option<i64>, at: i64) -> Option<f64> {
+    let interval = (*previous_at)
+        .and_then(|previous| at.checked_sub(previous))
+        .filter(|delta| *delta > 0)
+        .map(|delta| delta as f64 / 10_000_000.0);
+    if (*previous_at).is_none_or(|previous| at > previous) {
+        *previous_at = Some(at);
+    }
+    interval
+}
+
 impl PdhSampler {
     fn expansion_due(&self, kind: Counter) -> bool {
         self.sample_sequence >= self.next_expansion[kind as usize]
@@ -209,12 +222,7 @@ impl PdhSampler {
                 self.interval = None;
                 return Err(format!("PdhCollectQueryDataWithTime: {status:#x}"));
             }
-            self.interval = self
-                .previous_at
-                .replace(at)
-                .and_then(|previous| at.checked_sub(previous))
-                .filter(|delta| *delta > 0)
-                .map(|delta| delta as f64 / 10_000_000.0);
+            self.interval = advance_baseline(&mut self.previous_at, at);
         }
         Ok(())
     }
@@ -896,6 +904,20 @@ mod tests {
                 .collect(),
             malformed: 0,
         })
+    }
+
+    #[test]
+    fn non_advancing_timestamp_does_not_move_the_baseline() {
+        const SECOND: i64 = 10_000_000;
+        let mut baseline = None;
+        assert_eq!(advance_baseline(&mut baseline, 0), None);
+        assert_eq!(advance_baseline(&mut baseline, SECOND), Some(1.0));
+        // An earlier timestamp has no interval and must not become the baseline for the next one.
+        assert_eq!(advance_baseline(&mut baseline, SECOND / 2), None);
+        assert_eq!(advance_baseline(&mut baseline, 2 * SECOND), Some(1.0));
+        // An equal timestamp is also non-advancing.
+        assert_eq!(advance_baseline(&mut baseline, 2 * SECOND), None);
+        assert_eq!(advance_baseline(&mut baseline, 3 * SECOND), Some(1.0));
     }
 
     #[test]
