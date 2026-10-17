@@ -5568,6 +5568,7 @@ fn followup_all_catalogue_reads_observe_deadlines() {
         interrupt: Mutex::new(None),
     };
     for (command, payload) in [
+        ("health.get", json!({})),
         ("roots.list", json!({})),
         (
             "tree.slice",
@@ -5596,6 +5597,36 @@ fn followup_all_catalogue_reads_observe_deadlines() {
             "{command}"
         );
     }
+}
+
+#[test]
+fn health_counts_do_not_use_the_shared_mutation_connection() {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    fixture(&svc, 3);
+    let expected = crate::db::counts(&svc.inner.db()).unwrap();
+    svc.inner
+        .db()
+        .authorizer(Some(|ctx: AuthContext<'_>| {
+            if ctx.database_name == Some("main")
+                && matches!(
+                    ctx.action,
+                    AuthAction::Read {
+                        table_name: "file" | "dir",
+                        ..
+                    }
+                )
+            {
+                Authorization::Deny
+            } else {
+                Authorization::Allow
+            }
+        }))
+        .unwrap();
+    let (health, _) = ok("health.get", call(&svc, "health.get", json!({})));
+    assert_eq!(health["catalog"]["files"], expected.0);
+    assert_eq!(health["catalog"]["dirs"], expected.1);
 }
 
 #[test]
