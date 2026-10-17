@@ -47,6 +47,9 @@ pub(crate) struct Copies {
     pub(crate) hook: Mutex<Option<RunHook>>,
 }
 
+/// The run hook's types, for the copy tests (the primitives stay referenced from this module only).
+#[cfg(all(test, windows))]
+pub(crate) use loomward_windows::effects::exec::{Flow, Point};
 #[cfg(all(test, windows))]
 pub(crate) type Gate = Arc<dyn Fn(&str) + Send + Sync>;
 #[cfg(all(test, windows))]

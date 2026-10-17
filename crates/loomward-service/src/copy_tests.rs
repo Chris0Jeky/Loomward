@@ -321,7 +321,7 @@ mod lab_copy {
         let (after, was_fenced) = std::sync::mpsc::channel::<bool>();
         let fired = std::sync::atomic::AtomicBool::new(false);
         *svc.inner.copies.hook.lock().unwrap() = Some(Arc::new(move |p, c| {
-            use loomward_windows::effects::exec::{Flow, Point};
+            use crate::copy::{Flow, Point};
             if matches!(p, Point::Identities(_))
                 && !fired.swap(true, std::sync::atomic::Ordering::SeqCst)
             {
