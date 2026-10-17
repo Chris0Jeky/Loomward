@@ -20,6 +20,10 @@ time = { version = "0.3.55", features = ["formatting", "parsing"] }
 tempfile = "3.27.0"
 jsonschema = { version = "0.58.6", default-features = false }
 
+# The test watchdog's thread report (#495); already in the lockfile, no new crate.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = "0.2.190"
+
 # Needs the crash points in src/crashpoint.rs, which exist only with the feature.
 [[test]]
 name = "crash_sweep"

@@ -13,6 +13,10 @@ use crate::query::{
 use crate::*;
 use rusqlite::{types::Value, Connection};
 use std::collections::HashMap;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 mod analyze;
 mod rank;
@@ -234,7 +238,7 @@ fn visible(files: bool, scope: Option<&[i64]>) -> String {
     let filters = if files {
         "(?4 IS NULL OR e.ext=?4) AND (?5 IS NULL OR f.logical>=?5) AND (?6 IS NULL OR f.logical<=?6) AND (?7 IS NULL OR f.modified_ft>=?7) AND (?8 IS NULL OR f.modified_ft<=?8)"
     } else {
-        "?4 IS NULL AND (?5 IS NULL OR d.sub_logical>=?5) AND (?6 IS NULL OR d.sub_logical<=?6) AND (?7 IS NULL OR d.modified_ft>=?7) AND (?8 IS NULL OR d.modified_ft<=?8)"
+        "?4 IS NULL AND ((?5 IS NULL AND ?6 IS NULL) OR d.agg_valid_rev>=d.dirty_rev) AND (?5 IS NULL OR d.sub_logical>=?5) AND (?6 IS NULL OR d.sub_logical<=?6) AND (?7 IS NULL OR d.modified_ft>=?7) AND (?8 IS NULL OR d.modified_ft<=?8)"
     };
     // Root ids are integers from the store, so the scope is inlined; `IN ()` matches nothing.
     let scope = scope.map_or(String::new(), |ids| {
@@ -267,6 +271,8 @@ struct Walk<'r> {
     size: Option<i64>,
     hits: Vec<(SearchHit, Position)>,
     places: HashMap<i64, Place>,
+    skipped: bool,
+    progress: Arc<AtomicBool>,
 }
 impl Walk<'_> {
     fn full(&self) -> bool {
@@ -299,15 +305,13 @@ impl Walk<'_> {
             let key: i64 = row.get(24)?;
             if row.get::<_, bool>(23)? {
                 let hit = raw(row)?;
-                if !hit.valid {
-                    return Err(Error::RepairRequired);
-                }
                 self.hit(conn, hit, key)?;
             }
             self.key = key;
             if by_size {
                 self.size = Some(row.get(3)?);
             }
+            self.progress.store(true, Ordering::Relaxed);
             if self.full() {
                 return Ok(false);
             }
@@ -316,7 +320,14 @@ impl Walk<'_> {
     }
     fn hit(&mut self, conn: &Connection, hit: Raw, key: i64) -> Result<()> {
         // A folder hit is never a root (roots are not indexed), so both kinds have a parent.
-        let parent = place(conn, &mut self.places, hit.parent.ok_or(Error::NotFound)?)?;
+        let parent = match place(conn, &mut self.places, hit.parent.ok_or(Error::NotFound)?) {
+            Ok(parent) => parent,
+            Err(Error::Invalid("directory identity cycle")) => {
+                self.skipped = true;
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
         if parent.hidden {
             return Ok(());
         }
@@ -331,6 +342,13 @@ impl Walk<'_> {
             format!("{}\\{}", parent.rel, hit.name)
         };
         let mut row = hit.entry();
+        if !hit.valid {
+            row.logical_bytes = None;
+            row.allocated_bytes = None;
+            row.files = None;
+            row.dirs = None;
+            row.coverage = "unknown".into();
+        }
         row.location_hint = Some(DisplayPath::bounded(location, false));
         let size = if self.pass == FILTER_PASS && self.req.extension.is_some() {
             Some(hit.totals.logical as i64)
@@ -503,9 +521,18 @@ impl Reader {
                 size,
                 hits: Vec::new(),
                 places: HashMap::new(),
+                skipped: false,
+                progress: Arc::new(AtomicBool::new(false)),
             };
             let soft = req.time_budget.map(|t| std::time::Instant::now() + t);
-            let guard = WorkGuard::with_soft_deadline(conn, req.work_budget, deadline, soft)?;
+            // A soft cut waits for one row; the VM work budget and caller deadline always bind.
+            let guard = WorkGuard::with_soft_deadline(
+                conn,
+                req.work_budget,
+                deadline,
+                soft,
+                Some(walk.progress.clone()),
+            )?;
             let mut hit = false;
             if let Err(e) = walk.run(conn, &plan) {
                 if guard.hit() && is_budget_interrupt(&e) {
@@ -516,6 +543,11 @@ impl Reader {
             }
             hit |= guard.hit();
             drop(guard);
+            // An FTS xNext can exhaust the budget before yielding a row. Never issue the same
+            // cursor again: callers must increase the budget or narrow the query.
+            if hit && (walk.pass, walk.key, walk.size) == (pass, key, size) {
+                return Err(Error::ResourceBudget);
+            }
             let more = walk.full();
             walk.hits.truncate(req.limit);
             let position = if more {
@@ -544,7 +576,7 @@ impl Reader {
                 next_cursor,
                 budget_hit: hit,
                 index_state: index_state.into(),
-                partial,
+                partial: partial || walk.skipped,
                 substring_searched: plan.substring_searched,
                 roots,
             })

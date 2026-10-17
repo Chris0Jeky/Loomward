@@ -177,9 +177,6 @@ impl Walk<'_> {
     }
     /// One raw row as a hit, or none when its ancestors hide it.
     fn keep(&mut self, conn: &Connection, hit: Raw, key: i64) -> Result<Option<(SearchHit, i64)>> {
-        if !hit.valid {
-            return Err(Error::RepairRequired);
-        }
         let before = self.hits.len();
         self.hit(conn, hit, key)?;
         Ok((self.hits.len() > before).then(|| (self.hits.pop().expect("a hit").0, key)))
@@ -399,9 +396,11 @@ impl Reader {
                 size: None,
                 hits: Vec::new(),
                 places: HashMap::new(),
+                skipped: false,
+                progress: Arc::new(AtomicBool::new(false)),
             };
             let soft = req.time_budget.map(|t| std::time::Instant::now() + t);
-            let guard = WorkGuard::with_soft_deadline(conn, req.work_budget, deadline, soft)?;
+            let guard = WorkGuard::with_soft_deadline(conn, req.work_budget, deadline, soft, None)?;
             let mut lists: [List; 3] = Default::default();
             let mut hit = false;
             let mut run = |tier: usize, walk: &mut Walk| -> Result<bool> {
@@ -539,7 +538,7 @@ impl Reader {
                 next_cursor,
                 budget_hit: hit,
                 index_state: index_state.into(),
-                partial,
+                partial: partial || walk.skipped,
                 substring_searched: plan.substring_searched,
                 roots,
             })

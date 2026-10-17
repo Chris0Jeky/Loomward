@@ -2591,6 +2591,73 @@ impl ScanSink for FenceProbe {
 }
 
 #[test]
+fn both_grant_endings_call_the_scan_writer_fence_after_commit() {
+    for ending in ["revoke", "identity_changed", "identity_changed_from_scan"] {
+        let tmp = temp_root();
+        let svc = Service::open_with(
+            Config {
+                state_dir: tmp.path().into(),
+                dataset: DatasetClass::Synthetic,
+                allow_personal: false,
+                allow_identity_unverified: false,
+                grant_roots: vec![],
+            },
+            crate::idem::TTL,
+            false,
+        )
+        .unwrap();
+        let probe = Arc::new(FenceProbe {
+            state: svc.inner.state_dir.clone(),
+            seen: Mutex::new(vec![]),
+        });
+        svc.inner.engine.set_scan_sink(probe.clone()).unwrap();
+        let (root, grant) = register(&svc, 3);
+        let id = RootId::new(svc.inner.root_id(root)).unwrap();
+        let state = if ending == "revoke" {
+            svc.inner.revoke(grant).unwrap();
+            "revoked"
+        } else {
+            svc.inner
+                .identity_changed(grant, &id, ending == "identity_changed");
+            "identity_changed"
+        };
+        assert_eq!(
+            *probe.seen.lock().unwrap(),
+            vec![format!("{id}:{state}")],
+            "{ending}"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn identity_change_cancels_an_active_scan_before_returning() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    svc.inner.scan.gate.arm();
+    let job = start(svc, &lab.root, "full");
+    svc.inner.scan.gate.wait_reached();
+    let grant = svc
+        .inner
+        .db()
+        .query_row("SELECT grant_id FROM main.root WHERE id=1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    svc.inner
+        .identity_changed(grant, &RootId::new(lab.root.clone()).unwrap(), true);
+    // Observe cancellation while the writer is still held, before it can fail on its own fence.
+    let job_id = JobId::new(job.clone()).unwrap();
+    let state = svc.inner.engine.job_status(&job_id).unwrap().state;
+    svc.inner.scan.gate.release();
+    assert!(
+        matches!(state, JobState::CancelRequested | JobState::Cancelled),
+        "{state:?}"
+    );
+    assert_eq!(settle(svc, &job)["state"], "cancelled");
+}
+
+#[test]
 fn revocation_commits_first_then_fences_then_emits_and_is_monotone() {
     let tmp = temp_root();
     let svc = Service::open_with(
@@ -3471,7 +3538,7 @@ fn f3_hits(svc: &Service) -> Value {
 }
 
 #[cfg(windows)]
-fn f3_wait_live(svc: &Service) -> Value {
+pub(crate) fn f3_wait_live(svc: &Service) -> Value {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let page = f3_hits(svc);
@@ -4023,6 +4090,201 @@ fn f3_explicit_scan_preempts_a_running_watcher_refresh() {
     assert_eq!(err(second).code, ErrorCode::Busy);
     assert_eq!(settle(svc, &first)["state"], "completed");
     f3_wait_live(svc);
+}
+
+/// #568: hashing waits out an automatic refresh before reading its catalogue candidates.
+#[cfg(windows)]
+#[test]
+fn f3_duplicates_preempt_a_running_watcher_refresh() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    for name in ["copy.bin", "other.bin"] {
+        std::fs::write(lab.path.join(name), b"same").unwrap();
+    }
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    svc.inner.scan.gate.arm();
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    svc.inner.freshness.ready_targeted_hint(1);
+    svc.inner.scan.gate.wait_reached();
+    let (jobs, _) = ok("jobs.list", call(svc, "jobs.list", json!({"limit":50})));
+    let auto = jobs["jobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|j| j["state"] == "running")
+        .unwrap()["job_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (answer, stale_in_hand_over) = std::thread::scope(|s| {
+        let asking = s.spawn(|| {
+            call(
+                svc,
+                "duplicates.inspect",
+                json!({"root_id":lab.root,
+                "budget":{"max_candidates":200,"max_bytes":"1024","max_ms":5000}}),
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !asking.is_finished()
+            && svc
+                .inner
+                .engine
+                .job_status(&JobId::new(&auto).unwrap())
+                .unwrap()
+                .state
+                == JobState::Running
+            && Instant::now() < deadline
+        {
+            std::thread::yield_now();
+        }
+        let stale = svc.inner.freshness.stale(1);
+        svc.inner.scan.gate.release();
+        (asking.join().unwrap(), stale)
+    });
+    let (job, _) = ok("duplicates.inspect", answer);
+    let duplicate = job["job"]["job_id"].as_str().unwrap();
+    let auto = settle(svc, &auto);
+    let duplicate = settle(svc, duplicate);
+    assert_eq!(
+        auto["state"], "cancelled",
+        "the owner pre-empts automatic work"
+    );
+    assert_eq!(duplicate["state"], "completed", "{duplicate:?}");
+    assert_eq!(
+        duplicate["duplicates"]["groups"].as_array().unwrap().len(),
+        1
+    );
+    assert!(stale_in_hand_over, "hashing cannot repair freshness");
+    f3_wait_live(svc);
+}
+
+/// #568: no automatic start may slip between candidate selection and job submission.
+#[cfg(windows)]
+#[test]
+fn f3_duplicates_claim_fences_candidate_selection() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    let held = (Command::DuplicatesInspect, "candidates_ready");
+    svc.inner.hooks.closed.lock().unwrap().push(held);
+    svc.inner.scan.gate.arm();
+    let (answer, during) = std::thread::scope(|s| {
+        let asking = s.spawn(|| {
+            call(
+                svc,
+                "duplicates.inspect",
+                json!({"root_id":lab.root,
+                "budget":{"max_candidates":200,"max_bytes":"1024","max_ms":5000}}),
+            )
+        });
+        svc.inner
+            .hooks
+            .until("duplicates candidates selected", |h| {
+                h.arrived.lock().unwrap().contains(&held)
+            });
+        svc.inner
+            .freshness
+            .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+        svc.inner.freshness.ready_targeted_hint(1);
+        crate::freshness::refresh(&svc.inner);
+        let during = svc
+            .inner
+            .engine
+            .job_list(&serde_json::from_value(json!({"limit":50})).unwrap())
+            .unwrap();
+        svc.inner.scan.gate.release();
+        svc.inner.hooks.open(held.0, held.1);
+        (asking.join().unwrap(), during)
+    });
+    let (job, _) = ok("duplicates.inspect", answer);
+    settle(svc, job["job"]["job_id"].as_str().unwrap());
+    assert!(
+        during.jobs.iter().all(|j| !matches!(
+            j.state,
+            JobState::Queued | JobState::Running | JobState::CancelRequested
+        )),
+        "an automatic scan started during candidate selection: {during:?}"
+    );
+    f3_wait_live(svc);
+}
+
+/// #568: a timed-out duplicates request must release its claim without submitting hashing.
+#[cfg(windows)]
+#[test]
+fn f3_duplicates_expired_request_releases_the_refresh_fence() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    svc.inner.scan.gate.arm();
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    svc.inner.freshness.ready_targeted_hint(1);
+    svc.inner.scan.gate.wait_reached();
+    let mut req = request(
+        "duplicates.inspect",
+        json!({"root_id":lab.root,
+        "budget":{"max_candidates":200,"max_bytes":"1024","max_ms":5000}}),
+    );
+    req.deadline_ms = Some(Int::new(300).unwrap());
+    let refused = err(svc.call(req, &CallContext::http())).code;
+    svc.inner.hooks.until("duplicates request settled", |_| {
+        svc.inner.freshness.unclaimed(1)
+    });
+    svc.inner.scan.gate.release();
+    assert!(matches!(
+        refused,
+        ErrorCode::Busy | ErrorCode::DeadlineExceeded
+    ));
+    let (jobs, _) = ok("jobs.list", call(svc, "jobs.list", json!({"limit":50})));
+    assert!(jobs["jobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|j| j["kind"] != "duplicates"));
+    f3_wait_live(svc);
+}
+
+/// #568: bounded pre-emption must still retain a submitted job's idempotent receipt.
+#[cfg(windows)]
+#[test]
+fn a_duplicates_job_started_past_its_deadline_reports_the_started_job() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    let after = (Command::DuplicatesInspect, "after");
+    svc.inner.hooks.closed.lock().unwrap().push(after);
+    let mut req = request(
+        "duplicates.inspect",
+        json!({"root_id":lab.root,
+        "budget":{"max_candidates":200,"max_bytes":"1024","max_ms":5000}}),
+    );
+    req.deadline_ms = Some(Int::new(200).unwrap());
+    let sent = Instant::now();
+    let first = std::thread::scope(|s| {
+        let asking = s.spawn(|| svc.call(req.clone(), &CallContext::http()));
+        svc.inner
+            .hooks
+            .until("duplicates started, past deadline", |h| {
+                h.arrived.lock().unwrap().contains(&after)
+                    && sent.elapsed() > Duration::from_millis(250)
+            });
+        svc.inner.hooks.open(after.0, after.1);
+        asking.join().unwrap()
+    });
+    assert_eq!(err(first).code, ErrorCode::DeadlineExceeded);
+    let (job, _) = ok("duplicates.inspect", svc.call(req, &CallContext::http()));
+    assert_eq!(
+        settle(svc, job["job"]["job_id"].as_str().unwrap())["state"],
+        "completed"
+    );
 }
 
 /// #565 review: a scan that started just past its request deadline reports the real job, and a

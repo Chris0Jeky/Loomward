@@ -33,7 +33,7 @@ pub(crate) struct Tracker {
     pump: Mutex<Option<std::thread::JoinHandle<()>>>,
     #[cfg(windows)]
     setup: Mutex<()>,
-    /// #561: roots an explicit scan request is claiming. Held across every automatic start.
+    /// Roots an explicit scan or duplicates request is claiming. Held across every automatic start.
     #[cfg(windows)]
     explicit: Mutex<BTreeMap<i64, usize>>,
 }
@@ -168,7 +168,7 @@ impl Tracker {
         #[cfg(not(windows))]
         let _ = row;
     }
-    /// #561: an explicit scan of `row` is never refused because of an automatic refresh.
+    /// Explicit owner work on `row` pre-empts automatic refreshes (#561, #568).
     pub(crate) fn explicit(&self, row: i64) -> Explicit<'_> {
         #[cfg(windows)]
         {
@@ -586,7 +586,7 @@ fn replay(
 }
 
 #[cfg(windows)]
-fn refresh(inner: &Inner) {
+pub(crate) fn refresh(inner: &Inner) {
     let rows = db::roots(&inner.db(), None).unwrap_or_default();
     for row in rows {
         if row.grant_state != "active" {

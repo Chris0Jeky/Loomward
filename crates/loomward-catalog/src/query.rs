@@ -159,7 +159,7 @@ impl Raw {
             name: self.name.clone(),
             extension: self.extension.clone(),
             ext_family: self.family.clone(),
-            logical_bytes: self.totals.logical.to_string(),
+            logical_bytes: Some(self.totals.logical.to_string()),
             allocated_bytes: (self.totals.allocation_unknown == 0)
                 .then(|| self.totals.allocated.to_string()),
             files: Some(self.totals.files),
@@ -327,15 +327,17 @@ impl<'a> WorkGuard<'a> {
         budget: u64,
         deadline: Option<std::time::Instant>,
     ) -> Result<Self> {
-        Self::with_soft_deadline(conn, budget, deadline, None)
+        Self::with_soft_deadline(conn, budget, deadline, None, None)
     }
     /// As `new`, and reaching `soft` counts as an exhausted budget (a partial page, resumable),
     /// where reaching `deadline` is the caller's hard stop.
+    /// When supplied, `progress` defers only the soft cut until one row has been examined.
     pub(crate) fn with_soft_deadline(
         conn: &'a Connection,
         budget: u64,
         deadline: Option<std::time::Instant>,
         soft: Option<std::time::Instant>,
+        progress: Option<Arc<std::sync::atomic::AtomicBool>>,
     ) -> Result<Self> {
         let remaining = Arc::new(AtomicU64::new(budget));
         let hit = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -348,7 +350,9 @@ impl<'a> WorkGuard<'a> {
                 if deadline.is_some_and(|at| std::time::Instant::now() >= at) {
                     return true;
                 }
-                if soft.is_some_and(|at| std::time::Instant::now() >= at) {
+                if soft.is_some_and(|at| std::time::Instant::now() >= at)
+                    && progress.as_ref().is_none_or(|p| p.load(Ordering::Relaxed))
+                {
                     h.store(true, Ordering::Relaxed);
                     return true;
                 }
@@ -879,6 +883,7 @@ mod wal_reader_tests {
     /// when two readers ended at once, so `wal_checkpoint(TRUNCATE)` stayed busy for good.
     #[test]
     fn concurrent_readers_never_pin_the_state_wal() {
+        let _hang = crate::test_watchdog::watchdog();
         let temp = tempfile::tempdir().unwrap();
         // Canonical, as the service opens it: on Windows this is the `\\?\C:\...` form.
         let dir = temp.path().canonicalize().unwrap();

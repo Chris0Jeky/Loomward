@@ -556,6 +556,42 @@ fn a_spent_time_budget_returns_a_partial_page_that_resumes() {
     assert_eq!(paged, all);
 }
 
+#[test]
+fn a_common_token_budget_cut_must_advance_or_refuse() {
+    let mut lab = lab();
+    let root = register(&lab, "vol", "Alpha", 1);
+    let run = begin(&lab, &root, "full");
+    let files = (0..4096)
+        .map(|i| obs(&mut lab, &format!("common-{i}.txt"), 1))
+        .collect();
+    list(&lab, run, root.dir, files, vec![]);
+    end(&lab, run);
+    let mut request = req("common");
+    request.limit = 1;
+    let mut cursor = search(&lab, &request).next_cursor.unwrap();
+    // Resume at the expensive substring NOT (prefix OR token) pass.
+    cursor.pass = 3;
+    cursor.last_key = (1 << 48) - 1;
+    request.cursor = Some(cursor.clone());
+    request.work_budget = 0;
+    match lab.c.reader().unwrap().search(&request) {
+        Ok(page) => {
+            assert!(page.budget_hit);
+            assert_ne!(
+                page.next_cursor.as_ref(),
+                Some(&cursor),
+                "zero-progress cursor"
+            );
+        }
+        Err(Error::ResourceBudget) => {}
+        Err(e) => panic!("unexpected refusal: {e:?}"),
+    }
+    // The same pass completes with enough work; rejecting every request is not a fix.
+    request.work_budget = 50_000_000;
+    let page = search(&lab, &request);
+    assert!(page.hits.is_empty() && !page.budget_hit && page.next_cursor.is_none());
+}
+
 /// The index holds exactly one entry per non-root folder and per file, keyed as the triggers key them.
 fn assert_index_parity(lab: &Lab) {
     let db = Connection::open(lab.temp.path().join("catalog.db")).unwrap();

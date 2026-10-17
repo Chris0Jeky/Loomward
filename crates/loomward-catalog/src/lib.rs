@@ -7,7 +7,9 @@
 //! Publications without intents keep NORMAL (ADR-V3-22); no transaction writes both files.
 //! Membership readers accept the confirmed binding or a pending binding whose instance and
 //! token match the published witness, keeping surviving hard links visible before confirmation.
-#![forbid(unsafe_code)]
+#![cfg_attr(not(test), forbid(unsafe_code))]
+// Test builds only: the hang watchdog's thread report signals threads through libc (#495).
+#![cfg_attr(test, deny(unsafe_code))]
 use std::path::Path;
 mod crashpoint;
 mod developer_clutter;
@@ -21,6 +23,9 @@ mod model;
 mod query;
 mod search;
 mod slice;
+#[cfg(test)]
+#[allow(unsafe_code)]
+mod test_watchdog;
 mod writer;
 pub use model::*;
 pub use query::Reader;

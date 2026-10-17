@@ -338,7 +338,7 @@
         {#if scope.index_state === 'building'}<li class="bad">A searched folder is still being scanned, so more results may appear.</li>{/if}
         {#if scope.index_state === 'stale'}<li class="bad">A searched folder's catalogue is stale or failed: results may be out of date.</li>{/if}
         {#if scope.partial}<li>Not every searched folder is fully scanned, so a missing result is not proof of absence.</li>{/if}
-        {#if !scope.substring_searched}<li>Short text: whole names, name starts and word starts only. Type three characters to match inside names.</li>{/if}
+        {#if !scope.substring_searched}<li>Short text: one character searches whole names (or the name before a dot); two also search name and word starts. Matching words separately needs two characters per word for starts and three to match inside names.</li>{/if}
       </ul>
     {/if}
   {:else}

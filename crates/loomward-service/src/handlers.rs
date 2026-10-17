@@ -75,7 +75,16 @@ pub(crate) fn forget_backups(dir: &std::path::Path, path: Option<&str>) -> Resul
         };
         let name = entry.file_name().to_string_lossy().into_owned();
         let file = entry.path();
-        let migration = name.starts_with("state.before-v") && name.ends_with(".db");
+        let copy_name = name
+            .strip_suffix("-wal")
+            .or_else(|| name.strip_suffix("-shm"))
+            .unwrap_or(&name);
+        let migration = copy_name.starts_with("state.before-v") && copy_name.ends_with(".db");
+        let sidecar = copy_name != name;
+        // A migration WAL may hold committed rows: let its copy checkpoint it before removal.
+        if migration && sidecar && file.with_file_name(copy_name).exists() {
+            continue;
+        }
         let archive_stem = name
             .strip_suffix(".db")
             .or_else(|| name.strip_suffix(".db-wal"))
@@ -85,27 +94,43 @@ pub(crate) fn forget_backups(dir: &std::path::Path, path: Option<&str>) -> Resul
                 .or_else(|| stem.strip_prefix("catalog.before-v1-"))
                 .is_some_and(|stamp| !stamp.is_empty() && stamp.bytes().all(|b| b.is_ascii_digit()))
         });
-        let remove = if migration {
+        let remove = if migration && !sidecar {
             match scrub_copy(&file, &loomward_catalog::sqlite_dir(dir).join("state.db")) {
-                Ok((known, _pin)) => !known && path.is_none_or(|path| holds(&file, path)),
+                Ok((known, _pin)) => {
+                    // SQLite is closed; keep the copy pinned while clearing even stale sidecars.
+                    for extension in ["db-wal", "db-shm"] {
+                        if let Err(e) = std::fs::remove_file(file.with_extension(extension)) {
+                            if e.kind() != std::io::ErrorKind::NotFound {
+                                failed.get_or_insert_with(|| backup_scrub_error("migration"));
+                            }
+                        }
+                    }
+                    !known && path.is_none_or(|path| holds(&file, path))
+                }
                 Err(_) => {
                     failed.get_or_insert_with(|| backup_scrub_error("migration"));
                     continue; // the rollback copy is kept
                 }
             }
         } else {
-            (name.starts_with("state.start-") && name.ends_with(".db")) || archived
+            (copy_name.starts_with("state.start-") && copy_name.ends_with(".db"))
+                || (migration && sidecar)
+                || archived
         };
-        if remove && std::fs::remove_file(&file).is_err() {
-            failed.get_or_insert_with(|| {
-                backup_scrub_error(if archived {
-                    "catalog_archive"
-                } else if migration {
-                    "migration"
-                } else {
-                    "startup"
-                })
-            });
+        if remove {
+            if let Err(e) = std::fs::remove_file(&file) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    failed.get_or_insert_with(|| {
+                        backup_scrub_error(if archived {
+                            "catalog_archive"
+                        } else if migration {
+                            "migration"
+                        } else {
+                            "startup"
+                        })
+                    });
+                }
+            }
         }
     }
     failed.map_or(Ok(()), Err)
@@ -121,6 +146,12 @@ fn backup_scrub_error(kind: &str) -> ErrorBody {
     ]))
     .ok();
     error
+}
+
+fn live_scrub_error() -> ErrorBody {
+    with_reason(fail(ErrorCode::InternalError,
+        "the root was forgotten, but database cleanup is still pending; Loomward will retry automatically and at restart"),
+        "forget_scrub_pending")
 }
 
 /// Refuse aliases, and on Windows pin the checked path against replacement until SQLite closes.
@@ -173,6 +204,8 @@ fn scrub_copy(
     let conn = rusqlite::Connection::open(copy)?;
     // Allow transient store contention to settle before reporting a failed scrub.
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    // Checkpoint old WAL frames before scrubbing; a held reader keeps cleanup pending.
+    conn.execute_batch("PRAGMA main.journal_mode=DELETE")?;
     conn.execute(
         "ATTACH DATABASE ?1 AS live",
         [state.to_string_lossy().as_ref()],
@@ -421,7 +454,7 @@ impl Inner {
             CollectionsCreate => self.collections_create(req),
             CollectionsUpdateMembers => self.collections_update(req),
             CollectionsMembers => self.collections_members(req, work),
-            DuplicatesInspect => self.duplicates_inspect(req),
+            DuplicatesInspect => self.duplicates_inspect(req, work),
             DuplicatesCancel => self.duplicates_cancel(req.decode_payload()?),
             ScanStart => self.scan_start(req.decode_payload()?, work),
             ScanCancel => engine(
@@ -708,6 +741,18 @@ impl Inner {
             })
             .map_err(ErrorBody::from)?;
         let revs = self.revisions()?;
+        let scrub_pending: bool = self
+            .db()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM st.meta WHERE key='scrub_pending')",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(sql_error)?;
+        let last_error = self
+            .backup_scrub_pending()?
+            .map(|kind| backup_scrub_error(&kind))
+            .or_else(|| scrub_pending.then(live_scrub_error));
         Ok(out(
             json!({
                 "observed_at": now(),
@@ -728,7 +773,7 @@ impl Inner {
                     "writer_queue_capacity": loomward_catalog::QUEUE_BYTES,
                 },
                 "jobs_running": running,
-                "last_error": self.backup_scrub_pending()?.map(|kind| backup_scrub_error(&kind)),
+                "last_error": last_error,
                 "warnings": [],
             }),
             Some(revs),
@@ -875,9 +920,7 @@ impl Inner {
             )
             .map_err(sql_error)?;
         if scrub_pending {
-            return Err(with_reason(fail(ErrorCode::InternalError,
-                "the root was forgotten, but database cleanup is still pending; Loomward will retry automatically and at restart"),
-                "forget_scrub_pending"));
+            return Err(live_scrub_error());
         }
         Ok(out(
             json!({"root_id": r.root_id, "forgotten_at": ts_ns(at)}),
@@ -1452,6 +1495,76 @@ impl Inner {
 
 #[cfg(test)]
 mod scrub_copy_tests {
+
+    #[test]
+    fn backup_byte_check_fails_closed_when_file_cannot_be_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(super::holds(
+            &dir.path().join("missing.db"),
+            "SyntheticPath"
+        ));
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            let path = dir.path().join("locked.db");
+            std::fs::write(&path, b"unreadable contents").unwrap();
+            let _lock = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(&path)
+                .unwrap();
+            assert!(super::holds(&path, "SyntheticPath"));
+        }
+    }
+
+    #[test]
+    fn scrub_copy_checkpoints_wal_and_leaves_no_sidecars() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state.db");
+        let copy = dir.path().join("state.before-v6.db");
+        rusqlite::Connection::open(&state).unwrap().execute_batch(
+            "CREATE TABLE object_ref(id INTEGER PRIMARY KEY); CREATE TABLE root_forgotten(grant_id INTEGER); INSERT INTO root_forgotten VALUES(1)"
+        ).unwrap();
+        let conn = rusqlite::Connection::open(&copy).unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE object_ref(id INTEGER PRIMARY KEY); CREATE TABLE root_grant(id INTEGER PRIMARY KEY,display_path TEXT,volume_key TEXT,root_file_id BLOB); PRAGMA user_version=6; INSERT INTO root_grant VALUES(1,'SyntheticForgottenPath','fixture',zeroblob(8)),(2,'SyntheticKeptPath','fixture',zeroblob(8))").unwrap();
+        // Simulate a copied/crashed WAL database, preserving its committed WAL frames.
+        let saved = dir.path().join("saved.db");
+        for suffix in ["", "-wal", "-shm"] {
+            std::fs::copy(
+                format!("{}{suffix}", copy.display()),
+                format!("{}{suffix}", saved.display()),
+            )
+            .unwrap();
+        }
+        drop(conn);
+        for suffix in ["", "-wal", "-shm"] {
+            std::fs::rename(
+                format!("{}{suffix}", saved.display()),
+                format!("{}{suffix}", copy.display()),
+            )
+            .unwrap();
+        }
+        let (known, _pin) = super::scrub_copy(&copy, &state).unwrap();
+        assert!(known);
+        let copy_conn = rusqlite::Connection::open(&copy).unwrap();
+        let mode: String = copy_conn
+            .pragma_query_value(None, "journal_mode", |r| r.get(0))
+            .unwrap();
+        assert_eq!(mode, "delete", "scrubbing must not write a new WAL");
+        assert_eq!(
+            copy_conn
+                .query_row("SELECT display_path FROM root_grant WHERE id=2", [], |r| {
+                    r.get::<_, String>(0)
+                })
+                .unwrap(),
+            "SyntheticKeptPath"
+        );
+        drop(copy_conn);
+        assert!(!super::holds(&copy, "SyntheticForgottenPath"));
+        for suffix in ["-wal", "-shm"] {
+            assert!(!std::path::Path::new(&format!("{}{suffix}", copy.display())).exists());
+        }
+    }
 
     #[cfg(windows)]
     #[test]

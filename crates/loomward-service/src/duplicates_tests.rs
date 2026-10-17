@@ -168,6 +168,7 @@ fn duplicates_personal_session_confirms_owner_duplicates_and_revocation_redacts(
     );
     let scan: JobResult = serde_json::from_value(json!(scan)).unwrap();
     assert_eq!(terminal(&svc, &scan.job.job_id).state, JobState::Completed);
+    crate::tests::f3_wait_live(&svc);
     let (start, _) = ok(
         "duplicates.inspect",
         call(
