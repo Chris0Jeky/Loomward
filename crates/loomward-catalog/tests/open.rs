@@ -2,6 +2,29 @@ use loomward_catalog::{Catalog, Error, APPLICATION_ID, SCHEMA_VERSION};
 use rusqlite::{Connection, OpenFlags};
 
 #[test]
+fn existing_catalogue_gains_partial_directory_gap_index() {
+    let temp = tempfile::tempdir().unwrap();
+    drop(Catalog::open(temp.path(), "synthetic").unwrap());
+    let conn = Connection::open(temp.path().join("catalog.db")).unwrap();
+    conn.execute_batch("DROP INDEX IF EXISTS dir_missing_identity")
+        .unwrap();
+    drop(conn);
+    drop(Catalog::open(temp.path(), "synthetic").unwrap());
+    let conn = Connection::open(temp.path().join("catalog.db")).unwrap();
+    let sql: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE name='dir_missing_identity'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        sql.contains("WHERE file_id IS NULL AND listing_state!='absent_pending'"),
+        "{sql}"
+    );
+}
+
+#[test]
 fn fresh_pair_has_strict_schema_and_separate_data_classes() {
     let temp = tempfile::tempdir().unwrap();
     let _catalog = Catalog::open(temp.path(), "synthetic").unwrap();

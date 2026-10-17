@@ -149,9 +149,10 @@ pub(super) fn targets(
         for record in batch {
             let reach = classify(record, |id| {
                 let mut identity = found.get(id).cloned().unwrap_or_default();
+                // A replayed in-root directory can supersede its pre-window hidden row.
                 if let Some(&parent) = new_dirs
                     .get(id)
-                    .filter(|_| identity.directory == Directory::Unresolved)
+                    .filter(|_| !matches!(identity.directory, Directory::Inside(_)))
                 {
                     identity.directory = Directory::Inside(parent);
                 }
@@ -278,6 +279,24 @@ mod tests {
             |ids| lookup(&conn, 1, ids),
         );
         assert_eq!(targets, Some(BTreeSet::from([1, 2, 3])));
+    }
+
+    #[test]
+    fn recreated_outside_directory_keeps_child_targets_across_batches() {
+        let conn = super::super::tests::catalogue(4);
+        conn.execute_batch("UPDATE dir SET listing_state='absent_pending' WHERE id=2; UPDATE dir SET file_id=NULL WHERE id=3").unwrap();
+        let mut records = vec![record(2, 1, true)];
+        records.extend((0..127).map(|i| record(1000 + i, 4, false)));
+        records.extend([record(99, 2, true), record(100, 99, false)]);
+        assert_eq!(
+            targets(
+                &records,
+                Instant::now() + Duration::from_secs(5),
+                true,
+                |ids| lookup(&conn, 1, ids)
+            ),
+            Some(BTreeSet::from([1, 4]))
+        );
     }
 
     #[test]

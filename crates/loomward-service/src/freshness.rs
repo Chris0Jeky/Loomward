@@ -12,6 +12,12 @@ use std::sync::Arc;
 #[cfg(windows)]
 mod reach;
 #[cfg(windows)]
+// sub_noid is the current root aggregate for files; the partial index covers directory gaps.
+const GAP_SQL: &str = "SELECT sub_noid>0 OR EXISTS(
+    SELECT 1 FROM main.dir INDEXED BY dir_missing_identity
+    WHERE root_id=?1 AND file_id IS NULL AND listing_state!='absent_pending')
+    FROM main.dir WHERE id=?2 AND root_id=?1 AND parent_id IS NULL";
+#[cfg(windows)]
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{
@@ -536,10 +542,10 @@ fn replay(
     records: &[loomward_windows::usn::Record],
 ) {
     let targets = result.as_ref().ok().and_then(|_| {
-        // sub_noid counts files, so directory identity gaps need their own check.
-        let missing_identity = inner.db().query_row(
-            "SELECT EXISTS(SELECT 1 FROM main.dir WHERE root_id=?1 AND (file_id IS NULL OR sub_noid>0))",
-            [row.root], |r| r.get(0)).ok()?;
+        let missing_identity = inner
+            .db()
+            .query_row(GAP_SQL, params![row.root, row.dir?], |r| r.get(0))
+            .ok()?;
         reach::targets(records, deadline, missing_identity, |ids| {
             if !inner
                 .freshness
@@ -835,6 +841,93 @@ mod tests {
             "{plan:#?}"
         );
         eprintln!("F3 indexed query plan: {plan:#?}");
+    }
+
+    #[test]
+    fn f3_gap_probe_ignores_retired_identity_but_preserves_live_gaps() {
+        let conn = catalogue(4);
+        let gap = || {
+            conn.query_row(GAP_SQL, params![1, 1], |r| r.get::<_, bool>(0))
+                .unwrap()
+        };
+        assert!(!gap());
+        conn.execute_batch("UPDATE dir SET listing_state='excluded' WHERE id=2;
+            UPDATE dir SET parent_id=2,listing_state='absent_pending',file_id=NULL,sub_noid=7 WHERE id=3").unwrap();
+        assert!(
+            !gap(),
+            "retired rows below an excluded directory are not identity gaps"
+        );
+        conn.execute_batch("UPDATE dir SET file_id=NULL WHERE id=4")
+            .unwrap();
+        assert!(gap(), "a visible NULL directory still needs a full refresh");
+        conn.execute_batch(
+            "UPDATE dir SET file_id=zeroblob(16) WHERE id=4;
+            UPDATE dir SET sub_noid=1 WHERE id=1",
+        )
+        .unwrap();
+        assert!(gap(), "the root aggregate must retain file identity gaps");
+    }
+
+    #[test]
+    fn f3_gap_probe_scale() {
+        let dirs = if std::env::var_os("LOOMWARD_F3_GAP_SCALE").is_some() {
+            1_000_000
+        } else {
+            10
+        };
+        let conn = catalogue(dirs);
+        let records = [loomward_windows::usn::Record {
+            file_id: (dirs + 1).to_le_bytes().to_vec(),
+            parent_id: dirs.to_le_bytes().to_vec(),
+            reason: 0x100,
+            is_directory: false,
+        }];
+        let old = "SELECT EXISTS(SELECT 1 FROM main.dir WHERE root_id=?1 AND (file_id IS NULL OR sub_noid>0))";
+        for (label, sql) in [("before", old), ("after", GAP_SQL)] {
+            let mut stmt = conn.prepare(sql).unwrap();
+            let args = [1i64, 1];
+            let args = &args[..stmt.parameter_count()];
+            let began = Instant::now();
+            let missing: bool = stmt
+                .query_row(rusqlite::params_from_iter(args), |r| r.get(0))
+                .unwrap();
+            let elapsed = began.elapsed();
+            let steps = stmt.get_status(rusqlite::StatementStatus::VmStep);
+            eprintln!("F3 gap {label}: {dirs} directories, {elapsed:?}, {steps} VM steps");
+            assert!(!missing);
+            if label == "after" {
+                assert!(
+                    steps < 100,
+                    "gap probe must not scale with directory count: {steps}"
+                );
+            }
+            for counted in [false, true] {
+                let steps = Arc::new(std::sync::atomic::AtomicU64::new(0));
+                if counted {
+                    let count = steps.clone();
+                    conn.progress_handler(
+                        1,
+                        Some(move || {
+                            count.fetch_add(1, Ordering::Relaxed);
+                            false
+                        }),
+                    )
+                    .unwrap();
+                }
+                let began = Instant::now();
+                let missing = stmt
+                    .query_row(rusqlite::params_from_iter(args), |r| r.get(0))
+                    .unwrap();
+                let targets =
+                    reach::targets(&records, began + Duration::from_secs(30), missing, |ids| {
+                        reach::lookup(&conn, 1, ids)
+                    });
+                let elapsed = began.elapsed();
+                conn.progress_handler(0, None::<fn() -> bool>).unwrap();
+                eprintln!("F3 catch-up {label}: {dirs} directories, step-counted={counted}, {elapsed:?}, {} VM steps", steps.load(Ordering::Relaxed));
+                assert_eq!(targets, Some(BTreeSet::from([dirs])));
+            }
+        }
     }
 
     #[test]

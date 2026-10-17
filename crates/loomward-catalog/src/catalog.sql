@@ -45,6 +45,7 @@ CREATE TABLE dir (
 CREATE INDEX dir_by_logical   ON dir(parent_id, sub_logical DESC, id);
 CREATE INDEX dir_by_allocated ON dir(parent_id, sub_allocated DESC, id);
 CREATE UNIQUE INDEX dir_identity ON dir(root_id, file_id) WHERE file_id IS NOT NULL;
+CREATE INDEX dir_missing_identity ON dir(root_id) WHERE file_id IS NULL AND listing_state!='absent_pending';
 CREATE TABLE file (
   id INTEGER PRIMARY KEY AUTOINCREMENT, dir_id INTEGER NOT NULL REFERENCES dir(id) ON DELETE CASCADE,
   name TEXT NOT NULL, name_utf16 BLOB, ext_id INTEGER REFERENCES ext(id),
