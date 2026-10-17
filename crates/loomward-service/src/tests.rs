@@ -36,6 +36,37 @@ pub(crate) struct Hooks {
     /// #219: the filesystem name grant-time probes observe instead of the volume's.
     #[cfg_attr(not(windows), allow(dead_code))]
     pub filesystem: Mutex<Option<&'static str>>,
+    /// #519 review: a personal space read for one volume key answers this instead of the OS.
+    pub space: Mutex<Vec<(String, SpaceFake)>>,
+}
+
+/// What a personal space read answers in tests: stall past the caller's deadline, or report fixed
+/// space. Runs on the worker thread, as the OS read does.
+#[derive(Clone, Copy)]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) enum SpaceFake {
+    Stall(Duration),
+    Fixed { capacity: u64, free: u64 },
+}
+
+impl SpaceFake {
+    pub(crate) fn answer(self) -> Option<(loomward_windows::volumes::Space, i64)> {
+        match self {
+            Self::Stall(d) => {
+                std::thread::sleep(d);
+                None
+            }
+            Self::Fixed { capacity, free } => Some((
+                loomward_windows::volumes::Space {
+                    capacity_bytes: capacity.to_string(),
+                    free_bytes: free.to_string(),
+                    read_only: Some(false),
+                    cluster_bytes: None,
+                },
+                crate::now_ns(),
+            )),
+        }
+    }
 }
 
 impl Hooks {
@@ -473,6 +504,180 @@ fn placement_lab_space_timestamp_is_fresh() {
     let observed: Timestamp =
         serde_json::from_value(volumes["volumes"][0]["observed_at"].clone()).unwrap();
     assert!(observed >= crate::ts_ns(before) && observed <= crate::ts_ns(after));
+}
+
+/// A personal session whose only owner grant is a real folder (#519). Returns the folder so a test
+/// can change it; the caller keeps `tmp` alive for the grant's lifetime.
+#[cfg(windows)]
+fn personal_grant_session(tmp: &tempfile::TempDir) -> Option<(Service, std::path::PathBuf)> {
+    if loomward_windows::enumerate::running_elevated() {
+        eprintln!("skipped: elevated token; the native space read refuses elevation (invariant 2)");
+        return None;
+    }
+    let folder = tmp.path().join("owner-folder");
+    std::fs::create_dir_all(&folder).unwrap();
+    let folder = folder.canonicalize().unwrap();
+    let svc = Service::open(Config {
+        state_dir: tmp.path().join("state"),
+        dataset: DatasetClass::Personal,
+        allow_personal: true,
+        allow_identity_unverified: false,
+        grant_roots: vec![folder.clone()],
+    })
+    .unwrap();
+    Some((svc, folder))
+}
+
+/// #519: a volume holding an active owner grant reports its observed capacity and free space.
+#[cfg(windows)]
+#[test]
+fn volumes_list_observes_space_for_an_active_personal_grant() {
+    let tmp = temp_root();
+    let Some((svc, _folder)) = personal_grant_session(&tmp) else {
+        return;
+    };
+    let (volumes, _) = ok("volumes.list", call(&svc, "volumes.list", json!({})));
+    let rows = volumes["volumes"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{:?}", volumes);
+    let capacity: u64 = rows[0]["capacity_bytes"].as_str().unwrap().parse().unwrap();
+    let free: u64 = rows[0]["free_bytes"].as_str().unwrap().parse().unwrap();
+    assert!(capacity > 0 && free <= capacity, "{}", rows[0]);
+}
+
+/// #519: revoking the grant ends the observation; the volume reports unknown, never zero.
+#[cfg(windows)]
+#[test]
+fn volumes_list_space_is_unknown_once_the_personal_grant_is_revoked() {
+    let tmp = temp_root();
+    let Some((svc, _folder)) = personal_grant_session(&tmp) else {
+        return;
+    };
+    let (roots, _) = ok("roots.list", call(&svc, "roots.list", json!({})));
+    let root_id = roots["roots"][0]["root_id"].clone();
+    ok(
+        "roots.revoke",
+        call(
+            &svc,
+            "roots.revoke",
+            json!({"root_id": root_id, "purge_catalog": false}),
+        ),
+    );
+    let (volumes, _) = ok("volumes.list", call(&svc, "volumes.list", json!({})));
+    assert!(volumes["volumes"][0]["capacity_bytes"].is_null());
+    assert!(volumes["volumes"][0]["free_bytes"].is_null());
+}
+
+/// #519: a granted root that can no longer be observed stays unknown and the list still answers.
+#[cfg(windows)]
+#[test]
+fn volumes_list_space_is_unknown_not_zero_when_the_personal_root_is_unobservable() {
+    let tmp = temp_root();
+    let Some((svc, folder)) = personal_grant_session(&tmp) else {
+        return;
+    };
+    std::fs::remove_dir(&folder).unwrap();
+    let (volumes, _) = ok("volumes.list", call(&svc, "volumes.list", json!({})));
+    assert_eq!(volumes["volumes"][0]["capacity_bytes"], Value::Null);
+    assert_eq!(volumes["volumes"][0]["free_bytes"], Value::Null);
+}
+
+/// #519 review: one stalled personal volume degrades alone. `volumes.list` and the alerts view still
+/// answer, the healthy volume is observed, and repeated refreshes never exhaust the space readers.
+#[cfg(windows)]
+#[test]
+fn a_stalled_personal_volume_degrades_alone_and_never_exhausts_the_readers() {
+    let tmp = temp_root();
+    let Some((svc, _folder)) = personal_grant_session(&tmp) else {
+        return;
+    };
+    // The stalled volume gets a key of its own, so its injected stall cannot hold up other tests
+    // that read the real volume of this disk.
+    svc.inner
+        .db()
+        .execute(
+            "UPDATE main.volume SET volume_key='vsn_stalled' WHERE id=(SELECT min(id) FROM main.volume)",
+            [],
+        )
+        .unwrap();
+    let stalled_key = "vsn_stalled";
+    // A second online personal volume, read by injection rather than by the OS.
+    let healthy = tmp.path().join("healthy-folder");
+    std::fs::create_dir_all(&healthy).unwrap();
+    svc.inner
+        .catalog
+        .writer()
+        .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_key: "vsn_healthy".into(),
+            display_name: "Healthy".into(),
+            display_path: healthy.display().to_string(),
+            root_file_id: Some(vec![2; 16]),
+            filesystem: Some("NTFS".into()),
+            origin: "owner_granted".into(),
+            granted_via: "cli_flag".into(),
+            observed_at_ns: 0,
+        }))
+        .unwrap();
+    svc.inner.hooks.space.lock().unwrap().extend([
+        (
+            stalled_key.to_owned(),
+            SpaceFake::Stall(Duration::from_secs(5)),
+        ),
+        (
+            "vsn_healthy".to_owned(),
+            SpaceFake::Fixed {
+                capacity: 1 << 30,
+                free: 1 << 29,
+            },
+        ),
+    ]);
+    let wire_id = |key: &str| -> String {
+        let row: i64 = svc
+            .inner
+            .db()
+            .query_row(
+                "SELECT id FROM main.volume WHERE volume_key=?1",
+                [key],
+                |r| r.get(0),
+            )
+            .unwrap();
+        svc.inner.volume_id(row)
+    };
+    let (stalled_id, healthy_id) = (wire_id(stalled_key), wire_id("vsn_healthy"));
+    for round in 0..10 {
+        // The real default read budget (2 s), not the helper's 60 s, so a stall past it is visible.
+        let request: RequestEnvelope = serde_json::from_value(json!({
+            "protocol": "loomward/3", "request_id": format!("stalled-{round}"),
+            "command": "volumes.list", "payload": {}, "deadline_ms": 2000
+        }))
+        .unwrap();
+        let (volumes, _) = ok("volumes.list", svc.call(request, &CallContext::http()));
+        let rows = volumes["volumes"].as_array().unwrap();
+        let row = |id: &str| {
+            rows.iter()
+                .find(|r| r["volume_id"] == json!(id))
+                .unwrap_or_else(|| panic!("round {round}: {volumes:?}"))
+        };
+        assert!(
+            row(&stalled_id)["capacity_bytes"].is_null(),
+            "round {round}: {volumes:?}"
+        );
+        assert!(
+            row(&stalled_id)["free_bytes"].is_null(),
+            "round {round}: {volumes:?}"
+        );
+        assert_eq!(
+            row(&healthy_id)["capacity_bytes"],
+            "1073741824",
+            "round {round}: {volumes:?}"
+        );
+        assert_eq!(
+            row(&healthy_id)["free_bytes"],
+            "536870912",
+            "round {round}: {volumes:?}"
+        );
+    }
+    // The alerts view reads the same observation and must still answer while the volume stalls.
+    ok("alerts.list", call(&svc, "alerts.list", json!({})));
 }
 
 #[test]
