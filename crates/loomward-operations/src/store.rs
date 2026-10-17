@@ -50,7 +50,11 @@ fn load(conn: &Connection, op: u64) -> rusqlite::Result<Vec<Row>> {
 impl Store {
     /// Open the journal's database with the precious-state pragmas of ADR-V3-22 and ensure its tables.
     pub fn open(path: &Path) -> rusqlite::Result<Store> {
-        let conn = Connection::open(path)?;
+        Store::new(Connection::open(path)?)
+    }
+
+    /// Adopt a connection to `state.db`, forcing the precious-state pragmas whatever it was set to.
+    pub fn new(conn: Connection) -> rusqlite::Result<Store> {
         conn.busy_timeout(Duration::from_secs(5))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "FULL")?;

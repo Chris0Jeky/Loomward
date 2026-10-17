@@ -603,6 +603,130 @@ fn publish_in_use_blocks_and_abandon_must_withdraw() {
     assert_eq!(j.state(), OpState::Cancelling);
 }
 
+// ---- Cancel is sticky; batches close exactly (review round 1 on #474) ----
+
+fn tr(to: OpState) -> Record {
+    Record::Transition { to, code: None }
+}
+
+/// Bypassing the append check must not help either: recovery refuses the journal.
+fn refused_everywhere(base: &J, epoch: u64, record: Record) {
+    let entry = Entry { epoch, record };
+    assert!(
+        base.clone().try_push(epoch, entry.record.clone()).is_err(),
+        "{entry:?} accepted"
+    );
+    let mut rows = base.rows.clone();
+    rows.push(base.replay.row_for(&entry));
+    assert!(
+        matches!(
+            recover(OP, &rows, &full_disk()).decision,
+            Decision::NeedsAttention(Attention::InvalidJournal(_))
+        ),
+        "{entry:?} replayed"
+    );
+}
+
+#[test]
+fn cancel_is_sticky_abandon_is_the_only_exit() {
+    // The reviewer's sequence: cancelling -> needs_attention -> copying -> staged -> publish.
+    let mut j = run()[8].clone();
+    j.push(1, tr(OpState::Cancelling))
+        .push(1, tr(OpState::NeedsAttention));
+    refused_everywhere(&j, 1, tr(OpState::Copying));
+    // Abandon again is the exit.
+    let mut k = j.clone();
+    k.push(1, tr(OpState::Cancelling));
+    assert_eq!(k.state(), OpState::Cancelling);
+    assert_eq!(
+        decide(&j, &full_disk()).decision,
+        Decision::NeedsAttention(Attention::Recorded)
+    );
+
+    // Staging removed first, then anything that would recreate or publish against it.
+    let mut j = run()[8].clone();
+    j.push(1, tr(OpState::Cancelling));
+    for (item, n) in [(0u32, 1u8), (1, 2), (2, 3)] {
+        j.push(1, Record::ItemRemoved { item, id: id(n) });
+    }
+    j.push(1, Record::StagingRemoved { id: id(S) })
+        .push(1, tr(OpState::NeedsAttention));
+    refused_everywhere(&j, 1, tr(OpState::Copying));
+    refused_everywhere(
+        &j,
+        1,
+        Record::CreateBatch {
+            items: items(&[(0, "d")]),
+        },
+    );
+    refused_everywhere(
+        &j,
+        1,
+        Record::PublishIntent {
+            final_name: FINAL.into(),
+        },
+    );
+    // Even without the detour through needs_attention.
+    let mut c = run()[8].clone();
+    c.push(1, tr(OpState::Cancelling));
+    refused_everywhere(&c, 1, Record::Verified { items: vec![0] });
+    refused_everywhere(
+        &c,
+        1,
+        Record::ItemFailed {
+            item: 0,
+            code: Refusal::AccessDenied,
+        },
+    );
+}
+
+#[test]
+fn batch_retry_and_create_failure_inside_a_batch() {
+    // A crash before the identity commit: the same batch may be intended again, nothing else.
+    let mut j = run()[3].clone();
+    j.push(
+        1,
+        Record::CreateBatch {
+            items: items(&[(1, "d/a"), (0, "d")]),
+        },
+    );
+    // A create that fails inside the batch leaves it; the identity commit covers exactly the rest,
+    // even though the failure already moved the run to needs_attention.
+    j.push(
+        1,
+        Record::ItemFailed {
+            item: 1,
+            code: Refusal::StagingNameTaken,
+        },
+    );
+    assert_eq!(j.state(), OpState::NeedsAttention);
+    refused_everywhere(
+        &j,
+        1,
+        Record::Identities {
+            items: vec![(0, id(1)), (1, id(2))],
+        },
+    );
+    j.push(
+        1,
+        Record::Identities {
+            items: vec![(0, id(1))],
+        },
+    );
+    assert!(j.replay.open_batch.is_empty());
+    // The failed item's name is reported if something sits there, never adopted.
+    let disk = FakeDisk::default().staging().file("d", 1).file("d/a", 77);
+    assert_eq!(
+        decide(&j, &disk).decision,
+        Decision::NeedsAttention(Attention::Recorded)
+    );
+    j.push(1, tr(OpState::Copying));
+    assert_eq!(
+        decide(&j, &disk).decision,
+        Decision::NeedsAttention(Attention::Unjournaled(vec!["d/a".into()]))
+    );
+}
+
 // ---- Buggy writers: records that must never be accepted ----
 
 #[test]
@@ -703,6 +827,49 @@ fn illegal_records_are_rejected_at_append_and_at_replay() {
             },
         ),
         (4, 1, Verified { items: vec![0] }),
+        // Batch tracking: the identity commit covers the open batch exactly; no second batch while open.
+        (
+            4,
+            1,
+            Identities {
+                items: vec![(0, id(1))],
+            },
+        ),
+        (
+            4,
+            1,
+            Identities {
+                items: vec![(0, id(1)), (1, id(2)), (2, id(3))],
+            },
+        ),
+        (
+            4,
+            1,
+            CreateBatch {
+                items: items(&[(2, "b")]),
+            },
+        ),
+        (
+            4,
+            1,
+            CreateBatch {
+                items: items(&[(0, "d")]),
+            },
+        ),
+        (
+            4,
+            1,
+            CreateBatch {
+                items: items(&[(0, "d"), (1, "d/a"), (2, "b")]),
+            },
+        ),
+        (
+            7,
+            1,
+            Identities {
+                items: vec![(2, id(3)), (2, id(4))],
+            },
+        ),
         (5, 1, Verified { items: vec![0, 0] }),
         (5, 1, tr(OpState::Staged)),
         (5, 1, tr(OpState::Publishing)),
@@ -951,6 +1118,7 @@ fn random_run(rng: &mut Rng) -> Vec<(J, FakeDisk)> {
             .cloned()
             .collect();
         let open = r.open_batch.clone();
+        let cancelled = r.cancelled;
         let state = r.state;
         if !fenced && rng.chance(4) {
             epoch += 1;
@@ -1007,25 +1175,35 @@ fn random_run(rng: &mut Rng) -> Vec<(J, FakeDisk)> {
                     );
                 }
             }
-            OpState::Copying => {
-                if !open.is_empty() {
-                    // Identity commit for what the batch created.
-                    let ids: Vec<(u32, ObjectId)> = open
+            OpState::Copying | OpState::Blocked | OpState::NeedsAttention
+                if !open.is_empty() && !cancelled =>
+            {
+                // Close the open batch: a create that did not happen fails its item (leaving the batch),
+                // then one identity commit covers exactly what remains.
+                let missing = open
+                    .iter()
+                    .copied()
+                    .find(|&i| !disk.staged.contains_key(&names[i as usize]));
+                if let (Some(item), OpState::Copying) = (missing, state) {
+                    j.push(
+                        epoch,
+                        ItemFailed {
+                            item,
+                            code: Refusal::AccessDenied,
+                        },
+                    );
+                } else if missing.is_some() {
+                    break; // a create failed outside copying: the owner's call
+                } else {
+                    let ids = open
                         .iter()
-                        .filter_map(|&i| disk.staged.get(&names[i as usize]).map(|o| (i, o.id)))
+                        .map(|&i| (i, disk.staged[&names[i as usize]].id))
                         .collect();
-                    if ids.is_empty() {
-                        j.push(
-                            epoch,
-                            Transition {
-                                to: OpState::Cancelling,
-                                code: None,
-                            },
-                        );
-                    } else {
-                        j.push(epoch, Identities { items: ids });
-                    }
-                } else if !unheld.is_empty() && rng.chance(60) {
+                    j.push(epoch, Identities { items: ids });
+                }
+            }
+            OpState::Copying => {
+                if !unheld.is_empty() && rng.chance(60) {
                     let take = 1 + rng.below(unheld.len());
                     let batch: Vec<(u32, String)> = unheld[..take]
                         .iter()
@@ -1117,7 +1295,16 @@ fn random_run(rng: &mut Rng) -> Vec<(J, FakeDisk)> {
                 }
             }
             OpState::Blocked | OpState::NeedsAttention => {
-                if publish.is_some() && !renamed {
+                if cancelled {
+                    // Once cancel started, Abandon is the only exit.
+                    j.push(
+                        epoch,
+                        Transition {
+                            to: OpState::Cancelling,
+                            code: None,
+                        },
+                    );
+                } else if publish.is_some() && !renamed {
                     j.push(epoch, PublishWithdrawn);
                 } else if publish.is_some() {
                     break; // published but unconfirmed: the owner's call
@@ -1186,7 +1373,16 @@ fn random_run(rng: &mut Rng) -> Vec<(J, FakeDisk)> {
                 }
             }
             OpState::Cancelling => {
-                if let Some(h) = held.first() {
+                if rng.chance(8) {
+                    // Cleanup refused: waits for the owner, who can only abandon again.
+                    j.push(
+                        epoch,
+                        Transition {
+                            to: OpState::NeedsAttention,
+                            code: None,
+                        },
+                    );
+                } else if let Some(h) = held.first() {
                     disk.staged.remove(&h.name);
                     if rng.chance(85) {
                         j.push(
@@ -1366,7 +1562,17 @@ fn property_recovery_never_targets_unrecorded_identities_or_paths() {
             ] {
                 let rec = recover(OP, &j.rows, &d);
                 check_safety(&j, &d, &rec);
-                states.insert(j.state());
+                if j.replay.cancelled {
+                    assert!(
+                        matches!(
+                            j.state(),
+                            OpState::Cancelling | OpState::NeedsAttention | OpState::Cancelled
+                        ),
+                        "cancel did not stick: {:?}",
+                        j.state()
+                    );
+                }
+                states.insert((j.state(), j.replay.cancelled));
                 decisions.insert(std::mem::discriminant(&rec.decision));
             }
         }
@@ -1383,8 +1589,15 @@ fn property_recovery_never_targets_unrecorded_identities_or_paths() {
         OpState::Cancelling,
         OpState::Cancelled,
     ] {
-        assert!(states.contains(&s), "never reached {s:?}");
+        assert!(
+            states.contains(&(s, false)) || states.contains(&(s, true)),
+            "never reached {s:?}"
+        );
     }
+    assert!(
+        states.contains(&(OpState::NeedsAttention, true)),
+        "never reached needs_attention from cancelling"
+    );
     assert_eq!(decisions.len(), 6, "every decision kind reached");
 }
 
@@ -1526,6 +1739,30 @@ fn store_is_append_only_full_sync_and_validates_appends() {
         store.recover(op, &disk).unwrap().decision,
         Decision::NeedsAttention(Attention::InvalidJournal(Invalid { seq: 2, .. }))
     ));
-    let sync: i64 = store.synchronous().unwrap();
-    assert_eq!(sync, 2, "state.db journal must run synchronous=FULL");
+}
+
+#[test]
+fn store_forces_full_sync_and_wal_on_a_weaker_connection() {
+    // SQLite's default is already FULL, so start from a connection deliberately set weaker: the store's
+    // own pragmas are the only thing that can bring it back.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA synchronous=OFF")
+        .unwrap();
+    let probe = |c: &rusqlite::Connection| -> i64 {
+        c.query_row("PRAGMA synchronous", [], |r| r.get(0)).unwrap()
+    };
+    assert_eq!(probe(&conn), 0);
+    let store = Store::new(conn).unwrap();
+    assert_eq!(
+        store.synchronous().unwrap(),
+        2,
+        "state.db journal must run synchronous=FULL"
+    );
+    let mode: String = rusqlite::Connection::open(&path)
+        .unwrap()
+        .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(mode, "wal");
 }

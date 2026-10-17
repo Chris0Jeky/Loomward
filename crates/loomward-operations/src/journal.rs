@@ -191,6 +191,8 @@ pub struct Replay {
     pub state: OpState,
     pub epoch: u64,
     pub fenced: bool,
+    /// Set on entering `cancelling` and never cleared: Abandon is then the only exit (doc 47 section 5).
+    pub cancelled: bool,
     pub digest: [u8; 32],
     pub items: Vec<Item>,
     /// Every staging token ever intended, in order; only the last can carry the staging identity.
@@ -238,6 +240,7 @@ impl Replay {
             state: OpState::Approved,
             epoch: 0,
             fenced: false,
+            cancelled: false,
             digest: [0; 32],
             items: Vec::new(),
             staging_tokens: Vec::new(),
@@ -313,6 +316,7 @@ impl Replay {
             .state
             .transition(to)
             .map_err(|_| "illegal state transition")?;
+        self.cancelled |= to == OpState::Cancelling;
         Ok(())
     }
 
@@ -366,6 +370,9 @@ impl Replay {
         if self.fenced && advancing {
             return Err("record advances a fenced run");
         }
+        if self.cancelled && advancing {
+            return Err("record advances a cancelled run");
+        }
         match record {
             Record::Started { .. } => return Err("started twice"),
             Record::Fenced { .. } => unreachable!(),
@@ -392,6 +399,14 @@ impl Replay {
                 }
                 if items.is_empty() || items.len() > MAX_BATCH {
                     return Err("create batch size out of range");
+                }
+                // A new batch only once the last one is closed; otherwise only the same batch again (a retry).
+                let mut ids: Vec<u32> = items.iter().map(|(i, _)| *i).collect();
+                let mut open = self.open_batch.clone();
+                ids.sort_unstable();
+                open.sort_unstable();
+                if !open.is_empty() && ids != open {
+                    return Err("create batch while another batch is open");
                 }
                 let mut batch = Vec::with_capacity(items.len());
                 for (i, name) in items {
@@ -420,15 +435,18 @@ impl Replay {
                 self.open_batch = batch;
             }
             Record::Identities { items } => {
-                if self.state != Copying || items.is_empty() {
+                // An outcome of creates already made: also after the item failure that interrupted the batch.
+                if !matches!(self.state, Copying | Blocked | NeedsAttention) || items.is_empty() {
                     return Err("identity commit outside copying");
                 }
+                let mut covered: Vec<u32> = items.iter().map(|(i, _)| *i).collect();
                 let mut open = std::mem::take(&mut self.open_batch);
+                covered.sort_unstable();
+                open.sort_unstable();
+                if covered != open {
+                    return Err("identity commit does not cover the open batch exactly");
+                }
                 for (i, id) in items {
-                    let Some(at) = open.iter().position(|&x| x == i) else {
-                        return Err("identity for an item not in the open batch");
-                    };
-                    open.swap_remove(at);
                     self.fresh(id)?;
                     self.item(i)?.id = Some(id);
                 }
@@ -449,6 +467,8 @@ impl Replay {
                 if self.state != Copying || !code.is_item() {
                     return Err("item failure outside copying");
                 }
+                // A create that failed inside the open batch leaves the batch; the rest still commit.
+                self.open_batch.retain(|&x| x != i);
                 let item = self.item(i)?;
                 if item.verified {
                     return Err("failure of a verified item");

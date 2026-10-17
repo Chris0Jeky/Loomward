@@ -5,6 +5,10 @@
 //! file. A recovery decision is a proposal the executor (lane C5) must re-check against native identities;
 //! it is never authority on its own, and it only ever names identities and staging-relative names that the
 //! journal recorded.
+//!
+//! The per-operation hash chain detects damage in the middle of a journal (an edited, truncated, duplicated,
+//! reordered or missing record). It does not detect tail truncation: losing the last records looks exactly
+//! like a crash before they were written, and recovery treats it so.
 #![forbid(unsafe_code)]
 
 pub mod journal;
