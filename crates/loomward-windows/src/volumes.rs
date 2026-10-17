@@ -159,6 +159,17 @@ impl Volume {
     }
 }
 
+/// A volume that fails validation keeps its row; only its capacity becomes an Unknown with a reason.
+#[cfg(any(windows, test))]
+fn settle(mut volume: Volume) -> Volume {
+    if let Err(error) = volume.validate() {
+        volume.capacity = Fact::Unknown {
+            reason: error.to_string(),
+        };
+    }
+    volume
+}
+
 #[cfg(not(windows))]
 pub fn enumerate() -> io::Result<Vec<Volume>> {
     Err(io::Error::new(
@@ -479,8 +490,7 @@ mod native {
             trim_enabled: trim,
             availability,
         };
-        result.validate()?;
-        Ok(result)
+        Ok(settle(result))
     }
 }
 
@@ -492,6 +502,69 @@ mod hardening_tests {
         assert!(!super::removable_drive_type(3).unwrap());
         assert!(super::removable_drive_type(0).is_err());
         assert!(super::removable_drive_type(4).is_err());
+    }
+}
+
+#[cfg(test)]
+mod settle_tests {
+    use super::*;
+
+    fn volume_with_capacity(capacity: Fact<Capacity>) -> Volume {
+        Volume {
+            volume_name: "synthetic-volume".into(),
+            mount_paths: Fact::Known { value: vec![] },
+            filesystem: Fact::Unknown {
+                reason: "synthetic".into(),
+            },
+            capacity,
+            drive_type: Fact::Known {
+                value: "fixed".into(),
+            },
+            bus_type: Fact::Unknown {
+                reason: "synthetic".into(),
+            },
+            removable_media: Fact::Known { value: false },
+            incurs_seek_penalty: Fact::Unknown {
+                reason: "synthetic".into(),
+            },
+            trim_enabled: Fact::Unknown {
+                reason: "synthetic".into(),
+            },
+            availability: Fact::Known { value: true },
+        }
+    }
+
+    #[test]
+    fn invalid_capacity_is_named_unknown_and_the_volume_is_kept() {
+        let invalid = Capacity {
+            total_bytes: "10".into(),
+            free_bytes: "20".into(),
+            available_bytes: "5".into(),
+        };
+        let raw = volume_with_capacity(Fact::Known { value: invalid });
+        assert!(raw.validate().is_err());
+        let settled = settle(raw);
+        assert!(settled.validate().is_ok());
+        assert_eq!(settled.volume_name, "synthetic-volume");
+        assert!(matches!(
+            &settled.capacity,
+            Fact::Unknown { reason } if reason == "capacity requires available <= free <= total"
+        ));
+        assert!(matches!(
+            &settled.drive_type,
+            Fact::Known { value } if value == "fixed"
+        ));
+    }
+
+    #[test]
+    fn valid_capacity_is_left_alone() {
+        let valid = Capacity {
+            total_bytes: "20".into(),
+            free_bytes: "10".into(),
+            available_bytes: "5".into(),
+        };
+        let settled = settle(volume_with_capacity(Fact::Known { value: valid }));
+        assert!(matches!(&settled.capacity, Fact::Known { value } if value.free_bytes == "10"));
     }
 }
 
