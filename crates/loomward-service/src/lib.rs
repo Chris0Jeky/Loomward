@@ -105,7 +105,7 @@ pub(crate) struct Inner {
     metadata: Arc<dyn inventory::Provider>,
     metadata_cursors: cursors::Cursors,
     #[cfg(test)]
-    pub(crate) hooks: tests::Hooks,
+    pub(crate) hooks: Arc<tests::Hooks>,
 }
 
 /// Detached workers (reads, mutations, a telemetry sampling turn) hold the shared state, hence
