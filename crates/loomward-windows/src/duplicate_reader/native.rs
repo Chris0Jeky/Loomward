@@ -8,7 +8,6 @@ use sha2::{Digest, Sha256};
 use std::{
     fs::File,
     io,
-    mem::ManuallyDrop,
     os::windows::{ffi::OsStrExt, io::AsRawHandle},
     path::Component,
     ptr,
@@ -61,8 +60,54 @@ fn source(error: SourceError) -> Reason {
     }
 }
 fn observe(file: &File) -> Result<ObservedIdentity, Reason> {
-    let borrowed = ManuallyDrop::new(Handle(file.as_raw_handle()));
-    identity::from_handle(&borrowed).map_err(error)
+    identity::from_file(file).map_err(error)
+}
+
+#[cfg(feature = "copy-primitives")]
+pub(crate) struct CopySource {
+    reader: Reader<fn(Event, usize)>,
+    opened: Opened,
+    entry: Entry,
+    meter: Meter,
+}
+#[cfg(feature = "copy-primitives")]
+impl CopySource {
+    pub(crate) fn open(
+        root: &Path,
+        expected: &OpenedIdentity,
+        entry: Entry,
+        budget: Budget,
+    ) -> Result<Self, Reason> {
+        let reader = Reader::new(root, expected, (|_, _| {}) as fn(Event, usize))?;
+        let meter = Meter::new(budget);
+        crate::effects::supported_file(&reader.open(&entry, false, &meter)?.file)
+            .map_err(|_| Reason::Unsupported)?;
+        let opened = reader.open(&entry, true, &meter)?;
+        Ok(Self {
+            reader,
+            opened,
+            entry,
+            meter,
+        })
+    }
+    pub(crate) fn file(&self) -> &File {
+        &self.opened.file
+    }
+    pub(crate) fn read(&mut self, offset: u64, buffer: &mut [u8]) -> Result<(), Reason> {
+        self.reader
+            .read(0, &self.opened.file, offset, buffer, &mut self.meter)
+    }
+    pub(crate) fn read_stream(
+        &mut self,
+        file: &File,
+        offset: u64,
+        buffer: &mut [u8],
+    ) -> Result<(), Reason> {
+        self.reader.read(0, file, offset, buffer, &mut self.meter)
+    }
+    pub(crate) fn finish(&self) -> Result<(), Reason> {
+        self.reader.finish(&self.opened, &self.entry, &self.meter)
+    }
 }
 fn signature(current: &ObservedIdentity, expected: &ObservedIdentity) -> bool {
     current.object == expected.object
