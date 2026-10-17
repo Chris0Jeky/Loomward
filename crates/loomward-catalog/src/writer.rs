@@ -619,6 +619,10 @@ fn serve(
     let mut vacuum_pending = cut_pending;
     let mut retry_delay = Duration::from_millis(500);
     let mut next_retry = Instant::now() + retry_delay;
+    // A store that has just opted into the ranked token index is backfilled here, one bounded
+    // round per transaction, only while no command is waiting (#520).
+    let mut backfill = crate::search::backfilling(&conn).unwrap_or(false);
+    let mut backfill_after = Instant::now();
     loop {
         let first = loop {
             if cut_pending && Instant::now() >= next_retry {
@@ -626,13 +630,32 @@ fn serve(
                 retry_delay = (retry_delay * 2).min(Duration::from_secs(30));
                 next_retry = Instant::now() + retry_delay;
             }
+            if backfill && pending.is_none() && Instant::now() >= backfill_after {
+                match rx.try_recv() {
+                    Ok(p) => pending = Some(p),
+                    Err(crossbeam_channel::TryRecvError::Empty) => {
+                        // A failed round (a lock held elsewhere) rolls back and is retried a second later.
+                        match backfill_step(&mut conn) {
+                            Ok(more) => backfill = more,
+                            Err(_) => backfill_after = Instant::now() + Duration::from_secs(1),
+                        }
+                        continue;
+                    }
+                    Err(crossbeam_channel::TryRecvError::Disconnected) => {}
+                }
+            }
             if let Some(p) = pending.take() {
                 break Some(p);
             }
-            if !cut_pending {
+            if !cut_pending && !backfill {
                 break rx.recv().ok();
             }
-            match rx.recv_timeout(next_retry.saturating_duration_since(Instant::now())) {
+            let wake = match (cut_pending, backfill) {
+                (true, true) => next_retry.min(backfill_after),
+                (true, false) => next_retry,
+                _ => backfill_after,
+            };
+            match rx.recv_timeout(wake.saturating_duration_since(Instant::now())) {
                 Ok(p) => break Some(p),
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
                 Err(_) => break None,
@@ -998,6 +1021,13 @@ pub(crate) fn wal_cut(conn: &Connection, wait: Duration, vacuum: &mut bool) -> b
             .is_ok();
     }
     done
+}
+/// One backfill round in its own transaction. Whether keys remain.
+fn backfill_step(conn: &mut Connection) -> Result<bool> {
+    let tx = conn.transaction()?;
+    let more = crate::search::backfill_round(&tx)?;
+    tx.commit()?;
+    Ok(more)
 }
 fn end_checkpoint(conn: &Connection, compact_bulk: bool) -> rusqlite::Result<[i64; 3]> {
     let timeout = conn.query_row("PRAGMA busy_timeout", [], |r| r.get::<_, u32>(0))?;
@@ -2243,6 +2273,9 @@ fn swap_bulk(conn: &Connection, root: i64) -> Result<()> {
         return Err(Error::Invalid("bulk root gained live rows"));
     }
     conn.execute("DELETE FROM dir WHERE id=?1", [root_dir])?;
+    // The build's rows are new token keys (IDs are never reused): index them in one pass below
+    // instead of queueing each through the insert triggers and reading it back (#520).
+    let token_triggers = crate::search::suspend_insert_triggers(conn)?;
     conn.execute(
         "INSERT INTO dir SELECT * FROM bulk_dir WHERE root_id=?1 ORDER BY id",
         [root],
@@ -2283,6 +2316,22 @@ fn swap_bulk(conn: &Connection, root: i64) -> Result<()> {
     )?;
     for (_, sql) in deferred {
         conn.execute_batch(&sql)?;
+    }
+    if !token_triggers.is_empty() {
+        crate::search::index_new_tokens(
+            conn,
+            "SELECT id,name FROM bulk_dir WHERE root_id=?1 AND parent_id IS NOT NULL ORDER BY id",
+            root,
+        )?;
+        crate::search::index_new_tokens(
+            conn,
+            &format!(
+                "SELECT id+{},name FROM {source} ORDER BY id",
+                crate::search::FILE_KEY
+            ),
+            root,
+        )?;
+        crate::search::restore_insert_triggers(conn, &token_triggers)?;
     }
     if alone {
         crate::db::bulk_tables(conn, true)?;

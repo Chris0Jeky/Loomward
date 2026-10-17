@@ -667,6 +667,43 @@ fn preserved_catalogue_copies_are_swept_with_their_sidecars() {
 }
 
 #[test]
+fn forget_removes_the_archive_created_by_corrupt_catalogue_recovery() {
+    let dir = temp_root();
+    drop(loomward_catalog::Catalog::open(dir.path(), "synthetic").unwrap());
+    std::fs::write(dir.path().join("catalog.db"), PATH_A).unwrap();
+    drop(loomward_catalog::Catalog::open(dir.path(), "synthetic").unwrap());
+    let archived = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("catalog.corrupt-")
+        })
+        .expect("corrupt catalogue was not archived");
+    assert!(crate::handlers::holds(&archived, PATH_A));
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    svc.inner.revoke(grant).unwrap();
+    ok("roots.forget", forget(&svc, root, None));
+    assert!(!archived.exists());
+    assert!(holders(dir.path(), PATH_A).is_empty());
+}
+
+#[test]
+fn backup_directory_open_failure_is_not_an_empty_success() {
+    let dir = temp_root();
+    let error =
+        crate::handlers::forget_backups(&dir.path().join("missing"), Some(PATH_A)).unwrap_err();
+    assert_eq!(
+        error.detail.as_ref().unwrap()["reason"],
+        "forget_backup_scrub_failed"
+    );
+    assert_eq!(error.detail.as_ref().unwrap()["copy_kind"], "directory");
+}
+
+#[test]
 fn migration_hard_link_never_changes_the_external_database() {
     let dir = temp_root();
     let external = temp_root();

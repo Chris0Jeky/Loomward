@@ -50,6 +50,43 @@ describe('SliceNav response validation', () => {
 });
 
 describe('SliceNav', () => {
+  it.each(['latest first', 'older first'])('the latest basis choice supersedes a pending request: %s', async order => {
+    const client = new Client(createMockTransport());
+    session.client = client;
+    try {
+      const nav = new SliceNav({ depth: 2, maxNodes: 200, minShare: 0 });
+      expect(await nav.start()).toBe(true);
+      const logical = JSON.parse(JSON.stringify(nav.slice));
+      const allocated = { ...logical, basis: 'allocated' };
+      let finishOlder!: (value: never) => void, finishLatest!: (value: never) => void;
+      const call = vi.spyOn(client, 'call')
+        .mockImplementationOnce(() => new Promise(resolve => { finishOlder = resolve; }))
+        .mockImplementationOnce(() => new Promise(resolve => { finishLatest = resolve; }));
+      const older = nav.setBasis('allocated');
+      expect(nav.busy).toBe(true);
+      const latest = nav.setBasis('logical');
+      // Resolve the older request even on the broken implementation, so no promise is left hanging.
+      if (order === 'older first' || call.mock.calls.length === 1) {
+        finishOlder({ result: allocated } as never);
+        expect(await older).toBe(false);
+        expect(nav.busy).toBe(true);
+      }
+      expect(call).toHaveBeenCalledTimes(2);
+      finishLatest({ result: logical } as never);
+      expect(await latest).toBe(true);
+      if (order === 'latest first') {
+        finishOlder({ result: allocated } as never);
+        expect(await older).toBe(false);
+      }
+      expect(nav.basis).toBe('logical');
+      expect(nav.slice!.basis).toBe('logical');
+      expect(nav.busy).toBe(false);
+      call.mockClear();
+      expect(await nav.setBasis('logical')).toBe(true);
+      expect(call).not.toHaveBeenCalled();
+    } finally { session.client = null; vi.restoreAllMocks(); }
+  });
+
   it('a failed drill leaves the trail where it was and drops the slice; a good one commits both', async () => {
     session.client = new Client(createMockTransport({ now: () => new Date('2026-10-01T00:00:00Z') }));
     const nav = new SliceNav({ depth: 2, maxNodes: 200, minShare: 0 });

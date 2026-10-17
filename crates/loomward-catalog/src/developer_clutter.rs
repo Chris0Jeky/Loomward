@@ -70,7 +70,7 @@ impl Reader {
                 let row = query::get(conn, NodeKey::Dir(id))?;
                 let coverage = row.coverage();
                 let known = coverage == "complete" && row.valid && !scanning;
-                report.partial |= !known;
+                report.partial |= !known || row.totals.allocation_unknown != 0;
                 let (provider, hint, reason) = match provider.as_str() {
                     "cargo" => ("cargo", "Rebuild with Cargo; toolchain, dependencies and build-script inputs are unverified.",
                         "Cargo conventional target directory beside a recorded Cargo.toml."),

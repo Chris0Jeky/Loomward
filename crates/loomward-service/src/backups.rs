@@ -38,6 +38,8 @@ fn out(result: Value, revs: Option<(i64, i64)>) -> Out {
 /// placeholders before opening anything (opening a placeholder would download it). The handle is
 /// dropped before this returns, so nothing holds the file while parsing. Returns the bytes and the
 /// file's modification time in Unix seconds (when the provider wrote it, not when Loomward read it).
+/// shortcut: path checks can race a swap and do not inspect parents; use anchored no-follow opens
+/// before expanding beyond owner-picked receipts. The handle metadata check follows links.
 pub(crate) fn read_receipt(path: &Path) -> Result<(Vec<u8>, u64), Why> {
     if paths::network_path(path) || paths::reserved_device(path) {
         return Err(Why::NotARegularFile);
@@ -285,6 +287,14 @@ impl Inner {
             None
         };
         drop(_dialog);
+        let ns = |s: u64| i64::try_from(s).ok()?.checked_mul(1_000_000_000);
+        let Some(snapshot_ns) = ns(snapshot_at) else {
+            return refused(Why::Unreadable);
+        };
+        let integrity_ns = integrity.as_ref().and_then(|(_, at)| ns(*at));
+        if integrity.is_some() && integrity_ns.is_none() {
+            return refused(Why::Unreadable);
+        }
         let label = r.repository_label.to_string();
         let snapshot_id = r.snapshot_id.to_string();
         let observation = |observed_at| lb::Observation {
@@ -353,14 +363,13 @@ impl Inner {
         if others >= MAX_REPOSITORIES {
             return refused(Why::RepositoryLimit);
         }
-        let ns = |s: u64| i64::try_from(s).unwrap_or(i64::MAX / 1_000_000_000) * 1_000_000_000;
         let imported = now_ns();
         tx.execute(
             "INSERT INTO st.backup_evidence(repository_label,evidence_json,snapshot_observed_ns,integrity_observed_ns,imported_at_ns)
              VALUES(?1,?2,?3,?4,?5) ON CONFLICT(repository_label) DO UPDATE SET evidence_json=excluded.evidence_json,
              snapshot_observed_ns=excluded.snapshot_observed_ns,integrity_observed_ns=excluded.integrity_observed_ns,
              imported_at_ns=excluded.imported_at_ns",
-            params![label, stored.to_string(), ns(snapshot_at), integrity.as_ref().map(|(_, at)| ns(*at)), imported],
+            params![label, stored.to_string(), snapshot_ns, integrity_ns, imported],
         )
         .map_err(sql_error)?;
         let id: i64 = tx

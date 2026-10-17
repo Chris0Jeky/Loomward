@@ -14,7 +14,8 @@ identical and every latency was higher). Compare the columns of one table, not a
 
 Nothing serves ranked search yet (`features.federated_search` is false), so the token index is opt-in:
 `Catalog::open` builds no `search_token` or `search_dirty`, queues nothing and refuses `search_ranked` with
-`Error::RankedIndexDisabled`; `Catalog::open_with(.., &CatalogOptions { ranked_index: true })` creates and backfills it
+`Error::RankedIndexDisabled`; `Catalog::open_with(.., &CatalogOptions { ranked_index: true })` creates it and (since #520,
+[search-ranked-520.md](search-ranked-520.md)) queues the existing rows for the writer's background backfill
 (a store that already has it keeps maintaining it whatever the option says). Everything in this file, the crash sweep and
 the F2 tests ran with it on; a test pins both modes, including that a store opened without it gains no object. **Turning
 it on for real catalogues is F3/F5's job, together with three things recorded in

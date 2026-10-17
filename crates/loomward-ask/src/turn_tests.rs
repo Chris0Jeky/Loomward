@@ -18,6 +18,7 @@ fn local() -> ProviderProfile {
 #[derive(Default)]
 struct FakeView {
     calls: Mutex<Vec<(String, String)>>,
+    search: Option<Value>,
 }
 
 fn ok(result: Value) -> ResponseEnvelope {
@@ -45,7 +46,7 @@ impl ViewService for FakeView {
         let command = request.command.as_ref().to_owned();
         self.calls.lock().unwrap().push((who, command.clone()));
         match command.as_str() {
-            "search.query" => ok(json!({
+            "search.query" => ok(self.search.clone().unwrap_or_else(|| json!({
                 "hits": [
                     {"row": row("n_7", "report.pdf"), "root_id": "rt_1",
                      "path": {"text": "Alpha\\report.pdf", "truncated": false}, "match_kind": "name"},
@@ -53,7 +54,7 @@ impl ViewService for FakeView {
                      "path": {"text": "Alpha\\evil", "truncated": false}, "match_kind": "name"}
                 ],
                 "next_cursor": null, "roots": [], "generation": "g1"
-            })),
+            }))),
             "node.inspect" => ok(json!({"row": row("n_7", "report.pdf"), "root_id": "rt_1"})),
             _ => panic!("the loop called {command}"),
         }
@@ -69,7 +70,7 @@ fn run(
     script: Vec<Upstream>,
 ) -> (
     ScriptedProvider,
-    Result<Answer, ProviderError>,
+    Result<Answer, Failure>,
     Vec<OutboundRecord>,
 ) {
     let p = ScriptedProvider::new(script);
@@ -159,6 +160,57 @@ fn tools_run_as_the_ask_client_and_the_model_sees_handles_not_node_ids() {
         .into_bytes();
         assert_eq!(rec.bytes, bytes.len());
         assert_eq!(rec.sha256, format!("sha256:{:x}", Sha256::digest(&bytes)));
+    }
+}
+
+#[test]
+fn find_keeps_bounded_clean_uncertainty_even_when_no_rows_match() {
+    for empty in [true, false] {
+        let hostile = "stale\u{202e}\n";
+        let roots: Vec<Value> = (0..70).map(|i| json!({
+            "root_id": format!("rt_{i}"), "scan_state": "never_scanned", "coverage": hostile,
+            "path": "must not reach model"
+        })).collect();
+        let view = FakeView {
+            search: Some(json!({
+                "hits": if empty { vec![] } else { vec![json!({
+                    "row": row("n_7", "report.pdf"), "freshness": {"state": hostile, "at": null}
+                })] },
+                "next_cursor": null, "partial": true, "budget_hit": true,
+                "index_state": "x".repeat(600), "substring_searched": false, "roots": roots
+            })),
+            ..Default::default()
+        };
+        let (p, answer, _) = run(
+            &view,
+            vec![
+                Upstream::Reply(calls(vec![call("a", "find", r#"{"text":"x"}"#)])),
+                Upstream::Reply(text("Coverage is unknown.")),
+            ],
+        );
+        answer.unwrap();
+        let seen = p.seen.lock().unwrap();
+        let Message::Tool { content, .. } = seen[1].messages.last().unwrap() else {
+            panic!()
+        };
+        let v: Value = serde_json::from_str(content).unwrap();
+        assert_eq!(v["partial"], true);
+        assert_eq!(v["budget_hit"], true);
+        assert_eq!(v["substring_searched"], false);
+        assert_eq!(v["index_state"].as_str().unwrap().len(), 255);
+        assert_eq!(v["roots"].as_array().unwrap().len(), 64);
+        assert_eq!(
+            v["roots"][0],
+            json!({"scan_state": "never_scanned", "coverage": clean(hostile)})
+        );
+        assert!(!content.contains("rt_"));
+        assert!(!content.contains("must not reach model"));
+        if !empty {
+            assert_eq!(
+                v["rows"][0]["freshness"],
+                json!({"state": clean(hostile), "at": "unknown"})
+            );
+        }
     }
 }
 
@@ -265,7 +317,7 @@ fn bad_tool_calls_are_tool_errors_and_the_loop_goes_on() {
 fn an_unreachable_or_silent_model_is_an_error_not_an_empty_answer() {
     let view = FakeView::default();
     let (_, answer, log) = run(&view, vec![Upstream::Down]);
-    let e = answer.unwrap_err();
+    let e = answer.unwrap_err().error;
     assert_eq!((e.kind, e.dispatched), (ErrorKind::Unreachable, false));
     assert_eq!(log.len(), 1);
     assert_eq!(
@@ -275,13 +327,13 @@ fn an_unreachable_or_silent_model_is_an_error_not_an_empty_answer() {
     // After dispatch the record says so, whatever the result.
     let late = ProviderError::new(ErrorKind::Timeout, "stalled", true);
     let (_, answer, log) = run(&view, vec![Upstream::Fail(late)]);
-    assert_eq!(answer.unwrap_err().kind, ErrorKind::Timeout);
+    assert_eq!(answer.unwrap_err().error.kind, ErrorKind::Timeout);
     assert_eq!(
         (log[0].dispatched, log[0].outcome.as_str()),
         (true, "timeout")
     );
     let (_, answer, _) = run(&view, vec![Upstream::Reply(text("  "))]);
-    assert_eq!(answer.unwrap_err().kind, ErrorKind::InvalidReply);
+    assert_eq!(answer.unwrap_err().error.kind, ErrorKind::InvalidReply);
 }
 
 #[test]

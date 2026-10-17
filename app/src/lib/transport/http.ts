@@ -44,6 +44,7 @@ async function readCapped(res: Response, max: number): Promise<string> {
 
 const BACKOFF_START_MS = 500;
 const BACKOFF_MAX_MS = 15_000;
+const IDLE_MS = 45_000;
 
 export function createHttpTransport(opts: HttpOptions): Transport {
   const doFetch = opts.fetchImpl ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
@@ -88,6 +89,13 @@ export function createHttpTransport(opts: HttpOptions): Transport {
 
       async function run() {
         while (!stop.signal.aborted) {
+          const connection = new AbortController();
+          let idleTimer: ReturnType<typeof setTimeout>;
+          const beat = () => {
+            clearTimeout(idleTimer);
+            idleTimer = setTimeout(() => connection.abort(), IDLE_MS);
+          };
+          beat();
           try {
             const h: Record<string, string> = { ...headers, Accept: 'text/event-stream' };
             // The frame id is `<epoch>.<seq>`; a bare seq reads as another epoch to the service (`epoch_changed`).
@@ -96,7 +104,7 @@ export function createHttpTransport(opts: HttpOptions): Transport {
               headers: h,
               cache: 'no-store',
               credentials: 'omit',
-              signal: stop.signal,
+              signal: AbortSignal.any([stop.signal, connection.signal]),
             });
             if (res.status !== 200 || !res.body) throw new TransportError(`event stream HTTP ${res.status}`);
             emit('open');
@@ -108,6 +116,7 @@ export function createHttpTransport(opts: HttpOptions): Transport {
               for (;;) {
                 const { done, value } = await reader.read();
                 if (done) break;
+                beat();
                 for (const frame of parser.push(decoder.decode(value, { stream: true }))) {
                   let ev: EventEnvelope | null = null;
                   try {
@@ -124,6 +133,8 @@ export function createHttpTransport(opts: HttpOptions): Transport {
             }
           } catch {
             if (stop.signal.aborted) return;
+          } finally {
+            clearTimeout(idleTimer!);
           }
           emit('closed');
           await sleep(delay);
