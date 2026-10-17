@@ -1422,10 +1422,13 @@ fn hardening_grant_checks_the_registered_digest_before_writes() {
     assert!(svc.inner.grant(&root, "cli_flag", false).is_ok());
 }
 
+/// Requests carry the protocol maximum deadline: a test that pins a deadline sets its own, and the
+/// 2 to 5 s defaults turned every handler into a race on a loaded host (#320).
 fn request(command: &str, payload: Value) -> RequestEnvelope {
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     serde_json::from_value(json!({
-        "protocol": "loomward/3", "request_id": format!("r{n}"), "command": command, "payload": payload
+        "protocol": "loomward/3", "request_id": format!("r{n}"), "command": command, "payload": payload,
+        "deadline_ms": 60_000
     }))
     .unwrap()
 }

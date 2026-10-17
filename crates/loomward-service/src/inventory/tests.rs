@@ -29,6 +29,7 @@ fn open(
     )
     .unwrap()
 }
+/// Content tests pass the protocol maximum (60 s); a short deadline here is the property under test (#320).
 fn call(s: &Service, cmd: &str, payload: Value, deadline: u64) -> Value {
     let request: RequestEnvelope = serde_json::from_value(json!({"protocol": "loomward/3", "request_id": "metadata_test", "command": cmd, "payload": payload, "deadline_ms": deadline})).unwrap();
     let response = s.call(request, &CallContext::http());
@@ -79,7 +80,7 @@ fn injected_synthetic_pages_bind_session_command_and_snapshot() {
     let tmp = tempfile::tempdir().unwrap();
     let probe = Arc::new(Probe::new(Duration::ZERO, DatasetClass::Synthetic));
     let s = open(tmp.path(), DatasetClass::Synthetic, Some(probe.clone()));
-    let a = call(&s, "apps.list", json!({"limit": 1, "cursor": null}), 2000);
+    let a = call(&s, "apps.list", json!({"limit": 1, "cursor": null}), 60_000);
     assert_eq!(a["ok"], true);
     assert_eq!(a["meta"]["dataset_class"], "synthetic");
     assert_eq!(
@@ -92,7 +93,7 @@ fn injected_synthetic_pages_bind_session_command_and_snapshot() {
         &s,
         "apps.list",
         json!({"limit": 200, "cursor": cursor}),
-        2000,
+        60_000,
     );
     assert_eq!(b["result"]["applications"].as_array().unwrap().len(), 1);
     assert!(b["result"]["applications"][0]["estimated_size_bytes"].is_null());
@@ -103,7 +104,7 @@ fn injected_synthetic_pages_bind_session_command_and_snapshot() {
             &s,
             "desktop.contexts",
             json!({"limit": 1, "cursor": cursor}),
-            2000
+            60_000
         )["error"]["code"],
         "invalid_request"
     );
@@ -114,7 +115,7 @@ fn injected_synthetic_pages_bind_session_command_and_snapshot() {
             &other,
             "apps.list",
             json!({"limit": 1, "cursor": cursor}),
-            2000
+            60_000
         )["error"]["detail"]["reason"],
         "cursor_expired"
     );
@@ -122,7 +123,7 @@ fn injected_synthetic_pages_bind_session_command_and_snapshot() {
         &s,
         "desktop.contexts",
         json!({"limit": 200, "cursor": null}),
-        2000,
+        60_000,
     );
     assert_eq!(desktop["ok"], true);
     assert_eq!(desktop["result"]["contexts"][0]["redirected"], true);
@@ -133,7 +134,12 @@ fn injected_synthetic_pages_bind_session_command_and_snapshot() {
     );
     assert_eq!(desktop["result"]["contexts"][1]["ownership"], "public");
     assert_eq!(
-        call(&s, "apps.list", json!({"limit": 201, "cursor": null}), 2000)["error"]["code"],
+        call(
+            &s,
+            "apps.list",
+            json!({"limit": 201, "cursor": null}),
+            60_000
+        )["error"]["code"],
         "invalid_request"
     );
 }
@@ -144,8 +150,12 @@ fn wrong_dataset_and_timed_out_providers_never_publish_fallback() {
     let mismatch = Arc::new(Probe::new(Duration::ZERO, DatasetClass::Personal));
     let s = open(tmp.path(), DatasetClass::Synthetic, Some(mismatch.clone()));
     assert_eq!(
-        call(&s, "apps.list", json!({"limit": 200, "cursor": null}), 2000)["error"]["detail"]
-            ["reason"],
+        call(
+            &s,
+            "apps.list",
+            json!({"limit": 200, "cursor": null}),
+            60_000
+        )["error"]["detail"]["reason"],
         "metadata_dataset_mismatch"
     );
     assert_eq!(mismatch.calls.load(Ordering::SeqCst), 0);
@@ -332,24 +342,32 @@ fn metadata_snapshots_and_cursors_have_finite_budgets() {
         Some(Arc::new(Oversized)),
     );
     assert_eq!(
-        call(&s, "apps.list", json!({"limit": 200, "cursor": null}), 2000)["error"]["detail"]
-            ["reason"],
+        call(
+            &s,
+            "apps.list",
+            json!({"limit": 200, "cursor": null}),
+            60_000
+        )["error"]["detail"]["reason"],
         "metadata_snapshot_budget"
     );
     drop(s);
     let s = open(tmp.path(), DatasetClass::Synthetic, None);
-    let first = call(&s, "apps.list", json!({"limit": 1, "cursor": null}), 2000)["result"]
+    let first = call(&s, "apps.list", json!({"limit": 1, "cursor": null}), 60_000)["result"]
         ["next_cursor"]
         .clone();
     for _ in 0..16 {
         assert_eq!(
-            call(&s, "apps.list", json!({"limit": 1, "cursor": null}), 2000)["ok"],
+            call(&s, "apps.list", json!({"limit": 1, "cursor": null}), 60_000)["ok"],
             true
         );
     }
     assert_eq!(
-        call(&s, "apps.list", json!({"limit": 1, "cursor": first}), 2000)["error"]["detail"]
-            ["reason"],
+        call(
+            &s,
+            "apps.list",
+            json!({"limit": 1, "cursor": first}),
+            60_000
+        )["error"]["detail"]["reason"],
         "cursor_expired"
     );
 }
@@ -384,7 +402,7 @@ fn metadata_entry_bounds_refuse_the_whole_page_and_issue_no_cursor() {
         &at_apps_bound,
         "apps.list",
         json!({"limit": 1, "cursor": null}),
-        2000,
+        60_000,
     );
     assert_eq!(page["ok"], true, "{page}");
     assert!(!page["result"]["next_cursor"].is_null());
@@ -402,7 +420,7 @@ fn metadata_entry_bounds_refuse_the_whole_page_and_issue_no_cursor() {
         &over_apps_bound,
         "apps.list",
         json!({"limit": 1, "cursor": null}),
-        2000,
+        60_000,
     );
     assert_eq!(refused["ok"], false);
     assert_eq!(refused["error"]["code"], "resource_budget");
@@ -423,7 +441,7 @@ fn metadata_entry_bounds_refuse_the_whole_page_and_issue_no_cursor() {
             &at_shortcut_bound,
             "desktop.contexts",
             json!({"limit": 1, "cursor": null}),
-            2000
+            60_000
         )["ok"],
         true
     );
@@ -441,7 +459,7 @@ fn metadata_entry_bounds_refuse_the_whole_page_and_issue_no_cursor() {
         &over_shortcut_bound,
         "desktop.contexts",
         json!({"limit": 1, "cursor": null}),
-        2000,
+        60_000,
     );
     assert_eq!(refused["ok"], false);
     assert_eq!(refused["error"]["code"], "resource_budget");
@@ -453,12 +471,12 @@ fn metadata_entry_bounds_refuse_the_whole_page_and_issue_no_cursor() {
 fn timed_out_metadata_page_does_not_evict_a_received_cursor() {
     let tmp = tempfile::tempdir().unwrap();
     let s = Arc::new(open(tmp.path(), DatasetClass::Synthetic, None));
-    let first = call(&s, "apps.list", json!({"limit": 1, "cursor": null}), 2000)["result"]
+    let first = call(&s, "apps.list", json!({"limit": 1, "cursor": null}), 60_000)["result"]
         ["next_cursor"]
         .clone();
     for _ in 0..15 {
         assert_eq!(
-            call(&s, "apps.list", json!({"limit": 1, "cursor": null}), 2000)["ok"],
+            call(&s, "apps.list", json!({"limit": 1, "cursor": null}), 60_000)["ok"],
             true
         );
     }
@@ -494,7 +512,7 @@ fn timed_out_metadata_page_does_not_evict_a_received_cursor() {
         &s,
         "apps.list",
         json!({"limit": 200, "cursor": first}),
-        2000,
+        60_000,
     );
     assert_eq!(resumed["ok"], true, "{resumed}");
     assert_eq!(
