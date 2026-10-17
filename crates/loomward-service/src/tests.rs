@@ -29,6 +29,8 @@ pub(crate) struct Hooks {
     pub opened: std::sync::Condvar,
     /// How far ahead of the wall clock the collection page loop reads time (`Inner::past`).
     pub skew: Mutex<Duration>,
+    /// How far ahead of the wall clock a read's receiver reads time once it starts waiting.
+    pub read_ahead: Mutex<Duration>,
     /// (profile, profiles directory) for the scan-time fence instead of the OS folders (#312).
     pub profile: Mutex<Option<(std::path::PathBuf, std::path::PathBuf)>>,
     /// #219: the filesystem name grant-time probes observe instead of the volume's.

@@ -152,17 +152,34 @@ fn wrong_dataset_and_timed_out_providers_never_publish_fallback() {
     drop(s);
     let slow = Arc::new(Probe::new(Duration::ZERO, DatasetClass::Synthetic));
     slow.hold();
-    let s = open(tmp.path(), DatasetClass::Synthetic, Some(slow.clone()));
+    let s = Arc::new(open(
+        tmp.path(),
+        DatasetClass::Synthetic,
+        Some(slow.clone()),
+    ));
+    // The deadline is reached on the receiver's clock once the provider is parked mid-read, not
+    // by a short wall-clock budget a loaded host can spend before the worker even starts (#320).
+    let hooks = &s.inner.hooks;
+    let wait = (Command::DesktopContexts, "read_wait");
+    hooks.closed.lock().unwrap().push(wait);
+    let caller = {
+        let s = s.clone();
+        std::thread::spawn(move || {
+            call(
+                &s,
+                "desktop.contexts",
+                json!({"limit": 200, "cursor": null}),
+                30_000,
+            )
+        })
+    };
+    hooks.until("provider entered", |h| {
+        slow.calls.load(Ordering::SeqCst) == 1 && h.arrived.lock().unwrap().contains(&wait)
+    });
+    *hooks.read_ahead.lock().unwrap() = Duration::from_secs(30);
+    hooks.open(wait.0, wait.1);
     // The provider is parked mid-read, so the call can only come back by its deadline.
-    assert_eq!(
-        call(
-            &s,
-            "desktop.contexts",
-            json!({"limit": 200, "cursor": null}),
-            20
-        )["error"]["code"],
-        "deadline_exceeded"
-    );
+    assert_eq!(caller.join().unwrap()["error"]["code"], "deadline_exceeded");
     assert_eq!(slow.calls.load(Ordering::SeqCst), 1);
     assert_eq!(*s.inner.reads.lock().unwrap(), 1);
     slow.release();
@@ -177,11 +194,14 @@ fn wrong_dataset_and_timed_out_providers_never_publish_fallback() {
 fn native_personal_contexts_refuse_shortcut_reach_and_effects() {
     let tmp = tempfile::tempdir().unwrap();
     let s = open(tmp.path(), DatasetClass::Personal, None);
+    // Real registry and known-folder reads: the claim is what they return, not how fast a loaded
+    // host serves them, so the protocol maximum takes time out of it (#320). The deadline itself
+    // is pinned by `wrong_dataset_and_timed_out_providers_never_publish_fallback`.
     let result = call(
         &s,
         "desktop.contexts",
         json!({"limit": 200, "cursor": null}),
-        2000,
+        60_000,
     );
     if personal_admission().is_err() {
         assert_eq!(result["error"]["code"], "capability_unavailable");
@@ -189,7 +209,12 @@ fn native_personal_contexts_refuse_shortcut_reach_and_effects() {
             .as_str()
             .unwrap()
             .starts_with("personal_metadata_"));
-        let applications = call(&s, "apps.list", json!({"limit": 200, "cursor": null}), 2000);
+        let applications = call(
+            &s,
+            "apps.list",
+            json!({"limit": 200, "cursor": null}),
+            60_000,
+        );
         assert_eq!(applications["error"]["code"], "capability_unavailable");
         return;
     }
@@ -204,7 +229,12 @@ fn native_personal_contexts_refuse_shortcut_reach_and_effects() {
             .contains("desktop_enumeration_unavailable"));
     }
     let _typed: ResponseEnvelope = serde_json::from_value(result).unwrap();
-    let applications = call(&s, "apps.list", json!({"limit": 200, "cursor": null}), 2000);
+    let applications = call(
+        &s,
+        "apps.list",
+        json!({"limit": 200, "cursor": null}),
+        60_000,
+    );
     assert_eq!(applications["ok"], true);
     assert_eq!(
         applications["result"]["providers"]
