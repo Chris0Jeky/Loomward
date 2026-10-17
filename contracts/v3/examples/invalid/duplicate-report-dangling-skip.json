@@ -1,0 +1,52 @@
+{
+  "def": "DuplicateReport",
+  "reason": "skipped.entry refers to entries; index 5 is past the five entries",
+  "rust_only": true,
+  "value": {
+    "entries": [
+      {
+        "relative_path": "a.txt",
+        "logical_bytes": "4"
+      },
+      {
+        "relative_path": "b.txt",
+        "logical_bytes": "4"
+      },
+      {
+        "relative_path": "linked.txt",
+        "logical_bytes": "4"
+      },
+      {
+        "relative_path": "alias.txt",
+        "logical_bytes": "4"
+      },
+      {
+        "relative_path": "changed.txt",
+        "logical_bytes": "4"
+      }
+    ],
+    "groups": [
+      [
+        0,
+        1
+      ]
+    ],
+    "links": [
+      [
+        2,
+        3
+      ]
+    ],
+    "links_not_compared": 2,
+    "skipped": [
+      {
+        "entry": 5,
+        "reason": "changed_during_read"
+      }
+    ],
+    "bytes_read": "24",
+    "partial": true,
+    "truncated": false,
+    "stop": null
+  }
+}

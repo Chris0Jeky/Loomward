@@ -121,19 +121,40 @@ pub struct CollectionCreateRequest {
     pub name: CollectionName,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CollectionMembersUpdate {
     pub collection_id: CollectionId,
     pub add: UniqueVec<NodeId, 0, 500>,
     pub remove: UniqueVec<NodeId, 0, 500>,
     /// Stable local references can be removed without a live node or an active root.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "crate::types::optional_present"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remove_members: Option<UniqueVec<BoundedStr<1, 64>, 0, 500>>,
+}
+
+impl<'de> Deserialize<'de> for CollectionMembersUpdate {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            collection_id: CollectionId,
+            add: UniqueVec<NodeId, 0, 500>,
+            remove: UniqueVec<NodeId, 0, 500>,
+            #[serde(default, deserialize_with = "crate::types::optional_present")]
+            remove_members: Option<UniqueVec<BoundedStr<1, 64>, 0, 500>>,
+        }
+        let fields = Fields::deserialize(deserializer)?;
+        // semantics.md (Collections): adding and removing the same reference is refused, since
+        // the result would depend on the order the two sets were applied in.
+        if fields.add.iter().any(|id| fields.remove.contains(id)) {
+            return Err(serde::de::Error::custom("adds and removes overlap"));
+        }
+        Ok(Self {
+            collection_id: fields.collection_id,
+            add: fields.add,
+            remove: fields.remove,
+            remove_members: fields.remove_members,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -1,0 +1,17 @@
+{
+  "def": "CollectionMembersUpdate",
+  "reason": "a node may not be both added and removed (semantics.md, Collections)",
+  "rust_only": true,
+  "value": {
+    "collection_id": "co_proj1",
+    "add": [
+      "nd_0020"
+    ],
+    "remove": [
+      "nd_0020"
+    ],
+    "remove_members": [
+      "om_7"
+    ]
+  }
+}

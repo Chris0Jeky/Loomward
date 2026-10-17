@@ -379,9 +379,10 @@ impl ResponseEnvelope {
 
 impl<'de> Deserialize<'de> for ResponseEnvelope {
     /// Dispatches on `ok` so a malformed body reports the real field error, not
-    /// "did not match any variant".
+    /// "did not match any variant". Reads through the same [`Strict`] visitor as requests, so a
+    /// repeated member at any depth is refused rather than collapsed into its last value.
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let value = Value::deserialize(d)?;
+        let Strict(value) = Strict::deserialize(d)?;
         let ok = value
             .get("ok")
             .and_then(Value::as_bool)
