@@ -57,39 +57,119 @@ pub(crate) fn grant_number(id: &str) -> Result<i64, ErrorBody> {
 /// After a forget (#288) no file of the state directory may still hold the root's name. The rolling
 /// `state.start-*.db` copies are dropped (the next open makes a fresh one). The one-off
 /// `state.before-v*.db` migration copies are the owner's way back to an older build, so each is
-/// scrubbed in place instead; a copy that still holds `path` after a successful scrub (a shape the
-/// scrub does not know) is removed. A failed scrub preserves the rollback copy and reports failure.
-fn forget_backups(dir: &std::path::Path, path: &str) -> Result<(), ErrorBody> {
+/// scrubbed by exact grant ID instead; unknown copy shapes containing the path are removed.
+/// Another grant may name the same folder or a child, so a substring is not a failed known scrub.
+/// At restart the forgotten path is deliberately no longer stored: unknown shapes must be removed
+/// fail-closed, since their contents cannot be proved unrelated without retaining that private path.
+pub(crate) fn forget_backups(dir: &std::path::Path, path: Option<&str>) -> Result<(), ErrorBody> {
     // Every copy is visited even after a failure, so one failed scrub never leaves another copy unswept.
     let mut failed = None;
-    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+    let entries = std::fs::read_dir(dir).map_err(|_| backup_scrub_error("directory"))?;
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => {
+                failed.get_or_insert_with(|| backup_scrub_error("directory"));
+                continue;
+            }
+        };
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.ends_with(".db") {
-            continue;
-        }
         let file = entry.path();
-        let clean = if name.starts_with("state.before-v") {
+        let migration = name.starts_with("state.before-v") && name.ends_with(".db");
+        let archive_stem = name
+            .strip_suffix(".db")
+            .or_else(|| name.strip_suffix(".db-wal"))
+            .or_else(|| name.strip_suffix(".db-shm"));
+        let archived = archive_stem.is_some_and(|stem| {
+            stem.strip_prefix("catalog.corrupt-")
+                .or_else(|| stem.strip_prefix("catalog.before-v1-"))
+                .is_some_and(|stamp| !stamp.is_empty() && stamp.bytes().all(|b| b.is_ascii_digit()))
+        });
+        let remove = if migration {
             match scrub_copy(&file, &loomward_catalog::sqlite_dir(dir).join("state.db")) {
-                Ok(()) => !holds(&file, path),
-                Err(e) => {
-                    failed.get_or_insert(sql_error(e));
+                Ok((known, _pin)) => !known && path.is_none_or(|path| holds(&file, path)),
+                Err(_) => {
+                    failed.get_or_insert_with(|| backup_scrub_error("migration"));
                     continue; // the rollback copy is kept
                 }
             }
         } else {
-            false
+            (name.starts_with("state.start-") && name.ends_with(".db")) || archived
         };
-        if !clean && (name.starts_with("state.start-") || name.starts_with("state.before-v")) {
-            let _ = std::fs::remove_file(&file);
+        if remove && std::fs::remove_file(&file).is_err() {
+            failed.get_or_insert_with(|| {
+                backup_scrub_error(if archived {
+                    "catalog_archive"
+                } else if migration {
+                    "migration"
+                } else {
+                    "startup"
+                })
+            });
         }
     }
     failed.map_or(Ok(()), Err)
 }
 
+fn backup_scrub_error(kind: &str) -> ErrorBody {
+    let mut error = fail(ErrorCode::InternalError, &format!(
+            "the root was forgotten, but {kind} backup cleanup is pending; Loomward will retry automatically and at restart"
+        ));
+    error.detail = Detail::new(std::collections::BTreeMap::from([
+        ("reason".into(), json!("forget_backup_scrub_failed")),
+        ("copy_kind".into(), json!(kind)),
+    ]))
+    .ok();
+    error
+}
+
+/// Refuse aliases, and on Windows pin the checked path against replacement until SQLite closes.
+fn pin_backup(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options
+            // READ_DATA makes Windows enforce the share restriction; no content is read here.
+            .access_mode(0x81)
+            .share_mode(3)
+            .custom_flags(0x00300000); // no DELETE sharing; OPEN_REPARSE_POINT|OPEN_NO_RECALL
+    }
+    let file = options.open(path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() || meta.file_type().is_symlink() || paths::unsafe_attributes(&meta) {
+        return Err(std::io::Error::other(
+            "backup is not an ordinary local file",
+        ));
+    }
+    #[cfg(windows)]
+    if loomward_windows::linkcount::from_file(&file)? != 1 {
+        return Err(std::io::Error::other("backup has aliases"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let named = std::fs::symlink_metadata(path)?;
+        if named.file_type().is_symlink()
+            || named.ino() != meta.ino()
+            || named.dev() != meta.dev()
+            || meta.nlink() != 1
+        {
+            return Err(std::io::Error::other("backup has aliases or changed"));
+        }
+    }
+    Ok(file)
+}
+
 /// Removes from an older-schema copy what the forget removed from `state.db`: every reference
 /// `state.db` no longer has (only a forget deletes references) with the rows keyed to it, and the
 /// path and identity of every forgotten grant. Freed pages are zeroed and VACUUM rewrites the file.
-fn scrub_copy(copy: &std::path::Path, state: &std::path::Path) -> rusqlite::Result<()> {
+fn scrub_copy(
+    copy: &std::path::Path,
+    state: &std::path::Path,
+) -> rusqlite::Result<(bool, std::fs::File)> {
+    let pin = pin_backup(copy).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
     let conn = rusqlite::Connection::open(copy)?;
     // Allow transient store contention to settle before reporting a failed scrub.
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -105,6 +185,12 @@ fn scrub_copy(copy: &std::path::Path, state: &std::path::Path) -> rusqlite::Resu
             |r| r.get::<_, bool>(0),
         )
     };
+    let known = has("root_grant", "display_path")? && has("object_ref", "id")?;
+    let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    if has("root_grant", "display_path")? && version < 2 {
+        // v1 state had no grants; an extended/unknown table cannot promise the live ID namespace.
+        return Ok((false, pin));
+    }
     let tx = conn.unchecked_transaction()?;
     if has("object_ref", "id")? {
         tx.execute_batch("CREATE TEMP TABLE gone AS SELECT id FROM main.object_ref WHERE id NOT IN (SELECT id FROM live.object_ref)")?;
@@ -130,20 +216,50 @@ fn scrub_copy(copy: &std::path::Path, state: &std::path::Path) -> rusqlite::Resu
     }
     if has("root_grant", "display_path")? {
         tx.execute_batch("UPDATE main.root_grant SET display_path='forgotten',volume_key='forgotten',root_file_id=zeroblob(8) WHERE id IN (SELECT grant_id FROM live.root_forgotten)")?;
+        let uncleared: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM main.root_grant WHERE id IN (SELECT grant_id FROM live.root_forgotten)
+             AND (display_path!='forgotten' OR volume_key!='forgotten' OR root_file_id!=zeroblob(8)))", [], |r| r.get(0)
+        )?;
+        if uncleared {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
     }
     tx.commit()?;
-    conn.execute_batch("DETACH DATABASE live; VACUUM")
+    conn.execute_batch("DETACH DATABASE live; VACUUM")?;
+    Ok((known, pin))
 }
 
-/// Whether `file` holds `needle` as UTF-8 or UTF-16LE.
+/// Unknown legacy copy shapes need a byte check; buffer only a chunk and the longest overlap.
 pub(crate) fn holds(file: &std::path::Path, needle: &str) -> bool {
-    let Ok(bytes) = std::fs::read(file) else {
-        return true;
-    };
+    std::fs::File::open(file).map_or(true, |file| holds_reader(file, needle))
+}
+
+fn holds_reader(mut reader: impl std::io::Read, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
     let utf16: Vec<u8> = needle.encode_utf16().flat_map(u16::to_le_bytes).collect();
-    [needle.as_bytes(), utf16.as_slice()]
-        .iter()
-        .any(|n| !n.is_empty() && bytes.windows(n.len()).any(|w| w == *n))
+    let patterns = [needle.as_bytes(), utf16.as_slice()];
+    let overlap = patterns.iter().map(|p| p.len()).max().unwrap() - 1;
+    let mut bytes = vec![0; 65536 + overlap];
+    let mut kept = 0;
+    loop {
+        let n = match reader.read(&mut bytes[kept..kept + 65536]) {
+            Ok(0) => return false,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return true,
+        };
+        let end = kept + n;
+        if patterns
+            .iter()
+            .any(|p| bytes[..end].windows(p.len()).any(|w| w == *p))
+        {
+            return true;
+        }
+        kept = overlap.min(end);
+        bytes.copy_within(end - kept..end, 0);
+    }
 }
 
 pub(crate) fn encode<T: Serialize>(v: &T) -> Result<Value, ErrorBody> {
@@ -187,6 +303,51 @@ fn stale(message: &str, reason: &str) -> ErrorBody {
 }
 
 impl Inner {
+    pub(crate) fn backup_scrub_pending(&self) -> Result<Option<String>, ErrorBody> {
+        self.db()
+            .query_row(
+                "SELECT value FROM st.meta WHERE key='forget_backup_scrub_pending'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(sql_error)
+    }
+
+    /// Called under the mutation lock (or before the service is exposed at startup).
+    pub(crate) fn scrub_backups(&self, path: Option<&str>) -> Result<(), ErrorBody> {
+        // A later forget must not clear an earlier path's pending cleanup with its own byte check.
+        let path = if self.backup_scrub_pending()?.is_some() {
+            None
+        } else {
+            path
+        };
+        let result = forget_backups(&self.state_dir, path);
+        match &result {
+            Ok(()) => {
+                self.db()
+                    .execute(
+                        "DELETE FROM st.meta WHERE key='forget_backup_scrub_pending'",
+                        [],
+                    )
+                    .map_err(sql_error)?;
+            }
+            Err(error) => {
+                let kind = error
+                    .detail
+                    .as_ref()
+                    .and_then(|d| d.get("copy_kind"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("directory");
+                self.db().execute(
+                    "INSERT INTO st.meta(key,value) VALUES('forget_backup_scrub_pending',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    [kind],
+                ).map_err(sql_error)?;
+            }
+        }
+        result
+    }
+
     pub(crate) fn handle(
         &self,
         req: &RequestEnvelope,
@@ -561,7 +722,7 @@ impl Inner {
                     "writer_queue_capacity": loomward_catalog::QUEUE_BYTES,
                 },
                 "jobs_running": running,
-                "last_error": null,
+                "last_error": self.backup_scrub_pending()?.map(|kind| backup_scrub_error(&kind)),
                 "warnings": [],
             }),
             Some(revs),
@@ -692,21 +853,26 @@ impl Inner {
         self.db()
             .execute("DELETE FROM st.root_freshness WHERE grant_id=?1", [grant])
             .map_err(sql_error)?;
-        let backups = forget_backups(&self.state_dir, &path);
+        let backups = self.scrub_backups(Some(&path));
         let revs = self.revisions()?;
         if let Ok(list) = self.root_list(None) {
             self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));
         }
         // The live forget is committed and announced; only a kept migration copy may still hold the name.
-        backups.map_err(|_| {
-            with_reason(
-                fail(
-                    ErrorCode::InternalError,
-                    "the root was forgotten, but a migration backup copy could not be scrubbed and still holds its name",
-                ),
-                "forget_backup_scrub_failed",
+        backups?;
+        let scrub_pending: bool = self
+            .db()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM st.meta WHERE key='scrub_pending')",
+                [],
+                |r| r.get(0),
             )
-        })?;
+            .map_err(sql_error)?;
+        if scrub_pending {
+            return Err(with_reason(fail(ErrorCode::InternalError,
+                "the root was forgotten, but database cleanup is still pending; Loomward will retry automatically and at restart"),
+                "forget_scrub_pending"));
+        }
         Ok(out(
             json!({"root_id": r.root_id, "forgotten_at": ts_ns(at)}),
             Some(revs),
@@ -1280,6 +1446,104 @@ impl Inner {
 
 #[cfg(test)]
 mod scrub_copy_tests {
+
+    #[cfg(windows)]
+    #[test]
+    fn backup_pin_accepts_owned_files_and_refuses_aliases_without_an_elevation_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        let copy = dir.path().join("synthetic-copy.db");
+        std::fs::write(&copy, b"synthetic backup").unwrap();
+        let pin = super::pin_backup(&copy).unwrap();
+        assert!(
+            std::fs::remove_file(&copy).is_err(),
+            "pin must deny deletion"
+        );
+        assert!(std::fs::rename(&copy, dir.path().join("replacement.db")).is_err());
+        drop(pin);
+
+        let alias = dir.path().join("synthetic-alias.db");
+        std::fs::hard_link(&copy, &alias).unwrap();
+        assert!(super::pin_backup(&copy).is_err());
+        assert!(super::pin_backup(&alias).is_err());
+        std::fs::remove_file(&alias).unwrap();
+        drop(super::pin_backup(&copy).unwrap());
+
+        let directory = dir.path().join("synthetic-directory");
+        std::fs::create_dir(&directory).unwrap();
+        assert!(super::pin_backup(&directory).is_err());
+        let junction = dir.path().join("synthetic-junction");
+        let made = std::process::Command::new("cmd.exe")
+            .args(["/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&directory)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "{made:?}");
+        assert!(super::pin_backup(&junction).is_err());
+        std::fs::remove_dir(&junction).unwrap();
+        std::fs::remove_file(&copy).unwrap();
+    }
+
+    /// Explicit resource probe, kept out of the ordinary suite's I/O budget.
+    #[test]
+    #[ignore = "manual 1 GiB streaming-memory probe; run explicitly with --ignored --nocapture"]
+    #[cfg(windows)]
+    fn large_sparse_backup_memory_probe() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("synthetic-sparse-copy.db");
+        let file = std::fs::File::create(&path).unwrap();
+        assert!(std::process::Command::new("fsutil.exe")
+            .args(["sparse", "setflag"])
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success());
+        file.set_len(1024 * 1024 * 1024).unwrap();
+        drop(file);
+        println!("ready");
+        let started = std::time::Instant::now();
+        assert!(!super::holds(&path, "SyntheticAbsentMarker"));
+        println!(
+            "{}",
+            serde_json::json!({"sparse_bytes": 1073741824u64, "scan_seconds": started.elapsed().as_secs_f64()})
+        );
+    }
+
+    #[test]
+    fn streaming_backup_check_preserves_split_matches_and_read_failures() {
+        use std::io::{self, Read};
+        let needle = "Synthetic ?? name";
+        let utf16: Vec<_> = needle.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        for pattern in [needle.as_bytes(), utf16.as_slice()] {
+            for prefix in [65533, 65535, 65536] {
+                let mut bytes = vec![0; prefix];
+                bytes.extend_from_slice(pattern);
+                assert!(super::holds_reader(bytes.as_slice(), needle));
+            }
+        }
+        assert!(!super::holds_reader(&b"different"[..], needle));
+        struct Broken;
+        impl Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::other("synthetic mid-stream failure"))
+            }
+        }
+        assert!(super::holds_reader(
+            io::repeat(0).take(65537).chain(Broken),
+            needle
+        ));
+        struct Bounded(u64);
+        impl Read for Bounded {
+            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+                assert!(bytes.len() <= 65536, "unbounded backup read");
+                let n = bytes.len().min(self.0 as usize);
+                bytes[..n].fill(0);
+                self.0 -= n as u64;
+                Ok(n)
+            }
+        }
+        assert!(!super::holds_reader(Bounded(2 * 1024 * 1024), needle));
+    }
     use super::scrub_copy;
 
     /// A table name is an identifier, never SQL: a copy table named with a quote and a statement

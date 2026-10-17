@@ -467,3 +467,378 @@ fn busy_migration_scrub_preserves_rollback_copy_and_reports_failure() {
     assert_eq!(std::fs::read(&copy).unwrap(), before);
     assert_eq!(err(response).code, ErrorCode::InternalError);
 }
+
+#[test]
+fn migration_copy_keeps_regranted_and_nested_paths() {
+    for kept in [
+        PATH_A.to_owned(),
+        format!("{PATH_A}\\Nested"),
+        format!("{PATH_A}Suffix"),
+    ] {
+        let dir = temp_root();
+        let svc = open(dir.path(), DatasetClass::Synthetic);
+        let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+        svc.inner.revoke(grant).unwrap();
+        let (_, keep) = named(&svc, if kept == PATH_A { 1 } else { 2 }, "KeptRoot", &kept);
+        let copy = dir.path().join("state.before-v6.db");
+        svc.inner
+            .db()
+            .execute("VACUUM st INTO ?1", [copy.to_string_lossy().as_ref()])
+            .unwrap();
+        ok("roots.forget", forget(&svc, root, None));
+        assert!(
+            copy.exists(),
+            "the active path {kept:?} caused rollback-copy deletion"
+        );
+        let db = rusqlite::Connection::open(copy).unwrap();
+        let rows: (String, String) = db.query_row("SELECT (SELECT display_path FROM root_grant WHERE id=?1),(SELECT display_path FROM root_grant WHERE id=?2)", [grant, keep], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+        assert_eq!(rows, ("forgotten".into(), kept));
+    }
+}
+
+#[test]
+fn failed_backup_removal_reports_and_restart_retries_every_owned_copy() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    svc.inner.revoke(grant).unwrap();
+    let copy = dir.path().join("state.start-blocked.db");
+    std::fs::create_dir(&copy).unwrap();
+    let response = forget(&svc, root, None);
+    assert_eq!(
+        err(response).detail.unwrap()["reason"],
+        "forget_backup_scrub_failed"
+    );
+    std::fs::remove_dir(&copy).unwrap();
+    for name in [
+        "state.start-interrupted.db",
+        "catalog.corrupt-1.db",
+        "catalog.corrupt-1.db-wal",
+        "catalog.before-v1-2.db",
+    ] {
+        std::fs::write(dir.path().join(name), PATH_A).unwrap();
+    }
+    drop(svc);
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    assert!(holders(dir.path(), PATH_A).is_empty());
+    drop(svc);
+}
+
+#[test]
+fn preserved_catalogue_copies_are_swept_with_their_sidecars() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    svc.inner.revoke(grant).unwrap();
+    for name in [
+        "catalog.corrupt-1.db",
+        "catalog.corrupt-1.db-wal",
+        "catalog.corrupt-1.db-shm",
+        "catalog.before-v1-2.db",
+    ] {
+        std::fs::write(dir.path().join(name), PATH_A).unwrap();
+    }
+    let unrelated = dir.path().join("catalog.corrupt-notes.db");
+    std::fs::write(&unrelated, PATH_B).unwrap();
+    ok("roots.forget", forget(&svc, root, None));
+    assert!(holders(dir.path(), PATH_A).is_empty());
+    assert_eq!(std::fs::read_to_string(unrelated).unwrap(), PATH_B);
+}
+
+#[test]
+fn migration_hard_link_never_changes_the_external_database() {
+    let dir = temp_root();
+    let external = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    svc.inner.revoke(grant).unwrap();
+    let other = external.path().join("external.db");
+    svc.inner
+        .db()
+        .execute("VACUUM st INTO ?1", [other.to_string_lossy().as_ref()])
+        .unwrap();
+    std::fs::hard_link(&other, dir.path().join("state.before-v6.db")).unwrap();
+    let before = std::fs::read(&other).unwrap();
+    let _response = forget(&svc, root, None);
+    assert!(
+        std::fs::read(&other).unwrap() == before,
+        "scrub followed a backup alias outside its owned directory"
+    );
+}
+
+#[test]
+fn pending_catalogue_scrub_is_visible_to_the_forget_caller() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    svc.inner.revoke(grant).unwrap();
+    let reader = rusqlite::Connection::open(dir.path().join("state.db")).unwrap();
+    reader
+        .execute_batch("BEGIN; SELECT count(*) FROM root_grant")
+        .unwrap();
+    let response = forget(&svc, root, None);
+    let error = err(response);
+    assert_eq!(error.detail.unwrap()["reason"], "forget_scrub_pending");
+    assert!(error.message.contains("forgotten"));
+    reader.execute_batch("COMMIT").unwrap();
+}
+
+#[test]
+fn restart_repeats_the_backup_sweep_after_live_forget_committed() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (_root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    let copy = dir.path().join("state.before-v6.db");
+    svc.inner
+        .db()
+        .execute("VACUUM st INTO ?1", [copy.to_string_lossy().as_ref()])
+        .unwrap();
+    svc.inner.revoke(grant).unwrap();
+    svc.inner
+        .catalog
+        .writer()
+        .call(WriteCommand::ForgetGrant {
+            grant_id: grant,
+            forgotten_at_ns: 2,
+            expected_state_rev: None,
+        })
+        .unwrap();
+    assert!(holders(dir.path(), PATH_A).contains(&"state.before-v6.db".into()));
+    drop(svc);
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    assert!(!holders(dir.path(), PATH_A).contains(&"state.before-v6.db".into()));
+    assert!(copy.exists());
+    drop(svc);
+}
+
+#[test]
+fn a_copy_that_silently_refuses_the_grant_scrub_is_reported() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    svc.inner.revoke(grant).unwrap();
+    let copy = dir.path().join("state.before-v6.db");
+    svc.inner
+        .db()
+        .execute("VACUUM st INTO ?1", [copy.to_string_lossy().as_ref()])
+        .unwrap();
+    rusqlite::Connection::open(&copy).unwrap().execute_batch("CREATE TRIGGER refuse_scrub BEFORE UPDATE ON root_grant BEGIN SELECT RAISE(IGNORE); END;").unwrap();
+    assert_eq!(
+        err(forget(&svc, root, None)).detail.unwrap()["reason"],
+        "forget_backup_scrub_failed"
+    );
+    assert!(copy.exists());
+}
+
+#[test]
+fn v1_migration_forget_preserves_the_other_grant_and_clears_every_copy() {
+    let dir = temp_root();
+    for (name, schema) in [
+        (
+            "catalog.db",
+            include_str!("../../loomward-catalog/tests/fixtures/catalog-v1.sql"),
+        ),
+        (
+            "state.db",
+            include_str!("../../loomward-catalog/tests/fixtures/state-v1.sql"),
+        ),
+    ] {
+        let db = rusqlite::Connection::open(dir.path().join(name)).unwrap();
+        db.execute_batch(schema).unwrap();
+        db.pragma_update(None, "application_id", loomward_catalog::APPLICATION_ID)
+            .unwrap();
+        db.pragma_update(None, "user_version", 1).unwrap();
+        db.execute("INSERT INTO meta VALUES('dataset_class','synthetic')", [])
+            .unwrap();
+    }
+    let db = rusqlite::Connection::open(dir.path().join("catalog.db")).unwrap();
+    db.execute_batch("INSERT INTO volume VALUES(1,'fixture','Fixture','{}','{}','{}',1,0)")
+        .unwrap();
+    for (id, path) in [(41, PATH_A), (7, PATH_B)] {
+        db.execute(
+            "INSERT INTO root_grant VALUES(?1,1,?2,?3,'fixture','fixture','active',0,NULL)",
+            rusqlite::params![id, vec![id as u8; 16], path],
+        )
+        .unwrap();
+    }
+    db.execute_batch("CREATE TABLE fixture_utf16(bytes BLOB)")
+        .unwrap();
+    let utf16: Vec<u8> = PATH_A.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    db.execute("INSERT INTO fixture_utf16 VALUES(?1)", [utf16])
+        .unwrap();
+    drop(db);
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    assert!(dir.path().join("state.before-v1.db").exists());
+    assert_eq!(
+        count(
+            &svc,
+            "SELECT id FROM st.root_grant WHERE display_path='ForgetServicePathAlpha'"
+        ),
+        41
+    );
+    let root = count(&svc, "SELECT id FROM main.root WHERE grant_id=41");
+    svc.inner.revoke(41).unwrap();
+    ok("roots.forget", forget(&svc, root, None));
+    assert_eq!(count(&svc, "SELECT count(*) FROM st.root_grant WHERE id=7 AND display_path='KeepServicePathBeta' AND state='active'"), 1);
+    drop(svc);
+    assert!(holders(dir.path(), PATH_A).is_empty());
+}
+
+#[test]
+fn an_unrecognised_grant_copy_is_byte_checked_before_any_id_scrub() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    let (_, kept) = named(&svc, 2, "KeptRoot", PATH_B);
+    svc.inner.revoke(grant).unwrap();
+    let copy = dir.path().join("state.before-v1.db");
+    svc.inner
+        .db()
+        .execute("VACUUM st INTO ?1", [copy.to_string_lossy().as_ref()])
+        .unwrap();
+    let db = rusqlite::Connection::open(&copy).unwrap();
+    // A legacy-shaped grant table is not a promise that its IDs share the live namespace.
+    db.pragma_update(None, "user_version", 1).unwrap();
+    db.execute("UPDATE root_grant SET id=id+100", []).unwrap();
+    db.execute(
+        "UPDATE root_grant SET id=?1 WHERE display_path=?2",
+        rusqlite::params![grant, PATH_B],
+    )
+    .unwrap();
+    drop(db);
+    ok("roots.forget", forget(&svc, root, None));
+    assert!(
+        !copy.exists(),
+        "an unrecognised copy kept the forgotten path"
+    );
+    assert_eq!(
+        count(
+            &svc,
+            &format!(
+                "SELECT display_path='KeepServicePathBeta' FROM st.root_grant WHERE id={kept}"
+            )
+        ),
+        1
+    );
+}
+
+#[test]
+fn startup_backup_failures_are_visible_and_retried_without_a_restart() {
+    for hard_link in [false, true] {
+        let dir = temp_root();
+        let external = temp_root();
+        let svc = open(dir.path(), DatasetClass::Synthetic);
+        let (_, grant) = named(&svc, 1, NAME_A, PATH_A);
+        let copy = dir.path().join("state.before-v6.db");
+        svc.inner
+            .db()
+            .execute("VACUUM st INTO ?1", [copy.to_string_lossy().as_ref()])
+            .unwrap();
+        svc.inner.revoke(grant).unwrap();
+        svc.inner
+            .catalog
+            .writer()
+            .call(WriteCommand::ForgetGrant {
+                grant_id: grant,
+                forgotten_at_ns: 2,
+                expected_state_rev: None,
+            })
+            .unwrap();
+        drop(svc);
+        let alias = external.path().join("external.db");
+        let lock = if hard_link {
+            std::fs::hard_link(&copy, &alias).unwrap();
+            None
+        } else {
+            let lock = rusqlite::Connection::open(&copy).unwrap();
+            lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+            Some(lock)
+        };
+        let before = std::fs::read(&copy).unwrap();
+        let svc = open(dir.path(), DatasetClass::Synthetic);
+        let health = ok("health.get", call(&svc, "health.get", json!({}))).0;
+        assert_eq!(
+            health["last_error"]["detail"]["reason"],
+            "forget_backup_scrub_failed"
+        );
+        assert_eq!(health["last_error"]["detail"]["copy_kind"], "migration");
+        assert_eq!(
+            count(
+                &svc,
+                "SELECT count(*) FROM st.meta WHERE key='forget_backup_scrub_pending'"
+            ),
+            1
+        );
+        assert_eq!(std::fs::read(&copy).unwrap(), before);
+        if let Some(lock) = lock {
+            lock.execute_batch("ROLLBACK").unwrap();
+        } else {
+            std::fs::remove_file(alias).unwrap();
+        }
+        let until = Instant::now() + Duration::from_secs(20);
+        loop {
+            let health = ok("health.get", call(&svc, "health.get", json!({}))).0;
+            if health["last_error"].is_null() {
+                break;
+            }
+            assert!(
+                Instant::now() < until,
+                "backup cleanup did not recover: {health:?}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(
+            count(
+                &svc,
+                "SELECT count(*) FROM st.meta WHERE key='forget_backup_scrub_pending'"
+            ),
+            0
+        );
+        assert!(!holders(dir.path(), PATH_A).contains(&"state.before-v6.db".into()));
+    }
+}
+
+#[test]
+fn another_forget_cannot_clear_an_earlier_unknown_copy_obligation() {
+    let dir = temp_root();
+    let external = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (a, grant_a) = named(&svc, 1, NAME_A, PATH_A);
+    svc.inner.revoke(grant_a).unwrap();
+    let copy = dir.path().join("state.before-v1.db");
+    svc.inner
+        .db()
+        .execute("VACUUM st INTO ?1", [copy.to_string_lossy().as_ref()])
+        .unwrap();
+    rusqlite::Connection::open(&copy)
+        .unwrap()
+        .pragma_update(None, "user_version", 1)
+        .unwrap();
+    let (_, grant_b) = named(&svc, 2, "KeepServiceFolderBeta", PATH_B);
+    svc.inner.revoke(grant_b).unwrap();
+    let alias = external.path().join("external.db");
+    std::fs::hard_link(&copy, &alias).unwrap();
+    assert_eq!(
+        err(forget(&svc, a, None)).detail.unwrap()["reason"],
+        "forget_backup_scrub_failed"
+    );
+    // Hold the retry worker off so the second forget must finish the first one's cleanup itself.
+    let _mutation = svc.inner.mutation.lock().unwrap();
+    std::fs::remove_file(alias).unwrap();
+    svc.inner
+        .catalog
+        .writer()
+        .call(WriteCommand::ForgetGrant {
+            grant_id: grant_b,
+            forgotten_at_ns: 3,
+            expected_state_rev: None,
+        })
+        .unwrap();
+    svc.inner.scrub_backups(Some(PATH_B)).unwrap();
+    assert!(
+        !copy.exists(),
+        "second forget cleared pending work for the first path"
+    );
+    assert!(svc.inner.backup_scrub_pending().unwrap().is_none());
+    assert!(!holders(dir.path(), PATH_A).contains(&"state.before-v1.db".into()));
+}
