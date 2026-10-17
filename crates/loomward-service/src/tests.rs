@@ -3988,6 +3988,8 @@ fn absence_is_decided_by_identity_when_a_directory_is_replaced_at_its_name() {
         settle(svc, &start(svc, &lab.root, "refresh"))["state"],
         "completed"
     );
+    // #561: late watcher hints may start a refresh; read once freshness is idle.
+    f3_wait_live(svc);
     let slice = lab_slice(svc, &lab.root);
     assert_eq!(slice_totals(&slice), walk(&lab.path));
     assert_eq!(slice_totals(&slice), (2, 2, 107));
@@ -4026,6 +4028,8 @@ fn a_junction_replacing_a_directory_stays_visible_as_excluded() {
     let done = settle(svc, &start(svc, &lab.root, "refresh"));
     assert_eq!(done["state"], "completed", "{done:?}");
     assert!(done["progress"]["skipped"].as_u64().unwrap() >= 1);
+    // #561: late watcher hints may start a refresh; read once freshness is idle.
+    f3_wait_live(svc);
     let slice = lab_slice(svc, &lab.root);
     let b = slice["nodes"]
         .as_array()
@@ -4607,6 +4611,8 @@ fn a_wide_lab_tree_matches_the_walk_under_parallel_workers() {
     let done = settle(svc, job["job"]["job_id"].as_str().unwrap());
     assert_eq!(done["state"], "completed", "{done:?}");
     assert_eq!(done["coverage"], "complete");
+    // #561: late watcher hints from the tree build may start a refresh; read once it is idle.
+    f3_wait_live(svc);
     assert_eq!(slice_totals(&lab_slice(svc, &lab.root)), walk(&lab.path));
 }
 
