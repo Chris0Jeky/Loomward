@@ -1,0 +1,21 @@
+[package]
+name = "loomward-ask"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The Ask provider interface (LW-117, docs/46 section 8): provider classes, the consent gate, the per-round broker spawn and the grant-scoped tool loop. No network code."
+
+[dependencies]
+loomward-protocol = { path = "../loomward-protocol" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+loomward-service = { path = "../loomward-service", features = ["test-support"] }
+tempfile.workspace = true
+
+[features]
+# The scripted fake provider and the provider contract suite, for other crates' tests.
+testkit = []
