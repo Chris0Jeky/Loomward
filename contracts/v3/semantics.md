@@ -233,7 +233,7 @@ Rules:
   SHOULD page from slices (which are snapshots) during scans and use cursors once the scan finishes.
 - A page that stops on its work budget returns the items found so far, `budget_hit: true`, and a cursor that
   resumes the scan after the last examined row (not the last returned row).
-- `search.query` (LW-113, owner-local and grant-scoped; no MCP or Ask exposure before LW-067) reads a name index
+- `search.query` (LW-113; client principals require an owner-issued LW-067 grant through the LW-069 shared adapter) reads a name index
   that every catalogue commit keeps exact in the same transaction. Hits come in tiers, each tier folders first and
   then files in index-key order: `exact` (the whole name, or the name up to a dot), `prefix`, `token` (after a
   separator), `substring`, then for several words `token` (every word at a word start) and `substring` (every word

@@ -520,6 +520,33 @@ fn an_empty_text_is_the_filter_listing_and_a_spent_budget_says_so() {
     r.time_budget = Some(std::time::Duration::ZERO);
     let p = ranked(&lab, &r);
     assert!(p.budget_hit);
+    assert!(!p.hits.is_empty());
+}
+
+#[test]
+fn a_ranked_budget_cut_without_returned_hits_refuses() {
+    let (lab, _) = corpus();
+    let mut r = req("report");
+    let mut reader = lab.c.reader().unwrap();
+    for tiers in [ALL_TIERS, TIER_TRIGRAM, TIER_TOKEN, TIER_CONTEXT] {
+        r.work_budget = 0;
+        let opts = RankOptions {
+            tiers,
+            ..RankOptions::default()
+        };
+        let cut = reader.search_ranked(&r, &opts);
+        assert!(
+            matches!(cut, Err(Error::ResourceBudget)),
+            "{tiers}: {cut:?}"
+        );
+    }
+    r.work_budget = 50_000_000;
+    let complete = reader.search_ranked(&r, &RankOptions::default()).unwrap();
+    assert!(!complete.hits.is_empty() && !complete.budget_hit);
+    let absent = reader
+        .search_ranked(&req("no-such-synthetic-name"), &RankOptions::default())
+        .unwrap();
+    assert!(absent.hits.is_empty() && !absent.budget_hit);
 }
 
 #[test]
