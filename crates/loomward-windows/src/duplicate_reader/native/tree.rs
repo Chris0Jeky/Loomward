@@ -620,6 +620,7 @@ mod tests {
             | FILE_APPEND_DATA
             | FILE_WRITE_EA
             | FILE_WRITE_ATTRIBUTES
+            | FILE_DELETE_CHILD
             | DELETE
             | WRITE_DAC
             | WRITE_OWNER

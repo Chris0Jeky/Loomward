@@ -204,7 +204,9 @@ pub fn normalise_backup_receipt(
         .required
         .iter()
         .filter(|f| {
-            snapshot_taken && source.snapshot_files.contains(f) && restored_versions.contains(f)
+            snapshot_taken
+                && source.snapshot_files.iter().any(|s| same_file(s, f))
+                && restored_versions.iter().any(|s| same_file(s, f))
         })
         .cloned()
         .collect();
@@ -215,14 +217,14 @@ pub fn normalise_backup_receipt(
                 && source
                     .required
                     .iter()
-                    .all(|f| r.files.iter().any(|got| got.file.path == f.path))
+                    .all(|f| r.files.iter().any(|got| same_path(&got.file.path, &f.path)))
         });
     let metadata_supported = restore_bound
         && source.restore.as_ref().is_some_and(|r| {
             source.required.iter().all(|f| {
                 r.files
                     .iter()
-                    .find(|got| got.file == *f)
+                    .find(|got| same_file(&got.file, f))
                     .is_some_and(|got| {
                         source
                             .required_metadata
@@ -371,6 +373,16 @@ fn bound(observation: &Observation, source: &BackupSource) -> bool {
     observation.repository_id == source.repository_id
         && observation.snapshot_id == source.snapshot_id
         && observation.exit_code == 0
+}
+
+/// Relative names are Windows names: case folds exactly as `valid_files` folds duplicates, so
+/// coverage and duplicate detection share one path identity.
+fn same_path(a: &str, b: &str) -> bool {
+    a.to_lowercase() == b.to_lowercase()
+}
+
+fn same_file(a: &FileVersion, b: &FileVersion) -> bool {
+    same_path(&a.path, &b.path) && a.version == b.version
 }
 
 fn digest(value: &str) -> bool {

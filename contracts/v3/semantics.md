@@ -632,3 +632,63 @@ and visible-node text list carry labels, scores, abstention and reasons independ
 fourth crossing, every second thread missing, no meaning thread), and the legend names each. A human
 `labelled` or `mixed` meaning (`source: "human"`) already in a slice is never replaced by the student
 projection; a system aggregate or a teacher label is.
+
+## Federated search extension and query grammar (docs/46 section 4, lane F1)
+
+F1 lands the **contract and the parser only**. No engine serves the extension yet:
+`session.hello` `features.federated_search` is `false`, and a `search.query` carrying any extension field
+(even `sources: ["own"]`) answers `capability_unavailable` instead of ignoring the field. The lanes that
+serve it (F2 ranking and filters, F3 freshness, F4 Everything, F9 semantic) flip the flag per engine.
+Search v1 requests and pages are unchanged and stay valid.
+
+- **Request fields (all optional; absent means v1 behaviour).** `sources` (unique, from `own`,
+  `everything`, `semantic`; absent means `["own"]`), `terms` (at most 8 of `{text, mode: token|substring,
+  negated}`), `extensions` (a lower-case set of at most 16, no dot), `collection_id`, `under_node_id`.
+  Every field **narrows**: `terms` together with `text`, `extensions` together with `extension`, and so
+  on; none replaces a v1 field. `under_node_id` and `collection_id` are opaque identifiers, never a path
+  or a name.
+- **Hit fields (all optional).** `source` (absent means `own`), `freshness` and `score`. `freshness` is
+  `{state, at}` with `state` one of `live`, `caught_up`, `stale`, `everything_live`, `verified`,
+  `semantic_stale` (docs/46 section 7); `at` names a time exactly for `caught_up`, `stale` and `verified`
+  and is `null` otherwise (schema and Rust both reject the other combinations). `score` is a relative
+  rank in 0..1: never a probability, not comparable across sources. `match_kind` gains `semantic`.
+- **`unverified_hits` (optional page field).** Hits from an adapter that are not yet catalogue rows:
+  `name`, `path` (a root-relative display path under a granted root), `root_id`, `kind`, `source`
+  (`everything`), `freshness`, `match_kind`, `score`, and **no `node_id`**. No command accepts such a hit;
+  native verification mints a node ID and the hit then arrives in `hits`. They are never counted in
+  `hits` and a cursor never covers them (F4 binds its own).
+- **No effect fields.** Every new object is closed (`additionalProperties: false`); the contract tests
+  carry invalid examples for an extra field on a request and for a node ID on an unverified hit.
+
+### Query grammar (people type it; the model fills structured fields)
+
+`parseQuery` (TypeScript, `app/src/lib/search/grammar.ts`) and `parse_query` (Rust,
+`loomward_protocol::query_grammar`) turn the find-bar text into the structured filters above. They are
+pure and total, mirror each other, and are held to `fixtures/v3/query-grammar-parity.json` (every case
+must give the same JSON in both; `modified_bounds` is checked against a fixed `now`). Where docs/46
+section 4.1 left a reading open, this is the choice:
+
+- **Separators** are exactly space, tab, line feed and carriage return (no Unicode whitespace), so the
+  two languages cannot disagree. Case folding of keys, units and extensions is ASCII only.
+- **Terms.** A bare word is a `token` term, `"quoted text"` a `substring` term, a leading `-` (directly
+  before a word or a quote) negates it; a lone `-` and a `-` inside a word are literal. There are no
+  escapes: a quote ends at the next quote, and an unterminated quote runs to the end of the input and
+  raises `unterminated_quote`. At most 8 terms of 1 to 64 characters (code points); the rest are refused
+  with `too_many_terms` or `term_too_long`. An unknown `key:value` is just a bare term.
+- **Filters** are `ext:`, `size:`, `modified:`, `kind:`, `in:` and `under:`; a value may be quoted
+  (`in:"Tax Papers"`). A negated filter is refused (`negated_filter`). A bad value is refused whole with
+  `bad_value`, never half applied, and the text stays visible in `issues`; nothing is dropped silently.
+- `ext:pdf;docx` is a set; a leading dot is stripped; repeated tokens accumulate without duplicates, up
+  to 16 (`too_many_extensions`). `kind:` is `file` or `dir`.
+- `size:` takes an optional comparison (`>`, `>=`, `<`, `<=`, `=`), an integer and a unit (`b`, `kb`,
+  `mb`, `gb`, `tb`, powers of 1024; none means bytes). Wire bounds are inclusive, so `>` and `<` move by
+  one byte; a bound that cannot be named (`<0`, above `u64`) is a bad value. No decimals.
+- `modified:` takes a UTC date (`2025`, `2025-03`, `2025-03-14`, years 1601 to 9999) that means the whole
+  period, or a relative age (`30d`, units `h`, `d`, `w`, `mo` = 30 days, `y` = 365 days) that must carry
+  a comparison. Relative values compare the **age**: `<30d` is newer than 30 days, `>30d` older. For a
+  date, `>`/`<` leave the period out and `>=`/`<=` include it. Relative bounds stay symbolic
+  (`{"ago": {n, unit}}`) until `modified_bounds(now)` resolves them; nothing in the parser reads a clock.
+- A later `size:`, `modified:`, `kind:`, `in:` or `under:` token replaces the same side of the earlier one
+  (a range is `size:>1mb size:<2mb`); contradictions are left to the service.
+- `in:` and `under:` stay names: the find bar resolves them to `collection_id` and `under_node_id`
+  (docs/46 section 4, "under:<pinned node>"), and an unresolved name is shown as an unmatched chip.

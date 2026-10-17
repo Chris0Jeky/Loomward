@@ -1,0 +1,21 @@
+{
+  "def": "SearchUnverifiedHit",
+  "reason": "an unverified hit carries no node_id",
+  "value": {
+    "name": "report_notes.txt",
+    "path": {
+      "text": "S1\\Projects\\Alpha\\report_notes.txt",
+      "truncated": false
+    },
+    "root_id": "rt_synth1",
+    "kind": "file",
+    "source": "everything",
+    "freshness": {
+      "state": "everything_live",
+      "at": null
+    },
+    "match_kind": "substring",
+    "score": 0.4,
+    "node_id": "nd_0021"
+  }
+}

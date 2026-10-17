@@ -206,6 +206,8 @@ export interface SessionInfoFeatures {
   gpu_available: boolean;
   /** The desktop adapter's Rust-side save dialog for diagnostics.save (docs/42 ADR-V3-24). */
   diagnostics_save: boolean;
+  /** The engine honours the federated search extension of search.query (docs/46 section 4, F1): sources, terms, extensions, collection_id, under_node_id and the per-hit source, freshness and score. False: search.query serves the v1 fields only and answers any extension field with capability_unavailable. */
+  federated_search: boolean;
 }
 
 export type HealthWarningCode = "catalog_writer_backlog" | "low_state_disk" | "scan_throttled" | "telemetry_unavailable" | "teacher_failed" | "root_identity_changed" | "event_stream_lagging";
@@ -720,7 +722,50 @@ export interface SearchRequest {
   kind: "any" | "file" | "dir";
   limit: number;
   cursor: Cursor | null;
+  /** Federated extension (docs/46 section 4, F1); absent means [own]. Only an engine advertising features.federated_search honours the fields from here on; every other engine answers them with capability_unavailable. */
+  sources?: SearchSource[];
+  /** Structured name terms (the parsed query grammar). Every term narrows, together with text. */
+  terms?: SearchTerm[];
+  /** Extension set, lower case, no leading dot. Narrows together with extension. */
+  extensions?: string[];
+  /** Only members of this collection. */
+  collection_id?: CollectionId;
+  /** Only entries below this directory node. Browse identity; never an operand. */
+  under_node_id?: NodeId;
 }
+
+/** own: the catalogue name index; everything: the optional Everything adapter (docs/46 section 5.3); semantic: the derived embedding index (section 6). */
+export type SearchSource = "own" | "everything" | "semantic";
+
+export interface SearchTerm {
+  text: string;
+  /** token: the text starts a word of the name; substring: it occurs anywhere in the name. */
+  mode: "token" | "substring";
+  /** True: names matching the term are excluded. */
+  negated: boolean;
+}
+
+export interface SearchFreshness {
+  /** docs/46 section 7: live (watched now), caught_up (journal catch-up at at), stale (since at), everything_live (Everything's own journal, not yet verified), verified (checked natively at at), semantic_stale (the name changed after embedding). */
+  state: "live" | "caught_up" | "stale" | "everything_live" | "verified" | "semantic_stale";
+  /** Required for caught_up, stale and verified; null for the other states. */
+  at: NullableTimestamp;
+}
+
+/** A hit from an adapter that is not yet a catalogue row (docs/46 section 5.3): display only, and deliberately without a node_id. Native verification mints one; until then no command accepts this hit. */
+export interface SearchUnverifiedHit {
+  name: string;
+  /** Root-relative path under a granted root, display only. */
+  path: DisplayPath;
+  root_id: RootId;
+  kind: "file" | "dir";
+  source: "everything";
+  freshness: SearchFreshness;
+  match_kind: SearchMatchKind;
+  score: Fraction;
+}
+
+export type SearchMatchKind = "exact" | "prefix" | "token" | "substring" | "filter" | "semantic";
 
 export interface SearchPage {
   generation: NullableGeneration;
@@ -734,6 +779,8 @@ export interface SearchPage {
   /** False for texts too short for a trigram (or with a word under three characters): only whole names, name starts and word starts were searched. */
   substring_searched: boolean;
   roots: SearchRootCoverage[];
+  /** Federated extension: hits that are not yet catalogue rows, kept apart from hits. Omitted when features.federated_search is false. */
+  unverified_hits?: SearchUnverifiedHit[];
 }
 
 export interface SearchHit {
@@ -741,7 +788,13 @@ export interface SearchHit {
   root_id: RootId;
   /** Root-relative path of the hit itself, display only. */
   path: DisplayPath;
-  match_kind: "exact" | "prefix" | "token" | "substring" | "filter";
+  match_kind: SearchMatchKind;
+  /** Federated extension; absent means own. */
+  source?: SearchSource;
+  /** Federated extension: how fresh this hit's root is (docs/46 section 7). */
+  freshness?: SearchFreshness;
+  /** Federated extension: a relative rank signal in 0..1, never a probability and not comparable across sources. */
+  score?: Fraction;
   /** Half-open UTF-16 offsets into row.name; best effort and may be empty. */
   highlights: number[][];
 }
