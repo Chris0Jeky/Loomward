@@ -460,6 +460,8 @@ impl Sampler {
                 own.parent_pid = walked.parent_pid;
             }
         }
+        // One instant for both the rate and the stored reference, so the two can never disagree.
+        let read_at = own_read_instant(own_read_at, now);
         if let Some((previous_at, previous)) = &self.previous {
             let seconds = now.duration_since(*previous_at).as_secs_f64();
             current.sample_interval_seconds = Some(seconds);
@@ -469,7 +471,7 @@ impl Sampler {
                 own.rates = own_rates(
                     own,
                     self.own.as_ref(),
-                    own_read_instant(own_read_at, now),
+                    read_at,
                     current.logical_processor_count.unwrap_or(0),
                 );
             }
@@ -515,7 +517,7 @@ impl Sampler {
         if refresh_processes {
             self.process_sample_at = Some(now);
         }
-        self.own = own.map(|own| (own_read_instant(own_read_at, now), own));
+        self.own = own.map(|own| (read_at, own));
         self.previous = Some((now, current.clone()));
         current
             .processes
