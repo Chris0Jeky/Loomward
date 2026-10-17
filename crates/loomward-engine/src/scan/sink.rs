@@ -318,7 +318,7 @@ fn active(r: &MemoryRoot, run: u64) -> EngineResult<()> {
     Ok(())
 }
 fn invalidate(r: &mut MemoryRoot, mut dir: u64, revision: Option<u64>) {
-    for _ in 0..129 {
+    for _ in 0..=loomward_catalog::MAX_DIRECTORY_CHAIN_LENGTH {
         r.invalidated.insert(dir);
         let Some(d) = r.dirs.get_mut(&dir) else { break };
         d.valid = 0;
@@ -594,7 +594,7 @@ impl ScanSink for MemorySink {
                     || matches!(scope, RunScope::Targeted(ids) if d.parent.is_some_and(|p| ids.contains(&p)))))
                 .map(|(id, _)| *id)
                 .collect();
-            for _ in 0..129 {
+            for _ in 0..=loomward_catalog::MAX_DIRECTORY_CHAIN_LENGTH {
                 let before = removed.len();
                 removed.extend(
                     r.dirs
