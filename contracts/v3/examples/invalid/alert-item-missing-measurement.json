@@ -1,0 +1,17 @@
+{
+  "def": "AlertItem",
+  "reason": "an unknown measurement is an explicit null, never an absent field",
+  "value": {
+    "kind": "low_space",
+    "status": "unknown",
+    "label": "Synthetic volume B",
+    "volume_id": "vo_2",
+    "root_id": null,
+    "threshold_bytes": null,
+    "capacity_bytes": null,
+    "window_start": null,
+    "window_end": null,
+    "coverage": "unknown",
+    "note": "Free space was not observed."
+  }
+}

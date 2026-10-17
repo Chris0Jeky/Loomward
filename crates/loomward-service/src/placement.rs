@@ -326,13 +326,17 @@ fn receive_space<T>(
 
 /// One SQLite snapshot spans directory headers and every selected group's entries. Reads cannot
 /// combine same-generation changes from separate transactions; revocation fences the next call.
-struct Input<'a> {
+pub(crate) struct Input<'a> {
+    pub(crate) conn: Connection,
     inner: &'a Inner,
-    conn: Connection,
-    revisions: (i64, i64),
+    pub(crate) revisions: (i64, i64),
 }
 impl<'a> Input<'a> {
-    fn open(inner: &'a Inner, deadline: Instant, work: Option<&ReadWork>) -> EngineResult<Self> {
+    pub(crate) fn open(
+        inner: &'a Inner,
+        deadline: Instant,
+        work: Option<&ReadWork>,
+    ) -> EngineResult<Self> {
         check(deadline)?;
         let conn = db::open(&inner.state_dir).map_err(sql)?;
         conn.busy_timeout(deadline.saturating_duration_since(Instant::now()))
@@ -353,7 +357,7 @@ impl<'a> Input<'a> {
         })
     }
 
-    fn volumes(&self, deadline: Instant) -> EngineResult<Vec<VolumeObservation>> {
+    pub(crate) fn volumes(&self, deadline: Instant) -> EngineResult<Vec<VolumeObservation>> {
         let rows = db::volumes(&self.conn, None).map_err(sql)?;
         if rows.len() > 64 {
             return Err(EngineError::ResourceBudget {

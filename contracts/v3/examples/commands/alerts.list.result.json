@@ -1,0 +1,63 @@
+{
+  "evaluated_at": "2026-10-17T12:00:00.000Z",
+  "settings": {
+    "notifications_enabled": false,
+    "low_space_free_percent": 10,
+    "low_space_free_bytes": "10737418240",
+    "growth_window_days": 7,
+    "growth_bytes": "5368709120"
+  },
+  "defaults": {
+    "notifications_enabled": false,
+    "low_space_free_percent": 10,
+    "low_space_free_bytes": "10737418240",
+    "growth_window_days": 7,
+    "growth_bytes": "5368709120"
+  },
+  "active_count": 1,
+  "items": [
+    {
+      "kind": "low_space",
+      "status": "alert",
+      "label": "Synthetic volume A",
+      "volume_id": "vo_1",
+      "root_id": null,
+      "measured_bytes": "4294967296",
+      "threshold_bytes": "10737418240",
+      "capacity_bytes": "107374182400",
+      "window_start": null,
+      "window_end": null,
+      "coverage": "complete",
+      "note": "Free space is below the threshold (the larger of 10% of capacity and the byte floor)."
+    },
+    {
+      "kind": "low_space",
+      "status": "unknown",
+      "label": "Synthetic volume B",
+      "volume_id": "vo_2",
+      "root_id": null,
+      "measured_bytes": null,
+      "threshold_bytes": null,
+      "capacity_bytes": null,
+      "window_start": null,
+      "window_end": null,
+      "coverage": "unknown",
+      "note": "Free space was not observed for this volume; no alert is raised and none is implied."
+    },
+    {
+      "kind": "fast_growth",
+      "status": "incomplete_coverage",
+      "label": "Synthetic root 1",
+      "volume_id": null,
+      "root_id": "rt_1",
+      "measured_bytes": null,
+      "threshold_bytes": "5368709120",
+      "capacity_bytes": null,
+      "window_start": "2026-10-11T12:00:00.000Z",
+      "window_end": "2026-10-17T11:00:00.000Z",
+      "coverage": "partial",
+      "note": "A scan in the window did not cover the whole root, so its size is not comparable; no growth is claimed."
+    }
+  ],
+  "notifications_note": "Notifications are off. Alerts show here only; no operating-system notification channel is wired yet."
+}
