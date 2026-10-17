@@ -33,6 +33,35 @@ pub(crate) struct Tracker {
     pump: Mutex<Option<std::thread::JoinHandle<()>>>,
     #[cfg(windows)]
     setup: Mutex<()>,
+    /// #561: roots an explicit scan request is claiming. Held across every automatic start.
+    #[cfg(windows)]
+    explicit: Mutex<BTreeMap<i64, usize>>,
+}
+
+/// While held, no automatic refresh starts on `row`; `auto` names the one already started.
+pub(crate) struct Explicit<'a> {
+    #[cfg(windows)]
+    tracker: &'a Tracker,
+    #[cfg(not(windows))]
+    tracker: std::marker::PhantomData<&'a Tracker>,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    row: i64,
+    pub(crate) auto: Option<loomward_protocol::JobId>,
+}
+
+impl Drop for Explicit<'_> {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        {
+            let mut held = self.tracker.explicit.lock().unwrap();
+            if let Some(n) = held.get_mut(&self.row) {
+                *n -= 1;
+                if *n == 0 {
+                    held.remove(&self.row);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -134,6 +163,31 @@ impl Tracker {
         }
         #[cfg(not(windows))]
         let _ = row;
+    }
+    /// #561: an explicit scan of `row` is never refused because of an automatic refresh.
+    pub(crate) fn explicit(&self, row: i64) -> Explicit<'_> {
+        #[cfg(windows)]
+        {
+            let mut held = self.explicit.lock().unwrap();
+            *held.entry(row).or_default() += 1;
+            let auto = self
+                .roots
+                .lock()
+                .unwrap()
+                .get(&row)
+                .and_then(|r| r.job.clone());
+            Explicit {
+                tracker: self,
+                row,
+                auto,
+            }
+        }
+        #[cfg(not(windows))]
+        Explicit {
+            tracker: std::marker::PhantomData,
+            row,
+            auto: None,
+        }
     }
     pub(crate) fn stale(&self, row: i64) -> bool {
         #[cfg(windows)]
@@ -578,6 +632,11 @@ fn refresh(inner: &Inner) {
                 }
                 None => full = true,
             }
+        }
+        // Start and record under the claim fence, so an explicit request sees every auto job.
+        let claimed = inner.freshness.explicit.lock().unwrap();
+        if claimed.contains_key(&row.root) {
+            continue;
         }
         let job = if full || targets.is_empty() {
             inner.engine.scan_refresh(&grant, None)
