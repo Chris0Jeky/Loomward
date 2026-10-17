@@ -4395,3 +4395,7 @@ mod diagnostics_tests;
 
 #[path = "gap_tests.rs"]
 mod gap_tests;
+
+#[cfg(test)]
+#[path = "alerts_tests.rs"]
+mod alerts_tests;

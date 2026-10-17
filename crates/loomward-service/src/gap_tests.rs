@@ -221,6 +221,7 @@ fn only_the_listed_commands_change_state() {
         BackupsImport,
         BackupsForget,
         DiagnosticsSave,
+        AlertsConfigure,
     ];
     for c in Command::ALL {
         assert_eq!(

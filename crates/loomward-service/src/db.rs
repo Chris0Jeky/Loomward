@@ -284,6 +284,33 @@ pub fn declare_tier(
     Ok(Ok(next))
 }
 
+/// The owner's alert thresholds as stored JSON (`meta` key `alert_settings`), or `None` before the
+/// owner configures anything. Reads any connection that has `state.db` attached as `st`.
+pub fn alert_settings(conn: &Connection) -> Sql<Option<String>> {
+    conn.query_row(
+        "SELECT value FROM st.meta WHERE key='alert_settings'",
+        [],
+        |r| r.get(0),
+    )
+    .optional()
+}
+
+/// Replaces the stored alert thresholds in one FULL `state.db` transaction and bumps `state_rev`.
+pub fn set_alert_settings(conn: &mut Connection, json: &str) -> Sql<i64> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    tx.execute(
+        "INSERT INTO st.meta(key,value) VALUES('alert_settings',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [json],
+    )?;
+    tx.execute(
+        "UPDATE st.revision SET state_rev=state_rev+1 WHERE id=1",
+        [],
+    )?;
+    let next: i64 = tx.query_row("SELECT state_rev FROM st.revision", [], |r| r.get(0))?;
+    tx.commit()?;
+    Ok(next)
+}
+
 #[cfg(test)]
 pub fn declarations(conn: &Connection, volume_key: &str) -> Sql<Vec<Option<i64>>> {
     let mut stmt = conn
