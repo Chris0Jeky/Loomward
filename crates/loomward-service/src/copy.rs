@@ -147,7 +147,8 @@ fn source_entries(
         .zip(&plan.sources)
         .map(|(i, (rel, _))| (full(&i.name), (rel.clone(), i.identity.file_id)))
         .collect();
-    if let (Some(top), Some(first), Some((rel, _))) = (&m.root, m.items.first(), plan.sources.first())
+    if let (Some(top), Some(first), Some((rel, _))) =
+        (&m.root, m.items.first(), plan.sources.first())
     {
         if let Some(rel) = rel.ancestors().nth(first.name.split('/').count()) {
             out.insert(top.name.clone(), (rel.to_path_buf(), top.identity.file_id));

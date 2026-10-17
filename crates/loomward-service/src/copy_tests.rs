@@ -1040,7 +1040,10 @@ mod lab_copy {
         let at = |names: &[&str], file_id: [u8; 16]| {
             crate::copy::catalogue_node(&inner.db(), dir, names, file_id)
         };
-        assert!(matches!(at(&["a", "1.bin"], id), Some((loomward_catalog::NodeKey::File(_), _))));
+        assert!(matches!(
+            at(&["a", "1.bin"], id),
+            Some((loomward_catalog::NodeKey::File(_), _))
+        ));
         assert_eq!(at(&["a", "1.bin"], [0xEE; 16]), None);
         assert_eq!(at(&["a", "absent.bin"], id), None);
         assert_eq!(at(&["absent", "1.bin"], id), None);
