@@ -138,8 +138,29 @@ fn read_tree_from(
                 }
                 let opened = reader.open_relative(&relative, None, false, &meter)?;
                 let observed = observe(&opened.file)?;
-                if id != Some(enumerate::FileIdObs::Id128(observed.object.file_id))
-                    || observed.size.parse::<u64>().ok() != Some(size)
+                // The listed ID binds at its own width, as enumerate::opened does: 128-bit against
+                // the observed 128-bit ID; 64-bit against the 64-bit query on this handle, never
+                // a truncation; no listed ID (Find) falls back to the post-open identity.
+                match id {
+                    Some(enumerate::FileIdObs::Id128(listed))
+                        if listed != observed.object.file_id =>
+                    {
+                        return Err(Reason::ChangedDuringRead);
+                    }
+                    Some(enumerate::FileIdObs::Id64(listed)) => {
+                        // Non-unique on ReFS (N3): such an ID cannot establish identity.
+                        if source.is_refs(&dir) {
+                            return Err(Reason::IdentityUnverified);
+                        }
+                        match legacy_index(&opened.file) {
+                            Some(index) if index == listed => {}
+                            Some(_) => return Err(Reason::ChangedDuringRead),
+                            None => return Err(Reason::IdentityUnverified),
+                        }
+                    }
+                    _ => {}
+                }
+                if observed.size.parse::<u64>().ok() != Some(size)
                     || observed.attributes != attributes
                     || creation.is_some_and(|t| observed.object.creation_time != t.to_string())
                     || write.is_some_and(|t| observed.last_write_time != t.to_string())
@@ -190,6 +211,13 @@ fn read_tree_from(
         }
     }
     Ok((tree, meter.read))
+}
+
+/// The 64-bit index of an open handle, the query a 64-bit listing is compared with.
+fn legacy_index(file: &File) -> Option<u64> {
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    (unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } != 0)
+        .then_some((u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow))
 }
 
 fn metadata(file: &File, observed: &ObservedIdentity, security: Option<&File>, kind: Kind) -> Node {
