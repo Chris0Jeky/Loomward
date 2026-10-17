@@ -247,7 +247,7 @@ class FakeEngine:
             gate, self.candidate_gate = self.candidate_gate, None
             if gate:
                 gate[0].set()
-                if not gate[1].wait(9):
+                if not gate[1].wait(60):  # every user releases in finally; slow CI runners need the headroom
                     return ('deadline_exceeded', 'synthetic candidate gate expired')
             return {'source_volume_id': p['source_volume_id'], 'root_generations': [], 'groups': groups, 'excluded_volumes': [], 'note': 'n'}
         if cmd == 'volumes.declare_tier':
