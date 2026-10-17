@@ -144,6 +144,9 @@ fn migrate(path: &Path, schema: &str, version: i64, dataset: &str, precious: boo
             tx.execute_batch(include_str!("backup-evidence.sql"))?;
             tx.execute_batch(include_str!("root-forgotten.sql"))?;
         }
+        if precious && version < 8 {
+            tx.execute_batch(include_str!("client-grant.sql"))?;
+        }
         if !precious && !tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('dir') WHERE name='listing_outcome')", [], |r| r.get::<_, bool>(0))? {
             tx.execute_batch("ALTER TABLE dir ADD COLUMN listing_outcome TEXT CHECK (listing_outcome IN ('complete','partial','denied','excluded','cancelled','unscanned','stale'))")?;
         }

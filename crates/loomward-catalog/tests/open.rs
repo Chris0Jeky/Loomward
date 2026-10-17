@@ -419,7 +419,7 @@ fn v4_state_store_grants_migrate_as_identity_verified() {
 /// `backup_evidence`, keeping their rows, and the table refuses anything but a JSON document.
 #[test]
 fn v6_v5_and_v4_state_stores_reach_v7_with_backup_evidence_and_the_forget_record() {
-    assert_eq!(SCHEMA_VERSION, 7);
+    assert_eq!(SCHEMA_VERSION, 8);
     for (from, downgrade) in [
         // v6 (backups applied): only forget's step runs, and the evidence already there stays.
         (
@@ -481,4 +481,46 @@ fn v6_v5_and_v4_state_stores_reach_v7_with_backup_evidence_and_the_forget_record
             "one record per label"
         );
     }
+}
+
+/// LW-067: a v7 store gains `client_grant` and keeps its rows; one live grant per client, and the
+/// roots and fields are JSON arrays.
+#[test]
+fn a_v7_state_store_reaches_v8_with_client_grants() {
+    let temp = tempfile::tempdir().unwrap();
+    drop(Catalog::open(temp.path(), "synthetic").unwrap());
+    let st = Connection::open(temp.path().join("state.db")).unwrap();
+    st.execute_batch(
+        "DROP TABLE client_grant;
+         INSERT INTO collection(name,kind,created_at_ns) VALUES('kept','human',0);
+         PRAGMA user_version=7;",
+    )
+    .unwrap();
+    drop(st);
+    drop(Catalog::open(temp.path(), "synthetic").unwrap());
+    assert!(temp.path().join("state.before-v7.db").exists());
+    let st = Connection::open(temp.path().join("state.db")).unwrap();
+    let (version, kept): (i64, i64) = st
+        .query_row(
+            "SELECT (SELECT user_version FROM pragma_user_version),(SELECT count(*) FROM collection WHERE name='kept')",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((version, kept), (SCHEMA_VERSION, 1));
+    let grant = |client: &str, roots: &str, revoked: Option<i64>| {
+        st.execute(
+            "INSERT INTO client_grant(client,roots_json,fields_json,created_at_ns,revoked_at_ns) VALUES(?1,?2,'[]',0,?3)",
+            rusqlite::params![client, roots, revoked],
+        )
+    };
+    grant("mcp:a", "[1]", None).unwrap();
+    assert!(
+        grant("mcp:a", "[2]", None).is_err(),
+        "one live grant per client"
+    );
+    grant("mcp:a", "[2]", Some(1)).unwrap();
+    grant("mcp:b", "[1]", None).unwrap();
+    assert!(grant("mcp:c", "{}", None).is_err(), "roots are an array");
+    assert!(grant("mcp:c", "1,2", None).is_err(), "roots are JSON");
 }
