@@ -1,7 +1,10 @@
 """Drives the real loomward-desktop window (WebView2) over the Chrome DevTools Protocol.
 
-Usage: py -3 native/tests/webview2_probe.py [--exe native/target/debug/loomward-desktop.exe]
-                                            [--out evidence/v3/native] [--p9-runs 5]
+Usage: py -3 native/tests/webview2_probe.py [--exe PATH] [--out DIR] [--p9-runs 5]
+  --exe defaults to <cargo target dir>/debug/loomward-desktop.exe and --out to <cargo target dir>/webview2-probe.
+  The cargo target dir is the one `cargo metadata` reports (CARGO_TARGET_DIR and .cargo/config honoured;
+  native/target only if metadata cannot be read). The committed evidence/v3/native is refreshed only with
+  --out evidence/v3/native.
 
 Checks, in the shipped window and its real IPC, over the engine service in a synthetic session with a
 scratch state directory (never the owner's state):
@@ -67,21 +70,42 @@ P9_MARKS = """() => ['layout', 'first-paint', 'slice-to-paint'].map((k) =>
   performance.getEntriesByName(`loomward:atlas:${k}`).map((m) => ({ name: k, ms: m.duration, nodes: m.detail?.nodes, cells: m.detail?.cells }))).flat()"""
 
 
-def fixture_shell() -> Path:
-    """Embed development fixtures without changing app/dist or leaving a fixture production binary."""
+FALLBACK_TARGET = ROOT / 'native/target'
+
+
+def cargo_target_dir() -> Path:
+    """The target directory cargo uses for native/Cargo.toml (CARGO_TARGET_DIR and .cargo/config included).
+
+    native/target is assumed only when cargo metadata cannot be read (#504).
+    """
+    try:
+        meta = subprocess.run(['cargo', 'metadata', '--format-version', '1', '--no-deps', '--manifest-path', 'native/Cargo.toml'],
+                              cwd=ROOT, capture_output=True, encoding='utf-8', check=True)
+        return Path(json.loads(meta.stdout)['target_directory'])
+    except (OSError, subprocess.CalledProcessError, ValueError, KeyError, TypeError) as e:
+        print(f'warning: cargo metadata unavailable ({type(e).__name__}); assuming {FALLBACK_TARGET}', file=sys.stderr)
+        return FALLBACK_TARGET
+
+
+def fixture_shell(target: Path) -> Path:
+    """Embed development fixtures without changing app/dist or leaving a fixture production binary.
+
+    Builds into the shell's own cargo target dir, so the fixture build reuses the dependency artifacts
+    instead of compiling a second copy into native/target (#504).
+    """
     fixture = ROOT / '.loomward/webview2-fixture'
     dist = fixture / 'app'
     subprocess.run(
         ['npm.cmd' if os.name == 'nt' else 'npm', '--prefix', 'app', 'run', 'build', '--', '--outDir', str(dist)],
         cwd=ROOT, env=dict(os.environ, NODE_ENV='development'), check=True,
     )
-    build = ['cargo', 'build', '--manifest-path', 'native/Cargo.toml', '--target-dir', 'native/target']
+    build = ['cargo', 'build', '--manifest-path', 'native/Cargo.toml', '--target-dir', str(target)]
     # Tauri can parse a Windows drive prefix as a URL; use its config-relative directory form.
     env = dict(os.environ, TAURI_CONFIG=json.dumps({'build': {'frontendDist': os.path.relpath(dist, ROOT / 'native')}}))
     exe = fixture / 'loomward-desktop.exe'
     try:
         subprocess.run(build, cwd=ROOT, env=env, check=True)
-        shutil.copy2(ROOT / 'native/target/debug/loomward-desktop.exe', exe)
+        shutil.copy2(target / 'debug/loomward-desktop.exe', exe)
     finally:
         subprocess.run(build, cwd=ROOT, check=True)
     return exe
@@ -391,12 +415,18 @@ def personal_grant(exe: Path, out: Path, check) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument('--exe', type=Path, default=ROOT / 'native/target/debug/loomward-desktop.exe')
-    ap.add_argument('--out', type=Path, default=ROOT / 'evidence/v3/native')
+    ap.add_argument('--exe', type=Path, help='shell to drive (default: <cargo target dir>/debug/loomward-desktop.exe)')
+    ap.add_argument('--out', type=Path, help='output directory (default: <cargo target dir>/webview2-probe)')
     ap.add_argument('--p9-runs', type=int, default=5)
     a = ap.parse_args()
     if a.p9_runs < 1:
         ap.error('--p9-runs must be positive')
+    target = cargo_target_dir()
+    if a.exe is None:
+        a.exe = target / 'debug/loomward-desktop.exe'
+    if a.out is None:
+        a.out = target / 'webview2-probe'
+    print(f'output directory: {a.out}')
     a.out.mkdir(parents=True, exist_ok=True)
     # Each run owns its profile: debug options must not collide with another WebView2 environment.
     PROFILES.mkdir(parents=True, exist_ok=True)
@@ -537,7 +567,7 @@ def main() -> int:
     except Exception as e:
         check(False, 'personal default: picker grant leg completed', error=f'{type(e).__name__}: {e}')
     try:
-        results['p9'] = p9(fixture_shell(), a.out, a.p9_runs)
+        results['p9'] = p9(fixture_shell(target), a.out, a.p9_runs)
         med = results['p9']['median_layout_plus_paint_ms']
         check(med <= 50, 'P9 layout + first draw of 2,500 nodes within 50 ms in WebView2 (median)', median_ms=round(med, 2))
     except Exception as e:
