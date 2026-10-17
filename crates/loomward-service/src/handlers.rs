@@ -57,20 +57,19 @@ pub(crate) fn grant_number(id: &str) -> Result<i64, ErrorBody> {
 /// After a forget (#288) no file of the state directory may still hold the root's name. The rolling
 /// `state.start-*.db` copies are dropped (the next open makes a fresh one). The one-off
 /// `state.before-v*.db` migration copies are the owner's way back to an older build, so each is
-/// scrubbed by exact grant ID instead; unknown copy shapes are removed. Another grant may name
-/// the same folder or a child, so a path substring is never evidence of a failed scrub.
+/// scrubbed by exact grant ID instead; unknown copy shapes containing the path are removed.
+/// Another grant may name the same folder or a child, so a substring is not a failed known scrub.
+/// At restart the forgotten path is deliberately no longer stored: unknown shapes must be removed
+/// fail-closed, since their contents cannot be proved unrelated without retaining that private path.
 pub(crate) fn forget_backups(dir: &std::path::Path, path: Option<&str>) -> Result<(), ErrorBody> {
     // Every copy is visited even after a failure, so one failed scrub never leaves another copy unswept.
     let mut failed = None;
-    let entries = std::fs::read_dir(dir)
-        .map_err(|_| fail(ErrorCode::InternalError, "cannot enumerate backup copies"))?;
+    let entries = std::fs::read_dir(dir).map_err(|_| backup_scrub_error("directory"))?;
     for entry in entries {
         let entry = match entry {
             Ok(entry) => entry,
             Err(_) => {
-                failed.get_or_insert_with(|| {
-                    fail(ErrorCode::InternalError, "cannot inspect backup copy")
-                });
+                failed.get_or_insert_with(|| backup_scrub_error("directory"));
                 continue;
             }
         };
@@ -89,8 +88,8 @@ pub(crate) fn forget_backups(dir: &std::path::Path, path: Option<&str>) -> Resul
         let remove = if migration {
             match scrub_copy(&file, &loomward_catalog::sqlite_dir(dir).join("state.db")) {
                 Ok((known, _pin)) => !known && path.is_none_or(|path| holds(&file, path)),
-                Err(e) => {
-                    failed.get_or_insert(sql_error(e));
+                Err(_) => {
+                    failed.get_or_insert_with(|| backup_scrub_error("migration"));
                     continue; // the rollback copy is kept
                 }
             }
@@ -98,11 +97,30 @@ pub(crate) fn forget_backups(dir: &std::path::Path, path: Option<&str>) -> Resul
             (name.starts_with("state.start-") && name.ends_with(".db")) || archived
         };
         if remove && std::fs::remove_file(&file).is_err() {
-            failed
-                .get_or_insert_with(|| fail(ErrorCode::InternalError, "cannot remove backup copy"));
+            failed.get_or_insert_with(|| {
+                backup_scrub_error(if archived {
+                    "catalog_archive"
+                } else if migration {
+                    "migration"
+                } else {
+                    "startup"
+                })
+            });
         }
     }
     failed.map_or(Ok(()), Err)
+}
+
+fn backup_scrub_error(kind: &str) -> ErrorBody {
+    let mut error = fail(ErrorCode::InternalError, &format!(
+            "the root was forgotten, but {kind} backup cleanup is pending; Loomward will retry automatically and at restart"
+        ));
+    error.detail = Detail::new(std::collections::BTreeMap::from([
+        ("reason".into(), json!("forget_backup_scrub_failed")),
+        ("copy_kind".into(), json!(kind)),
+    ]))
+    .ok();
+    error
 }
 
 /// Refuse aliases, and on Windows pin the checked path against replacement until SQLite closes.
@@ -167,6 +185,11 @@ fn scrub_copy(
         )
     };
     let known = has("root_grant", "display_path")? && has("object_ref", "id")?;
+    let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    if has("root_grant", "display_path")? && version < 2 {
+        // v1 state had no grants; an extended/unknown table cannot promise the live ID namespace.
+        return Ok((false, pin));
+    }
     let tx = conn.unchecked_transaction()?;
     if has("object_ref", "id")? {
         tx.execute_batch("CREATE TEMP TABLE gone AS SELECT id FROM main.object_ref WHERE id NOT IN (SELECT id FROM live.object_ref)")?;
@@ -279,6 +302,51 @@ fn stale(message: &str, reason: &str) -> ErrorBody {
 }
 
 impl Inner {
+    pub(crate) fn backup_scrub_pending(&self) -> Result<Option<String>, ErrorBody> {
+        self.db()
+            .query_row(
+                "SELECT value FROM st.meta WHERE key='forget_backup_scrub_pending'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(sql_error)
+    }
+
+    /// Called under the mutation lock (or before the service is exposed at startup).
+    pub(crate) fn scrub_backups(&self, path: Option<&str>) -> Result<(), ErrorBody> {
+        // A later forget must not clear an earlier path's pending cleanup with its own byte check.
+        let path = if self.backup_scrub_pending()?.is_some() {
+            None
+        } else {
+            path
+        };
+        let result = forget_backups(&self.state_dir, path);
+        match &result {
+            Ok(()) => {
+                self.db()
+                    .execute(
+                        "DELETE FROM st.meta WHERE key='forget_backup_scrub_pending'",
+                        [],
+                    )
+                    .map_err(sql_error)?;
+            }
+            Err(error) => {
+                let kind = error
+                    .detail
+                    .as_ref()
+                    .and_then(|d| d.get("copy_kind"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("directory");
+                self.db().execute(
+                    "INSERT INTO st.meta(key,value) VALUES('forget_backup_scrub_pending',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    [kind],
+                ).map_err(sql_error)?;
+            }
+        }
+        result
+    }
+
     pub(crate) fn handle(
         &self,
         req: &RequestEnvelope,
@@ -618,7 +686,7 @@ impl Inner {
                     "writer_queue_capacity": loomward_catalog::QUEUE_BYTES,
                 },
                 "jobs_running": running,
-                "last_error": null,
+                "last_error": self.backup_scrub_pending()?.map(|kind| backup_scrub_error(&kind)),
                 "warnings": [],
             }),
             Some(revs),
@@ -747,21 +815,13 @@ impl Inner {
         self.db()
             .execute("DELETE FROM st.root_freshness WHERE grant_id=?1", [grant])
             .map_err(sql_error)?;
-        let backups = forget_backups(&self.state_dir, Some(&path));
+        let backups = self.scrub_backups(Some(&path));
         let revs = self.revisions()?;
         if let Ok(list) = self.root_list(None) {
             self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));
         }
         // The live forget is committed and announced; only a kept migration copy may still hold the name.
-        backups.map_err(|_| {
-            with_reason(
-                fail(
-                    ErrorCode::InternalError,
-                    "the root was forgotten, but a backup copy could not be scrubbed or removed; cleanup is pending and will be retried at restart",
-                ),
-                "forget_backup_scrub_failed",
-            )
-        })?;
+        backups?;
         let scrub_pending: bool = self
             .db()
             .query_row(

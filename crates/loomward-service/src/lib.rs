@@ -232,10 +232,6 @@ impl Service {
                 r.get(0)
             })
             .map_err(|e| format!("forget recovery: {e}"))?;
-        if forgotten {
-            handlers::forget_backups(&state_dir, None)
-                .map_err(|_| "forget recovery: backup cleanup is still pending".to_string())?;
-        }
         engine.install_learning(
             loomward_engine::learning::Store::open(&state_dir)
                 .map_err(|e| format!("learning store: {e}"))?,
@@ -277,6 +273,9 @@ impl Service {
             #[cfg(test)]
             hooks: Default::default(),
         });
+        if forgotten {
+            let _ = inner.scrub_backups(None); // Pending cleanup is exposed by health.get, not fatal.
+        }
         if scan_writer {
             inner
                 .engine
@@ -302,6 +301,7 @@ impl Service {
             freshness::start(&inner);
         }
         spawn_telemetry_pump(Arc::downgrade(&inner));
+        spawn_backup_scrub_retry(Arc::downgrade(&inner));
         Ok(Service { inner })
     }
 
@@ -1300,6 +1300,27 @@ fn spawn_telemetry_pump(inner: Weak<Inner>) {
             for sample in inner.engine.telemetry_events().unwrap_or_default() {
                 if let Ok(data) = serde_json::to_value(sample) {
                     inner.publish(EventName::TelemetrySample, data, None, None);
+                }
+            }
+        });
+}
+
+/// Match catalogue cleanup's 0.5s to 30s backoff without blocking telemetry or retaining the service.
+fn spawn_backup_scrub_retry(inner: Weak<Inner>) {
+    let _ = std::thread::Builder::new()
+        .name("lw-backup-scrub".into())
+        .spawn(move || {
+            let mut delay = Duration::from_millis(500);
+            loop {
+                std::thread::sleep(delay);
+                let Some(inner) = inner.upgrade() else { return };
+                if inner.backup_scrub_pending().is_ok_and(|p| p.is_some()) {
+                    if let Ok(_mutation) = inner.mutation.try_lock() {
+                        let _ = inner.scrub_backups(None);
+                        delay = (delay * 2).min(Duration::from_secs(30));
+                    }
+                } else {
+                    delay = Duration::from_millis(500);
                 }
             }
         });
