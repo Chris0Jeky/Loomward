@@ -1895,3 +1895,166 @@ fn a_reference_bound_before_a_stage_chunk_led_batch_is_restaged_before_the_joine
     // The fence failed, so the re-staged chunk no longer let the listing join it.
     assert_eq!(timings.lock().unwrap().transactions, 2);
 }
+
+#[cfg(test)]
+mod hardlink_regressions {
+    use super::*;
+
+    fn add_survivor_reference(conn: &Connection) {
+        conn.execute_batch("INSERT INTO st.object_ref(volume_key,file_id,creation_ft,kind,state,incarnation,catalog_instance,row_id,born_run)
+            SELECT volume_key,file_id,creation_ft,kind,state,2,catalog_instance,2,born_run FROM st.object_ref WHERE id=1;
+            INSERT INTO st.collection_member VALUES(1,5,1);
+            INSERT INTO st.taxonomy VALUES(1,'[]',0);
+            INSERT INTO st.human_feedback(event_id,client_event_id,content_digest,object_ref_id,revision,label,retracted,taxonomy_version,features_json,recorded_at_ns)
+            SELECT 'event-'||id,'client-'||id,'digest',id,1,'keep',0,1,'{}',0 FROM st.object_ref WHERE id IN (1,5);").unwrap();
+    }
+
+    fn assert_preserved(dir: &std::path::Path) {
+        let after = bindings(dir);
+        assert_eq!(after[0], (1, "unresolved".into(), true, 1, 1));
+        assert_eq!(after[4], (5, "resolved".into(), false, 2, 1));
+        let st = Connection::open(dir.join("state.db")).unwrap();
+        for table in ["collection_member", "human_feedback"] {
+            let count: i64 = st
+                .query_row(
+                    &format!("SELECT count(*) FROM {table} WHERE object_ref_id IN (1,5)"),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 2, "{table} must retain both references");
+        }
+        assert_eq!(pending_count(dir), 0);
+    }
+
+    #[test]
+    fn hardlink_collision_preserves_survivor_and_recovers_twice() {
+        for crash in [
+            None,
+            Some(PublicationCrash::BeforeCatalog),
+            Some(PublicationCrash::AfterCatalog),
+        ] {
+            let (temp, conn, command) = fixture();
+            add_survivor_reference(&conn);
+            let before = bindings(temp.path());
+            let result = publish(conn, command, crash);
+            if crash.is_none() {
+                result.unwrap();
+            } else {
+                assert!(matches!(result, Err(Error::Closed)));
+            }
+            if matches!(crash, Some(PublicationCrash::AfterCatalog)) {
+                // Readers in the witness/confirmation window see only the survivor's binding.
+                let st = Connection::open(temp.path().join("state.db")).unwrap();
+                let target: Option<i64> = st
+                    .query_row(
+                        "SELECT row_id FROM pending_reference WHERE object_ref_id=1",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(target, None);
+            }
+            for _ in 0..2 {
+                drop(crate::db::open_pair(temp.path(), "synthetic").unwrap());
+                if matches!(crash, Some(PublicationCrash::BeforeCatalog)) {
+                    assert_eq!(bindings(temp.path()), before);
+                } else {
+                    assert_preserved(temp.path());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_conflicting_pending_intent_recovers() {
+        let (temp, conn, command) = fixture();
+        add_survivor_reference(&conn);
+        publish(conn, command, Some(PublicationCrash::AfterCatalog)).unwrap_err();
+        let st = Connection::open(temp.path().join("state.db")).unwrap();
+        // The intent written by versions predating #363.
+        st.execute(
+            "UPDATE pending_reference SET row_id=2,born_run=1 WHERE object_ref_id=1",
+            [],
+        )
+        .unwrap();
+        drop(st);
+        for _ in 0..2 {
+            drop(crate::db::open_pair(temp.path(), "synthetic").unwrap());
+            assert_preserved(temp.path());
+        }
+    }
+
+    #[test]
+    fn competing_rebinds_elect_the_lowest_reference_id() {
+        let (temp, conn, command) = fixture();
+        conn.execute_batch("UPDATE file SET file_id=(SELECT file_id FROM file WHERE id=1) WHERE id=3;
+            UPDATE st.object_ref SET file_id=(SELECT file_id FROM st.object_ref WHERE id=1),incarnation=2 WHERE id=2;").unwrap();
+        publish(conn, command, None).unwrap();
+        for _ in 0..2 {
+            drop(crate::db::open_pair(temp.path(), "synthetic").unwrap());
+            let after = bindings(temp.path());
+            assert_eq!(after[0], (1, "resolved".into(), false, 2, 1));
+            assert_eq!(after[1], (2, "unresolved".into(), true, 3, 1));
+            assert_eq!(after.len(), 4);
+            let st = Connection::open(temp.path().join("state.db")).unwrap();
+            let count: i64 = st
+                .query_row("SELECT count(*) FROM collection_member", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 4);
+            assert_eq!(pending_count(temp.path()), 0);
+        }
+    }
+
+    #[test]
+    fn continuous_reference_churn_fails_unpublished_and_writer_remains_usable() {
+        fn churn(conn: &Connection) {
+            let count: i64 = conn
+                .query_row("SELECT count(*) FROM st.object_ref", [], |r| r.get(0))
+                .unwrap();
+            assert!(count < 20, "publication retried without a bound");
+            conn.execute_batch("INSERT INTO st.object_ref(volume_key,file_id,creation_ft,kind,state,incarnation,row_id,born_run)
+                SELECT 'churn',zeroblob(16),0,'file','unresolved',coalesce(max(incarnation),0)+1,0,0 FROM st.object_ref WHERE volume_key='churn'").unwrap();
+        }
+        let (temp, conn, command) = fixture();
+        let before = bindings(temp.path());
+        let listing = old_listing(temp.path());
+        let (tx, rx) = bounded(2);
+        let mut replies = Vec::new();
+        for command in [command, WriteCommand::Barrier] {
+            let (reply, result) = bounded(1);
+            tx.send(Pending {
+                command,
+                reply,
+                _permit: BytePermit {
+                    quota: Arc::new((Mutex::new(0), Condvar::new())),
+                    bytes: 0,
+                },
+            })
+            .unwrap();
+            replies.push(result);
+        }
+        drop(tx);
+        let (alive, _) = bounded(0);
+        work(
+            conn,
+            rx,
+            Arc::new(Mutex::new(WriterTimings::default())),
+            alive,
+            Some(PublicationCrash::BeforeFence(churn)),
+        );
+        assert!(matches!(
+            replies[0].recv().unwrap(),
+            Err(Error::Invalid("reference publication retry limit"))
+        ));
+        replies[1].recv().unwrap().unwrap();
+        // Only the succeeding barrier advances the revision; the rejected publication changes no rows.
+        assert_eq!(old_listing(temp.path()), (listing.0 + 1, listing.1));
+        assert_eq!(&bindings(temp.path())[..4], &before);
+        assert_eq!(bindings(temp.path()).len(), 12, "eight attempts only");
+        assert_eq!(pending_count(temp.path()), 0);
+        let writer =
+            Writer::start(crate::db::open_pair(temp.path(), "synthetic").unwrap()).unwrap();
+        writer.call(WriteCommand::Barrier).unwrap();
+    }
+}

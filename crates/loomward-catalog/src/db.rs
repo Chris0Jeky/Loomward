@@ -440,6 +440,26 @@ pub(crate) fn bulk_tables(conn: &Connection, file_only: bool) -> Result<()> {
     conn.execute_batch("CREATE INDEX bulk_file_by_dir ON bulk_file(dir_id)")?;
     Ok(())
 }
+/// Automatic rebinds keep an existing survivor's reference; otherwise the lowest reference ID
+/// wins. Losing references retain all meaning data and retire only when the witness commits.
+pub(crate) fn resolve_pending_collisions(conn: &Connection, token: &str) -> Result<()> {
+    conn.execute("WITH candidates AS MATERIALIZED (
+        SELECT p.object_ref_id,
+            row_number() OVER (PARTITION BY p.catalog_instance,o.kind,p.row_id,p.born_run ORDER BY o.id) AS rank,
+            EXISTS(SELECT 1 FROM st.object_ref bound
+                WHERE bound.catalog_instance=p.catalog_instance AND bound.kind=o.kind
+                AND bound.row_id=p.row_id AND bound.born_run=p.born_run
+                AND bound.state='resolved' AND bound.id!=o.id
+                AND NOT EXISTS(SELECT 1 FROM st.pending_reference moving
+                    WHERE moving.object_ref_id=bound.id AND moving.catalog_instance=p.catalog_instance
+                    AND moving.publication_token=p.publication_token)) AS occupied
+        FROM st.pending_reference p JOIN st.object_ref o ON o.id=p.object_ref_id
+        WHERE p.publication_token=?1 AND p.catalog_instance=(SELECT value FROM meta WHERE key='instance_id')
+        AND p.row_id IS NOT NULL
+    ) UPDATE st.pending_reference SET row_id=NULL,born_run=NULL
+        WHERE object_ref_id IN (SELECT object_ref_id FROM candidates WHERE occupied OR rank>1)", [token])?;
+    Ok(())
+}
 /// Only state.db is written; read the publication witness before recovery changes main.
 pub(crate) fn reconcile_references(conn: &mut Connection) -> Result<()> {
     if !conn.query_row(
@@ -461,6 +481,10 @@ pub(crate) fn reconcile_references(conn: &mut Connection) -> Result<()> {
         )
         .optional()?;
     let tx = conn.transaction()?;
+    // Also repair conflicting intents persisted by older writers before #363.
+    if let Some(token) = token.as_deref() {
+        resolve_pending_collisions(&tx, token)?;
+    }
     let changed = tx.execute("UPDATE st.object_ref AS o SET
         state=CASE WHEN p.row_id IS NULL THEN 'unresolved' ELSE 'resolved' END,
         retired=(p.row_id IS NULL), row_id=coalesce(p.row_id,o.row_id), born_run=coalesce(p.born_run,o.born_run)
