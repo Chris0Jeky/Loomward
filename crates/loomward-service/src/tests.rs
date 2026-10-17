@@ -38,25 +38,24 @@ pub(crate) struct Hooks {
     pub filesystem: Mutex<Option<&'static str>>,
     /// #519 review: a personal space read for one volume key answers this instead of the OS.
     pub space: Mutex<Vec<(String, SpaceFake)>>,
-    /// #530: the personal space wait a test sets instead of the production 500 ms bound (`None`
-    /// keeps it), so a host loaded enough to delay a read's worker start is not read as unknown.
+    /// #530: the personal space read budget a test sets instead of the production 500 ms.
     pub personal_space_wait: Mutex<Option<Duration>>,
 }
 
-/// What a personal space read answers in tests: stall past the caller's deadline, or report fixed
-/// space. Runs on the worker thread, as the OS read does.
+/// What a personal space read answers in tests: wait on an explicit gate, or report fixed space.
+/// Runs on the worker thread, as the OS read does.
 #[derive(Clone, Copy)]
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) enum SpaceFake {
-    Stall(Duration),
+    Stall,
     Fixed { capacity: u64, free: u64 },
 }
 
 impl SpaceFake {
-    pub(crate) fn answer(self) -> Option<(loomward_windows::volumes::Space, i64)> {
+    pub(crate) fn answer(self, hooks: &Hooks) -> Option<(loomward_windows::volumes::Space, i64)> {
         match self {
-            Self::Stall(d) => {
-                std::thread::sleep(d);
+            Self::Stall => {
+                hooks.gate(Command::VolumesList, "space_read");
                 None
             }
             Self::Fixed { capacity, free } => Some((
@@ -539,8 +538,7 @@ fn volumes_list_observes_space_for_an_active_personal_grant() {
     let Some((svc, _folder)) = personal_grant_session(&tmp) else {
         return;
     };
-    // #530: under CPU load a read's worker can start after the production 500 ms wait (the read itself
-    // takes milliseconds), which reads as unknown. This test asserts an observed value, so it alone waits longer.
+    // This test requires an OS observation, so allow a generous read budget on a loaded host.
     *svc.inner.hooks.personal_space_wait.lock().unwrap() = Some(Duration::from_secs(30));
     let (volumes, _) = ok("volumes.list", call(&svc, "volumes.list", json!({})));
     let rows = volumes["volumes"].as_array().unwrap();
@@ -623,11 +621,22 @@ fn a_stalled_personal_volume_degrades_alone_and_never_exhausts_the_readers() {
             observed_at_ns: 0,
         }))
         .unwrap();
+    // Keep the stall in force through every refresh, and release it even if an assertion fails.
+    struct Release(Arc<Hooks>);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            self.0.open(Command::VolumesList, "space_read");
+        }
+    }
+    let _release = Release(svc.inner.hooks.clone());
+    svc.inner
+        .hooks
+        .closed
+        .lock()
+        .unwrap()
+        .push((Command::VolumesList, "space_read"));
     svc.inner.hooks.space.lock().unwrap().extend([
-        (
-            stalled_key.to_owned(),
-            SpaceFake::Stall(Duration::from_secs(5)),
-        ),
+        (stalled_key.to_owned(), SpaceFake::Stall),
         (
             "vsn_healthy".to_owned(),
             SpaceFake::Fixed {
@@ -650,13 +659,7 @@ fn a_stalled_personal_volume_degrades_alone_and_never_exhausts_the_readers() {
     };
     let (stalled_id, healthy_id) = (wire_id(stalled_key), wire_id("vsn_healthy"));
     for round in 0..10 {
-        // The real default read budget (2 s), not the helper's 60 s, so a stall past it is visible.
-        let request: RequestEnvelope = serde_json::from_value(json!({
-            "protocol": "loomward/3", "request_id": format!("stalled-{round}"),
-            "command": "volumes.list", "payload": {}, "deadline_ms": 2000
-        }))
-        .unwrap();
-        let (volumes, _) = ok("volumes.list", svc.call(request, &CallContext::http()));
+        let (volumes, _) = ok("volumes.list", call(&svc, "volumes.list", json!({})));
         let rows = volumes["volumes"].as_array().unwrap();
         let row = |id: &str| {
             rows.iter()
@@ -684,6 +687,38 @@ fn a_stalled_personal_volume_degrades_alone_and_never_exhausts_the_readers() {
     }
     // The alerts view reads the same observation and must still answer while the volume stalls.
     ok("alerts.list", call(&svc, "alerts.list", json!({})));
+    assert_eq!(
+        svc.inner
+            .hooks
+            .arrived
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|g| **g == (Command::VolumesList, "space_read"))
+            .count(),
+        1,
+        "refreshes must share the same stalled reader"
+    );
+    // A different grant root on the same volume must not inherit the stalled root's unknown.
+    let replacement = tmp.path().join("replacement-folder");
+    std::fs::create_dir_all(&replacement).unwrap();
+    svc.inner.db().execute(
+        "UPDATE st.root_grant SET display_path=?1 WHERE id=(SELECT r.grant_id FROM main.root r JOIN main.volume v ON v.id=r.volume_id WHERE v.volume_key='vsn_stalled')",
+        [replacement.display().to_string()],
+    ).unwrap();
+    svc.inner.hooks.space.lock().unwrap()[0].1 = SpaceFake::Fixed {
+        capacity: 4096,
+        free: 1024,
+    };
+    let (volumes, _) = ok("volumes.list", call(&svc, "volumes.list", json!({})));
+    let replacement = volumes["volumes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["volume_id"] == stalled_id)
+        .unwrap();
+    assert_eq!(replacement["capacity_bytes"], "4096");
+    assert_eq!(replacement["free_bytes"], "1024");
 }
 
 #[test]

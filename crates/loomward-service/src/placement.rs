@@ -264,14 +264,22 @@ fn inactive_volumes(conn: &Connection) -> EngineResult<Vec<i64>> {
 
 static SPACE_READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 type Observed = Option<(loomward_windows::volumes::Space, i64)>;
-/// A personal volume's read in progress (#519 review): its answer, once the OS gives one, is shared
-/// with every caller that asks for that volume while it runs.
-type PendingRead = std::sync::Arc<(std::sync::Mutex<Option<Observed>>, std::sync::Condvar)>;
+#[derive(Default)]
+struct SpaceRead {
+    started: Option<Instant>,
+    answer: Option<Observed>,
+}
+/// Callers observing the same volume through the same grant root share one read and its start time.
+type PendingRead = std::sync::Arc<(std::sync::Mutex<SpaceRead>, std::sync::Condvar)>;
 /// Personal volume keys with a read running, so a stalled volume keeps one reader, not one per refresh.
 static SPACE_IN_FLIGHT: std::sync::Mutex<std::collections::BTreeMap<String, PendingRead>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 /// How long a personal volume's read is awaited before that volume alone reads as unknown (#519).
 const PERSONAL_SPACE_WAIT: Duration = Duration::from_millis(500);
+
+fn space_wait_deadline(deadline: Instant, started: Option<Instant>, budget: Duration) -> Instant {
+    started.map_or(deadline, |started| deadline.min(started + budget))
+}
 
 /// Releases the reader slot when the OS read finishes, not when its caller stops waiting.
 struct SpacePermit {
@@ -290,35 +298,48 @@ impl Drop for SpacePermit {
 }
 
 /// Waits, within this caller's own deadline, for the answer to a read another caller started.
-fn await_pending(pending: &PendingRead, deadline: Instant) -> EngineResult<Observed> {
+fn await_pending(
+    pending: &PendingRead,
+    deadline: Instant,
+    budget: Duration,
+) -> EngineResult<Observed> {
     let (slot, ready) = &**pending;
     let mut answer = slot.lock().unwrap_or_else(|e| e.into_inner());
     loop {
-        if let Some(done) = answer.clone() {
+        if let Some(done) = answer.answer.clone() {
             return Ok(done);
         }
+        let wait_until = space_wait_deadline(deadline, answer.started, budget);
         let now = Instant::now();
-        if now >= deadline {
+        if now >= wait_until {
             return Err(EngineError::DeadlineExceeded {
                 message: "lab volume observation deadline expired".into(),
             });
         }
         answer = ready
-            .wait_timeout(answer, deadline - now)
+            .wait_timeout(answer, wait_until - now)
             .unwrap_or_else(|e| e.into_inner())
             .0;
     }
 }
 
 // The OS call cannot be cancelled; its own permit survives a caller timeout to bound stragglers.
-// `key` names a personal volume: one read runs per volume at a time, and a concurrent caller for
-// that volume shares its answer instead of pinning another reader.
+// `personal` names a volume and grant root: concurrent callers share its answer and read budget.
+// Queueing is bounded by the request deadline; the personal read budget starts in the worker.
 fn bounded_space(
     deadline: Instant,
-    key: Option<&str>,
+    personal: Option<(&str, Duration)>,
     read: impl FnOnce() -> Observed + Send + 'static,
+    #[cfg(test)] hooks: Option<std::sync::Arc<crate::tests::Hooks>>,
 ) -> EngineResult<Observed> {
     check(deadline)?;
+    let mut in_flight = personal.map(|_| SPACE_IN_FLIGHT.lock().unwrap_or_else(|e| e.into_inner()));
+    if let Some((key, budget)) = personal {
+        if let Some(pending) = in_flight.as_ref().and_then(|m| m.get(key)).cloned() {
+            drop(in_flight);
+            return await_pending(&pending, deadline, budget);
+        }
+    }
     // A compare-exchange loop: `fetch_update` is deprecated on newer stable toolchains (#276).
     let mut running = SPACE_READS.load(std::sync::atomic::Ordering::SeqCst);
     loop {
@@ -339,37 +360,57 @@ fn bounded_space(
     }
     let mut permit = SpacePermit { key: None };
     let mut shared: Option<PendingRead> = None;
-    if let Some(key) = key {
-        let mut in_flight = SPACE_IN_FLIGHT.lock().unwrap_or_else(|e| e.into_inner());
-        let existing = in_flight.get(key).cloned();
-        if let Some(pending) = existing {
-            drop(in_flight);
-            drop(permit);
-            return await_pending(&pending, deadline);
-        }
+    if let Some((key, _)) = personal {
         let pending: PendingRead = Default::default();
-        in_flight.insert(key.to_owned(), pending.clone());
-        drop(in_flight);
+        in_flight
+            .as_mut()
+            .expect("personal map locked")
+            .insert(key.to_owned(), pending.clone());
         permit.key = Some(key.to_owned());
         shared = Some(pending);
     }
+    drop(in_flight);
+    let pending = shared.clone();
+    #[cfg(test)]
+    let worker_hooks = hooks.clone();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("lw-volume-space".into())
         .spawn(move || {
             let _permit = permit;
+            #[cfg(test)]
+            if let Some(hooks) = &worker_hooks {
+                hooks.gate(Command::VolumesList, "space_start");
+            }
+            if let Some(pending) = &shared {
+                let (slot, ready) = &**pending;
+                slot.lock().unwrap_or_else(|e| e.into_inner()).started = Some(Instant::now());
+                ready.notify_all();
+            }
             let answer = read();
             if let Some(pending) = shared {
                 let (slot, ready) = &*pending;
-                *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(answer.clone());
+                slot.lock().unwrap_or_else(|e| e.into_inner()).answer = Some(answer.clone());
                 ready.notify_all();
             }
             let _ = tx.send(answer);
+            #[cfg(test)]
+            if let Some(hooks) = &worker_hooks {
+                hooks.gate(Command::VolumesList, "space_done");
+            }
         })
         .map_err(|_| EngineError::ResourceBudget {
             message: "no volume observation worker".into(),
         })?;
-    receive_space(deadline, |timeout| rx.recv_timeout(timeout))
+    if let Some((_, budget)) = personal {
+        #[cfg(test)]
+        if let Some(hooks) = &hooks {
+            hooks.gate(Command::VolumesList, "space_wait");
+        }
+        await_pending(&pending.expect("personal pending read"), deadline, budget)
+    } else {
+        receive_space(deadline, |timeout| rx.recv_timeout(timeout))
+    }
 }
 
 fn receive_space<T>(
@@ -467,6 +508,10 @@ impl<'a> Input<'a> {
                 let root: Option<String> = self.conn.query_row("SELECT g.display_path FROM main.root r JOIN st.root_grant g ON g.id=r.grant_id WHERE r.volume_id=?1 AND g.state='active' AND g.origin=?2 LIMIT 1", params![v.id, origin], |r| r.get(0)).optional().map_err(sql)?;
                 if let Some(root) = root {
                     let key = v.key.clone();
+                    let flight_key = format!("{key}/{root}");
+                    // #530: preserve per-service test isolation while distinguishing grant roots.
+                    #[cfg(test)]
+                    let flight_key = format!("{:p}/{flight_key}", self.inner);
                     #[cfg(test)]
                     let fake = self
                         .inner
@@ -477,10 +522,12 @@ impl<'a> Input<'a> {
                         .iter()
                         .find(|(k, _)| *k == key)
                         .map(|(_, fake)| *fake);
+                    #[cfg(test)]
+                    let hooks = self.inner.hooks.clone();
                     let read = move || {
                         #[cfg(test)]
                         if let Some(fake) = fake {
-                            return fake.answer();
+                            return fake.answer(&hooks);
                         }
                         let path = std::path::Path::new(&root);
                         // A replacement root cannot supply observations for the old volume.
@@ -509,15 +556,13 @@ impl<'a> Input<'a> {
                                 .unwrap_or(PERSONAL_SPACE_WAIT);
                             #[cfg(not(test))]
                             let budget = PERSONAL_SPACE_WAIT;
-                            // #530: in tests each service has its own in-flight map. The process-wide one let a
-                            // concurrent test's read of the same disk answer this one, including a None from a root
-                            // that test had made unobservable.
-                            #[cfg(test)]
-                            let flight_key = format!("{:p}/{}", self.inner, v.key);
-                            #[cfg(not(test))]
-                            let flight_key = v.key.clone();
-                            let wait = deadline.min(Instant::now() + budget);
-                            match bounded_space(wait, Some(flight_key.as_str()), read) {
+                            match bounded_space(
+                                deadline,
+                                Some((flight_key.as_str(), budget)),
+                                read,
+                                #[cfg(test)]
+                                None,
+                            ) {
                                 Ok(observed) => observed,
                                 Err(
                                     EngineError::DeadlineExceeded { .. }
@@ -529,7 +574,13 @@ impl<'a> Input<'a> {
                             None
                         }
                     } else {
-                        bounded_space(deadline, None, read)?
+                        bounded_space(
+                            deadline,
+                            None,
+                            read,
+                            #[cfg(test)]
+                            None,
+                        )?
                     };
                     if let Some((observation, at)) = observed {
                         space = serde_json::to_value(observation).expect("space serialises");
@@ -1088,6 +1139,104 @@ mod followup_tests {
     use super::*;
 
     #[test]
+    fn personal_space_budget_starts_at_the_read_not_while_worker_is_queued() {
+        let queued = Instant::now();
+        let deadline = queued + Duration::from_secs(60);
+        // A worker held before the read starts still has its full read budget.
+        assert_eq!(
+            space_wait_deadline(deadline, None, PERSONAL_SPACE_WAIT),
+            deadline
+        );
+        let started = queued + Duration::from_secs(1);
+        assert_eq!(
+            space_wait_deadline(deadline, Some(started), PERSONAL_SPACE_WAIT),
+            started + Duration::from_millis(500)
+        );
+        assert_eq!(
+            space_wait_deadline(started, Some(started), PERSONAL_SPACE_WAIT),
+            started
+        );
+    }
+
+    #[test]
+    fn a_queued_space_worker_keeps_its_read_budget_and_accepted_receipt() {
+        use crate::tests::Hooks;
+        use std::sync::Arc;
+        let hooks = Arc::new(Hooks::default());
+        // Zero makes any charge for spawn/scheduling observable; gates replace elapsed-time races.
+        *hooks.personal_space_wait.lock().unwrap() = Some(Duration::ZERO);
+        for at in ["space_start", "space_wait", "space_done"] {
+            hooks
+                .closed
+                .lock()
+                .unwrap()
+                .push((Command::VolumesList, at));
+        }
+        struct Release(Arc<Hooks>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                for at in ["space_start", "space_wait", "space_done"] {
+                    self.0.open(Command::VolumesList, at);
+                }
+            }
+        }
+        let _release = Release(hooks.clone());
+        let caller_hooks = hooks.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let caller = std::thread::spawn(move || {
+            let budget = caller_hooks.personal_space_wait.lock().unwrap().unwrap();
+            let result = bounded_space(
+                Instant::now() + Duration::from_secs(60),
+                Some(("queued-space-regression/root", budget)),
+                || {
+                    Some((
+                        loomward_windows::volumes::Space {
+                            capacity_bytes: "1024".into(),
+                            free_bytes: "512".into(),
+                            cluster_bytes: None,
+                            read_only: Some(false),
+                        },
+                        0,
+                    ))
+                },
+                Some(caller_hooks.clone()),
+            );
+            tx.send(result).unwrap();
+            caller_hooks.gate(Command::VolumesList, "space_call_done");
+        });
+        hooks.until("queued caller waits or returns", |h| {
+            h.arrived.lock().unwrap().iter().any(|g| {
+                *g == (Command::VolumesList, "space_wait")
+                    || *g == (Command::VolumesList, "space_call_done")
+            })
+        });
+        let waiting = hooks
+            .arrived
+            .lock()
+            .unwrap()
+            .contains(&(Command::VolumesList, "space_wait"));
+        if waiting {
+            hooks.open(Command::VolumesList, "space_start");
+            hooks.until("space receipt queued", |h| {
+                h.arrived
+                    .lock()
+                    .unwrap()
+                    .contains(&(Command::VolumesList, "space_done"))
+            });
+            hooks.open(Command::VolumesList, "space_wait");
+        }
+        let result = rx.recv_timeout(Duration::from_secs(60)).unwrap();
+        drop(_release);
+        caller.join().unwrap();
+        let (space, _) = result
+            .expect("queueing must not expire the read budget")
+            .unwrap();
+        assert!(waiting, "the worker must be allowed to start");
+        assert_eq!(space.capacity_bytes, "1024");
+        assert_eq!(space.free_bytes, "512");
+    }
+
+    #[test]
     fn accepted_space_receipt_survives_post_receive_deadline_crossing() {
         let (tx, rx) = std::sync::mpsc::channel();
         tx.send(Some((
@@ -1153,6 +1302,7 @@ mod followup_tests {
                     finished_tx.send(()).unwrap();
                     None
                 },
+                None,
             );
             drop(_permit);
             done_tx.send(result).unwrap();
@@ -1172,7 +1322,7 @@ mod followup_tests {
         assert_eq!(reads, 0);
         finished_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         assert!(
-            bounded_space(Instant::now() + Duration::from_secs(2), None, || None)
+            bounded_space(Instant::now() + Duration::from_secs(2), None, || None, None)
                 .unwrap()
                 .is_none()
         );
