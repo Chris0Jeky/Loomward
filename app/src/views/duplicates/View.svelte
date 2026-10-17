@@ -7,61 +7,42 @@
     report: DuplicateReport | undefined;
     problem: string;
     withheldGroups: number;
+    withheldLinks: number;
     unreadableSkipped: number;
     skippedUnknown: boolean;
   } {
-    if (!report) return { report: undefined, problem: '', withheldGroups: 0, unreadableSkipped: 0, skippedUnknown: false };
+    if (!report) return { report: undefined, problem: '', withheldGroups: 0, withheldLinks: 0, unreadableSkipped: 0, skippedUnknown: false };
     const count = Array.isArray(report.entries) ? report.entries.length : 0;
     const valid = (i: unknown): i is number =>
       typeof i === 'number' && Number.isInteger(i) && i >= 0 && i < count;
     let malformed = false;
-    let withheldGroups = 0;
     let unreadableSkipped = 0;
-    const cleanLists = (lists: unknown): number[][] => {
+    // A verified group or a hard-link set is shown only whole: losing any member, or ending below its minimum (two for a group, one for a link set whose other names may lie outside the inspected set), withholds it.
+    const cleanWhole = (lists: unknown, min: number): { sets: number[][]; withheld: number } => {
       if (!Array.isArray(lists)) {
         malformed = true;
-        return [];
+        return { sets: [], withheld: 0 };
       }
-      const out: number[][] = [];
+      const sets: number[][] = [];
+      let withheld = 0;
       for (const list of lists) {
         if (!Array.isArray(list)) {
           malformed = true;
-          continue;
-        }
-        const kept = (list as unknown[]).filter((i) => {
-          const ok = valid(i);
-          if (!ok) malformed = true;
-          return ok;
-        });
-        if (kept.length > 0) out.push(kept);
-      }
-      return out;
-    };
-    // A verified group is shown only whole: losing any member, or ending with fewer than two, withholds it.
-    const cleanGroups = (lists: unknown): number[][] => {
-      if (!Array.isArray(lists)) {
-        malformed = true;
-        return [];
-      }
-      const out: number[][] = [];
-      for (const list of lists) {
-        if (!Array.isArray(list)) {
-          malformed = true;
-          withheldGroups += 1;
+          withheld += 1;
           continue;
         }
         const kept = (list as unknown[]).filter(valid);
-        if (kept.length !== list.length || kept.length < 2) {
+        if (kept.length !== list.length || kept.length < min) {
           malformed = true;
-          withheldGroups += 1;
+          withheld += 1;
           continue;
         }
-        out.push(kept);
+        sets.push(kept);
       }
-      return out;
+      return { sets, withheld };
     };
-    const groups = cleanGroups(report.groups);
-    const links = cleanLists(report.links);
+    const { sets: groups, withheld: withheldGroups } = cleanWhole(report.groups, 2);
+    const { sets: links, withheld: withheldLinks } = cleanWhole(report.links, 1);
     const skipped = Array.isArray(report.skipped)
       ? report.skipped.filter((skip) => {
           const ok = !!skip && valid(skip.entry);
@@ -74,6 +55,7 @@
       : [];
     const skippedUnknown = !Array.isArray(report.skipped);
     const groupsUnknown = !Array.isArray(report.groups);
+    const linksUnknown = !Array.isArray(report.links);
     if (!Array.isArray(report.groups) || !Array.isArray(report.links) || !Array.isArray(report.skipped)) {
       malformed = true;
     }
@@ -83,11 +65,15 @@
       if (withheldGroups === 1) problem += ' 1 verified group was withheld as incomplete.';
       else if (withheldGroups > 1) problem += ` ${withheldGroups} verified groups were withheld as incomplete.`;
       if (groupsUnknown) problem += ' The verified groups could not be read, so they are unknown.';
+      if (withheldLinks === 1) problem += ' 1 link set was withheld as incomplete.';
+      else if (withheldLinks > 1) problem += ` ${withheldLinks} link sets were withheld as incomplete.`;
+      if (linksUnknown) problem += ' The link sets could not be read, so they are unknown.';
     }
     return {
       report: { ...report, groups, links, skipped },
       problem,
       withheldGroups,
+      withheldLinks,
       unreadableSkipped,
       skippedUnknown,
     };

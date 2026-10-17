@@ -244,6 +244,42 @@ describe('duplicates report index guard', () => {
     expect(guarded.withheldGroups).toBe(0);
     expect(guarded.problem).toBe('');
   });
+  it('withholds a mixed-reference link set and counts it, keeping an intact link set beside it', () => {
+    const guarded = sanitizeDuplicatesReport(twoEntries({ links: [[0, 1], [0, 999]] }));
+    expect(guarded.report?.links).toEqual([[0, 1]]);
+    expect(guarded.withheldLinks).toBe(1);
+    expect(guarded.problem).toContain('1 link set was withheld as incomplete.');
+  });
+  it('withholds a link set that lost its only other member to an invalid reference', () => {
+    const guarded = sanitizeDuplicatesReport(twoEntries({ links: [[0, 999]] }));
+    expect(guarded.report?.links).toEqual([]);
+    expect(guarded.withheldLinks).toBe(1);
+    expect(guarded.problem).toContain('1 link set was withheld as incomplete.');
+  });
+  it('keeps a whole one-name link set (its other names lie outside the inspected set) and withholds a link set that is not a list', () => {
+    const guarded = sanitizeDuplicatesReport(twoEntries({ links: [[0], 'x' as unknown as number[]] }));
+    expect(guarded.report?.links).toEqual([[0]]);
+    expect(guarded.withheldLinks).toBe(1);
+    expect(guarded.problem).toContain('1 link set was withheld as incomplete.');
+  });
+  it('a valid report with a one-name link set shows it and raises no warning', () => {
+    const guarded = sanitizeDuplicatesReport(twoEntries({ links: [[1]] }));
+    expect(guarded.report?.links).toEqual([[1]]);
+    expect(guarded.withheldLinks).toBe(0);
+    expect(guarded.problem).toBe('');
+  });
+  it('keeps all-valid link sets unchanged and withholds nothing', () => {
+    const guarded = sanitizeDuplicatesReport(twoEntries({ links: [[0, 1]] }));
+    expect(guarded.report?.links).toEqual([[0, 1]]);
+    expect(guarded.withheldLinks).toBe(0);
+    expect(guarded.problem).toBe('');
+  });
+  it('a link list that is not a list reads as unknown, not empty', () => {
+    const guarded = sanitizeDuplicatesReport(twoEntries({ links: 'x' as unknown as number[][] }));
+    expect(guarded.report?.links).toEqual([]);
+    expect(guarded.withheldLinks).toBe(0);
+    expect(guarded.problem).toContain('The link sets could not be read, so they are unknown.');
+  });
   it('renders a fully valid report exactly as before', () => {
     const report = twoEntries({ groups: [[0, 1]], links: [[0, 1]], skipped: [{ entry: 1, reason: 'changed_during_read' }] });
     const guarded = sanitizeDuplicatesReport(report);
