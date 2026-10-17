@@ -3644,6 +3644,96 @@ fn f3_revoke_fences_a_watch_still_being_armed() {
 
 #[cfg(windows)]
 #[test]
+fn f3_watch_event_between_start_and_journal_read_cannot_be_caught_up() {
+    let Some(lab) = lab() else { return };
+    settle(&lab.svc, &start(&lab.svc, &lab.root, "full"));
+    f3_wait_live(&lab.svc);
+    let svc = Arc::new(lab.svc);
+    let phase = (Command::ScanStart, "persistent_watch_started");
+    svc.inner.hooks.arrived.lock().unwrap().clear();
+    svc.inner.hooks.closed.lock().unwrap().push(phase);
+    svc.inner.freshness.remove(1);
+    let opening = {
+        let svc = svc.clone();
+        std::thread::spawn(move || crate::freshness::ensure_roots(&svc.inner))
+    };
+    svc.inner
+        .hooks
+        .until("watch started before journal read", |h| {
+            h.arrived.lock().unwrap().contains(&phase)
+        });
+    // A watch hint can precede its USN record (for example, while a renamed handle is open).
+    // Hold automatic retries so the assertion observes catch-up, not a subsequent full scan.
+    svc.inner.freshness.exhaust_budget(1);
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    svc.inner.hooks.open(phase.0, phase.1);
+    opening.join().unwrap();
+    assert!(
+        svc.inner.freshness.stale(1),
+        "lost the in-window watch event"
+    );
+    assert!(svc.inner.freshness.debug(1).contains("full=true"));
+    assert!(f3_hits(&svc)["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|h| h["freshness"]["state"] == "stale"));
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_journal_replay_does_not_hold_db_or_watch_setup() {
+    let Some(lab) = lab() else { return };
+    settle(&lab.svc, &start(&lab.svc, &lab.root, "full"));
+    f3_wait_live(&lab.svc);
+    let grant = crate::db::roots(&lab.svc.inner.db(), Some(1)).unwrap()[0].grant;
+    let svc = Arc::new(lab.svc);
+    let phase = (Command::ScanStart, "persistent_journal_read");
+    svc.inner.hooks.arrived.lock().unwrap().clear();
+    svc.inner.hooks.closed.lock().unwrap().push(phase);
+    svc.inner.freshness.remove(1);
+    let opening = {
+        let svc = svc.clone();
+        std::thread::spawn(move || crate::freshness::ensure_roots(&svc.inner))
+    };
+    svc.inner.hooks.until("journal replay", |h| {
+        h.arrived.lock().unwrap().contains(&phase)
+    });
+    let read_deadline = Instant::now() + Duration::from_secs(1);
+    let read_available = loop {
+        if svc.inner.db.try_lock().is_ok() {
+            break true;
+        }
+        if Instant::now() >= read_deadline {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let (sent, ack) = std::sync::mpsc::channel();
+    let revoking = {
+        let svc = svc.clone();
+        std::thread::spawn(move || sent.send(svc.inner.revoke(grant)).unwrap())
+    };
+    let early = ack.recv_timeout(Duration::from_secs(2)).ok();
+    // Always release before asserting, including on the old blocking implementation.
+    svc.inner.hooks.open(phase.0, phase.1);
+    opening.join().unwrap();
+    revoking.join().unwrap();
+    assert!(
+        read_available,
+        "journal replay held the service database mutex"
+    );
+    assert!(
+        early.is_some_and(|r| r.is_ok()),
+        "revoke waited on journal replay"
+    );
+    assert!(!svc.inner.freshness.stale(1));
+}
+
+#[cfg(windows)]
+#[test]
 fn f3_successful_full_scan_with_late_hints_restarts_refresh_budget() {
     let Some(lab) = lab() else { return };
     settle(&lab.svc, &start(&lab.svc, &lab.root, "full"));

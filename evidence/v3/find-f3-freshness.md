@@ -126,3 +126,152 @@ uncommitted. No push, PR or merge was attempted. The ignored `target/` is preser
 fixture output; it is not removal-ready while the source is uncommitted. Raw logs in the external
 lane target are `workspace-final.log`, `clippy-final.log`, `f3-final.log`, and the earlier negative
 receipts `crates-test.log`, `workspace-test.log`, `budget-red.log`, `revoke-red.log`.
+
+## PR #531 fix round (2026-10-17)
+
+Fix-round starting HEAD: `c406fdee798b5e2f125bd8b09ded70ef12314514`, branch
+`feat/404-f3-watchers-usn`, KRASPYON / Windows 11 Home. This addendum supersedes the
+earlier driver-handoff state above. The Sol lane leaves its edits uncommitted for the driver;
+no commit, push, PR mutation or merge is part of this lane.
+
+### Changed and regression receipts
+
+1. The restart epoch is captured with `Tracked` insertion, before native watch startup, and
+   passed into catch-up. `f3_watch_event_between_start_and_journal_read_cannot_be_caught_up`
+   injects the actual tracker `RootDirty` event after watcher startup and before journal access.
+   Automatic retries are held so a subsequent full scan cannot hide the result. Before the fix:
+   **0 passed / 1 failed**, `lost the in-window watch event` (`fix-epoch-red.log`). After the
+   epoch-only fix the same regression passed in `fix-index-red-baseline.log`.
+2. Journal IO/decode completes without the service DB mutex. Resolution uses batches of 128
+   records, deduplicates parent/file identities, and takes/releases that mutex once per batch.
+   The watch-setup mutex ends after the watch is installed; revoke can stop it during replay.
+   Completion tolerates a root removed by revocation. Deadline/lookup failure retains stale,
+   full-refresh-required coverage. Visibility walks upward only from identity matches, and
+   rejects excluded/absent ancestors. Previous in-root parents (including multiple hard links)
+   remain refresh scopes; a journal parent never grants a path or an open.
+   `f3_journal_replay_does_not_hold_db_or_watch_setup` pauses the journal-read seam and checks
+   that a service read and revocation can finish before releasing it. It failed on the reviewed
+   implementation (`journal replay held the service database mutex`). The query-plan test also
+   failed there: the old query walked the whole visible tree rather than seeking by file ID.
+   The combined red receipt was **10 passed / 2 failed** (`fix-index-red-baseline.log`), with
+   the epoch fix already green. An initial indexed rewrite still allowed SQLite to reorder
+   joins into range scans; the plan assertion caught it. The final query fixes the input-first
+   join order and materializes candidate identities. `fix-reach-green.log` records **6 passed /
+   0 failed**, including the query-plan assertion and the 100k-directory fixture. Relevant plan:
+
+   ```text
+   SEARCH d USING INDEX dir_identity (root_id=? AND file_id=?)
+   SEARCH f USING INDEX file_identity (file_id=?)
+   SEARCH d USING INTEGER PRIMARY KEY (rowid=?)
+   ```
+
+3. Record classification is now a pure function of `(record, lookup)`. Unit cases pin move-in,
+   move-out through the previous catalogued parent, rename within the root, a hard-link event
+   from outside, outside and unresolved parents (both skipped), and new-directory chains across
+   batch boundaries. Database tests additionally pin hidden ancestors, all visible in-root
+   hard-link parents, foreign-root refusal, V2/128-bit aliasing and no V3 truncation. Deadline
+   expiry before/after a batch and query failure return loss of coverage rather than empty
+   success. Decoder coverage tests valid aligned padding, non-aligned record lengths, odd name
+   offsets, overflowing name lengths and unknown versions for both V2/V3, requiring refusal
+   without panic. These are added coverage and extraction checks; no decoder behavior was
+   changed, and no pre-existing decoder failure is claimed.
+
+### 100,000-directory catch-up resolution measurement
+
+`f3_catch_up_100k_directories` constructs an in-memory catalogue using the production
+`catalog.sql` table/index definitions: one root, 99,999 direct child directories, and 128
+decoded new-file journal records with distinct known parents. Both paths must select exactly
+the same 128 scopes. Construction, native journal IO and subsequent refresh scans are excluded.
+The before path preserves the reviewed per-record visible-tree CTE **and** previous-parent
+lookup; it runs to completion to measure the work, without stopping at the old five-second
+deadline. The after path is the production batched resolver, including its five-second deadline.
+The old measured workload exceeds that budget: production would abandon continuity and stay
+stale, rather than wait for all 72.6 seconds of resolution work.
+
+| Same-process sample, shared host | Elapsed |
+|---|---:|
+| Before: reviewed per-record resolution | 72.6211607 s |
+| After: indexed batch resolution | 107.1768 ms |
+
+Command: `LOOMWARD_F3_BASELINE=1 cargo test -p loomward-service --lib f3_ -- --nocapture`
+(PowerShell sets the environment variable before invoking Cargo). Receipt:
+`fix-f3-comparison.log`. This is one paired synthetic sample on a shared host, not a cold-disk
+or end-to-end large-root latency claim. The earlier parent-only baseline was 47.1132031 s;
+the final paired sample above includes both old queries and is the comparable result. Ordinary
+test runs omit the slow before measurement but still build the 100k fixture, exercise the indexed
+resolver and assert exact scopes within its deadline.
+
+### Fix-round verification and remaining test concern
+
+The final source is the uncommitted working tree based on the starting HEAD above. Commands
+below use its absolute `--manifest-path`, `CARGO_BUILD_JOBS=4`, the lane's separate target
+directory, and `RUST_TEST_THREADS=1`. The slow baseline flag is set only for the paired comparison.
+
+| Command | Observed result / receipt |
+|---|---|
+| `cargo fmt --all --check` | Exit 0; `fix-fmt-final.log` |
+| `cargo clippy --workspace --all-targets -- -D warnings` | Exit 0, no warnings; `fix-clippy-final.log` |
+| `cargo test -p loomward-service --lib freshness:: -- --nocapture` | 6 passed, 0 failed; `fix-reach-green.log` |
+| `LOOMWARD_F3_BASELINE=1 cargo test -p loomward-service --lib f3_ -- --nocapture` | 12 passed, 0 failed; `fix-f3-comparison.log` |
+| `cargo test -p loomward-service -p loomward-windows -p loomward-engine --no-fail-fast` | Exit 101: 645 passed, 2 failed, 1 ignored; `fix-crates-final.log` |
+| `cargo test -p loomward-service --lib -- tests::a_junction_replacing_a_directory_stays_visible_as_excluded tests::a_live_scanned_ntfs_grant_can_be_labelled_and_collected --exact --nocapture` | Exit 0: both passed with unchanged source/assertions; `fix-conflicts-isolated.log` |
+
+The required crate run had two service failures outside the reported #292 set:
+
+- `a_junction_replacing_a_directory_stays_visible_as_excluded`: its foreground `scan.start`
+  received retryable `Busy`, `root already scanning`.
+- `a_live_scanned_ntfs_grant_can_be_labelled_and_collected`: `collections.members` received
+  retryable `StaleGeneration`, `collection changed while reading` / `revision_changed`.
+
+These errors are consistent with background refresh overlapping foreground calls. Both tests
+start with a fresh service, before restart journal catch-up is used, and passed the isolated
+control unchanged. This establishes intermittent outcomes; it does **not** establish a
+base-HEAD reproduction or the precise notification timing. No assertions, skips, scan budgets
+or production retry semantics were changed to hide them. All 16 F3/resolver tests in that same
+broader run passed. The five task-listed #292 cases also passed; this lane does not fix #292.
+The one existing ignored Windows test is `effects::exec::tests::throughput_lab`.
+
+| Final broader command / coverage | Observed result / receipt |
+|---|---|
+| `cargo test --workspace --no-fail-fast` | Exit 101: **1,306 passed, 1 failed, 1 ignored**, across 74 targets; `fix-workspace-final.log` |
+| Service unit tests in that workspace run | **231 passed, 0 failed**; both earlier conflict cases and all F3/resolver tests passed |
+| USN decoder/bookmark tests in that workspace run | **4 passed, 0 failed**, including the added V2/V3 alignment/offset/length/version cases |
+| Default catalogue crash sweep in that workspace run | **9 passed, 0 failed**; no catalogue write/schema changes were made by this fix round |
+| Same workspace-built `pathological-ac73e433cb4da9c8.exe --exact concurrent_create_delete_rename_grow_reconciles_exactly_to_fresh_scan --nocapture` | Exit 0: **1 passed, 0 failed**, unchanged binary; `fix-churn-isolated.log` |
+| `git diff --check` | Exit 0 |
+
+The workspace's single failure was
+`loomward-engine/tests/pathological.rs::concurrent_create_delete_rename_grow_reconciles_exactly_to_fresh_scan`,
+at the catalogue-observation comparison (line 596). Its filesystem file count and `(path, logical
+bytes)` checks passed. The failed row was the root directory: all compared fields matched except
+`sub_complete`, **0 versus 1** in the fresh scan. This integration uses `Service`; neither service
+starts from an existing scan/bookmark, so restart catch-up is not used. The foreground refresh
+had reported complete before the observation was taken. A background refresh overlapping that
+observation is consistent with the documented targeted-pass partial-coverage behavior, but its
+precise scheduling was not instrumented. This case passed in the earlier required-crate run,
+failed in the workspace run, then passed the **same workspace binary** in isolation: 4,000
+initial files, 128 mutation batches, 65 overlapping enumeration, 4,041 matching catalogue
+observations, and 4,000 files matching the filesystem walk. No test or production behavior was
+changed between these runs.
+
+**The workspace gate remains red.** The isolated pass is not a replacement for an all-green
+workspace receipt. Resolving the lifecycle tests' background-refresh/quiescence assumption is
+a separate remaining concern, outside the three requested fixes. A next bounded investigation
+can capture the outstanding refresh job and root coverage at the churn test's observation
+snapshot. No origin/main or base-HEAD reproduction is claimed for these intermittent outcomes.
+The #292 cases did not reproduce in either broader run.
+
+### NOT verified / residual risk / driver state
+
+Hosted CI for these uncommitted edits, non-NTFS/non-Windows qualification, sustained-churn soak,
+and crash injection at the service bookmark write remain unverified. The existing ignored
+`throughput_lab` was not enabled. The paired timing measures decoded-record resolution only;
+native journal IO and subsequent refresh latency are excluded. The existing targeted scan then
+full-root fallback remains unchanged.
+
+All raw receipts named in this addendum remain in the external lane target, outside Git.
+`HUMAN_TODO.md`, the tier/delegation files, `AGENTS.md`, and the protected implementation-status
+and checkpoint files are unchanged. No new owner decision is needed. The worktree remains on
+`feat/404-f3-watchers-usn` at the starting HEAD with the three fixes and this receipt uncommitted
+for the driver; the new `src/freshness/reach.rs` module is untracked until the driver adds it.
+No commit, push, PR edit, merge or cleanup was performed. The worktree is not removal-ready.

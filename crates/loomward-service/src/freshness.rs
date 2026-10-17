@@ -10,6 +10,8 @@ use loomward_windows::usn::Bookmark;
 use rusqlite::{params, OptionalExtension};
 use std::sync::Arc;
 #[cfg(windows)]
+mod reach;
+#[cfg(windows)]
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{
@@ -362,11 +364,13 @@ pub(crate) fn ensure_roots(inner: &Arc<Inner>) {
             loomward_protocol::Command::ScanStart,
             "persistent_watch_resolved",
         );
+        // Every event after insertion must invalidate restart continuity, including watch setup.
+        let epoch = 0;
         inner.freshness.roots.lock().unwrap().insert(
             row.root,
             Tracked {
                 watch: None,
-                epoch: 0,
+                epoch,
                 stale_since: Some(row.finished_at_ns.unwrap_or_else(now_ns)),
                 at: row.finished_at_ns.unwrap_or_else(now_ns),
                 caught_up: false,
@@ -397,15 +401,22 @@ pub(crate) fn ensure_roots(inner: &Arc<Inner>) {
                 .get_mut(&row.root)
                 .unwrap()
                 .watch = Some(Arc::new(watch));
+            // Setup fences native handle creation only. Revoke must not wait for journal IO.
+            drop(_setup);
             if row.finished_at_ns.is_some() {
-                catch_up(inner, row);
+                #[cfg(test)]
+                inner.hooks.gate(
+                    loomward_protocol::Command::ScanStart,
+                    "persistent_watch_started",
+                );
+                catch_up(inner, row, epoch);
             }
         }
     }
 }
 
 #[cfg(windows)]
-fn catch_up(inner: &Inner, row: &db::RootRow) {
+fn catch_up(inner: &Inner, row: &db::RootRow, epoch: u64) {
     if row.state != "complete" || !row.subtree_complete {
         return;
     }
@@ -429,62 +440,61 @@ fn catch_up(inner: &Inner, row: &db::RootRow) {
     let Some(journal) = journal(inner, row.root) else {
         return;
     };
-    let epoch = inner.freshness.roots.lock().unwrap()[&row.root].epoch;
-    let conn = inner.db();
-    let mut targets = BTreeSet::new();
-    // New directories inherit the nearest catalogued ancestor; names never enter this map.
-    let mut new_dirs: BTreeMap<Vec<u8>, u64> = BTreeMap::new();
-    let mut failed = false;
     let deadline = Instant::now() + Duration::from_secs(5);
-    let result = journal.catch_up(Bookmark { journal_id: u64::from_le_bytes(id), next_usn }, |record| {
-        if failed { return; }
-        if Instant::now() > deadline || new_dirs.len() >= 100_000 || targets.len() > 1024 { failed = true; return; }
-        // V2 IDs on NTFS are the low half of FILE_ID_128, never truncate a V3 identifier.
-        let canonical = |id: &[u8]| { let mut id = id.to_vec(); if id.len() == 8 { id.resize(16,0); } id };
-        let parent = canonical(&record.parent_id);
-        let file = canonical(&record.file_id);
-        let find = |id: &[u8]| -> rusqlite::Result<Option<u64>> {
-            conn.query_row("WITH RECURSIVE visible(id) AS (SELECT id FROM main.dir WHERE root_id=?1 AND parent_id IS NULL UNION ALL SELECT d.id FROM main.dir d JOIN visible v ON d.parent_id=v.id WHERE d.listing_state NOT IN ('absent_pending','excluded')) SELECT d.id FROM main.dir d JOIN visible v ON v.id=d.id WHERE d.file_id=?2 OR (length(d.file_id)=8 AND d.file_id=substr(?2,1,8) AND substr(?2,9,8)=zeroblob(8)) LIMIT 1", params![row.root,id], |r|r.get::<_,i64>(0).map(|v|v as u64)).optional()
-        };
-        let parent = match new_dirs.get(&parent).copied().map(Some).map(Ok).unwrap_or_else(|| find(&parent)) {
-            Ok(parent) => parent, Err(_) => { failed=true; return; }
-        };
-        if let Some(parent) = parent {
-            targets.insert(parent);
-            if record.is_directory { new_dirs.insert(file.clone(),parent); }
-        }
-        // A moved-out directory/file may now name a parent outside the grant. Its old parent is
-        // still an authorised scope; never open the journal's new parent or infer a path from it.
-        let previous: rusqlite::Result<Option<u64>> = conn.query_row("SELECT parent_id FROM main.dir WHERE root_id=?1 AND (file_id=?2 OR (length(file_id)=8 AND file_id=substr(?2,1,8) AND substr(?2,9,8)=zeroblob(8))) AND parent_id IS NOT NULL UNION ALL SELECT f.dir_id FROM main.file f JOIN main.dir d ON d.id=f.dir_id WHERE d.root_id=?1 AND (f.file_id=?2 OR (length(f.file_id)=8 AND f.file_id=substr(?2,1,8) AND substr(?2,9,8)=zeroblob(8))) LIMIT 1", params![row.root,file], |r| r.get::<_,i64>(0).map(|v|v as u64)).optional();
-        match previous { Ok(Some(dir)) => { targets.insert(dir); }, Err(_) => failed=true, _ => {} }
+    #[cfg(test)]
+    inner.hooks.gate(
+        loomward_protocol::Command::ScanStart,
+        "persistent_journal_read",
+    );
+    // The native reader is bounded to 16 MiB. Decode before taking any catalogue lock.
+    let mut records = Vec::new();
+    let result = journal.catch_up(
+        Bookmark {
+            journal_id: u64::from_le_bytes(id),
+            next_usn,
+        },
+        |record| records.push(record),
+    );
+    let targets = result.as_ref().ok().and_then(|_| {
+        reach::targets(&records, deadline, |ids| {
+            if !inner
+                .freshness
+                .roots
+                .lock()
+                .unwrap()
+                .contains_key(&row.root)
+            {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+            reach::lookup(&inner.db(), row.root, ids)
+        })
     });
-    drop(conn);
     let mut roots = inner.freshness.roots.lock().unwrap();
-    let root = roots.get_mut(&row.root).unwrap();
+    let Some(root) = roots.get_mut(&row.root) else {
+        return;
+    };
     root.stale_since = Some(at);
-    if let Ok(head) = result {
-        if !failed {
-            if root.epoch == epoch {
-                root.full = false;
-            }
-            root.targets = targets;
-            if root.targets.is_empty() && root.epoch == epoch {
-                root.stale_since = None;
-                root.at = now_ns();
-                root.caught_up = true;
-                let at = root.at;
-                drop(roots);
-                if save(inner, row.grant, Some(head), at).is_err() {
-                    if let Some(root) = inner.freshness.roots.lock().unwrap().get_mut(&row.root) {
-                        root.dirty(true);
-                        root.auto = false;
-                    }
-                }
-            } else {
-                root.auto = true;
-            }
-            return;
+    if let (Ok(head), Some(targets)) = (result, targets) {
+        if root.epoch == epoch {
+            root.full = false;
         }
+        root.targets = targets;
+        if root.targets.is_empty() && root.epoch == epoch {
+            root.stale_since = None;
+            root.at = now_ns();
+            root.caught_up = true;
+            let at = root.at;
+            drop(roots);
+            if save(inner, row.grant, Some(head), at).is_err() {
+                if let Some(root) = inner.freshness.roots.lock().unwrap().get_mut(&row.root) {
+                    root.dirty(true);
+                    root.auto = false;
+                }
+            }
+        } else {
+            root.auto = true;
+        }
+        return;
     }
     // Wrapped/recreated/unsupported journals and read budgets are loss of coverage, never empty.
     root.full = true;
@@ -581,4 +591,110 @@ fn resolve(inner: &Inner, root: i64, path: &[Vec<u16>]) -> Option<u64> {
         dir=conn.query_row("SELECT id FROM main.dir WHERE parent_id=?1 AND name=?2 AND listing_state NOT IN ('absent_pending','excluded')",params![dir as i64,text],|r|r.get::<_,i64>(0).map(|v|v as u64)).ok()?;
     }
     Some(dir)
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    // Retain the reviewed query only as the before-measurement, never on the production path.
+    const OLD_PARENT: &str = "WITH RECURSIVE visible(id) AS (SELECT id FROM main.dir WHERE root_id=?1 AND parent_id IS NULL UNION ALL SELECT d.id FROM main.dir d JOIN visible v ON d.parent_id=v.id WHERE d.listing_state NOT IN ('absent_pending','excluded')) SELECT d.id FROM main.dir d JOIN visible v ON v.id=d.id WHERE d.file_id=?2 OR (length(d.file_id)=8 AND d.file_id=substr(?2,1,8) AND substr(?2,9,8)=zeroblob(8)) LIMIT 1";
+
+    pub(super) fn catalogue(dirs: u64) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../../loomward-catalog/src/catalog.sql"))
+            .unwrap();
+        conn.execute_batch("BEGIN; INSERT INTO root(id,grant_id,state) VALUES(1,1,'complete');")
+            .unwrap();
+        {
+            let mut insert = conn.prepare("INSERT INTO dir(id,root_id,parent_id,name,file_id,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run) VALUES(?1,1,?2,?3,?4,'native_file_id_128','post_open',?5,0,'complete',1,1)").unwrap();
+            for id in 1..=dirs {
+                let mut native = id.to_le_bytes().to_vec();
+                native.resize(16, 0);
+                insert
+                    .execute(params![
+                        id as i64,
+                        (id != 1).then_some(1),
+                        format!("synthetic-{id}"),
+                        native,
+                        i64::from(id != 1)
+                    ])
+                    .unwrap();
+            }
+        }
+        conn.execute_batch("COMMIT").unwrap();
+        conn
+    }
+
+    #[test]
+    fn f3_identity_resolution_uses_directory_identity_index() {
+        let conn = catalogue(10);
+        let mut id = 10u64.to_le_bytes().to_vec();
+        id.resize(16, 0);
+        let (sql, args) = reach::lookup_sql(&BTreeSet::from([id]), 1);
+        let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        let plan: Vec<String> = stmt
+            .query_map(rusqlite::params_from_iter(args), |r| r.get(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            plan.iter()
+                .any(|line| line.contains("dir_identity") && line.contains("file_id=?")),
+            "{plan:#?}"
+        );
+        assert!(
+            plan.iter()
+                .any(|line| line.contains("file_identity") && line.contains("file_id=?")),
+            "{plan:#?}"
+        );
+        eprintln!("F3 indexed query plan: {plan:#?}");
+    }
+
+    #[test]
+    fn f3_catch_up_100k_directories() {
+        let conn = catalogue(100_000);
+        let records: Vec<_> = (99_873u64..=100_000)
+            .map(|id| loomward_windows::usn::Record {
+                file_id: (id + 100_000).to_le_bytes().to_vec(),
+                parent_id: id.to_le_bytes().to_vec(),
+                reason: 0x100,
+                is_directory: false,
+            })
+            .collect();
+        let expected: BTreeSet<u64> = (99_873..=100_000).collect();
+        // The slow before-measurement is opt-in; normal suites still prove the 100k indexed path.
+        if std::env::var_os("LOOMWARD_F3_BASELINE").is_some() {
+            let began = Instant::now();
+            let mut before = BTreeSet::new();
+            for record in &records {
+                let mut native = record.parent_id.clone();
+                native.resize(16, 0);
+                let parent: i64 = conn
+                    .query_row(OLD_PARENT, params![1, native], |r| r.get(0))
+                    .unwrap();
+                before.insert(parent as u64);
+                let mut file = record.file_id.clone();
+                file.resize(16, 0);
+                let previous: Option<i64> = conn.query_row("SELECT parent_id FROM main.dir WHERE root_id=?1 AND (file_id=?2 OR (length(file_id)=8 AND file_id=substr(?2,1,8) AND substr(?2,9,8)=zeroblob(8))) AND parent_id IS NOT NULL UNION ALL SELECT f.dir_id FROM main.file f JOIN main.dir d ON d.id=f.dir_id WHERE d.root_id=?1 AND (f.file_id=?2 OR (length(f.file_id)=8 AND f.file_id=substr(?2,1,8) AND substr(?2,9,8)=zeroblob(8))) LIMIT 1", params![1,file], |r| r.get(0)).optional().unwrap();
+                if let Some(previous) = previous {
+                    before.insert(previous as u64);
+                }
+            }
+            eprintln!(
+                "F3 before: 100000 directories, 128 decoded records: {:?}",
+                began.elapsed()
+            );
+            assert_eq!(before, expected);
+        }
+        let began = Instant::now();
+        let after = reach::targets(&records, began + Duration::from_secs(5), |ids| {
+            reach::lookup(&conn, 1, ids)
+        });
+        eprintln!(
+            "F3 after: 100000 directories, 128 decoded records: {:?}",
+            began.elapsed()
+        );
+        assert_eq!(after, Some(expected));
+    }
 }

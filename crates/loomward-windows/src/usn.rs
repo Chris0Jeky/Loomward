@@ -193,6 +193,40 @@ pub use native::Journal;
 mod tests {
     use super::*;
     #[test]
+    fn decoder_alignment_offsets_lengths_and_unknown_versions_never_panic() {
+        for (version, minimum, name_at) in [(2u16, 60usize, 56usize), (3, 76, 72)] {
+            let len = (minimum + 2).next_multiple_of(8);
+            let mut valid = vec![0; 8 + len];
+            valid[8..12].copy_from_slice(&(len as u32).to_le_bytes());
+            valid[12..14].copy_from_slice(&version.to_le_bytes());
+            valid[8 + name_at..10 + name_at].copy_from_slice(&2u16.to_le_bytes());
+            valid[10 + name_at..12 + name_at].copy_from_slice(&(minimum as u16).to_le_bytes());
+            // Padding belongs to the record and is not another header, even when nonzero.
+            valid[8 + minimum + 2..].fill(0xff);
+            assert_eq!(decode(&valid).unwrap().1.len(), 1);
+            let mut malformed = Vec::new();
+            let mut unaligned = valid.clone();
+            unaligned[8..12].copy_from_slice(&((len - 1) as u32).to_le_bytes());
+            malformed.push(unaligned);
+            let mut odd_offset = valid.clone();
+            odd_offset[10 + name_at..12 + name_at]
+                .copy_from_slice(&((minimum + 1) as u16).to_le_bytes());
+            malformed.push(odd_offset);
+            let mut overflow = valid.clone();
+            overflow[8 + name_at..10 + name_at].copy_from_slice(&65534u16.to_le_bytes());
+            malformed.push(overflow);
+            let mut unknown = valid;
+            unknown[12..14].copy_from_slice(&99u16.to_le_bytes());
+            malformed.push(unknown);
+            for bytes in malformed {
+                assert_eq!(
+                    std::panic::catch_unwind(|| decode(&bytes)).unwrap(),
+                    Err(SourceError::Refused)
+                );
+            }
+        }
+    }
+    #[test]
     fn decoder_keeps_v2_width_and_directory_bit() {
         let mut bytes = vec![0; 72];
         bytes[8..12].copy_from_slice(&64u32.to_le_bytes());
