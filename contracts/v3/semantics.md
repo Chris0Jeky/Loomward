@@ -118,7 +118,11 @@ ID tie-break. The synthetic smoke queue is bounded to 10,000 eligible files; ref
 the latest unretracted human labels for at most 10,000 resolved objects, newest event first. Human history and durable replay receipts remain intact; older objects fall outside this explicit training window.
 Feedback changed during a refit is `stale_generation`; retry explicitly. Cancellation is available
 through `jobs.cancel` for any retained job kind; `scan.cancel` remains scan-only. Cancellation
-acknowledges immediately and completion remains a separate job state. Refit cancellation and candidate commit are serialized: cancellation before commit rolls back without `learning.updated`; after commit the job completes. The Learning view warns when human history exceeds fitted examples; this is a conservative freshness warning, not an exact stale flag.
+does not join the worker; completion remains a separate job state. Refit cancellation and candidate
+commit are serialized: cancellation may wait for an in-flight durable commit. Cancellation before
+commit rolls back without `learning.updated`; a successful commit wins and the job completes.
+The Learning view warns when human history exceeds fitted examples; this is a conservative freshness
+warning, not an exact stale flag.
 
 ### Placement reads and stored scenarios
 
