@@ -508,7 +508,14 @@ mod tests {
         fs::create_dir(&lab).unwrap();
         let root = lab.join("soak");
         let out = tmp.path().join("cycles.jsonl");
-        run(&root, &out, std::time::Duration::ZERO, Some(3)).unwrap();
+        match run(&root, &out, std::time::Duration::ZERO, Some(3)) {
+            // A checkout under a user profile puts target/ there, which the harness refuses by design.
+            Err(refused) if refused.to_string().contains("profile, credential, browser") => {
+                eprintln!("skipped: this checkout's test root is refused: {refused}");
+                return;
+            }
+            other => other.unwrap(),
+        }
         let records: Vec<serde_json::Value> = fs::read_to_string(out)
             .unwrap()
             .lines()
