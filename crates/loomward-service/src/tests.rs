@@ -4392,3 +4392,6 @@ mod backups_tests;
 #[cfg(test)]
 #[path = "diagnostics_tests.rs"]
 mod diagnostics_tests;
+
+#[path = "gap_tests.rs"]
+mod gap_tests;
