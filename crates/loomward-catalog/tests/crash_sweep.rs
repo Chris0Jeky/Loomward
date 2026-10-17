@@ -456,6 +456,28 @@ fn structural(store: &Path) -> Vec<String> {
     zero_check(&db, &mut bad, "directory unreachable from its root", "WITH RECURSIVE reach(id) AS (SELECT id FROM dir WHERE parent_id IS NULL UNION ALL SELECT d.id FROM dir d JOIN reach r ON d.parent_id=r.id JOIN dir p ON p.id=r.id WHERE d.root_id=p.root_id) SELECT (SELECT count(*) FROM dir)-(SELECT count(*) FROM reach)");
     zero_check(&db, &mut bad, "valid rollup disagrees with its rows", "SELECT count(*) FROM dir d WHERE d.sub_complete=1 AND (d.sub_files != (SELECT count(*) FROM file f WHERE f.dir_id=d.id)+coalesce((SELECT sum(c.sub_files) FROM dir c WHERE c.parent_id=d.id),0) OR d.sub_logical != coalesce((SELECT sum(logical) FROM file f WHERE f.dir_id=d.id),0)+coalesce((SELECT sum(c.sub_logical) FROM dir c WHERE c.parent_id=d.id),0))");
     zero_check(&db, &mut bad, "resolved reference bound to a missing row", "SELECT count(*) FROM st.object_ref o WHERE o.state='resolved' AND NOT ((o.kind='file' AND EXISTS(SELECT 1 FROM file WHERE id=o.row_id)) OR (o.kind='dir' AND EXISTS(SELECT 1 FROM dir WHERE id=o.row_id)))");
+    // The search indexes (trigram and token) are derived: after recovery each holds exactly the rows' keys.
+    zero_check(
+        &db,
+        &mut bad,
+        "token index changes still queued after recovery",
+        "SELECT count(*) FROM search_dirty",
+    );
+    for (index, what) in [("search_token", "token"), ("search_name", "trigram")] {
+        let keys = "SELECT id+281474976710656 AS k FROM file UNION ALL SELECT id FROM dir WHERE parent_id IS NOT NULL";
+        zero_check(
+            &db,
+            &mut bad,
+            &format!("row missing from the {what} index"),
+            &format!("SELECT count(*) FROM ({keys}) WHERE k NOT IN (SELECT rowid FROM {index})"),
+        );
+        zero_check(
+            &db,
+            &mut bad,
+            &format!("{what} index entry without a row"),
+            &format!("SELECT count(*) FROM {index} WHERE rowid NOT IN ({keys})"),
+        );
+    }
     zero_check(&db, &mut bad, "row stamped newer than the catalogue revision", "SELECT coalesce((SELECT max(listing_rev) FROM dir),0) > (SELECT catalog_rev FROM revision)");
     bad
 }
