@@ -159,12 +159,17 @@ fn two_stores_appending_to_one_operation_make_one_linear_chain() {
     first.append(op, 1, created()).unwrap();
     let mut second = Store::open(&path).unwrap();
     const EACH: usize = 100;
+    // Both threads start appending together, so their write transactions really interleave.
+    let go = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let go_b = go.clone();
     let a = thread::spawn(move || {
+        go.wait();
         for _ in 0..EACH {
             first.append(op, 1, batch()).expect("first store append");
         }
     });
     let b = thread::spawn(move || {
+        go_b.wait();
         for _ in 0..EACH {
             second.append(op, 1, batch()).expect("second store append");
         }
