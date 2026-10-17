@@ -167,6 +167,46 @@ fn reopen_follows_identity_after_rename_and_rejects_changed_volume_or_root() {
         std::fs::rename(&moved, &child).unwrap();
     }
 }
+/// #292: on some Windows 11 hosts a filter refuses `OpenFileById` relative to a directory under
+/// the user profile's AppData (ERROR_NOT_SUPPORTED), so a grant there could never relist by
+/// identity. Reopen must retry with the volume root as the hint, and only for that error.
+#[cfg(windows)]
+#[test]
+fn reopen_retries_on_the_volume_root_when_the_root_hint_is_not_supported() {
+    if skip_elevated() {
+        return;
+    }
+    let temp = canonical_tempdir();
+    std::fs::create_dir(temp.path().join("child")).unwrap();
+    let open = |source: &NativeSource| {
+        let (root, root_identity) = source.open_root(temp.path()).unwrap();
+        let mut child = None;
+        source.list(&root, &mut |entry| {
+            if entry.name == "child".encode_utf16().collect::<Vec<_>>() {
+                child = Some(source.open_child(&root, &entry).unwrap().1);
+            }
+            Flow::Continue
+        });
+        (root, root_identity, child.unwrap())
+    };
+    let source = NativeSource::default().with_root_hint_failure(50);
+    let (root, root_identity, child) = open(&source);
+    let (_, observed) = source.reopen(&root, root_identity, child).unwrap();
+    assert_eq!(observed.id, child.id);
+    let mut wrong_volume = child;
+    wrong_volume.volume_serial = child.volume_serial.map(|n| n.wrapping_add(1));
+    assert!(matches!(
+        source.reopen(&root, root_identity, wrong_volume),
+        Err(SourceError::IdentityChanged)
+    ));
+    // Any other refusal of the root hint stays an error, never a silent retry.
+    let source = NativeSource::default().with_root_hint_failure(87);
+    let (root, root_identity, child) = open(&source);
+    assert!(matches!(
+        source.reopen(&root, root_identity, child),
+        Err(SourceError::Io(87))
+    ));
+}
 #[cfg(windows)]
 #[test]
 fn native_handle_relative_open_and_all_strategy_widths() {
