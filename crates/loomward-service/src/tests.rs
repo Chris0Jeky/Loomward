@@ -475,6 +475,81 @@ fn placement_lab_space_timestamp_is_fresh() {
     assert!(observed >= crate::ts_ns(before) && observed <= crate::ts_ns(after));
 }
 
+/// A personal session whose only owner grant is a real folder (#519). Returns the folder so a test
+/// can change it; the caller keeps `tmp` alive for the grant's lifetime.
+#[cfg(windows)]
+fn personal_grant_session(tmp: &tempfile::TempDir) -> Option<(Service, std::path::PathBuf)> {
+    if loomward_windows::enumerate::running_elevated() {
+        eprintln!("skipped: elevated token; the native space read refuses elevation (invariant 2)");
+        return None;
+    }
+    let folder = tmp.path().join("owner-folder");
+    std::fs::create_dir_all(&folder).unwrap();
+    let folder = folder.canonicalize().unwrap();
+    let svc = Service::open(Config {
+        state_dir: tmp.path().join("state"),
+        dataset: DatasetClass::Personal,
+        allow_personal: true,
+        allow_identity_unverified: false,
+        grant_roots: vec![folder.clone()],
+    })
+    .unwrap();
+    Some((svc, folder))
+}
+
+/// #519: a volume holding an active owner grant reports its observed capacity and free space.
+#[cfg(windows)]
+#[test]
+fn volumes_list_observes_space_for_an_active_personal_grant() {
+    let tmp = temp_root();
+    let Some((svc, _folder)) = personal_grant_session(&tmp) else {
+        return;
+    };
+    let (volumes, _) = ok("volumes.list", call(&svc, "volumes.list", json!({})));
+    let rows = volumes["volumes"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{:?}", volumes);
+    let capacity: u64 = rows[0]["capacity_bytes"].as_str().unwrap().parse().unwrap();
+    let free: u64 = rows[0]["free_bytes"].as_str().unwrap().parse().unwrap();
+    assert!(capacity > 0 && free <= capacity, "{}", rows[0]);
+}
+
+/// #519: revoking the grant ends the observation; the volume reports unknown, never zero.
+#[cfg(windows)]
+#[test]
+fn volumes_list_space_is_unknown_once_the_personal_grant_is_revoked() {
+    let tmp = temp_root();
+    let Some((svc, _folder)) = personal_grant_session(&tmp) else {
+        return;
+    };
+    let (roots, _) = ok("roots.list", call(&svc, "roots.list", json!({})));
+    let root_id = roots["roots"][0]["root_id"].clone();
+    ok(
+        "roots.revoke",
+        call(
+            &svc,
+            "roots.revoke",
+            json!({"root_id": root_id, "purge_catalog": false}),
+        ),
+    );
+    let (volumes, _) = ok("volumes.list", call(&svc, "volumes.list", json!({})));
+    assert!(volumes["volumes"][0]["capacity_bytes"].is_null());
+    assert!(volumes["volumes"][0]["free_bytes"].is_null());
+}
+
+/// #519: a granted root that can no longer be observed stays unknown and the list still answers.
+#[cfg(windows)]
+#[test]
+fn volumes_list_space_is_unknown_not_zero_when_the_personal_root_is_unobservable() {
+    let tmp = temp_root();
+    let Some((svc, folder)) = personal_grant_session(&tmp) else {
+        return;
+    };
+    std::fs::remove_dir(&folder).unwrap();
+    let (volumes, _) = ok("volumes.list", call(&svc, "volumes.list", json!({})));
+    assert_eq!(volumes["volumes"][0]["capacity_bytes"], Value::Null);
+    assert_eq!(volumes["volumes"][0]["free_bytes"], Value::Null);
+}
+
 #[test]
 fn placement_wire_preserves_unknowns_and_exclusions() {
     let tmp = temp_root();

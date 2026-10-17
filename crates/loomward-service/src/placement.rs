@@ -119,7 +119,7 @@ impl Inner {
             declaration_rev: declaration_rev(&input.conn)?,
         };
         let mut result = match command {
-            Command::VolumesList => Ok(json!({"volumes":input.volumes(deadline)?.into_iter().map(|v|v.volume).collect::<Vec<_>>()})),
+            Command::VolumesList => Ok(json!({"volumes":input.volumes(deadline, true)?.into_iter().map(|v|v.volume).collect::<Vec<_>>()})),
             Command::TiersModel => {
                 let mut model = self.engine.placement_model(&input, deadline)?;
                 let inactive = inactive_volumes(&input.conn)?;
@@ -357,7 +357,15 @@ impl<'a> Input<'a> {
         })
     }
 
-    pub(crate) fn volumes(&self, deadline: Instant) -> EngineResult<Vec<VolumeObservation>> {
+    /// `observe_personal_grants` is set only by `volumes.list` and the alerts report (#519): a
+    /// personal volume holding an active owner grant gets a read-only space observation through that
+    /// grant's own root. Placement and tier models keep reading catalogue physics only, so their
+    /// personal refusal still holds.
+    pub(crate) fn volumes(
+        &self,
+        deadline: Instant,
+        observe_personal_grants: bool,
+    ) -> EngineResult<Vec<VolumeObservation>> {
         let rows = db::volumes(&self.conn, None).map_err(sql)?;
         if rows.len() > 64 {
             return Err(EngineError::ResourceBudget {
@@ -385,10 +393,14 @@ impl<'a> Input<'a> {
             let stored: Value = serde_json::from_str(&capabilities).unwrap_or(Value::Null);
             let mut space = stored.get("space").cloned().unwrap_or(Value::Null);
             let mut observed_at = v.observed_at_ns;
-            // Only registered synthetic roots may supply fresh volume physics. Personal placement
-            // stays catalogue-only until the volume observation lane records these facts.
-            if space.is_null() && self.inner.dataset == DatasetClass::Synthetic {
-                let root: Option<String> = self.conn.query_row("SELECT g.display_path FROM main.root r JOIN st.root_grant g ON g.id=r.grant_id WHERE r.volume_id=?1 AND g.state='active' AND g.origin='lab_generated' LIMIT 1", [v.id], |r| r.get(0)).optional().map_err(sql)?;
+            // Only an active grant's own root may supply fresh volume physics: a registered lab root
+            // in a synthetic session, or an owner grant for `volumes.list` in a personal session.
+            let observed_origin = match self.inner.dataset {
+                DatasetClass::Synthetic => Some("lab_generated"),
+                DatasetClass::Personal => observe_personal_grants.then_some("owner_granted"),
+            };
+            if let Some(origin) = observed_origin.filter(|_| space.is_null()) {
+                let root: Option<String> = self.conn.query_row("SELECT g.display_path FROM main.root r JOIN st.root_grant g ON g.id=r.grant_id WHERE r.volume_id=?1 AND g.state='active' AND g.origin=?2 LIMIT 1", params![v.id, origin], |r| r.get(0)).optional().map_err(sql)?;
                 if let Some(root) = root {
                     let key = v.key.clone();
                     if let Some((observation, at)) = bounded_space(deadline, move || {
@@ -455,7 +467,7 @@ struct Dir {
 impl PlacementInput for Input<'_> {
     fn snapshot(&self, source: Option<&VolumeId>, deadline: Instant) -> EngineResult<Snapshot> {
         check(deadline)?;
-        let mut volumes = self.volumes(deadline)?;
+        let mut volumes = self.volumes(deadline, false)?;
         let Some(source) = source else {
             return Ok(Snapshot {
                 volumes,
