@@ -319,7 +319,8 @@ fn settle(
     let (mut citations, mut unverified) = (Vec::new(), Vec::new());
     for h in turn::cited(&shown) {
         match answer.handles.iter().find(|(k, _)| *k == h) {
-            Some((_, node)) if citations.len() < LIST_CAP => citations.push(cite(view, &h, node)),
+            // Bounded by the ledger (turn::MAX_LEDGER), so no cited row is ever mislabelled.
+            Some((_, node)) => citations.push(cite(view, &h, node)),
             None if unverified.len() < LIST_CAP => unverified.push(h),
             _ => {}
         }

@@ -466,3 +466,23 @@ fn an_unreachable_model_fails_the_turn_honestly_and_one_turn_runs_at_a_time() {
         ErrorCode::NotFound
     );
 }
+
+#[test]
+fn the_contract_holds_every_handle_a_turn_can_mint() {
+    // AskTurnRecord.citations is BoundedVec<_, 0, 160>: a ledger-backed citation is never cut.
+    assert_eq!(loomward_ask::turn::MAX_LEDGER, 160);
+    let cites: Vec<Value> = (1..=160)
+        .map(|i| json!({"handle": format!("h{i}"), "node_id": "nd_x", "resolved": false, "name": null, "root_id": null}))
+        .collect();
+    let mut t: Value = serde_json::from_str(
+        &std::fs::read_to_string(format!(
+            "{}/../../contracts/v3/examples/commands/ask.result.result.json",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    t["citations"] = json!(cites);
+    let Value::Object(map) = t else { panic!() };
+    Command::AskResult.validate_result(&map).unwrap();
+}

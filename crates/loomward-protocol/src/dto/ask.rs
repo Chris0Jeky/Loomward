@@ -186,7 +186,8 @@ pub struct AskTurnRecord {
     pub answer_truncated: bool,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub failure: Option<AskFailure>,
-    pub citations: BoundedVec<AskCitation, 0, 64>,
+    /// Every ledger-backed handle the answer cites (a turn mints at most 160).
+    pub citations: BoundedVec<AskCitation, 0, 160>,
     /// Handles the answer names that the ledger does not hold: shown as unverified references.
     pub unverified: BoundedVec<Text<8>, 0, 64>,
     pub tool_calls: BoundedVec<AskToolUse, 0, 64>,

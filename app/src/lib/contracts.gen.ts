@@ -2119,6 +2119,7 @@ export interface AskTurnRecord {
   answer: string | null;
   answer_truncated: boolean;
   failure: AskFailure | null;
+  /** Every ledger-backed handle the answer cites; a turn mints at most 8 x 20 handles. */
   citations: AskCitation[];
   unverified: string[];
   tool_calls: AskToolUse[];
