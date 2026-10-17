@@ -42,22 +42,22 @@ pub(crate) struct Copies {
     /// Test seams: `copy.start` calls the gate at "prepared" (tree walked, nothing registered) and
     /// "spawned" (worker running, not yet in `running`); new runs get the hook on their control.
     #[cfg(all(test, windows))]
-    pub(crate) gate: Mutex<Option<Arc<dyn Fn(&str) + Send + Sync>>>,
+    pub(crate) gate: Mutex<Option<Gate>>,
     #[cfg(all(test, windows))]
-    #[allow(clippy::type_complexity)]
-    pub(crate) hook: Mutex<
-        Option<
-            Arc<
-                dyn Fn(
-                        loomward_windows::effects::exec::Point,
-                        &loomward_windows::effects::exec::Control,
-                    ) -> loomward_windows::effects::exec::Flow
-                    + Send
-                    + Sync,
-            >,
-        >,
-    >,
+    pub(crate) hook: Mutex<Option<RunHook>>,
 }
+
+#[cfg(all(test, windows))]
+pub(crate) type Gate = Arc<dyn Fn(&str) + Send + Sync>;
+#[cfg(all(test, windows))]
+pub(crate) type RunHook = Arc<
+    dyn Fn(
+            loomward_windows::effects::exec::Point,
+            &loomward_windows::effects::exec::Control,
+        ) -> loomward_windows::effects::exec::Flow
+        + Send
+        + Sync,
+>;
 
 #[cfg(windows)]
 struct Run {
