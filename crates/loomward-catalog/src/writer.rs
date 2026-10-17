@@ -1220,6 +1220,7 @@ fn forget_state(conn: &mut Connection, grant: i64, at: i64, expected: Option<i64
         // The objects of this root: bound to its rows now, or (after a catalogue rebuild) matched
         // by native identity, unless another root of the same volume still observes the object
         // (a hard link seen under both): its labels and memberships are not only this root's.
+        // A v1 reference migrated with creation_ft=0 and no row matches by native id alone, as before.
         let bound = "o.catalog_instance=(SELECT value FROM main.meta WHERE key='instance_id') AND (
                 (o.kind='dir' AND o.row_id IN (SELECT id FROM main.dir WHERE root_id=?1))
                 OR (o.kind='file' AND o.row_id IN (SELECT f.id FROM main.file f JOIN main.dir d ON d.id=f.dir_id WHERE d.root_id=?1)))";
@@ -1227,10 +1228,10 @@ fn forget_state(conn: &mut Connection, grant: i64, at: i64, expected: Option<i64
         tx.execute_batch("CREATE TEMP TABLE forget_ref(id INTEGER PRIMARY KEY)")?;
         tx.execute(&format!("INSERT OR IGNORE INTO forget_ref SELECT o.id FROM st.object_ref o WHERE o.volume_key=?2 AND (
               ({bound})
-              OR EXISTS(SELECT 1 FROM main.file f JOIN main.dir d ON d.id=f.dir_id WHERE o.kind='file' AND f.file_id=o.file_id AND f.created_ft IS o.creation_ft AND d.root_id=?1)
-              OR EXISTS(SELECT 1 FROM main.dir d WHERE o.kind='dir' AND d.root_id=?1 AND d.file_id=o.file_id AND d.created_ft IS o.creation_ft))
-            AND NOT EXISTS(SELECT 1 FROM main.file f JOIN main.dir d ON d.id=f.dir_id WHERE o.kind='file' AND f.file_id=o.file_id AND f.created_ft IS o.creation_ft AND d.root_id IN {elsewhere})
-            AND NOT EXISTS(SELECT 1 FROM main.dir d WHERE o.kind='dir' AND d.file_id=o.file_id AND d.created_ft IS o.creation_ft AND d.root_id IN {elsewhere})"), params![root, volume])?;
+              OR EXISTS(SELECT 1 FROM main.file f JOIN main.dir d ON d.id=f.dir_id WHERE o.kind='file' AND f.file_id=o.file_id AND (f.created_ft IS o.creation_ft OR (o.creation_ft=0 AND o.row_id IS NULL)) AND d.root_id=?1)
+              OR EXISTS(SELECT 1 FROM main.dir d WHERE o.kind='dir' AND d.root_id=?1 AND d.file_id=o.file_id AND (d.created_ft IS o.creation_ft OR (o.creation_ft=0 AND o.row_id IS NULL))))
+            AND NOT EXISTS(SELECT 1 FROM main.file f JOIN main.dir d ON d.id=f.dir_id WHERE o.kind='file' AND f.file_id=o.file_id AND (f.created_ft IS o.creation_ft OR (o.creation_ft=0 AND o.row_id IS NULL)) AND d.root_id IN {elsewhere})
+            AND NOT EXISTS(SELECT 1 FROM main.dir d WHERE o.kind='dir' AND d.file_id=o.file_id AND (d.created_ft IS o.creation_ft OR (o.creation_ft=0 AND o.row_id IS NULL)) AND d.root_id IN {elsewhere})"), params![root, volume])?;
         // A kept object bound to one of this root's rows loses the row: unresolved, as after a rebuild.
         tx.execute(&format!("UPDATE st.object_ref AS o SET state='unresolved',retired=1 WHERE o.state='resolved' AND {bound} AND o.id NOT IN (SELECT id FROM forget_ref)"), params![root])?;
         let has = |table: &str| {

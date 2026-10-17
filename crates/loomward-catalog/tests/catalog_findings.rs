@@ -458,3 +458,66 @@ fn search_tracks_file_upsert_and_directory_update_renames() {
         }
     }
 }
+
+#[test]
+fn forgetting_purges_a_migrated_v1_reference_matched_by_native_id_alone() {
+    // A v1 state.db migrates its references with creation_ft=0, unresolved and no bound row
+    // (db.rs): forget must still purge them and their memberships by native id, as before #499.
+    let temp = tempfile::tempdir().unwrap();
+    let c = Catalog::open(temp.path(), "synthetic").unwrap();
+    c.writer().set_bulk_first_scan(false);
+    let (grant, dir) = root(&c, 1);
+    let scan = run(&c, grant);
+    c.writer()
+        .call(listing(
+            scan,
+            dir,
+            vec![entry("legacy-object", 10, 100)],
+            vec![],
+        ))
+        .unwrap();
+    finish(&c, scan);
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    let file: i64 = db
+        .query_row("SELECT id FROM file WHERE name='legacy-object'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let reference = reference(&c, NodeKey::File(file));
+    let st = Connection::open(temp.path().join("state.db")).unwrap();
+    st.execute(
+        "UPDATE object_ref SET creation_ft=0,state='unresolved',retired=1,row_id=NULL,catalog_instance=NULL WHERE id=?1",
+        [reference],
+    )
+    .unwrap();
+    st.execute_batch("INSERT INTO collection(name,kind,created_at_ns) VALUES('legacy','human',0)")
+        .unwrap();
+    st.execute("INSERT INTO collection_member VALUES(1,?1,0)", [reference])
+        .unwrap();
+    c.writer()
+        .call(WriteCommand::RevokeGrant {
+            grant_id: grant,
+            revoked_at_ns: 5,
+        })
+        .unwrap();
+    c.writer()
+        .call(WriteCommand::ForgetGrant {
+            grant_id: grant,
+            forgotten_at_ns: 6,
+            expected_state_rev: None,
+        })
+        .unwrap();
+    let left = |sql: &str| {
+        st.query_row(sql, [reference], |r| r.get::<_, i64>(0))
+            .unwrap()
+    };
+    assert_eq!(
+        left("SELECT count(*) FROM object_ref WHERE id=?1"),
+        0,
+        "the migrated reference survived the forget"
+    );
+    assert_eq!(
+        left("SELECT count(*) FROM collection_member WHERE object_ref_id=?1"),
+        0
+    );
+}
