@@ -3886,6 +3886,71 @@ fn f3_successful_full_scan_with_late_hints_restarts_refresh_budget() {
     f3_wait_live(&lab.svc);
 }
 
+/// #561: an explicit scan.start is never refused because an automatic watcher refresh holds the
+/// root. It pre-empts that refresh, the root stays stale across the hand-over, and a second
+/// explicit scan is still refused while the first runs.
+#[cfg(windows)]
+#[test]
+fn f3_explicit_scan_preempts_a_running_watcher_refresh() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    svc.inner.scan.gate.arm();
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    svc.inner.freshness.ready_targeted_hint(1);
+    svc.inner.scan.gate.wait_reached();
+    let (jobs, _) = ok("jobs.list", call(svc, "jobs.list", json!({"limit":50})));
+    let auto = jobs["jobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|j| j["state"] == "running")
+        .expect("the watcher refresh holds the root")["job_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let state = |job: &str| {
+        let (j, _) = ok("jobs.get", call(svc, "jobs.get", json!({"job_id": job})));
+        j["job"]["state"].as_str().unwrap().to_owned()
+    };
+    let (explicit, stale_in_hand_over) = std::thread::scope(|s| {
+        let asking = s.spawn(|| {
+            call(
+                svc,
+                "scan.start",
+                json!({"root_id": lab.root, "mode": "full"}),
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !asking.is_finished() && state(&auto) == "running" && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        let stale = svc.inner.freshness.stale(1);
+        // Release before asserting so a regression cannot strand the scan worker.
+        svc.inner.scan.gate.release();
+        (asking.join().unwrap(), stale)
+    });
+    let (job, _) = ok("scan.start", explicit);
+    let explicit = job["job"]["job_id"].as_str().unwrap().to_owned();
+    assert_ne!(explicit, auto);
+    assert!(stale_in_hand_over, "the hand-over must stay visibly stale");
+    assert_eq!(settle(svc, &auto)["state"], "cancelled");
+    assert_eq!(settle(svc, &explicit)["coverage"], "complete");
+    f3_wait_live(svc);
+
+    // An explicit scan is never pre-empted: a second one is refused at once.
+    svc.inner.scan.gate.arm();
+    let first = start(svc, &lab.root, "full");
+    let second = call(svc, "scan.start", json!({"root_id": lab.root, "mode": "full"}));
+    svc.inner.scan.gate.release();
+    assert_eq!(err(second).code, ErrorCode::Busy);
+    assert_eq!(settle(svc, &first)["state"], "completed");
+    f3_wait_live(svc);
+}
+
 /// #184 MEDIUM-1 for the durable writer: a directory deleted and recreated under the same name
 /// (same creation time, new file ID) is a new row; the old row and its subtree are absent.
 #[cfg(windows)]
