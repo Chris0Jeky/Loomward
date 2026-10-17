@@ -707,6 +707,282 @@ mod lab_copy {
         assert_eq!(left.len(), 1, "staging left (Q1 default)");
         assert!(s["staging_folder"].as_str().is_some(), "{s:?}");
     }
+
+    /// The ID of the child named `name` in a depth-3 slice, at any depth.
+    fn node_named(slice: &Payload, name: &str) -> String {
+        slice["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["name"] == name)
+            .map(|n| n["node_id"].as_str().unwrap().to_owned())
+            .unwrap()
+    }
+
+    /// Two granted lab roots in one store, both scanned: the first holds `a` and `b`, the second `c`.
+    /// Returns the temp folder (kept alive), the service and the two root IDs.
+    fn two_roots() -> Option<(tempfile::TempDir, Service, String, String)> {
+        if loomward_windows::enumerate::running_elevated() {
+            eprintln!("skipped: elevated token; the native scan refuses elevation (invariant 2)");
+            return None;
+        }
+        let tmp = temp_root();
+        let state = tmp.path().join("state");
+        let seed = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+        let mut roots = Vec::new();
+        for name in ["lab-scan", "lab-other"] {
+            let root = tmp.path().join(name);
+            crate::lab::register(&state, &root, &format!("seed-{name}"), "S", seed).unwrap();
+            roots.push(root.canonicalize().unwrap());
+        }
+        let (first, second) = (roots[0].clone(), roots[1].clone());
+        std::fs::create_dir_all(first.join("a")).unwrap();
+        std::fs::write(first.join("a").join("1.bin"), [0u8; 10]).unwrap();
+        std::fs::create_dir(first.join("b")).unwrap();
+        std::fs::create_dir(second.join("c")).unwrap();
+        std::fs::write(second.join("c").join("1.bin"), [0u8; 7]).unwrap();
+        let svc = Service::open(Config {
+            state_dir: state,
+            dataset: DatasetClass::Synthetic,
+            allow_personal: false,
+            allow_identity_unverified: false,
+            grant_roots: roots,
+        })
+        .unwrap();
+        let (listed, _) = ok("roots.list", call(&svc, "roots.list", json!({})));
+        let id_of = |root: &Path| {
+            let name = root.file_name().unwrap().to_str().unwrap();
+            listed["roots"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["display_path"]["text"].as_str().unwrap().ends_with(name))
+                .unwrap()["root_id"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        let (one, two) = (id_of(&first), id_of(&second));
+        for root in [&one, &two] {
+            let job = start(&svc, root, "full");
+            assert_eq!(settle(&svc, &job)["state"], "completed");
+        }
+        f3_wait_live(&svc);
+        Some((tmp, svc, one, two))
+    }
+
+    /// copy_prepare (~374): a selection drawn from two granted roots is refused as one InvalidRequest
+    /// before anything is observed. Each source on its own is served.
+    #[test]
+    fn sources_from_two_granted_roots_are_refused() {
+        let Some((_tmp, svc, first, second)) = two_roots() else {
+            return;
+        };
+        let a = child_named(&lab_slice(&svc, &first), "a").unwrap();
+        let b = child_named(&lab_slice(&svc, &first), "b").unwrap();
+        let c = child_named(&lab_slice(&svc, &second), "c").unwrap();
+        let (alone, _) = ok(
+            "copy.preview",
+            call(
+                &svc,
+                "copy.preview",
+                json!({"sources": [a], "destination_node_id": b}),
+            ),
+        );
+        assert_eq!(alone["state"], "draft", "{alone:?}");
+        let e = err(call(
+            &svc,
+            "copy.preview",
+            json!({"sources": [a, c], "destination_node_id": b}),
+        ));
+        assert_eq!(e.code, ErrorCode::InvalidRequest, "{e:?}");
+        assert_eq!(
+            e.message.as_str(),
+            "every source must come from one granted root"
+        );
+    }
+
+    /// copy_start (~627): a start naming a digest other than the approved one is refused
+    /// `digest_mismatch`. That attempt spends the approval (single use): nothing is journaled or written,
+    /// and even the right digest no longer starts.
+    #[test]
+    fn a_start_naming_another_digest_than_the_approved_one_is_refused() {
+        let Some((lab, a, b)) = scanned() else { return };
+        let svc = &lab.svc;
+        let p = preview(svc, &a, &b);
+        let op = p["operation_id"].as_str().unwrap().to_owned();
+        let other = format!("sha256:{}", "0".repeat(64));
+        assert_ne!(other, digest(&p));
+        ok(
+            "copy.approve",
+            call(
+                svc,
+                "copy.approve",
+                json!({"operation_id": op, "digest": digest(&p)}),
+            ),
+        );
+        let e = err(call(
+            svc,
+            "copy.start",
+            json!({"operation_id": op, "digest": other}),
+        ));
+        assert_eq!(e.code, ErrorCode::PermissionDenied, "{e:?}");
+        assert_eq!(reason(&e), Some("digest_mismatch"), "{e:?}");
+        assert_eq!(std::fs::read_dir(lab.path.join("b")).unwrap().count(), 0);
+        let e = err(call(
+            svc,
+            "copy.start",
+            json!({"operation_id": op, "digest": digest(&p)}),
+        ));
+        assert_eq!(reason(&e), Some("approval_required"), "{e:?}");
+    }
+
+    /// A digest that is not `sha256:` followed by exactly 64 lowercase hex digits is refused at
+    /// copy_approve and copy_start as InvalidRequest, before any approval is looked at. The wire type
+    /// `Digest` checks it on decode, so parse_digest's own `malformed digest` branch is not reachable
+    /// from the wire. A malformed start spends no approval, so the right digest still starts and commits.
+    #[test]
+    fn a_malformed_digest_is_refused_and_spends_no_approval() {
+        let Some((lab, a, b)) = scanned() else { return };
+        let svc = &lab.svc;
+        let p = preview(svc, &a, &b);
+        let op = p["operation_id"].as_str().unwrap().to_owned();
+        let malformed = [
+            String::new(),
+            "sha256:".to_owned(),
+            format!("sha256:{}", "a".repeat(62)),
+            format!("sha256:{}", "a".repeat(63)),
+            format!("sha256:{}", "g".repeat(64)),
+            "a".repeat(64),
+            format!("md5:{}", "a".repeat(64)),
+        ];
+        for text in &malformed {
+            for command in ["copy.approve", "copy.start"] {
+                let e = err(call(
+                    svc,
+                    command,
+                    json!({"operation_id": op, "digest": text}),
+                ));
+                assert_eq!(
+                    e.code,
+                    ErrorCode::InvalidRequest,
+                    "{command} {text:?}: {e:?}"
+                );
+                assert!(
+                    e.message.as_str().starts_with("expected sha256:"),
+                    "{command} {text:?}: {e:?}"
+                );
+            }
+        }
+        ok(
+            "copy.approve",
+            call(
+                svc,
+                "copy.approve",
+                json!({"operation_id": op, "digest": digest(&p)}),
+            ),
+        );
+        for text in &malformed {
+            let e = err(call(
+                svc,
+                "copy.start",
+                json!({"operation_id": op, "digest": text}),
+            ));
+            assert_eq!(e.code, ErrorCode::InvalidRequest, "{text:?}");
+        }
+        ok(
+            "copy.start",
+            call(
+                svc,
+                "copy.start",
+                json!({"operation_id": op, "digest": digest(&p)}),
+            ),
+        );
+        assert_eq!(settle_copy(svc, &op)["state"], "committed");
+    }
+
+    /// copy_op (~723): `copy.status` and `copy.cancel` answer NotFound `unknown copy operation` for an
+    /// operation ID this service never issued.
+    #[test]
+    fn an_unknown_copy_operation_id_is_not_found() {
+        let Some((lab, _a, _b)) = scanned() else {
+            return;
+        };
+        for command in ["copy.status", "copy.cancel"] {
+            let e = err(call(
+                &lab.svc,
+                command,
+                json!({"operation_id": "cp_000000000000000000"}),
+            ));
+            assert_eq!(e.code, ErrorCode::NotFound, "{command}: {e:?}");
+            assert_eq!(e.message.as_str(), "unknown copy operation", "{command}");
+        }
+    }
+
+    /// copy_preview (~516-537): a refused preview is reported `refused`, never `draft`, with its refusal
+    /// count, and each refusal's `node_id` is null. Here the destination sits inside the selected folder.
+    #[test]
+    fn a_refused_preview_is_reported_refused_with_null_node_ids() {
+        let Some((lab, a, _b)) = scanned() else {
+            return;
+        };
+        let svc = &lab.svc;
+        let deep = node_named(&lab_slice(svc, &lab.root), "deep");
+        let (p, _) = ok(
+            "copy.preview",
+            call(
+                svc,
+                "copy.preview",
+                json!({"sources": [a], "destination_node_id": deep}),
+            ),
+        );
+        assert_eq!(p["state"], "refused", "{p:?}");
+        let refusals = p["refusals"].as_array().unwrap();
+        assert!(!refusals.is_empty(), "{p:?}");
+        assert_eq!(p["refusal_count"].as_u64(), Some(refusals.len() as u64));
+        assert!(
+            refusals
+                .iter()
+                .any(|r| r["code"] == "destination_inside_source"),
+            "{p:?}"
+        );
+        assert!(refusals.iter().all(|r| r["node_id"].is_null()), "{p:?}");
+    }
+
+    /// copy_preview (~516): a preview with more refusals than the wire bound answers the first 256 and
+    /// the full count, and is never `draft`. Each name has the device stem `NUL`, which
+    /// `name_unrepresentable` refuses (Win32 refuses `?` in a name before the copy could see it).
+    #[test]
+    fn a_preview_with_more_than_256_refusals_is_capped_with_the_full_count() {
+        const BAD: usize = 300;
+        let Some(lab) = lab() else { return };
+        for i in 0..BAD {
+            std::fs::write(lab.path.join("a").join(format!("NUL.{i}")), [0u8; 1]).unwrap();
+        }
+        let job = start(&lab.svc, &lab.root, "full");
+        assert_eq!(settle(&lab.svc, &job)["state"], "completed");
+        f3_wait_live(&lab.svc);
+        let slice = lab_slice(&lab.svc, &lab.root);
+        let (a, b) = (
+            child_named(&slice, "a").unwrap(),
+            child_named(&slice, "b").unwrap(),
+        );
+        let (p, _) = ok(
+            "copy.preview",
+            call(
+                &lab.svc,
+                "copy.preview",
+                json!({"sources": [a], "destination_node_id": b}),
+            ),
+        );
+        assert_eq!(p["state"], "refused", "{p:?}");
+        assert!(p["refusal_count"].as_u64().unwrap() >= BAD as u64, "{p:?}");
+        let refusals = p["refusals"].as_array().unwrap();
+        assert_eq!(refusals.len(), 256);
+        assert!(refusals
+            .iter()
+            .all(|r| r["code"] == "name_unrepresentable" && r["node_id"].is_null()));
+    }
 }
 
 /// Every command whose contract declares an effect is a mutation: a ticketed, retained, serialised
