@@ -345,6 +345,17 @@ Conformance tests MUST validate **complete** envelopes with the payload discrimi
 through `commands.json`, so that, for example, an `EventEnvelope` with `event: "job.state"` and a data object that
 is not a `JobResult` fails. Implementations MUST enable `format` validation for `date-time` in tests.
 
+`commands.json`'s `result` describes the complete owner reply. For a client principal under an
+LW-067 grant, `search.query` and `node.inspect` use the command's `client_result` instead:
+`ClientSearchPage` and `ClientNodeDetail`. The service validates the owner-shaped result before
+projection and the final client result after projection. Other commands have no client result.
+`ClientEntryRow` always carries node reference, kind, name, extension, extension family and
+coverage. Path, size, modified time and attributes are present only when the grant discloses
+them; withheld fields are absent, while disclosed unknown values remain null. Client node
+detail contains only its row, root and optionally a root-relative display path; owner identity,
+timestamps, subtree totals, threads, exclusions, capabilities, memberships and suggestions stay
+with the owner. Unverified federated hits are not part of the client contract.
+
 ## 11. Disclosure
 
 The Rust-owned native disclosure dialog pages synthetic summaries within its display limits;

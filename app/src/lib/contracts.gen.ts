@@ -686,6 +686,63 @@ export interface CollectionRef {
   name: string;
 }
 
+/** LW-067 client projection. Fields outside the disclosure grant are absent; a disclosed unknown remains null. Owner EntryRow stays complete. */
+export interface ClientEntryRow {
+  node_id: NodeId;
+  kind: "dir" | "file";
+  name: string;
+  extension: string | null;
+  ext_family: ExtFamily | null;
+  /** Null for a search folder whose aggregate is unsettled; never present its old aggregate as a current size. */
+  logical_bytes?: NullableBytes;
+  allocated_bytes?: NullableBytes;
+  files?: NullableCount;
+  dirs?: NullableCount;
+  modified_at?: NullableTimestamp;
+  attributes?: FileAttribute[];
+  flags?: EntryFlag[];
+  coverage: CoverageState;
+  /** Search and collection results only: the parent's display path. */
+  location_hint?: DisplayPath | null;
+}
+
+export interface ClientSearchHit {
+  row: ClientEntryRow;
+  root_id: RootId;
+  /** Root-relative path of the hit itself, display only. */
+  path?: DisplayPath;
+  match_kind: SearchMatchKind;
+  /** Federated extension; absent means own. */
+  source?: SearchSource;
+  /** Federated extension: how fresh this hit's root is (docs/46 section 7). */
+  freshness?: SearchFreshness;
+  /** Federated extension: a relative rank signal in 0..1, never a probability and not comparable across sources. */
+  score?: Fraction;
+  /** Half-open UTF-16 offsets into row.name; best effort and may be empty. */
+  highlights: number[][];
+}
+
+export interface ClientSearchPage {
+  generation: NullableGeneration;
+  hits: ClientSearchHit[];
+  next_cursor: Cursor | null;
+  budget_hit: boolean;
+  /** building: a searched root is being scanned; stale: a searched root is stale or failed. The index itself follows every catalogue commit. */
+  index_state: "current" | "building" | "stale";
+  /** A searched root does not have complete coverage: no hit is not proof of absence. */
+  partial: boolean;
+  /** False when full inner-substring matching was unavailable. In v1, one character searches whole names (including the name up to a dot) only; two characters also search name and word starts. Matching words separately requires at least two characters per word for starts and three for inner matches. Ranked search can also use short token prefixes. */
+  substring_searched: boolean;
+  roots: SearchRootCoverage[];
+}
+
+/** LW-067 client projection: root-relative display_path is present only with path disclosure. Owner-only detail is never exposed. */
+export interface ClientNodeDetail {
+  row: ClientEntryRow;
+  root_id: RootId;
+  display_path?: DisplayPath;
+}
+
 export interface NodeDetail {
   row: EntryRow;
   root_id: RootId;
@@ -2260,6 +2317,12 @@ export interface CommandMap {
   "ask.result": { request: AskTurnRef; result: AskTurnRecord };
 }
 
+/** Results for grant-scoped client principals; CommandMap remains owner-only. */
+export interface ClientCommandMap {
+  "node.inspect": { request: NodeRefRequest; result: ClientNodeDetail };
+  "search.query": { request: SearchRequest; result: ClientSearchPage };
+}
+
 export type CommandKey = keyof CommandMap;
 
 /** Where each command exists (elsewhere: capability_unavailable), its wave and its events. */
@@ -2373,6 +2436,9 @@ export interface TypedResponseOk<C extends CommandKey> extends Omit<ResponseOk, 
 }
 
 export type TypedResponse<C extends CommandKey> = TypedResponseOk<C> | ResponseError;
+
+export type TypedClientResponse<C extends keyof ClientCommandMap> =
+  (Omit<ResponseOk, "result"> & { result: ClientCommandMap[C]["result"] }) | ResponseError;
 
 export interface TypedEvent<E extends EventKey> extends Omit<EventEnvelope, "event" | "data"> {
   event: E;
