@@ -39,9 +39,10 @@ pub use writer::{
 pub struct CatalogOptions {
     /// Keep the token index `search_ranked` needs (`search_token` and its change queue
     /// `search_dirty`, F2). Off by default: nothing serves ranked search yet, and the index costs
-    /// write-path time and open-time backfill. Turning it on creates and backfills the index; a
-    /// store that already has it keeps maintaining it whatever this says. Turning it on for real
-    /// catalogues is F3/F5's job, see the F2 evidence.
+    /// write-path time and a backfill. Turning it on creates the index and queues every existing
+    /// row for the writer's background backfill (`search_ranked` is `RankedIndexBuilding` until it
+    /// is done, #520); a store that already has it keeps maintaining it whatever this says. The
+    /// service sets it only where it flips `features.federated_search`.
     pub ranked_index: bool,
 }
 
@@ -69,6 +70,9 @@ pub enum Error {
     ResourceBudget,
     /// `search_ranked` on a store without the ranked-search token index.
     RankedIndexDisabled,
+    /// `search_ranked` while the token index of a store that just opted in is still being
+    /// backfilled by the writer (#520); it answers once the backfill is done.
+    RankedIndexBuilding,
 }
 pub type Result<T> = std::result::Result<T, Error>;
 impl From<rusqlite::Error> for Error {

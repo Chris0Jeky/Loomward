@@ -12,17 +12,11 @@ The owner answered agent-hq decision `loomward-teacher-sandbox-path` with (c), "
 2026-10-10 22:46 UTC, agent-hq#356): build the broker (b), and register one AppContainer profile
 only to measure, deleting it afterwards. The measurement is done and the profile is deleted.
 
-Two records of this decision disagree, and the design follows the stricter one until the owner
-says otherwise:
-
-- The agent-hq option text says the broker "holds your Codex login".
-- Loomward `HUMAN_TODO.md` q-8 (written before the (c) answer, still saying "broker-first", option b)
-  says not to copy or reuse an existing Codex credential, and that new authentication is a separate
-  approval. q-8 also still says no profile registration is authorised; the (c) answer superseded
-  that for the one measurement. The driver should reconcile q-8 with the (c) answer.
-
-This ADR therefore designs a broker that holds **its own** credential, obtained through a separate,
-owner-approved sign-in, and never reads Codex's files.
+`HUMAN_TODO.md` q-8 now records the (c) answer and its scope: the one-off measurement is
+authorised, existing Codex credentials must never be copied or reused, and a new sign-in or paid
+fallback needs separate approval. The agent-hq option's phrase "holds your Codex login" does not
+override those limits. This ADR designs a broker that holds **its own** credential, obtained
+through a separate, owner-approved sign-in, and never reads Codex's files.
 
 ## Decision
 
@@ -99,10 +93,18 @@ The closed schema, byte, depth and item bounds, digest binding, reply identity r
   by the payload digest.
 - The broker re-validates everything the engine validated. It does not trust its caller beyond the
   schema.
+- The maximum accepted data stage is compiled into the teacher broker and covered by the runner
+  profile digest. A request above that ceiling is `invalid_request` before credential access or
+  dispatch. Neither a caller-supplied stage nor a profile field can raise the compiled ceiling.
 - **Stage 0, fixture IDs:** the request names committed fixture IDs; the broker resolves them from
   a compiled-in registry. Offline mock provider first, then the qualified provider.
 - **Stage 1, registered synthetic lab metadata:** items come from a registered lab root whose
-  provenance the engine verifies (never a self-declared `synthetic: true`).
+  provenance the engine verifies (never a self-declared `synthetic: true`). Each item also carries
+  the registered lab manifest digest and its manifest-local identity. The broker independently
+  verifies the digest against its trusted synthetic registry and binds the emitted metadata to
+  that manifest entry; copying a known digest onto arbitrary names is not provenance. Missing,
+  unknown or mismatched provenance is `invalid_request` before dispatch. The first build accepts
+  stage 0 only; stage 1 remains closed until these broker-side checks and negative tests exist.
 - **Stage 2, redacted real metadata.** Not authorised. Before any real name or path may flow, all of
   the following must hold, with evidence:
   1. Redaction is a pure, tested function in `loomward-learn`: request-local handles, size buckets,
@@ -165,9 +167,10 @@ and a job with kill-on-close, an active-process limit of 1 and no breakaway.
   the boundary. The design already uses stdio, so no listener exists to attack.
 - **`internetClient` is all-destinations** (non-provider control reached). An AppContainer adds
   nothing to C-NET; endpoint-only egress remains q-6 either way.
-- **Standard AppContainer denies user-owned files but not `%SystemRoot%`**. Wrapping the broker in
-  one would protect real files from a compromised broker, which is the main residual risk above;
-  LPAC would be needed for a strict allowlist. This needs a persistent profile, `LOCALAPPDATA` in
+- **Standard AppContainer denied the synthetic directory with no container or ALL APPLICATION
+  PACKAGES ACE; `%SystemRoot%` remained accessible.** This does not establish denial of all
+  user-owned files: access depends on their ACLs. LPAC would need separate measurement for a
+  strict allowlist. A contained broker needs a persistent profile, `LOCALAPPDATA` in
   the environment and a granted credential directory, so it is a separate owner decision, not part
   of this design.
 - **A shell starts inside a container and inherits its denials.** OS isolation limits tool effects;
@@ -183,6 +186,8 @@ Before the broker is used on anything but synthetic data:
 
 1. Contract tests (offline): closed schema, byte, depth and count bounds checked before parsing;
    digest binding; reply identity; tool-shaped and oversized replies rejected; fixture provenance.
+   Include a stage above the compiled ceiling, an unknown lab digest, and real-looking metadata
+   carrying a valid digest for a different synthetic manifest entry; all must fail before dispatch.
 2. Process tests: spawned with three handles, minimal environment, job limits; a lingering child
    attempt fails; kill-on-close observed.
 3. Egress tests: offline stage opens no socket; connected stage refuses redirects, proxy variables
@@ -222,5 +227,6 @@ Neutral: the native Codex runner profile in docs/41 section 9.2 becomes unused f
 
 - For the owner: which provider route may the broker use (API key with its billing, or a supported
   sign-in route if one exists)? This is the decision that "holds your Codex login" left open.
-- For the driver: reconcile HUMAN_TODO q-8 with the (c) answer; decide whether this ADR becomes
-  ADR-V3-23 in docs/42 and how docs/41 section 9.2 records the broker path.
+- For the driver: decide whether this ADR becomes ADR-V3-23 in docs/42 and how docs/41 section 9.2
+  records the broker path. q-8's decision record is already reconciled; provider qualification and
+  implementation of the compiled stage ceiling and broker-side provenance checks remain open.

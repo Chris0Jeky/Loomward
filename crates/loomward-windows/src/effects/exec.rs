@@ -772,21 +772,24 @@ pub fn run(store: &Mutex<Store>, op: u64, control: &Control) -> Result<Outcome, 
     };
     let stopped = match Destination::open(&plan.destination, &plan.destination_key) {
         Err(e) => {
-            // Revalidation failed before any effect: `preparing -> refused`.
+            // Revalidation failed before any effect: `preparing -> refused`. An access, sharing or
+            // space error keeps its own code; anything else means the name no longer reaches the
+            // pinned object (renamed, replaced or removed): `destination_changed` (#526).
             let code = match io_refusal(&e) {
-                Stop::Refused(code, _) => Some(code),
-                _ => None,
+                Stop::Refused(code, _) if code != Refusal::StagingNameTaken => code,
+                _ if e.kind() == io::ErrorKind::PermissionDenied => Refusal::AccessDenied,
+                _ => Refusal::DestinationChanged,
             };
             journal.log(Record::Transition {
                 to: OpState::Refused,
-                code,
+                code: Some(code),
             })
         }
         // The pinned parent must still sit under its grant's root (a swapped ancestor is refused).
         Ok(destination) if !within(&destination, plan.destination_root).unwrap_or(false) => journal
             .log(Record::Transition {
                 to: OpState::Refused,
-                code: None,
+                code: Some(Refusal::DestinationChanged),
             }),
         Ok(destination) => copy(&journal, &plan, control, &destination),
     };

@@ -789,7 +789,55 @@ fn a_destination_outside_its_grant_identity_is_refused_before_any_write() {
     let op = lab.start_with(&["f"], |plan| plan.destination_root.1 = [0xCD; 16]);
     let outcome = run(&lab.store, op, &Control::new(false)).unwrap();
     assert_eq!(outcome.state, OpState::Refused, "{outcome:?}");
+    assert_eq!(outcome.refusal, Some((Refusal::DestinationChanged, None)));
     assert!(lab.dest_names().is_empty());
+}
+
+/// #526: the destination parent replaced between approval and the run (renamed away, a new folder under
+/// its name) is refused with a cause, `destination_changed`, before any write to either folder.
+#[test]
+fn a_replaced_destination_parent_is_refused_with_destination_changed() {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f"), b"x").unwrap();
+    let op = lab.start(&["f"]);
+    let moved = lab.dest().with_file_name("dest-moved");
+    fs::rename(lab.dest(), &moved).unwrap();
+    fs::create_dir(lab.dest()).unwrap();
+    let outcome = run(&lab.store, op, &Control::new(false)).unwrap();
+    assert_eq!(outcome.state, OpState::Refused, "{outcome:?}");
+    assert_eq!(outcome.refusal, Some((Refusal::DestinationChanged, None)));
+    assert!(lab.dest_names().is_empty());
+    assert_eq!(fs::read_dir(&moved).unwrap().count(), 0);
+    // Gone altogether: the same cause.
+    let op = lab.start(&["f"]);
+    fs::remove_dir(lab.dest()).unwrap();
+    let outcome = run(&lab.store, op, &Control::new(false)).unwrap();
+    assert_eq!(outcome.refusal, Some((Refusal::DestinationChanged, None)));
+    assert!(!lab.dest().exists());
+}
+
+/// #526, the window before `committed`: an owner cancel that lands after the rename never unpublishes.
+/// The run confirms and commits; the copy is kept under either Q1 policy, never presented as cancelled.
+#[test]
+fn a_cancel_after_the_rename_commits_and_never_removes_the_copy() {
+    for removal in [false, true] {
+        let Some(lab) = Lab::new() else { return };
+        fs::create_dir(lab.src().join("top")).unwrap();
+        fs::write(lab.src().join("top/f.bin"), b"payload").unwrap();
+        let op = lab.start(&["top"]);
+        let control = Control::new(removal).with_hook(|p, c| {
+            if p == Point::AfterPublish {
+                c.cancel();
+            }
+            Flow::Continue
+        });
+        let outcome = run(&lab.store, op, &control).unwrap();
+        assert_eq!(outcome.state, OpState::Committed, "{removal} {outcome:?}");
+        // An abandon after it is a no-op on a committed run.
+        let again = cancel(&lab.store, op, &lab.plan(op), &Control::new(removal)).unwrap();
+        assert_eq!(again.state, OpState::Committed, "{removal} {again:?}");
+        assert_eq!(fs::read(lab.dest().join("top/f.bin")).unwrap(), b"payload");
+    }
 }
 
 /// (2) A named stream added to a staged file after verification (stream holds are released for the

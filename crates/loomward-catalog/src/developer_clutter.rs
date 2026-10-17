@@ -9,6 +9,9 @@ pub struct DeveloperClutterCandidate {
     pub anchor: NodeKey,
     pub anchor_name: String,
     pub provider: &'static str,
+    /// What the conventional name is: `build_output`, `dependency_install`, `environment`,
+    /// `bytecode_cache` or `build_cache`. A reading of the name, not of the contents.
+    pub kind: &'static str,
     pub logical_bytes: Option<u64>,
     pub allocated_bytes: Option<u64>,
     pub coverage: String,
@@ -81,12 +84,21 @@ impl Reader {
                         "Gradle conventional build or cache directory beside a recorded build manifest."),
                     _ => return Err(Error::Invalid("developer clutter provider")),
                 };
+                let kind = match row.name.as_str() {
+                    "target" | "bin" | "obj" | "build" => "build_output",
+                    "node_modules" => "dependency_install",
+                    ".venv" | "venv" => "environment",
+                    "__pycache__" => "bytecode_cache",
+                    ".gradle" => "build_cache",
+                    _ => return Err(Error::Invalid("developer clutter output name")),
+                };
                 report.candidates.push(DeveloperClutterCandidate {
                     directory: row.key,
                     directory_name: row.name,
                     anchor: NodeKey::File(anchor),
                     anchor_name,
                     provider,
+                    kind,
                     logical_bytes: known.then_some(row.totals.logical),
                     allocated_bytes: (known && row.totals.allocation_unknown == 0)
                         .then_some(row.totals.allocated),

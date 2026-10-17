@@ -60,7 +60,10 @@ struct Peer(Weak<Inner>);
 
 impl Peer {
     fn service(&self) -> Option<Service> {
-        self.0.upgrade().map(|inner| Service { inner, peer: true })
+        self.0.upgrade().map(|inner| Service {
+            inner: crate::OwnedInner(Some(inner)),
+            peer: true,
+        })
     }
 }
 

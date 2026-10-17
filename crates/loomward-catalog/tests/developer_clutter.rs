@@ -104,6 +104,16 @@ fn only_manifest_and_adjacent_output_pairs_qualify_and_sizes_rank() {
         assert_eq!(row.anchor, NodeKey::File(anchor));
         assert_eq!(row.anchor_name, *manifest);
         assert_eq!(row.provider, *provider);
+        assert_eq!(
+            row.kind,
+            match *output {
+                "node_modules" => "dependency_install",
+                ".venv" | "venv" => "environment",
+                "__pycache__" => "bytecode_cache",
+                ".gradle" => "build_cache",
+                _ => "build_output",
+            }
+        );
         assert_eq!(row.regeneration_cost, "unknown");
         assert!(!row.regeneration_hint.is_empty());
         assert!(row.reason.contains("conventional"));
