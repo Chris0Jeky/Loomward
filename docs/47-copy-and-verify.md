@@ -510,7 +510,9 @@ journal `staging_left` and report the staging folder's name; identity-bound remo
 Creation times are journaled (`planned`) before they are set, and recovery attaches only by journaled
 file ID with the original or planned creation time. Measured in C5: a held named-stream handle blocks the
 ancestor rename (H2 negative for streams), so stream holds are released for publish and the streams
-re-hashed after it. No resume yet: a stopped run exits by Abandon. Evidence:
+re-hashed after it. Revocation follows section 5 (#526): each plan names its grants, a revoke fences
+the journal, and every effect step reads the fence under the run's admission lock; H7 measured positive
+on NTFS. No resume yet: a stopped run exits by Abandon. Evidence:
 `evidence/v3/copy-executor-lab.md`.
 
 **Gate evidence (what C8 must show, beside doc 45's bar and HUMAN_TODO q-39).**
