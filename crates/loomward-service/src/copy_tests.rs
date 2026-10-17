@@ -99,6 +99,9 @@ mod lab_copy {
         let lab = lab()?;
         let job = start(&lab.svc, &lab.root, "full");
         assert_eq!(settle(&lab.svc, &job)["state"], "completed");
+        // Freshness quiescence before any catalogue read: the per-root watcher may still be catching up
+        // after the scan, and a read in that window fails with PartialCoverage under parallel load.
+        f3_wait_live(&lab.svc);
         let slice = lab_slice(&lab.svc, &lab.root);
         let a = child_named(&slice, "a").unwrap();
         let b = child_named(&slice, "b").unwrap();
@@ -432,6 +435,15 @@ mod lab_copy {
         }
     }
 
+    /// Releases a copy hook that waits for the fence once its test has already failed: the guard
+    /// drops on a panic, so a failing test never leaves the worker waiting.
+    struct GiveUp(Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for GiveUp {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
     fn lab_grant(svc: &Service) -> i64 {
         svc.inner
             .db()
@@ -481,15 +493,19 @@ mod lab_copy {
         let (reached, wait) = std::sync::mpsc::channel::<()>();
         let (after, was_fenced) = std::sync::mpsc::channel::<bool>();
         let fired = std::sync::atomic::AtomicBool::new(false);
+        // As in the identity test (#571): the hook waits for the fence itself, with no deadline sized for
+        // an idle host. The test's own bounded receive below ends the wait, and a failing test drops
+        // `_release`, which lets the hook go unfenced.
+        let give_up = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let _release = GiveUp(give_up.clone());
         *svc.inner.copies.hook.lock().unwrap() = Some(Arc::new(move |p, c| {
             use crate::copy::{Flow, Point};
             if matches!(p, Point::Identities(_))
                 && !fired.swap(true, std::sync::atomic::Ordering::SeqCst)
             {
                 reached.send(()).unwrap();
-                let until = Instant::now() + Duration::from_secs(10);
-                while !c.fenced() && Instant::now() < until {
-                    std::thread::sleep(Duration::from_millis(5));
+                while !c.fenced() && !give_up.load(std::sync::atomic::Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(1));
                 }
                 after.send(c.fenced()).unwrap();
             }
@@ -554,12 +570,6 @@ mod lab_copy {
             // #571: the hook waits for the fence itself, with no deadline sized for an idle host; the
             // fence lands whenever `identity_changed` gets there, however loaded the host is. Only a
             // test that is already failing (the guard drops on a panic) lets the hook go unfenced.
-            struct GiveUp(Arc<std::sync::atomic::AtomicBool>);
-            impl Drop for GiveUp {
-                fn drop(&mut self) {
-                    self.0.store(true, std::sync::atomic::Ordering::SeqCst);
-                }
-            }
             let give_up = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let _release = GiveUp(give_up.clone());
             *svc.inner.copies.hook.lock().unwrap() = Some(Arc::new(move |p, c| {
