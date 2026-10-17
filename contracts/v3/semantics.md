@@ -768,7 +768,9 @@ Alerts are advice, never an action, and never an approval.
   a question. `ask.status` never contacts it.
 - **Grant.** `ask.grant` replaces the standing `ask:local` client grant (LW-067) over active granted roots and the
   optional fields `path`, `size`, `modified`, `attributes`; `ask.revoke` ends it. The grant is read on every tool
-  call, so a revocation holds from the next call and the next turn. For the local class there is **no per-round
+  call, so a revocation holds from the next call and the next turn. It does not cancel a question already
+  running: that turn finishes with what it already looked up, and its later rounds re-send that conversation
+  (rows read before the revocation included) to the same loopback model; it gets nothing new. For the local class there is **no per-round
   preview**: the grant is the control (docs/46 section 11 Q3 recommendation; pending the owner's decision).
 - **Turns.** `ask.turn` returns at once with `state: running` (a turn may take up to 180 s, longer than any call
   deadline) and `ask.result` reads it. One turn runs at a time (`busy`). It is refused before anything is sent when

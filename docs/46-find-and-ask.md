@@ -468,8 +468,10 @@ holds a provider credential or links an HTTP client", and Ask needs no exception
   loopback), checked in the broker on every call, and the owner names the port. `cloud` uses a compiled-in
   HTTPS host list plus one owner-entered custom HTTPS host, with no redirects and proxy variables ignored,
   as in the broker ADR.
-- **Provider profile** in `state.db`, created in a native dialog on the desktop only (the HTTP adapter
-  refuses, as for `roots.request_grant`). It holds dialect, base URL, model ID, detected capabilities, probe
+- **Provider profile** in `state.db`, created on the desktop only: `ask.configure` exists on the Tauri adapter
+  alone (the HTTP adapter refuses, as for `roots.request_grant`). As built in LW-118 the form is the webview's,
+  sent over IPC, not a separate native dialog; the service's loopback and remote-model checks bound what it can
+  store. It holds dialect, base URL, model ID, detected capabilities, probe
   result and class. Its digest is bound into every conversation.
 - **Per model round:** the engine spawns a **fresh broker process** under the job settings from the broker
   ADR and writes one request (messages, tool schemas, model, limits; at most 256 KiB). The broker validates,

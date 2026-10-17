@@ -138,6 +138,7 @@
     </ul>
     <p class="muted small">Also disclosed: {status?.grant?.fields.length ? status.grant.fields.map((f) => FIELD_WORDS[f].toLowerCase()).join(', ') : 'names and kinds only'}.</p>
     <button class="btn" type="button" onclick={() => void owner(() => session.client!.call('ask.revoke', {}), 'Revoked. The next lookup and the next question see nothing.')}>Revoke Ask's access</button>
+    <p class="muted small">A question already running is not stopped: it finishes with what it already looked up, sending those rows to the same local model again, and gets nothing new.</p>
   {:else}
     <div class="empty-grant">
       <p>Ask sees nothing until you choose folders for it. It then reads names{pickFields.length ? ' and the details you tick' : ''} inside those folders only, never file contents, and only when you ask a question. Revoking stops it from the next lookup.</p>
