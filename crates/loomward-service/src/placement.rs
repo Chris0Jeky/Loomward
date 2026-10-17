@@ -505,7 +505,7 @@ impl<'a> Input<'a> {
                 DatasetClass::Personal => observe_personal_grants.then_some("owner_granted"),
             };
             if let Some(origin) = observed_origin.filter(|_| space.is_null()) {
-                let root: Option<String> = self.conn.query_row("SELECT g.display_path FROM main.root r JOIN st.root_grant g ON g.id=r.grant_id WHERE r.volume_id=?1 AND g.state='active' AND g.origin=?2 LIMIT 1", params![v.id, origin], |r| r.get(0)).optional().map_err(sql)?;
+                let root: Option<String> = self.conn.query_row("SELECT g.display_path FROM main.root r JOIN st.root_grant g ON g.id=r.grant_id WHERE r.volume_id=?1 AND g.state='active' AND g.origin=?2 ORDER BY g.id LIMIT 1", params![v.id, origin], |r| r.get(0)).optional().map_err(sql)?;
                 if let Some(root) = root {
                     let key = v.key.clone();
                     let flight_key = format!("{key}/{root}");
