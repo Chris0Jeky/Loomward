@@ -1,7 +1,7 @@
 {
   "grants": [
     {
-      "grant_id": "gr_0001",
+      "grant_id": "gr_1",
       "kind": "metadata_root",
       "root_id": "rt_synth1",
       "granted_at": "2026-10-09T11:58:30Z",
@@ -10,7 +10,7 @@
       "forgotten_at": null
     },
     {
-      "grant_id": "gr_0002",
+      "grant_id": "gr_2",
       "kind": "teacher_disclosure",
       "recipient": "codex_cli_gpt_6_1_sol",
       "dataset_class": "synthetic",
