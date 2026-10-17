@@ -467,3 +467,165 @@ fn busy_migration_scrub_preserves_rollback_copy_and_reports_failure() {
     assert_eq!(std::fs::read(&copy).unwrap(), before);
     assert_eq!(err(response).code, ErrorCode::InternalError);
 }
+
+#[test]
+fn migration_copy_keeps_regranted_and_nested_paths() {
+    for kept in [
+        PATH_A.to_owned(),
+        format!("{PATH_A}\\Nested"),
+        format!("{PATH_A}Suffix"),
+    ] {
+        let dir = temp_root();
+        let svc = open(dir.path(), DatasetClass::Synthetic);
+        let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+        svc.inner.revoke(grant).unwrap();
+        let (_, keep) = named(&svc, if kept == PATH_A { 1 } else { 2 }, "KeptRoot", &kept);
+        let copy = dir.path().join("state.before-v6.db");
+        svc.inner
+            .db()
+            .execute("VACUUM st INTO ?1", [copy.to_string_lossy().as_ref()])
+            .unwrap();
+        ok("roots.forget", forget(&svc, root, None));
+        assert!(
+            copy.exists(),
+            "the active path {kept:?} caused rollback-copy deletion"
+        );
+        let db = rusqlite::Connection::open(copy).unwrap();
+        let rows: (String, String) = db.query_row("SELECT (SELECT display_path FROM root_grant WHERE id=?1),(SELECT display_path FROM root_grant WHERE id=?2)", [grant, keep], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+        assert_eq!(rows, ("forgotten".into(), kept));
+    }
+}
+
+#[test]
+fn failed_backup_removal_reports_and_restart_retries_every_owned_copy() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    svc.inner.revoke(grant).unwrap();
+    let copy = dir.path().join("state.start-blocked.db");
+    std::fs::create_dir(&copy).unwrap();
+    let response = forget(&svc, root, None);
+    assert_eq!(
+        err(response).detail.unwrap()["reason"],
+        "forget_backup_scrub_failed"
+    );
+    std::fs::remove_dir(&copy).unwrap();
+    for name in [
+        "state.start-interrupted.db",
+        "catalog.corrupt-1.db",
+        "catalog.corrupt-1.db-wal",
+        "catalog.before-v1-2.db",
+    ] {
+        std::fs::write(dir.path().join(name), PATH_A).unwrap();
+    }
+    drop(svc);
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    assert!(holders(dir.path(), PATH_A).is_empty());
+    drop(svc);
+}
+
+#[test]
+fn preserved_catalogue_copies_are_swept_with_their_sidecars() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    svc.inner.revoke(grant).unwrap();
+    for name in [
+        "catalog.corrupt-1.db",
+        "catalog.corrupt-1.db-wal",
+        "catalog.corrupt-1.db-shm",
+        "catalog.before-v1-2.db",
+    ] {
+        std::fs::write(dir.path().join(name), PATH_A).unwrap();
+    }
+    let unrelated = dir.path().join("catalog.corrupt-notes.db");
+    std::fs::write(&unrelated, PATH_B).unwrap();
+    ok("roots.forget", forget(&svc, root, None));
+    assert!(holders(dir.path(), PATH_A).is_empty());
+    assert_eq!(std::fs::read_to_string(unrelated).unwrap(), PATH_B);
+}
+
+#[test]
+fn migration_hard_link_never_changes_the_external_database() {
+    let dir = temp_root();
+    let external = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    svc.inner.revoke(grant).unwrap();
+    let other = external.path().join("external.db");
+    svc.inner
+        .db()
+        .execute("VACUUM st INTO ?1", [other.to_string_lossy().as_ref()])
+        .unwrap();
+    std::fs::hard_link(&other, dir.path().join("state.before-v6.db")).unwrap();
+    let before = std::fs::read(&other).unwrap();
+    let _response = forget(&svc, root, None);
+    assert!(
+        std::fs::read(&other).unwrap() == before,
+        "scrub followed a backup alias outside its owned directory"
+    );
+}
+
+#[test]
+fn pending_catalogue_scrub_is_visible_to_the_forget_caller() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    svc.inner.revoke(grant).unwrap();
+    let reader = rusqlite::Connection::open(dir.path().join("state.db")).unwrap();
+    reader
+        .execute_batch("BEGIN; SELECT count(*) FROM root_grant")
+        .unwrap();
+    let response = forget(&svc, root, None);
+    let error = err(response);
+    assert_eq!(error.detail.unwrap()["reason"], "forget_scrub_pending");
+    assert!(error.message.contains("forgotten"));
+    reader.execute_batch("COMMIT").unwrap();
+}
+
+#[test]
+fn restart_repeats_the_backup_sweep_after_live_forget_committed() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (_root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    let copy = dir.path().join("state.before-v6.db");
+    svc.inner
+        .db()
+        .execute("VACUUM st INTO ?1", [copy.to_string_lossy().as_ref()])
+        .unwrap();
+    svc.inner.revoke(grant).unwrap();
+    svc.inner
+        .catalog
+        .writer()
+        .call(WriteCommand::ForgetGrant {
+            grant_id: grant,
+            forgotten_at_ns: 2,
+            expected_state_rev: None,
+        })
+        .unwrap();
+    assert!(holders(dir.path(), PATH_A).contains(&"state.before-v6.db".into()));
+    drop(svc);
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    assert!(!holders(dir.path(), PATH_A).contains(&"state.before-v6.db".into()));
+    assert!(copy.exists());
+    drop(svc);
+}
+
+#[test]
+fn a_copy_that_silently_refuses_the_grant_scrub_is_reported() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    svc.inner.revoke(grant).unwrap();
+    let copy = dir.path().join("state.before-v6.db");
+    svc.inner
+        .db()
+        .execute("VACUUM st INTO ?1", [copy.to_string_lossy().as_ref()])
+        .unwrap();
+    rusqlite::Connection::open(&copy).unwrap().execute_batch("CREATE TRIGGER refuse_scrub BEFORE UPDATE ON root_grant BEGIN SELECT RAISE(IGNORE); END;").unwrap();
+    assert_eq!(
+        err(forget(&svc, root, None)).detail.unwrap()["reason"],
+        "forget_backup_scrub_failed"
+    );
+    assert!(copy.exists());
+}

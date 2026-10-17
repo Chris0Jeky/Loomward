@@ -227,6 +227,15 @@ impl Service {
         let engine = Engine::open(EngineConfig::new(state_dir.clone(), config.dataset))
             .map_err(|e| format!("engine refused to open: {e}"))?;
         let conn = db::open(&state_dir).map_err(|e| format!("state store: {e}"))?;
+        let forgotten: bool = conn
+            .query_row("SELECT EXISTS(SELECT 1 FROM st.root_forgotten)", [], |r| {
+                r.get(0)
+            })
+            .map_err(|e| format!("forget recovery: {e}"))?;
+        if forgotten {
+            handlers::forget_backups(&state_dir, None)
+                .map_err(|_| "forget recovery: backup cleanup is still pending".to_string())?;
+        }
         engine.install_learning(
             loomward_engine::learning::Store::open(&state_dir)
                 .map_err(|e| format!("learning store: {e}"))?,

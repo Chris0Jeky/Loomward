@@ -615,21 +615,26 @@ fn serve(
     // The state rewrite and WAL cut after a forget, when a lock outlasted the first try: retried between commands.
     // A forget that committed its state half but whose rewrite and log cut never finished (a crash,
     // a lock that outlasted open) leaves the marker in state.db: finish it here.
-    let mut cut_pending = scrub_pending(&conn);
+    let mut cut_pending = scrub_pending(&conn).unwrap_or(true);
     let mut vacuum_pending = cut_pending;
+    let mut retry_delay = Duration::from_millis(500);
+    let mut next_retry = Instant::now() + retry_delay;
     loop {
         let first = loop {
+            if cut_pending && Instant::now() >= next_retry {
+                cut_pending = !wal_cut(&conn, Duration::ZERO, &mut vacuum_pending);
+                retry_delay = (retry_delay * 2).min(Duration::from_secs(30));
+                next_retry = Instant::now() + retry_delay;
+            }
             if let Some(p) = pending.take() {
                 break Some(p);
             }
             if !cut_pending {
                 break rx.recv().ok();
             }
-            match rx.recv_timeout(Duration::from_millis(500)) {
+            match rx.recv_timeout(next_retry.saturating_duration_since(Instant::now())) {
                 Ok(p) => break Some(p),
-                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                    cut_pending = !wal_cut(&conn, Duration::ZERO, &mut vacuum_pending)
-                }
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
                 Err(_) => break None,
             }
         };
@@ -907,6 +912,8 @@ fn serve(
         if forget && results.iter().all(Result::is_ok) {
             vacuum_pending = true;
             cut_pending = !wal_cut(&conn, Duration::from_millis(750), &mut vacuum_pending);
+            retry_delay = Duration::from_millis(500);
+            next_retry = Instant::now() + retry_delay;
         }
         for (p, result) in batch.into_iter().zip(results) {
             let Pending { reply, _permit, .. } = p;
@@ -922,13 +929,12 @@ fn serve(
 }
 /// Whether a forget's rewrite of the stores is still owed (the `scrub_pending` marker, written in
 /// the forget's own state.db transaction and cleared only after both rewrites and both log cuts).
-pub(crate) fn scrub_pending(conn: &Connection) -> bool {
-    conn.query_row(
+pub(crate) fn scrub_pending(conn: &Connection) -> Result<bool> {
+    Ok(conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM st.meta WHERE key='scrub_pending')",
         [],
         |r| r.get(0),
-    )
-    .unwrap_or(false)
+    )?)
 }
 /// Page images from before a purge sit in the WALs until they are folded in and cut, and stale
 /// cells freed without secure_delete (a staged listing deleted when it was published, a cell an
@@ -942,11 +948,22 @@ pub(crate) fn wal_cut(conn: &Connection, wait: Duration, vacuum: &mut bool) -> b
     };
     let _ = conn.busy_timeout(wait);
     if *vacuum {
-        crate::crashpoint::hit("VACUUM st");
-        *vacuum = conn.execute_batch("VACUUM st").is_err() || {
-            crate::crashpoint::hit("VACUUM main");
-            conn.execute_batch("VACUUM main").is_err()
+        let rewrite = || -> Result<()> {
+            let temp: i64 = conn.query_row("PRAGMA temp_store", [], |r| r.get(0))?;
+            conn.pragma_update(None, "temp_store", "FILE")?;
+            crate::crashpoint::hit("VACUUM st");
+            let result = conn.execute_batch("VACUUM st").and_then(|()| {
+                crate::crashpoint::hit("VACUUM main");
+                conn.execute_batch("VACUUM main")
+            });
+            // Changing temp_store drops temporary objects; the listing tables are recreated lazily.
+            let restore = conn.pragma_update(None, "temp_store", temp);
+            let views = crate::db::grant_view(conn);
+            result?;
+            restore?;
+            views
         };
+        *vacuum = rewrite().is_err();
         if *vacuum {
             let _ = conn.busy_timeout(Duration::from_millis(u64::from(timeout)));
             return false;
@@ -964,7 +981,9 @@ pub(crate) fn wal_cut(conn: &Connection, wait: Duration, vacuum: &mut bool) -> b
     let done = state && catalog;
     if done && !*vacuum {
         crate::crashpoint::hit("clear scrub marker");
-        let _ = conn.execute("DELETE FROM st.meta WHERE key='scrub_pending'", []);
+        return conn
+            .execute("DELETE FROM st.meta WHERE key='scrub_pending'", [])
+            .is_ok();
     }
     done
 }
@@ -2931,5 +2950,91 @@ mod tests {
             writer.send(WriteCommand::Barrier),
             Err(Error::Closed)
         ));
+    }
+    #[test]
+    fn failed_scrub_marker_clear_is_not_reported_as_complete() {
+        let temp = tempfile::tempdir().unwrap();
+        let conn = crate::db::open_pair(temp.path(), "synthetic").unwrap();
+        conn.execute_batch("INSERT INTO st.meta VALUES('scrub_pending','1'); CREATE TRIGGER st.refuse_clear BEFORE DELETE ON meta WHEN old.key='scrub_pending' BEGIN SELECT RAISE(ABORT,'synthetic marker failure'); END;").unwrap();
+        assert!(!wal_cut(&conn, Duration::ZERO, &mut false));
+        assert!(scrub_pending(&conn).unwrap());
+    }
+    #[test]
+    fn persistent_scrub_failure_backs_off_and_keeps_the_durable_marker() {
+        use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+        let temp = tempfile::tempdir().unwrap();
+        let conn = crate::db::open_pair(temp.path(), "synthetic").unwrap();
+        conn.execute("INSERT INTO st.meta VALUES('scrub_pending','1')", [])
+            .unwrap();
+        let attempts = Arc::new(Mutex::new(Vec::new()));
+        let observed = attempts.clone();
+        conn.authorizer(Some(move |context: AuthContext<'_>| {
+            if matches!(context.action, AuthAction::Attach { .. }) {
+                observed.lock().unwrap().push(Instant::now());
+                Authorization::Deny
+            } else {
+                Authorization::Allow
+            }
+        }))
+        .unwrap();
+        let writer = Writer::start(conn).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while attempts.lock().unwrap().len() < 3 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        drop(writer);
+        let times = attempts.lock().unwrap();
+        assert!(times.len() >= 3, "failure injection did not run");
+        assert!(times[1].duration_since(times[0]) >= Duration::from_secs(1));
+        assert!(times[2].duration_since(times[1]) >= Duration::from_secs(2));
+        let state = Connection::open(temp.path().join("state.db")).unwrap();
+        assert_eq!(
+            state
+                .query_row(
+                    "SELECT count(*) FROM meta WHERE key='scrub_pending'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn rewrite_uses_file_temp_store_and_restores_writer_views_even_on_failure() {
+        use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+        for fail in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let conn = crate::db::open_pair(temp.path(), "synthetic").unwrap();
+            let mode = Arc::new(Mutex::new(String::new()));
+            let observed = mode.clone();
+            conn.authorizer(Some(move |context: AuthContext<'_>| {
+                match context.action {
+                    AuthAction::Pragma {
+                        pragma_name: "temp_store",
+                        pragma_value: Some(value),
+                    } => *observed.lock().unwrap() = value.into(),
+                    AuthAction::Attach { .. } => {
+                        assert_eq!(*observed.lock().unwrap(), "FILE");
+                        if fail {
+                            return Authorization::Deny;
+                        }
+                    }
+                    _ => {}
+                }
+                Authorization::Allow
+            }))
+            .unwrap();
+            assert_eq!(wal_cut(&conn, Duration::ZERO, &mut true), !fail);
+            assert_eq!(
+                conn.query_row("PRAGMA temp_store", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                2
+            );
+            conn.execute_batch(
+                "SELECT count(*) FROM temp.root_grant; SELECT count(*) FROM temp.visible_dir",
+            )
+            .unwrap();
+        }
     }
 }

@@ -384,7 +384,7 @@ pub(crate) fn open_pair_with(dir: &Path, dataset: &str, ranked: bool) -> Result<
     }
     tx.commit()?;
     // Also when the catalogue half finished before the crash and only the rewrite is owed.
-    if !forgotten.is_empty() || crate::writer::scrub_pending(&conn) {
+    if !forgotten.is_empty() || crate::writer::scrub_pending(&conn)? {
         crate::writer::wal_cut(&conn, Duration::from_millis(750), &mut true);
     }
     Ok(conn)
