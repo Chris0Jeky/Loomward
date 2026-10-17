@@ -670,6 +670,26 @@ def live_backups(page: Page, token: str) -> None:
     print('PASS live Backups: list and forget over HTTP, import refused, the view shows no evidence rather than demo data')
 
 
+def live_alerts(page: Page, token: str) -> None:
+    """LW-121 alerts over the real HTTP adapter: defaults first, nothing claimed about an unobserved volume or a root with no history."""
+    listed = live_call(page, token, 'alerts.list', {})
+    check(listed['ok'] and listed['result']['settings'] == listed['result']['defaults'] and listed['result']['settings']['notifications_enabled'] is False,
+          f'alerts.list answers the documented defaults with notifications off: {listed}')
+    check(listed['result']['active_count'] == 0 and all(i['status'] != 'alert' for i in listed['result']['items']), 'no alert is raised from nothing')
+    check(all(i['measured_bytes'] is None for i in listed['result']['items'] if i['status'] in ('unknown', 'insufficient_history')), 'unknown and missing history carry no measurement, never zero')
+    settings = dict(listed['result']['settings'], low_space_free_percent=20)
+    saved = live_call(page, token, 'alerts.configure', settings)
+    check(saved['ok'] and saved['result']['settings']['low_space_free_percent'] == 20 and saved['meta']['state_rev'] is not None, f'alerts.configure stores the thresholds: {saved}')
+    bad = live_call(page, token, 'alerts.configure', dict(settings, low_space_free_percent=0))
+    check(not bad['ok'] and bad['error']['code'] == 'invalid_request', f'an out-of-range threshold is refused: {bad}')
+    page.evaluate("location.hash = '#/alerts'")
+    expect(page.get_by_role('heading', name='Alerts', level=1)).to_be_visible()
+    expect(page.get_by_role('heading', name='Thresholds', level=2)).to_be_visible()
+    expect(page.get_by_label('Low space: percent of capacity')).to_have_value('20')
+    check(page.locator('main p.bad.live').inner_text() == '', 'alerts: the view loaded from the engine with no error')
+    print('PASS live Alerts: defaults, unknowns suppressed, thresholds stored and refused out of range')
+
+
 def live_diagnostics(page: Page, token: str) -> None:
     """The diagnostic bundle over the real HTTP adapter: previewed and checked, never saved (no Rust-owned dialog)."""
     previewed = live_call(page, token, 'diagnostics.preview', {})
@@ -738,6 +758,7 @@ def run_live_serve(browser_path: str | None) -> None:
             run_live_collections(page, token, Path(state.name), check)
             run_inventory(page, base, check, live=True)
             live_backups(page, token)
+            live_alerts(page, token)
             live_diagnostics(page, token)
             live_scan_refusals(browser, exe)
             live_personal_scan(browser, exe)
