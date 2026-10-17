@@ -630,7 +630,7 @@
     "app_vitest": 483,
     "python_tests": 279,
     "wired_commands": 64,
-    "copy_and_verify": "C6 crash matrix (#532: 482 kills, 0 source changes, 0 false commits) and journal-append faults (#566); journal head anchor (#539); revocation fence and admission lock (#544); identity-change fence and bounded cancel (#564); copy service hardening (#573); still lab-only, personal sessions copy_effect_gated, staging removal off",
+    "copy_and_verify": "C6 crash matrix (#532 landed with 476 kills; full re-run 482 kills, 0 source changes, 0 false commits) and journal-append faults (#566); journal head anchor (#539); revocation fence and admission lock (#544); identity-change fence and bounded cancel (#564); copy service hardening (#573); still lab-only, personal sessions copy_effect_gated, staging removal off",
     "find_and_ask": "F3 watchers and USN catch-up (#531, #548); F3a per-client grants (#541, #555); Ask provider LW-117 local loopback broker (#556, #572); explicit scans/duplicates pre-empt automatic refreshes (#565, #577); search v1 follow-ups (#575); federated_search and ranked index off",
     "forget": "exact-grant retention, honest pending cleanup, file-backed VACUUM temp (#562); sidecars and catalogue scrub-pending health (#576)",
     "soak": "72-hour run started 2026-10-17 03:39 local; 14.2 h, 0 errors at writing; legacy receipt (started before #534 wall-clock continuity)",

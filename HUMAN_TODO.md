@@ -400,10 +400,12 @@ and possibly a full redesign, come later. "for now I wanna keep the momentum goi
 
 An empty GitHub organisation named `Loomward` (created 2026-08-06) exists. Whose it is was not established.
 
-### q-47 — Design questions waiting for their lanes — copy-and-verify Q1-Q3 DRAFTED 2026-10-17
+### q-47 — Design questions waiting for their lanes — copy-and-verify Q1-Q3 and Ask Q3-Q4 DRAFTED 2026-10-17
 
 Copy-and-verify lanes C1 to C5 and C7 landed on 2026-10-17 (lab-only), so Q1 to Q3 were drafted for the owner
-inbox in agent-hq#461; they reach the cockpit when that PR merges. Answer there or in chat. The Find & Ask and Store items below are still not asked.
+inbox in agent-hq#461, and Ask Q3 (local-model preview) and Q4 (conversation retention) were added there the same day;
+they reach the cockpit when that PR merges. Answer there or in chat. Still not asked: the elevated helper's launch model
+(docs/46 Q1), Everything results outside the grants (docs/46 Q2) and the Store item below.
 - [ ] **loomward-copy-staging-removal** (Q1): may cancel and abandon delete Loomward's own unpublished staging files,
   matched by recorded identity inside its own staging folder? Recommended: allow. Until answered, cancel and abandon
   leave the staging folder in place and report it (`LOOMWARD_COPY_STAGING_REMOVAL = false`, #522).
