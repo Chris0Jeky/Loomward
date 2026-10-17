@@ -581,6 +581,17 @@ impl Inner {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
             job = start();
+            #[cfg(test)]
+            if self
+                .hooks
+                .fail_explicit_retry
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                job = Err(loomward_engine::EngineError::Internal {
+                    message: "synthetic retry failure".into(),
+                    detail: None,
+                });
+            }
         }
         drop(claim);
         Ok(out(encode(&JobResult { job: job? })?, None))
