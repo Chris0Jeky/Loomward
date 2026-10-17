@@ -704,3 +704,41 @@ fn a_grant_revoked_before_secure_delete_leaves_no_stale_path_after_the_forget() 
         "a stale image of the path survived the forget"
     );
 }
+
+#[test]
+fn scrub_retries_progress_between_continuous_commands_and_keep_reader_snapshot() {
+    let f = fixture();
+    fold_wal(&f);
+    revoke(&f, f.grant_a);
+    let reader = Connection::open(f.temp.path().join("catalog.db")).unwrap();
+    reader
+        .execute_batch("BEGIN; SELECT count(*) FROM file")
+        .unwrap();
+    let before: i64 = reader
+        .query_row("SELECT count(*) FROM file", [], |r| r.get(0))
+        .unwrap();
+    forget(&f, f.grant_a, None).unwrap();
+    assert_eq!(
+        reader
+            .query_row("SELECT count(*) FROM file", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        before
+    );
+    assert_eq!(
+        catalog_count(&f, "SELECT count(*) FROM root WHERE grant_id=1"),
+        0
+    );
+    assert_eq!(
+        state_count(&f, "SELECT count(*) FROM meta WHERE key='scrub_pending'"),
+        1
+    );
+    reader.execute_batch("COMMIT").unwrap();
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while std::time::Instant::now() < until {
+        f.catalog.writer().call(WriteCommand::Barrier).unwrap();
+        if state_count(&f, "SELECT count(*) FROM meta WHERE key='scrub_pending'") == 0 {
+            return;
+        }
+    }
+    panic!("continuous commands starved the pending scrub");
+}

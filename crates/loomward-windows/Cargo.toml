@@ -25,8 +25,13 @@ sha2.workspace = true
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Storage_CloudFilters", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_SystemServices", "Win32_System_WindowsProgramming", "Win32_Security", "Win32_System_Threading", "Wdk_Storage_FileSystem", "Wdk_Foundation", "Win32_System_Pipes"] }
 
 [dev-dependencies]
+loomward-operations = { path = "../loomward-operations", features = ["fault-injection"] }
 proptest.workspace = true
 tempfile.workspace = true
+
+# H7 measurement only: a child process keeps a writable mapped view of a staged file.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Memory"] }
 
 [[bin]]
 name = "loomward-fixtures"

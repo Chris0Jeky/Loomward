@@ -728,6 +728,13 @@ impl ScanSink for CatalogScanSink {
                     "targeted_catalogue_published",
                 );
             }
+            #[cfg(test)]
+            if complete && matches!(scope, RunScope::FullRoot) {
+                inner.hooks.gate(
+                    loomward_protocol::Command::ScanStart,
+                    "full_catalogue_published",
+                );
+            }
             inner.freshness_finish(grant, scope, complete);
         }
         self.invalidated(root, true);

@@ -33,6 +33,35 @@ pub(crate) struct Tracker {
     pump: Mutex<Option<std::thread::JoinHandle<()>>>,
     #[cfg(windows)]
     setup: Mutex<()>,
+    /// #561: roots an explicit scan request is claiming. Held across every automatic start.
+    #[cfg(windows)]
+    explicit: Mutex<BTreeMap<i64, usize>>,
+}
+
+/// While held, no automatic refresh starts on `row`; `auto` names the one already started.
+pub(crate) struct Explicit<'a> {
+    #[cfg(windows)]
+    tracker: &'a Tracker,
+    #[cfg(not(windows))]
+    tracker: std::marker::PhantomData<&'a Tracker>,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    row: i64,
+    pub(crate) auto: Option<loomward_protocol::JobId>,
+}
+
+impl Drop for Explicit<'_> {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        {
+            let mut held = self.tracker.explicit.lock().unwrap();
+            if let Some(n) = held.get_mut(&self.row) {
+                *n -= 1;
+                if *n == 0 {
+                    held.remove(&self.row);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -73,6 +102,10 @@ impl Tracker {
         root.job = None;
         root.full = false;
         root.changed = Instant::now() - Duration::from_secs(1);
+    }
+    #[cfg(all(test, windows))]
+    pub(crate) fn unclaimed(&self, row: i64) -> bool {
+        !self.explicit.lock().unwrap().contains_key(&row)
     }
     #[cfg(all(test, windows))]
     pub(crate) fn exhaust_budget(&self, row: i64) {
@@ -134,6 +167,31 @@ impl Tracker {
         }
         #[cfg(not(windows))]
         let _ = row;
+    }
+    /// #561: an explicit scan of `row` is never refused because of an automatic refresh.
+    pub(crate) fn explicit(&self, row: i64) -> Explicit<'_> {
+        #[cfg(windows)]
+        {
+            let mut held = self.explicit.lock().unwrap();
+            *held.entry(row).or_default() += 1;
+            let auto = self
+                .roots
+                .lock()
+                .unwrap()
+                .get(&row)
+                .and_then(|r| r.job.clone());
+            Explicit {
+                tracker: self,
+                row,
+                auto,
+            }
+        }
+        #[cfg(not(windows))]
+        Explicit {
+            tracker: std::marker::PhantomData,
+            row,
+            auto: None,
+        }
     }
     pub(crate) fn stale(&self, row: i64) -> bool {
         #[cfg(windows)]
@@ -464,8 +522,25 @@ fn catch_up(inner: &Inner, row: &db::RootRow, epoch: u64) {
         },
         |record| records.push(record),
     );
+    replay(inner, row, epoch, at, deadline, result, &records);
+}
+
+#[cfg(windows)]
+fn replay(
+    inner: &Inner,
+    row: &db::RootRow,
+    epoch: u64,
+    at: i64,
+    deadline: Instant,
+    result: Result<Bookmark, loomward_windows::enumerate::SourceError>,
+    records: &[loomward_windows::usn::Record],
+) {
     let targets = result.as_ref().ok().and_then(|_| {
-        reach::targets(&records, deadline, |ids| {
+        // sub_noid counts files, so directory identity gaps need their own check.
+        let missing_identity = inner.db().query_row(
+            "SELECT EXISTS(SELECT 1 FROM main.dir WHERE root_id=?1 AND (file_id IS NULL OR sub_noid>0))",
+            [row.root], |r| r.get(0)).ok()?;
+        reach::targets(records, deadline, missing_identity, |ids| {
             if !inner
                 .freshness
                 .roots
@@ -562,6 +637,11 @@ fn refresh(inner: &Inner) {
                 None => full = true,
             }
         }
+        // Start and record under the claim fence, so an explicit request sees every auto job.
+        let claimed = inner.freshness.explicit.lock().unwrap();
+        if claimed.contains_key(&row.root) {
+            continue;
+        }
         let job = if full || targets.is_empty() {
             inner.engine.scan_refresh(&grant, None)
         } else {
@@ -605,6 +685,103 @@ fn resolve(inner: &Inner, root: i64, path: &[Vec<u16>]) -> Option<u64> {
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn f3_complete_verified_root_with_null_directory_stays_stale_on_unresolved_record() {
+        let temp = crate::tests::temp_root();
+        let svc = crate::Service::open(crate::Config {
+            state_dir: temp.path().to_path_buf(),
+            dataset: loomward_protocol::DatasetClass::Synthetic,
+            allow_personal: false,
+            allow_identity_unverified: false,
+            grant_roots: vec![],
+        })
+        .unwrap();
+        svc.inner.freshness.stop();
+        let (root_id, _) = crate::tests::fixture(&svc, 0);
+        let row = db::roots(&svc.inner.db(), Some(root_id)).unwrap().remove(0);
+        assert_eq!(row.state, "complete");
+        assert!(row.subtree_complete);
+        let observed: (String, i64, i64) = svc.inner.db().query_row(
+            "SELECT g.identity_mode,d.sub_noid,(SELECT count(*) FROM main.dir c WHERE c.root_id=d.root_id AND c.file_id IS NULL) FROM main.dir d JOIN main.root r ON r.id=d.root_id JOIN st.root_grant g ON g.id=r.grant_id WHERE d.parent_id IS NULL",
+            [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+        assert_eq!(observed, ("verified".into(), 0, 1));
+        let records = [loomward_windows::usn::Record {
+            file_id: 99u64.to_le_bytes().to_vec(),
+            parent_id: 999u64.to_le_bytes().to_vec(),
+            reason: 0x100,
+            is_directory: false,
+        }];
+        // Also retain the identified-root control and the conservative sub_noid guard.
+        for missing in ["directory", "none", "sub_noid"] {
+            if missing == "none" {
+                svc.inner
+                    .db()
+                    .execute(
+                        "UPDATE main.dir SET file_id=zeroblob(16) WHERE file_id IS NULL",
+                        [],
+                    )
+                    .unwrap();
+            } else if missing == "sub_noid" {
+                svc.inner
+                    .db()
+                    .execute("UPDATE main.dir SET sub_noid=1 WHERE parent_id IS NULL", [])
+                    .unwrap();
+            }
+            svc.inner.freshness.roots.lock().unwrap().insert(
+                root_id,
+                Tracked {
+                    watch: None,
+                    epoch: 0,
+                    stale_since: Some(1),
+                    at: 1,
+                    caught_up: false,
+                    full: true,
+                    paths: BTreeSet::new(),
+                    targets: BTreeSet::new(),
+                    auto: false,
+                    attempts: 3,
+                    changed: Instant::now(),
+                    job: None,
+                    started: None,
+                },
+            );
+            replay(
+                &svc.inner,
+                &row,
+                0,
+                1,
+                Instant::now() + Duration::from_secs(5),
+                Ok(Bookmark {
+                    journal_id: 1,
+                    next_usn: 2,
+                }),
+                &records,
+            );
+            let (caught_up, stale, full) = {
+                let roots = svc.inner.freshness.roots.lock().unwrap();
+                let tracked = &roots[&root_id];
+                (
+                    tracked.caught_up,
+                    tracked.stale_since.is_some(),
+                    tracked.full,
+                )
+            };
+            if missing == "none" {
+                assert!(caught_up && !stale);
+            } else {
+                assert!(stale, "{missing}: unresolved change falsely caught up");
+                assert!(
+                    full && !caught_up,
+                    "{missing}: missing full-root dirty scope"
+                );
+            }
+        }
+        assert_eq!(
+            svc.inner.hit_freshness(root_id).state,
+            SearchFreshnessState::Stale
+        );
+    }
 
     // Retain the reviewed query only as the before-measurement, never on the production path.
     const OLD_PARENT: &str = "WITH RECURSIVE visible(id) AS (SELECT id FROM main.dir WHERE root_id=?1 AND parent_id IS NULL UNION ALL SELECT d.id FROM main.dir d JOIN visible v ON d.parent_id=v.id WHERE d.listing_state NOT IN ('absent_pending','excluded')) SELECT d.id FROM main.dir d JOIN visible v ON v.id=d.id WHERE d.file_id=?2 OR (length(d.file_id)=8 AND d.file_id=substr(?2,1,8) AND substr(?2,9,8)=zeroblob(8)) LIMIT 1";
@@ -697,7 +874,7 @@ mod tests {
             assert_eq!(before, expected);
         }
         let began = Instant::now();
-        let after = reach::targets(&records, began + Duration::from_secs(5), |ids| {
+        let after = reach::targets(&records, began + Duration::from_secs(5), false, |ids| {
             reach::lookup(&conn, 1, ids)
         });
         eprintln!(

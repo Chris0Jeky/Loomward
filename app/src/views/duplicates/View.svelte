@@ -6,48 +6,85 @@
   export function sanitizeDuplicatesReport(report: DuplicateReport | undefined | null): {
     report: DuplicateReport | undefined;
     problem: string;
+    withheldGroups: number;
+    withheldLinks: number;
+    unreadableSkipped: number;
+    skippedUnknown: boolean;
   } {
-    if (!report) return { report: undefined, problem: '' };
+    if (!report) return { report: undefined, problem: '', withheldGroups: 0, withheldLinks: 0, unreadableSkipped: 0, skippedUnknown: false };
     const count = Array.isArray(report.entries) ? report.entries.length : 0;
     const valid = (i: unknown): i is number =>
       typeof i === 'number' && Number.isInteger(i) && i >= 0 && i < count;
     let malformed = false;
-    const cleanLists = (lists: unknown): number[][] => {
+    let unreadableSkipped = 0;
+    // A verified group or a hard-link set is shown only whole: losing any member, or ending below its minimum (two for a group, one for a link set whose other names may lie outside the inspected set), withholds it.
+    const cleanWhole = (lists: unknown, min: number): { sets: number[][]; withheld: number } => {
       if (!Array.isArray(lists)) {
         malformed = true;
-        return [];
+        return { sets: [], withheld: 0 };
       }
-      const out: number[][] = [];
+      const sets: number[][] = [];
+      let withheld = 0;
       for (const list of lists) {
         if (!Array.isArray(list)) {
           malformed = true;
+          withheld += 1;
           continue;
         }
-        const kept = (list as unknown[]).filter((i) => {
-          const ok = valid(i);
-          if (!ok) malformed = true;
-          return ok;
-        });
-        if (kept.length > 0) out.push(kept);
+        const kept = (list as unknown[]).filter(valid);
+        if (kept.length !== list.length || kept.length < min) {
+          malformed = true;
+          withheld += 1;
+          continue;
+        }
+        sets.push(kept);
       }
-      return out;
+      return { sets, withheld };
     };
-    const groups = cleanLists(report.groups);
-    const links = cleanLists(report.links);
+    const { sets: groups, withheld: withheldGroups } = cleanWhole(report.groups, 2);
+    const { sets: links, withheld: withheldLinks } = cleanWhole(report.links, 1);
     const skipped = Array.isArray(report.skipped)
       ? report.skipped.filter((skip) => {
           const ok = !!skip && valid(skip.entry);
-          if (!ok) malformed = true;
+          if (!ok) {
+            malformed = true;
+            unreadableSkipped += 1;
+          }
           return ok;
         })
       : [];
+    const skippedUnknown = !Array.isArray(report.skipped);
+    const groupsUnknown = !Array.isArray(report.groups);
+    const linksUnknown = !Array.isArray(report.links);
     if (!Array.isArray(report.groups) || !Array.isArray(report.links) || !Array.isArray(report.skipped)) {
       malformed = true;
     }
+    let problem = '';
+    if (malformed) {
+      problem = 'Some inspection references were invalid and were skipped.';
+      if (withheldGroups === 1) problem += ' 1 verified group was withheld as incomplete.';
+      else if (withheldGroups > 1) problem += ` ${withheldGroups} verified groups were withheld as incomplete.`;
+      if (groupsUnknown) problem += ' The verified groups could not be read, so they are unknown.';
+      if (withheldLinks === 1) problem += ' 1 link set was withheld as incomplete.';
+      else if (withheldLinks > 1) problem += ` ${withheldLinks} link sets were withheld as incomplete.`;
+      if (linksUnknown) problem += ' The link sets could not be read, so they are unknown.';
+    }
     return {
       report: { ...report, groups, links, skipped },
-      problem: malformed ? 'Some inspection references were invalid and were skipped.' : '',
+      problem,
+      withheldGroups,
+      withheldLinks,
+      unreadableSkipped,
+      skippedUnknown,
     };
+  }
+
+  // Wording for skipped evidence that could not be read. Empty string means the list itself says enough.
+  export function skippedNotice(unreadable: number, listed: number, unknown = false): string {
+    if (unknown) return 'The skipped list could not be read, so what was skipped is unknown.';
+    if (unreadable === 1) return '1 skipped record could not be read, so its reason is unknown.';
+    if (unreadable > 1) return `${unreadable} skipped records could not be read, so their reasons are unknown.`;
+    return listed > 0 ? '' : 'No listed entries were skipped.';
   }
 </script>
 
@@ -71,6 +108,7 @@
   const guarded = $derived(sanitizeDuplicatesReport(report));
   const safeReport = $derived(guarded.report);
   const indexProblem = $derived(guarded.problem);
+  const skippedText = $derived(safeReport ? skippedNotice(guarded.unreadableSkipped, safeReport.skipped.length, guarded.skippedUnknown) : '');
   const active = $derived(job ? isActive(job.state) : false);
   // A session reads its own class of root only: lab roots when synthetic, folders you granted when personal (q-10).
   const origin = $derived(session.datasetClass === 'personal' ? 'owner_granted' : 'lab_generated');
@@ -159,7 +197,8 @@
         <thead><tr><th scope="col">Name</th><th scope="col">Reason</th></tr></thead>
         <tbody>{#each safeReport.skipped as skip}<tr><th scope="row"><VisibleName name={safeReport.entries[skip.entry]!.relative_path} /></th><td>{skip.reason}</td></tr>{/each}</tbody>
       </table></div>
-    {:else}<p class="empty">No listed entries were skipped.</p>{/if}
+    {/if}
+    {#if skippedText}<p class={safeReport.skipped.length ? 'muted' : 'empty'}>{skippedText}</p>{/if}
   {:else}<p class="empty">{active ? 'Inspection is running; verified evidence will appear when it ends.' : 'Start an inspection to see its evidence.'}</p>{/if}
 </section>
 

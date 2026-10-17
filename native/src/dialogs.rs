@@ -3,7 +3,9 @@
 //! grants no dialog permission, no dialog plugin is registered, and the only way in is a service
 //! call that passes the [`CallContext`]. The chosen path never crosses IPC.
 
-use loomward_protocol::{DatasetClass, DisclosureSummary, ErrorBody, ErrorCode, NativeDialogs};
+use loomward_protocol::{
+    DatasetClass, DisclosureSummary, ErrorBody, ErrorCode, NativeDialogs, SaveDialog,
+};
 use serde::Serialize;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
@@ -104,20 +106,32 @@ impl DesktopDialogs {
     /// diagnostic bundle (docs/42 ADR-V3-24). Every session may save: the bundle is redacted and
     /// holds no personal data. One dialog at a time. Whatever this dialog asks about an existing
     /// file, the service replaces one only after [`REPLACE_TITLE`] is accepted.
+    ///
+    /// Only a dialog that opened and closed without a file is `Cancelled`. Another dialog open is
+    /// `Busy`; no picker (no owner window yet, or no start folder) is `Unavailable` (#437).
+    /// ponytail: `rfd` reports a dialog that failed to open as `None` too, so that one still reads
+    /// as a cancel; telling them apart needs a lower-level dialog call.
     pub fn save_with(
         &self,
         title: &str,
         default_name: &str,
         save: impl FnOnce(rfd::FileDialog) -> Option<PathBuf>,
-    ) -> Option<PathBuf> {
-        let _active = self.active.try_lock().ok()?;
-        let picker = self.picker.lock().ok()?.clone()?;
+    ) -> SaveDialog {
+        let _active = match self.active.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::WouldBlock) => return SaveDialog::Busy,
+            Err(std::sync::TryLockError::Poisoned(_)) => return SaveDialog::Unavailable,
+        };
+        let Some(picker) = self.picker.lock().ok().and_then(|p| p.clone()) else {
+            return SaveDialog::Unavailable;
+        };
         save(
             picker
                 .set_title(title)
                 .set_file_name(default_name)
                 .add_filter("Loomward diagnostic bundle", &["json"]),
         )
+        .map_or(SaveDialog::Cancelled, SaveDialog::Chosen)
     }
 }
 
@@ -191,7 +205,7 @@ impl NativeDialogs for DesktopDialogs {
     }
 
     /// Any session: the path goes to the service in-process and never crosses IPC.
-    fn save_file(&self, title: &str, default_name: &str) -> Option<PathBuf> {
+    fn save_file(&self, title: &str, default_name: &str) -> SaveDialog {
         self.save_with(title, default_name, |dialog| dialog.save_file())
     }
 
@@ -460,10 +474,10 @@ mod tests {
         let name = "loomward-diagnostics-20261011-120000.json";
         for class in [DatasetClass::Synthetic, DatasetClass::Personal] {
             let dialogs = DesktopDialogs::new(class);
-            // No owner window yet, so no picker: nothing opens.
+            // No owner window yet, so no picker: nothing opens, and it is not a cancel (#437).
             assert_eq!(
                 dialogs.save_with(title, name, |_| panic!("unparented save dialog")),
-                None
+                SaveDialog::Unavailable
             );
             *dialogs.picker.lock().unwrap() = Some(rfd::FileDialog::new());
             let chosen = PathBuf::from("C:/synthetic/bundle.json");
@@ -475,13 +489,17 @@ mod tests {
                     assert!(configured.contains("json"), "{configured}");
                     Some(chosen.clone())
                 }),
-                Some(chosen)
+                SaveDialog::Chosen(chosen)
             );
-            assert_eq!(dialogs.save_with(title, name, |_| None), None);
+            // The owner closing the dialog is the one cancel.
+            assert_eq!(
+                dialogs.save_with(title, name, |_| None),
+                SaveDialog::Cancelled
+            );
             let active = dialogs.active.lock().unwrap();
             assert_eq!(
                 dialogs.save_with(title, name, |_| panic!("stacked dialog")),
-                None
+                SaveDialog::Busy
             );
             drop(active);
         }

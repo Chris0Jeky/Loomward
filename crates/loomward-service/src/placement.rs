@@ -269,7 +269,7 @@ struct SpaceRead {
     started: Option<Instant>,
     answer: Option<Observed>,
 }
-/// Callers observing the same volume through the same grant root share one read and its start time.
+/// Callers observing the same volume share one read and its start time.
 type PendingRead = std::sync::Arc<(std::sync::Mutex<SpaceRead>, std::sync::Condvar)>;
 /// Personal volume keys with a read running, so a stalled volume keeps one reader, not one per refresh.
 static SPACE_IN_FLIGHT: std::sync::Mutex<std::collections::BTreeMap<String, PendingRead>> =
@@ -324,7 +324,7 @@ fn await_pending(
 }
 
 // The OS call cannot be cancelled; its own permit survives a caller timeout to bound stragglers.
-// `personal` names a volume and grant root: concurrent callers share its answer and read budget.
+// `personal` names a volume: concurrent callers share its answer and read budget.
 // Queueing is bounded by the request deadline; the personal read budget starts in the worker.
 fn bounded_space(
     deadline: Instant,
@@ -505,11 +505,20 @@ impl<'a> Input<'a> {
                 DatasetClass::Personal => observe_personal_grants.then_some("owner_granted"),
             };
             if let Some(origin) = observed_origin.filter(|_| space.is_null()) {
-                let root: Option<String> = self.conn.query_row("SELECT g.display_path FROM main.root r JOIN st.root_grant g ON g.id=r.grant_id WHERE r.volume_id=?1 AND g.state='active' AND g.origin=?2 ORDER BY g.id LIMIT 1", params![v.id, origin], |r| r.get(0)).optional().map_err(sql)?;
-                if let Some(root) = root {
+                // #553: up to four active roots on the volume, in grant order. They are tried inside the one
+                // shared read of this volume, so an unobservable root falls through to the next root without
+                // a second reader or a stale shared answer.
+                let roots: Vec<String> = {
+                    let mut stmt = self.conn.prepare("SELECT g.display_path FROM main.root r JOIN st.root_grant g ON g.id=r.grant_id WHERE r.volume_id=?1 AND g.state='active' AND g.origin=?2 ORDER BY g.id LIMIT 4").map_err(sql)?;
+                    let rows = stmt
+                        .query_map(params![v.id, origin], |r| r.get(0))
+                        .map_err(sql)?;
+                    rows.collect::<Result<Vec<String>, _>>().map_err(sql)?
+                };
+                if !roots.is_empty() {
                     let key = v.key.clone();
-                    let flight_key = format!("{key}/{root}");
-                    // #530: preserve per-service test isolation while distinguishing grant roots.
+                    let flight_key = key.clone();
+                    // #530: preserve per-service test isolation while sharing across grant roots.
                     #[cfg(test)]
                     let flight_key = format!("{:p}/{flight_key}", self.inner);
                     #[cfg(test)]
@@ -529,18 +538,20 @@ impl<'a> Input<'a> {
                         if let Some(fake) = fake {
                             return fake.answer(&hooks);
                         }
-                        let path = std::path::Path::new(&root);
-                        // A replacement root cannot supply observations for the old volume.
-                        if crate::lab::identity(path)
-                            .ok()
-                            .is_some_and(|(current, _)| current == key)
-                        {
-                            loomward_windows::volumes::space(path)
+                        roots.iter().find_map(|root| {
+                            let path = std::path::Path::new(root);
+                            // A replacement root cannot supply observations for the old volume.
+                            if crate::lab::identity(path)
                                 .ok()
-                                .map(|space| (space, now_ns()))
-                        } else {
-                            None
-                        }
+                                .is_some_and(|(current, _)| current == key)
+                            {
+                                loomward_windows::volumes::space(path)
+                                    .ok()
+                                    .map(|space| (space, now_ns()))
+                            } else {
+                                None
+                            }
+                        })
                     };
                     let observed = if origin == "owner_granted" {
                         // A personal volume waits briefly and alone: an offline volume is not read, and a

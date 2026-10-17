@@ -39,12 +39,48 @@ pub(crate) struct Copies {
     running: Mutex<HashMap<u64, Run>>,
     /// The Q1 setting for this service (tests flip it; production reads the constant).
     pub(crate) removal: AtomicBool,
+    /// Test seams: `copy.start` calls the gate at "prepared" (tree walked, nothing registered) and
+    /// "spawned" (worker running, not yet in `running`); new runs get the hook on their control.
+    #[cfg(all(test, windows))]
+    pub(crate) gate: Mutex<Option<Gate>>,
+    #[cfg(all(test, windows))]
+    pub(crate) hook: Mutex<Option<RunHook>>,
 }
+
+/// The run hook's types, for the copy tests (the primitives stay referenced from this module only).
+#[cfg(all(test, windows))]
+pub(crate) use loomward_windows::effects::exec::{Flow, Point};
+#[cfg(all(test, windows))]
+pub(crate) type Gate = Arc<dyn Fn(&str) + Send + Sync>;
+#[cfg(all(test, windows))]
+pub(crate) type RunHook = Arc<
+    dyn Fn(
+            loomward_windows::effects::exec::Point,
+            &loomward_windows::effects::exec::Control,
+        ) -> loomward_windows::effects::exec::Flow
+        + Send
+        + Sync,
+>;
 
 #[cfg(windows)]
 struct Run {
     control: Arc<loomward_windows::effects::exec::Control>,
     thread: std::thread::JoinHandle<()>,
+    done: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(windows)]
+impl Run {
+    fn join(self) -> Result<(), Self> {
+        if matches!(
+            self.done.recv_timeout(std::time::Duration::from_secs(30)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ) {
+            return Err(self);
+        }
+        let _ = self.thread.join();
+        Ok(())
+    }
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -122,6 +158,10 @@ impl Copies {
                 ops: Mutex::new(ops),
                 running: Mutex::default(),
                 removal,
+                #[cfg(test)]
+                gate: Mutex::default(),
+                #[cfg(test)]
+                hook: Mutex::default(),
             }
         }
         #[cfg(not(windows))]
@@ -132,6 +172,16 @@ impl Copies {
                 ops: Mutex::default(),
                 removal,
             }
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
+impl Copies {
+    fn at(&self, point: &str) {
+        let gate = self.gate.lock().unwrap().clone();
+        if let Some(gate) = gate {
+            gate(point);
         }
     }
 }
@@ -315,7 +365,75 @@ impl Inner {
             ));
         }
         plan.operation_id.clear();
+        plan.grants = vec![first.root.grant, dest.root.grant];
         Ok((preview, plan))
+    }
+
+    /// docs/47 section 5: called once a grant's revocation is durable. Every copy using the grant is
+    /// fenced in the journal. A running one is stopped at its next effect step (at most the step in
+    /// flight completes, waited for up to 30 s) and joined: before the rename it cancels itself, after
+    /// it commits annotated `grant_revoked`. A run left waiting (blocked, interrupted, publishing) is
+    /// then cancelled through the abandon path; `needs_attention` stays for the owner. Q1 applies.
+    pub(crate) fn copies_fence(&self, grant: i64) {
+        #[cfg(windows)]
+        {
+            use loomward_windows::effects::exec;
+            let Some(store) = &self.copies.store else {
+                return;
+            };
+            let ops: Vec<u64> = self.copies.ops.lock().unwrap().values().copied().collect();
+            for op in ops {
+                let plan: Option<exec::Plan> = store
+                    .lock()
+                    .unwrap()
+                    .plan(op)
+                    .ok()
+                    .flatten()
+                    .and_then(|p| serde_json::from_str(&p).ok());
+                let Some(plan) = plan.filter(|p| p.grants.contains(&grant)) else {
+                    continue;
+                };
+                let removal = self
+                    .copies
+                    .removal
+                    .load(std::sync::atomic::Ordering::SeqCst);
+                let running = self.copies.running.lock().unwrap().remove(&op);
+                let control = running.as_ref().map_or_else(
+                    || Arc::new(exec::Control::new(removal)),
+                    |r| r.control.clone(),
+                );
+                let cause = loomward_operations::FenceCause::GrantRevoked;
+                if !matches!(
+                    exec::fence(store, op, &control, cause),
+                    Ok(exec::Ack::StoppedBeforePublish | exec::Ack::Published)
+                ) {
+                    // Settled, a journal fault, or a step stuck past the wait: the fence (if any) is
+                    // durable and read by every later step; nothing more to do here.
+                    if let Some(run) = running {
+                        self.copies.running.lock().unwrap().insert(op, run);
+                    }
+                    continue;
+                }
+                if let Some(run) = running {
+                    if let Err(run) = run.join() {
+                        self.copies.running.lock().unwrap().insert(op, run);
+                        continue;
+                    }
+                }
+                let waiting = exec::status(store, op).map(|s| s.state);
+                if !matches!(
+                    waiting,
+                    Ok(loomward_operations::OpState::NeedsAttention
+                        | loomward_operations::OpState::Cancelled
+                        | loomward_operations::OpState::Committed)
+                        | Err(_)
+                ) {
+                    let _ = exec::cancel(store, op, &plan, &exec::Control::new(removal));
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = grant;
     }
 
     fn copies_store(&self) -> Result<&Arc<Mutex<loomward_operations::Store>>, ErrorBody> {
@@ -458,6 +576,29 @@ impl Inner {
                 ));
             }
             let (fresh, mut plan) = self.copy_prepare(&sources, &destination)?;
+            #[cfg(test)]
+            self.copies.at("prepared");
+            // Review of #544: the grant check above ran before the tree walk, and a revocation
+            // may have landed since. Revocation holds `mutation` from its commit through
+            // `copies_fence`, so under it the grants are re-checked and the run is registered in
+            // `ops` and `running` atomically: a revoke either refuses this start or fences this run.
+            let _registering = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
+            for &grant in &plan.grants {
+                let state: Option<String> = self
+                    .db()
+                    .query_row(
+                        "SELECT state FROM st.root_grant WHERE id=?1",
+                        [grant],
+                        |r| r.get(0),
+                    )
+                    .ok();
+                if state.as_deref() != Some("active") {
+                    return Err(with_reason(
+                        fail(ErrorCode::PermissionDenied, "the copy cannot start"),
+                        "grant_revoked",
+                    ));
+                }
+            }
             let admitted = approval
                 .admit(&fresh, 0, now_ns() / 1_000_000)
                 .map_err(|code| {
@@ -478,27 +619,40 @@ impl Inner {
             };
             self.copies.pending.lock().unwrap().remove(&id);
             self.copies.ops.lock().unwrap().insert(id.clone(), op);
-            let control = Arc::new(exec::Control::new(
+            let control = exec::Control::new(
                 self.copies
                     .removal
                     .load(std::sync::atomic::Ordering::SeqCst),
-            ));
+            );
+            #[cfg(test)]
+            let control = match self.copies.hook.lock().unwrap().clone() {
+                Some(hook) => control.with_hook(move |p, c| hook(p, c)),
+                None => control,
+            };
+            let control = Arc::new(control);
             let (worker_store, worker_control) = (store.clone(), control.clone());
+            let (completed, done) = std::sync::mpsc::channel();
             let thread = std::thread::Builder::new()
                 .name("lw-copy".into())
                 .spawn(move || {
                     let _ = exec::run(&worker_store, op, &worker_control);
+                    let _ = completed.send(());
                 })
                 .map_err(|_| {
                     // Nothing was created: settle the started operation as cancelled, never stuck.
                     let _ = exec::cancel(&store, op, &plan, &control);
                     fail(ErrorCode::ResourceBudget, "no worker")
                 })?;
-            self.copies
-                .running
-                .lock()
-                .unwrap()
-                .insert(op, Run { control, thread });
+            #[cfg(test)]
+            self.copies.at("spawned");
+            self.copies.running.lock().unwrap().insert(
+                op,
+                Run {
+                    control,
+                    thread,
+                    done,
+                },
+            );
             self.copy_status_of(&id, op)
         }
         #[cfg(not(windows))]
@@ -528,10 +682,22 @@ impl Inner {
         #[cfg(windows)]
         {
             use loomward_windows::effects::exec;
+            // Serialised with `copies_fence` (review of #544): one of them stops and joins the run,
+            // the other finds it settled.
+            let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
             let running = self.copies.running.lock().unwrap().remove(&op);
             if let Some(run) = running {
                 run.control.cancel();
-                let _ = run.thread.join();
+                if let Err(run) = run.join() {
+                    self.copies.running.lock().unwrap().insert(op, run);
+                    return Err(with_reason(
+                        fail(
+                            ErrorCode::Busy,
+                            "copy cancellation is pending an in-flight step",
+                        ),
+                        "pending_in_flight_step",
+                    ));
+                }
             }
             let plan: exec::Plan = store
                 .lock()

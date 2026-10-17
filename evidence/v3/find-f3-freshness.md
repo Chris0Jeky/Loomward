@@ -45,7 +45,8 @@ it is not a simulated success substituted for the measurement.
 - Kernel overflow/failed-watch hints use the existing native `RootDirty` classification and the
   engine's full-root refresh path. Journal wrap/recreation, unsupported records, missing bookmarks
   or failed journal access leave a dirty full-root scope; a successful explicit full scan repairs it.
-- Ordinary `search.query` hits carry F1's `freshness: {state, at}`. `federated_search` and the ranked
+- Ordinary `search.query` hits carry F1's `freshness: {state, at}`; `at` is `null` for a `live`
+  hit (no catch-up time yet), while stale and caught-up hits carry it (#553). `federated_search` and the ranked
   index stay off. Search page coverage also exposes tracked stale roots using its existing state
   fields; `roots.list` retains the historical scan state. No protocol or frontend extension is needed.
 
@@ -377,3 +378,44 @@ modified files left for the driver. Suite-created synthetic fixtures remain unde
 the ignored `target/test-roots/`; raw receipts are outside the worktree in
 `C:/lw/target/search-f3/`, so they survive later worktree removal. The worktree is
 not removal-ready while these edits are uncommitted.
+
+
+## Issue #545: NULL-directory identity catch-up (2026-10-17)
+
+KRASPYON / Windows 11, `fix/545-f3-null-file-id`, base `origin/main`
+`4acd744393bbe6e1970c6bd4967d59006085026b`; committed in #548 (merge `28e5752`).
+
+**Reachable:** the production catalogue writer fixture creates a verified NTFS grant,
+root state `complete`, current complete aggregates, `sub_noid=0` and one NULL-id
+directory. Engine `scan/pipeline.rs` accepts successful identity-less child opens
+(existing synthetic `NameOnlyTree` tests); the service sink preserves missing IDs.
+Catalogue `writer.rs::publish` accepts them, while `rollup` computes completeness
+independently of identity. `sub_noid` counts files, so it misses directory gaps.
+
+Decoded-record replay now checks NULL directory IDs or positive `sub_noid` once per
+root. Unresolved records with either condition retain stale/full-root-required
+coverage; fully identified roots retain the outside-parent skip. Existing journal,
+deadline, batch and scope-count bounds remain. Item 2 also fixes `new_dirs` overriding
+known directory reach; the rename test now retains the directory's own child scope.
+The regression exercises production replay/completion without automatic repair:
+baseline logic **6 passed / 2 failed** (`noid-red-clean.log`), fixed **8 / 0**
+(`noid-green.log`), including identified-root and `sub_noid` controls and the 100k test.
+
+Cargo uses `--manifest-path C:/lw/wt/f3-noid/Cargo.toml`, `CARGO_BUILD_JOBS=4`,
+`CARGO_TARGET_DIR=C:/lw/target/f3-noid`, `RUST_TEST_THREADS=1`. Receipts stay there.
+
+| Command (manifest omitted) | Result / receipt |
+|---|---|
+| `cargo test -p loomward-service` twice | Each 237 passed, 0 failed; `service-1.log`, `service-2.log` |
+| `cargo test -p loomward-windows` | 120 passed, 0 failed; `windows.log` |
+| `cargo test -p loomward-engine` | 241 passed, 0 failed; `engine.log` |
+| `cargo fmt --all --check` | Exit 0; `fmt.log` |
+| `cargo clippy --workspace --all-targets -- -D warnings` | Exit 0, no warnings; `clippy.log` |
+| `cargo test --workspace --no-fail-fast` once | 1,335 passed, 0 failed, 1 ignored, 75 targets; `workspace.log` |
+| `git -C C:/lw/wt/f3-noid diff --check` | Exit 0 |
+
+**NOT verified / residual risk:** physical NTFS identity loss, non-Windows execution,
+hosted CI, app/Tauri, exhaustive crash sweep and the existing ignored throughput lab. Identity gaps conservatively require
+a full refresh even for an unrelated outside event. `HUMAN_TODO.md` and protected
+files are unchanged; no new owner decision. No commit, push, PR mutation or merge;
+the uncommitted worktree is not removal-ready.

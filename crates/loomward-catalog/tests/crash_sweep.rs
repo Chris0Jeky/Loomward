@@ -311,14 +311,13 @@ fn run_child(scenario: &str, work: &Path, at: Option<u64>) -> Outcome {
     // A crash point that is never reached is a missing test, not a recovery: require the exit the
     // run was meant to end with.
     let want = if at.is_some() { CRASH_EXIT } else { 0 };
+    if at.is_some() && code == Some(0) {
+        panic!("the crash point was not reached: {scenario} at {at:?}");
+    }
     assert!(
         code == Some(want),
         "{scenario} at {at:?}: the child exited {code:?}, expected {want} ({})\nlast output:\n{}\n{}",
-        if at.is_some() {
-            "the crash point was not reached"
-        } else {
-            "a clean run must finish"
-        },
+        "unexpected child failure",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -874,26 +873,33 @@ fn the_verifier_catches_planted_damage() {
     let root = tempfile::tempdir().unwrap();
     let out = run_child("lifecycle", &root.path().join("clean"), None);
     let store = root.path().join("clean").join("store");
-    let clean = verify(&store, &out.acks, "lifecycle");
-    assert!(clean.is_empty(), "{clean:#?}");
-    for (what, sql) in [
-        ("a deleted acknowledged file", "DELETE FROM file WHERE name='keepB1.yyqx'"),
-        ("a leftover running scan", "INSERT INTO scan_run(root_id,mode,strategy,state,started_at_ns,counters_json,budget_json) SELECT id,'full','x','running',0,'{}','{}' FROM root LIMIT 1"),
-        ("a bulk row left behind", "INSERT INTO bulk_dir(root_id,parent_id,name,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run) SELECT id,NULL,'x','path_observation','none',0,0,'unlisted',0,0 FROM root LIMIT 1"),
-        ("a forgotten grant that kept its root", "PRAGMA foreign_keys=OFF; INSERT INTO st.root_forgotten(grant_id,root_number,forgotten_at_ns) VALUES(2,1,0)"),
-    ] {
-        let copy = root.path().join(format!("copy-{}", what.len()));
+    let copy_store = |name: &str| {
+        let copy = root.path().join(name);
         std::fs::create_dir_all(&copy).unwrap();
-        for f in ["state.db", "catalog.db"] {
-            std::fs::copy(store.join(f), copy.join(f)).unwrap();
+        for file in ["state.db", "catalog.db"] {
+            std::fs::copy(store.join(file), copy.join(file)).unwrap();
         }
+        copy
+    };
+    // verify's write probe changes its input: keep the source fixture intact for every case.
+    let clean = verify(&copy_store("verified-control"), &out.acks, "lifecycle");
+    assert!(clean.is_empty(), "{clean:#?}");
+    for (what, sql, expected) in [
+        ("a deleted acknowledged file", "DELETE FROM file WHERE name='keepB1.yyqx'", "valid rollup disagrees with its rows"),
+        ("a leftover running scan", "INSERT INTO scan_run(root_id,mode,strategy,state,started_at_ns,counters_json,budget_json) SELECT id,'full','x','running',0,'{}','{}' FROM root LIMIT 1", "running scan_run after recovery"),
+        ("a bulk row left behind", "INSERT INTO bulk_dir(root_id,parent_id,name,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run) SELECT id,NULL,'x','path_observation','none',0,0,'unlisted',0,0 FROM root LIMIT 1", "bulk build left behind"),
+        ("a forgotten grant that kept its root", "PRAGMA foreign_keys=OFF; INSERT INTO st.root_forgotten(grant_id,root_number,forgotten_at_ns) VALUES(2,1,0)", "forgotten grant still has a root"),
+    ] {
+        let copy = copy_store(&format!("copy-{}", what.len()));
         let db = reader(&copy);
         db.execute_batch(sql).unwrap();
         drop(db);
-        assert!(
-            !verify(&copy, &out.acks, "lifecycle").is_empty(),
-            "undetected: {what}"
-        );
+        let mut violations = structural(&copy);
+        if violations.is_empty() {
+            violations = verify(&copy, &out.acks, "lifecycle");
+        }
+        eprintln!("planted {what}: {violations:?}");
+        assert!(violations.iter().any(|v| v.contains(expected)), "undetected {what}: {violations:?}");
     }
 }
 
@@ -952,5 +958,19 @@ fn an_unreached_crash_point_fails_the_sweep() {
         "lifecycle",
         &root.path().join("past"),
         Some(base.boundaries + 1),
+    );
+}
+
+#[test]
+fn a_panicking_child_is_not_an_unreached_crash_point() {
+    let root = tempfile::tempdir().unwrap();
+    let panic =
+        std::panic::catch_unwind(|| run_child("invalid-synthetic-scenario", root.path(), Some(1)))
+            .err()
+            .unwrap();
+    let message = panic.downcast_ref::<String>().unwrap();
+    assert!(
+        !message.contains("the crash point was not reached"),
+        "a child panic masqueraded as the guard's expected failure"
     );
 }

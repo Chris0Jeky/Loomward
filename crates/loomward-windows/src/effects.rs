@@ -693,6 +693,40 @@ impl Staging<'_> {
     pub fn own_metadata(&self) -> io::Result<BasicMetadata> {
         BasicMetadata::read(&self.pin(false)?)
     }
+    /// A staged or published folder carries no named stream and no extended attributes. Section 6
+    /// refuses both on folders at preview, so any found was added later (a hold denies neither).
+    pub fn folder_plain(
+        &self,
+        path: &[(&str, ObjectKey)],
+        name: &str,
+        recorded: &ObjectKey,
+    ) -> io::Result<bool> {
+        let pins = self.pins(path, false)?;
+        let named = relative(
+            pins.last().unwrap(),
+            &component(name)?,
+            FILE_READ_ATTRIBUTES | FILE_READ_EA,
+            SHARE,
+            false,
+            0,
+        )?;
+        same(&named, recorded)?;
+        plain(&named)
+    }
+    /// `folder_plain` for the staging (or published) folder itself.
+    pub fn own_plain(&self) -> io::Result<bool> {
+        same(&self.file, &self.recorded)?;
+        let named = relative(
+            self.destination.parent(),
+            &self.name,
+            FILE_READ_ATTRIBUTES | FILE_READ_EA,
+            SHARE,
+            false,
+            0,
+        )?;
+        same(&named, &self.recorded)?;
+        plain(&named)
+    }
     /// Caller must first withdraw any journaled publish intent. No adoption by name.
     /// The by-ID pin below shares delete, so it excludes nothing. Identity, link count and disposition are
     /// checked, and the removal made, on the name-opened handle, which shares READ only: no other handle
@@ -1224,6 +1258,15 @@ fn ea_size(file: &File) -> io::Result<u32> {
         return Err(nt_error(code));
     }
     Ok(ea.EaSize)
+}
+fn plain(file: &File) -> io::Result<bool> {
+    let streams = match streams(file) {
+        Ok(s) => s,
+        // FileStreamInfo answers ERROR_HANDLE_EOF for an object with no stream (a plain folder).
+        Err(e) if e.raw_os_error() == Some(38) => Vec::new(),
+        Err(e) => return Err(e),
+    };
+    Ok(streams.is_empty() && ea_size(file)? == 0)
 }
 pub(crate) fn supported_file(file: &File) -> io::Result<()> {
     let current = identity::from_file(file)?;

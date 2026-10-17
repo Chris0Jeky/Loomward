@@ -17,6 +17,8 @@ use DiagnosticsSaveRefusal as Why;
 
 /// A bundle is a few KiB (at most 64 roots); past this the preview is refused, never cut.
 pub(crate) const MAX_BUNDLE_BYTES: usize = 256 * 1024;
+/// The contract lists at most this many roots (`DiagnosticsBundle.roots`).
+const MAX_BUNDLE_ROOTS: usize = 64;
 /// The newest jobs the engine lists, counted by kind and state.
 const JOB_WINDOW: u64 = 50;
 pub(crate) const SAVE_TITLE: &str =
@@ -125,8 +127,9 @@ impl Target {
 /// Checks an owner-picked `target` before anything is written.
 ///
 /// Refuses: a relative path, a network, device or verbatim namespace, a Windows device name, a
-/// stream name, a parent folder that is missing or resolves to a network path, and an existing
-/// final component that is not a regular file or is a link, reparse point or cloud placeholder.
+/// stream name, a parent folder that is missing or resolves to a network path, an existing final
+/// component that is not a regular file or is a link or reparse point, and (named) one that is a
+/// cloud placeholder.
 /// Local junctions and links among the ancestors are followed: the folder is canonicalised and the
 /// target joined to it, so a link swapped into the path later is not followed.
 pub(crate) fn check_target(target: &Path) -> Result<Target, Why> {
@@ -145,6 +148,8 @@ pub(crate) fn check_target(target: &Path) -> Result<Target, Why> {
     }
     let path = folder.join(target.file_name().ok_or(Why::UnsupportedTarget)?);
     let exists = match std::fs::symlink_metadata(&path) {
+        // Named before the general refusal: an online-only file looks like a plain local file to the owner.
+        Ok(meta) if paths::cloud_placeholder(&meta) => return Err(Why::CloudPlaceholder),
         Ok(meta) if !meta.is_file() || paths::unsafe_attributes(&meta) => {
             return Err(Why::UnsupportedTarget)
         }
@@ -178,6 +183,12 @@ pub(crate) fn write_to(target: &Target, bytes: &[u8]) -> Result<(), Why> {
         file.write_all(bytes)?;
         file.sync_all()?;
         drop(file);
+        // A file that appeared since the check was never confirmed for replacement: leave it.
+        // ponytail: this shrinks the check-to-rename gap to microseconds, it does not close it; std has
+        // no no-replace rename, so closing it needs MoveFileEx from the Windows crate.
+        if !target.exists && std::fs::symlink_metadata(&target.path).is_ok() {
+            return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists));
+        }
         std::fs::rename(&temporary, &target.path)
     })();
     if written.is_err() {
@@ -330,7 +341,7 @@ impl Inner {
             stores,
             counts: known(counts, "store_unreadable"),
             jobs: known(jobs, "job_list_unavailable"),
-            roots: known(roots, "store_unreadable"),
+            roots: roots.map_or_else(Known::unknown, Known::Value),
             // The service keeps no error history; a bundle never invents one.
             recent_errors: Known::unknown("not_retained"),
         })
@@ -338,34 +349,41 @@ impl Inner {
 
     /// Opaque ID, origin, grant and scan state, coverage, filesystem family and identity mode:
     /// never the display path, the volume's name or label, or any name under the root.
+    ///
+    /// The bundle lists at most 64 roots. More than that is one honest unknown naming the cap, never
+    /// a silently cut list and never "unreadable".
     fn diagnostic_roots(
         &self,
         conn: &rusqlite::Connection,
-    ) -> Option<BoundedVec<DiagnosticsRoot, 0, 64>> {
-        let rows = db::roots(conn, None).ok()?;
+    ) -> Result<BoundedVec<DiagnosticsRoot, 0, 64>, &'static str> {
+        const UNREADABLE: &str = "store_unreadable";
+        let rows = db::grant_rows(conn).map_err(|_| UNREADABLE)?;
+        if rows.len() > MAX_BUNDLE_ROOTS {
+            return Err("root_cap_exceeded");
+        }
         let mut stmt = conn
             .prepare(
                 "SELECT g.identity_mode,v.filesystem FROM main.root r JOIN st.root_grant g ON g.id=r.grant_id
                  LEFT JOIN main.volume v ON v.id=r.volume_id WHERE r.id=?1",
             )
-            .ok()?;
+            .map_err(|_| UNREADABLE)?;
         let mut roots = Vec::new();
         for r in &rows {
             let (mode, fs): (String, Option<String>) = stmt
                 .query_row([r.root], |q| Ok((q.get(0)?, q.get(1)?)))
-                .ok()?;
+                .map_err(|_| UNREADABLE)?;
             let (state, coverage) = scan_view(r);
             roots.push(DiagnosticsRoot {
-                root_id: RootId::new(self.root_id(r.root)).ok()?,
-                origin: variant(&r.origin)?,
-                grant_state: variant(&r.grant_state)?,
-                scan_state: variant(state)?,
-                coverage: variant(coverage)?,
+                root_id: RootId::new(self.root_id(r.root)).map_err(|_| UNREADABLE)?,
+                origin: variant(&r.origin).ok_or(UNREADABLE)?,
+                grant_state: variant(&r.grant_state).ok_or(UNREADABLE)?,
+                scan_state: variant(state).ok_or(UNREADABLE)?,
+                coverage: variant(coverage).ok_or(UNREADABLE)?,
                 filesystem: filesystem(fs.as_deref()),
-                identity_mode: variant(&mode)?,
+                identity_mode: variant(&mode).ok_or(UNREADABLE)?,
             });
         }
-        BoundedVec::new(roots).ok()
+        BoundedVec::new(roots).map_err(|_| UNREADABLE)
     }
 
     /// Read-only: builds the bundle, keeps its exact bytes for `diagnostics.save`, writes nothing.
@@ -420,8 +438,22 @@ impl Inner {
             )
         })?;
         let _dialog = self.dialog_turn()?;
-        let Some(target) = dialogs.save_file(SAVE_TITLE, &default_name(&now())) else {
-            return answer(DiagnosticsSaveOutcome::CancelledByUser, None, None);
+        // Only the owner closing the dialog is a cancel; a dialog that never opened says so.
+        let target = match dialogs.save_file(SAVE_TITLE, &default_name(&now())) {
+            SaveDialog::Chosen(target) => target,
+            SaveDialog::Cancelled => {
+                return answer(DiagnosticsSaveOutcome::CancelledByUser, None, None)
+            }
+            SaveDialog::Busy => {
+                return answer(DiagnosticsSaveOutcome::Refused, None, Some(Why::DialogBusy))
+            }
+            SaveDialog::Unavailable => {
+                return answer(
+                    DiagnosticsSaveOutcome::Refused,
+                    None,
+                    Some(Why::DialogUnavailable),
+                )
+            }
         };
         let target = match check_target(&target) {
             Ok(t) => t,

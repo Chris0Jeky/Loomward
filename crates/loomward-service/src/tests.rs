@@ -585,11 +585,60 @@ fn volumes_list_space_is_unknown_not_zero_when_the_personal_root_is_unobservable
     assert_eq!(volumes["volumes"][0]["free_bytes"], Value::Null);
 }
 
-/// #519 review: one stalled personal volume degrades alone. `volumes.list` and the alerts view still
-/// answer, the healthy volume is observed, and repeated refreshes never exhaust the space readers.
+/// #553: an unobservable first active root must not hide a second observable root on the same volume.
 #[cfg(windows)]
 #[test]
-fn a_stalled_personal_volume_degrades_alone_and_never_exhausts_the_readers() {
+fn volumes_list_observes_space_through_a_second_root_when_the_first_is_unobservable() {
+    let tmp = temp_root();
+    let Some((svc, folder)) = personal_grant_session(&tmp) else {
+        return;
+    };
+    *svc.inner.hooks.personal_space_wait.lock().unwrap() = Some(Duration::from_secs(30));
+    let volume_key: String = svc
+        .inner
+        .db()
+        .query_row("SELECT volume_key FROM main.volume", [], |r| r.get(0))
+        .unwrap();
+    // The second grant lives on the same real volume, so its identity matches the volume key.
+    let second = tmp.path().join("second-folder");
+    std::fs::create_dir_all(&second).unwrap();
+    svc.inner
+        .catalog
+        .writer()
+        .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_key,
+            display_name: "Second".into(),
+            display_path: second.canonicalize().unwrap().display().to_string(),
+            root_file_id: Some(vec![3; 16]),
+            filesystem: Some("NTFS".into()),
+            origin: "owner_granted".into(),
+            granted_via: "cli_flag".into(),
+            observed_at_ns: 0,
+        }))
+        .unwrap();
+    // The first (lowest-id) root is now unobservable; the second must still answer.
+    std::fs::remove_dir(&folder).unwrap();
+    let (volumes, _) = ok("volumes.list", call(&svc, "volumes.list", json!({})));
+    assert_eq!(
+        volumes["volumes"].as_array().unwrap().len(),
+        1,
+        "{volumes:?}"
+    );
+    assert!(
+        !volumes["volumes"][0]["capacity_bytes"].is_null(),
+        "{volumes:?}"
+    );
+    assert!(
+        !volumes["volumes"][0]["free_bytes"].is_null(),
+        "{volumes:?}"
+    );
+}
+
+/// #519 review: one stalled personal volume degrades alone. `volumes.list` and the alerts view still
+/// answer, the healthy volume is observed, and changing grant roots never exhausts the space readers.
+#[cfg(windows)]
+#[test]
+fn a_stalled_personal_volume_shares_one_reader_across_distinct_grant_roots() {
     let tmp = temp_root();
     let Some((svc, _folder)) = personal_grant_session(&tmp) else {
         return;
@@ -659,6 +708,12 @@ fn a_stalled_personal_volume_degrades_alone_and_never_exhausts_the_readers() {
     };
     let (stalled_id, healthy_id) = (wire_id(stalled_key), wire_id("vsn_healthy"));
     for round in 0..10 {
+        let root = tmp.path().join(format!("replacement-folder-{round}"));
+        std::fs::create_dir_all(&root).unwrap();
+        svc.inner.db().execute(
+            "UPDATE st.root_grant SET display_path=?1 WHERE id=(SELECT r.grant_id FROM main.root r JOIN main.volume v ON v.id=r.volume_id WHERE v.volume_key='vsn_stalled')",
+            [root.display().to_string()],
+        ).unwrap();
         let (volumes, _) = ok("volumes.list", call(&svc, "volumes.list", json!({})));
         let rows = volumes["volumes"].as_array().unwrap();
         let row = |id: &str| {
@@ -697,9 +752,9 @@ fn a_stalled_personal_volume_degrades_alone_and_never_exhausts_the_readers() {
             .filter(|g| **g == (Command::VolumesList, "space_read"))
             .count(),
         1,
-        "refreshes must share the same stalled reader"
+        "distinct grant roots must share the same stalled volume reader"
     );
-    // A different grant root on the same volume must not inherit the stalled root's unknown.
+    // A replacement root shares the stall, but can retry once the volume's reader finishes.
     let replacement = tmp.path().join("replacement-folder");
     std::fs::create_dir_all(&replacement).unwrap();
     svc.inner.db().execute(
@@ -717,8 +772,22 @@ fn a_stalled_personal_volume_degrades_alone_and_never_exhausts_the_readers() {
         .iter()
         .find(|r| r["volume_id"] == stalled_id)
         .unwrap();
-    assert_eq!(replacement["capacity_bytes"], "4096");
-    assert_eq!(replacement["free_bytes"], "1024");
+    assert!(replacement["capacity_bytes"].is_null());
+    assert!(replacement["free_bytes"].is_null());
+    svc.inner.hooks.open(Command::VolumesList, "space_read");
+    svc.inner.hooks.until(
+        "replacement root observes space after the stalled read finishes",
+        |_| {
+            let (volumes, _) = ok("volumes.list", call(&svc, "volumes.list", json!({})));
+            let replacement = volumes["volumes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["volume_id"] == stalled_id)
+                .unwrap();
+            replacement["capacity_bytes"] == "4096" && replacement["free_bytes"] == "1024"
+        },
+    );
 }
 
 #[test]
@@ -1174,6 +1243,8 @@ fn placement_registered_lab_simulation_preserves_every_file_and_mtime() {
         settle(&lab.svc, &start(&lab.svc, &lab.root, "full"))["state"],
         "completed"
     );
+    // #561: a background watcher publication would otherwise race the saved simulation.
+    f3_wait_live(&lab.svc);
     fn contents(
         root: &Path,
     ) -> std::collections::BTreeMap<std::path::PathBuf, (Vec<u8>, std::time::SystemTime)> {
@@ -1769,7 +1840,7 @@ fn file(name: &str, bytes: u64) -> Observation {
 }
 
 /// A fixture root (origin `fixture`, no path) with one listing of `files` files and a subdir.
-fn fixture(svc: &Service, files: u64) -> (i64, i64) {
+pub(super) fn fixture(svc: &Service, files: u64) -> (i64, i64) {
     let w = svc.inner.catalog.writer();
     let WriteReply::Root {
         grant_id,
@@ -3866,6 +3937,152 @@ fn f3_successful_full_scan_with_late_hints_restarts_refresh_budget() {
     f3_wait_live(&lab.svc);
 }
 
+/// #561: an explicit scan.start is never refused because an automatic watcher refresh holds the
+/// root. It pre-empts that refresh, the root stays stale across the hand-over, and a second
+/// explicit scan is still refused while the first runs.
+#[cfg(windows)]
+#[test]
+fn f3_explicit_scan_preempts_a_running_watcher_refresh() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    svc.inner.scan.gate.arm();
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    svc.inner.freshness.ready_targeted_hint(1);
+    svc.inner.scan.gate.wait_reached();
+    let held = (Command::ScanStart, "full_catalogue_published");
+    svc.inner.hooks.closed.lock().unwrap().push(held);
+    let (jobs, _) = ok("jobs.list", call(svc, "jobs.list", json!({"limit":50})));
+    let auto = jobs["jobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|j| j["state"] == "running")
+        .expect("the watcher refresh holds the root")["job_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let state = |job: &str| {
+        let (j, _) = ok("jobs.get", call(svc, "jobs.get", json!({"job_id": job})));
+        j["job"]["state"].as_str().unwrap().to_owned()
+    };
+    let (explicit, stale_in_hand_over) = std::thread::scope(|s| {
+        let asking = s.spawn(|| {
+            call(
+                svc,
+                "scan.start",
+                json!({"root_id": lab.root, "mode": "full"}),
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !asking.is_finished() && state(&auto) == "running" && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        let stale = svc.inner.freshness.stale(1);
+        // Release before asserting so a regression cannot strand the scan worker.
+        svc.inner.scan.gate.release();
+        (asking.join().unwrap(), stale)
+    });
+    let (job, _) = ok("scan.start", explicit);
+    let explicit = job["job"]["job_id"].as_str().unwrap().to_owned();
+    assert_ne!(explicit, auto);
+    assert!(stale_in_hand_over, "the hand-over must stay visibly stale");
+    assert_eq!(settle(svc, &auto)["state"], "cancelled");
+    // The cancelled run has ended and the explicit pass has not yet reported: still stale.
+    svc.inner
+        .hooks
+        .until("explicit pass held before freshness", |h| {
+            h.arrived.lock().unwrap().contains(&held)
+        });
+    let stale_between = svc.inner.freshness.stale(1);
+    let hits_between = f3_hits(svc);
+    svc.inner.hooks.open(held.0, held.1);
+    assert!(stale_between, "a cancelled run must not make the root live");
+    assert!(hits_between["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|h| h["freshness"]["state"] == "stale"));
+    assert_eq!(settle(svc, &explicit)["coverage"], "complete");
+    f3_wait_live(svc);
+
+    // An explicit scan is never pre-empted: a second one is refused at once.
+    svc.inner.scan.gate.arm();
+    let first = start(svc, &lab.root, "full");
+    let second = call(
+        svc,
+        "scan.start",
+        json!({"root_id": lab.root, "mode": "full"}),
+    );
+    svc.inner.scan.gate.release();
+    assert_eq!(err(second).code, ErrorCode::Busy);
+    assert_eq!(settle(svc, &first)["state"], "completed");
+    f3_wait_live(svc);
+}
+
+/// #565 review: a scan that started just past its request deadline reports the real job, and a
+/// retry with the same request_id gets that job, never `deadline_exceeded` for an effect that ran.
+#[cfg(windows)]
+#[test]
+fn a_scan_started_past_its_deadline_reports_the_started_job() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    let after = (Command::ScanStart, "after");
+    svc.inner.hooks.closed.lock().unwrap().push(after);
+    let mut req = request("scan.start", json!({"root_id": lab.root, "mode": "full"}));
+    req.deadline_ms = Some(Int::new(200).unwrap());
+    let sent = Instant::now();
+    let first = std::thread::scope(|s| {
+        let asking = s.spawn(|| svc.call(req.clone(), &CallContext::http()));
+        svc.inner.hooks.until("started, past the deadline", |h| {
+            h.arrived.lock().unwrap().contains(&after)
+                && sent.elapsed() > Duration::from_millis(250)
+        });
+        svc.inner.hooks.open(after.0, after.1);
+        asking.join().unwrap()
+    });
+    assert_eq!(err(first).code, ErrorCode::DeadlineExceeded);
+    let (job, _) = ok("scan.start", svc.call(req, &CallContext::http()));
+    let job = job["job"]["job_id"].as_str().unwrap().to_owned();
+    assert_eq!(settle(svc, &job)["state"], "completed");
+}
+
+/// #565 review: a request that gives up at its deadline releases its claim, so an automatic
+/// refresh can run again and the root returns to live.
+#[cfg(windows)]
+#[test]
+fn an_expired_explicit_request_releases_the_automatic_refresh_fence() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    svc.inner.scan.gate.arm();
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    svc.inner.freshness.ready_targeted_hint(1);
+    svc.inner.scan.gate.wait_reached();
+    // The held refresh cannot observe its cancel, so the explicit request runs out of time.
+    let mut req = request("scan.start", json!({"root_id": lab.root, "mode": "full"}));
+    req.deadline_ms = Some(Int::new(300).unwrap());
+    let refused = err(svc.call(req, &CallContext::http())).code;
+    svc.inner
+        .hooks
+        .until("the request settled", |_| svc.inner.freshness.unclaimed(1));
+    svc.inner.scan.gate.release();
+    assert!(matches!(
+        refused,
+        ErrorCode::Busy | ErrorCode::DeadlineExceeded
+    ));
+    // The cancelled refresh leaves the root stale; only a new automatic pass makes it live.
+    f3_wait_live(svc);
+}
+
 /// #184 MEDIUM-1 for the durable writer: a directory deleted and recreated under the same name
 /// (same creation time, new file ID) is a new row; the old row and its subtree are absent.
 #[cfg(windows)]
@@ -3897,6 +4114,8 @@ fn absence_is_decided_by_identity_when_a_directory_is_replaced_at_its_name() {
         settle(svc, &start(svc, &lab.root, "refresh"))["state"],
         "completed"
     );
+    // #561: late watcher hints may start a refresh; read once freshness is idle.
+    f3_wait_live(svc);
     let slice = lab_slice(svc, &lab.root);
     assert_eq!(slice_totals(&slice), walk(&lab.path));
     assert_eq!(slice_totals(&slice), (2, 2, 107));
@@ -3935,6 +4154,8 @@ fn a_junction_replacing_a_directory_stays_visible_as_excluded() {
     let done = settle(svc, &start(svc, &lab.root, "refresh"));
     assert_eq!(done["state"], "completed", "{done:?}");
     assert!(done["progress"]["skipped"].as_u64().unwrap() >= 1);
+    // #561: late watcher hints may start a refresh; read once freshness is idle.
+    f3_wait_live(svc);
     let slice = lab_slice(svc, &lab.root);
     let b = slice["nodes"]
         .as_array()
@@ -4516,6 +4737,8 @@ fn a_wide_lab_tree_matches_the_walk_under_parallel_workers() {
     let done = settle(svc, job["job"]["job_id"].as_str().unwrap());
     assert_eq!(done["state"], "completed", "{done:?}");
     assert_eq!(done["coverage"], "complete");
+    // #561: late watcher hints from the tree build may start a refresh; read once it is idle.
+    f3_wait_live(svc);
     assert_eq!(slice_totals(&lab_slice(svc, &lab.root)), walk(&lab.path));
 }
 
@@ -5078,6 +5301,8 @@ fn label_and_collect_live(svc: &Service, root: &str, file: &str) {
     );
     let job = settle(svc, &start(svc, root, "full"));
     assert_eq!(job["state"], "completed", "{job:?}");
+    // #561: a background watcher publication would otherwise race the collection read below.
+    f3_wait_live(svc);
     let node = child_named(&lab_slice(svc, root), file).unwrap();
     let (inspected, _) = ok(
         "node.inspect",
@@ -5105,17 +5330,92 @@ fn label_and_collect_live(svc: &Service, root: &str, file: &str) {
         "collections.update_members",
         svc.call(add, &CallContext::http()),
     );
-    let (members, _) = ok(
-        "collections.members",
-        call(
-            svc,
-            "collections.members",
-            json!({"collection_id": created["collection_id"], "limit": 10, "cursor": null}),
-        ),
-    );
+    let members = live_collection_members(svc, &created["collection_id"]);
     let items = members["items"].as_array().unwrap();
     assert_eq!(items.len(), 1, "{members:?}");
     assert_eq!(items[0]["status"], "resolved");
+}
+
+#[cfg(windows)]
+fn live_collection_members(svc: &Service, collection: &Value) -> Payload {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let response = call(
+            svc,
+            "collections.members",
+            json!({"collection_id": collection, "limit": 10, "cursor": null}),
+        );
+        match &response {
+            ResponseEnvelope::Err(e) if e.error.code == ErrorCode::StaleGeneration => {
+                checked("collections.members", &response);
+                assert!(
+                    Instant::now() < deadline,
+                    "live members never stabilised: {:?}",
+                    e.error
+                );
+                // A newer watcher publication invalidates this read, not the durable membership.
+                f3_wait_live(svc);
+            }
+            _ => return ok("collections.members", response).0,
+        }
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn live_collection_read_recovers_from_a_background_publication() {
+    let Some(lab) = lab() else { return };
+    let svc = Arc::new(lab.svc);
+    let hydrate = (Command::CollectionsMembers, "hydrate");
+    let published = (Command::ScanStart, "targeted_catalogue_published");
+    svc.inner
+        .hooks
+        .closed
+        .lock()
+        .unwrap()
+        .extend([hydrate, published]);
+    let reading = {
+        let svc = svc.clone();
+        let root = lab.root.clone();
+        std::thread::spawn(move || label_and_collect_live(&svc, &root, "top.bin"))
+    };
+    svc.inner.hooks.until("live members hydration", |h| {
+        h.arrived.lock().unwrap().contains(&hydrate)
+    });
+    let clean = svc.inner.hit_freshness(1);
+    let before = svc.inner.revisions().unwrap();
+    // A real change inside the grant, with the state/WAL files outside watcher reach.
+    std::fs::write(lab.path.join("a").join("new.bin"), b"synthetic").unwrap();
+    let stale = svc.inner.hit_freshness(1);
+    svc.inner.freshness.ready_targeted_hint(1);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !svc.inner.hooks.arrived.lock().unwrap().contains(&published) && Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let reached = svc.inner.hooks.arrived.lock().unwrap().contains(&published);
+    let after = svc.inner.revisions().unwrap();
+    // Release both workers before asserting, including when the reproduction fails.
+    svc.inner.hooks.open(published.0, published.1);
+    svc.inner.hooks.open(hydrate.0, hydrate.1);
+    let result = reading.join();
+    assert_ne!(
+        clean.state,
+        SearchFreshnessState::Stale,
+        "state writes and reads dirtied the grant"
+    );
+    assert_eq!(stale.state, SearchFreshnessState::Stale);
+    assert!(reached, "native change never caused a targeted publication");
+    assert!(
+        after.0 > before.0,
+        "background scan did not advance catalogue revision"
+    );
+    assert_eq!(
+        after.1, before.1,
+        "the race must be a catalogue publication, not a preference edit"
+    );
+    result.unwrap();
+    assert!(svc.inner.hooks.runs.lock().unwrap()[&Command::CollectionsMembers] >= 2);
 }
 
 #[cfg(windows)]

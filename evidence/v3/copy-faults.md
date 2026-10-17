@@ -74,9 +74,11 @@ unclassified label fails the run, so the map cannot fall behind the executor.
 | CP-22 | C5 refused at `preparing` | `... transition:refused` |
 | CP-F | refusal records reached by fault scenarios | `item_failed`, `transition:blocked`, `transition:needs_attention` |
 
-C5 has no admission lock or fence epoch read at the rename (revocation is not wired into the executor).
-CP-16 is the point immediately before the rename call: the place that read will take. The revocation
-cases of section 10 (publish barrier, revoke at each boundary) wait for that wiring.
+C5 has the per-run admission lock and a fence epoch read at every effect step, the rename included
+(`crates/loomward-windows/src/effects/exec.rs`, `admit`; docs/47 section 5; #544). A revocation or an identity
+change fences a running copy (#564). CP-16 is the point immediately before the rename call, where the rename
+step takes the admission lock and reads the epoch. The revocation cases of section 10 are only partly covered;
+see "Not covered here".
 
 ## Scenarios
 
@@ -143,6 +145,64 @@ Reproduce with `LOOMWARD_CRASH_SEED=<decimal seed>` (default `0x2026101700c6`).
 | Source changed mid-copy, then a kill | source rewritten after the identity commit (real) | never committed, never published; Abandon `cancelled` |
 | Source changed between rename and `committed` | kill at CP-13, then the source rewritten (real) | recovery does not commit; Abandon ends `needs_attention` and the published copy is kept byte-identical |
 
+## Journal append faults (#535)
+
+The kill matrix stops the process; it never makes a journal write fail while the process lives on. docs/47
+section 8 lists `state.db` full or locked ("stop before the effect; no effect without its intent"). A test-only
+seam now fails a chosen `Store::append` as SQLite would, and the executor runs on in this process.
+
+**Seam.** `loomward-operations` feature `fault-injection` (off everywhere except the dev-dependency of
+`loomward-windows`; production builds contain no hook, no field and no error path for it). A hook sees every
+append and its stage and may fail it:
+
+| Stage | Where inside the append | After the error |
+|---|---|---|
+| `Row` | after validation, before the journal row is inserted | rolled back: nothing stored |
+| `Head` | after the row, before the head anchor (#539) | rolled back: row and head together, never a row without its head |
+| `Ack` | after the commit | the record is durable while the caller is told it failed (a lost acknowledgement) |
+
+Two kinds: `Full` (SQLITE_FULL, "database or disk is full") and `Busy` (SQLITE_BUSY, "database is locked").
+`crates/loomward-operations/tests/append_faults.rs` also drives the two real SQLite errors with no seam: a second
+connection holding the write lock past the 5 s busy timeout, and `PRAGMA max_page_count` capping the database.
+Both leave the journal replaying (head equals tail) and accepting the next append.
+
+**Matrix** (`a_failed_journal_append_stops_the_executor_and_recovers_under_the_oracle`, in-process, no kill). For
+every journal append each scenario's step makes (Run, Refused, AbandonVerified, AbandonPublish, Confirm; run, or
+recover then Abandon), under every variant of kind x stage, the Nth append fails. The same oracle then applies,
+plus these checks:
+
+1. The fault surfaces as that database error (`Fault::Journal` naming `DiskFull` or `DatabaseBusy`), never
+   swallowed, never turned into another outcome.
+2. No append is attempted after the failed one, and the destination parent is identical when the step returns and
+   at the moment of the failure (no effect after a failed record; write-ahead).
+3. The journal holds exactly the rows before the failed append (`Ack`: plus that one); it replays; the receipt
+   (`status`) agrees with it and passes the oracle before any recovery.
+4. Recovery on open, then the owner's Abandon, then the oracle again: the same end states as a kill at that record.
+
+Record classes failed: CP-01, 02, 03, 04, 10, 11, 13, 15, 17, 19, 20, 21, 22 (every "before <record>" boundary
+of the kill map; the run asserts each). CP-05 to CP-09, 12, 14, 16 and 18 are effect boundaries or "after"
+labels and have no append of their own.
+
+Default mode (this PR): 43 faults, 1 variant per append, rotating through the six; all 8 `crash_tests` passed in 51 s
+on a quiet host. Full: 360 faults, every append under all six variants, both Q1 policies, 0 source changes, 0
+false commits, 24 commits (the `Ack` variants at `committed`, each C1-equal to the source). Faults per class: CP-01
+24, CP-02 12, CP-03 12, CP-04 12, CP-10 24, CP-11 24, CP-13 24, CP-15 36, CP-17 12, CP-19 132, CP-20 24, CP-21 12,
+CP-22 12. Outcomes (state after recovery -> after Abandon): cancelled -> cancelled 184, copying -> cancelled 88,
+committed -> committed 24, preparing -> cancelled 24, publishing -> cancelled 12, staged -> cancelled 12,
+cancelling -> needs_attention 8, copying -> needs_attention 4, refused -> refused 4. The `needs_attention`
+endings are the designed answer for a failed write mid-cleanup or after a create batch (an unjournaled
+create is never adopted).
+
+A lost acknowledgement at `committed` leaves a published, C1-equal copy and a `committed` receipt while the run
+returned an error: a false failure, never a false completion. Callers must treat `Fault::Journal` as "read the
+journal", not "nothing happened".
+
+**The oracle was shown to fail.** (a) With the `create_batch` append's error ignored (`let _ = ...`), the run
+continued to a committed copy and the matrix failed at the first lost-acknowledgement variant: "the failed append
+was swallowed or misreported". (b) With the staging folder created after a failed `staging_intent` append, it
+failed with "an effect ran after its record failed" and the extra `~lw-staging-...` entry. Both mutations were
+reverted.
+
 ## Elevation
 
 Hosted runners are elevated and the copy primitives refuse elevated tokens. Each C6 test first proves the
@@ -163,7 +223,13 @@ exit within 120 s fails the run instead of hanging it.
 **Folder-metadata kill points came after the full run.** They were added in `04fb4ca` from the Codex review of
 #532, so the full run at `dcf6077` has no kill between partial folder metadata sets. They are covered by the
 default-mode run above. The full re-run at `04fb4ca` was refused at preview with `insufficient_space`: C: had
-9.1 GB free, below the 1% reserve, because of other lanes' build directories. It is owed when space allows.
+9.1 GB free, below the 1% reserve, because of other lanes' build directories. It was owed.
+
+**Full re-run, 2026-10-17 14:34 to 14:46 UTC, 11 min 25 s (684 s of tests), 8 passed** with the journal append
+matrix above in the same command. The kill matrix is now **242 kills** (the folder-metadata points raised Run
+from 70 to 73 boundaries per policy): 0 source changes, 0 false commits, 30 commits, each C1-equal to the
+source; CP-10 58 (was 52), every class CP-01 to CP-22 killed at least once. Random: 240 kills, seed
+`0x2026101700c6`, 0 source changes, 0 false commits, 53 commits. Total 482 kills and 360 append faults.
 
 The preview refuses with `insufficient_space` when C: has less free than the reserve (the larger of 1 GiB and
 1% of the volume). On this 1 TB host, shared with other lanes' build directories, that refusal was seen
@@ -173,8 +239,13 @@ at 7.5 GB and at 9.1 GB free.
 
 - Real power cuts (G5) and the proven restore (G9): open, owner method pending (Q2).
 - Resume after a crash: C5 has none.
-- Revocation at each boundary, the publish barrier and the publish TOCTOU regression: they need the admission
-  lock and fence wiring, which C5 does not have.
+- Revocation at each boundary: `exec_tests.rs` fences at staging creation, identity commit, before and after
+  the rename, and mid-file at the 1 MiB chunk. Not fenced there: the `Writing`, `Written` and `Verified`
+  boundaries, and mid-file offsets other than 1 MiB. The publish barrier test and the publish TOCTOU regression
+  (docs/47 section 10) are not written.
 - A kill between `started` and the plan record (the service writes both): `recover` handles it as
   cancelled-before-plan, but no kill exercises it here.
-- Journal write failure injection (`state.db` full or locked).
+- A failed `set_plan` write (the service writes the plan after `started`, outside the executor), a failed
+  `Store::start`, and an ambiguous commit where the database has the record but the connection is gone before
+  the executor is told (modelled only as the `Ack` stage, in the same process).
+- Journal faults during several appends in a row (the matrix fails exactly one append per run, then recovers).

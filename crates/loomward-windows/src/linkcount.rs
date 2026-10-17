@@ -19,6 +19,21 @@ pub fn is_placeholder(attributes: u32) -> bool {
     attributes & (0x1000 | 0x40000 | 0x400000) != 0
 }
 
+/// Link count from an already-open handle, without opening an owner path or checking elevation.
+/// State-copy scrubbing supplies its own deny-delete handle; this is not effect authority.
+#[cfg(windows)]
+pub fn from_file(file: &std::fs::File) -> std::io::Result<u32> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(info.nNumberOfLinks)
+}
+
 /// One trusted catalogue name to observe, never a path supplied by a service caller.
 #[derive(Debug, Clone)]
 pub struct Entry {
@@ -125,6 +140,24 @@ fn one(entry: &Entry) -> std::io::Result<Outcome> {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[cfg(windows)]
+    #[test]
+    fn linkcount_from_file_does_not_apply_owner_path_elevation_gate() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("synthetic-copy.db");
+        std::fs::write(&path, b"synthetic backup").unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let _reset = crate::enumerate::force_elevation_for_test();
+        assert_eq!(from_file(&file).unwrap(), 1);
+        assert_eq!(
+            crate::identity::observe(&path).unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        let alias = temp.path().join("synthetic-alias.db");
+        std::fs::hard_link(&path, &alias).unwrap();
+        assert_eq!(from_file(&file).unwrap(), 2);
+    }
 
     #[cfg(windows)]
     #[test]

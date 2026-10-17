@@ -620,12 +620,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "loomward-ask"
+version = "0.1.0"
+dependencies = [
+ "loomward-protocol",
+ "loomward-service",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "loomward-backup"
 version = "0.1.0"
 dependencies = [
  "proptest",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "loomward-broker"
+version = "0.1.0"
+dependencies = [
+ "loomward-ask",
+ "loomward-protocol",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

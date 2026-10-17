@@ -288,7 +288,7 @@ the rename outcomes above are host measurements.
 ## NOT verified and residual risk
 
 ReFS and other hosts; files above 4 GiB; 200,000 simultaneous holds; every ACL
-inheritance shape; the unsupported-read-only-flag fallback; mapped-section H7;
+inheritance shape; the unsupported-read-only-flag fallback; mapped-section H7 on ReFS (NTFS measured positive in `copy-executor-lab.md`, #526);
 SHA-256-versus-storage throughput; cloud/provider recall behavior; the full
 refusal/fault/crash matrix and post-publish confirmation; real power cuts and
 proven restore: **UNVERIFIED**. Large-file and handle-limit stress runs were not
