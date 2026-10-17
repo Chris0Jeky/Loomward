@@ -121,6 +121,12 @@ fn one(path: &Path) -> io::Result<ObservedIdentity> {
     from_handle(&handle)
 }
 
+#[cfg(all(windows, any(feature = "content-read", test)))]
+pub(crate) fn from_file(file: &std::fs::File) -> io::Result<ObservedIdentity> {
+    use std::{mem::ManuallyDrop, os::windows::io::AsRawHandle};
+    from_handle(&ManuallyDrop::new(crate::win::Handle(file.as_raw_handle())))
+}
+
 #[cfg(windows)]
 pub(crate) fn from_handle(handle: &crate::win::Handle) -> io::Result<ObservedIdentity> {
     use crate::win::info;
