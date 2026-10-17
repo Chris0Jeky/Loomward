@@ -154,3 +154,109 @@ for i in 1 2 3; do for v in main branch; do .loomward/bulk148/$v/bench.exe --row
 ```
 
 `py -3 .loomward/bulk148/ab.py MINUTES` runs both sets, waiting up to MINUTES for a quiet host.
+
+## Follow-ups #386 — 17 October 2026
+
+Native Windows 11, KRASPYON, shared host, synthetic metadata only. Baseline is current main
+`04cb397ee2604113acfa0babe29dc1b0827d9b27`, not the pre-search-index main above. Work is committed
+on `fix/386-first-scan-bulk`. Initial commands used `CARGO_BUILD_JOBS=4`; after the
+driver's memory-pressure interruption all commands use `CARGO_BUILD_JOBS=3` and the lane-owned
+`CARGO_TARGET_DIR=C:/lw/target/bulk-386` from `C:/lw/wt/bulk-386`.
+
+### Changed
+
+- A successful bulk `EndRun` (including failed/cancelled run finalisation) attempts `VACUUM main`
+  after publication commits, before the existing non-waiting WAL checkpoint. It runs only when
+  the freelist holds at least 1 MiB and at least 10% of the catalogue's pages. It never runs on
+  ordinary incremental `EndRun`s. Lock waiting is disabled during maintenance and the original
+  timeout is restored. A maintenance error cannot turn committed scan rows into a failed receipt.
+  `checkpoint_seconds` includes the compaction cost.
+- The in-memory bulk-run map is restored when a command's savepoint fails. Only the four command
+  types that change this map take a snapshot; listing batches gain no map copy. A failed outer
+  transaction still closes the writer and recovery remains unchanged.
+- The existing P4/P14 bench additionally reports free pages and the search index's occupied bytes
+  (`dbstat`, as in `search_bench`), so a remaining size miss can be distinguished from unused pages.
+
+### Regression evidence
+
+Before the production change:
+
+```text
+cargo test --manifest-path C:/lw/wt/bulk-386/Cargo.toml -p loomward-catalog --lib writer::bulk_tests::bulk_ -- --nocapture
+1 passed, 3 failed, 65 filtered out; exit 101
+```
+
+- `bulk_map_follows_begin_savepoint_rollback`: retry got `NotFound` after the rolled-back run ID
+  was reissued to an incremental refresh. The fault rejects one actual SQLite savepoint RELEASE
+  through its authorizer; rusqlite rolls back the savepoint on drop.
+- `bulk_map_follows_end_savepoint_rollback`: a listing after a rejected EndRun RELEASE appeared
+  live (`1` file, expected `0`) instead of remaining in the rolled-back bulk build.
+- `bulk_end_reclaims_large_freelists_without_changing_rows`: 30,000 fixture files left 1,125 unused
+  pages after EndRun.
+
+After the fix, the same command passed all 4 tests (the existing full equivalence test included).
+The size test was then strengthened to require zero free pages, retain a pre-publication reader
+snapshot, and keep a second root's unpublished build through compaction and its later publication.
+It also checks row counts, logical-byte totals, SQLite integrity and FTS integrity.
+
+### Measurement
+
+Existing bench command for each variant:
+
+```text
+cargo run --release --manifest-path C:/lw/wt/bulk-386/Cargo.toml -p loomward-catalog --example bench -- --rows 1000000
+```
+
+There are 1,000,000 files and 1,001 directories. The first baseline ran before any production edit;
+its binary is retained in ignored `.loomward/bulk386/baseline-bench.exe`. Raw benchmark receipts
+and logs remain in ignored `.loomward/bulk386/`; the portable measurement receipt is
+[`bench/bulk-load-followups-386.json`](bench/bulk-load-followups-386.json).
+
+| Variant | Catalogue bytes | B/entry | Insert s | EndRun s | Maintenance s |
+|---|---:|---:|---:|---:|---:|
+| Current main | 311,488,512 | 311.177 | 15.058 | 25.944 | 0.158 |
+| Compaction | 228,229,120 | 228.001 | 16.012 | 30.775 | 4.825 |
+| Compaction, instrumented repeat | 228,229,120 | 228.001 | 5.475 | 12.504 | 1.830 |
+| Compaction, 2M files | 456,900,608 | 228.222 | 10.707 | 30.129 | 4.330 |
+
+The first comparison reclaimed 83,259,392 bytes (26.73%). EndRun increased by 4.832 s and
+maintenance by 4.667 s in these observations. Host load is uncontrolled: no throughput improvement,
+cold-cache result or quiet-host latency comparison is claimed. The faster instrumented repeat
+also demonstrates that elapsed-time comparisons are load-sensitive here.
+
+The instrumented 1M run had **zero freelist pages** and 81,403,904 bytes in the mandatory
+`search_name` tables (81.323 B/entry); the remaining catalogue occupies 146.678 B/entry. The 2M
+run also had zero free pages and 162,783,232 search-index bytes. Its 2,000,000 files plus 2,001
+directories are the largest row count the existing benchmark accepts (`--rows 2000000`). Both
+instrumented runs matched their independent count/byte oracle and removed their temporary stores.
+
+Process high-water through publication and queries was 573,161,472 bytes (546.6 MiB) at 1M and
+835,276,800 bytes (796.6 MiB) at 2M. A 500 ms monitor of each entire process, including its
+isolated index probe, sampled the same peaks. Runs were serial and monitored with a 3 GiB kill
+bound on the owned benchmark only; the 2M process exited 0. Both receipts were complete and stderr
+was empty. The native high-water counters exclude the isolated index probe; the full-process
+monitor is sampled, so it can miss short peaks. The 2M limit was retained instead of changing
+the benchmark to attempt 10M on the shared 16 GB host.
+
+**P14 remains open:** 228.001 B/entry exceeds the 200 B/entry target. The compulsory trigram
+search index was added after #386's original 229.9 B/entry baseline (see
+[`search-v1.md`](search-v1.md), size table); changing its representation is outside this slice.
+The freed-build-page regression is fixed; the 10M size and peak-memory target is unverified.
+
+### Failed/interrupted first scan: preserve the documented decision
+
+No behavior change. The catalogue HANDOFF's first-scan design explicitly says failed EndRun
+discards its build and leaves an empty partial root; its crash-safety section says reopen discards
+an unpublished build. Existing tests
+`a_failed_run_discards_the_build_and_the_next_scan_is_incremental` and
+`a_crash_between_build_and_swap_leaves_nothing_visible_and_reopen_discards_the_build` pin that behavior. Cancelled
+EndRun continues to publish its partial build atomically. No new owner/product decision is inferred.
+
+### Gates and limits
+
+Final gates (driver, same host): `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test -p loomward-catalog` (all suites green: lib 69 passed) and `git diff --check` pass. No personal scan, HTTP/app/native-shell change, publication or commit.
+`HUMAN_TODO.md` was inspected and left unchanged; q-13 is the existing authority for the bulk path.
+VACUUM rewrites the catalogue, needs temporary disk space and can increase peak WAL/disk usage;
+a busy/full/error case leaves compaction undone and the committed scan intact. It runs synchronously,
+so cancellation during EndRun also waits for this maintenance. Physical power-cut and actual IOERR
+injection are not verified by the authorizer fault or SQLite integrity checks.

@@ -637,6 +637,7 @@ fn serve(
             break;
         };
         let checkpoint = matches!(first.command, WriteCommand::EndRun { .. });
+        let compact_bulk = matches!(&first.command, WriteCommand::EndRun { run_id, .. } if context.bulk.contains_key(run_id));
         let forget = matches!(first.command, WriteCommand::ForgetGrant { .. });
         let mut batch = vec![first];
         let first_run = staged_run(&batch[0].command).filter(|run| {
@@ -737,6 +738,14 @@ fn serve(
                         let p = batch.last_mut().expect("transaction command");
                         let command_bytes = transaction_bytes(p, first_run);
                         let ready = prepared.take().unwrap_or(Ok(None));
+                        let bulk_before = matches!(
+                            p.command,
+                            WriteCommand::BeginRun { .. }
+                                | WriteCommand::EndRun { .. }
+                                | WriteCommand::RevokeGrant { .. }
+                                | WriteCommand::GrantIdentityChanged { .. }
+                        )
+                        .then(|| context.bulk.clone());
                         results.push(ready.and_then(|prepared| {
                         let save = tx.savepoint()?;
                         save.execute(
@@ -778,6 +787,9 @@ fn serve(
                         }
                     }));
                         if results.last().is_some_and(Result::is_err) {
+                            if let Some(bulk) = bulk_before {
+                                context.bulk = bulk;
+                            }
                             if let WriteCommand::StageChunk { run_id, dir_id, .. } = &p.command {
                                 // Savepoint rollback must not make the accepted prefix publishable as complete.
                                 context.fenced_listings.insert((*run_id, *dir_id));
@@ -887,7 +899,7 @@ fn serve(
             let profile = std::env::var_os("LOOMWARD_SCAN_PROFILE").is_some();
             let before = profile.then(|| checkpoint_probe(&conn));
             let started = Instant::now();
-            let result = end_checkpoint(&conn);
+            let result = end_checkpoint(&conn, compact_bulk && results.iter().all(Result::is_ok));
             let seconds = started.elapsed().as_secs_f64();
             if profile {
                 eprintln!(
@@ -968,10 +980,22 @@ pub(crate) fn wal_cut(conn: &Connection, wait: Duration, vacuum: &mut bool) -> b
     }
     done
 }
-fn end_checkpoint(conn: &Connection) -> rusqlite::Result<[i64; 3]> {
+fn end_checkpoint(conn: &Connection, compact_bulk: bool) -> rusqlite::Result<[i64; 3]> {
     let timeout = conn.query_row("PRAGMA busy_timeout", [], |r| r.get::<_, u32>(0))?;
     // Best-effort WAL maintenance must not hold a committed EndRun receipt behind a reader.
     conn.busy_timeout(Duration::ZERO)?;
+    if compact_bulk {
+        // Best effort after publication: reclaim large build leftovers, never fail committed rows.
+        let reclaim = conn.query_row(
+            "SELECT freelist_count*page_size>=1048576 AND freelist_count*10>=page_count
+             FROM pragma_freelist_count, pragma_page_size, pragma_page_count",
+            [],
+            |r| r.get::<_, bool>(0),
+        );
+        if matches!(reclaim, Ok(true)) {
+            let _ = conn.execute_batch("VACUUM main");
+        }
+    }
     crate::crashpoint::hit("end-of-run checkpoint");
     let result = conn.query_row("PRAGMA main.wal_checkpoint(TRUNCATE)", [], |r| {
         Ok([r.get(0)?, r.get(1)?, r.get(2)?])
