@@ -967,9 +967,10 @@ mod lab_copy {
     }
 
     /// copy_preview (~516-537): a refused preview is reported `refused`, never `draft`, with its refusal
-    /// count, and each refusal's `node_id` is null. Here the destination sits inside the selected folder.
+    /// count. An item refusal names the refused entry's catalogue node (#526); an operation-wide one is
+    /// null. Here the destination sits inside the selected folder `a`, which is the refused entry.
     #[test]
-    fn a_refused_preview_is_reported_refused_with_null_node_ids() {
+    fn a_refused_preview_is_reported_refused_with_catalogue_node_ids() {
         let Some((lab, a, _b)) = scanned() else {
             return;
         };
@@ -987,13 +988,62 @@ mod lab_copy {
         let refusals = p["refusals"].as_array().unwrap();
         assert!(!refusals.is_empty(), "{p:?}");
         assert_eq!(p["refusal_count"].as_u64(), Some(refusals.len() as u64));
-        assert!(
-            refusals
-                .iter()
-                .any(|r| r["code"] == "destination_inside_source"),
-            "{p:?}"
+        let inside = refusals
+            .iter()
+            .find(|r| r["code"] == "destination_inside_source")
+            .unwrap_or_else(|| panic!("{p:?}"));
+        assert_eq!(inside["node_id"], json!(a), "{p:?}");
+    }
+
+    /// #526: a runtime item refusal carries the refused entry's catalogue node. A writer holding `1.bin`
+    /// makes the run `blocked` with `source_in_use` on that item.
+    #[test]
+    fn a_runtime_item_refusal_names_the_catalogue_node() {
+        let Some((lab, a, b)) = scanned() else { return };
+        let svc = &lab.svc;
+        let one = node_named(&lab_slice(svc, &lab.root), "1.bin");
+        let p = preview(svc, &a, &b);
+        let op = p["operation_id"].as_str().unwrap().to_owned();
+        let consent = json!({"operation_id": op, "digest": digest(&p)});
+        ok("copy.approve", call(svc, "copy.approve", consent.clone()));
+        let writer = std::fs::OpenOptions::new()
+            .append(true)
+            .open(lab.path.join("a").join("1.bin"))
+            .unwrap();
+        ok("copy.start", call(svc, "copy.start", consent));
+        let done = settle_copy(svc, &op);
+        drop(writer);
+        assert_eq!(done["state"], "blocked", "{done:?}");
+        assert_eq!(
+            done["refusal"],
+            json!({"code": "source_in_use", "node_id": one}),
+            "{done:?}"
         );
-        assert!(refusals.iter().all(|r| r["node_id"].is_null()), "{p:?}");
+    }
+
+    /// #526: the catalogue lookup behind refusal node IDs never invents a node. A name the catalogue
+    /// does not hold, or a held name whose native file ID differs, is `None`.
+    #[test]
+    fn a_refusal_node_is_null_unless_name_and_identity_match() {
+        let Some((lab, _a, _b)) = scanned() else {
+            return;
+        };
+        let inner = &lab.svc.inner;
+        let row = inner.root_row(&lab.root).unwrap();
+        let dir = crate::db::roots(&inner.db(), Some(row)).unwrap()[0]
+            .dir
+            .unwrap();
+        let id = loomward_windows::identity::observe(&lab.path.join("a").join("1.bin"))
+            .unwrap()
+            .object
+            .file_id;
+        let at = |names: &[&str], file_id: [u8; 16]| {
+            crate::copy::catalogue_node(&inner.db(), dir, names, file_id)
+        };
+        assert!(matches!(at(&["a", "1.bin"], id), Some((loomward_catalog::NodeKey::File(_), _))));
+        assert_eq!(at(&["a", "1.bin"], [0xEE; 16]), None);
+        assert_eq!(at(&["a", "absent.bin"], id), None);
+        assert_eq!(at(&["absent", "1.bin"], id), None);
     }
 
     /// copy_preview (~516): a preview with more refusals than the wire bound answers the first 256 and
@@ -1026,9 +1076,13 @@ mod lab_copy {
         assert!(p["refusal_count"].as_u64().unwrap() >= BAD as u64, "{p:?}");
         let refusals = p["refusals"].as_array().unwrap();
         assert_eq!(refusals.len(), 256);
-        assert!(refusals
+        // Each refused file is catalogued under its name and file ID, so each names its own node.
+        assert!(refusals.iter().all(|r| r["code"] == "name_unrepresentable"));
+        let nodes: std::collections::BTreeSet<_> = refusals
             .iter()
-            .all(|r| r["code"] == "name_unrepresentable" && r["node_id"].is_null()));
+            .map(|r| r["node_id"].as_str().unwrap_or_else(|| panic!("{r:?}")))
+            .collect();
+        assert_eq!(nodes.len(), 256);
     }
 }
 
