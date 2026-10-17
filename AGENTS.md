@@ -47,11 +47,11 @@ a first measurement and must be reported as such. On Windows use `codex.cmd`, `n
 
 | You changed | Run |
 |---|---|
-| Python reference (frozen oracle), schemas, fixtures | `py -3 scripts/verify.py` (256 tests (2 skips), including the 80 admission-parity fixtures; it also runs the Rust gates when cargo is present) |
-| Rust workspace (`crates/*`, glob) | `cargo fmt --all --check`, `cargo test --workspace` (988 on Windows at 129373f: apps 24, backup 19, catalog 213, core 30, engine 209, http 72, lab 27, learn 18, protocol 36, service 179, shell 27, telemetry 34, windows 100; doc tests counted in their crates), `cargo clippy --workspace --all-targets -- -D warnings`; add `--all-features` for the `loomward-windows` fixture lab |
+| Python reference (frozen oracle), schemas, fixtures | `py -3 scripts/verify.py` (279 tests (1 skip), including the 80 admission-parity fixtures; it also runs the Rust gates when cargo is present) |
+| Rust workspace (`crates/*`, glob) | `cargo fmt --all --check`, `cargo test --workspace` (1,288 on Windows at 8a3dc6f, 2026-10-17; per-crate split in docs/16 wave 9 is historical), `cargo clippy --workspace --all-targets -- -D warnings`; add `--all-features` for the `loomward-windows` fixture lab |
 | Svelte app (`app/`) | `npm.cmd --prefix app run check`, `run test`, `run build`, then `py -3 scripts/test_app.py` (Playwright e2e incl. Atlas and Observatory), or all four via `py -3 scripts/verify.py --app`; add `--live-serve` when you touch `loomward-http` or an app transport |
 | Python, Rust and the Svelte app in one go | `py -3 scripts/verify.py --app` (`--app` reports UNVERIFIED, never PASS, when Node, npm or `app/node_modules` is missing) |
-| Tauri shell (`native/`) | excluded from the root workspace: `cargo build`, `cargo test` (7 + 1 ignored) and `cargo clippy --all-targets -- -D warnings` with `--manifest-path native/Cargo.toml`, then `native/target/debug/loomward-desktop.exe --self-test`; `native/tests/webview2_probe.py` drives the real window |
+| Tauri shell (`native/`) | excluded from the root workspace: `cargo build`, `cargo test` (59 + 1 ignored on 2026-10-17) and `cargo clippy --all-targets -- -D warnings` with `--manifest-path native/Cargo.toml`, then `native/target/debug/loomward-desktop.exe --self-test`; `native/tests/webview2_probe.py` drives the real window |
 | Docs only | `git diff --check` plus the links you touched |
 
 Missing tooling is UNVERIFIED, never PASS. New behaviour lands with the test that pins it. Never
@@ -64,7 +64,9 @@ disable, skip or weaken a failing test to advance a milestone.
    general execute, shell, delete or kill endpoint, through HTTP, IPC or MCP.
    The one file write opened so far is the q-15 diagnostic bundle (LW-055, ADR-V3-24): only the
    previewed, redacted bytes, to a new file or an owner-confirmed overwrite chosen in the Rust-side
-   save dialog; the path never crosses IPC. It is not a general write capability.
+   save dialog; the path never crosses IPC. It is not a general write capability. Copy-and-verify (LW-124,
+   docs/47) writes, renames and (only when enabled) removes its own staging, but only for synthetic sessions on
+   registered lab roots (#522); personal sessions get `copy_effect_gated` until gate C8 opens.
 2. **No silent reach.** No automatic cloud requests, model downloads, installers, global config
    changes, elevation or whole-disk scans. Real-disk scans take an explicit root, non-elevated,
    metadata only, with state outside it; a path seen in a doc is not a grant. Owner grant

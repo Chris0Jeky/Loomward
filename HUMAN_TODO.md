@@ -400,14 +400,18 @@ and possibly a full redesign, come later. "for now I wanna keep the momentum goi
 
 An empty GitHub organisation named `Loomward` (created 2026-08-06) exists. Whose it is was not established.
 
-### q-47 — Design questions waiting for their lanes — NOT YET ASKED
+### q-47 — Design questions waiting for their lanes — copy-and-verify Q1-Q3 POSED 2026-10-17
 
-Recorded so a later session asks them at the right time; no answer is needed now.
-- Copy-and-verify (docs/47 section 12), before the copy lanes that need them:
-  - Q1: may cancel delete Loomward's own staging files?
-  - Q2: how to prove power-cut safety (Hyper-V hard stop or a power pull on lab data; until then the operation stays
-    lab-only)?
-  - Q3: copies into new folders only, or also into an existing folder (new names only)?
+Copy-and-verify lanes C1 to C5 and C7 landed on 2026-10-17 (lab-only), so Q1 to Q3 were posed through the owner
+inbox (agent-hq#461; answer in the cockpit or in chat). The Find & Ask and Store items below are still not asked.
+- [ ] **loomward-copy-staging-removal** (Q1): may cancel and abandon delete Loomward's own unpublished staging files,
+  matched by recorded identity inside its own staging folder? Recommended: allow. Until answered, cancel and abandon
+  leave the staging folder in place and report it (`LOOMWARD_COPY_STAGING_REMOVAL = false`, #522).
+- [ ] **loomward-copy-power-cut-method** (Q2): a Hyper-V VM hard-stopped during lab copies (desktop only; KRASPYON is
+  Windows 11 Home, without Hyper-V), a power pull on a disposable machine, or neither yet (copy stays lab-only).
+  Recommended: Hyper-V. Gate G5 stays shut until one is done.
+- [ ] **loomward-copy-destination-shape** (Q3): v1 new folder only (recommended, built), or also into an existing
+  folder with new names only. Defaults to new folder only on 2026-10-24 if unanswered (reversible).
 - Find & Ask (docs/46 section 11, which names each question's trigger lane):
   - the elevated helper's launch model;
   - Everything results outside the grants (hidden is recommended);

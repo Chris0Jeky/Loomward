@@ -335,3 +335,43 @@ Counts (Windows, at `129373f`):
 - any package-channel publication.
 
 **Effects:** one file write exists: the owner-initiated diagnostic export. When the owner confirms Loomward's replace question, it overwrites that existing file; that is the only act on an existing owner file. No other effect touches existing owner files, and none touches processes. Copy-and-verify is designed, not built.
+
+## v0.3 status, wave 10 (17 October 2026, overnight on the KRASPYON laptop; counts measured at `8a3dc6f`)
+
+The sections above are kept as history.
+- **Merged:** 42 PRs (#458 to #525), each with green hosted CI at merge.
+- **Review:** each PR had at least one fresh-context review (Sonnet reviewer, test-reviewer or fact-checker) before merge. High-risk lanes had a second lens: C2 and C5 (Opus deep reviewer, gate item G8). Fix rounds were verified by a scoped pass.
+- **Bug hunting:** four Muse lens waves (bug-hunt, security, a11y, perf, test-gaps, then retroactive review-range) fed verify-then-fix lanes. Confirmed findings were fixed test-first; unconfirmed claims are recorded as such in each PR.
+- **Host:** first session on KRASPYON (Windows 11 Home 10.0.26100, 18 threads, 16 GB). Its five host failures were a real defect: `OpenFileById` returns error 50 when the hint handle sits under AppData. The fix retries against the volume root with every identity check intact (#479, closes #292). The workspace is now green on this host.
+
+| Area | State on `main` | Evidence |
+|---|---|---|
+| Copy-and-verify (LW-124, q-32) | **Lanes C1 to C5 and C7 built; lab-only.** C1 read-only tree verifier (#471, #485, #511). C2 native primitives: create-new staging, non-cached read-back, no-replace publish, identity-bound staging cleanup, H1-H6 measured (#503). C3 journal, state machine and recovery reader (#474). C4 manifest, refusal classifier, digest-bound single-use approval and the `copy.*` contract (#508). C5 executor for **synthetic sessions on registered lab roots only** (#522). C7 UI with the gate shown honestly (#516, #524). Personal sessions get `copy_effect_gated`. G6 holds (HTTP refuses personal approvals; MCP has no copy command). Staging removal is off by default until the owner answers Q1 | `evidence/v3/copy-primitives.md`, `evidence/v3/copy-executor-lab.md` |
+| Copy gate (C8) | **Closed.** Needs C6 (fault and crash matrix, in progress), the G5 power-cut proof, G9 proven restore, owner answers to Q1-Q3 (posed: agent-hq#461), and the pre-C8 items: revocation wiring, admission lock and the residual windows (#526) | docs/47 section 11 |
+| Find & Ask | F1 federated-search contract and query grammar with Rust/TS parity (#476). F2 ranked search: token index, weighted RRF, relevance harness. MRR@10 0.993 vs 0.770 for v1 on a synthetic corpus written with the ranker. The token index is **off by default**: enabling it waits on a 10M baseline, a bulk-aware swap and a measured migration (#513, #520). `federated_search` stays false | `evidence/v3/search-relevance-f2.md` |
+| Readiness bar (q-39) | Row 4 churn **PASS**: 100k files and 128 mutation batches during a scan; scan plus refresh equals a fresh scan and a filesystem walk (#484). Row 1: full crash sweep on KRASPYON, 334 of 334 boundaries and 6,652 double crashes, no violation (#477). Row 3 pathological trees (#484), with the depth limit now a shared 512 (#512). Row 5 whole-store SQLITE_FULL recovery (#486). Row 6 property fuzzing, proptest substituting for cargo-fuzz (#488). Row 7 soak harness and pass rule (#478); **a 72-hour run is in progress on KRASPYON** (started 2026-10-17 03:45 local). Rows 8 and 9 stay UNVERIFIED | `docs/45-daily-use-readiness.md` |
+| Monitoring (LW-121) | Low-space and fast-growth alerts. Thresholds are settings; notifications are off, and the setting says nothing is sent yet. Unknown capacity stays unknown (#518). Free space is now observed for volumes holding active personal grants, with a 500 ms per-volume bound that degrades alone (#525) | `crates/loomward-service/src/alerts.rs` |
+| Developer clutter (LW-119) | First slice, a library only: manifest-anchored build outputs and caches, advice only (#514). A scale check comes before any service exposure (#515) | `evidence/v3/lw119-developer-clutter.md` |
+| Correctness fixes | #361 stale complete coverage (#459). A failed forget scrub keeps the rollback copy (#459). Forget no longer drops another root's reference on file-ID reuse (#499). Hard-link rebind collision (#510, closes #363). Duplicate-name guard over mixed listings (#499). Fail-closed DTO rules (#497). The tree verifier stays honest under the Find and Both strategies (#511). App stale-response races (#472, #524). Telemetry and volume honesty (#490). Release-notes sanitising in the installer prompt (#487) | PR tests |
+| Test and CI health | Load-robust deadline tests (#500, refs #320). Bounded catalogue hangs (#495). CI job timeouts (#496). Jobs coverage (#480). Service gap pins (#501). Probe target dir (#507). The soak test skips under a profile checkout (#523) | CI |
+| Performance | tree.slice 4.2-4.8x faster at 100k to 1M files; duplicate candidates 1.2-1.4x faster. Forget keeps its whole-index optimize for erasure (#517) | `evidence/v3/catalog-perf-2026-10-17.md` |
+| Real-system QA on KRASPYON | Desktop shell: self-test 14/14 and WebView2 probe 24/24 VERIFIED, first render 2.86 s (#505). Read-only real-folder cross-check: four strategies agreed exactly on 170k directories and 154k files (21.7 GB), 16k directories and 126k files (172 GB), and 426 directories and 8.7k files. Native handle strategy 9.5 s versus 694 s for single-threaded std, cold-cache first; profile-located roots were refused as designed. Only aggregates were recorded, outside Git | `evidence/v3/kraspyon-desktop-qa.md` |
+
+Counts (Windows, KRASPYON, at `8a3dc6f`):
+- **Rust:** 1,288 tests: 1,283 passed, 1 ignored, and 4 lab-copy tests that fail only in a cloud-synced (OneDrive) checkout, where the copy rightly refuses a synced destination. #527 makes those four skip with that reason. The workspace was green on the worktree checkouts outside OneDrive.
+- **App:** 466 vitest, plus Playwright e2e, `--a11y` and the copy walk.
+- **Python:** 279 tests (1 skip).
+- **Contract:** 64 commands.
+
+**Not established:**
+- the 72-hour soak result;
+- the copy crash matrix (C6, in progress), a real power cut (G5) and a proven restore (G9);
+- any copy of personal files;
+- the ranked index enabled in any store;
+- ReFS;
+- a real Linux run of the Windows-gated tests;
+- the owner's answers to Q1-Q3.
+
+**Effects:**
+- The owner-initiated diagnostic export remains the only write that can touch an existing owner file.
+- Copy-and-verify now writes, renames and (only if enabled) removes its own staging, but only for synthetic sessions on registered lab roots. No owner file and no process is touched.
