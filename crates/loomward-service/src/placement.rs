@@ -263,18 +263,61 @@ fn inactive_volumes(conn: &Connection) -> EngineResult<Vec<i64>> {
 }
 
 static SPACE_READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-struct SpacePermit;
+type Observed = Option<(loomward_windows::volumes::Space, i64)>;
+/// A personal volume's read in progress (#519 review): its answer, once the OS gives one, is shared
+/// with every caller that asks for that volume while it runs.
+type PendingRead = std::sync::Arc<(std::sync::Mutex<Option<Observed>>, std::sync::Condvar)>;
+/// Personal volume keys with a read running, so a stalled volume keeps one reader, not one per refresh.
+static SPACE_IN_FLIGHT: std::sync::Mutex<std::collections::BTreeMap<String, PendingRead>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+/// How long a personal volume's read is awaited before that volume alone reads as unknown (#519).
+const PERSONAL_SPACE_WAIT: Duration = Duration::from_millis(500);
+
+/// Releases the reader slot when the OS read finishes, not when its caller stops waiting.
+struct SpacePermit {
+    key: Option<String>,
+}
 impl Drop for SpacePermit {
     fn drop(&mut self) {
         SPACE_READS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        if let Some(key) = self.key.take() {
+            SPACE_IN_FLIGHT
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&key);
+        }
+    }
+}
+
+/// Waits, within this caller's own deadline, for the answer to a read another caller started.
+fn await_pending(pending: &PendingRead, deadline: Instant) -> EngineResult<Observed> {
+    let (slot, ready) = &**pending;
+    let mut answer = slot.lock().unwrap_or_else(|e| e.into_inner());
+    loop {
+        if let Some(done) = answer.clone() {
+            return Ok(done);
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(EngineError::DeadlineExceeded {
+                message: "lab volume observation deadline expired".into(),
+            });
+        }
+        answer = ready
+            .wait_timeout(answer, deadline - now)
+            .unwrap_or_else(|e| e.into_inner())
+            .0;
     }
 }
 
 // The OS call cannot be cancelled; its own permit survives a caller timeout to bound stragglers.
+// `key` names a personal volume: one read runs per volume at a time, and a concurrent caller for
+// that volume shares its answer instead of pinning another reader.
 fn bounded_space(
     deadline: Instant,
-    read: impl FnOnce() -> Option<(loomward_windows::volumes::Space, i64)> + Send + 'static,
-) -> EngineResult<Option<(loomward_windows::volumes::Space, i64)>> {
+    key: Option<&str>,
+    read: impl FnOnce() -> Observed + Send + 'static,
+) -> EngineResult<Observed> {
     check(deadline)?;
     // A compare-exchange loop: `fetch_update` is deprecated on newer stable toolchains (#276).
     let mut running = SPACE_READS.load(std::sync::atomic::Ordering::SeqCst);
@@ -294,13 +337,34 @@ fn bounded_space(
             Err(now) => running = now,
         }
     }
-    let permit = SpacePermit;
+    let mut permit = SpacePermit { key: None };
+    let mut shared: Option<PendingRead> = None;
+    if let Some(key) = key {
+        let mut in_flight = SPACE_IN_FLIGHT.lock().unwrap_or_else(|e| e.into_inner());
+        let existing = in_flight.get(key).cloned();
+        if let Some(pending) = existing {
+            drop(in_flight);
+            drop(permit);
+            return await_pending(&pending, deadline);
+        }
+        let pending: PendingRead = Default::default();
+        in_flight.insert(key.to_owned(), pending.clone());
+        drop(in_flight);
+        permit.key = Some(key.to_owned());
+        shared = Some(pending);
+    }
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("lw-volume-space".into())
         .spawn(move || {
             let _permit = permit;
-            let _ = tx.send(read());
+            let answer = read();
+            if let Some(pending) = shared {
+                let (slot, ready) = &*pending;
+                *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(answer.clone());
+                ready.notify_all();
+            }
+            let _ = tx.send(answer);
         })
         .map_err(|_| EngineError::ResourceBudget {
             message: "no volume observation worker".into(),
@@ -403,7 +467,21 @@ impl<'a> Input<'a> {
                 let root: Option<String> = self.conn.query_row("SELECT g.display_path FROM main.root r JOIN st.root_grant g ON g.id=r.grant_id WHERE r.volume_id=?1 AND g.state='active' AND g.origin=?2 LIMIT 1", params![v.id, origin], |r| r.get(0)).optional().map_err(sql)?;
                 if let Some(root) = root {
                     let key = v.key.clone();
-                    if let Some((observation, at)) = bounded_space(deadline, move || {
+                    #[cfg(test)]
+                    let fake = self
+                        .inner
+                        .hooks
+                        .space
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .iter()
+                        .find(|(k, _)| *k == key)
+                        .map(|(_, fake)| *fake);
+                    let read = move || {
+                        #[cfg(test)]
+                        if let Some(fake) = fake {
+                            return fake.answer();
+                        }
                         let path = std::path::Path::new(&root);
                         // A replacement root cannot supply observations for the old volume.
                         if crate::lab::identity(path)
@@ -416,7 +494,27 @@ impl<'a> Input<'a> {
                         } else {
                             None
                         }
-                    })? {
+                    };
+                    let observed = if origin == "owner_granted" {
+                        // A personal volume waits briefly and alone: an offline volume is not read, and a
+                        // stall, a timeout or a busy reader leaves only that volume unknown (#519 review).
+                        if v.online {
+                            let wait = deadline.min(Instant::now() + PERSONAL_SPACE_WAIT);
+                            match bounded_space(wait, Some(v.key.as_str()), read) {
+                                Ok(observed) => observed,
+                                Err(
+                                    EngineError::DeadlineExceeded { .. }
+                                    | EngineError::ResourceBudget { .. },
+                                ) => None,
+                                Err(e) => return Err(e),
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        bounded_space(deadline, None, read)?
+                    };
+                    if let Some((observation, at)) = observed {
                         space = serde_json::to_value(observation).expect("space serialises");
                         observed_at = at;
                     }
@@ -1029,12 +1127,16 @@ mod followup_tests {
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
             let _permit = crate::ReadPermit::acquire(inner).unwrap();
-            let result = bounded_space(Instant::now() + Duration::from_millis(100), move || {
-                entered_tx.send(()).unwrap();
-                release_rx.recv().unwrap();
-                finished_tx.send(()).unwrap();
-                None
-            });
+            let result = bounded_space(
+                Instant::now() + Duration::from_millis(100),
+                None,
+                move || {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    finished_tx.send(()).unwrap();
+                    None
+                },
+            );
             drop(_permit);
             done_tx.send(result).unwrap();
         });
@@ -1053,7 +1155,7 @@ mod followup_tests {
         assert_eq!(reads, 0);
         finished_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         assert!(
-            bounded_space(Instant::now() + Duration::from_secs(2), || None)
+            bounded_space(Instant::now() + Duration::from_secs(2), None, || None)
                 .unwrap()
                 .is_none()
         );
