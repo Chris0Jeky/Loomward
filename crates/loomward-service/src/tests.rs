@@ -40,6 +40,8 @@ pub(crate) struct Hooks {
     pub space: Mutex<Vec<(String, SpaceFake)>>,
     /// #530: the personal space read budget a test sets instead of the production 500 ms.
     pub personal_space_wait: Mutex<Option<Duration>>,
+    /// #569: the next explicit scan.start that has just cancelled an automatic run fails on retry.
+    pub fail_explicit_retry: std::sync::atomic::AtomicBool,
 }
 
 /// What a personal space read answers in tests: wait on an explicit gate, or report fixed space.
@@ -4343,6 +4345,84 @@ fn an_expired_explicit_request_releases_the_automatic_refresh_fence() {
     ));
     // The cancelled refresh leaves the root stale; only a new automatic pass makes it live.
     f3_wait_live(svc);
+}
+
+/// #569 item 3: an explicit scan.start pre-empts a running automatic refresh, then fails on its
+/// retry. The explicit start reports the error, the root stays stale while the cancelled automatic
+/// run is still held, and a later automatic refresh runs and makes the root live.
+#[cfg(windows)]
+#[test]
+fn f3_failed_explicit_start_after_cancel_leaves_an_automatic_refresh_to_resume() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    let baseline = start(svc, &lab.root, "full");
+    settle(svc, &baseline);
+    f3_wait_live(svc);
+    svc.inner.scan.gate.arm();
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    svc.inner.freshness.ready_targeted_hint(1);
+    svc.inner.scan.gate.wait_reached();
+    let (jobs, _) = ok("jobs.list", call(svc, "jobs.list", json!({"limit":50})));
+    let auto = jobs["jobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|j| j["state"] == "running")
+        .expect("the watcher refresh holds the root")["job_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    svc.inner
+        .hooks
+        .fail_explicit_retry
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let (refused, stale_while_held, hits_while_held) = std::thread::scope(|s| {
+        let asking = s.spawn(|| {
+            call(
+                svc,
+                "scan.start",
+                json!({"root_id": lab.root, "mode": "full"}),
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !asking.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // The automatic run is still held (cancel requested, not observed): nothing can go live.
+        let stale = svc.inner.freshness.stale(1);
+        let hits = f3_hits(svc);
+        // Release before asserting so a regression cannot strand the held scan worker.
+        svc.inner.scan.gate.release();
+        (asking.join().unwrap(), stale, hits)
+    });
+    // (a) the explicit start returns the honest engine error, and no job id.
+    let error = err(refused);
+    assert_eq!(error.code, ErrorCode::InternalError);
+    assert_eq!(error.message.as_str(), "synthetic retry failure");
+    // (b) the root stays stale while the automatic run is still held.
+    assert!(
+        stale_while_held,
+        "a failed explicit start must not make the root live"
+    );
+    assert!(hits_while_held["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|h| h["freshness"]["state"] == "stale"));
+    assert_eq!(settle(svc, &auto)["state"], "cancelled");
+    // (c) the pump's next automatic refresh runs and the root returns to live, bounded by
+    // f3_wait_live's 30 s deadline; a completed job other than the cancelled one must exist.
+    f3_wait_live(svc);
+    let (jobs, _) = ok("jobs.list", call(svc, "jobs.list", json!({"limit":50})));
+    assert!(jobs["jobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|j| j["job_id"] != auto.as_str()
+            && j["job_id"] != baseline.as_str()
+            && j["state"] == "completed"));
 }
 
 /// #184 MEDIUM-1 for the durable writer: a directory deleted and recreated under the same name
