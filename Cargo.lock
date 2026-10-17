@@ -679,7 +679,6 @@ dependencies = [
  "loomward-windows",
  "serde",
  "serde_json",
- "sha2",
  "tempfile",
  "windows-sys",
 ]
