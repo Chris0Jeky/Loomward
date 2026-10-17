@@ -129,6 +129,7 @@ pub(super) fn lookup(
 pub(super) fn targets(
     records: &[Record],
     deadline: Instant,
+    missing_identity: bool,
     mut lookup_batch: impl FnMut(&BTreeSet<Vec<u8>>) -> rusqlite::Result<BTreeMap<Vec<u8>, Identity>>,
 ) -> Option<BTreeSet<u64>> {
     let mut targets = BTreeSet::new();
@@ -148,7 +149,10 @@ pub(super) fn targets(
         for record in batch {
             let reach = classify(record, |id| {
                 let mut identity = found.get(id).cloned().unwrap_or_default();
-                if let Some(&parent) = new_dirs.get(id) {
+                if let Some(&parent) = new_dirs
+                    .get(id)
+                    .filter(|_| identity.directory == Directory::Unresolved)
+                {
                     identity.directory = Directory::Inside(parent);
                 }
                 identity
@@ -162,6 +166,7 @@ pub(super) fn targets(
                     }
                 }
                 Reach::PreviousCataloguedParent(previous) => targets.extend(previous),
+                Reach::Unresolved if missing_identity => return None,
                 Reach::Outside | Reach::Unresolved => {}
             }
             if new_dirs.len() > 100_000 || targets.len() > 1024 {
@@ -245,36 +250,57 @@ mod tests {
             record(6, 5, true),
             record(7, 6, false),
         ]);
-        let result = targets(&records, Instant::now() + Duration::from_secs(1), |_| {
-            Ok(BTreeMap::from([(
-                canonical(&1u64.to_le_bytes()),
-                Identity {
-                    directory: Directory::Inside(11),
-                    ..Default::default()
-                },
-            )]))
-        });
+        let result = targets(
+            &records,
+            Instant::now() + Duration::from_secs(1),
+            false,
+            |_| {
+                Ok(BTreeMap::from([(
+                    canonical(&1u64.to_le_bytes()),
+                    Identity {
+                        directory: Directory::Inside(11),
+                        ..Default::default()
+                    },
+                )]))
+            },
+        );
         assert_eq!(result, Some(BTreeSet::from([11])));
+    }
+
+    #[test]
+    fn catalogued_directory_rename_keeps_child_scope_precise() {
+        let conn = super::super::tests::catalogue(3);
+        let records = [record(2, 3, true), record(99, 2, false)];
+        let targets = targets(
+            &records,
+            Instant::now() + Duration::from_secs(5),
+            false,
+            |ids| lookup(&conn, 1, ids),
+        );
+        assert_eq!(targets, Some(BTreeSet::from([1, 2, 3])));
     }
 
     #[test]
     fn expired_batch_deadlines_and_lookup_failures_are_not_empty_success() {
         let records = [record(2, 1, false)];
         assert_eq!(
-            targets(&records, Instant::now(), |_| panic!(
+            targets(&records, Instant::now(), false, |_| panic!(
                 "expired before lookup"
             )),
             None
         );
         assert_eq!(
-            targets(&records, Instant::now() + Duration::from_secs(1), |_| Err(
-                rusqlite::Error::InvalidQuery
-            )),
+            targets(
+                &records,
+                Instant::now() + Duration::from_secs(1),
+                false,
+                |_| Err(rusqlite::Error::InvalidQuery)
+            ),
             None
         );
         let deadline = Instant::now() + Duration::from_millis(5);
         assert_eq!(
-            targets(&records, deadline, |_| {
+            targets(&records, deadline, false, |_| {
                 std::thread::sleep(Duration::from_millis(10));
                 Ok(BTreeMap::new())
             }),
