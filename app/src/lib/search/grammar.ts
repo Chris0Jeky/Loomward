@@ -41,6 +41,7 @@ export interface ParsedQuery {
 }
 
 const KEYS = ['ext', 'size', 'modified', 'kind', 'in', 'under'];
+const SIZE_SHIFT = new Map<string, number>([['', 0], ['b', 0], ['kb', 10], ['mb', 20], ['gb', 30], ['tb', 40]]);
 const MAX_TERMS = 8;
 const MAX_TERM_CHARS = 64;
 const MAX_EXTENSIONS = 16;
@@ -122,7 +123,7 @@ export function parseQuery(input: string): ParsedQuery {
     let digits = 0;
     while (digits < rest.length && isDigit(rest[digits]!)) digits++;
     const num = rest.slice(0, digits);
-    const shift = ({ '': 0, b: 0, kb: 10, mb: 20, gb: 30, tb: 40 } as Record<string, number>)[lowerAscii(rest.slice(digits))];
+    const shift = SIZE_SHIFT.get(lowerAscii(rest.slice(digits))); // a Map, so `constructor` or `__proto__` is an unknown unit, not a prototype key
     if (shift === undefined || num === '' || num.length > 20) return false;
     const v = BigInt(num) << BigInt(shift);
     if (v > U64_MAX) return false;

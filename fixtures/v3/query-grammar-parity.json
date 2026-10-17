@@ -293,11 +293,11 @@
   },
   {
    "name": "no-break space is not a separator",
-   "input": "a\u00a0b",
+   "input": "a b",
    "expected": {
     "terms": [
      {
-      "text": "a\u00a0b",
+      "text": "a b",
       "mode": "token",
       "negated": false
      }
@@ -417,11 +417,11 @@
   },
   {
    "name": "ext keeps non-ASCII as typed",
-   "input": "ext:\u00c0B",
+   "input": "ext:ÀB",
    "expected": {
     "terms": [],
     "extensions": [
-     "\u00c0b"
+     "Àb"
     ],
     "min_bytes": null,
     "max_bytes": null,
@@ -1881,11 +1881,11 @@
   },
   {
    "name": "the limit counts code points, not UTF-16 units",
-   "input": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00",
+   "input": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
    "expected": {
     "terms": [
      {
-      "text": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00",
+      "text": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
       "mode": "token",
       "negated": false
      }
@@ -1903,7 +1903,7 @@
   },
   {
    "name": "one code point over the limit",
-   "input": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00",
+   "input": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
    "expected": {
     "terms": [],
     "extensions": [],
@@ -1917,28 +1917,28 @@
     "issues": [
      {
       "code": "term_too_long",
-      "token": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00"
+      "token": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
      }
     ]
    }
   },
   {
    "name": "non-ASCII terms stay as typed",
-   "input": "caf\u00e9 \"na\u00efve\" \u65e5\u672c\u8a9e",
+   "input": "café \"naïve\" 日本語",
    "expected": {
     "terms": [
      {
-      "text": "caf\u00e9",
+      "text": "café",
       "mode": "token",
       "negated": false
      },
      {
-      "text": "na\u00efve",
+      "text": "naïve",
       "mode": "substring",
       "negated": false
      },
      {
-      "text": "\u65e5\u672c\u8a9e",
+      "text": "日本語",
       "mode": "token",
       "negated": false
      }
@@ -2012,6 +2012,69 @@
      {
       "code": "too_many_terms",
       "token": "t8"
+     }
+    ]
+   }
+  },
+  {
+   "name": "size with a prototype-key unit (constructor) is bad",
+   "input": "size:1constructor",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "size:1constructor"
+     }
+    ]
+   }
+  },
+  {
+   "name": "size with a prototype-key unit (__proto__) is bad",
+   "input": "size:1__proto__",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "size:1__proto__"
+     }
+    ]
+   }
+  },
+  {
+   "name": "size with a prototype-key unit (toString) is bad",
+   "input": "size:1toString",
+   "expected": {
+    "terms": [],
+    "extensions": [],
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "in_collection": null,
+    "under": null,
+    "issues": [
+     {
+      "code": "bad_value",
+      "token": "size:1toString"
      }
     ]
    }
