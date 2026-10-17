@@ -381,21 +381,34 @@ pub(crate) fn open_pair(dir: &Path, dataset: &str) -> Result<Connection> {
     }
     Ok(conn)
 }
-/// The name search index (q-34): created with its triggers by the first open that lacks it, and
-/// filled from the rows already there in the same transaction, so it is never behind the tables.
+/// The name search indexes (q-34, F2): the trigram table and the token table, each created with its
+/// triggers by the first open that lacks it, and filled from the rows already there in the same
+/// transaction, so neither is ever behind the tables.
 pub(crate) fn search_index(conn: &Connection) -> Result<()> {
-    if conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='search_name')",
-        [],
-        |r| r.get::<_, bool>(0),
-    )? {
-        return Ok(());
+    let has = |name: &str| -> Result<bool> {
+        Ok(conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name=?1)",
+            [name],
+            |r| r.get::<_, bool>(0),
+        )?)
+    };
+    if !has("search_name")? {
+        conn.execute_batch(include_str!("search.sql"))?;
+        conn.execute_batch(
+            "INSERT INTO search_name(rowid,name) SELECT id, char(1)||replace(replace(name,char(1),' '),char(2),' ')||char(2) FROM dir WHERE parent_id IS NOT NULL;
+             INSERT INTO search_name(rowid,name) SELECT id+281474976710656, char(1)||replace(replace(name,char(1),' '),char(2),' ')||char(2) FROM file;",
+        )?;
     }
-    conn.execute_batch(include_str!("search.sql"))?;
-    conn.execute_batch(
-        "INSERT INTO search_name(rowid,name) SELECT id, char(1)||replace(replace(name,char(1),' '),char(2),' ')||char(2) FROM dir WHERE parent_id IS NOT NULL;
-         INSERT INTO search_name(rowid,name) SELECT id+281474976710656, char(1)||replace(replace(name,char(1),' '),char(2),' ')||char(2) FROM file;",
-    )?;
+    if !has("search_token")? {
+        conn.execute_batch(include_str!("search-token.sql"))?;
+        // Every existing row is a new key to the queue; the drain below indexes them all.
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO search_dirty SELECT id,1 FROM dir WHERE parent_id IS NOT NULL;
+             INSERT OR IGNORE INTO search_dirty SELECT id+281474976710656,1 FROM file;",
+        )?;
+    }
+    // Keys a raw writer queued while no writer was running.
+    crate::search::drain_tokens(conn)?;
     Ok(())
 }
 /// First-scan bulk build tables (#148): the live `dir`/`file` definitions and the `dir` indexes,

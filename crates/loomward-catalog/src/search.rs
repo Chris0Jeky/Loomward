@@ -14,6 +14,12 @@ use crate::*;
 use rusqlite::{types::Value, Connection};
 use std::collections::HashMap;
 
+mod analyze;
+mod rank;
+mod tokens;
+pub use rank::{RankOptions, ALL_TIERS, TIER_CONTEXT, TIER_TOKEN, TIER_TRIGRAM};
+pub(crate) use tokens::drain_tokens;
+
 /// A file's index key is its id plus this; a folder's is its id.
 pub(crate) const FILE_KEY: i64 = 1 << 48;
 const BATCH: usize = 128;
@@ -222,14 +228,19 @@ fn root_states(conn: &Connection, root: Option<i64>) -> Result<Vec<SearchRootSta
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The SQL of one batch: a pass's folders or files, or a filter-only listing of either.
-fn statement(filter: bool, files: bool, by_size: bool) -> String {
+/// The visibility and filter condition of one hit's row (`d` is its folder): an active grant, the
+/// requested root, no pending absence, and the request's filters. NULL reads as false.
+fn visible(files: bool) -> String {
     let filters = if files {
         "(?4 IS NULL OR e.ext=?4) AND (?5 IS NULL OR f.logical>=?5) AND (?6 IS NULL OR f.logical<=?6) AND (?7 IS NULL OR f.modified_ft>=?7) AND (?8 IS NULL OR f.modified_ft<=?8)"
     } else {
         "?4 IS NULL AND (?5 IS NULL OR d.sub_logical>=?5) AND (?6 IS NULL OR d.sub_logical<=?6) AND (?7 IS NULL OR d.modified_ft>=?7) AND (?8 IS NULL OR d.modified_ft<=?8)"
     };
-    let matched = format!("coalesce(d.root_id IN (SELECT id FROM root_grant WHERE state='active') AND d.listing_state!='absent_pending' AND (?3 IS NULL OR d.root_id=?3) AND {filters},0)");
+    format!("d.root_id IN (SELECT id FROM root_grant WHERE state='active') AND d.listing_state!='absent_pending' AND (?3 IS NULL OR d.root_id=?3) AND {filters}")
+}
+/// The SQL of one batch: a pass's folders or files, or a filter-only listing of either.
+fn statement(filter: bool, files: bool, by_size: bool) -> String {
+    let matched = format!("coalesce({},0)", visible(files));
     match (filter, files) {
         (false, false) => format!("SELECT {DIR_COLUMNS},{matched},s.rowid FROM search_name s JOIN dir d ON d.id=s.rowid WHERE search_name MATCH ?1 AND s.rowid>?2 AND s.rowid<{FILE_KEY} ORDER BY s.rowid LIMIT {BATCH}"),
         (false, true) => format!("SELECT {FILE_COLUMNS},{matched},s.rowid FROM search_name s JOIN file f ON f.id=s.rowid-{FILE_KEY} JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id WHERE search_name MATCH ?1 AND s.rowid>?2 ORDER BY s.rowid LIMIT {BATCH}"),
@@ -363,45 +374,68 @@ impl Walk<'_> {
     }
 }
 
+/// Bounds-check a request and return its cleaned text (trimmed, no control characters).
+fn clean(req: &SearchRequest, deadline: Option<std::time::Instant>) -> Result<String> {
+    if deadline.is_some_and(|at| std::time::Instant::now() >= at) {
+        return Err(Error::Cancelled);
+    }
+    let bytes = |v: Option<u64>| v.is_some_and(|v| v > i64::MAX as u64);
+    if !(1..=100).contains(&req.limit)
+        || req.text.chars().count() > 256
+        || req
+            .extension
+            .as_ref()
+            .is_some_and(|s| s.chars().count() > 32)
+        || bytes(req.min_bytes)
+        || bytes(req.max_bytes)
+        || !matches!(req.kind.as_str(), "any" | "file" | "dir")
+    {
+        return Err(Error::Invalid("search bounds"));
+    }
+    let text: String = req
+        .text
+        .trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect();
+    Ok(text.trim().to_string())
+}
+/// What a cursor is bound to: the request's filters and cleaned text.
+fn filters_key(req: &SearchRequest, text: &str) -> String {
+    format!(
+        "{:?}",
+        (
+            req.root_id,
+            text,
+            &req.extension,
+            req.min_bytes,
+            req.max_bytes,
+            req.modified_after,
+            req.modified_before,
+            &req.kind
+        )
+    )
+}
+/// The page's `index_state` and `partial` from the searched roots.
+fn index_meta(roots: &[SearchRootState]) -> (&'static str, bool) {
+    let state = if roots.iter().any(|r| r.scan_state == "scanning") {
+        "building"
+    } else if roots
+        .iter()
+        .any(|r| matches!(r.scan_state.as_str(), "stale" | "failed" | "repairing"))
+    {
+        "stale"
+    } else {
+        "current"
+    };
+    (state, roots.iter().any(|r| r.coverage != "complete"))
+}
+
 impl Reader {
     pub fn search(&mut self, req: &SearchRequest) -> Result<SearchPage> {
         let deadline = self.deadline;
-        if deadline.is_some_and(|at| std::time::Instant::now() >= at) {
-            return Err(Error::Cancelled);
-        }
-        let bytes = |v: Option<u64>| v.is_some_and(|v| v > i64::MAX as u64);
-        if !(1..=100).contains(&req.limit)
-            || req.text.chars().count() > 256
-            || req
-                .extension
-                .as_ref()
-                .is_some_and(|s| s.chars().count() > 32)
-            || bytes(req.min_bytes)
-            || bytes(req.max_bytes)
-            || !matches!(req.kind.as_str(), "any" | "file" | "dir")
-        {
-            return Err(Error::Invalid("search bounds"));
-        }
-        let text: String = req
-            .text
-            .trim()
-            .chars()
-            .filter(|c| !c.is_control())
-            .collect();
-        let text = text.trim().to_string();
-        let filters = format!(
-            "{:?}",
-            (
-                req.root_id,
-                &text,
-                &req.extension,
-                req.min_bytes,
-                req.max_bytes,
-                req.modified_after,
-                req.modified_before,
-                &req.kind
-            )
-        );
+        let text = clean(req, deadline)?;
+        let filters = filters_key(req, &text);
         let plan = plan(&text);
         self.read(|conn| {
             let revisions = revisions(conn, req.root_id)?;
@@ -469,16 +503,7 @@ impl Reader {
                 last_key,
                 last_size,
             });
-            let index_state = if roots.iter().any(|r| r.scan_state == "scanning") {
-                "building"
-            } else if roots
-                .iter()
-                .any(|r| matches!(r.scan_state.as_str(), "stale" | "failed" | "repairing"))
-            {
-                "stale"
-            } else {
-                "current"
-            };
+            let (index_state, partial) = index_meta(&roots);
             Ok(SearchPage {
                 generation: if revisions.len() == 1 {
                     revisions[0].1.map(|g| g.to_string())
@@ -489,7 +514,7 @@ impl Reader {
                 next_cursor,
                 budget_hit: hit,
                 index_state: index_state.into(),
-                partial: roots.iter().any(|r| r.coverage != "complete"),
+                partial,
                 substring_searched: plan.substring_searched,
                 roots,
             })

@@ -115,3 +115,21 @@ claim is made for those trees. Existing deterministic manifests are checked befo
 rejection, an actual denied directory and scope/log guards using one newly marked disposable G:
 tree; its ACL change and cleanup touch only that control. Real experiment results and limitations:
 [real-folder-stress.md](../../docs/research/real-folder-stress.md).
+
+## Semantic corpus and the relevance harness (LW-113 F2)
+
+`loomward_lab::semantic` generates, from a seed, a synthetic find-and-ask corpus without touching a
+filesystem: planted concept folders (invoices by year, thesis drafts, game mods, photo dumps with
+camera names, build outputs, versioned documents, hostile names) with near-miss decoys, plus any
+number of invented-word filler names that share no word with them, and about 75 labelled queries
+(known item, attribute, concept) whose relevant paths carry grades. `metrics` scores a ranking
+(MRR@10, nDCG@10, recall@50).
+
+```powershell
+cargo build --release -p loomward-lab --example search_relevance
+target/release/examples/search_relevance.exe --filler 1000000 --seed 42 --out receipt.json
+```
+
+The example builds the corpus in an in-process catalogue (first-scan bulk path), scores
+`Reader::search` and each `search_ranked` tier, then times first pages (P8). Results:
+[evidence/v3/search-relevance-f2.md](../../evidence/v3/search-relevance-f2.md).

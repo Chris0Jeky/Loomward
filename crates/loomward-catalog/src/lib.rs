@@ -22,6 +22,7 @@ mod slice;
 mod writer;
 pub use model::*;
 pub use query::Reader;
+pub use search::{RankOptions, ALL_TIERS, TIER_CONTEXT, TIER_TOKEN, TIER_TRIGRAM};
 pub use writer::{
     BytePermit, Cancellation, Receipt, Writer, WriterTimings, CHUNK_ENTRIES, QUEUE_BYTES,
 };
