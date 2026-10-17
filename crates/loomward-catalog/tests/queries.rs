@@ -335,6 +335,7 @@ fn absent_budgeted_search_advances_examined_rows_and_terminates() {
         cursor: None,
         work_budget: 500,
         time_budget: None,
+        scope: None,
     };
     let mut last = (0, i64::MIN);
     let mut hits = 0;
@@ -466,6 +467,7 @@ fn sparse_budgeted_search_keeps_every_match_without_duplicates() {
         cursor: None,
         work_budget: 500,
         time_budget: None,
+        scope: None,
     };
     let mut names = Vec::new();
     for _ in 0..100 {
@@ -612,6 +614,7 @@ fn budget_hit_is_visible_and_progress_handler_does_not_poison_later_queries() {
         cursor: None,
         work_budget: 1,
         time_budget: None,
+        scope: None,
     };
     let p = r.search(&req).unwrap();
     assert!(p.budget_hit);
@@ -1074,6 +1077,7 @@ fn budgeted_absent_search_resumes_and_catalogue_instance_invalidates_cursors() {
         cursor: None,
         work_budget: 1,
         time_budget: None,
+        scope: None,
     };
     let first = reader.search(&req).unwrap();
     assert!(first.budget_hit);
@@ -1121,6 +1125,7 @@ fn budgeted_search_resumes_after_the_last_returned_match() {
         cursor: None,
         work_budget: 1,
         time_budget: None,
+        scope: None,
     };
     // Find a SQLite opcode budget that interrupts after matches inside the first batch.
     let first = (1..=200)
@@ -1326,6 +1331,7 @@ fn search_sql_error_survives_exhausted_budget() {
         cursor: None,
         work_budget: 1,
         time_budget: None,
+        scope: None,
     };
     let healthy = reader.search(&req).unwrap();
     assert!(healthy.budget_hit, "tiny budget must exhaust");
@@ -1377,6 +1383,7 @@ fn pure_budget_interrupt_still_reports_budget_cut() {
             cursor: None,
             work_budget: 1,
             time_budget: None,
+            scope: None,
         })
         .unwrap();
     assert!(page.budget_hit);

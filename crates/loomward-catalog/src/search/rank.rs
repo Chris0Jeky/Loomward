@@ -92,7 +92,7 @@ fn window_statement() -> &'static str {
 }
 /// The rows of one window that pass the visibility and filter conditions. Columns match `raw`,
 /// then the match flag and the key.
-fn window_rows_sql(files: bool, keys: &[i64]) -> String {
+fn window_rows_sql(files: bool, keys: &[i64], scope: Option<&[i64]>) -> String {
     // Row ids, not keys, so the primary-key lookup applies.
     let list = keys
         .iter()
@@ -102,12 +102,12 @@ fn window_rows_sql(files: bool, keys: &[i64]) -> String {
     if files {
         format!(
             "SELECT {FILE_COLUMNS},1,f.id+{FILE_KEY} FROM file f JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id WHERE f.id IN ({list}) AND {}",
-            visible(true)
+            visible(true, scope)
         )
     } else {
         format!(
             "SELECT {DIR_COLUMNS},1,d.id FROM dir d WHERE d.id IN ({list}) AND {}",
-            visible(false)
+            visible(false, scope)
         )
     }
 }
@@ -162,7 +162,8 @@ impl Walk<'_> {
             looked += keys.len();
             let mut vals = values(self.req, "", 0);
             vals.truncate(8);
-            let mut stmt = conn.prepare(&window_rows_sql(files, &keys))?;
+            let mut stmt =
+                conn.prepare(&window_rows_sql(files, &keys, self.req.scope.as_deref()))?;
             let mut rows = stmt.query(rusqlite::params_from_iter(vals))?;
             while let Some(row) = rows.next()? {
                 let key: i64 = row.get(24)?;
@@ -291,7 +292,7 @@ fn context_list(walk: &mut Walk, conn: &Connection, qtokens: &[String], k: usize
         };
         let sql = format!(
             "SELECT {columns},1,{key} FROM {from} WHERE {owner} IN ({list}) AND {} LIMIT {CONTEXT_ROWS}",
-            visible(files)
+            visible(files, walk.req.scope.as_deref())
         );
         let mut stmt = conn.prepare(&sql)?;
         let mut vals = values(walk.req, "", 0);
@@ -356,7 +357,7 @@ impl Reader {
         // Every page of a query ranks the same pool, whatever its offset: depth follows the page size.
         let k = (req.limit * 2).clamp(100, 1000);
         self.read(|conn| {
-            let revisions = revisions(conn, req.root_id)?;
+            let revisions = in_scope(req, revisions(conn, req.root_id)?, |r| r.0);
             let catalog_instance = instance(conn)?;
             let rev: i64 = conn.query_row("SELECT catalog_rev FROM revision", [], |r| r.get(0))?;
             if let Some(c) = &req.cursor {
@@ -367,12 +368,17 @@ impl Reader {
                     return Err(Error::StaleGeneration);
                 }
             }
-            let roots = root_states(conn, req.root_id)?;
+            let roots = in_scope(req, root_states(conn, req.root_id)?, |r| r.root_id);
             // Prepare afresh and before the budget, as `search` does.
             conn.flush_prepared_statement_cache();
             for (pass, _) in &plan.passes {
                 for (files, by_size) in [(false, false), (true, false)] {
-                    conn.prepare_cached(&statement(*pass == FILTER_PASS, files, by_size))?;
+                    conn.prepare_cached(&statement(
+                        *pass == FILTER_PASS,
+                        files,
+                        by_size,
+                        req.scope.as_deref(),
+                    ))?;
                 }
             }
             conn.prepare_cached(window_statement())?;
