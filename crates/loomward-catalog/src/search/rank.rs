@@ -13,9 +13,12 @@
 //! a name prefix, all tokens at token starts, and (when the caller gives a clock) recency. Ties
 //! break by index key (folders, then files, by id), so an order never depends on SQLite's.
 //!
-//! Ranked mode answers at most [`HORIZON`] hits per query and pages by offset: it is not an
-//! exhaustive enumeration (use `search` for that), so a budget cut during candidate collection
-//! ranks what was seen and says `budget_hit`, without a scan position to resume.
+//! Ranked mode pages by offset over one pool that depends only on the query, its filters, the
+//! ranking options and the page size (the cursor binds all four), so pages neither overlap nor skip
+//! while the catalogue is unchanged. The pool is at least 100 hits deep (twice the page size above
+//! 50), so a query answers at most [`HORIZON`] hits and usually fewer: it is not an exhaustive
+//! enumeration (use `search` for that), and a budget cut during candidate collection ranks what was
+//! seen and says `budget_hit`, without a scan position to resume.
 use super::analyze::{query_tokens, shape, tokens};
 use super::*;
 use crate::query::Raw;
@@ -54,6 +57,8 @@ const BOOST_RECENT: f64 = 0.006;
 const TICKS_PER_DAY: f64 = 864_000_000_000.0;
 /// Token-index matches read per kind before they are ranked.
 const TOKEN_SCAN: usize = 256;
+/// Index matches the token list looks at per kind, however few pass the filters.
+const TOKEN_MAX: usize = 2048;
 /// Folder anchors per query token, and the folder rows the context tier reads.
 const ANCHORS: usize = 128;
 const CONTEXT_DIRS: usize = 2048;
@@ -75,26 +80,32 @@ fn fts(qtokens: &[String]) -> String {
         .collect::<Vec<_>>()
         .join(" AND ")
 }
-/// A token-index query for folders or files: the first `?9` matches of `?1` in key order, then
-/// the visibility and filter conditions. Columns match `raw`, then the match flag and the key.
-fn token_statement(files: bool) -> String {
-    let (columns, from, range) = if files {
-        (
-            FILE_COLUMNS,
-            format!("file f ON f.id=t.rowid-{FILE_KEY} JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id"),
-            format!("rowid>={FILE_KEY}"),
+/// The next window of token-index keys: up to `?4` matches of `?1` with a key above `?2` and below
+/// `?3`, in key order. The only statement that touches the FTS table, so it is the one prepared
+/// before the budget starts.
+fn window_statement() -> &'static str {
+    "SELECT rowid FROM search_token WHERE search_token MATCH ?1 AND rowid>?2 AND rowid<?3 LIMIT ?4"
+}
+/// The rows of one window that pass the visibility and filter conditions. Columns match `raw`,
+/// then the match flag and the key.
+fn window_rows_sql(files: bool, keys: &[i64]) -> String {
+    // Row ids, not keys, so the primary-key lookup applies.
+    let list = keys
+        .iter()
+        .map(|k| (if files { k - FILE_KEY } else { *k }).to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    if files {
+        format!(
+            "SELECT {FILE_COLUMNS},1,f.id+{FILE_KEY} FROM file f JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id WHERE f.id IN ({list}) AND {}",
+            visible(true)
         )
     } else {
-        (
-            DIR_COLUMNS,
-            "dir d ON d.id=t.rowid".to_string(),
-            format!("rowid<{FILE_KEY}"),
+        format!(
+            "SELECT {DIR_COLUMNS},1,d.id FROM dir d WHERE d.id IN ({list}) AND {}",
+            visible(false)
         )
-    };
-    format!(
-        "SELECT {columns},1,t.rowid FROM (SELECT rowid FROM search_token WHERE search_token MATCH ?1 AND {range} LIMIT ?9) t JOIN {from} WHERE {}",
-        visible(files)
-    )
+    }
 }
 fn anchor_statement() -> String {
     format!("SELECT rowid FROM search_token WHERE search_token MATCH ?1 AND rowid<{FILE_KEY} LIMIT {ANCHORS}")
@@ -118,21 +129,44 @@ fn values(req: &SearchRequest, expr: &str, limit: usize) -> Vec<Value> {
 }
 
 impl Walk<'_> {
-    /// Run a token-index statement and return its rows, not yet built into hits.
+    /// The entries of one kind whose every query token starts a name token, read in key order in
+    /// windows of `TOKEN_SCAN` index matches until `TOKEN_SCAN` of them pass the request's filters
+    /// (the bound counts eligible entries) or `TOKEN_MAX` matches have been looked at.
     fn token_rows(
         &mut self,
         conn: &Connection,
         files: bool,
         expr: &str,
     ) -> Result<Vec<(Raw, i64)>> {
-        let mut stmt = conn.prepare_cached(&token_statement(files))?;
-        let mut rows = stmt.query(rusqlite::params_from_iter(values(
-            self.req, expr, TOKEN_SCAN,
-        )))?;
+        let (mut after, upper) = if files {
+            (FILE_KEY - 1, i64::MAX)
+        } else {
+            (0, FILE_KEY)
+        };
         let mut out = Vec::new();
-        while let Some(row) = rows.next()? {
-            let key: i64 = row.get(24)?;
-            out.push((raw(row)?, key));
+        let mut looked = 0;
+        loop {
+            let keys: Vec<i64> = conn
+                .prepare_cached(window_statement())?
+                .query_map(
+                    rusqlite::params![expr, after, upper, TOKEN_SCAN as i64],
+                    |r| r.get(0),
+                )?
+                .collect::<rusqlite::Result<_>>()?;
+            let Some(&last) = keys.last() else { break };
+            after = last;
+            looked += keys.len();
+            let mut vals = values(self.req, "", 0);
+            vals.truncate(8);
+            let mut stmt = conn.prepare(&window_rows_sql(files, &keys))?;
+            let mut rows = stmt.query(rusqlite::params_from_iter(vals))?;
+            while let Some(row) = rows.next()? {
+                let key: i64 = row.get(24)?;
+                out.push((raw(row)?, key));
+            }
+            if out.len() >= TOKEN_SCAN || keys.len() < TOKEN_SCAN || looked >= TOKEN_MAX {
+                break;
+            }
         }
         Ok(out)
     }
@@ -291,7 +325,14 @@ impl Reader {
         if text.is_empty() {
             return self.search(req);
         }
-        let filters = format!("ranked:{}", filters_key(req, &text));
+        // The page size and the ranking options shape the pool every page is cut from, so they bind the cursor.
+        let filters = format!(
+            "ranked:{}:{}:{:?}:{}",
+            filters_key(req, &text),
+            opts.tiers,
+            opts.now_ft,
+            req.limit
+        );
         let qtokens = query_tokens(&text, 6);
         let plan = plan(&text);
         let offset = match &req.cursor {
@@ -299,8 +340,8 @@ impl Reader {
             Some(c) if c.pass == RANKED_PASS && c.last_key >= 0 => c.last_key as usize,
             Some(_) => return Err(Error::Invalid("search cursor binding")),
         };
-        let want = (offset + req.limit).min(HORIZON);
-        let k = (want * 2).clamp(100, 1000);
+        // Every page of a query ranks the same pool, whatever its offset: depth follows the page size.
+        let k = (req.limit * 2).clamp(100, 1000);
         self.read(|conn| {
             let revisions = revisions(conn, req.root_id)?;
             let catalog_instance = instance(conn)?;
@@ -320,15 +361,13 @@ impl Reader {
                     conn.prepare_cached(&statement(*pass == FILTER_PASS, files, by_size))?;
                 }
             }
-            for files in [false, true] {
-                conn.prepare_cached(&token_statement(files))?;
-            }
+            conn.prepare_cached(window_statement())?;
             conn.prepare_cached(&anchor_statement())?;
             // The trigram passes read no deeper than `search` would for the same page: a later
             // pass costs far more than an earlier one (a filter can force it), and the other
             // lists supply the depth.
             let inner = SearchRequest {
-                limit: want,
+                limit: req.limit,
                 cursor: None,
                 ..req.clone()
             };
@@ -444,7 +483,8 @@ impl Reader {
                 scored.push((score, key, hit));
             }
             scored.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
-            let more = scored.len() > want && want < HORIZON;
+            let end = (offset + req.limit).min(HORIZON);
+            let more = scored.len() > end && end < HORIZON;
             let hits: Vec<SearchHit> = scored
                 .into_iter()
                 .skip(offset)
@@ -455,7 +495,7 @@ impl Reader {
                 catalog_instance: catalog_instance.clone(),
                 filters: filters.clone(),
                 pass: RANKED_PASS,
-                last_key: want as i64,
+                last_key: end as i64,
                 last_size: None,
             });
             let (index_state, partial) = index_meta(&roots);

@@ -1,7 +1,7 @@
 {
  "build": {
-  "end_run_seconds": 80.0969691,
-  "publish_seconds": 26.3650492,
+  "end_run_seconds": 38.0087018,
+  "publish_seconds": 10.9956278,
   "token_bytes_per_entry": 43.23674089286187,
   "token_index_bytes": 86573056,
   "trigram_bytes_per_entry": 94.30216305923729,
@@ -27,9 +27,9 @@
     "hits": 1,
     "more": false,
     "timing": {
-     "max_ms": 11.1398,
-     "p50_ms": 7.3841,
-     "p95_ms": 9.7221,
+     "max_ms": 4.5606,
+     "p50_ms": 3.9322000000000004,
+     "p95_ms": 4.2714,
      "runs": 21
     }
    },
@@ -39,9 +39,9 @@
     "hits": 1,
     "more": false,
     "timing": {
-     "max_ms": 9.3519,
-     "p50_ms": 6.2639000000000005,
-     "p95_ms": 8.7886,
+     "max_ms": 4.2333,
+     "p50_ms": 3.8298,
+     "p95_ms": 4.1904,
      "runs": 21
     }
    }
@@ -52,9 +52,9 @@
     "hits": 13,
     "more": false,
     "timing": {
-     "max_ms": 13.0953,
-     "p50_ms": 10.274000000000001,
-     "p95_ms": 12.94,
+     "max_ms": 6.5278,
+     "p50_ms": 4.774900000000001,
+     "p95_ms": 5.739400000000001,
      "runs": 21
     }
    },
@@ -64,9 +64,9 @@
     "hits": 0,
     "more": false,
     "timing": {
-     "max_ms": 9.8286,
-     "p50_ms": 7.1393,
-     "p95_ms": 9.5353,
+     "max_ms": 4.6349,
+     "p50_ms": 3.5492000000000004,
+     "p95_ms": 3.9667,
      "runs": 21
     }
    }
@@ -77,9 +77,9 @@
     "hits": 2,
     "more": false,
     "timing": {
-     "max_ms": 13.8992,
-     "p50_ms": 10.4635,
-     "p95_ms": 12.7966,
+     "max_ms": 5.5662,
+     "p50_ms": 4.8386000000000005,
+     "p95_ms": 5.4475,
      "runs": 21
     }
    },
@@ -89,9 +89,9 @@
     "hits": 2,
     "more": false,
     "timing": {
-     "max_ms": 11.5478,
-     "p50_ms": 7.9948999999999995,
-     "p95_ms": 11.3574,
+     "max_ms": 5.4205,
+     "p50_ms": 4.5683,
+     "p95_ms": 5.3925,
      "runs": 21
     }
    }
@@ -102,9 +102,9 @@
     "hits": 50,
     "more": true,
     "timing": {
-     "max_ms": 7.5789,
-     "p50_ms": 6.3847000000000005,
-     "p95_ms": 7.2311,
+     "max_ms": 2.1681999999999997,
+     "p50_ms": 1.6268,
+     "p95_ms": 2.0664,
      "runs": 21
     }
    },
@@ -114,9 +114,9 @@
     "hits": 50,
     "more": true,
     "timing": {
-     "max_ms": 6.6011999999999995,
-     "p50_ms": 4.1899,
-     "p95_ms": 5.032100000000001,
+     "max_ms": 1.9653,
+     "p50_ms": 1.4752999999999998,
+     "p95_ms": 1.7004,
      "runs": 21
     }
    }
@@ -127,9 +127,9 @@
     "hits": 0,
     "more": false,
     "timing": {
-     "max_ms": 4.3308,
-     "p50_ms": 3.0376000000000003,
-     "p95_ms": 3.9826999999999995,
+     "max_ms": 1.4873,
+     "p50_ms": 0.9726999999999999,
+     "p95_ms": 1.2155,
      "runs": 21
     }
    },
@@ -139,9 +139,9 @@
     "hits": 0,
     "more": false,
     "timing": {
-     "max_ms": 2.4542,
-     "p50_ms": 1.8783,
-     "p95_ms": 2.2541,
+     "max_ms": 1.1612,
+     "p50_ms": 0.8832,
+     "p95_ms": 1.1020999999999999,
      "runs": 21
     }
    }
@@ -152,9 +152,9 @@
     "hits": 50,
     "more": true,
     "timing": {
-     "max_ms": 7.447900000000001,
-     "p50_ms": 5.542199999999999,
-     "p95_ms": 6.921,
+     "max_ms": 2.6768,
+     "p50_ms": 2.1783,
+     "p95_ms": 2.5902999999999996,
      "runs": 21
     }
    },
@@ -164,9 +164,9 @@
     "hits": 0,
     "more": false,
     "timing": {
-     "max_ms": 1.3472,
-     "p50_ms": 0.5820000000000001,
-     "p95_ms": 1.2685000000000002,
+     "max_ms": 0.5407,
+     "p50_ms": 0.3948,
+     "p95_ms": 0.5249,
      "runs": 21
     }
    }
@@ -177,9 +177,9 @@
     "hits": 50,
     "more": true,
     "timing": {
-     "max_ms": 31.1574,
-     "p50_ms": 26.8948,
-     "p95_ms": 29.7117,
+     "max_ms": 14.1557,
+     "p50_ms": 13.5367,
+     "p95_ms": 14.001700000000001,
      "runs": 21
     }
    },
@@ -189,9 +189,9 @@
     "hits": 50,
     "more": true,
     "timing": {
-     "max_ms": 4.217099999999999,
-     "p50_ms": 2.3341,
-     "p95_ms": 3.2409000000000003,
+     "max_ms": 1.8255000000000001,
+     "p50_ms": 1.0032999999999999,
+     "p95_ms": 1.4478,
      "runs": 21
     }
    }
@@ -202,9 +202,9 @@
     "hits": 50,
     "more": true,
     "timing": {
-     "max_ms": 8.593399999999999,
-     "p50_ms": 6.093,
-     "p95_ms": 7.9266000000000005,
+     "max_ms": 3.4265,
+     "p50_ms": 2.5364,
+     "p95_ms": 3.3979,
      "runs": 21
     }
    },
@@ -214,9 +214,9 @@
     "hits": 50,
     "more": true,
     "timing": {
-     "max_ms": 2.8567,
-     "p50_ms": 1.5196,
-     "p95_ms": 2.1628,
+     "max_ms": 0.7954,
+     "p50_ms": 0.7177,
+     "p95_ms": 0.7525000000000001,
      "runs": 21
     }
    }
@@ -227,9 +227,9 @@
     "hits": 1,
     "more": false,
     "timing": {
-     "max_ms": 52.299699999999994,
-     "p50_ms": 44.0841,
-     "p95_ms": 48.7444,
+     "max_ms": 42.3876,
+     "p50_ms": 32.716,
+     "p95_ms": 38.4589,
      "runs": 21
     }
    },
@@ -239,9 +239,9 @@
     "hits": 1,
     "more": false,
     "timing": {
-     "max_ms": 37.0719,
-     "p50_ms": 31.358200000000004,
-     "p95_ms": 35.634699999999995,
+     "max_ms": 28.1371,
+     "p50_ms": 23.9637,
+     "p95_ms": 27.362000000000002,
      "runs": 21
     }
    }
@@ -252,9 +252,9 @@
     "hits": 50,
     "more": true,
     "timing": {
-     "max_ms": 13.242500000000001,
-     "p50_ms": 10.8292,
-     "p95_ms": 13.186,
+     "max_ms": 5.835100000000001,
+     "p50_ms": 5.1656,
+     "p95_ms": 5.731,
      "runs": 21
     }
    },
@@ -264,9 +264,9 @@
     "hits": 50,
     "more": true,
     "timing": {
-     "max_ms": 5.4643,
-     "p50_ms": 3.8485,
-     "p95_ms": 5.3455,
+     "max_ms": 2.8495,
+     "p50_ms": 2.0526,
+     "p95_ms": 2.7667,
      "runs": 21
     }
    }
@@ -277,9 +277,9 @@
     "hits": 50,
     "more": true,
     "timing": {
-     "max_ms": 25.9634,
-     "p50_ms": 17.3848,
-     "p95_ms": 25.0571,
+     "max_ms": 19.3816,
+     "p50_ms": 17.1876,
+     "p95_ms": 18.8603,
      "runs": 21
     }
    },
@@ -289,9 +289,9 @@
     "hits": 50,
     "more": true,
     "timing": {
-     "max_ms": 20.177400000000002,
-     "p50_ms": 14.4749,
-     "p95_ms": 16.967200000000002,
+     "max_ms": 12.4774,
+     "p50_ms": 10.383099999999999,
+     "p95_ms": 12.1284,
      "runs": 21
     }
    }
@@ -2904,6 +2904,6 @@
   }
  },
  "scope": "in-process generated synthetic names (loomward-lab semantic corpus); no enumeration, no HTTP; warm, uncontrolled timings on a shared host",
- "host": "KRASPYON laptop, Windows 11 Home, 16 GB, shared by about ten parallel agent lanes; disk queue length 15-30 during the runs",
- "code": "loomward-catalog search_ranked at the F2 PR head (56ab878 for the ranking code)"
+ "host": "KRASPYON laptop, Windows 11 Home, 16 GB, shared with other agent lanes",
+ "code": "loomward-catalog search_ranked at the F2 PR head"
 }

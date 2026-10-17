@@ -100,9 +100,10 @@ fusion of three candidate lists: the trigram passes above, the token index
 boundaries, the extension; `search_dirty` queues changed keys and the writer drains
 it in the commit that changed them) and a context list (entries under folders whose
 names, with their parents', carry the query). Exact, prefix, token-start and
-(with a caller clock) recency add boosts; ties break by index key. It answers at
-most 500 hits by offset cursor and is not an exhaustive scan: a budget cut ranks
-what was read and says `budget_hit` without a resume position. `search` is
+(with a caller clock) recency add boosts; ties break by index key. Pages are cut
+from one pool fixed by the query, filters, options and page size (the cursor binds
+them), at least 100 hits deep and at most 500 answered; it is not an exhaustive
+scan: a budget cut ranks what was read and says `budget_hit` without a resume position. `search` is
 unchanged. Evidence: `evidence/v3/search-relevance-f2.md`.
 
 Projections are checked against the JSON Schema. Byte counts are decimal strings;

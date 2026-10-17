@@ -1,0 +1,2909 @@
+{
+ "build": {
+  "end_run_seconds": 1731.7911331,
+  "publish_seconds": 112.2750617,
+  "token_bytes_per_entry": 43.55827071368369,
+  "token_index_bytes": 436031488,
+  "trigram_bytes_per_entry": 95.63359031190164,
+  "trigram_index_bytes": 957321216
+ },
+ "corpus": {
+  "attribute": 14,
+  "concept": 10,
+  "entries": 10010303,
+  "filler_files": 10000000,
+  "known_item": 52,
+  "planted_dirs": 60,
+  "planted_files": 243,
+  "queries": 76,
+  "relevance_at_ms_budget": 250,
+  "seed": 42
+ },
+ "lane": "LW-113 F2 relevance and latency",
+ "latency": {
+  "camel_hump": {
+   "ranked_fused": {
+    "budget_hit": false,
+    "hits": 1,
+    "more": false,
+    "timing": {
+     "max_ms": 19.269499999999997,
+     "p50_ms": 14.755799999999999,
+     "p95_ms": 19.0555,
+     "runs": 21
+    }
+   },
+   "text": "texture pack",
+   "v1_passes": {
+    "budget_hit": false,
+    "hits": 1,
+    "more": false,
+    "timing": {
+     "max_ms": 16.8805,
+     "p50_ms": 11.887699999999999,
+     "p95_ms": 15.2965,
+     "runs": 21
+    }
+   }
+  },
+  "concept_folder_context": {
+   "ranked_fused": {
+    "budget_hit": false,
+    "hits": 13,
+    "more": false,
+    "timing": {
+     "max_ms": 19.339499999999997,
+     "p50_ms": 10.712100000000001,
+     "p95_ms": 19.077299999999997,
+     "runs": 21
+    }
+   },
+   "text": "invoices 2023",
+   "v1_passes": {
+    "budget_hit": false,
+    "hits": 0,
+    "more": false,
+    "timing": {
+     "max_ms": 7.0768,
+     "p50_ms": 6.1938,
+     "p95_ms": 6.8472,
+     "runs": 21
+    }
+   }
+  },
+  "digits": {
+   "ranked_fused": {
+    "budget_hit": false,
+    "hits": 1,
+    "more": false,
+    "timing": {
+     "max_ms": 64.77,
+     "p50_ms": 49.4078,
+     "p95_ms": 59.823800000000006,
+     "runs": 21
+    }
+   },
+   "text": "3333333",
+   "v1_passes": {
+    "budget_hit": false,
+    "hits": 1,
+    "more": false,
+    "timing": {
+     "max_ms": 48.030499999999996,
+     "p50_ms": 40.862,
+     "p95_ms": 46.301500000000004,
+     "runs": 21
+    }
+   }
+  },
+  "inner_substring": {
+   "ranked_fused": {
+    "budget_hit": false,
+    "hits": 50,
+    "more": true,
+    "timing": {
+     "max_ms": 5.6825,
+     "p50_ms": 4.151,
+     "p95_ms": 5.6289,
+     "runs": 21
+    }
+   },
+   "text": "recu",
+   "v1_passes": {
+    "budget_hit": false,
+    "hits": 50,
+    "more": true,
+    "timing": {
+     "max_ms": 7.0832999999999995,
+     "p50_ms": 4.557099999999999,
+     "p95_ms": 6.7883,
+     "runs": 21
+    }
+   }
+  },
+  "no_match": {
+   "ranked_fused": {
+    "budget_hit": false,
+    "hits": 0,
+    "more": false,
+    "timing": {
+     "max_ms": 2.5397000000000003,
+     "p50_ms": 1.8211,
+     "p95_ms": 2.3345000000000002,
+     "runs": 21
+    }
+   },
+   "text": "zzqqxx",
+   "v1_passes": {
+    "budget_hit": false,
+    "hits": 0,
+    "more": false,
+    "timing": {
+     "max_ms": 2.5231,
+     "p50_ms": 1.6417000000000002,
+     "p95_ms": 2.2187,
+     "runs": 21
+    }
+   }
+  },
+  "one_char": {
+   "ranked_fused": {
+    "budget_hit": false,
+    "hits": 50,
+    "more": true,
+    "timing": {
+     "max_ms": 5.0550999999999995,
+     "p50_ms": 3.1194,
+     "p95_ms": 4.7368999999999994,
+     "runs": 21
+    }
+   },
+   "text": "k",
+   "v1_passes": {
+    "budget_hit": false,
+    "hits": 0,
+    "more": false,
+    "timing": {
+     "max_ms": 1.3918,
+     "p50_ms": 0.9301999999999999,
+     "p95_ms": 1.3045,
+     "runs": 21
+    }
+   }
+  },
+  "prefix_4": {
+   "ranked_fused": {
+    "budget_hit": false,
+    "hits": 50,
+    "more": true,
+    "timing": {
+     "max_ms": 92.6759,
+     "p50_ms": 73.6543,
+     "p95_ms": 92.4512,
+     "runs": 21
+    }
+   },
+   "text": "brec",
+   "v1_passes": {
+    "budget_hit": false,
+    "hits": 50,
+    "more": true,
+    "timing": {
+     "max_ms": 7.0363999999999995,
+     "p50_ms": 4.0111,
+     "p95_ms": 6.9032,
+     "runs": 21
+    }
+   }
+  },
+  "two_chars": {
+   "ranked_fused": {
+    "budget_hit": false,
+    "hits": 50,
+    "more": true,
+    "timing": {
+     "max_ms": 4.2312,
+     "p50_ms": 3.653,
+     "p95_ms": 4.1051,
+     "runs": 21
+    }
+   },
+   "text": "ka",
+   "v1_passes": {
+    "budget_hit": false,
+    "hits": 50,
+    "more": true,
+    "timing": {
+     "max_ms": 1.6434,
+     "p50_ms": 1.2814,
+     "p95_ms": 1.6253000000000002,
+     "runs": 21
+    }
+   }
+  },
+  "two_words_known_item": {
+   "ranked_fused": {
+    "budget_hit": false,
+    "hits": 1,
+    "more": false,
+    "timing": {
+     "max_ms": 187.01409999999998,
+     "p50_ms": 135.6685,
+     "p95_ms": 181.6379,
+     "runs": 21
+    }
+   },
+   "text": "misek norhinnor 154306",
+   "v1_passes": {
+    "budget_hit": false,
+    "hits": 1,
+    "more": false,
+    "timing": {
+     "max_ms": 90.2586,
+     "p50_ms": 66.3207,
+     "p95_ms": 87.4061,
+     "runs": 21
+    }
+   }
+  },
+  "word": {
+   "ranked_fused": {
+    "budget_hit": false,
+    "hits": 50,
+    "more": true,
+    "timing": {
+     "max_ms": 18.5351,
+     "p50_ms": 12.9953,
+     "p95_ms": 16.610500000000002,
+     "runs": 21
+    }
+   },
+   "text": "brecunor",
+   "v1_passes": {
+    "budget_hit": false,
+    "hits": 50,
+    "more": true,
+    "timing": {
+     "max_ms": 11.5546,
+     "p50_ms": 6.7428,
+     "p95_ms": 9.329799999999999,
+     "runs": 21
+    }
+   }
+  },
+  "word_and_extension": {
+   "ranked_fused": {
+    "budget_hit": false,
+    "hits": 50,
+    "more": true,
+    "timing": {
+     "max_ms": 32.1325,
+     "p50_ms": 28.9041,
+     "p95_ms": 30.559099999999997,
+     "runs": 21
+    }
+   },
+   "text": "brecunor",
+   "v1_passes": {
+    "budget_hit": false,
+    "hits": 50,
+    "more": true,
+    "timing": {
+     "max_ms": 18.1768,
+     "p50_ms": 14.9521,
+     "p95_ms": 16.969,
+     "runs": 21
+    }
+   }
+  }
+ },
+ "queries": [
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "invoices",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 13,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "invoices 2021"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "invoices",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 14,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "invoices 2022"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "invoices",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 15,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "invoices 2023"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "invoices",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 14,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "invoices 2024"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "invoices",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 2,
+   "returned": 2,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "invoice acme corp"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": "pdf",
+   "group": "invoices",
+   "max_age_days": null,
+   "ndcg": 0.795,
+   "recall50": 0.0769,
+   "relevant": 52,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "invoice"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "thesis",
+   "max_age_days": null,
+   "ndcg": 0.3199,
+   "recall50": 0.1111,
+   "relevant": 9,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "thesis draft"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "thesis",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 1,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "thesis chapter 3"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "thesis",
+   "max_age_days": null,
+   "ndcg": 0.7496,
+   "recall50": 0.4667,
+   "relevant": 15,
+   "returned": 11,
+   "rr": 0.5,
+   "system": "v1_passes",
+   "text": "thesis"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "thesis",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 3,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "thesis figures"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": "docx",
+   "group": "thesis",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 3,
+   "returned": 3,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "draft"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "thesis",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "supervisor comments"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "mods",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 4,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "texture mod"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "mods",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "mod manager"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": "zip",
+   "group": "mods",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 3,
+   "returned": 3,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "texture"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "photos",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 2,
+   "returned": 2,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "dsc 0421"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "photos",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "img 20230415 1301"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "photos",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "pxl 20240102"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "photos",
+   "max_age_days": null,
+   "ndcg": 0.2201,
+   "recall50": 0.0714,
+   "relevant": 14,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "italy trip"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": "jpg",
+   "group": "photos",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 13,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "italy"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "photos",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 5,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "iceland dsc"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "build",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 2,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "quillon release exe"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "build",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 2,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "brandt release exe"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "build",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 2,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "naveth release exe"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "build",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 2,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "oskar release exe"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "build",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 2,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "tessel release exe"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "build",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 2,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "wyvern release exe"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 0.7504,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "weekly status"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": 365,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "weekly status"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 0.7504,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "budget review"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": 365,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "budget review"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 0.7504,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "roadmap sync"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 0.7504,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "retro notes"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 0.7504,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "design review"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 0.7504,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "sprint plan"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 0.7504,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "hiring tracker"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 0.7504,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "release checklist"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "ignore previous instructions"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "system prompt"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "drop table"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "quoted name"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "\u0442\u0435\u0441\u0442 \u043e\u0442\u0447\u0451\u0442"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "\u5831\u544a\u66f8"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 1,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "cafe resume"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "party"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 1,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "near a b"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "misek norhinnor 154306"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "drev 448477"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "quanormi 936457"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "wiquabre 1312632"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "yomi 1374117"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "sekruka 1969203"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "cuwitan ruhinyo 2218167"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "loso 2477533"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "tansolka 2786645"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "zuqua ruseksek 3123714"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "tann 3417769"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "quahinru 3825342"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "dexquaqua 4288566"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "ganv 4493894"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "solsekhin 4704482"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "ganvecu 5069114"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "yowi 5479286"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "vetanfal 5718315"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "quatantan dexcuka 6019658"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "ruve 6532126"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "hinganhin 6689289"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "wizucu 7061098"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "ruyo 7345281"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "miganwi 7842641"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "quaquabre misolgan 8297628"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "brer 8347135"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "cuzuve 8879564"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "losekfal kadre 9123408"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "dexv 9589599"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "quagantan 9912171"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "invoices",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 13,
+   "returned": 13,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "invoices 2021"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "invoices",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 0.9286,
+   "relevant": 14,
+   "returned": 13,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "invoices 2022"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "invoices",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 0.8667,
+   "relevant": 15,
+   "returned": 13,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "invoices 2023"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "invoices",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 0.9286,
+   "relevant": 14,
+   "returned": 13,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "invoices 2024"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "invoices",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 2,
+   "returned": 2,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "invoice acme corp"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": "pdf",
+   "group": "invoices",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 0.9615,
+   "relevant": 52,
+   "returned": 50,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "invoice"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "thesis",
+   "max_age_days": null,
+   "ndcg": 0.8195,
+   "recall50": 0.4444,
+   "relevant": 9,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "thesis draft"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "thesis",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "thesis chapter 3"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "thesis",
+   "max_age_days": null,
+   "ndcg": 0.7496,
+   "recall50": 1.0,
+   "relevant": 15,
+   "returned": 19,
+   "rr": 0.5,
+   "system": "ranked_fused",
+   "text": "thesis"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "thesis",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 3,
+   "returned": 3,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "thesis figures"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": "docx",
+   "group": "thesis",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 3,
+   "returned": 3,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "draft"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "thesis",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "supervisor comments"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "mods",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "texture mod"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "mods",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "mod manager"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": "zip",
+   "group": "mods",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 3,
+   "returned": 3,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "texture"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "photos",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 2,
+   "returned": 2,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "dsc 0421"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "photos",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "img 20230415 1301"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "photos",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "pxl 20240102"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "photos",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 14,
+   "returned": 14,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "italy trip"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": "jpg",
+   "group": "photos",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 13,
+   "returned": 13,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "italy"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "photos",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 5,
+   "returned": 5,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "iceland dsc"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "build",
+   "max_age_days": null,
+   "ndcg": 0.8262,
+   "recall50": 0.5,
+   "relevant": 2,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "quillon release exe"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "build",
+   "max_age_days": null,
+   "ndcg": 0.8262,
+   "recall50": 0.5,
+   "relevant": 2,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "brandt release exe"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "build",
+   "max_age_days": null,
+   "ndcg": 0.8262,
+   "recall50": 0.5,
+   "relevant": 2,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "naveth release exe"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "build",
+   "max_age_days": null,
+   "ndcg": 0.8262,
+   "recall50": 0.5,
+   "relevant": 2,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "oskar release exe"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "build",
+   "max_age_days": null,
+   "ndcg": 0.8262,
+   "recall50": 0.5,
+   "relevant": 2,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "tessel release exe"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "build",
+   "max_age_days": null,
+   "ndcg": 0.8262,
+   "recall50": 0.5,
+   "relevant": 2,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "wyvern release exe"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "weekly status"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": 365,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "weekly status"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "budget review"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": 365,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "budget review"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "roadmap sync"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "retro notes"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "design review"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "sprint plan"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "hiring tracker"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "release checklist"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "ignore previous instructions"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "system prompt"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "drop table"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "quoted name"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "\u0442\u0435\u0441\u0442 \u043e\u0442\u0447\u0451\u0442"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "\u5831\u544a\u66f8"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "cafe resume"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "party"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "near a b"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "misek norhinnor 154306"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "drev 448477"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "quanormi 936457"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "wiquabre 1312632"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "yomi 1374117"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "sekruka 1969203"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "cuwitan ruhinyo 2218167"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "loso 2477533"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "tansolka 2786645"
+  },
+  {
+   "budget_hit": true,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "zuqua ruseksek 3123714"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "tann 3417769"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "quahinru 3825342"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "dexquaqua 4288566"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "ganv 4493894"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "solsekhin 4704482"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "ganvecu 5069114"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "yowi 5479286"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "vetanfal 5718315"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "quatantan dexcuka 6019658"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "ruve 6532126"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "hinganhin 6689289"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "wizucu 7061098"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "ruyo 7345281"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "miganwi 7842641"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "quaquabre misolgan 8297628"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "brer 8347135"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "cuzuve 8879564"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "losekfal kadre 9123408"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "dexv 9589599"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "quagantan 9912171"
+  }
+ ],
+ "relevance": {
+  "ranked_context_only": {
+   "budget_hit_queries": 0,
+   "by_class": {
+    "attribute": {
+     "mrr_at_10": 0.1429,
+     "ndcg_at_10": 0.105,
+     "queries": 14,
+     "recall_at_50": 0.1374
+    },
+    "concept": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 0.9819,
+     "queries": 10,
+     "recall_at_50": 0.9097
+    },
+    "known_item": {
+     "mrr_at_10": 0.1538,
+     "ndcg_at_10": 0.1338,
+     "queries": 52,
+     "recall_at_50": 0.0962
+    }
+   },
+   "by_group": {
+    "build": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 0.8262,
+     "queries": 6,
+     "recall_at_50": 0.5
+    },
+    "filler": {
+     "mrr_at_10": 0.0,
+     "ndcg_at_10": 0.0,
+     "queries": 30,
+     "recall_at_50": 0.0
+    },
+    "hostile": {
+     "mrr_at_10": 0.0,
+     "ndcg_at_10": 0.0,
+     "queries": 9,
+     "recall_at_50": 0.0
+    },
+    "invoices": {
+     "mrr_at_10": 0.8333,
+     "ndcg_at_10": 0.745,
+     "queries": 6,
+     "recall_at_50": 0.7745
+    },
+    "mods": {
+     "mrr_at_10": 0.6667,
+     "ndcg_at_10": 0.6667,
+     "queries": 3,
+     "recall_at_50": 0.6667
+    },
+    "photos": {
+     "mrr_at_10": 0.5,
+     "ndcg_at_10": 0.5,
+     "queries": 6,
+     "recall_at_50": 0.4881
+    },
+    "thesis": {
+     "mrr_at_10": 0.6667,
+     "ndcg_at_10": 0.6366,
+     "queries": 6,
+     "recall_at_50": 0.5741
+    },
+    "versions": {
+     "mrr_at_10": 0.0,
+     "ndcg_at_10": 0.0,
+     "queries": 10,
+     "recall_at_50": 0.0
+    }
+   },
+   "overall": {
+    "mrr_at_10": 0.2632,
+    "ndcg_at_10": 0.2401,
+    "queries": 76,
+    "recall_at_50": 0.2108
+   }
+  },
+  "ranked_fused": {
+   "budget_hit_queries": 1,
+   "by_class": {
+    "attribute": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 14,
+     "recall_at_50": 0.9973
+    },
+    "concept": {
+     "mrr_at_10": 0.95,
+     "ndcg_at_10": 0.9569,
+     "queries": 10,
+     "recall_at_50": 0.9168
+    },
+    "known_item": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 0.98,
+     "queries": 52,
+     "recall_at_50": 0.9423
+    }
+   },
+   "by_group": {
+    "build": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 0.8262,
+     "queries": 6,
+     "recall_at_50": 0.5
+    },
+    "filler": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 30,
+     "recall_at_50": 1.0
+    },
+    "hostile": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 9,
+     "recall_at_50": 1.0
+    },
+    "invoices": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 6,
+     "recall_at_50": 0.9476
+    },
+    "mods": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 3,
+     "recall_at_50": 1.0
+    },
+    "photos": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 6,
+     "recall_at_50": 1.0
+    },
+    "thesis": {
+     "mrr_at_10": 0.9167,
+     "ndcg_at_10": 0.9282,
+     "queries": 6,
+     "recall_at_50": 0.9074
+    },
+    "versions": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 10,
+     "recall_at_50": 1.0
+    }
+   },
+   "overall": {
+    "mrr_at_10": 0.9934,
+    "ndcg_at_10": 0.9806,
+    "queries": 76,
+    "recall_at_50": 0.9491
+   }
+  },
+  "ranked_token_only": {
+   "budget_hit_queries": 0,
+   "by_class": {
+    "attribute": {
+     "mrr_at_10": 0.9286,
+     "ndcg_at_10": 0.9139,
+     "queries": 14,
+     "recall_at_50": 0.8626
+    },
+    "concept": {
+     "mrr_at_10": 0.25,
+     "ndcg_at_10": 0.129,
+     "queries": 10,
+     "recall_at_50": 0.0649
+    },
+    "known_item": {
+     "mrr_at_10": 0.8846,
+     "ndcg_at_10": 0.8846,
+     "queries": 52,
+     "recall_at_50": 0.8846
+    }
+   },
+   "by_group": {
+    "build": {
+     "mrr_at_10": 0.0,
+     "ndcg_at_10": 0.0,
+     "queries": 6,
+     "recall_at_50": 0.0
+    },
+    "filler": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 30,
+     "recall_at_50": 1.0
+    },
+    "hostile": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 9,
+     "recall_at_50": 1.0
+    },
+    "invoices": {
+     "mrr_at_10": 0.3333,
+     "ndcg_at_10": 0.2992,
+     "queries": 6,
+     "recall_at_50": 0.1795
+    },
+    "mods": {
+     "mrr_at_10": 0.6667,
+     "ndcg_at_10": 0.6667,
+     "queries": 3,
+     "recall_at_50": 0.6667
+    },
+    "photos": {
+     "mrr_at_10": 0.6667,
+     "ndcg_at_10": 0.5367,
+     "queries": 6,
+     "recall_at_50": 0.5119
+    },
+    "thesis": {
+     "mrr_at_10": 0.75,
+     "ndcg_at_10": 0.6783,
+     "queries": 6,
+     "recall_at_50": 0.5963
+    },
+    "versions": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 10,
+     "recall_at_50": 1.0
+    }
+   },
+   "overall": {
+    "mrr_at_10": 0.8092,
+    "ndcg_at_10": 0.7906,
+    "queries": 76,
+    "recall_at_50": 0.7727
+   }
+  },
+  "ranked_trigram_only": {
+   "budget_hit_queries": 0,
+   "by_class": {
+    "attribute": {
+     "mrr_at_10": 0.9286,
+     "ndcg_at_10": 0.9139,
+     "queries": 14,
+     "recall_at_50": 0.8626
+    },
+    "concept": {
+     "mrr_at_10": 0.25,
+     "ndcg_at_10": 0.129,
+     "queries": 10,
+     "recall_at_50": 0.0649
+    },
+    "known_item": {
+     "mrr_at_10": 0.8269,
+     "ndcg_at_10": 0.8269,
+     "queries": 52,
+     "recall_at_50": 0.8269
+    }
+   },
+   "by_group": {
+    "build": {
+     "mrr_at_10": 0.0,
+     "ndcg_at_10": 0.0,
+     "queries": 6,
+     "recall_at_50": 0.0
+    },
+    "filler": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 30,
+     "recall_at_50": 1.0
+    },
+    "hostile": {
+     "mrr_at_10": 0.7778,
+     "ndcg_at_10": 0.7778,
+     "queries": 9,
+     "recall_at_50": 0.7778
+    },
+    "invoices": {
+     "mrr_at_10": 0.3333,
+     "ndcg_at_10": 0.2992,
+     "queries": 6,
+     "recall_at_50": 0.1795
+    },
+    "mods": {
+     "mrr_at_10": 0.6667,
+     "ndcg_at_10": 0.6667,
+     "queries": 3,
+     "recall_at_50": 0.6667
+    },
+    "photos": {
+     "mrr_at_10": 0.6667,
+     "ndcg_at_10": 0.5367,
+     "queries": 6,
+     "recall_at_50": 0.5119
+    },
+    "thesis": {
+     "mrr_at_10": 0.5833,
+     "ndcg_at_10": 0.5116,
+     "queries": 6,
+     "recall_at_50": 0.4296
+    },
+    "versions": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 10,
+     "recall_at_50": 1.0
+    }
+   },
+   "overall": {
+    "mrr_at_10": 0.7697,
+    "ndcg_at_10": 0.7511,
+    "queries": 76,
+    "recall_at_50": 0.7332
+   }
+  },
+  "ranked_trigram_plus_token": {
+   "budget_hit_queries": 0,
+   "by_class": {
+    "attribute": {
+     "mrr_at_10": 0.9286,
+     "ndcg_at_10": 0.9139,
+     "queries": 14,
+     "recall_at_50": 0.8626
+    },
+    "concept": {
+     "mrr_at_10": 0.25,
+     "ndcg_at_10": 0.129,
+     "queries": 10,
+     "recall_at_50": 0.0649
+    },
+    "known_item": {
+     "mrr_at_10": 0.8846,
+     "ndcg_at_10": 0.8846,
+     "queries": 52,
+     "recall_at_50": 0.8846
+    }
+   },
+   "by_group": {
+    "build": {
+     "mrr_at_10": 0.0,
+     "ndcg_at_10": 0.0,
+     "queries": 6,
+     "recall_at_50": 0.0
+    },
+    "filler": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 30,
+     "recall_at_50": 1.0
+    },
+    "hostile": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 9,
+     "recall_at_50": 1.0
+    },
+    "invoices": {
+     "mrr_at_10": 0.3333,
+     "ndcg_at_10": 0.2992,
+     "queries": 6,
+     "recall_at_50": 0.1795
+    },
+    "mods": {
+     "mrr_at_10": 0.6667,
+     "ndcg_at_10": 0.6667,
+     "queries": 3,
+     "recall_at_50": 0.6667
+    },
+    "photos": {
+     "mrr_at_10": 0.6667,
+     "ndcg_at_10": 0.5367,
+     "queries": 6,
+     "recall_at_50": 0.5119
+    },
+    "thesis": {
+     "mrr_at_10": 0.75,
+     "ndcg_at_10": 0.6783,
+     "queries": 6,
+     "recall_at_50": 0.5963
+    },
+    "versions": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 10,
+     "recall_at_50": 1.0
+    }
+   },
+   "overall": {
+    "mrr_at_10": 0.8092,
+    "ndcg_at_10": 0.7906,
+    "queries": 76,
+    "recall_at_50": 0.7727
+   }
+  },
+  "v1_passes": {
+   "budget_hit_queries": 0,
+   "by_class": {
+    "attribute": {
+     "mrr_at_10": 0.9286,
+     "ndcg_at_10": 0.7713,
+     "queries": 14,
+     "recall_at_50": 0.8626
+    },
+    "concept": {
+     "mrr_at_10": 0.25,
+     "ndcg_at_10": 0.129,
+     "queries": 10,
+     "recall_at_50": 0.0649
+    },
+    "known_item": {
+     "mrr_at_10": 0.8269,
+     "ndcg_at_10": 0.8269,
+     "queries": 52,
+     "recall_at_50": 0.8269
+    }
+   },
+   "by_group": {
+    "build": {
+     "mrr_at_10": 0.0,
+     "ndcg_at_10": 0.0,
+     "queries": 6,
+     "recall_at_50": 0.0
+    },
+    "filler": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 30,
+     "recall_at_50": 1.0
+    },
+    "hostile": {
+     "mrr_at_10": 0.7778,
+     "ndcg_at_10": 0.7778,
+     "queries": 9,
+     "recall_at_50": 0.7778
+    },
+    "invoices": {
+     "mrr_at_10": 0.3333,
+     "ndcg_at_10": 0.2992,
+     "queries": 6,
+     "recall_at_50": 0.1795
+    },
+    "mods": {
+     "mrr_at_10": 0.6667,
+     "ndcg_at_10": 0.6667,
+     "queries": 3,
+     "recall_at_50": 0.6667
+    },
+    "photos": {
+     "mrr_at_10": 0.6667,
+     "ndcg_at_10": 0.5367,
+     "queries": 6,
+     "recall_at_50": 0.5119
+    },
+    "thesis": {
+     "mrr_at_10": 0.5833,
+     "ndcg_at_10": 0.5116,
+     "queries": 6,
+     "recall_at_50": 0.4296
+    },
+    "versions": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 0.8003,
+     "queries": 10,
+     "recall_at_50": 1.0
+    }
+   },
+   "overall": {
+    "mrr_at_10": 0.7697,
+    "ndcg_at_10": 0.7248,
+    "queries": 76,
+    "recall_at_50": 0.7332
+   }
+  }
+ },
+ "scope": "in-process generated synthetic names (loomward-lab semantic corpus); no enumeration, no HTTP; warm, uncontrolled timings on a shared host",
+ "host": "KRASPYON laptop, Windows 11 Home, 16 GB, shared with other agent lanes",
+ "code": "loomward-catalog search_ranked at the F2 PR head"
+}

@@ -397,7 +397,10 @@ fn ranked_pages_by_offset_and_cursors_do_not_cross_modes() {
             None => break,
         }
     }
-    assert_eq!(paged, all);
+    // The pool depends on the page size (see the pool test), so the two walks may differ in the tail.
+    let unique: std::collections::BTreeSet<_> = paged.iter().collect();
+    assert_eq!(unique.len(), paged.len());
+    assert!(paged.len() >= 4 && paged.iter().all(|p| all.contains(p)));
     // A ranked cursor is bound to its query and to ranked mode.
     r.limit = 1;
     r.cursor = None;
@@ -607,4 +610,103 @@ fn rows_written_outside_the_writer_wait_in_the_queue_until_the_next_open() {
         .unwrap();
     assert_eq!(page.index_state, "current");
     assert_eq!(order(&page), ["qwerty rawwrite.txt"]);
+}
+
+#[test]
+fn the_token_window_counts_eligible_entries_not_index_matches() {
+    let mut lab = lab();
+    let r = register(&lab, "Alpha", 1);
+    let run = begin(&lab, &r);
+    // More than the 256-match window of earlier .txt names, then the one .pdf that matches.
+    let mut files: Vec<_> = (0..300)
+        .map(|i| obs(&mut lab, &format!("alpha {i:03}.txt"), 5))
+        .collect();
+    files.push(obs(&mut lab, "alpha zzz.pdf", 5));
+    list(&lab, run, r.dir, files, vec![]);
+    end(&lab, run);
+    let mut q = req("alpha");
+    q.extension = Some("pdf".into());
+    let page = lab
+        .c
+        .reader()
+        .unwrap()
+        .search_ranked(
+            &q,
+            &RankOptions {
+                tiers: TIER_TOKEN,
+                ..RankOptions::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(order(&page), ["alpha zzz.pdf"]);
+}
+
+#[test]
+fn every_page_ranks_the_same_pool_and_the_cursor_is_bound_to_it() {
+    let mut lab = lab();
+    let r = register(&lab, "Alpha", 1);
+    let run = begin(&lab, &r);
+    // Names that fuse differently in each list, so a pool that grew with the offset would reorder.
+    let files: Vec<_> = (0..240)
+        .map(|i| {
+            let name = match i % 3 {
+                0 => format!("report {i:03}.txt"),
+                1 => format!("Annual-Report-{i:03}.txt"),
+                _ => format!("x{i:03}report.txt"),
+            };
+            obs(&mut lab, &name, i as i64)
+        })
+        .collect();
+    list(&lab, run, r.dir, files, vec![]);
+    end(&lab, run);
+    let opts = RankOptions {
+        now_ft: Some(now()),
+        ..RankOptions::default()
+    };
+    let walk = |limit: usize| -> Vec<String> {
+        let mut q = req("report");
+        q.limit = limit;
+        let mut all = Vec::new();
+        for _ in 0..100 {
+            let page = lab.c.reader().unwrap().search_ranked(&q, &opts).unwrap();
+            all.extend(order(&page));
+            match page.next_cursor {
+                Some(c) => q.cursor = Some(c),
+                None => break,
+            }
+        }
+        all
+    };
+    let ten = walk(10);
+    assert!(ten.len() >= 100, "{}", ten.len());
+    let unique: std::collections::BTreeSet<_> = ten.iter().collect();
+    assert_eq!(unique.len(), ten.len(), "a page repeated a hit");
+    assert_eq!(ten, walk(10), "the same query pages the same way");
+    // A cursor carries its ranking options and page size: another set is refused.
+    let mut q = req("report");
+    q.limit = 10;
+    let cursor = lab
+        .c
+        .reader()
+        .unwrap()
+        .search_ranked(&q, &opts)
+        .unwrap()
+        .next_cursor
+        .unwrap();
+    q.cursor = Some(cursor);
+    let mut reader = lab.c.reader().unwrap();
+    for changed in [
+        RankOptions {
+            now_ft: Some(now() + DAY),
+            ..opts.clone()
+        },
+        RankOptions {
+            tiers: TIER_TRIGRAM,
+            ..opts.clone()
+        },
+    ] {
+        assert!(reader.search_ranked(&q, &changed).is_err());
+    }
+    q.limit = 20;
+    assert!(reader.search_ranked(&q, &opts).is_err());
 }
