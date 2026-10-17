@@ -1,4 +1,7 @@
 use super::{sink::*, source::*, GrantedRoot};
+#[cfg(test)]
+#[path = "w2_tests.rs"]
+mod w2_tests;
 use crate::{
     budgets::{ByteBudget, BytePermit},
     EngineError, EngineResult,

@@ -623,6 +623,13 @@ impl Engine {
                 Err(e) => return Err(e),
             };
         #[cfg(windows)]
+        {
+            let existing = self.scan_watches.lock().unwrap().remove(root.root_id());
+            if let Some(watch) = existing {
+                watch.stop();
+            }
+        }
+        #[cfg(windows)]
         if !watched {
             let io = source::native_cancel();
             let interrupt = io.clone();
@@ -667,15 +674,6 @@ impl Engine {
         #[cfg(windows)]
         {
             let watch = {
-                let existing = self
-                    .scan_watches
-                    .lock()
-                    .unwrap()
-                    .get(root.root_id())
-                    .cloned();
-                if let Some(watch) = existing {
-                    watch.stop();
-                }
                 let watch = watch::RootWatch::start(&root, sink.clone())?;
                 let replaced = self
                     .scan_watches
