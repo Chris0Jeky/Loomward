@@ -524,9 +524,8 @@ fn a_failed_write_leaves_the_target_and_no_partial_file() {
     assert_eq!(names(tmp.path()), ["read-only.json"]);
 }
 
-/// Only the owner closing the dialog is `cancelled_by_user` (#437). A dialog that never opened
-/// (another one open, no owner window yet, no dialog on the adapter) is a refusal that says so, and
-/// writes nothing, so a retry after the cause clears is not read as the owner declining.
+/// Only a known user cancellation is `cancelled_by_user` (#437). Dialog failures and a backend
+/// result that cannot distinguish failure from cancellation each say so and write nothing.
 #[test]
 fn a_dialog_that_never_opened_is_not_reported_as_a_cancel() {
     let tmp = temp_root();
@@ -537,6 +536,7 @@ fn a_dialog_that_never_opened_is_not_reported_as_a_cancel() {
     for (why, expected) in [
         (SaveDialog::Busy, "dialog_busy"),
         (SaveDialog::Unavailable, "dialog_unavailable"),
+        (SaveDialog::NoSelection, "dialog_no_selection"),
     ] {
         let saves = Saves::never_opens(why);
         let r = save(&svc, &saves, &d);

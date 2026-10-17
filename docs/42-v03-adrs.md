@@ -523,7 +523,8 @@ and never writes twice) without a ticket, sharing the pickers' one-dialog lock a
 5. *Loomward confirms a replace itself.* rfd 0.17 opens `IFileSaveDialog` without changing its options, and
    whether its documented `FOS_OVERWRITEPROMPT` default holds was never observed. So when the chosen file exists,
    the service asks `NativeDialogs::confirm_replace` (an app-owned box naming the file, Cancel the default);
-   a decline is `cancelled_by_user` and writes nothing.
+   a decline is `cancelled_by_user` and writes nothing. rfd's save dialog returns no path for both cancellation
+   and a dialog failure; that ambiguous result is `refused` / `dialog_no_selection`, never a claimed user cancel.
 6. *`capabilities.effects.file_write` stays `false`.* That matrix describes effects on the owner's files under a
    grant (invariant 1). The export is listed instead as the one command whose `commands.json` `effects` is
    `owner_picked_export`, and the contract test pins that no other command has an effect.
