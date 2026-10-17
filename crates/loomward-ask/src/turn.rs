@@ -214,7 +214,11 @@ impl Tools<'_> {
         };
         match call.function.name.as_str() {
             "find" => {
-                let text: String = only("text")?.chars().take(256).collect();
+                // Truncating would answer a different query than the model asked.
+                let text = only("text")?;
+                if text.chars().count() > 256 {
+                    return Err("`text` is longer than 256 characters".into());
+                }
                 let result = self.call(
                     "search.query",
                     json!({"root_id": null, "text": text, "extension": null, "min_bytes": null,
