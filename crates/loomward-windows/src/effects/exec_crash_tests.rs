@@ -30,6 +30,7 @@ const CHILD: &str = "effects::exec::crash_tests::crash_child";
 const SEED: u64 = 0x2026_1017_00C6;
 const RANDOM_KILLS_FULL: usize = 240;
 const KILLS_PER_TREE: usize = 5;
+const CHILD_TIMEOUT: Duration = Duration::from_secs(120);
 
 fn full() -> bool {
     std::env::var("LOOMWARD_CRASH_SWEEP").is_ok_and(|v| v == "full")
@@ -329,14 +330,36 @@ impl Prepared {
         if let Some(n) = n {
             cmd.env("LOOMWARD_COPY_CRASH_AT", n.to_string());
         }
-        let out = cmd.output().unwrap();
-        let code = out.status.code().unwrap_or(-1);
+        // Output goes to a file (no pipe to drain), so a hung child fails after the timeout, not hangs.
+        let log = self
+            .lab
+            .tmp
+            .path()
+            .join(format!("child-{}.log", n.unwrap_or(0)));
+        let file = fs::File::create(&log).unwrap();
+        let mut child = cmd
+            .stdout(file.try_clone().unwrap())
+            .stderr(file)
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if started.elapsed() > CHILD_TIMEOUT {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("{:?} child {n:?} hung past {CHILD_TIMEOUT:?}", self.case);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let code = status.code().unwrap_or(-1);
         assert!(
             code == 0 || code == crash::EXIT as i32,
-            "{:?} child exited {code}\n{}\n{}",
+            "{:?} child exited {code}\n{}",
             self.case,
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
+            fs::read_to_string(&log).unwrap_or_default()
         );
         let labels = fs::read_to_string(&trace)
             .unwrap_or_default()
@@ -576,8 +599,12 @@ fn kill(case: Case, n: usize, labels: &[String], tally: &mut Tally) {
     tally.record(&labels[n - 1], recovered, abandoned);
 }
 
-/// Default: each scenario killed once per crash-point class it reaches. Full: every boundary of
-/// every scenario under both Q1 policies.
+/// The effect-before-journal gaps (an object on disk whose identity is not yet journaled): the default
+/// mode kills at the first and last of each under both Q1 policies, not only at its class's first label.
+const GAPS: [&str; 2] = ["staging folder made", "created item"];
+
+/// Default: each scenario killed once per crash-point class it reaches, plus the first and last of each
+/// `GAPS` label (Run under both Q1 policies). Full: every boundary of every scenario under both.
 #[test]
 fn crash_matrix_every_point_recovers_and_abandons_under_the_oracle() {
     if lab().is_none() {
@@ -588,7 +615,7 @@ fn crash_matrix_every_point_recovers_and_abandons_under_the_oracle() {
     for scenario in Scenario::ALL {
         let policies: &[bool] = match (full(), scenario) {
             (true, _) => &[false, true],
-            (false, Scenario::AbandonVerified) => &[false, true],
+            (false, Scenario::Run | Scenario::AbandonVerified) => &[false, true],
             (false, Scenario::AbandonPublish) => &[true],
             (false, _) => &[false],
         };
@@ -600,8 +627,16 @@ fn crash_matrix_every_point_recovers_and_abandons_under_the_oracle() {
             };
             let labels = enumerate_case(case).unwrap();
             let mut seen = BTreeSet::new();
+            let gap = |n: usize| {
+                let l = labels[n - 1].as_str();
+                GAPS.contains(&l)
+                    && (labels.iter().position(|x| x == l) == Some(n - 1)
+                        || labels.iter().rposition(|x| x == l) == Some(n - 1))
+            };
+            // Run under removal on adds only the gap kills; its classes are already swept under off.
+            let classes = !(scenario == Scenario::Run && removal);
             let picks: Vec<usize> = (1..=labels.len())
-                .filter(|&n| full() || seen.insert(class(&labels[n - 1])))
+                .filter(|&n| full() || gap(n) || (classes && seen.insert(class(&labels[n - 1]))))
                 .collect();
             for &n in &picks {
                 kill(case, n, &labels, &mut tally);

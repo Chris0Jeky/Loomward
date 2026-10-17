@@ -150,9 +150,17 @@ refusal (`identity::observe` fails), then skips with the reason, like `effects::
 
 ## Default mode (CI)
 
-Without `LOOMWARD_CRASH_SWEEP=full` the matrix kills each scenario once per crash-point class it reaches.
-Run and Confirm use removal off, AbandonVerified both policies and AbandonPublish removal on. That is 29 kills
-covering all 22 classes, plus 4 random kills, about 50 s on this host.
+Without `LOOMWARD_CRASH_SWEEP=full` the matrix kills each scenario once per crash-point class it reaches
+(Run, Refused and Confirm with removal off, AbandonVerified under both policies, AbandonPublish with removal
+on). It also kills at the first and last `staging folder made` and `created item`, the effect-before-journal
+gaps, with Run under both policies. That is 35 kills covering all 22 classes, including two
+`needs_attention` endings from unjournaled creates, plus 4 random kills. Measured: 42 s for the earlier
+29-kill selection, and 184 s for the 35-kill selection with the laptop under heavy parallel load. A child that
+does not exit within 120 s fails the run instead of hanging it.
+
+The preview refuses with `insufficient_space` when C: has less free than the reserve (the larger of 1 GiB and
+1% of the volume). On this 1 TB host, shared with other lanes' build directories, that refusal was seen
+once at 7.5 GB free, before this lane's own build cache was cleaned.
 
 ## Not covered here
 
