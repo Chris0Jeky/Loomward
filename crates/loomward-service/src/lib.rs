@@ -234,7 +234,9 @@ impl Service {
         catalog.writer().set_bulk_first_scan(true);
         let engine = Engine::open(EngineConfig::new(state_dir.clone(), config.dataset))
             .map_err(|e| format!("engine refused to open: {e}"))?;
-        let conn = db::open(&state_dir).map_err(|e| format!("state store: {e}"))?;
+        let mut conn = db::open(&state_dir).map_err(|e| format!("state store: {e}"))?;
+        // Once per open, not per connection: it takes the write lock (#607).
+        clients::migrate(&mut conn).map_err(|e| format!("client grants: {e}"))?;
         let forgotten: bool = conn
             .query_row("SELECT EXISTS(SELECT 1 FROM st.root_forgotten)", [], |r| {
                 r.get(0)
@@ -380,6 +382,7 @@ pub(crate) fn is_mutation(c: Command) -> bool {
             | DiagnosticsSave
             | AlertsConfigure
             // docs/47: refused before dispatch while the gate is closed; mutations when it opens.
+            | CopyApprove
             | CopyStart
             | CopyCancel
             | CopyAbandon
