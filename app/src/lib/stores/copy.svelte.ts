@@ -95,11 +95,13 @@ export class CopyFlow {
     if (this.epoch !== null && this.epoch !== epoch) this.invalidateObservations();
     this.epoch = epoch;
   }
-  private async run(action: string, task: () => Promise<void>): Promise<void> {
+  /** `stale` tells whether the observation this call answers has changed; such a failure is dropped with its text. */
+  private async run(action: string, task: () => Promise<void>, stale: () => boolean = () => false): Promise<void> {
     if (this.busy) return;
     this.busy = true; this.action = action; this.problem = ''; this.error = null; this.gated = false;
     try { await task(); }
     catch (error) {
+      if (stale()) return;
       this.error = error;
       this.problem = error instanceof Error ? error.message : 'Unexpected copy response.';
       if (error instanceof LoomwardError) {
@@ -137,28 +139,37 @@ export class CopyFlow {
   }
   async start(client: Client): Promise<void> {
     if (!this.canStart) return;
+    const generation = this.generation;
     await this.run('start', async () => {
       const p = this.preview!;
       this.approval = null; this.uncertain = true;
       const { result } = await client.call('copy.start', { operation_id: p.operation_id, digest: p.digest });
-      this.accept(result);
-    });
+      if (generation === this.generation) this.accept(result);
+    }, () => generation !== this.generation);
   }
   async refresh(client: Client): Promise<void> {
     if (!this.preview) return;
+    const generation = this.generation;
     await this.run('status', async () => {
       const { result } = await client.call('copy.status', { operation_id: this.preview!.operation_id });
-      this.accept(result);
-    });
+      if (generation === this.generation) this.accept(result);
+    }, () => generation !== this.generation);
   }
   async cancel(client: Client): Promise<void> { if (this.canCancel) await this.stop(client, 'copy.cancel'); }
   async abandon(client: Client): Promise<void> { if (this.canAbandon) await this.stop(client, 'copy.abandon'); }
   private async stop(client: Client, command: 'copy.cancel' | 'copy.abandon'): Promise<void> {
+    if (this.busy) return;
+    const generation = this.generation;
     await this.run('stop', async () => {
       this.approval = null; this.uncertain = true;
       const { result } = await client.call(command, { operation_id: this.preview!.operation_id });
-      this.accept(result);
-    });
+      if (generation === this.generation) this.accept(result);
+    }, () => generation !== this.generation);
+    // A refused stop does not confirm the last status, so it is cleared rather than shown as current (as a refused start is).
+    if (this.gated) {
+      this.status = null;
+      this.notice = 'The engine refused this stop. The last status it reported is no longer shown; refresh status to see the current state.';
+    }
   }
 }
 

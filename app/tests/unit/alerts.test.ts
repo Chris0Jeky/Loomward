@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { Client, LoomwardError } from '../../src/lib/transport/client';
 import { createMockTransport } from '../../src/lib/transport/mock';
@@ -66,5 +67,19 @@ describe('mock alerts transport', () => {
     }
     const { notifications_enabled: _drop, ...partial } = ok;
     await expect(c.call('alerts.configure', partial as never)).rejects.toMatchObject({ code: 'invalid_request' });
+  });
+});
+
+// The View has no DOM harness in this repository, so this pins its save() against the same shape as load():
+// one generation counter, a reply dropped when superseded, and an error shown only for the current request.
+describe('alerts view save race', () => {
+  it('guards save() with the generation load() uses, so a superseded reply cannot overwrite the form', () => {
+    const source = readFileSync(new URL('../../src/views/alerts/View.svelte', import.meta.url), 'utf8');
+    const save = source.slice(source.indexOf('async function save()'), source.indexOf('function reset()'));
+    expect(save).toContain('const mine = ++generation;');
+    const reply = save.indexOf('report = result;');
+    expect(reply).toBeGreaterThan(save.indexOf('if (mine !== generation) return;'));
+    expect(save.indexOf('if (mine !== generation) return;')).toBeGreaterThan(-1);
+    expect(save).toContain('if (mine === generation) error = session.handle(e);');
   });
 });

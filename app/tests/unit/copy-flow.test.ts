@@ -194,4 +194,81 @@ describe('copy UI lifecycle (scripted transport only; no file effects)', () => {
     expect(f.select([{ node_id: 'nd_new', name: 'New choice' }])).toBe(true);
     expect(f.preview).toBeNull();
   });
+
+  it('drops a status reply that arrives after an observation change, without a mismatch error', async () => {
+    const f = selected(), { client, call } = scripted();
+    f.observe(1);
+    await f.review(client);
+    let reply!: (r: unknown) => void;
+    call.mockImplementationOnce(() => new Promise(resolve => { reply = resolve as never; }) as never);
+    const pending = f.refresh(client);
+    f.observe(2);
+    reply({ result: status('committed') });
+    await pending;
+    expect(f.preview).toBeNull(); expect(f.status).toBeNull();
+    expect(f.problem).toBe(''); expect(f.uncertain).toBe(false); expect(f.busy).toBe(false);
+  });
+
+  it('drops a start reply that arrives after an observation change and keeps the outcome unknown', async () => {
+    const f = selected(), { client, call } = scripted();
+    f.observe(1);
+    await f.review(client); await f.approve(client);
+    let reply!: (r: unknown) => void;
+    call.mockImplementationOnce(() => new Promise(resolve => { reply = resolve as never; }) as never);
+    const pending = f.start(client);
+    f.observe(2);
+    reply({ result: status('copying') });
+    await pending;
+    expect(f.status).toBeNull(); expect(f.uncertain).toBe(true);
+    expect(f.preview?.operation_id).toBe('cp_demo'); expect(f.problem).toBe('');
+  });
+
+  it('drops a cancel reply that arrives after an observation change, so no state is applied', async () => {
+    const f = selected(), { client, call } = scripted();
+    f.observe(1);
+    await f.review(client); await f.approve(client); await f.start(client);
+    let reply!: (r: unknown) => void;
+    call.mockImplementationOnce(() => new Promise(resolve => { reply = resolve as never; }) as never);
+    const pending = f.cancel(client);
+    f.observe(2);
+    reply({ result: status('cancelled') });
+    await pending;
+    expect(f.status?.state).toBe('copying'); expect(f.uncertain).toBe(true);
+    expect(f.problem).toBe('');
+  });
+
+  it('drops a refused cancel that arrives after an observation change, error and problem text included', async () => {
+    const f = selected(), { client, call } = scripted();
+    f.observe(1);
+    await f.review(client); await f.approve(client); await f.start(client);
+    let fail!: (e: unknown) => void;
+    call.mockImplementationOnce(() => new Promise((_, reject) => { fail = reject; }) as never);
+    const pending = f.cancel(client);
+    f.observe(2);
+    fail(new LoomwardError({ code: 'capability_unavailable', message: 'closed', retryable: false, detail: { reason: 'copy_effect_gated' } }));
+    await pending;
+    expect(f.problem).toBe(''); expect(f.gated).toBe(false); expect(f.uncertain).toBe(true);
+  });
+
+  it('clears the last status when the engine refuses a cancel, instead of showing it as current', async () => {
+    const f = selected(), { client, call } = scripted();
+    await f.review(client); await f.approve(client); await f.start(client);
+    expect(f.status?.state).toBe('copying');
+    call.mockRejectedValueOnce(new LoomwardError({ code: 'capability_unavailable', message: 'closed', retryable: false, detail: { reason: 'copy_effect_gated' } }));
+    await f.cancel(client);
+    expect(f.status).toBeNull(); expect(f.gated).toBe(true); expect(f.uncertain).toBe(false);
+    expect(f.canCancel).toBe(false); expect(f.notice).toContain('refused');
+    expect(f.problem).toContain('copy_effect_gated');
+  });
+
+  it('clears a blocked status when the engine refuses an abandon', async () => {
+    const f = selected(), { client, call } = scripted();
+    await f.review(client); await f.approve(client);
+    call.mockResolvedValueOnce({ result: { ...status('blocked'), refusal: { code: 'source_in_use', node_id: 'nd_source' } } } as never);
+    await f.start(client);
+    expect(f.canAbandon).toBe(true);
+    call.mockRejectedValueOnce(new LoomwardError({ code: 'capability_unavailable', message: 'closed', retryable: false, detail: { reason: 'copy_effect_gated' } }));
+    await f.abandon(client);
+    expect(f.status).toBeNull(); expect(f.gated).toBe(true);
+  });
 });
