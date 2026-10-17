@@ -25,8 +25,7 @@ def _check_wall(errors, wall, elapsed, previous):
     if previous is not None:
         wall_s = (wall - previous[0]) / 1000
         mono_s = elapsed - previous[1]
-        if wall_s < 0:
-            errors.add("wall-clock went backwards")
+        # A small backward step (an NTP correction) is normal; a large one shows as divergence below.
         if wall_s > GAP_SECONDS or abs(wall_s - mono_s) > GAP_SECONDS:
             errors.add(WALL_GAP)
     return (wall, elapsed)

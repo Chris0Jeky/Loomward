@@ -112,11 +112,15 @@ class WallClockContinuityTests(unittest.TestCase):
         self.assertIn(WALL_GAP, result["errors"])
         self.assertNotIn(MONO_GAP, result["errors"])
 
-    def test_wall_clock_stepped_backwards_fails_even_within_the_gap_bound(self):
-        records = with_wall_clock(fixture(), shift_from=245, shift_s=-30)
+    def test_small_backward_wall_step_is_an_ntp_correction_not_a_failure(self):
+        records = with_wall_clock(fixture(), shift_from=245, shift_s=-1)
+        self.assertNotIn(WALL_GAP, evaluate(records, smoke=True)["errors"])
+
+    def test_large_backward_wall_step_fails_as_divergence(self):
+        records = with_wall_clock(fixture(), shift_from=245, shift_s=-3600)
         result = evaluate(records, smoke=True)
         self.assertEqual(result["status"], "FAIL")
-        self.assertIn("wall-clock went backwards", result["errors"])
+        self.assertIn(WALL_GAP, result["errors"])
 
     def test_end_record_wall_clock_gap_fails(self):
         records = with_wall_clock(fixture())
