@@ -283,12 +283,83 @@ pub enum Point {
     Verified(u32),
     BeforePublish,
     AfterPublish,
+    /// Before the item's preallocation and first write (lane C6 fault seam).
+    Writing(u32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flow {
     Continue,
     Crash,
+    /// Lane C6 injected fault: the effect at this point fails with this OS error, as if the OS call had
+    /// returned it (no small lab volume on the test hosts for a real ERROR_DISK_FULL). Honoured at
+    /// `Point::Writing` only, where the error takes the same path as a failed preallocation or write.
+    Fail(i32),
+}
+
+/// Lane C6 kill points (docs/47 section 10), test builds only: with `LOOMWARD_COPY_CRASH_AT=N` the Nth
+/// boundary terminates the process on the spot (`TerminateProcess`: no unwinding, no destructor, no
+/// handle closed or flushed by Loomward); `LOOMWARD_COPY_CRASH_TRACE=<file>` appends `N<TAB>label` per
+/// boundary. Production builds compile every call to nothing and read no environment variable.
+#[cfg(test)]
+pub(crate) mod crash {
+    use std::{
+        io::Write,
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            OnceLock,
+        },
+    };
+    pub const EXIT: u32 = 86;
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    type Config = (Option<u64>, Option<std::path::PathBuf>);
+    fn config() -> &'static Config {
+        static CONFIG: OnceLock<Config> = OnceLock::new();
+        CONFIG.get_or_init(|| {
+            (
+                std::env::var("LOOMWARD_COPY_CRASH_AT")
+                    .ok()
+                    .and_then(|v| v.parse().ok()),
+                std::env::var_os("LOOMWARD_COPY_CRASH_TRACE").map(Into::into),
+            )
+        })
+    }
+    pub fn hit(label: &str) {
+        let (target, trace) = config();
+        if target.is_none() && trace.is_none() {
+            return;
+        }
+        let n = COUNT.fetch_add(1, Ordering::SeqCst) + 1;
+        if let Some(path) = trace {
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .expect("crash trace");
+            writeln!(f, "{n}\t{label}").expect("crash trace");
+        }
+        if *target == Some(n) {
+            use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+            unsafe { TerminateProcess(GetCurrentProcess(), EXIT) };
+        }
+    }
+    /// The journal record's `kind`, with the target state for a transition.
+    pub fn record(when: &str, record: &loomward_operations::Record) {
+        let v = serde_json::to_value(record).expect("record");
+        let kind = v["kind"].as_str().unwrap_or("?");
+        match v["to"].as_str() {
+            Some(to) => hit(&format!("{when} {kind}:{to}")),
+            None => hit(&format!("{when} {kind}")),
+        }
+    }
+}
+
+#[inline]
+fn hit(label: &str) {
+    #[cfg(test)]
+    crash::hit(label);
+    #[cfg(not(test))]
+    let _ = label;
 }
 
 type Hook = Box<dyn Fn(Point, &Control) -> Flow + Send + Sync>;
@@ -330,6 +401,10 @@ impl Control {
         {
             Flow::Continue => Ok(()),
             Flow::Crash => Err(Stop::Crashed),
+            Flow::Fail(code) => {
+                debug_assert!(matches!(point, Point::Writing(_)), "fault at {point:?}");
+                Err(io_refusal(&io::Error::from_raw_os_error(code)))
+            }
         }
     }
     fn check(&self) -> Result<(), Stop> {
@@ -415,14 +490,19 @@ fn with_item(stop: Stop, item: u32) -> Stop {
     }
 }
 
-/// Reads the source in the writer's chunks, stopping at the next chunk once the owner cancels.
-struct Cancellable<'a, R>(&'a mut R, &'a Control);
+/// Reads the source in the writer's chunks, stopping at the next chunk once the owner cancels. The
+/// third field counts the bytes handed to the writer so far (a lane C6 mid-write kill point per chunk).
+struct Cancellable<'a, R>(&'a mut R, &'a Control, u64);
 impl<R: Read> Read for Cancellable<'_, R> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         if self.1.cancel.load(Ordering::SeqCst) {
             return Err(io::Error::from(io::ErrorKind::Interrupted));
         }
-        self.0.read(buffer)
+        #[cfg(test)]
+        crash::hit(&format!("write@{}", self.2));
+        let n = self.0.read(buffer)?;
+        self.2 += n as u64;
+        Ok(n)
     }
 }
 
@@ -462,12 +542,18 @@ struct Journal<'a> {
 }
 impl Journal<'_> {
     fn log(&self, record: Record) -> Result<(), Stop> {
+        #[cfg(test)]
+        crash::record("before", &record);
+        #[cfg(test)]
+        let after = record.clone();
         self.store
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .append(self.op, self.epoch, record)
-            .map(drop)
-            .map_err(|e| Stop::Journal(format!("{e:?}")))
+            .map_err(|e| Stop::Journal(format!("{e:?}")))?;
+        #[cfg(test)]
+        crash::record("after", &after);
+        Ok(())
     }
     fn replay(&self) -> Result<Replay, Stop> {
         replay(self.store, self.op).map_err(|e| Stop::Journal(format!("{e:?}")))
@@ -599,7 +685,10 @@ fn copy(journal: &Journal, plan: &Plan, control: &Control, dest: &Destination) -
     // No staging identity exists yet, so the run cannot block or wait: `preparing -> refused` with the
     // cause (a token-named folder the OS may have left is reported as a leftover by `status`).
     let staging = match dest.stage(&token) {
-        Ok(staging) => staging,
+        Ok(staging) => {
+            hit("staging folder made");
+            staging
+        }
         Err(e) => {
             let code = match io_refusal(&e) {
                 Stop::Refused(code, _) if code != Refusal::StagingNameTaken => Some(code),
@@ -667,6 +756,7 @@ impl Runner<'_, '_> {
             });
             match made {
                 Ok((key, file)) => {
+                    hit("created item");
                     created.push((i as u32, oid(&key)));
                     match file {
                         Some(f) => open.push((i, f)),
@@ -722,6 +812,7 @@ impl Runner<'_, '_> {
                 .map_err(|e| with_item(io_refusal(&e), *i as u32));
             match key {
                 Ok(key) => {
+                    hit("metadata set");
                     self.files.insert(*i, key);
                 }
                 Err(stop) => {
@@ -837,8 +928,9 @@ impl Runner<'_, '_> {
         if found != item.streams {
             return Err(Stop::Refused(Refusal::SourceChanged, None));
         }
+        self.control.at(Point::Writing(i as u32))?;
         let digest = file
-            .write_and_flush(&mut Cancellable(&mut source, self.control), item.size)
+            .write_and_flush(&mut Cancellable(&mut source, self.control, 0), item.size)
             .map_err(|e| self.write_error(&e))?;
         let mut streams = Vec::new();
         for (name, size) in &item.streams {
@@ -847,7 +939,7 @@ impl Runner<'_, '_> {
                 .stream_reader(&format!(":{name}:$DATA"))
                 .map_err(|_| Stop::Refused(Refusal::SourceChanged, None))?;
             let d = stream
-                .write_and_flush(&mut Cancellable(&mut reader, self.control), *size)
+                .write_and_flush(&mut Cancellable(&mut reader, self.control, 0), *size)
                 .map_err(|e| self.write_error(&e))?;
             streams.push((name.clone(), d, *size));
         }
@@ -876,6 +968,7 @@ impl Runner<'_, '_> {
         let item = self.item(w.item);
         let key = &self.files[&w.item];
         let (path, name) = path_of(&item.name, &self.keys)?;
+        hit("verify item");
         let held = self
             .staging
             .verify(&path, name, key)
@@ -908,6 +1001,7 @@ impl Runner<'_, '_> {
             }
             holds.push(s);
         }
+        hit("verified item");
         Ok((held, holds))
     }
 
@@ -942,6 +1036,7 @@ impl Runner<'_, '_> {
                 });
             match changed {
                 Ok((key, now)) if now == preserved(&item) => {
+                    hit("directory metadata set");
                     self.keys.insert(item.name.clone(), key);
                 }
                 Ok(_) => {
@@ -963,6 +1058,7 @@ impl Runner<'_, '_> {
                 .set_metadata(meta)
                 .and_then(|_| self.staging.own_metadata())
                 .map(|now| now == meta);
+            hit("staging metadata set");
             if !matches!(ok, Ok(true)) {
                 let stop = Stop::Attention(None);
                 self.refuse(&stop)?;
@@ -997,6 +1093,7 @@ impl Runner<'_, '_> {
         })?;
         self.control.at(Point::BeforePublish)?;
         self.stream_holds.clear();
+        hit("rename");
         let mut tries = 0;
         loop {
             match self.staging.publish(&final_name) {
@@ -1020,6 +1117,7 @@ impl Runner<'_, '_> {
                 }
             }
         }
+        hit("renamed");
         self.control.at(Point::AfterPublish)?;
         // Default-stream holds stayed in place through the rename (H2 positive), so that content is
         // unchanged; named streams were released for the rename and are re-hashed now; tree shape and
@@ -1496,6 +1594,7 @@ fn confirm(
         let mut keys = HashMap::new();
         let mut holds = Vec::new();
         for (i, item) in plan.manifest.items.iter().enumerate() {
+            hit("confirm item");
             let journaled = &r.items[i];
             let id = journaled.id.ok_or(Changed)?;
             let (path, name) = path_of(&item.name, &keys).map_err(|_| Changed)?;
@@ -1590,6 +1689,10 @@ impl Write for DigestWriter<'_> {
 #[cfg(test)]
 #[path = "exec_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "exec_crash_tests.rs"]
+mod crash_tests;
 
 /// The held file's named streams are exactly `want` (bare names, sorted) and it has no EAs.
 fn exact_streams(held: &VerifiedFile, want: &[(String, u64)]) -> bool {

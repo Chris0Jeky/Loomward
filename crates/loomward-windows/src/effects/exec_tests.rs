@@ -5,15 +5,15 @@ use super::*;
 use loomward_operations::{approve, tree, Code};
 use std::{fs, sync::atomic::AtomicU32};
 
-const DATE: &str = "2026-10-17";
+pub(super) const DATE: &str = "2026-10-17";
 
-struct Lab {
-    tmp: tempfile::TempDir,
-    store: Mutex<Store>,
+pub(super) struct Lab {
+    pub(super) tmp: tempfile::TempDir,
+    pub(super) store: Mutex<Store>,
 }
 
 impl Lab {
-    fn new() -> Option<Lab> {
+    pub(super) fn new() -> Option<Lab> {
         if enumerate::running_elevated() {
             eprintln!("skipped: elevated token (invariant 2)");
             return None;
@@ -25,10 +25,10 @@ impl Lab {
         let store = Mutex::new(Store::open(&tmp.path().join("state/state.db")).unwrap());
         Some(Lab { tmp, store })
     }
-    fn src(&self) -> PathBuf {
+    pub(super) fn src(&self) -> PathBuf {
         fs::canonicalize(self.tmp.path()).unwrap().join("src")
     }
-    fn dest(&self) -> PathBuf {
+    pub(super) fn dest(&self) -> PathBuf {
         fs::canonicalize(self.tmp.path()).unwrap().join("dest")
     }
     fn request<'a>(&'a self, root: &'a Path, dest: &'a Path, sel: &'a [PathBuf]) -> Request<'a> {
@@ -51,7 +51,7 @@ impl Lab {
         (o.volume_serial.parse().unwrap(), o.file_id)
     }
     /// Preview, approve, start (fresh rebuild plus admit), journal the plan: the C4 to C3 hand-over.
-    fn start(&self, selected: &[&str]) -> u64 {
+    pub(super) fn start(&self, selected: &[&str]) -> u64 {
         self.start_with(selected, |_| {})
     }
     fn start_with(&self, selected: &[&str], edit: impl FnOnce(&mut Plan)) -> u64 {
@@ -70,10 +70,10 @@ impl Lab {
             .unwrap();
         op
     }
-    fn plan(&self, op: u64) -> Plan {
+    pub(super) fn plan(&self, op: u64) -> Plan {
         serde_json::from_str(&self.store.lock().unwrap().plan(op).unwrap().unwrap()).unwrap()
     }
-    fn dest_names(&self) -> Vec<String> {
+    pub(super) fn dest_names(&self) -> Vec<String> {
         let mut names: Vec<String> = fs::read_dir(self.dest())
             .unwrap()
             .map(|e| e.unwrap().file_name().into_string().unwrap())
@@ -82,7 +82,7 @@ impl Lab {
         names
     }
     /// A fresh store over the same `state.db`: what a restarted service sees.
-    fn reopen(&mut self) {
+    pub(super) fn reopen(&mut self) {
         self.store = Mutex::new(Store::open(&self.tmp.path().join("state/state.db")).unwrap());
     }
 }
@@ -126,12 +126,12 @@ fn tree_fixture(root: &Path) {
     fs::create_dir(top.join("empty")).unwrap();
 }
 
-fn set_attributes(path: &Path, attributes: u32) {
+pub(super) fn set_attributes(path: &Path, attributes: u32) {
     let wide = win::wide(path).unwrap();
     assert_ne!(unsafe { SetFileAttributesW(wide.as_ptr(), attributes) }, 0);
 }
 
-fn c1(root: &Path) -> tree::Tree {
+pub(super) fn c1(root: &Path) -> tree::Tree {
     let (_, expected) =
         <enumerate::NativeSource as enumerate::DirSource>::open_root(&Default::default(), root)
             .unwrap();
@@ -150,7 +150,7 @@ fn c1(root: &Path) -> tree::Tree {
 }
 
 /// Every source object's identity, signature and bytes: must be unchanged by any copy.
-fn source_snapshot(root: &Path) -> Vec<(PathBuf, identity::ObservedIdentity, Vec<u8>)> {
+pub(super) fn source_snapshot(root: &Path) -> Vec<(PathBuf, identity::ObservedIdentity, Vec<u8>)> {
     let mut out = Vec::new();
     let mut pending = vec![root.to_path_buf()];
     while let Some(dir) = pending.pop() {
@@ -647,12 +647,16 @@ fn a_stream_added_after_verification_is_never_committed() {
 }
 
 /// Deny "create folder" on the test's own destination for everyone; removed again on drop.
-struct DenyCreate(PathBuf);
+pub(super) struct DenyCreate(PathBuf);
 impl DenyCreate {
-    fn new(path: &Path) -> Self {
+    pub(super) fn new(path: &Path) -> Self {
+        Self::with(path, "(AD)")
+    }
+    /// Deny `rights` (icacls syntax, inheritance flags included) to everyone.
+    pub(super) fn with(path: &Path, rights: &str) -> Self {
         let ok = std::process::Command::new("icacls")
             .arg(path)
-            .args(["/deny", "*S-1-1-0:(AD)"])
+            .args(["/deny", &format!("*S-1-1-0:{rights}")])
             .output()
             .unwrap()
             .status
