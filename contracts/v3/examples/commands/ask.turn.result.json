@@ -1,0 +1,15 @@
+{
+  "turn_id": "at_1",
+  "state": "running",
+  "question": "Where is the largest report?",
+  "started_at": "2026-10-17T09:01:00.000Z",
+  "finished_at": null,
+  "answer": null,
+  "answer_truncated": false,
+  "failure": null,
+  "citations": [],
+  "unverified": [],
+  "tool_calls": [],
+  "tool_calls_total": 0,
+  "rounds": []
+}

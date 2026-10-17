@@ -45,6 +45,7 @@ import test_app_views
 from test_app_views import run_views, wait_until
 from test_app_copy import run_copy
 from test_app_inventory import run_inventory
+from test_app_ask import live_ask_isolated, run_ask
 
 ROOT = Path(__file__).resolve().parents[1]
 TOKEN = 'a1b2c3d4e5f60718293a4b5c6d7e8f90'
@@ -714,8 +715,11 @@ def live_diagnostics(page: Page, token: str) -> None:
 
 def run_live_serve(browser_path: str | None) -> None:
     """The app's http transport against the real loomward-serve binary (lane L6) and engine service (L8)."""
+    # loomward-broker lands beside loomward-serve: the service spawns it per Ask round (LW-118).
     subprocess.run(['cargo', 'build', '-q', '-p', 'loomward-http', '--bin', 'loomward-serve'], cwd=ROOT, check=True)
-    exe = ROOT / 'target' / 'debug' / ('loomward-serve.exe' if sys.platform == 'win32' else 'loomward-serve')
+    subprocess.run(['cargo', 'build', '-q', '-p', 'loomward-broker', '--bin', 'loomward-broker'], cwd=ROOT, check=True)
+    target = Path(os.environ.get('CARGO_TARGET_DIR') or ROOT / 'target')
+    exe = target / 'debug' / ('loomward-serve.exe' if sys.platform == 'win32' else 'loomward-serve')
     state = tempfile.TemporaryDirectory(prefix='lw-live-serve-')
     proc = subprocess.Popen([str(exe), '--state-dir', state.name, '--static', str(DIST)], stdout=subprocess.PIPE, text=True)
     try:
@@ -767,6 +771,7 @@ def run_live_serve(browser_path: str | None) -> None:
             live_placement(browser, exe)
             live_learning_isolated(browser, exe)
             live_personal_learning_isolated(browser, exe)
+            live_ask_isolated(browser, exe, DIST, check, live_call)
 
             proc.terminate()
             proc.wait(timeout=10)
@@ -1032,6 +1037,7 @@ def main() -> None:
         run_views(page, base, a.view_shots)
         run_inventory(page, base, check, shots=a.view_shots)
         run_copy(page, base, a.view_shots)
+        run_ask(page, base)
 
         # --- hygiene -------------------------------------------------------------------------------
         check(hosts <= {'127.0.0.1'}, f'every request stayed on loopback: {sorted(hosts)}')

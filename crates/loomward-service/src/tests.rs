@@ -2034,7 +2034,9 @@ fn every_command_answers_a_complete_envelope_and_core_reads_serve_the_catalogue(
                     | Command::DiagnosticsSave
             )
             // docs/47 C5: synthetic sessions serve copy on Windows (copy_tests.rs pins both classes).
-            && !(cfg!(windows) && command.as_str().starts_with("copy.")))
+            && !(cfg!(windows) && command.as_str().starts_with("copy."))
+            // LW-118: Ask is served (ask_tests.rs pins its refusals).
+            && !command.as_str().starts_with("ask."))
             || command == Command::RootsRequestGrant
         {
             assert_eq!(

@@ -1,0 +1,9 @@
+{
+  "def": "AskTool",
+  "reason": "every Ask tool is read-only: read_only is the constant true",
+  "value": {
+    "name": "delete",
+    "backed_by": "roots.forget",
+    "read_only": false
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "def": "AskGrantRequest",
+  "reason": "an Ask grant names at least one root",
+  "value": {
+    "roots": [],
+    "fields": []
+  }
+}

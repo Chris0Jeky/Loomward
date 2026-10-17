@@ -14,6 +14,8 @@ loomward-telemetry = { path = "../loomward-telemetry" }
 loomward-shell = { path = "../loomward-shell" }
 loomward-apps = { path = "../loomward-apps" }
 loomward-backup = { path = "../loomward-backup" }
+# LW-118: the Ask tool loop and provider interface (no network code; the broker is a separate process).
+loomward-ask = { path = "../loomward-ask" }
 loomward-operations = { path = "../loomward-operations" }
 # copy-primitives: the docs/47 C5 lab executor; served for synthetic sessions only (copy.rs).
 loomward-windows = { path = "../loomward-windows", features = ["copy-primitives"] }
@@ -25,6 +27,7 @@ subtle = "2.6"
 getrandom = "0.4"
 
 [dev-dependencies]
+loomward-ask = { path = "../loomward-ask", features = ["testkit"] }
 proptest.workspace = true
 loomward-windows = { path = "../loomward-windows", features = ["fixtures"] }
 loomward-catalog = { path = "../loomward-catalog", features = ["test-hooks"] }

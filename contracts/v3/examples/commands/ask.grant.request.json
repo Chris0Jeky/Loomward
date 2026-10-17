@@ -1,0 +1,9 @@
+{
+  "roots": [
+    "rt_1"
+  ],
+  "fields": [
+    "path",
+    "size"
+  ]
+}

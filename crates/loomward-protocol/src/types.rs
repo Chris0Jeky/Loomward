@@ -488,6 +488,9 @@ id_newtype!(
 id_newtype!(
     /// Copy-and-verify operation id (docs/47).
     CopyOperationId, "cp_");
+id_newtype!(
+    /// Ask turn id (LW-118): held in memory for this session only.
+    AskTurnId, "at_");
 
 string_newtype!(
     /// An owner-chosen backup repository label: 1-64 of `[A-Za-z0-9._-]`, so a URL, path or

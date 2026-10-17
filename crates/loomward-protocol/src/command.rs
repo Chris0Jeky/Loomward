@@ -137,6 +137,12 @@ commands! {
     CopyCancel = "copy.cancel", CopyOperationRequest, CopyStatus, [Tauri, Http], 3, [];
     CopyAbandon = "copy.abandon", CopyOperationRequest, CopyStatus, [Tauri, Http], 3, [];
     CopyStatus = "copy.status", CopyOperationRequest, CopyStatus, [Tauri, Http], 3, [];
+    AskStatus = "ask.status", EmptyRequest, AskStatus, [Tauri, Http], 3, [];
+    AskConfigure = "ask.configure", AskConfigureRequest, AskStatus, [Tauri], 3, [];
+    AskGrant = "ask.grant", AskGrantRequest, AskStatus, [Tauri, Http], 3, [];
+    AskRevoke = "ask.revoke", EmptyRequest, AskStatus, [Tauri, Http], 3, [];
+    AskTurn = "ask.turn", AskTurnRequest, AskTurnRecord, [Tauri, Http], 3, [];
+    AskResult = "ask.result", AskTurnRef, AskTurnRecord, [Tauri, Http], 3, [];
 }
 
 impl Command {
