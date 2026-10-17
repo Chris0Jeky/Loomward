@@ -23,6 +23,9 @@ use std::{
 /// Everything a run needs, written to `op_plan` after `started` and before any effect.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Plan {
+    /// The service's wire ID for this operation (`cp_...`), so it survives a restart.
+    #[serde(default)]
+    pub operation_id: String,
     pub source_root: PathBuf,
     pub source_root_id: [u8; 16],
     pub source_root_volume: u64,
@@ -234,6 +237,7 @@ pub fn prepare(request: &Request) -> io::Result<(loomward_operations::Preview, P
         .collect::<Option<Vec<_>>>()
         .ok_or_else(|| invalid("manifest and observation disagree"))?;
     let plan = Plan {
+        operation_id: String::new(),
         source_root: request.source_root.to_path_buf(),
         source_root_id: root_id,
         source_root_volume: root

@@ -561,14 +561,15 @@ impl Staging<'_> {
         } == 0
         {
             let error = io::Error::last_os_error();
-            if error.raw_os_error() != Some(123) {
+            if !matches!(error.raw_os_error(), Some(87 | 123)) {
                 return Err(error);
             }
             #[cfg(test)]
             eprintln!(
-                "publish: relative Win32 rename returned 123; using native pinned-parent rename"
+                "publish: relative Win32 rename returned {error}; using native pinned-parent rename"
             );
-            // The Win32 wrapper rejects a relative name on this host; keep the
+            // The Win32 wrapper rejects a relative name on this host, with 123 or (seen in the C5
+            // service lab, cause not isolated) 87; keep the
             // same pinned-parent buffer and no-replace semantics in the native call.
             let mut status = IO_STATUS_BLOCK::default();
             let code = unsafe {

@@ -518,3 +518,17 @@ fn h2_named_stream_hold_blocks_publish_default_hold_does_not() {
     stage.publish("done").unwrap();
     assert_eq!(held.verify_stream("note").unwrap().size, 1);
 }
+
+/// Regression (found by the C5 service lab run): a one-character final name was refused with
+/// ERROR_INVALID_PARAMETER because the rename buffer was sized below the Win32 minimum.
+#[test]
+fn publish_accepts_short_final_names() {
+    let Some(lab) = Lab::new() else { return };
+    let key = identity::observe(&lab.dest()).unwrap().object;
+    let dest = Destination::open(&lab.dest(), &key).unwrap();
+    for name in ["a", "ab", "abc"] {
+        let mut stage = dest.stage(&format!("tok-{name}")).unwrap();
+        stage.publish(name).unwrap();
+        assert!(lab.dest().join(name).is_dir());
+    }
+}
