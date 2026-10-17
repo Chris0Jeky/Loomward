@@ -382,7 +382,7 @@ fn rows_dropped_by_the_output_budget_never_enter_the_ledger() {
     assert_eq!(content, r#"{"error":"tool output budget spent"}"#);
     // Only the rows the model actually saw have handles: 20 per find that fitted the budget.
     let fitted = answer.tools.iter().filter(|t| t.ok).count();
-    assert!(fitted >= 1 && fitted < 3, "{fitted}");
+    assert!((1..3).contains(&fitted), "{fitted}");
     assert_eq!(answer.handles.len(), 20 * fitted);
     let dropped = format!("h{}", 20 * fitted + 1);
     assert!(answer.handles.iter().all(|(h, _)| *h != dropped));
