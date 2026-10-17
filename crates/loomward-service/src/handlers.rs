@@ -415,7 +415,7 @@ impl Inner {
             CollectionsCreate => self.collections_create(req),
             CollectionsUpdateMembers => self.collections_update(req),
             CollectionsMembers => self.collections_members(req, work),
-            DuplicatesInspect => self.duplicates_inspect(req),
+            DuplicatesInspect => self.duplicates_inspect(req, work),
             DuplicatesCancel => self.duplicates_cancel(req.decode_payload()?),
             ScanStart => self.scan_start(req.decode_payload()?, work),
             ScanCancel => engine(
