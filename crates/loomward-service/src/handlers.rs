@@ -221,6 +221,8 @@ impl Inner {
             BackupsForget => self.backups_forget(req),
             DiagnosticsPreview => self.diagnostics_preview(ctx),
             DiagnosticsSave => self.diagnostics_save(req, ctx),
+            AlertsList => self.alerts_list(work),
+            AlertsConfigure => self.alerts_configure(req.decode_payload()?),
             RootsRevoke => {
                 let r: RootRevokeRequest = req.decode_payload()?;
                 let grant = self.grant_of_root(self.root_row(&r.root_id)?)?;

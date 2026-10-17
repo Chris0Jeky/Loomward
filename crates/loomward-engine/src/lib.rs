@@ -15,6 +15,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod alerts;
 pub mod budgets;
 mod duplicates;
 pub mod error;

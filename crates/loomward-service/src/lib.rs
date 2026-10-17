@@ -15,6 +15,7 @@
 //! No command has an effect on user files or processes (invariant 1), and no command accepts a path.
 #![forbid(unsafe_code)]
 
+mod alerts;
 mod apps;
 mod backups;
 mod collections;
@@ -343,6 +344,7 @@ pub(crate) fn is_mutation(c: Command) -> bool {
             | BackupsImport
             | BackupsForget
             | DiagnosticsSave
+            | AlertsConfigure
             // docs/47: refused before dispatch while the gate is closed; mutations when it opens.
             | CopyStart
             | CopyCancel

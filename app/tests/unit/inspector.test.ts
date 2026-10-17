@@ -13,6 +13,12 @@ const src: SliceNodeLike = {
 };
 
 describe('Inspector sizes', () => {
+  it('offers copy preview only for a selected source, without requiring browser globals to render', () => {
+    const node = nodeInfo(buildTree({ anchor_node_id: src.node_id, basis: 'logical', complete: true, truncated: false, nodes: [src] }).root);
+    const show = (status: string) => render(Inspector, { props: { node, status, basis: 'logical', provisional: false, palette: {} as Palette, path: [src.name] } }).body;
+    expect(show('Selected')).toContain('Copy to');
+    expect(show('Hover')).not.toContain('Copy to');
+  });
   it.each([
     ['denied', { coverage: 'denied' }, 'unknown', 'unknown'],
     ['permission denied', { threads: { ...src.threads, permission: { state: 'denied', reason: null } } }, 'unknown', 'unknown'],

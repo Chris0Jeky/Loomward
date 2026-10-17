@@ -1715,6 +1715,15 @@ fn apply(
                 "UPDATE scan_run SET state=?2,finished_at_ns=?3 WHERE id=?1",
                 params![run_id, state, finished_at_ns],
             )?;
+            if state == "completed" {
+                // LW-121: the root's size at this run's end, so growth can be read back from scan
+                // history. `complete` is the root aggregate's own coverage bit (set only by a full,
+                // clean traversal); a run without these counters (older rows) is an unknown sample.
+                conn.execute(
+                    "UPDATE scan_run SET counters_json=coalesce((SELECT json_object('logical_bytes',sub_logical,'files',sub_files,'skipped',sub_skipped,'errors',sub_errors,'complete',json(CASE WHEN sub_complete=1 THEN 'true' ELSE 'false' END)) FROM dir WHERE root_id=?2 AND parent_id IS NULL),'{}') WHERE id=?1",
+                    params![run_id, root],
+                )?;
+            }
             let completed=state=="completed" && conn.query_row("SELECT mode='targeted' AND NOT EXISTS(SELECT 1 FROM dir WHERE root_id=?2 AND seen_run=?1 AND listing_state='incomplete') FROM scan_run WHERE id=?1",params![run_id,root],|r|r.get::<_,bool>(0))?;
             conn.execute("UPDATE root SET active_run=NULL,generation=CASE WHEN ?2 THEN ?3 ELSE generation END,state=CASE WHEN ?4 THEN 'complete' ELSE 'partial' END WHERE id=?1",params![root,full||completed,run_id,full])?;
             ctx.fenced_listings.retain(|(run, _)| run != run_id);
@@ -2463,6 +2472,78 @@ mod tests {
                 .len(),
             0
         );
+    }
+    /// LW-121: a completed run keeps the root's size and coverage; other endings keep nothing.
+    #[test]
+    fn completed_run_records_root_size_and_coverage_for_growth_history() {
+        let temp = tempfile::tempdir().unwrap();
+        let writer =
+            Writer::start(crate::db::open_pair(temp.path(), "synthetic").unwrap()).unwrap();
+        writer
+            .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_key: "fixture".into(),
+                display_name: "Fixture".into(),
+                display_path: "Fixture root".into(),
+                root_file_id: Some(vec![1; 16]),
+                filesystem: Some("NTFS".into()),
+                origin: "fixture".into(),
+                granted_via: "fixture".into(),
+                observed_at_ns: 0,
+            }))
+            .unwrap();
+        let run = |state: &str, skipped: u64| {
+            let WriteReply::Run(run_id) = writer
+                .call(WriteCommand::BeginRun {
+                    grant_id: 1,
+                    mode: "full".into(),
+                    strategy: "fixture".into(),
+                    started_at_ns: 1,
+                })
+                .unwrap()
+            else {
+                panic!("run receipt")
+            };
+            writer
+                .call(WriteCommand::DirListing(DirListing {
+                    run_id,
+                    dir_id: 1,
+                    files: vec![
+                        Observation::file("a", 7, Some(7)),
+                        Observation::file("b", 5, Some(5)),
+                    ],
+                    dirs: vec![],
+                    state: "complete".into(),
+                    skipped,
+                    errors: 0,
+                }))
+                .unwrap();
+            writer
+                .call(WriteCommand::EndRun {
+                    run_id,
+                    state: state.into(),
+                    finished_at_ns: 2,
+                })
+                .unwrap();
+            run_id
+        };
+        let counters = |id: i64| {
+            let conn = Connection::open(temp.path().join("catalog.db")).unwrap();
+            let json: String = conn
+                .query_row(
+                    "SELECT counters_json FROM scan_run WHERE id=?1",
+                    [id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            serde_json::from_str::<serde_json::Value>(&json).unwrap()
+        };
+        let clean = counters(run("completed", 0));
+        assert_eq!(clean["logical_bytes"], 12);
+        assert_eq!(clean["files"], 2);
+        assert_eq!(clean["complete"], true);
+        // A listing that skipped entries keeps its size but not a complete-coverage claim.
+        assert_eq!(counters(run("completed", 1))["complete"], false);
+        assert_eq!(counters(run("cancelled", 0)), serde_json::json!({}));
     }
     #[test]
     fn synchronous_listing_receipts_do_not_wait_for_future_commands() {
