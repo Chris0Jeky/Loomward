@@ -3,9 +3,9 @@
 //!
 //! - **trigram** (weight 1): the v1 passes (exact, prefix, token, substring, then the several-word
 //!   passes), shorter names first within a pass. Substring evidence.
-//! - **token** (weight 1): the token index, every query token a prefix of some name token, best
-//!   bm25 first (a shorter name ranks higher). A query of one- and two-character tokens skips the
-//!   sort and takes the first matches in key order: that is the short-query path, bounded.
+//! - **token** (weight 1): the token index, every query token a prefix of some name token; the
+//!   first 256 matches per kind in key order, shorter names first. This is the short-query path
+//!   too: one- and two-character prefixes are indexed, and the scan is bounded by that count.
 //! - **context** (weight 0.5): entries whose own name plus the names of their two nearest ancestors
 //!   cover every query token, found through the folder rows of the token index at query time.
 //!
@@ -52,10 +52,10 @@ const BOOST_PREFIX: f64 = 0.02;
 const BOOST_TOKEN_START: f64 = 0.01;
 const BOOST_RECENT: f64 = 0.006;
 const TICKS_PER_DAY: f64 = 864_000_000_000.0;
-/// Entries a short query reads from the index before it ranks them.
-const SHORT_SCAN: usize = 1024;
+/// Token-index matches read per kind before they are ranked.
+const TOKEN_SCAN: usize = 256;
 /// Folder anchors per query token, and the folder rows the context tier reads.
-const ANCHORS: usize = 64;
+const ANCHORS: usize = 128;
 const CONTEXT_DIRS: usize = 2048;
 /// Entries the context tier reads per kind before it gates them.
 const CONTEXT_ROWS: usize = 4096;
@@ -75,34 +75,29 @@ fn fts(qtokens: &[String]) -> String {
         .collect::<Vec<_>>()
         .join(" AND ")
 }
-/// A token-index query for folders or files (`ranked`: best bm25 first; else the first matches
-/// in key order). Columns match `raw`, then the match flag, the key and the rank.
-fn token_statement(files: bool, ranked: bool) -> String {
+/// A token-index query for folders or files: the first `?9` matches of `?1` in key order, then
+/// the visibility and filter conditions. Columns match `raw`, then the match flag and the key.
+fn token_statement(files: bool) -> String {
     let (columns, from, range) = if files {
         (
             FILE_COLUMNS,
-            format!("search_token t JOIN file f ON f.id=t.rowid-{FILE_KEY} JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id"),
-            format!("t.rowid>={FILE_KEY}"),
+            format!("file f ON f.id=t.rowid-{FILE_KEY} JOIN dir d ON d.id=f.dir_id LEFT JOIN ext e ON e.id=f.ext_id"),
+            format!("rowid>={FILE_KEY}"),
         )
     } else {
         (
             DIR_COLUMNS,
-            "search_token t JOIN dir d ON d.id=t.rowid".to_string(),
-            format!("t.rowid<{FILE_KEY}"),
+            "dir d ON d.id=t.rowid".to_string(),
+            format!("rowid<{FILE_KEY}"),
         )
     };
-    let (rank, order) = if ranked {
-        ("t.rank", "ORDER BY t.rank")
-    } else {
-        ("0.0", "")
-    };
     format!(
-        "SELECT {columns},1,t.rowid,{rank} FROM {from} WHERE search_token MATCH ?1 AND {range} AND {} {order} LIMIT ?9",
+        "SELECT {columns},1,t.rowid FROM (SELECT rowid FROM search_token WHERE search_token MATCH ?1 AND {range} LIMIT ?9) t JOIN {from} WHERE {}",
         visible(files)
     )
 }
 fn anchor_statement() -> String {
-    format!("SELECT t.rowid FROM search_token t WHERE search_token MATCH ?1 AND t.rowid<{FILE_KEY} ORDER BY t.rank LIMIT {ANCHORS}")
+    format!("SELECT rowid FROM search_token WHERE search_token MATCH ?1 AND rowid<{FILE_KEY} LIMIT {ANCHORS}")
 }
 
 /// The request's filter values in the order `visible` numbers them (?3 to ?8), after ?1, ?2.
@@ -123,24 +118,21 @@ fn values(req: &SearchRequest, expr: &str, limit: usize) -> Vec<Value> {
 }
 
 impl Walk<'_> {
-    /// Run a token-index statement and keep the visible hits with their rank.
+    /// Run a token-index statement and return its rows, not yet built into hits.
     fn token_rows(
         &mut self,
         conn: &Connection,
         files: bool,
-        ranked: bool,
         expr: &str,
-        limit: usize,
-    ) -> Result<Vec<(f64, SearchHit, i64)>> {
-        let mut stmt = conn.prepare_cached(&token_statement(files, ranked))?;
-        let mut rows = stmt.query(rusqlite::params_from_iter(values(self.req, expr, limit)))?;
+    ) -> Result<Vec<(Raw, i64)>> {
+        let mut stmt = conn.prepare_cached(&token_statement(files))?;
+        let mut rows = stmt.query(rusqlite::params_from_iter(values(
+            self.req, expr, TOKEN_SCAN,
+        )))?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
             let key: i64 = row.get(24)?;
-            let rank: f64 = row.get(25)?;
-            if let Some((hit, key)) = self.keep(conn, raw(row)?, key)? {
-                out.push((rank, hit, key));
-            }
+            out.push((raw(row)?, key));
         }
         Ok(out)
     }
@@ -155,23 +147,31 @@ impl Walk<'_> {
     }
 }
 
-/// Candidates for the token list: folders and files (as the request's kind allows), best first.
+/// Candidates for the token list: folders and files (as the request's kind allows) whose every
+/// query token starts a name token. The index is read in key order, `TOKEN_SCAN` matches per kind
+/// at most, and the shorter name is the better evidence; ranking all of a large match set would
+/// cost more than the page it orders (measured: a prefix with 40k matches sorted in 70 ms alone).
 fn token_list(walk: &mut Walk, conn: &Connection, qtokens: &[String], k: usize) -> Result<List> {
     let expr = fts(qtokens);
-    // Only tokens of one or two characters: the match set can be most of the catalogue, so read
-    // a bounded run in key order rather than rank all of it.
-    let ranked = qtokens.iter().any(|t| t.chars().count() >= 3);
-    let limit = if ranked { k } else { k.min(SHORT_SCAN) };
     let mut all = Vec::new();
     if walk.req.kind != "file" {
-        all.extend(walk.token_rows(conn, false, ranked, &expr, limit)?);
+        all.extend(walk.token_rows(conn, false, &expr)?);
     }
     if walk.req.kind != "dir" {
-        all.extend(walk.token_rows(conn, true, ranked, &expr, limit)?);
+        all.extend(walk.token_rows(conn, true, &expr)?);
     }
-    all.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.2.cmp(&b.2)));
-    all.truncate(k);
-    Ok(all.into_iter().map(|(_, hit, key)| (hit, key)).collect())
+    all.sort_by_key(|(r, key)| (r.name.chars().count(), *key));
+    // Only the rows that can be ranked become hits: a hit costs its path and its row.
+    let mut out = Vec::new();
+    for (r, key) in all {
+        if let Some(h) = walk.keep(conn, r, key)? {
+            out.push(h);
+            if out.len() == k {
+                break;
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Does `q` start a token of `tokens` or occur inside the folded `name`?
@@ -183,7 +183,7 @@ fn covers(q: &str, tokens: &[String], folded: &str) -> bool {
 /// starts a query token, kept when every token is covered by the entry's name, its folder's name
 /// or its folder's parent's name (the two nearest ancestors). Anchor folders come from the token
 /// index; their children are read too, because a child's parent is the anchor.
-fn context_list(walk: &mut Walk, conn: &Connection, qtokens: &[String]) -> Result<List> {
+fn context_list(walk: &mut Walk, conn: &Connection, qtokens: &[String], k: usize) -> Result<List> {
     let anchors: Vec<&String> = qtokens.iter().filter(|t| t.chars().count() >= 3).collect();
     if anchors.is_empty() {
         return Ok(Vec::new());
@@ -272,6 +272,10 @@ fn context_list(walk: &mut Walk, conn: &Connection, qtokens: &[String]) -> Resul
                 if let Some(h) = walk.keep(conn, hit, key)? {
                     out.push(h);
                 }
+                // A hit costs its path and row; the list is cut where fusion cannot use more.
+                if out.len() >= k {
+                    return Ok(out);
+                }
             }
         }
     }
@@ -296,7 +300,7 @@ impl Reader {
             Some(_) => return Err(Error::Invalid("search cursor binding")),
         };
         let want = (offset + req.limit).min(HORIZON);
-        let k = (want * 3).clamp(150, 1500);
+        let k = (want * 2).clamp(100, 1000);
         self.read(|conn| {
             let revisions = revisions(conn, req.root_id)?;
             let catalog_instance = instance(conn)?;
@@ -316,8 +320,8 @@ impl Reader {
                     conn.prepare_cached(&statement(*pass == FILTER_PASS, files, by_size))?;
                 }
             }
-            for (files, ranked) in [(false, true), (true, true), (false, false), (true, false)] {
-                conn.prepare_cached(&token_statement(files, ranked))?;
+            for files in [false, true] {
+                conn.prepare_cached(&token_statement(files))?;
             }
             conn.prepare_cached(&anchor_statement())?;
             let inner = SearchRequest {
@@ -353,7 +357,7 @@ impl Reader {
                         r
                     }
                     1 => token_list(walk, conn, &qtokens, k).map(|v| lists[1] = v),
-                    _ => context_list(walk, conn, &qtokens).map(|mut v| {
+                    _ => context_list(walk, conn, &qtokens, k).map(|mut v| {
                         v.sort_by_key(|(h, key)| (h.row.name.chars().count(), *key));
                         lists[2] = v;
                     }),
