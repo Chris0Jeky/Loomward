@@ -380,6 +380,8 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     const base = { protocol: 'loomward/3' as const, request_id: req.request_id };
     const err = (code: ErrorCode, message: string, detail: Record<string, unknown> | null = null): ResponseEnvelope => ({ ...base, ok: false, error: { code, message, retryable: code === 'busy', detail } });
     if (req.protocol !== 'loomward/3') return err('unsupported_protocol', 'expected loomward/3');
+    // Like the engine (docs/47 C4): the copy commands are contract only until their effect gate opens.
+    if (req.command.startsWith('copy.')) return err('capability_unavailable', 'copy-and-verify is not open: its effect gate (docs/47 lane C8) is closed', { reason: 'copy_effect_gated' });
     const h = Object.hasOwn(handlers, req.command) ? handlers[req.command] : undefined;
     if (!h && !req.command.startsWith('collections.')) return err('capability_unavailable', `the mock transport does not implement ${req.command}`);
     try {

@@ -1,0 +1,16 @@
+{
+  "operation_id": "cp_7f3a9c",
+  "state": "draft",
+  "digest": "sha256:5ce0591058a0177bddc74b27b2c9112cb19f70fbf8cc335841231638aec983c8",
+  "folder_name": "Album",
+  "files": 2,
+  "folders": 2,
+  "bytes": "5010",
+  "space_needed": "20480",
+  "space_reserve": "2147483648",
+  "same_volume": false,
+  "explicit_acl_items": 0,
+  "hard_link_names": 0,
+  "refusals": [],
+  "refusal_count": 0
+}

@@ -222,6 +222,10 @@ fn only_the_listed_commands_change_state() {
         BackupsForget,
         DiagnosticsSave,
         AlertsConfigure,
+        // Gated today (copy_effect_gated), mutations so the gate can never open onto the read path (#508).
+        CopyStart,
+        CopyCancel,
+        CopyAbandon,
     ];
     for c in Command::ALL {
         assert_eq!(

@@ -1,5 +1,6 @@
 //! Copy-and-verify operation journal (doc 47 lane C3, LW-039, ADR-V3-25) and the pure read-only tree
-//! comparison of lane C1 (`tree`, no operation or effect authority).
+//! comparison of lane C1 (`tree`, no operation or effect authority), and lane C4's manifest, preflight
+//! refusal classifier, digest and single-use approval (`manifest`, LW-038).
 //!
 //! The state machine of doc 47 section 5, the write-ahead journal records, their `state.db` storage and the
 //! recovery reader. This crate performs NO file effect: it never opens, creates, writes, renames or deletes a
@@ -13,6 +14,7 @@
 #![forbid(unsafe_code)]
 
 pub mod journal;
+pub mod manifest;
 pub mod recovery;
 pub mod state;
 pub mod store;
@@ -21,6 +23,10 @@ pub mod tree;
 pub use journal::{
     Entry, FenceCause, Invalid, ObjectId, Record, Refusal, Replay, Row, StagedItem, MAX_BATCH,
     MAX_ITEMS,
+};
+pub use manifest::{
+    approve, preview, Admitted, Approval, Code, Context, Destination, DestinationFacts, Identity,
+    Manifest, ManifestItem, Preview, Refused, SourceEntry,
 };
 pub use recovery::{recover, Attention, Cleanup, Decision, Disk, Observed, Recovery, Resume};
 pub use state::{IllegalTransition, ItemState, OpState};

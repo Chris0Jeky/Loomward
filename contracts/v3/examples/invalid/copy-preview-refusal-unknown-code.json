@@ -1,0 +1,8 @@
+{
+  "def": "CopyRefusal",
+  "reason": "the refusal vocabulary is closed (docs/47 section 7)",
+  "value": {
+    "code": "overwrite_existing",
+    "node_id": null
+  }
+}
