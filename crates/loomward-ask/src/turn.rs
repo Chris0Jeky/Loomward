@@ -57,6 +57,13 @@ pub struct Answer {
     pub tools: Vec<ToolUse>,
 }
 
+/// A failed turn still owes the owner the history of lookups it already attempted.
+#[derive(Debug)]
+pub struct Failure {
+    pub error: ProviderError,
+    pub tools: Vec<ToolUse>,
+}
+
 /// One tool call as the owner sees it: the model's tool name (cleaned), whether it ran, and the
 /// row count or the reason it was refused. Never the arguments: they are the model's free text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -104,7 +111,7 @@ pub fn ask(
     profile: &ProviderProfile,
     question: &str,
     log: &mut Vec<OutboundRecord>,
-) -> Result<Answer, ProviderError> {
+) -> Result<Answer, Failure> {
     let started = Instant::now();
     let principal = profile.principal();
     let mut messages = vec![
@@ -133,18 +140,18 @@ pub fn ask(
         // The broker's exact body, not the engine-side struct: the record digests what is sent.
         let bytes = crate::request_body(&profile.model, &req).into_bytes();
         if bytes.len() > MAX_REQUEST_BYTES {
-            return Err(ProviderError::new(
+            return Err(tools.failure(ProviderError::new(
                 ErrorKind::InvalidRequest,
                 "the conversation exceeds the request bound",
                 false,
-            ));
+            )));
         }
         let Some(left) = TURN_BUDGET.checked_sub(started.elapsed()) else {
-            return Err(ProviderError::new(
+            return Err(tools.failure(ProviderError::new(
                 ErrorKind::Timeout,
                 "turn budget spent",
                 false,
-            ));
+            )));
         };
         log.push(OutboundRecord {
             round,
@@ -175,15 +182,15 @@ pub fn ask(
         let ChatReply {
             content,
             tool_calls,
-        } = result?;
+        } = result.map_err(|e| tools.failure(e))?;
         if tool_calls.is_empty() || !offer {
             let text = content.unwrap_or_default();
             if text.trim().is_empty() {
-                return Err(ProviderError::new(
+                return Err(tools.failure(ProviderError::new(
                     ErrorKind::InvalidReply,
                     "the model returned no answer",
                     true,
-                ));
+                )));
             }
             return Ok(Answer {
                 text,
@@ -228,6 +235,13 @@ struct Tools<'a> {
 }
 
 impl Tools<'_> {
+    fn failure(&mut self, error: ProviderError) -> Failure {
+        Failure {
+            error,
+            tools: std::mem::take(&mut self.log),
+        }
+    }
+
     /// A tool's result or a tool error, as the model sees it. Never panics on model input.
     fn run(&mut self, call: &ToolCall) -> Message {
         self.calls += 1;
@@ -286,21 +300,38 @@ impl Tools<'_> {
                 if text.chars().count() > 256 {
                     return Err("`text` is longer than 256 characters".into());
                 }
-                let result = self.call(
+                let result = Value::Object(self.call(
                     "search.query",
                     json!({"root_id": null, "text": text, "extension": null, "min_bytes": null,
                            "max_bytes": null, "modified_after": null, "modified_before": null,
                            "kind": "any", "limit": FIND_PAGE, "cursor": null}),
-                )?;
+                )?);
                 let hits = result.get("hits").and_then(Value::as_array);
                 let rows: Vec<Value> = hits
                     .into_iter()
                     .flatten()
                     .map(|hit| self.row(hit))
                     .collect();
-                Ok(
-                    json!({"rows": rows, "more": result.get("next_cursor").is_some_and(|c| !c.is_null())}),
-                )
+                let mut out = model_fields(
+                    &result,
+                    &["partial", "index_state", "budget_hit", "substring_searched"],
+                );
+                out.insert("rows".into(), json!(rows));
+                out.insert(
+                    "more".into(),
+                    json!(result.get("next_cursor").is_some_and(|c| !c.is_null())),
+                );
+                // Coverage is grant-scoped already; identifiers and paths are not model data.
+                let roots: Vec<_> = result
+                    .get("roots")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .take(64)
+                    .map(|r| model_fields(r, &["scan_state", "coverage"]))
+                    .collect();
+                out.insert("roots".into(), json!(roots));
+                Ok(out.into())
             }
             "describe" => {
                 let handle = only("handle")?;
@@ -396,16 +427,29 @@ impl Tools<'_> {
         if let Some(m) = item.get("match_kind").and_then(model_value) {
             out.insert("match".into(), m);
         }
+        if let Some(freshness) = item.get("freshness") {
+            out.insert(
+                "freshness".into(),
+                model_fields(freshness, &["state", "at"]).into(),
+            );
+        }
         Value::Object(out)
     }
 }
 
-/// The one gate for a value on its way to the model: strings cleaned, numbers as they are, and a
+fn model_fields(item: &Value, fields: &[&str]) -> Map<String, Value> {
+    fields
+        .iter()
+        .filter_map(|key| Some(((*key).into(), model_value(item.get(*key)?)?)))
+        .collect()
+}
+
+/// The one gate for a value on its way to the model: strings cleaned, scalars as they are, and a
 /// null (the service's "unknown", invariant 4) as the string `unknown`. Other types are dropped.
 fn model_value(v: &Value) -> Option<Value> {
     match v {
         Value::String(s) => Some(clean(s).into()),
-        Value::Number(_) => Some(v.clone()),
+        Value::Number(_) | Value::Bool(_) => Some(v.clone()),
         Value::Null => Some("unknown".into()),
         _ => None,
     }

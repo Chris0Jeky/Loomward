@@ -68,6 +68,15 @@ export function piecesOf(t: AskTurnRecord): Piece[] {
   return out;
 }
 
+/** A citation grounds only its own sentence; even an invented handle supplies no evidence. */
+export function sentencesOf(t: AskTurnRecord): { pieces: Piece[]; unsupported: boolean }[] {
+  // shortcut: sentences follow punctuation and line breaks, upgrade for language-aware boundaries.
+  return (t.answer ?? '').split(/(?<=[.!?]["'”’]?)(?=\s)|(?<=[。！？])|(?=\n)/u).filter(Boolean).map((answer) => {
+    const pieces = piecesOf({ ...t, answer });
+    return { pieces, unsupported: !!answer.trim() && !pieces.some((p) => 'citation' in p && p.citation !== null) };
+  });
+}
+
 /** A digest shortened for display; the full value is in the title and the copy. */
 export const shortDigest = (d: string) => d.replace(/^sha256:/, '').slice(0, 12);
 
