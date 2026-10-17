@@ -644,3 +644,223 @@ fn a_client_path_starts_at_the_granted_root_and_the_owner_keeps_the_absolute_one
         json!(r"Synthetic Parent\Synthetic Owner\Alpha\report drafts\report outline.txt")
     );
 }
+
+const ALL_FIELDS: [&str; 4] = ["path", "size", "modified", "attributes"];
+
+#[test]
+fn an_owner_revoked_root_leaves_a_multi_root_grant_and_cannot_be_granted() {
+    let tmp = temp_root();
+    let svc = open(tmp.path());
+    let alpha = root(&svc, "Alpha", 1, Some(ALPHA));
+    let beta = root(&svc, "Beta", 2, Some(BETA));
+    svc.grant_client(
+        "ask:local",
+        &[alpha.clone(), beta.clone()],
+        &ALL_FIELDS,
+        None,
+    )
+    .unwrap();
+    let query = |text: &str| {
+        ok(as_client(
+            &svc,
+            "ask:local",
+            "search.query",
+            search(text, 100, Value::Null),
+        ))
+    };
+    assert_eq!(query("report")["roots"].as_array().unwrap().len(), 2);
+    let beta_node = query("secret")["hits"][0]["row"]["node_id"].clone();
+    let revoked = as_owner(
+        &svc,
+        "roots.revoke",
+        json!({"root_id": beta.as_ref(), "purge_catalog": false}),
+    );
+    assert!(matches!(revoked, ResponseEnvelope::Ok(_)), "{revoked:?}");
+    // The client keeps its grant but sees only the still-active root, and nothing of Beta.
+    let page = query("report");
+    assert_eq!(
+        page["roots"],
+        json!([{"root_id": alpha.as_ref(), "scan_state": "complete", "coverage": "complete"}])
+    );
+    assert!(!names(&page).iter().any(|n| n.contains("beta")));
+    for hit in page["hits"].as_array().unwrap() {
+        assert_eq!(hit["root_id"], json!(alpha.as_ref()));
+    }
+    // The narrowing itself: the live grant lists the still-active root only. The catalogue also
+    // hides a revoked root's rows, so this seam is checked where it is made.
+    let live = svc.inner.client_grant("ask:local").unwrap();
+    assert_eq!(live.roots, [svc.inner.root_row(alpha.as_ref()).unwrap()]);
+    // Naming the revoked root, or explaining a node it held, reads as unknown.
+    let mut named = search("report", 10, Value::Null);
+    named["root_id"] = json!(beta.as_ref());
+    let e = err(as_client(&svc, "ask:local", "search.query", named));
+    assert_eq!(e.code, ErrorCode::NotFound);
+    let inspect = json!({"node_id": beta_node});
+    let e = err(as_client(&svc, "ask:local", "node.inspect", inspect));
+    assert_eq!(e.code, ErrorCode::NotFound);
+    // A revoked root, alone or among live ones, cannot be granted, and a refused grant replaces
+    // nothing; an unknown root reads the same.
+    let mut forged = beta.as_ref().to_owned();
+    forged.push('0');
+    let forged = RootId::new(forged).unwrap();
+    let held = query("notes");
+    for roots in [
+        vec![beta.clone()],
+        vec![alpha.clone(), beta.clone()],
+        vec![forged],
+    ] {
+        let e = svc
+            .grant_client("ask:local", &roots, &ALL_FIELDS, None)
+            .unwrap_err();
+        assert_eq!(e.code, ErrorCode::NotFound);
+        assert_eq!(e.message.as_str(), "unknown root");
+        let e = svc
+            .grant_client("mcp:other", &roots, &["path"], None)
+            .unwrap_err();
+        assert_eq!(e.code, ErrorCode::NotFound);
+    }
+    assert_eq!(unsealed(query("notes")), unsealed(held));
+    let other = as_client(
+        &svc,
+        "mcp:other",
+        "search.query",
+        search("notes", 5, Value::Null),
+    );
+    assert_eq!(err(other).code, ErrorCode::PermissionDenied);
+}
+
+/// The explain of a size-only grant carries the row's size fields and nothing else the grant
+/// does not name; with every field it is the owner's row, root and path.
+#[test]
+fn an_inspect_projects_the_row_to_the_granted_fields() {
+    let tmp = temp_root();
+    let svc = open(tmp.path());
+    let alpha = root(&svc, "Alpha", 1, Some(ALPHA));
+    svc.grant_client("mcp:sizes", std::slice::from_ref(&alpha), &["size"], None)
+        .unwrap();
+    svc.grant_client("mcp:all", std::slice::from_ref(&alpha), &ALL_FIELDS, None)
+        .unwrap();
+    let owner = ok(as_owner(
+        &svc,
+        "search.query",
+        search("report.pdf", 1, Value::Null),
+    ));
+    let node = owner["hits"][0]["row"]["node_id"].clone();
+    let inspect = |client: &str| {
+        ok(as_client(
+            &svc,
+            client,
+            "node.inspect",
+            json!({"node_id": node}),
+        ))
+    };
+    let owner_row = ok(as_owner(&svc, "node.inspect", json!({"node_id": node})))["row"].clone();
+    for k in ["modified_at", "attributes", "flags"] {
+        assert!(owner_row.get(k).is_some(), "the fixture has {k}");
+    }
+    let sizes = inspect("mcp:sizes");
+    let row = sizes["row"].as_object().unwrap();
+    for k in ["location_hint", "modified_at", "attributes", "flags"] {
+        assert!(!row.contains_key(k), "{k}");
+    }
+    assert_eq!(row["logical_bytes"], owner_row["logical_bytes"]);
+    assert!(sizes.get("display_path").is_none());
+    let all = inspect("mcp:all");
+    assert_eq!(all["row"], owner_row);
+    assert!(all["display_path"]["text"].is_string());
+}
+
+/// A directory resolves to its root for the scope check, as a file does.
+#[test]
+fn an_inspect_of_a_directory_is_scoped_by_its_root() {
+    let tmp = temp_root();
+    let svc = open(tmp.path());
+    let alpha = root(&svc, "Alpha", 1, Some(ALPHA));
+    let beta = root(&svc, "Beta", 2, Some(BETA));
+    svc.grant_client("ask:local", std::slice::from_ref(&alpha), &ALL_FIELDS, None)
+        .unwrap();
+    let mut dirs = search("report drafts", 10, Value::Null);
+    dirs["kind"] = json!("dir");
+    let owner = ok(as_owner(&svc, "search.query", dirs));
+    let dir_of = |root: &RootId| {
+        let hit = owner["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|h| h["root_id"] == json!(root.as_ref()))
+            .unwrap();
+        assert_eq!(hit["row"]["kind"], json!("dir"));
+        hit["row"]["node_id"].clone()
+    };
+    let (mine, theirs) = (dir_of(&alpha), dir_of(&beta));
+    let inspect = |node: &Value, generation: Option<u64>| {
+        let mut r = request("node.inspect", json!({"node_id": node}));
+        r.expected_generation = generation.map(Generation);
+        svc.call(r, &CallContext::client("ask:local"))
+    };
+    let seen = ok(inspect(&mine, None));
+    assert_eq!(seen["root_id"], json!(alpha.as_ref()));
+    assert_eq!(seen["row"]["kind"], json!("dir"));
+    // Another root's directory is an unknown node, before a generation check could tell it apart.
+    let forged = {
+        let mut s = theirs.as_str().unwrap().to_owned();
+        s.replace_range(s.len() - 2.., "00");
+        json!(s)
+    };
+    for generation in [None, Some(999)] {
+        let (other, unknown) = (
+            err(inspect(&theirs, generation)),
+            err(inspect(&forged, generation)),
+        );
+        assert_eq!(other.code, ErrorCode::NotFound, "{generation:?}");
+        assert_eq!(
+            (other.message, other.detail),
+            (unknown.message, unknown.detail)
+        );
+    }
+}
+fn listing(text: &str) -> Value {
+    let mut p = search(text, 10, Value::Null);
+    p["extension"] = json!("pdf");
+    p
+}
+
+/// A text that cleans to nothing is the same extension-only, largest-first listing as "": the
+/// size guard must read it the way the catalogue does (trimmed, control characters dropped).
+#[test]
+fn a_text_that_cleans_to_nothing_is_still_a_listing_that_needs_size() {
+    let tmp = temp_root();
+    let svc = open(tmp.path());
+    let alpha = root(&svc, "Alpha", 1, Some(ALPHA));
+    svc.grant_client("mcp:names", std::slice::from_ref(&alpha), &["path"], None)
+        .unwrap();
+    svc.grant_client("mcp:sizes", std::slice::from_ref(&alpha), &["size"], None)
+        .unwrap();
+    let want = names(&ok(as_owner(&svc, "search.query", listing(""))));
+    assert_eq!(want, ["report.pdf"]);
+    for text in [
+        "   ",
+        "\t\n",
+        "\u{1}",
+        " \u{1} ",
+        "\u{7}\u{7f}",
+        "\u{85}\u{1f}",
+    ] {
+        let e = err(as_client(&svc, "mcp:names", "search.query", listing(text)));
+        assert_eq!(e.code, ErrorCode::InvalidRequest, "{text:?}");
+        // With `size` the same text is the owner's listing: the catalogue agrees it is empty.
+        let page = ok(as_client(&svc, "mcp:sizes", "search.query", listing(text)));
+        assert_eq!(names(&page), want, "{text:?}");
+        let owner = ok(as_owner(&svc, "search.query", listing(text)));
+        assert_eq!(names(&owner), want, "{text:?}");
+    }
+    // A zero-width space survives the catalogue cleaning, so it is a text search, never a
+    // largest-first listing (the second half of the Muse claim).
+    let page = ok(as_client(
+        &svc,
+        "mcp:names",
+        "search.query",
+        listing("\u{200b}"),
+    ));
+    assert_eq!(names(&page), Vec::<String>::new());
+}

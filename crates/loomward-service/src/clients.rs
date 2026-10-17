@@ -45,11 +45,12 @@ impl ClientGrant {
     }
 
     /// A filter on a withheld field would disclose it by bisection; so would an extension-only
-    /// listing, which runs largest first.
+    /// listing, which runs largest first. The catalogue's search reads a text as empty when it is
+    /// only whitespace and control characters (its private `clean`), so the guard must too.
     pub(crate) fn check_filters(&self, r: &SearchRequest) -> Result<(), ErrorBody> {
-        let size = r.min_bytes.is_some()
-            || r.max_bytes.is_some()
-            || (r.text.trim().is_empty() && r.extension.is_some());
+        let no_text = r.text.chars().all(|c| c.is_whitespace() || c.is_control());
+        let size =
+            r.min_bytes.is_some() || r.max_bytes.is_some() || (no_text && r.extension.is_some());
         let modified = r.modified_after.is_some() || r.modified_before.is_some();
         if (size && !self.has("size")) || (modified && !self.has("modified")) {
             return Err(fail(
