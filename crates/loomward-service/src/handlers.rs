@@ -1187,3 +1187,36 @@ impl Inner {
         }
     }
 }
+
+#[cfg(test)]
+mod scrub_copy_tests {
+    use super::scrub_copy;
+
+    /// A table name is an identifier, never SQL: a copy table named with a quote and a statement
+    /// is scrubbed like any other keyed table, and the statement it spells never runs.
+    #[test]
+    fn scrub_copy_treats_table_names_as_identifiers_not_sql() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state.db");
+        let copy = dir.path().join("state.before-v7.db");
+        rusqlite::Connection::open(&state)
+            .unwrap()
+            .execute_batch("CREATE TABLE object_ref (id INTEGER PRIMARY KEY); INSERT INTO object_ref VALUES (1);")
+            .unwrap();
+        let evil = "evil\"; DROP TABLE sentinel; --";
+        let quoted = format!("\"{}\"", evil.replace('"', "\"\""));
+        rusqlite::Connection::open(&copy)
+            .unwrap()
+            .execute_batch(&format!(
+                "CREATE TABLE object_ref (id INTEGER PRIMARY KEY); INSERT INTO object_ref VALUES (1),(2);
+                 CREATE TABLE sentinel (k INTEGER); INSERT INTO sentinel VALUES (7);
+                 CREATE TABLE {quoted} (object_ref_id INTEGER); INSERT INTO {quoted} VALUES (1),(2);"
+            ))
+            .unwrap();
+        scrub_copy(&copy, &state).unwrap();
+        let old = rusqlite::Connection::open(&copy).unwrap();
+        let count = |sql: &str| old.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(count("SELECT count(*) FROM sentinel"), 1);
+        assert_eq!(count(&format!("SELECT count(*) FROM {quoted}")), 1);
+    }
+}
