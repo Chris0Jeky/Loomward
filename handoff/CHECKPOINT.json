@@ -95,12 +95,11 @@
     "windows_performance_claim": false
   },
   "next_local_issues": [
-    "C6 copy fault and crash matrix (in progress), then G5 power-cut (needs Q2) and G9 proven restore",
-    "#526 pre-C8 items: revocation wiring, admission lock, residual windows; #506 remainder",
-    "F3 persistent watchers and USN catch-up (in progress); #520 before enabling the ranked index",
-    "the 72-hour soak result (docs/45 row 7)",
-    "#475 journal head anchor; #515 developer-clutter scale check; #495 Linux catalogue hang cause; #481 soak wall clock",
-    "LW-111 (teacher: the owner's lane; q-5 answered 2026-10-11)"
+    "G5 power-cut proof (needs owner Q2) and G9 proven restore before any personal copy; remaining #526 items (window before Committed, refusal code naming, resume) and #567/#569 residuals",
+    "#409 Ask chat panel (LW-118, in progress) on the #556 local broker and #541 grants; Ask Q3/Q4 posed",
+    "#520 before enabling the ranked index; #552 search and writer perf hypotheses (measure at 10M first); #550 F3 identity-gap check cost",
+    "the 72-hour soak result (docs/45 row 7; legacy receipt, wall clock not checked)",
+    "#495 Linux catalogue hang cause (watchdog now prints thread state); #386 P14 200 B/entry with the trigram index"
   ],
   "optional_independent_starts": [
     "LW-065",
@@ -588,5 +587,62 @@
     "soak": "72-hour run started 2026-10-17 03:39 local on KRASPYON; pass rule in docs/45 row 7",
     "find_and_ask": "F1 contract and grammar (#476); F2 ranked search (#513), token index off by default until #520",
     "effects": "diagnostic export (owner file) plus copy-and-verify on synthetic lab roots only; no owner file or process otherwise touched"
+  },
+  "wave11": {
+    "host": "KRASPYON laptop, Windows 11 Home 10.0.26100, 18 threads, 16 GB; WSL 2 Ubuntu 24.04 added for Linux reproduction (#495)",
+    "merged": [
+      "#529",
+      "#531",
+      "#532",
+      "#534",
+      "#536",
+      "#537",
+      "#539",
+      "#540",
+      "#541",
+      "#542",
+      "#544",
+      "#546",
+      "#548",
+      "#549",
+      "#551",
+      "#554",
+      "#555",
+      "#556",
+      "#557",
+      "#558",
+      "#559",
+      "#562",
+      "#563",
+      "#564",
+      "#565",
+      "#566",
+      "#570",
+      "#572",
+      "#573",
+      "#574",
+      "#575",
+      "#576",
+      "#577"
+    ],
+    "rust_tests_at_4b05fd6": 1442,
+    "rust_note": "1,440 passed, 2 ignored, 0 failed (RUST_TEST_THREADS=3)",
+    "app_vitest": 483,
+    "python_tests": 279,
+    "wired_commands": 64,
+    "copy_and_verify": "C6 crash matrix (#532: 482 kills, 0 source changes, 0 false commits) and journal-append faults (#566); journal head anchor (#539); revocation fence and admission lock (#544); identity-change fence and bounded cancel (#564); copy service hardening (#573); still lab-only, personal sessions copy_effect_gated, staging removal off",
+    "find_and_ask": "F3 watchers and USN catch-up (#531, #548); F3a per-client grants (#541, #555); Ask provider LW-117 local loopback broker (#556, #572); explicit scans/duplicates pre-empt automatic refreshes (#565, #577); search v1 follow-ups (#575); federated_search and ranked index off",
+    "forget": "exact-grant retention, honest pending cleanup, file-backed VACUUM temp (#562); sidecars and catalogue scrub-pending health (#576)",
+    "soak": "72-hour run started 2026-10-17 03:39 local; 14.2 h, 0 errors at writing; legacy receipt (started before #534 wall-clock continuity)",
+    "owner_questions_posed": "copy Q1-Q3 and Ask Q3 (local-model preview) / Q4 (retention) in agent-hq#461; Ask Q3/Q4 default to the recommended option on 2026-10-24 if unanswered",
+    "open_followups": [
+      "#495 Linux CI hang (watchdog in place)",
+      "#526 remaining C5 items",
+      "#550 F3 identity-gap check cost",
+      "#552 search/writer perf hypotheses",
+      "#567/#569 copy residuals",
+      "#506 LOW API items",
+      "#409 Ask chat panel (in progress)"
+    ]
   }
 }

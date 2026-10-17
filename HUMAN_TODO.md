@@ -412,9 +412,12 @@ inbox in agent-hq#461; they reach the cockpit when that PR merges. Answer there 
   Recommended: Hyper-V. Gate G5 stays shut until one is done.
 - [ ] **loomward-copy-destination-shape** (Q3): v1 new folder only (recommended, built), or also into an existing
   folder with new names only. Defaults to new folder only on 2026-10-24 if unanswered (reversible).
-- Find & Ask (docs/46 section 11, which names each question's trigger lane):
+- [ ] **loomward-ask-local-preview** (docs/46 Q3, posed 2026-10-17 in agent-hq#461): for a model on this machine, is
+  the per-folder grant enough (recommended, what the local provider #556 and the Ask panel #409 build), or also a preview
+  before every request? Defaults to the grant only on 2026-10-24 if unanswered (reversible).
+- [ ] **loomward-ask-retention** (docs/46 Q4, posed 2026-10-17 in agent-hq#461): keep Ask conversations until you
+  delete them (recommended; Forget cascades) or delete them after N days. Defaults to keep on 2026-10-24 if unanswered.
+- Find & Ask, not asked yet (docs/46 section 11 names each question's trigger lane):
   - the elevated helper's launch model;
-  - Everything results outside the grants (hidden is recommended);
-  - local-model disclosure per folder;
-  - conversation retention.
+  - Everything results outside the grants (hidden is recommended).
 - Microsoft Store: a short privacy policy page is required before a Store submission (packaging/store/README.md).
