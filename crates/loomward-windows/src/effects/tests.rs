@@ -481,6 +481,98 @@ fn held_child_process() {
     let _ = std::io::stdin().read(&mut [0]).unwrap();
 }
 
+/// H7 (docs/47 section 13, review of #522): another process maps a staged file writable, closes its
+/// file and section handles, and keeps only the view. Does the executor's deny-write verification hold
+/// still fail while that view exists? A mapping is the one writer a closed handle leaves behind.
+#[test]
+fn h7_writable_mapped_view_blocks_the_deny_write_hold() {
+    if skip_elevated() {
+        return;
+    }
+    use std::{
+        io::{BufRead, BufReader},
+        process::{Command, Stdio},
+    };
+    let (temp, destination) = lab();
+    let stage = destination.stage("staging").unwrap();
+    let file = stage.create_file(&[], "payload").unwrap();
+    file.write_and_flush(&mut &[7u8; 8192][..], 8192).unwrap();
+    let id = file.identity().unwrap();
+    drop(file);
+    let mut mapper = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "effects::tests::mapped_child_process",
+            "--nocapture",
+        ])
+        .env(
+            "LOOMWARD_C2_MAPPED_FIXTURE",
+            temp.path().join("staging/payload"),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut output = BufReader::new(mapper.stdout.take().unwrap());
+    let mut line = String::new();
+    loop {
+        assert!(output.read_line(&mut line).unwrap() > 0, "the child died");
+        if line.contains("fixture-mapped") {
+            break;
+        }
+        line.clear();
+    }
+    let held = stage.verify(&[], "payload", &id);
+    println!("H7 hold under a writable view: {:?}", held.as_ref().err());
+    assert_eq!(
+        held.err().and_then(|e| e.raw_os_error()),
+        Some(32),
+        "H7: a deny-write hold must not coexist with a writable mapped view"
+    );
+    drop(mapper.stdin.take());
+    assert!(mapper.wait().unwrap().success());
+    // The view is gone with the child: the hold is granted again.
+    stage.verify(&[], "payload", &id).unwrap();
+}
+
+#[test]
+fn mapped_child_process() {
+    if skip_elevated() {
+        return;
+    }
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::System::Memory::*;
+    let Some(path) = std::env::var_os("LOOMWARD_C2_MAPPED_FIXTURE") else {
+        return;
+    };
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .open(path)
+        .unwrap();
+    let section = unsafe {
+        CreateFileMappingW(
+            file.as_raw_handle(),
+            ptr::null(),
+            PAGE_READWRITE,
+            0,
+            0,
+            ptr::null(),
+        )
+    };
+    assert!(!section.is_null());
+    let view = unsafe { MapViewOfFile(section, FILE_MAP_WRITE, 0, 0, 0) };
+    assert!(!view.Value.is_null());
+    // Only the view is left: no file handle and no section handle.
+    unsafe { CloseHandle(section) };
+    drop(file);
+    println!("fixture-mapped");
+    std::io::stdout().flush().unwrap();
+    let _ = std::io::stdin().read(&mut [0]).unwrap();
+    unsafe { UnmapViewOfFile(view) };
+}
+
 #[test]
 fn h5_null_descriptor_inherits_all_aces() {
     if skip_elevated() {
