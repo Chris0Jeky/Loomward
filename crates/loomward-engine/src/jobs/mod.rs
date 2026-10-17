@@ -58,8 +58,9 @@ impl JobContext {
             crate::scan::source::Strategy::Portable => {
                 loomward_protocol::EnumerationStrategy::StdReadDir
             }
-            // FileIdBothDirectoryInfo has no wire value yet (#190 item 3): stay unknown.
-            crate::scan::source::Strategy::Both => return Ok(()),
+            crate::scan::source::Strategy::Both => {
+                loomward_protocol::EnumerationStrategy::FileIdBothDirectoryInfo
+            }
         };
         let mut progress = serde_json::json!({"phase":"done","strategy":strategy,"examined":report.examined,"indexed_files":report.totals.files,"indexed_dirs":report.totals.dirs,"skipped":report.skipped,"failed":report.failed,"logical_bytes":report.totals.logical.to_string(),"allocated_bytes":report.totals.allocated.map(|n|n.to_string()),"pending_dirs":0,"writer_queue_depth":0,"entries_per_second":report.examined as f64/report.elapsed_seconds.max(0.000001),"elapsed_ms":(report.elapsed_seconds*1000.) as u64,"limit_hit":report.limit_hit});
         if let Some(reason) = report.limit_reason {

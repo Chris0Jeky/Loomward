@@ -30,6 +30,7 @@ pub enum EnumerationStrategy {
     NtQueryDirectoryFileEx,
     FindFirstFileExLargeFetch,
     StdReadDir,
+    FileIdBothDirectoryInfo,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
