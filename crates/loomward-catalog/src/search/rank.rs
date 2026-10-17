@@ -324,8 +324,11 @@ impl Reader {
                 conn.prepare_cached(&token_statement(files))?;
             }
             conn.prepare_cached(&anchor_statement())?;
+            // The trigram passes read no deeper than `search` would for the same page: a later
+            // pass costs far more than an earlier one (a filter can force it), and the other
+            // lists supply the depth.
             let inner = SearchRequest {
-                limit: k,
+                limit: want,
                 cursor: None,
                 ..req.clone()
             };
