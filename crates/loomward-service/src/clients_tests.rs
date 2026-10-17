@@ -669,6 +669,7 @@ fn an_owner_revoked_root_leaves_a_multi_root_grant_and_cannot_be_granted() {
         ))
     };
     assert_eq!(query("report")["roots"].as_array().unwrap().len(), 2);
+    let beta_node = query("secret")["hits"][0]["row"]["node_id"].clone();
     let revoked = as_owner(
         &svc,
         "roots.revoke",
@@ -685,6 +686,18 @@ fn an_owner_revoked_root_leaves_a_multi_root_grant_and_cannot_be_granted() {
     for hit in page["hits"].as_array().unwrap() {
         assert_eq!(hit["root_id"], json!(alpha.as_ref()));
     }
+    // The narrowing itself: the live grant lists the still-active root only. The catalogue also
+    // hides a revoked root's rows, so this seam is checked where it is made.
+    let live = svc.inner.client_grant("ask:local").unwrap();
+    assert_eq!(live.roots, [svc.inner.root_row(alpha.as_ref()).unwrap()]);
+    // Naming the revoked root, or explaining a node it held, reads as unknown.
+    let mut named = search("report", 10, Value::Null);
+    named["root_id"] = json!(beta.as_ref());
+    let e = err(as_client(&svc, "ask:local", "search.query", named));
+    assert_eq!(e.code, ErrorCode::NotFound);
+    let inspect = json!({"node_id": beta_node});
+    let e = err(as_client(&svc, "ask:local", "node.inspect", inspect));
+    assert_eq!(e.code, ErrorCode::NotFound);
     // A revoked root, alone or among live ones, cannot be granted, and a refused grant replaces
     // nothing; an unknown root reads the same.
     let mut forged = beta.as_ref().to_owned();
