@@ -835,7 +835,44 @@ mod hardening_tests {
 mod wal_reader_tests {
     use crate::Catalog;
     use rusqlite::Connection;
-    use std::sync::{Arc, Barrier};
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::time::Duration;
+
+    /// A `std::sync::Barrier` that fails instead of waiting forever: when a peer thread panics,
+    /// the others would otherwise block until CI cancels the job (#495).
+    struct Barrier {
+        parties: usize,
+        state: Mutex<(usize, u64)>,
+        turned: Condvar,
+    }
+    impl Barrier {
+        fn new(parties: usize) -> Self {
+            Self {
+                parties,
+                state: Mutex::new((0, 0)),
+                turned: Condvar::new(),
+            }
+        }
+        fn wait(&self) {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let generation = state.1;
+            state.0 += 1;
+            if state.0 == self.parties {
+                *state = (0, generation + 1);
+                self.turned.notify_all();
+                return;
+            }
+            let (state, waited) = self
+                .turned
+                .wait_timeout_while(state, Duration::from_secs(60), |s| s.1 == generation)
+                .unwrap_or_else(|e| e.into_inner());
+            drop(state);
+            assert!(
+                !waited.timed_out(),
+                "a peer never reached the barrier within 60 s (did it panic?)"
+            );
+        }
+    }
 
     /// #390: readers that end their transactions together must not pin `state.db`'s WAL. Through a
     /// `\\?\` path SQLite's Windows VFS shared one lock handle per process and leaked a read lock
