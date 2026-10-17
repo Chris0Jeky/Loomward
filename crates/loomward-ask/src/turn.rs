@@ -351,6 +351,8 @@ impl Tools<'_> {
             };
             out.insert("handle".into(), handle.into());
         }
+        // Every string that reaches the model goes through `clean` (names, extensions and the rest
+        // are file-derived text); numbers pass; anything else is dropped.
         for key in [
             "kind",
             "extension",
@@ -361,13 +363,11 @@ impl Tools<'_> {
             "dirs",
             "modified_at",
             "coverage",
+            "name",
         ] {
-            if let Some(v) = row.get(key).filter(|v| !v.is_null()) {
-                out.insert(key.into(), v.clone());
+            if let Some(v) = row.get(key).and_then(model_value) {
+                out.insert(key.into(), v);
             }
-        }
-        if let Some(name) = row.get("name").and_then(Value::as_str) {
-            out.insert("name".into(), clean(name).into());
         }
         let text = |v: Option<&Value>| {
             v.and_then(|p| p.get("text"))
@@ -378,10 +378,19 @@ impl Tools<'_> {
         if let Some(p) = text(item.get("path")).or_else(|| text(item.get("display_path"))) {
             out.insert("path".into(), p.into());
         }
-        if let Some(m) = item.get("match_kind") {
-            out.insert("match".into(), m.clone());
+        if let Some(m) = item.get("match_kind").and_then(model_value) {
+            out.insert("match".into(), m);
         }
         Value::Object(out)
+    }
+}
+
+/// The one gate for a value on its way to the model: strings cleaned, numbers as they are.
+fn model_value(v: &Value) -> Option<Value> {
+    match v {
+        Value::String(s) => Some(clean(s).into()),
+        Value::Number(_) => Some(v.clone()),
+        _ => None,
     }
 }
 
