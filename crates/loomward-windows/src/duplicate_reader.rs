@@ -141,6 +141,27 @@ pub fn observe_candidate(
         Err(Reason::Unsupported)
     }
 }
+
+/// Internal C1 observation, admitted by Engine::compare_trees. No paths cross a wire surface.
+#[cfg(any(feature = "content-read", test))]
+#[doc(hidden)]
+pub fn read_tree(
+    root: &Path,
+    expected: &OpenedIdentity,
+    budget: Budget,
+    max_entries: usize,
+    cancel: Arc<AtomicBool>,
+) -> Result<(loomward_operations::tree::Tree, u64), Reason> {
+    #[cfg(windows)]
+    {
+        native::tree::read_tree(root, expected, budget, max_entries, cancel)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (root, expected, budget, max_entries, cancel);
+        Err(Reason::Unsupported)
+    }
+}
 #[cfg(all(windows, test))]
 fn inspect_with_hook(
     root: &Path,

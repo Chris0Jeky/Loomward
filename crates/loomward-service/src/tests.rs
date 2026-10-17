@@ -1772,6 +1772,26 @@ fn every_command_answers_a_complete_envelope_and_core_reads_serve_the_catalogue(
         .unwrap()
         .values()
         .all(|v| v == false));
+    // docs/46 F1: the federated search fields are contract only; the engine says so and refuses them
+    // rather than ignoring them (every field alone, even `sources: ["own"]`).
+    assert_eq!(hello["features"]["federated_search"], false);
+    for extra in [
+        json!({"sources": ["own"]}),
+        json!({"terms": [{"text": "report", "mode": "token", "negated": false}]}),
+        json!({"extensions": ["docx"]}),
+        json!({"collection_id": "co_synth1"}),
+        json!({"under_node_id": anchor}),
+    ] {
+        let mut payload = json!({"root_id": svc.inner.root_id(root), "text": "report", "extension": null, "min_bytes": null, "max_bytes": null, "modified_after": null, "modified_before": null, "kind": "file", "limit": 10, "cursor": null});
+        payload
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        assert_eq!(
+            err(call(&svc, "search.query", payload)).code,
+            ErrorCode::CapabilityUnavailable
+        );
+    }
     // Synthetic sessions scan registered lab roots on Windows; personal sessions their own owner grants.
     assert_eq!(
         hello["capabilities"]["observation"]["metadata_scan"],
@@ -2398,6 +2418,20 @@ fn dropping_the_service_waits_for_workers_that_already_replied() {
         std::fs::remove_file(tmp.path().join("catalog.db")).unwrap();
         opener.join().unwrap();
     }
+}
+
+#[test]
+fn revoke_distinguishes_missing_grants_from_store_failures() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    assert_eq!(svc.inner.revoke(1).unwrap_err().code, ErrorCode::NotFound);
+    let (_, grant) = register(&svc, 1);
+    // Only this service connection loses the store; the catalogue writer remains intact.
+    svc.inner.db().execute_batch("DETACH DATABASE st").unwrap();
+    assert_eq!(
+        svc.inner.revoke(grant).unwrap_err().code,
+        ErrorCode::InternalError
+    );
 }
 
 /// H1: a rebuilt catalogue reassigns root and volume rows. An ID minted before the rebuild is

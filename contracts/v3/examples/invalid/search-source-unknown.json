@@ -1,0 +1,5 @@
+{
+  "def": "SearchSource",
+  "reason": "source outside own, everything, semantic",
+  "value": "windows_search"
+}

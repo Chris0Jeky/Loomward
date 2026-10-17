@@ -13,7 +13,7 @@ def run(test=None):
     command = ['cargo', 'test', '--offline', '-p', 'loomward-backup', '--test', 'receipts']
     if test:
         command += [test, '--', '--exact']
-    return subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=120)
+    return subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=900)
 
 
 def main():
@@ -56,6 +56,8 @@ def main():
             'source_limits_empty_scope_and_duplicate_paths_are_refused')
     replace('traversal', 'relative_path(&f.path)', 'true',
             'traversal_and_windows_ambiguous_names_are_refused')
+    replace('case-fold-identity', 'a.to_lowercase() == b.to_lowercase()', 'a == b',
+            'case_variant_paths_name_the_same_required_file')
     # Extra discriminating mutations for the numeric bound and identity binding.
     replace('huge-number', 'if !v.is_finite() || v.abs() >= i64::MAX as f64 {', 'if !v.is_finite() {',
             'malformed_wrong_types_huge_numbers_and_duplicate_keys_are_rejected')

@@ -161,7 +161,9 @@ fn example_directories_hold_exactly_the_expected_files() {
         BTreeSet::from([
             "disclosure-summary.json".to_string(),
             "duplicates-result.json".to_string(),
-            "identity-observation-unverified.json".to_string()
+            "identity-observation-unverified.json".to_string(),
+            "search-page-federated.json".to_string(),
+            "search-request-federated.json".to_string()
         ])
     );
     assert!(

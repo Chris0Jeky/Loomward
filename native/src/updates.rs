@@ -116,12 +116,39 @@ pub fn save_prefs(dir: &Path, prefs: &Prefs) -> Result<(), String> {
         .map_err(|e| format!("could not save the update settings: {e}"))
 }
 
+/// Unicode `Bidi_Control` characters: they reorder the text around them.
+fn bidi_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+    )
+}
+
+/// Release notes are text from the network. Line breaks and tabs become spaces, so they cannot
+/// start a line that looks like part of the confirmation; other control characters and bidi
+/// controls are dropped; the result is cut to [`NOTES_IN_BOX`] characters.
+pub fn release_notes_text(notes: &str) -> String {
+    let cleaned: String = notes
+        .chars()
+        .filter(|&c| c != '\r' && !bidi_control(c))
+        .map(|c| if matches!(c, '\n' | '\t') { ' ' } else { c })
+        .filter(|c| !c.is_control())
+        .collect();
+    let mut shown: String = cleaned.chars().take(NOTES_IN_BOX).collect();
+    if cleaned.chars().count() > NOTES_IN_BOX {
+        shown.push_str(" [...]");
+    }
+    shown
+}
+
 /// The native confirmation text: version, channel, notes, and where the state is kept.
 pub fn confirm_text(offer: &Offer, current: &str) -> String {
-    let mut notes: String = offer.notes.chars().take(NOTES_IN_BOX).collect();
-    if offer.notes.chars().count() > NOTES_IN_BOX {
-        notes.push_str(" [...]");
-    }
+    let cleaned = release_notes_text(&offer.notes);
+    let notes = if cleaned.is_empty() {
+        "Release notes: none published.".to_string()
+    } else {
+        format!("Release notes (text from the release, not checked by Loomward):\n{cleaned}")
+    };
     let kind = if offer.previous {
         "the previous nightly"
     } else {
@@ -541,6 +568,44 @@ mod tests {
         assert!(!text.contains(&"n".repeat(NOTES_IN_BOX + 1)));
         assert!(text.contains("state.before-v*.db"));
         assert!(text.contains("Cancel (the default) changes nothing"));
+    }
+
+    /// The notes come from the network: a bidi override, a control byte or a line break in them
+    /// cannot reshape the box, a line break cannot start a fake line of the confirmation, and the
+    /// block says it is the release's own text.
+    #[test]
+    fn release_notes_are_inert_labelled_text_in_the_confirmation() {
+        let offer = Offer {
+            version: "0.3.0".into(),
+            channel: Channel::Preview,
+            notes:
+                "Fixed \u{202E}evil\u{202C}\r\nOK installs. Cancel\u{7}\u{0}\u{2066}x\u{2069}\tdone"
+                    .into(),
+            date: None,
+            previous: false,
+        };
+        let text = confirm_text(&offer, "0.2.0");
+        assert!(
+            text.contains(
+                "Release notes (text from the release, not checked by Loomward):\n\
+                 Fixed evil OK installs. Cancelx done\n\nLoomward closes"
+            ),
+            "{text}"
+        );
+        let empty = Offer {
+            notes: String::new(),
+            ..offer
+        };
+        assert!(confirm_text(&empty, "0.2.0").contains("Release notes: none published."));
+    }
+
+    /// The cap counts what is shown, after the characters that are dropped are gone.
+    #[test]
+    fn release_notes_cap_applies_after_cleaning() {
+        let noisy = format!("\u{202E}{}", "n\u{7}".repeat(NOTES_IN_BOX + 5));
+        let shown = release_notes_text(&noisy);
+        assert_eq!(shown, format!("{} [...]", "n".repeat(NOTES_IN_BOX)));
+        assert!(!shown.chars().any(|c| c.is_control() || bidi_control(c)));
     }
 
     #[test]

@@ -1,8 +1,8 @@
 # Copy-and-verify: the first file effect
 
 Status: **design, proposed 2026-10-12** (ADR-V3-25 in [42](42-v03-adrs.md)). Owner decision HUMAN_TODO q-32
-(2026-10-12): copy with verification, never deleting the source, behind its own safety gate. Nothing here is
-implemented; nothing here opens AGENTS.md invariant 1. Every Windows behaviour below is either cited from Microsoft
+(2026-10-12): copy with verification, never deleting the source, behind its own safety gate. C1's read-only verifier
+is implemented (section 11); copy effects remain design, and AGENTS.md invariant 1 stays closed. Windows behaviours below are cited from Microsoft
 documentation (section 14) or listed as a hypothesis to measure (section 13). It extends [08](08-transactions-recovery.md)
 (lifecycle), [05](05-safety-security.md) (regression classes) and the backlog items LW-038 (#43), LW-039 (#45),
 LW-040 (#46) and LW-041 (#47). The readiness bar for effects is doc 45, written in a parallel lane; section 11 lists
@@ -477,6 +477,17 @@ HTTP adapter refuses personal approvals, as it does personal disclosure grants (
 C1, C2 and C3 run in parallel; C4 follows C3's schema; C5 needs C2 to C4; C6 needs C5; C7 needs C4; C8 needs C6,
 C7, the G5 and G9 runs, and the doc 45 readiness bar. **Until G5 and G9 pass, the operation stays lab-only**: C5 to
 C7 run on synthetic sessions, and C8 does not open, whatever else is green.
+
+**C1 implementation seam.** `loomward-operations::tree` compares observations without I/O;
+`Engine::compare_trees` admits both durable grants through the q-10 gate before asking the existing
+`loomward-windows::duplicate_reader` for bounded observations. Exact relative native names, including empty
+folders, are compared. Default and named file streams use full SHA-256 reads. Section 6 preserved classes
+require equality, refused classes remain refusals even when both sides match, destination ACLs require no
+explicit ACEs, and report-only classes retain both observations. A failed query, incomplete listing, changed
+identity, exhausted budget or unsupported class remains unknown and prevents an equal report. Directory
+named streams currently remain explicitly unsupported. This is observation-time evidence, not a durable
+read-back, restore receipt or permission to retire a source. C1 exposes no service, HTTP, IPC or MCP command
+and opens no effect gate.
 
 **Gate evidence (what C8 must show, beside doc 45's bar and HUMAN_TODO q-39).**
 

@@ -398,3 +398,72 @@ fn forgetting_scrubs_the_migration_copies_so_no_file_keeps_the_name() {
         "a copy the scrub cannot clear is removed"
     );
 }
+
+#[test]
+fn failed_migration_scrub_preserves_rollback_copy_and_reports_failure() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    svc.inner.revoke(grant).unwrap();
+    let copy = dir.path().join("state.before-v6.db");
+    svc.inner
+        .db()
+        .execute("VACUUM st INTO ?1", [copy.to_string_lossy().as_ref()])
+        .unwrap();
+    let rollback = rusqlite::Connection::open(&copy).unwrap();
+    rollback
+        .execute_batch("CREATE TRIGGER refuse_scrub BEFORE UPDATE ON root_grant BEGIN SELECT RAISE(ABORT, 'synthetic scrub failure'); END")
+        .unwrap();
+    drop(rollback);
+    let before = std::fs::read(&copy).unwrap();
+    // A start-up copy sorting after the failing one must still be swept.
+    let start = dir.path().join("state.start-zz.db");
+    svc.inner
+        .db()
+        .execute("VACUUM st INTO ?1", [start.to_string_lossy().as_ref()])
+        .unwrap();
+
+    let response = forget(&svc, root, None);
+    assert!(copy.exists(), "a failed scrub deleted the rollback copy");
+    assert_eq!(std::fs::read(&copy).unwrap(), before);
+    assert!(
+        !start.exists(),
+        "a failed scrub stopped the sweep of the other copies"
+    );
+    let error = err(response);
+    assert_eq!(error.code, ErrorCode::InternalError);
+    assert_eq!(
+        error.detail.unwrap()["reason"],
+        "forget_backup_scrub_failed"
+    );
+    // The live forget committed and was announced: the root is gone from roots.list.
+    let listed = serde_json::Value::Object(ok("roots.list", call(&svc, "roots.list", json!({}))).0)
+        .to_string();
+    assert!(
+        !listed.contains(NAME_A),
+        "the forgotten root is still listed"
+    );
+}
+
+#[test]
+fn busy_migration_scrub_preserves_rollback_copy_and_reports_failure() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    svc.inner.revoke(grant).unwrap();
+    let copy = dir.path().join("state.before-v6.db");
+    svc.inner
+        .db()
+        .execute("VACUUM st INTO ?1", [copy.to_string_lossy().as_ref()])
+        .unwrap();
+    let rollback = rusqlite::Connection::open(&copy).unwrap();
+    rollback.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let before = std::fs::read(&copy).unwrap();
+
+    let response = forget(&svc, root, None);
+    rollback.execute_batch("ROLLBACK").unwrap();
+    drop(rollback);
+    assert!(copy.exists(), "a busy scrub deleted the rollback copy");
+    assert_eq!(std::fs::read(&copy).unwrap(), before);
+    assert_eq!(err(response).code, ErrorCode::InternalError);
+}

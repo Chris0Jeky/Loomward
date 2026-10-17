@@ -243,6 +243,10 @@ refused to copy or launch it (`pinned_binary_mismatch`). Even with a matching pi
 would start with an empty `CODEX_HOME` and so could not authenticate: these results say what the
 OS boundary does to any process, not whether Codex can work inside it.
 
+Since #292 the example no longer discovers or launches Codex at all: the teacher broker path runs no
+Codex inside the container, and a hash pin went stale with every Codex update. Its receipt's
+`codex` field now records `skipped`; the receipts above are the last runs that tried.
+
 Changes from the 10 October run, all inside the example: the real Documents listing was dropped
 (it opened a handle on the owner's real folder) and replaced with listing, read and write probes on
 the synthetic directories and a `%SystemRoot%` listing; `cmd.exe` canaries, an in-container DNS
