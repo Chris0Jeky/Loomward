@@ -1,5 +1,6 @@
 use crate::{query::WorkGuard, *};
 use rusqlite::params;
+use std::collections::{hash_map::Entry, HashMap};
 
 /// Scan observations, not native handles or authority to read content.
 #[derive(Debug, Clone)]
@@ -48,12 +49,12 @@ impl Reader {
                 JOIN visible_dir v ON v.id=d.id WHERE d.root_id=?1 AND d.id NOT IN (SELECT id FROM shielded)
                 AND f.flags & ?4 = 0 AND f.logical>=?2 AND f.logical>0),
                 sizes AS (SELECT logical FROM eligible GROUP BY logical HAVING count(*)>=2)
-                SELECT f.id,f.logical,f.file_id,f.created_ft,f.modified_ft,f.changed_ft,f.attrs,g.volume_key
+                SELECT f.dir_id,f.logical,f.file_id,f.created_ft,f.modified_ft,f.changed_ft,f.attrs,g.volume_key,f.name
                 FROM eligible f JOIN sizes s ON s.logical=f.logical JOIN root_grant g ON g.id=f.root_id
                 ORDER BY f.logical,f.id LIMIT ?3")?;
             let rows = stmt.query_map(params![root, floor.max(1) as i64, cap as i64 + 1,
                 EXCLUDED_FLAGS | 1 | (1 << 1) | (1 << 6) | (1 << 9) | crate::IDENTITY_UNVERIFIED], |r| Ok((
-                r.get::<_, i64>(0)?, DuplicateCandidate { relative: String::new(), logical: r.get::<_, i64>(1)? as u64,
+                r.get::<_, i64>(0)?, r.get::<_, String>(8)?, DuplicateCandidate { relative: String::new(), logical: r.get::<_, i64>(1)? as u64,
                 file_id: r.get(2)?, created: r.get(3)?, modified: r.get(4)?, changed: r.get(5)?, attributes: r.get(6)?, volume_key: r.get(7)? }
             )))?.collect::<rusqlite::Result<Vec<_>>>()?;
             // Unreadable (access denied), unrepresentable (lossy) or identity-unverified (#219) names
@@ -70,10 +71,15 @@ impl Reader {
             let mut entries = Vec::new();
             let mut skipped = Vec::new();
             let mut path_bytes = 0;
-            for (id, mut candidate) in rows.into_iter().take(cap) {
-                let path = crate::query::node_path(conn, NodeKey::File(id))?;
-                if path.truncated { skipped.push("path_depth"); continue; }
-                candidate.relative = path.ancestors.iter().skip(1).map(|p| p.name.as_str()).collect::<Vec<_>>().join("\\");
+            let mut paths = HashMap::new();
+            for (dir, name, mut candidate) in rows.into_iter().take(cap) {
+                let path = match paths.entry(dir) {
+                    Entry::Occupied(entry) => entry.into_mut(),
+                    Entry::Vacant(entry) => entry.insert(crate::query::node_path(conn, NodeKey::Dir(dir))?),
+                };
+                // The file itself uses one of node_path's 512 slots.
+                if path.truncated || path.ancestors.len() >= MAX_DIRECTORY_CHAIN_LENGTH { skipped.push("path_depth"); continue; }
+                candidate.relative = path.ancestors.iter().skip(1).map(|p| p.name.as_str()).chain(std::iter::once(name.as_str())).collect::<Vec<_>>().join("\\");
                 if candidate.relative.chars().count() > 32768 { skipped.push("path_length"); continue; }
                 // Bound retained reports, including fifty reports in jobs.list, below transport limits.
                 path_bytes += serde_json::to_string(&candidate.relative).expect("string JSON").len();
@@ -101,5 +107,129 @@ impl Reader {
             }
             result => result,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    #[test]
+    fn candidates_reuse_parent_paths_and_match_node_path_bytes() {
+        let temp = tempfile::tempdir().unwrap();
+        let c = Catalog::open(temp.path(), "synthetic").unwrap();
+        let WriteReply::Root {
+            grant_id,
+            dir_id,
+            root_id,
+        } = c
+            .writer()
+            .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_key: "fixture".into(),
+                display_name: "Root".into(),
+                display_path: "Synthetic root".into(),
+                root_file_id: Some(vec![0; 16]),
+                filesystem: Some("NTFS".into()),
+                origin: "fixture".into(),
+                granted_via: "fixture".into(),
+                observed_at_ns: 0,
+            }))
+            .unwrap()
+        else {
+            panic!()
+        };
+        let WriteReply::Run(run) = c
+            .writer()
+            .call(WriteCommand::BeginRun {
+                grant_id,
+                mode: "full".into(),
+                strategy: "fixture".into(),
+                started_at_ns: 0,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        c.writer()
+            .call(WriteCommand::DirListing(DirListing {
+                run_id: run,
+                dir_id,
+                files: (0..200)
+                    .map(|i| Observation::file(format!("file-{i:03}"), 10, Some(4096)))
+                    .collect(),
+                dirs: vec![],
+                state: "complete".into(),
+                skipped: 0,
+                errors: 0,
+            }))
+            .unwrap();
+        c.writer()
+            .call(WriteCommand::EndRun {
+                run_id: run,
+                state: "completed".into(),
+                finished_at_ns: 1,
+            })
+            .unwrap();
+        let mut reader = c.reader().unwrap();
+        let ids: Vec<i64> = reader
+            .conn
+            .prepare("SELECT id FROM file ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let expected: Vec<String> = ids
+            .into_iter()
+            .map(|id| {
+                reader
+                    .path(NodeKey::File(id))
+                    .unwrap()
+                    .ancestors
+                    .into_iter()
+                    .skip(1)
+                    .map(|p| p.name)
+                    .collect::<Vec<_>>()
+                    .join("\\")
+            })
+            .collect();
+        let reads = Arc::new(AtomicUsize::new(0));
+        let counter = reads.clone();
+        reader
+            .conn
+            .authorizer(Some(move |ctx: AuthContext<'_>| {
+                if matches!(
+                    ctx.action,
+                    AuthAction::Read {
+                        table_name: "file",
+                        column_name: "name"
+                    }
+                ) {
+                    counter.fetch_add(1, Ordering::Relaxed);
+                }
+                Authorization::Allow
+            }))
+            .unwrap();
+        let report = reader.duplicate_candidates(root_id, 1, 200).unwrap();
+        assert_eq!(
+            report
+                .entries
+                .iter()
+                .map(|e| &e.relative)
+                .collect::<Vec<_>>(),
+            expected.iter().collect::<Vec<_>>()
+        );
+        assert!(!report.partial);
+        assert!(!report.truncated);
+        assert!(
+            reads.load(Ordering::Relaxed) <= 4,
+            "candidate file rows must not be reread for each path: {}",
+            reads.load(Ordering::Relaxed)
+        );
     }
 }
