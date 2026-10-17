@@ -1552,6 +1552,7 @@ fn hardening_expired_sql_reads_do_not_start_or_resume() {
         cursor: None,
         work_budget: 50_000_000,
         time_budget: None,
+        scope: None,
     };
     assert!(matches!(
         reader.search(&req),

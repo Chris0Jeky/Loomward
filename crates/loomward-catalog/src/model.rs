@@ -349,6 +349,10 @@ pub struct SearchRequest {
     pub kind: String,
     pub limit: usize,
     pub cursor: Option<SearchCursor>,
+    /// A client's disclosure scope (LW-069): root ids it may see. `None` is the owner's view; with
+    /// `Some`, rows, root states, the generation and the cursor binding all stay inside it, and a
+    /// `root_id` outside it is `NotFound`, as an unknown root is.
+    pub scope: Option<Vec<i64>>,
     pub work_budget: u64,
     /// Wall-clock work per page: past it the page returns what it has, `budget_hit` and a cursor.
     pub time_budget: Option<std::time::Duration>,

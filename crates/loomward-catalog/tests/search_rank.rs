@@ -900,3 +900,88 @@ fn a_ranked_cursor_is_refused_once_the_catalogue_has_moved() {
         .search_ranked(&q, &RankOptions::default());
     assert!(matches!(moved, Err(Error::StaleGeneration)), "{moved:?}");
 }
+
+/// LW-069: a client scoped to one root pages exactly as it would over an index holding only that
+/// root, in both the keyset and the ranked search. Nothing about the other root reaches the page:
+/// not a row, a root state, the generation or the cursor, and asking for it reads as unknown.
+#[test]
+fn a_client_scope_reads_a_multi_root_index_as_if_it_held_only_its_roots() {
+    let (alone, a) = corpus();
+    let (shared, a2) = corpus();
+    assert_eq!(a.root, a2.root);
+    let mut shared = shared;
+    let b = register(&shared, "Beta", 2);
+    let run = begin(&shared, &b);
+    let files = [
+        "report.pdf",
+        "AnnualReport2025.pdf",
+        "thesis final.docx",
+        "quillon.exe",
+    ]
+    .iter()
+    .map(|n| obs(&mut shared, n, 1))
+    .collect();
+    let dirs = vec![
+        obs(&mut shared, "Invoices", 0),
+        obs(&mut shared, "report", 0),
+    ];
+    list(&shared, run, b.dir, files, dirs);
+    end(&shared, run);
+    let page = |p: &SearchPage| {
+        serde_json::json!({
+            "hits": p.hits, "roots": p.roots, "generation": p.generation, "budget_hit": p.budget_hit,
+            "index_state": p.index_state, "partial": p.partial, "substring_searched": p.substring_searched,
+            "more": p.next_cursor.is_some(),
+        })
+    };
+    for text in ["report", "thesis", "invoices 2024", "quillon", "re", ""] {
+        let mut owner = req(text);
+        owner.limit = 3;
+        let mut client = owner.clone();
+        client.scope = Some(vec![a.root]);
+        let walk = |lab: &Lab, r: &SearchRequest, rank: bool| {
+            let mut r = r.clone();
+            let mut pages = vec![];
+            loop {
+                let p = if rank {
+                    ranked(lab, &r)
+                } else {
+                    plain(lab, &r)
+                };
+                pages.push(page(&p));
+                match p.next_cursor {
+                    Some(c) if pages.len() < 20 => r.cursor = Some(c),
+                    _ => break pages,
+                }
+            }
+        };
+        for rank in [false, true] {
+            let want = walk(&alone, &owner, rank);
+            assert_eq!(walk(&shared, &client, rank), want, "{text:?} ranked={rank}");
+            assert_ne!(
+                walk(&shared, &owner, rank),
+                want,
+                "{text:?}: the fixture must differ"
+            );
+        }
+    }
+    let mut other = req("report");
+    other.scope = Some(vec![a.root]);
+    for root in [b.root, 999] {
+        other.root_id = Some(root);
+        let r = shared.c.reader().unwrap().search(&other);
+        assert!(matches!(r, Err(Error::NotFound)), "{root}");
+    }
+    // A cursor minted under one scope is not resumed under another, nor by the owner.
+    let mut first = req("report");
+    first.limit = 1;
+    first.scope = Some(vec![a.root]);
+    let c = plain(&shared, &first).next_cursor.unwrap();
+    for scope in [None, Some(vec![a.root, b.root])] {
+        let mut next = first.clone();
+        next.scope = scope;
+        next.cursor = Some(c.clone());
+        let r = shared.c.reader().unwrap().search(&next);
+        assert!(matches!(r, Err(Error::Invalid(_))));
+    }
+}

@@ -18,6 +18,7 @@
 mod alerts;
 mod apps;
 mod backups;
+mod clients;
 mod collections;
 mod copy;
 mod cursors;
@@ -39,11 +40,12 @@ mod sink;
 #[cfg(test)]
 mod tests;
 
+pub use clients::CLIENT_FIELDS;
 use loomward_catalog::{Catalog, NodeKey, RootObservation, WriteCommand, WriteReply};
 use loomward_engine::{Engine, EngineConfig};
 use loomward_protocol::{
     CallContext, Command, DatasetClass, Detail, ErrorBody, ErrorCode, EventName, EventStream,
-    Generation, Payload, RequestEnvelope, RequestId, ResponseEnvelope, ResponseMeta,
+    Generation, Payload, Principal, RequestEnvelope, RequestId, ResponseEnvelope, ResponseMeta,
     RootGrantResultRefusal as Refusal, Timestamp, ViewService,
 };
 use rusqlite::OptionalExtension;
@@ -517,6 +519,14 @@ impl ViewService for Service {
             );
             return ResponseEnvelope::error(Some(id), e, None);
         }
+        // LW-067: a client principal reaches the grant-scoped reads only, whatever its grant says.
+        if matches!(ctx.principal, Principal::Client(_)) && !clients::open_to_clients(command) {
+            let e = fail(
+                ErrorCode::PermissionDenied,
+                "this command is not open to a client",
+            );
+            return ResponseEnvelope::error(Some(id), e, None);
+        }
         // docs/47: copy-and-verify is served for synthetic sessions on registered lab roots (lane C5,
         // copy.rs). A personal session never gets past this point with a copy command until lane C8
         // opens its effect gate (AGENTS.md invariant 1). A personal approval over HTTP is refused by its
@@ -898,20 +908,30 @@ impl Inner {
         metadata_cursor: Option<&Mutex<Option<cursors::Position>>>,
     ) -> ResponseEnvelope {
         let id = request.request_id.clone();
-        let out = self
-            .handle(request, command, ctx, work, metadata_cursor)
-            .and_then(|out| match out.result {
-                Value::Object(ref map) => command.validate_result(map).map(|_| out).map_err(|_| {
-                    fail(
-                        ErrorCode::InternalError,
-                        "the service produced an invalid result",
-                    )
-                }),
-                _ => Err(fail(
+        // LW-067: the grant is read once per call, so one call never mixes two grants.
+        let grant = match &ctx.principal {
+            Principal::Owner => None,
+            Principal::Client(client) => match self.client_grant(client) {
+                Ok(g) => Some(g),
+                Err(e) => return ResponseEnvelope::error(Some(id), e, None),
+            },
+        };
+        let out = match &grant {
+            None => self.handle(request, command, ctx, work, metadata_cursor),
+            Some(g) => self.client_handle(request, command, g, work),
+        };
+        let out = out.and_then(|out| match out.result {
+            Value::Object(ref map) => command.validate_result(map).map(|_| out).map_err(|_| {
+                fail(
                     ErrorCode::InternalError,
                     "the service produced an invalid result",
-                )),
-            });
+                )
+            }),
+            _ => Err(fail(
+                ErrorCode::InternalError,
+                "the service produced an invalid result",
+            )),
+        });
         let out = if work.is_some_and(|work| Instant::now() >= work.deadline)
             && !(command == Command::PlacementSimulate
                 && request.payload.get("save").and_then(Value::as_bool) == Some(true))
@@ -925,10 +945,13 @@ impl Inner {
         };
         match out {
             Ok(Out {
-                result: Value::Object(map),
+                result: Value::Object(mut map),
                 catalog_rev,
                 state_rev,
             }) => {
+                if let Some(g) = &grant {
+                    clients::project(command, g, &mut map);
+                }
                 let meta = self.meta(started, &map, catalog_rev, state_rev);
                 ResponseEnvelope::ok_object(id, map, meta)
             }

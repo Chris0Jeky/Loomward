@@ -318,6 +318,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         cursor: None,
         work_budget: 2_000_000,
         time_budget: None,
+        scope: None,
     };
     // Warm each query once; measure 21 subsequent runs, including serialization for P6.
     reader.slice(&slice_request)?;

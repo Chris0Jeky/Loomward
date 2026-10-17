@@ -43,12 +43,25 @@ pub trait NativeDialogs: Send + Sync {
     }
 }
 
+/// Who a call is for (docs/46 section 4). The adapter that hosts the caller sets it; nothing in a
+/// payload or a client's own metadata can claim it (AGENTS.md invariant 7).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Principal {
+    /// The owner's own UI: every command its adapter offers, unprojected.
+    #[default]
+    Owner,
+    /// A non-owner client (`ask:<class>`, `mcp:<name>`): only the grant-scoped reads, inside its
+    /// owner-issued disclosure grant (LW-067, LW-069), and nothing without one.
+    Client(String),
+}
+
 /// Per-call facts the adapter knows and the payload cannot claim.
 #[derive(Clone)]
 pub struct CallContext {
     pub adapter: Adapter,
     /// `Some` on the desktop adapter only; HTTP has no native dialogs.
     pub dialogs: Option<Arc<dyn NativeDialogs>>,
+    pub principal: Principal,
 }
 
 impl CallContext {
@@ -56,6 +69,16 @@ impl CallContext {
         Self {
             adapter: Adapter::Http,
             dialogs: None,
+            principal: Principal::Owner,
+        }
+    }
+
+    /// An in-process client host (Ask, MCP): no native dialogs, HTTP's command surface, and the
+    /// client principal `client`.
+    pub fn client(client: impl Into<String>) -> Self {
+        Self {
+            principal: Principal::Client(client.into()),
+            ..Self::http()
         }
     }
 
@@ -63,6 +86,7 @@ impl CallContext {
         Self {
             adapter: Adapter::Tauri,
             dialogs: Some(dialogs),
+            principal: Principal::Owner,
         }
     }
 }
@@ -72,6 +96,7 @@ impl fmt::Debug for CallContext {
         f.debug_struct("CallContext")
             .field("adapter", &self.adapter)
             .field("dialogs", &self.dialogs.as_ref().map(|_| "native"))
+            .field("principal", &self.principal)
             .finish()
     }
 }

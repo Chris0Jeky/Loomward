@@ -146,7 +146,7 @@ pub(crate) fn holds(file: &std::path::Path, needle: &str) -> bool {
         .any(|n| !n.is_empty() && bytes.windows(n.len()).any(|w| w == *n))
 }
 
-fn encode<T: Serialize>(v: &T) -> Result<Value, ErrorBody> {
+pub(crate) fn encode<T: Serialize>(v: &T) -> Result<Value, ErrorBody> {
     serde_json::to_value(v).map_err(|_| fail(ErrorCode::InternalError, "encode"))
 }
 
@@ -289,7 +289,7 @@ impl Inner {
             NodeInspect => self.node_read(req, work, |reader, key| {
                 reader.inspect(key).map(|d| encode(&d))
             }),
-            SearchQuery => self.search(req, work),
+            SearchQuery => self.search(req, work, None),
             StatsBreakdown => self.breakdown(req, work),
             TiersModel | PlacementCandidates | PlacementSimulate | ProposalsList | ProposalsGet => {
                 self.placement_command(req, command, work)
@@ -972,7 +972,7 @@ impl Inner {
         Ok(out(value, Some(revs)))
     }
 
-    fn node_read(
+    pub(crate) fn node_read(
         &self,
         req: &RequestEnvelope,
         work: Option<&crate::ReadWork>,
@@ -1085,7 +1085,14 @@ impl Inner {
         self.sealed(value, revs)
     }
 
-    fn search(&self, req: &RequestEnvelope, work: Option<&crate::ReadWork>) -> Handled {
+    /// `search.query`; with `client`, the grant-scoped adapter (LW-069): its roots bound the
+    /// rows, root states and generation, and the cursor binds the client and its grant epoch.
+    pub(crate) fn search(
+        &self,
+        req: &RequestEnvelope,
+        work: Option<&crate::ReadWork>,
+        client: Option<&crate::clients::ClientGrant>,
+    ) -> Handled {
         let r: SearchRequest = req.decode_payload()?;
         if r.uses_federated_fields() {
             return Err(fail(
@@ -1093,9 +1100,21 @@ impl Inner {
                 "federated search fields are not served by this engine (features.federated_search is false)",
             ));
         }
+        if let Some(g) = client {
+            g.check_filters(&r)?;
+        }
         let revs = self.revisions()?;
         let root = r.root_id.as_ref().map(|id| self.root_row(id)).transpose()?;
-        let bind = binding(req);
+        if let (Some(g), Some(row)) = (client, root) {
+            if !g.roots.contains(&row) {
+                // As an unknown root: nothing says the root exists.
+                return Err(fail(ErrorCode::NotFound, "unknown root"));
+            }
+        }
+        let bind = match client {
+            Some(g) => format!("client:{}:{}:{}", g.client, g.epoch, binding(req)),
+            None => binding(req),
+        };
         let cursor = match &r.cursor {
             None => None,
             Some(handle) => match self
@@ -1139,6 +1158,7 @@ impl Inner {
                 work_budget: 50_000_000,
                 // P8: a page answers within about 300 ms, partial with budget_hit and a cursor if need be.
                 time_budget: Some(std::time::Duration::from_millis(250)),
+                scope: client.map(|g| g.roots.clone()),
             })
             .map_err(catalog_error)?;
         let next = page.next_cursor.map(|c| {
@@ -1214,7 +1234,7 @@ impl Inner {
         self.sealed(encode(&b)?, revs)
     }
 
-    fn read_reader(&self, work: Option<&crate::ReadWork>) -> Result<Reader, ErrorBody> {
+    pub(crate) fn read_reader(&self, work: Option<&crate::ReadWork>) -> Result<Reader, ErrorBody> {
         match work {
             Some(work) => work.reader(&self.catalog),
             None => self.catalog.reader().map_err(catalog_error),
