@@ -24,6 +24,129 @@ fn lab() -> (tempfile::TempDir, Destination) {
 }
 
 #[test]
+fn journaled_staging_lists_entries_before_and_after_publish() {
+    if skip_elevated() {
+        return;
+    }
+    let (temp, destination) = lab();
+    let stage = destination.stage("staging").unwrap();
+    let recorded = stage.identity().clone();
+    let creation = recorded.creation_time.parse().unwrap();
+    let child = stage.create_directory(&[], "child").unwrap();
+    let empty = stage.create_directory(&[], "empty").unwrap();
+    // More than one native listing buffer, including maximum-length components.
+    for i in 0..160 {
+        let name = format!("{i:03}{}", "x".repeat(252));
+        drop(
+            stage
+                .create_file(&[("child", child.clone())], &name)
+                .unwrap(),
+        );
+    }
+    drop(stage);
+    let mut stage =
+        Staging::attach(&destination, "staging", recorded.file_id, &[creation]).unwrap();
+    let mut names = stage.entries(&[]).unwrap();
+    names.sort();
+    assert_eq!(names, ["child", "empty"]);
+    assert_eq!(
+        stage.entries(&[("child", child.clone())]).unwrap().len(),
+        160
+    );
+    assert!(stage.entries(&[("empty", empty)]).unwrap().is_empty());
+    stage.publish("published").unwrap();
+    drop(stage);
+    let published =
+        Staging::attach_published(&destination, "published", recorded.file_id, &[creation])
+            .unwrap();
+    assert_eq!(
+        published
+            .entries(&[("child", child.clone())])
+            .unwrap()
+            .len(),
+        160
+    );
+    fs::write(temp.path().join("published/extra"), b"extra").unwrap();
+    assert!(published
+        .entries(&[])
+        .unwrap()
+        .contains(&"extra".to_string()));
+    // A replacement child or root must never be listed under the journaled identity.
+    fs::rename(
+        temp.path().join("published/child"),
+        temp.path().join("published/moved"),
+    )
+    .unwrap();
+    fs::create_dir(temp.path().join("published/child")).unwrap();
+    assert!(published.entries(&[("child", child)]).is_err());
+    fs::rename(temp.path().join("published"), temp.path().join("moved")).unwrap();
+    fs::create_dir(temp.path().join("published")).unwrap();
+    assert!(published.entries(&[]).is_err());
+    assert!(
+        Staging::attach_published(&destination, "published", recorded.file_id, &[creation])
+            .is_err()
+    );
+}
+
+#[test]
+fn journaled_published_attachment_rehashes_and_refuses_effects() {
+    if skip_elevated() {
+        return;
+    }
+    let (temp, destination) = lab();
+    let mut stage = destination.stage("staging").unwrap();
+    let root = stage.identity().clone();
+    let creation = root.creation_time.parse().unwrap();
+    let file = stage.create_file(&[], "payload").unwrap();
+    let recorded = file.identity().unwrap();
+    file.write_and_flush(&mut &b"before"[..], 6).unwrap();
+    let stream = file.create_stream("named").unwrap();
+    stream.write_and_flush(&mut &b"stream"[..], 6).unwrap();
+    drop(stream);
+    drop(file);
+    let child = stage.create_directory(&[], "child").unwrap();
+    stage.publish("published").unwrap();
+    drop(stage);
+    // No holds survive a crash: confirmation must read the current bytes again.
+    fs::write(temp.path().join("published/payload"), b"after!").unwrap();
+    let mut published =
+        Staging::attach_published(&destination, "published", root.file_id, &[creation]).unwrap();
+    let held = published.verify(&[], "payload", &recorded).unwrap();
+    assert_eq!(held.digest, <[u8; 32]>::from(Sha256::digest(b"after!")));
+    assert_eq!(held.size, 6);
+    assert_eq!(
+        held.streams().unwrap(),
+        vec![(":named:$DATA".to_string(), 6)]
+    );
+    assert_eq!(held.ea_size().unwrap(), 0);
+    assert_eq!(
+        held.verify_stream("named").unwrap().digest,
+        <[u8; 32]>::from(Sha256::digest(b"stream"))
+    );
+    assert!(published.create_file(&[], "new").is_err());
+    assert!(published.create_directory(&[], "new").is_err());
+    assert!(published
+        .set_metadata(published.own_metadata().unwrap())
+        .is_err());
+    assert!(published
+        .set_directory_metadata(
+            &[],
+            "child",
+            &child,
+            published.metadata(&[], "child", &child).unwrap()
+        )
+        .is_err());
+    assert!(published.cleanup_file(&[], "payload", &recorded).is_err());
+    assert!(published.cleanup_directory(&[], "child", &child).is_err());
+    assert!(published.publish("again").is_err());
+    assert!(published.cleanup().is_err());
+    assert_eq!(
+        fs::read(temp.path().join("published/payload")).unwrap(),
+        b"after!"
+    );
+}
+
+#[test]
 fn staging_guard_rename_is_blocked() {
     if skip_elevated() {
         return;
@@ -929,6 +1052,16 @@ fn elevation_and_reparse_parents_refuse() {
     }
     let destination = Destination::open(temp.path(), &expected).unwrap();
     let stage = destination.stage("staging").unwrap();
+    {
+        let _reset = enumerate::force_elevation_for_test();
+        let key = stage.identity();
+        let creation = key.creation_time.parse().unwrap();
+        assert!(Staging::attach(&destination, "staging", key.file_id, &[creation]).is_err());
+        assert!(
+            Staging::attach_published(&destination, "staging", key.file_id, &[creation]).is_err()
+        );
+        assert!(stage.entries(&[]).is_err());
+    }
     fs::create_dir(temp.path().join("outside")).unwrap();
     crate::fixtures::junction(
         &temp.path().join("staging/link"),
@@ -938,6 +1071,8 @@ fn elevation_and_reparse_parents_refuse() {
     let link = identity::observe(&temp.path().join("staging/link"))
         .unwrap()
         .object;
+    assert_eq!(stage.entries(&[]).unwrap(), ["link"]);
+    assert!(stage.entries(&[("link", link.clone())]).is_err());
     assert!(stage.create_file(&[("link", link)], "escape").is_err());
     assert!(!temp.path().join("outside/escape").exists());
 }

@@ -218,6 +218,59 @@ fn staging_dirs(lab: &Lab) -> Vec<String> {
 }
 
 #[test]
+fn extra_nested_entries_prevent_publish_commit_and_crash_confirmation() {
+    // Before publish, after publish, and recovery after the rename lost all holds.
+    for phase in 0..3 {
+        let Some(mut lab) = Lab::new() else { return };
+        fs::create_dir_all(lab.src().join("top/sub")).unwrap();
+        fs::write(lab.src().join("top/sub/file"), b"data").unwrap();
+        let before = source_snapshot(&lab.src());
+        let op = lab.start(&["top"]);
+        let dest = lab.dest();
+        let control = Control::new(false).with_hook(move |point, _| {
+            if (phase == 0 && matches!(point, Point::Verified(_)))
+                || (phase == 1 && point == Point::AfterPublish)
+            {
+                let folder = fs::read_dir(&dest).unwrap().next().unwrap().unwrap().path();
+                fs::write(folder.join("sub/extra"), b"keep").unwrap();
+            }
+            if phase == 2 && point == Point::AfterPublish {
+                Flow::Crash
+            } else {
+                Flow::Continue
+            }
+        });
+        let result = run(&lab.store, op, &control);
+        let outcome = if phase == 2 {
+            assert!(matches!(result, Err(Fault::Crashed)));
+            fs::write(lab.dest().join("top/sub/extra"), b"keep").unwrap();
+            lab.reopen();
+            recover(&lab.store, op, &Control::new(false)).unwrap()
+        } else {
+            result.unwrap()
+        };
+        assert_eq!(
+            outcome.state,
+            OpState::NeedsAttention,
+            "{phase}: {outcome:?}"
+        );
+        assert_eq!(
+            outcome.refusal,
+            Some((Refusal::ChangedAfterVerification, None))
+        );
+        assert_eq!(source_snapshot(&lab.src()), before);
+        let folder = fs::read_dir(lab.dest())
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert_eq!(fs::read(folder.join("sub/extra")).unwrap(), b"keep");
+        assert_eq!(lab.dest().join("top").exists(), phase != 0);
+    }
+}
+
+#[test]
 fn source_changed_mid_run_is_needs_attention_with_staging_kept_and_never_published() {
     for removal in [false, true] {
         let Some(lab) = Lab::new() else { return };

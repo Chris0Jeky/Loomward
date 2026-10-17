@@ -1209,9 +1209,7 @@ impl Runner<'_, '_> {
     /// Final tree check, publish without replace, post-publish confirmation, `committed`.
     fn publish(&mut self) -> Result<(), Stop> {
         self.control.check()?;
-        let staging_name = self.journal.replay()?.staging_tokens.last().cloned();
-        let staging_name = staging_name.ok_or(Stop::Attention(None))?;
-        if !self.shape_matches(&staging_name) || !self.metadata_matches() {
+        if !self.shape_matches() || !self.metadata_matches() {
             let stop = Stop::Attention(Some(Refusal::ChangedAfterVerification));
             self.refuse(&stop)?;
             return Err(stop);
@@ -1269,7 +1267,7 @@ impl Runner<'_, '_> {
         // Default-stream holds stayed in place through the rename (H2 positive), so that content is
         // unchanged; named streams were released for the rename and are re-hashed now; tree shape and
         // preserved metadata are rechecked (write-attributes access is not denied by a hold).
-        if !self.shape_matches(&final_name) || !self.metadata_matches() || !self.streams_match() {
+        if !self.shape_matches() || !self.metadata_matches() || !self.streams_match() {
             let stop = Stop::Attention(Some(Refusal::ChangedAfterVerification));
             self.refuse(&stop)?;
             return Err(stop);
@@ -1302,8 +1300,8 @@ impl Runner<'_, '_> {
         ok
     }
 
-    /// Exactly the manifest's names under the folder, nothing more (a read; no handle kept).
-    fn shape_matches(&self, folder: &str) -> bool {
+    /// Exactly the manifest's names under identity-pinned folders, nothing more.
+    fn shape_matches(&self) -> bool {
         let want: BTreeSet<String> = self
             .plan
             .manifest
@@ -1311,7 +1309,7 @@ impl Runner<'_, '_> {
             .iter()
             .map(|i| i.name.clone())
             .collect();
-        listing(&self.plan.destination.join(folder)).is_ok_and(|got| got == want)
+        listing(&self.staging, &self.keys).is_ok_and(|got| got == want)
     }
 
     /// Preserved metadata of every entry, and no named stream or EA on any folder (#526).
@@ -1342,28 +1340,30 @@ impl Runner<'_, '_> {
     }
 }
 
-/// Every entry name under `folder`, staging-relative and `/`-joined. Reparse points are listed, never
-/// followed.
-fn listing(folder: &Path) -> io::Result<BTreeSet<String>> {
+/// List only the identity-pinned manifest folders, including extras but never descending into them.
+fn listing(
+    staging: &Staging<'_>,
+    keys: &HashMap<String, ObjectKey>,
+) -> io::Result<BTreeSet<String>> {
     let mut out = BTreeSet::new();
-    let mut pending = vec![(folder.to_path_buf(), String::new())];
-    while let Some((dir, prefix)) = pending.pop() {
-        for entry in std::fs::read_dir(&dir)? {
-            let entry = entry?;
-            let name = entry
-                .file_name()
-                .into_string()
-                .map_err(|_| refused("unrepresentable name"))?;
+    for prefix in std::iter::once("").chain(keys.keys().map(String::as_str)) {
+        let path = if prefix.is_empty() {
+            Vec::new()
+        } else {
+            let (mut path, name) = path_of(prefix, keys).map_err(|_| refused("unbound folder"))?;
+            path.push((name, keys[prefix].clone()));
+            path
+        };
+        for name in staging.entries(&path)? {
             let name = if prefix.is_empty() {
                 name
             } else {
                 format!("{prefix}/{name}")
             };
-            let kind = entry.file_type()?;
-            if kind.is_dir() && !kind.is_symlink() {
-                pending.push((entry.path(), name.clone()));
-            }
             out.insert(name);
+            if out.len() > loomward_operations::MAX_ITEMS as usize {
+                return Err(refused("too many staging entries"));
+            }
         }
     }
     Ok(out)
@@ -1771,7 +1771,6 @@ fn confirm(
         )
         .map_err(|e| unverifiable(&e))?;
         let want: BTreeSet<String> = plan.manifest.items.iter().map(|i| i.name.clone()).collect();
-        check(listing(&plan.destination.join(final_name)).map_err(|e| unverifiable(&e))? == want)?;
         let mut keys = HashMap::new();
         let mut holds = Vec::new();
         for (i, item) in plan.manifest.items.iter().enumerate() {
@@ -1836,6 +1835,7 @@ fn confirm(
                 keys.insert(item.name.clone(), key);
             }
         }
+        check(listing(&published, &keys).map_err(|e| unverifiable(&e))? == want)?;
         if let Some(root) = &plan.manifest.root {
             check(published.own_metadata().map_err(|e| unverifiable(&e))? == preserved(root))?;
             check(published.own_plain().map_err(|e| unverifiable(&e))?)?;
