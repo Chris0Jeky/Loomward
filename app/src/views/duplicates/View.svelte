@@ -8,8 +8,9 @@
     problem: string;
     withheldGroups: number;
     unreadableSkipped: number;
+    skippedUnknown: boolean;
   } {
-    if (!report) return { report: undefined, problem: '', withheldGroups: 0, unreadableSkipped: 0 };
+    if (!report) return { report: undefined, problem: '', withheldGroups: 0, unreadableSkipped: 0, skippedUnknown: false };
     const count = Array.isArray(report.entries) ? report.entries.length : 0;
     const valid = (i: unknown): i is number =>
       typeof i === 'number' && Number.isInteger(i) && i >= 0 && i < count;
@@ -71,6 +72,8 @@
           return ok;
         })
       : [];
+    const skippedUnknown = !Array.isArray(report.skipped);
+    const groupsUnknown = !Array.isArray(report.groups);
     if (!Array.isArray(report.groups) || !Array.isArray(report.links) || !Array.isArray(report.skipped)) {
       malformed = true;
     }
@@ -79,17 +82,20 @@
       problem = 'Some inspection references were invalid and were skipped.';
       if (withheldGroups === 1) problem += ' 1 verified group was withheld as incomplete.';
       else if (withheldGroups > 1) problem += ` ${withheldGroups} verified groups were withheld as incomplete.`;
+      if (groupsUnknown) problem += ' The verified groups could not be read, so they are unknown.';
     }
     return {
       report: { ...report, groups, links, skipped },
       problem,
       withheldGroups,
       unreadableSkipped,
+      skippedUnknown,
     };
   }
 
   // Wording for skipped evidence that could not be read. Empty string means the list itself says enough.
-  export function skippedNotice(unreadable: number, listed: number): string {
+  export function skippedNotice(unreadable: number, listed: number, unknown = false): string {
+    if (unknown) return 'The skipped list could not be read, so what was skipped is unknown.';
     if (unreadable === 1) return '1 skipped record could not be read, so its reason is unknown.';
     if (unreadable > 1) return `${unreadable} skipped records could not be read, so their reasons are unknown.`;
     return listed > 0 ? '' : 'No listed entries were skipped.';
@@ -116,7 +122,7 @@
   const guarded = $derived(sanitizeDuplicatesReport(report));
   const safeReport = $derived(guarded.report);
   const indexProblem = $derived(guarded.problem);
-  const skippedText = $derived(safeReport ? skippedNotice(guarded.unreadableSkipped, safeReport.skipped.length) : '');
+  const skippedText = $derived(safeReport ? skippedNotice(guarded.unreadableSkipped, safeReport.skipped.length, guarded.skippedUnknown) : '');
   const active = $derived(job ? isActive(job.state) : false);
   // A session reads its own class of root only: lab roots when synthetic, folders you granted when personal (q-10).
   const origin = $derived(session.datasetClass === 'personal' ? 'owner_granted' : 'lab_generated');

@@ -260,6 +260,15 @@ describe('duplicates report index guard', () => {
     expect(notice).toBe('1 skipped record could not be read, so its reason is unknown.');
     expect(notice).not.toContain('No listed entries were skipped');
   });
+  it('a skipped list or group list that is not a list reads as unknown, not empty', () => {
+    const guarded = sanitizeDuplicatesReport(twoEntries({ groups: 'x' as unknown as number[][], skipped: 'x' as unknown as [] }));
+    expect(guarded.skippedUnknown).toBe(true);
+    expect(skippedNotice(guarded.unreadableSkipped, guarded.report!.skipped.length, guarded.skippedUnknown)).toBe(
+      'The skipped list could not be read, so what was skipped is unknown.',
+    );
+    expect(guarded.problem).toContain('The verified groups could not be read, so they are unknown.');
+  });
+
   it('lists surviving skipped entries beside the unreadable count', () => {
     const guarded = sanitizeDuplicatesReport(twoEntries({ skipped: [{ entry: 1, reason: 'changed_during_read' }, { entry: 999, reason: 'changed_during_read' }] }));
     expect(guarded.report?.skipped).toEqual([{ entry: 1, reason: 'changed_during_read' }]);
