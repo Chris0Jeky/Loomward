@@ -1036,6 +1036,7 @@ impl Runner<'_, '_> {
                 });
             match changed {
                 Ok((key, now)) if now == preserved(&item) => {
+                    hit("directory metadata set");
                     self.keys.insert(item.name.clone(), key);
                 }
                 Ok(_) => {
@@ -1057,6 +1058,7 @@ impl Runner<'_, '_> {
                 .set_metadata(meta)
                 .and_then(|_| self.staging.own_metadata())
                 .map(|now| now == meta);
+            hit("staging metadata set");
             if !matches!(ok, Ok(true)) {
                 let stop = Stop::Attention(None);
                 self.refuse(&stop)?;

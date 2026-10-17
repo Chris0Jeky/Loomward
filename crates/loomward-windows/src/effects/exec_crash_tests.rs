@@ -508,7 +508,12 @@ fn class(label: &str) -> &'static str {
         "write@1048576" => "CP-07",
         "write@2097152" => "CP-08",
         l if l.starts_with("write@") => "CP-09",
-        "metadata set" | "verify item" | "verified item" | "before verified" => "CP-10",
+        "metadata set"
+        | "verify item"
+        | "verified item"
+        | "before verified"
+        | "directory metadata set"
+        | "staging metadata set" => "CP-10",
         "after verified"
         | "before transition:staged"
         | "after transition:staged"
@@ -599,9 +604,15 @@ fn kill(case: Case, n: usize, labels: &[String], tally: &mut Tally) {
     tally.record(&labels[n - 1], recovered, abandoned);
 }
 
-/// The effect-before-journal gaps (an object on disk whose identity is not yet journaled): the default
-/// mode kills at the first and last of each under both Q1 policies, not only at its class's first label.
-const GAPS: [&str; 2] = ["staging folder made", "created item"];
+/// Labels the default mode kills at first and last under both Q1 policies, not only at their class's
+/// first label: the effect-before-journal gaps (an object on disk whose identity is not yet journaled)
+/// and the folder metadata sets that change journaled identities' creation times one by one.
+const GAPS: [&str; 4] = [
+    "staging folder made",
+    "created item",
+    "directory metadata set",
+    "staging metadata set",
+];
 
 /// Default: each scenario killed once per crash-point class it reaches, plus the first and last of each
 /// `GAPS` label (Run under both Q1 policies). Full: every boundary of every scenario under both.
