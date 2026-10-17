@@ -302,6 +302,7 @@ Every command has `effects: none` except `diagnostics.save` (`owner_picked_expor
 | | `threads.meaning` | `MeaningRequest` | `MeaningResult` | Lazy meaning thread (wave 3) |
 | | `search.query` | `SearchRequest` | `EntryPage` | Bounded; `budget_hit` with a resumable cursor |
 | | `stats.breakdown` | `BreakdownRequest` | `Breakdown` | By extension family, extension or age band |
+| Developer clutter | `clutter.developer` | `DeveloperClutterRequest` | `DeveloperClutterReport` | Advice only (LW-119, owner only): conventional build outputs, dependency installs and caches beside a recorded manifest, ranked by recorded size; unknown sizes stay unknown, a spent work budget is `budget_hit` (never an empty list), regeneration cost, model hosts and stale worktrees are "not assessed yet" |
 | Learning | `taxonomy.get`, `feedback.record`, `learning.status`, `learning.queue`, `learning.refit` | | | Human data class only for feedback; `client_event_id` idempotent |
 | | `collections.list` / `.create` / `.update_members` / `.members` | | | Virtual membership via durable object references |
 | Teacher | `teacher.preview` | `TeacherPreviewRequest` | `TeacherPreview` | Immutable complete request with digests; sends nothing |

@@ -56,13 +56,22 @@ def run_clutter(page: Page, base: str) -> None:
 
 
 def live_clutter(page: Page, token: str, check, live_call) -> None:
-    """Over the real HTTP adapter, with no granted root: an unknown root is not_found, and the view lists no root rather than demo data."""
+    """Over the real HTTP adapter: an unknown root is not_found, a limit out of range is refused, and a scanned root with no
+    project file answers a complete, honest report (no candidate, nothing invented, what is not assessed named)."""
     unknown = live_call(page, token, 'clutter.developer', {'root_id': 'rt_unknownroot', 'limit': 5})
     check(not unknown['ok'] and unknown['error']['code'] == 'not_found', f'clutter.developer refuses an unknown root: {unknown}')
     bad = live_call(page, token, 'clutter.developer', {'root_id': 'rt_unknownroot', 'limit': 201})
     check(not bad['ok'] and bad['error']['code'] == 'invalid_request', f'an out-of-range limit is refused: {bad}')
+    roots = [r for r in live_call(page, token, 'roots.list', {})['result']['roots'] if r['grant_state'] == 'active']
+    check(bool(roots), 'the live catalogue holds a root to ask about')
+    report = live_call(page, token, 'clutter.developer', {'root_id': roots[0]['root_id'], 'limit': 50})
+    check(report['ok'] and report['meta']['catalog_rev'] is not None, f'clutter.developer answers over HTTP: {report}')
+    result = report['result']
+    check(result['root_id'] == roots[0]['root_id'] and result['budget_hit'] is False and result['candidates'] == [], f'a root with no project file lists nothing: {result}')
+    check([n['topic'] for n in result['not_assessed']] == ['regeneration_cost', 'model_host_lifecycle', 'stale_worktrees'], 'what is not assessed is named')
     page.evaluate("location.hash = '#/clutter'")
     expect(page.get_by_role('heading', name='Developer clutter', level=1)).to_be_visible()
-    expect(page.get_by_text('No granted root is available. Add and scan a folder first.')).to_be_visible()
+    expect(page.get_by_text('Not assessed yet', exact=True).first).to_be_visible()
     check(page.locator('main p.bad.live').inner_text() == '', 'clutter: the view loaded from the engine with no error')
-    print('PASS live developer clutter: unknown root refused, no demo roots')
+    check(page.get_by_role('table', name=re.compile('^Candidate folders')).count() == 0, 'clutter: no table where nothing was found')
+    print('PASS live developer clutter: unknown root refused, a scanned root answers an honest report')
