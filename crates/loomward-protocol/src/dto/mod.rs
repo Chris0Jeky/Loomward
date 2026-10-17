@@ -12,6 +12,8 @@ pub use backups::*;
 mod inventory;
 pub use inventory::*;
 mod common;
+mod copy;
+pub use copy::*;
 mod diagnostics;
 pub use diagnostics::*;
 mod duplicates;

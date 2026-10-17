@@ -485,6 +485,9 @@ id_newtype!(
 id_newtype!(
     /// Stored backup evidence record id.
     BackupEvidenceId, "be_");
+id_newtype!(
+    /// Copy-and-verify operation id (docs/47).
+    CopyOperationId, "cp_");
 
 string_newtype!(
     /// An owner-chosen backup repository label: 1-64 of `[A-Za-z0-9._-]`, so a URL, path or

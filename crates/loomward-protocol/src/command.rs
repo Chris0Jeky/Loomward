@@ -14,7 +14,9 @@ use serde_json::Value;
 macro_rules! commands {
     ($($var:ident = $wire:literal, $req:ident, $res:ident, [$($ad:ident),*], $wave:literal, [$($ev:ident),*];)*) => {
         /// A command the service understands. Every command has `effects: none` except
-        /// `diagnostics.save` (`owner_picked_export`, docs/42 ADR-V3-24).
+        /// `diagnostics.save` (`owner_picked_export`, docs/42 ADR-V3-24) and the gated
+        /// `copy.start`, `copy.cancel` and `copy.abandon` (`copy_and_verify`, docs/47), which answer
+        /// `capability_unavailable` until the docs/47 C8 gate opens.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
         pub enum Command {
             $(#[serde(rename = $wire)] $var,)*
@@ -127,6 +129,12 @@ commands! {
     BackupsForget = "backups.forget", BackupForgetRequest, BackupForgetResult, [Tauri, Http], 3, [];
     DiagnosticsPreview = "diagnostics.preview", EmptyRequest, DiagnosticsPreviewResult, [Tauri, Http], 3, [];
     DiagnosticsSave = "diagnostics.save", DiagnosticsSaveRequest, DiagnosticsSaveResult, [Tauri], 3, [];
+    CopyPreview = "copy.preview", CopyPreviewRequest, CopyPreview, [Tauri, Http], 3, [];
+    CopyApprove = "copy.approve", CopyConsentRequest, CopyApproval, [Tauri, Http], 3, [];
+    CopyStart = "copy.start", CopyConsentRequest, CopyStatus, [Tauri, Http], 3, [];
+    CopyCancel = "copy.cancel", CopyOperationRequest, CopyStatus, [Tauri, Http], 3, [];
+    CopyAbandon = "copy.abandon", CopyOperationRequest, CopyStatus, [Tauri, Http], 3, [];
+    CopyStatus = "copy.status", CopyOperationRequest, CopyStatus, [Tauri, Http], 3, [];
 }
 
 impl Command {
