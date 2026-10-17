@@ -375,3 +375,42 @@ Counts (Windows, KRASPYON, at `8a3dc6f`):
 **Effects:**
 - The owner-initiated diagnostic export remains the only write that can touch an existing owner file.
 - Copy-and-verify now writes, renames and (only if enabled) removes its own staging, but only for synthetic sessions on registered lab roots. No owner file and no process is touched.
+
+## v0.3 status, wave 11 (17 October 2026, day on the KRASPYON laptop; counts measured at `4b05fd6`)
+
+The sections above are kept as history.
+- **Merged:** 33 PRs (#529 to #577), each with green hosted CI at merge.
+- **Review:** each PR had at least one fresh-context review before merge; fix rounds got a scoped verification pass. A second lens (Opus deep reviewer) ran on #544 (revocation fence) and #556 (first outbound-network code). Muse lens waves 5 and 6, plus a re-run on forget after #562, fed verify-then-fix lanes; each claim was checked with a failing test first and false claims are recorded in the PRs.
+- **Host:** WSL 2 Ubuntu 24.04 was installed on KRASPYON to reproduce the Linux CI hang (#495). The disk filled once from parallel build caches (now cleaned up as lanes finish).
+
+| Area | State on `main` | Evidence |
+|---|---|---|
+| Copy-and-verify (LW-124) | **Still lab-only.** C6 fault and crash matrix landed (#532, 476 kills at its head); the full re-run at the later head: 482 kills (242 matrix + 240 random), 0 source changes, 0 false commits, plus journal-append faults (state.db full or locked) at every record boundary, 360 in the full sweep (#566). Journal head anchor detects truncation and replacement (#539). Revocation fence under a per-run admission lock; cancel interrupts publish retry; folder stream/EA checks; H7 measured (#544). Identity change fences running copies; bounded cancel wait (#564). Copy service: bounded maps and shutdown, lost-ack pinned (#573). Personal sessions still get `copy_effect_gated`; staging removal stays off | `evidence/v3/copy-faults.md`, `evidence/v3/copy-executor-lab.md` |
+| Copy gate (C8) | **Closed.** Still needs the G5 power-cut proof, G9 proven restore, the owner's answers to Q1-Q3 (agent-hq#461), the remaining #526 items (window before Committed, refusal code naming, resume) and #567/#569 residuals | docs/47 section 11 |
+| Find & Ask | **F3** persistent per-root watchers, unprivileged USN catch-up between sessions, dirty scopes on overflow or journal wrap, per-hit freshness (#531); unresolved journal records never mark a root fresh (#548). **F3a** per-client disclosure grants and the grant-scoped search adapter (LW-067, LW-069, #541), size-oracle guard (#555). **Ask provider** (LW-117, #556): local loopback broker only, cloud models refused, exact-bytes disclosure record (#572). Explicit scans and duplicates requests pre-empt automatic refreshes (#565, #577). Search v1 follow-ups: cursor progress or refusal, unknown sizes honest, 10M timings (#575). `federated_search` and the ranked index stay off | `evidence/v3/find-f3-freshness.md`, `evidence/v3/search-followups-442.md` |
+| Forget | Exact-grant retention for migration copies, honest pending cleanup, file-backed VACUUM temp (1 GiB catalogue peak working set 1.54 GB to 609 MB), startup sweep non-fatal and visible, remapped legacy copies byte-checked (#562); state-copy WAL/SHM sidecars and catalogue scrub-pending health (#576) | `evidence/v3/forget-434-391.md` |
+| Catalogue and performance | First-scan compaction reclaims bulk-build pages: 1M files 311.2 to 228.0 bytes/entry (P14 200 still open: the trigram index is 81 B/entry) (#563). Developer-clutter detector bounded: 9.6 billion to 783k VM steps on the wide lab (#558) | `evidence/v3/first-scan-bulk-load-148.md`, `evidence/v3/lw119-developer-clutter.md` |
+| Readiness bar (q-39) | Row 7: the 72-hour soak on KRASPYON has run 14.2 h with 0 errors so far. It started before #534 (wall-clock continuity), so its receipt is evaluated as legacy: a sleep or hibernate gap cannot be ruled out from wall-clock time. Rows 8 and 9 stay UNVERIFIED | `docs/45-daily-use-readiness.md` |
+| Test and CI health | F3-induced load flakes made deterministic (#536, #542, #557, #565, #577); Linux catalogue hang: not reproduced in about 640 WSL runs, the only overrun was a host disk stall (every thread in `fsync`); a watchdog now prints every thread's state and backtrace before aborting (#574, refs #495) | CI |
+| Other | Diagnostic bundle follow-ups: honest dialog reasons, root cap, panel store (#559). Duplicates evidence stays honest after sanitising (#546, #551). Telemetry CPU denominator pinned (#540, #554). Volume space read bound and per-volume sharing (#542, #549, #570) | PR tests |
+
+Counts (Windows, KRASPYON, at `4b05fd6`, `RUST_TEST_THREADS=3`):
+- **Rust:** 1,442 tests: 1,440 passed, 2 ignored, 0 failed.
+- **App:** 483 vitest, plus Playwright e2e.
+- **Python:** 279 tests (1 skip).
+- **Contract:** 64 commands.
+
+**Not established:**
+- the 72-hour soak result;
+- a real power cut (G5) and a proven restore (G9);
+- any copy of personal files;
+- the Linux CI hang's root cause (#495);
+- the ranked index or federated search enabled in any store;
+- a real local model behind the Ask broker;
+- ReFS;
+- the owner's answers to copy Q1-Q3 and Ask Q3-Q4 (agent-hq#461).
+
+**Effects:**
+- The owner-initiated diagnostic export remains the only write that can touch an existing owner file.
+- Copy-and-verify writes, renames and (only if enabled) removes its own staging, but only for synthetic sessions on registered lab roots.
+- The Ask broker is the first outbound-network code: it contacts only a loopback endpoint the owner configures, never by default.

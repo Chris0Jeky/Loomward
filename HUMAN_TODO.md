@@ -400,10 +400,12 @@ and possibly a full redesign, come later. "for now I wanna keep the momentum goi
 
 An empty GitHub organisation named `Loomward` (created 2026-08-06) exists. Whose it is was not established.
 
-### q-47 — Design questions waiting for their lanes — copy-and-verify Q1-Q3 DRAFTED 2026-10-17
+### q-47 — Design questions waiting for their lanes — copy-and-verify Q1-Q3 and Ask Q3-Q4 DRAFTED 2026-10-17
 
 Copy-and-verify lanes C1 to C5 and C7 landed on 2026-10-17 (lab-only), so Q1 to Q3 were drafted for the owner
-inbox in agent-hq#461; they reach the cockpit when that PR merges. Answer there or in chat. The Find & Ask and Store items below are still not asked.
+inbox in agent-hq#461, and Ask Q3 (local-model preview) and Q4 (conversation retention) were added there the same day;
+they reach the cockpit when that PR merges. Answer there or in chat. Still not asked: the elevated helper's launch model
+(docs/46 Q1), Everything results outside the grants (docs/46 Q2) and the Store item below.
 - [ ] **loomward-copy-staging-removal** (Q1): may cancel and abandon delete Loomward's own unpublished staging files,
   matched by recorded identity inside its own staging folder? Recommended: allow. Until answered, cancel and abandon
   leave the staging folder in place and report it (`LOOMWARD_COPY_STAGING_REMOVAL = false`, #522).
@@ -412,9 +414,12 @@ inbox in agent-hq#461; they reach the cockpit when that PR merges. Answer there 
   Recommended: Hyper-V. Gate G5 stays shut until one is done.
 - [ ] **loomward-copy-destination-shape** (Q3): v1 new folder only (recommended, built), or also into an existing
   folder with new names only. Defaults to new folder only on 2026-10-24 if unanswered (reversible).
-- Find & Ask (docs/46 section 11, which names each question's trigger lane):
+- [ ] **loomward-ask-local-preview** (docs/46 Q3, posed 2026-10-17 in agent-hq#461): for a model on this machine, is
+  the per-folder grant enough (recommended, what the local provider #556 and the Ask panel #409 build), or also a preview
+  before every request? Defaults to the grant only on 2026-10-24 if unanswered (reversible).
+- [ ] **loomward-ask-retention** (docs/46 Q4, posed 2026-10-17 in agent-hq#461): keep Ask conversations until you
+  delete them (recommended; Forget cascades) or delete them after N days. Defaults to keep on 2026-10-24 if unanswered.
+- Find & Ask, not asked yet (docs/46 section 11 names each question's trigger lane):
   - the elevated helper's launch model;
-  - Everything results outside the grants (hidden is recommended);
-  - local-model disclosure per folder;
-  - conversation retention.
+  - Everything results outside the grants (hidden is recommended).
 - Microsoft Store: a short privacy policy page is required before a Store submission (packaging/store/README.md).

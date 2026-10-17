@@ -48,7 +48,7 @@ a first measurement and must be reported as such. On Windows use `codex.cmd`, `n
 | You changed | Run |
 |---|---|
 | Python reference (frozen oracle), schemas, fixtures | `py -3 scripts/verify.py` (279 tests (1 skip), including the 80 admission-parity fixtures; it also runs the Rust gates when cargo is present) |
-| Rust workspace (`crates/*`, glob) | `cargo fmt --all --check`, `cargo test --workspace` (1,288 on Windows at 8a3dc6f, 2026-10-17; per-crate split in docs/16 wave 9 is historical), `cargo clippy --workspace --all-targets -- -D warnings`; add `--all-features` for the `loomward-windows` fixture lab |
+| Rust workspace (`crates/*`, glob) | `cargo fmt --all --check`, `cargo test --workspace` (1,442 on Windows at 4b05fd6, 2026-10-17; per-crate split in docs/16 wave 9 is historical), `cargo clippy --workspace --all-targets -- -D warnings`; add `--all-features` for the `loomward-windows` fixture lab |
 | Svelte app (`app/`) | `npm.cmd --prefix app run check`, `run test`, `run build`, then `py -3 scripts/test_app.py` (Playwright e2e incl. Atlas and Observatory), or all four via `py -3 scripts/verify.py --app`; add `--live-serve` when you touch `loomward-http` or an app transport |
 | Python, Rust and the Svelte app in one go | `py -3 scripts/verify.py --app` (`--app` reports UNVERIFIED, never PASS, when Node, npm or `app/node_modules` is missing) |
 | Tauri shell (`native/`) | excluded from the root workspace: `cargo build`, `cargo test` (59 + 1 ignored on 2026-10-17) and `cargo clippy --all-targets -- -D warnings` with `--manifest-path native/Cargo.toml`, then `native/target/debug/loomward-desktop.exe --self-test`; `native/tests/webview2_probe.py` drives the real window |
