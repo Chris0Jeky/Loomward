@@ -576,9 +576,9 @@ suites, `RUST_TEST_THREADS=3`. Raw receipts are outside the worktree in
    start errors leave attempts at 3 even after a new hint; a terminal automatic
    cancellation leaves attempts at 1 (`red.log`). Cancelled automatic jobs now
    return their attempt. Three unsuccessful attempts still exhaust the budget;
-   only a new hint received after a 30-second cooldown reopens it. Expiry alone
-   does not schedule another pass. Repeated hints before expiry do not extend or
-   bypass the cooldown. Successful healthy full passes clear both the attempt
+   only a new filesystem hint received after a 30-second cooldown reopens one
+   attempt. Expiry alone does not schedule another pass. Repeated hints before
+   expiry do not extend or bypass the cooldown. Successful healthy full passes clear both the attempt
    count and cooldown; retry eligibility never clears stale coverage.
 3. **Unnecessary duplicates cancellation confirmed.** Scans and duplicate jobs
    have separate job-conflict kinds. A refresh normally reserves all currently
@@ -708,7 +708,7 @@ workloads. No publication, push, merge or deployment was performed.
 
 **Residual risk:** genuine watch/I/O/start failures can still leave a root
 honestly stale. After three failed attempts, a new hint received after the
-30-second cooldown is required to reopen automatic attempts. Checkpoints for
+30-second cooldown is required to reopen one automatic attempt. Checkpoints for
 one root now wait behind each other; the native timeout is unchanged.
 
 `HUMAN_TODO.md`, `AGENTS.md`, `.agent-harness/`, the implementation-status file
@@ -717,3 +717,40 @@ The diff is **left uncommitted** on `fix/583-586-refresh-attempts` at base HEAD
 `47279505bb983290d74cc9bdbfff1b15d1db9bea` for the driver. Raw receipts already
 live outside the worktree. The worktree is not removal-ready while its diff is
 uncommitted. No additional out-of-scope fix is pending from this lane.
+
+### PR #590 fix round 1: dead watchers and the single retry
+
+Retry reopening now lives only in `Tracker::record`, once an actual filesystem
+hint arrives after cooldown. `Tracked::dirty` cannot reopen it, so searches with
+failed watch checkpoints and internal dirty marking cannot grant more scans.
+Reopening sets attempts to 2 of 3, leaving exactly one attempt. A failed retry
+requires another cooldown and a new hint; successful healthy full scans still
+reset the budget normally.
+
+The new dead-watcher regression stops the native watcher and verifies checkpoint
+failure, runs the original three full refreshes, then performs searches across
+three expired cooldowns without any new jobs. The updated hint regression checks
+the one-attempt allowance, consumes it with an injected start failure, rejects
+another hint during cooldown, and finally proves recovery after another expiry
+and hint. Both tests failed before the production fix (2 failed), then passed
+(2 passed). Cooldowns use `expire_retry`; no cooldown sleeps were added.
+
+Watcher restart remains unchanged: docs/46 specifies stale coverage and refresh,
+but no bounded watcher restart policy. A dead watcher remains honestly stale;
+automatic refresh cannot spin solely because users search. `HUMAN_TODO.md` and
+all protected driver-owned files are unchanged. Changes are left uncommitted.
+
+Receipts for this round are under `C:/lw/target/fresh-583/receipts/review1-*`.
+Checks ran on Windows with `CARGO_TARGET_DIR=C:/lw/target/fresh-583`,
+`CARGO_BUILD_JOBS=3` and `RUST_TEST_THREADS=3`. Each Cargo command used
+`--manifest-path C:/lw/wt/fresh-583/Cargo.toml`:
+
+- `cargo test -p loomward-service`, twice: each **317 passed, 0 failed, 1 ignored**.
+- `cargo fmt --all --check`: exit 0 after correcting formatting.
+- `cargo clippy --workspace --all-targets -- -D warnings`: exit 0.
+- `cargo test --workspace --no-fail-fast`: **1,478 passed, 0 failed, 2 ignored**,
+  82 targets; exit 0, including the 200,000-entry staging-limit fixture.
+- `git -C C:/lw/wt/fresh-583 diff --check`: exit 0 after this note.
+
+Hosted CI, non-Windows execution and app/Tauri/browser behaviour were not tested.
+No commit, push, PR mutation or merge was performed in this fix round.

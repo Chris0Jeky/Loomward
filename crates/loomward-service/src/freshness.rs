@@ -93,11 +93,6 @@ struct Tracked {
 #[cfg(windows)]
 impl Tracked {
     fn dirty(&mut self, full: bool) {
-        // Only a new hint after cooldown reopens an exhausted budget; a failing root cannot spin.
-        if self.attempts >= 3 && self.retry_after.is_some_and(|at| Instant::now() >= at) {
-            self.attempts = 0;
-            self.retry_after = None;
-        }
         self.epoch += 1;
         self.stale_since.get_or_insert(self.at);
         self.full |= full;
@@ -113,6 +108,12 @@ impl Tracker {
         if let Some(pump) = self.pump.lock().unwrap().take() {
             pump.join().unwrap();
         }
+    }
+    #[cfg(all(test, windows))]
+    pub(crate) fn stop_watch(&self, row: i64) {
+        let watch = self.roots.lock().unwrap()[&row].watch.clone().unwrap();
+        watch.stop();
+        assert!(watch.checkpoint().is_err());
     }
     #[cfg(all(test, windows))]
     pub(crate) fn ready_targeted_hint(&self, row: i64) {
@@ -166,6 +167,11 @@ impl Tracker {
     pub(crate) fn record(&self, row: i64, changes: Vec<loomward_windows::watch::Change>) {
         if let Some(root) = self.roots.lock().unwrap().get_mut(&row) {
             for change in changes {
+                // Only a new filesystem hint after cooldown grants one retry.
+                if root.attempts >= 3 && root.retry_after.is_some_and(|at| Instant::now() >= at) {
+                    root.attempts = 2;
+                    root.retry_after = None;
+                }
                 match change {
                     loomward_windows::watch::Change::RootDirty => root.dirty(true),
                     loomward_windows::watch::Change::Name { name, .. } => {

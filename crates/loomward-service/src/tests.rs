@@ -4145,6 +4145,41 @@ fn f3_search_and_scan_completion_serialize_watch_checkpoints() {
 
 #[cfg(windows)]
 #[test]
+fn f3_dead_watcher_searches_never_reopen_refresh_budget() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    svc.inner.freshness.pause_pump();
+    svc.inner.freshness.stop_watch(1);
+    for attempt in 1..=3 {
+        assert_eq!(f3_hits(svc)["hits"][0]["freshness"]["state"], "stale");
+        svc.inner.freshness.ready_targeted_hint(1);
+        crate::freshness::refresh(&svc.inner);
+        let claim = svc.inner.freshness.explicit(1);
+        let job = claim.auto.as_ref().expect("missing initial refresh");
+        assert_eq!(settle(svc, job.as_str())["state"], "completed");
+        assert_eq!(svc.inner.freshness.attempts(1), attempt);
+        assert!(svc.inner.freshness.stale(1));
+    }
+    let list = serde_json::from_value(json!({"limit":50})).unwrap();
+    let jobs = svc.inner.engine.job_list(&list).unwrap().jobs.len();
+    for _ in 0..3 {
+        svc.inner.freshness.expire_retry(1);
+        assert_eq!(f3_hits(svc)["hits"][0]["freshness"]["state"], "stale");
+        svc.inner.freshness.ready_targeted_hint(1);
+        crate::freshness::refresh(&svc.inner);
+        assert_eq!(
+            svc.inner.freshness.attempts(1),
+            3,
+            "search against a dead watcher reopened the budget"
+        );
+        assert_eq!(svc.inner.engine.job_list(&list).unwrap().jobs.len(), jobs);
+    }
+}
+
+#[cfg(windows)]
+#[test]
 fn f3_new_hint_reopens_failed_refresh_budget_only_after_backoff() {
     let Some(lab) = lab() else { return };
     let svc = &lab.svc;
@@ -4180,13 +4215,30 @@ fn f3_new_hint_reopens_failed_refresh_budget_only_after_backoff() {
         .record(1, vec![loomward_windows::watch::Change::RootDirty]);
     assert_eq!(
         svc.inner.freshness.attempts(1),
-        0,
-        "new hint never reopened the exhausted budget"
+        2,
+        "new hint must reopen exactly one attempt"
     );
     assert!(
         svc.inner.freshness.stale(1),
         "a retry grant is not fresh evidence"
     );
+    svc.inner.freshness.ready_targeted_hint(1);
+    svc.inner
+        .hooks
+        .fail_automatic_start
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    crate::freshness::refresh(&svc.inner);
+    assert_eq!(svc.inner.freshness.attempts(1), 3);
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    svc.inner.freshness.ready_targeted_hint(1);
+    crate::freshness::refresh(&svc.inner);
+    assert_eq!(svc.inner.freshness.attempts(1), 3, "retry bypassed backoff");
+    svc.inner.freshness.expire_retry(1);
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
     svc.inner.freshness.ready_targeted_hint(1);
     crate::freshness::refresh(&svc.inner);
     let claim = svc.inner.freshness.explicit(1);
