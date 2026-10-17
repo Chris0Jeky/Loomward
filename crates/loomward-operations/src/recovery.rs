@@ -178,7 +178,9 @@ fn decide(r: &Replay, disk: &impl Disk) -> Decision {
     for held in r.held() {
         let verified = r.items[held.item as usize].verified;
         match disk.in_staging(staging, &held.name) {
-            Some(o) if held.id.matches(&o.id, held.planned_ft) && o.links == 1 => present.push(held),
+            Some(o) if held.id.matches(&o.id, held.planned_ft) && o.links == 1 => {
+                present.push(held)
+            }
             None if !verified || cancel => gone.push(held),
             _ => mismatched.push(held.item),
         }

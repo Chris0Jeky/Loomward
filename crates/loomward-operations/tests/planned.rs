@@ -284,5 +284,8 @@ fn staging_left_ends_a_cancel_without_removal_and_ends_cleanup_authority() {
         code: None,
     });
     assert_eq!(j.0.state, OpState::Cancelled);
-    assert_eq!(recover(OP, &j.1, &Disk::default()).decision, Decision::Settled);
+    assert_eq!(
+        recover(OP, &j.1, &Disk::default()).decision,
+        Decision::Settled
+    );
 }

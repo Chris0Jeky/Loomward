@@ -480,8 +480,8 @@ impl Replay {
                 // After an item failure the executor stops creating: the commit covers the items it
                 // created, and the never-attempted rest leave the batch with their names journaled and no
                 // identity (never adopted, reported if something appears there). Otherwise: exactly.
-                let partial = self.state != Copying
-                    && covered.iter().all(|i| open.binary_search(i).is_ok());
+                let partial =
+                    self.state != Copying && covered.iter().all(|i| open.binary_search(i).is_ok());
                 if covered.windows(2).any(|w| w[0] == w[1]) || (covered != open && !partial) {
                     return Err("identity commit does not cover the open batch exactly");
                 }

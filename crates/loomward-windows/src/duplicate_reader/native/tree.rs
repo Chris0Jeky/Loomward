@@ -393,7 +393,7 @@ fn object_id(file: &File) -> Observation<Vec<u8>> {
     }
 }
 
-fn security_metadata(file: &File) -> Observation<(Vec<u8>, Vec<u8>)> {
+pub(crate) fn security_metadata(file: &File) -> Observation<(Vec<u8>, Vec<u8>)> {
     let mut needed = 0;
     let flags = OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
     unsafe {

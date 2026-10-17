@@ -1,7 +1,7 @@
-//! Unwired native copy laboratory. These primitives confer no operation grant.
-//!
-//! No workspace consumer enables `copy-primitives`. Journal/consent, cloud-root and
-//! destination policy checks belong to later lanes; never expose these through a command.
+//! Native copy primitives (docs/47 lane C2) and the lab executor that wires them (lane C5, `exec`).
+//! These primitives confer no operation grant. The only consumer is `loomward-service`, which runs
+//! the executor for synthetic sessions on registered lab roots; personal sessions stay refused
+//! (AGENTS.md invariant 1, gate C8 closed). Never expose them through MCP or a general command.
 
 use crate::{
     duplicate_reader, enumerate,
@@ -280,6 +280,85 @@ impl Destination {
     fn parent(&self) -> &File {
         self.pins.last().unwrap()
     }
+    /// Identities of the volume root down to the destination parent, from the pinned handles.
+    pub fn ancestry(&self) -> io::Result<Vec<ObjectKey>> {
+        self.pins
+            .iter()
+            .map(|p| identity::from_file(p).map(|o| o.object))
+            .collect()
+    }
+    /// The destination folder's OWN case-sensitivity flag (`FileCaseSensitiveInfo`), never the
+    /// volume-wide search flag: per-directory case sensitivity is what decides a collision there.
+    pub fn case_sensitive(&self) -> io::Result<bool> {
+        const CASE_SENSITIVE_DIR: u32 = 1;
+        match info::<FILE_CASE_SENSITIVE_INFO>(self.parent(), FileCaseSensitiveInfo) {
+            Ok(flags) => Ok(flags.Flags & CASE_SENSITIVE_DIR != 0),
+            // A file system without per-directory case sensitivity cannot have the flag set.
+            Err(e) if matches!(e.raw_os_error(), Some(1 | 50 | 87)) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+    /// The destination parent lies under a cloud sync root (writing there would upload, invariant 2).
+    pub fn cloud_synced(&self) -> io::Result<bool> {
+        use windows_sys::Win32::Storage::CloudFilters::{
+            CfGetSyncRootInfoByHandle, CF_SYNC_ROOT_BASIC_INFO, CF_SYNC_ROOT_INFO_BASIC,
+        };
+        let mut info = CF_SYNC_ROOT_BASIC_INFO::default();
+        let mut returned = 0;
+        let code = unsafe {
+            CfGetSyncRootInfoByHandle(
+                self.parent().as_raw_handle(),
+                CF_SYNC_ROOT_INFO_BASIC,
+                ptr::from_mut(&mut info).cast(),
+                size_of::<CF_SYNC_ROOT_BASIC_INFO>() as u32,
+                &mut returned,
+            )
+        };
+        // HRESULT_FROM_WIN32(ERROR_CLOUD_FILE_NOT_UNDER_SYNC_ROOT): the documented negative answer.
+        const NOT_UNDER_SYNC_ROOT: i32 = 0x8007_0186_u32 as i32;
+        match code {
+            0 => Ok(true),
+            NOT_UNDER_SYNC_ROOT => Ok(false),
+            other => Err(io::Error::other(format!(
+                "sync root query failed: {other:#x}"
+            ))),
+        }
+    }
+    /// Open a journaled object by its file ID on the pinned destination volume, accepting only the
+    /// journaled creation times given (original or planned). Never by name.
+    fn by_journaled_id(
+        &self,
+        file_id: [u8; 16],
+        creations: &[i64],
+        is_directory: bool,
+    ) -> io::Result<(File, ObjectKey)> {
+        let volume_serial = identity::from_file(self.parent())?.object.volume_serial;
+        let mut last = refused("no journaled creation time");
+        for creation in creations {
+            let key = ObjectKey {
+                volume_serial: volume_serial.clone(),
+                file_id,
+                quality: identity::IdentityQuality::FileId128,
+                creation_time: creation.to_string(),
+                reparse_tag: 0,
+            };
+            match by_id(
+                &self.volume,
+                &key,
+                FILE_READ_ATTRIBUTES,
+                SHARE,
+                if is_directory {
+                    FILE_FLAG_BACKUP_SEMANTICS
+                } else {
+                    0
+                },
+            ) {
+                Ok(file) => return Ok((file, key)),
+                Err(e) => last = e,
+            }
+        }
+        Err(last)
+    }
     /// Create one new staging folder. Never adopt an existing name.
     pub fn stage(&self, name: &str) -> io::Result<Staging<'_>> {
         let name = component(name)?;
@@ -335,7 +414,12 @@ impl Staging<'_> {
     }
     // LIST_DIRECTORY makes the deny-delete share effective; attributes alone do not.
     fn guard(&self) -> io::Result<File> {
-        if self.published {
+        self.pin(true)
+    }
+    /// The current name (staging, or the final name once published) bound to the recorded identity.
+    /// Reads (verification, the post-publish re-hash) may pin a published folder; writes never do.
+    fn pin(&self, write: bool) -> io::Result<File> {
+        if write && self.published {
             return Err(refused("published staging is never cleaned or written"));
         }
         same(&self.file, &self.recorded)?;
@@ -352,7 +436,10 @@ impl Staging<'_> {
         Ok(guard)
     }
     fn parents(&self, path: &[(&str, ObjectKey)]) -> io::Result<Vec<File>> {
-        let mut pins = vec![self.guard()?];
+        self.pins(path, true)
+    }
+    fn pins(&self, path: &[(&str, ObjectKey)], write: bool) -> io::Result<Vec<File>> {
+        let mut pins = vec![self.pin(write)?];
         for (name, expected) in path {
             let file = relative(
                 pins.last().unwrap(),
@@ -405,7 +492,7 @@ impl Staging<'_> {
         name: &str,
         recorded: &ObjectKey,
     ) -> io::Result<VerifiedFile> {
-        let pins = self.parents(path)?;
+        let pins = self.pins(path, false)?;
         let file = by_id(
             &self.destination.volume,
             recorded,
@@ -437,6 +524,10 @@ impl Staging<'_> {
             return Err(refused("already published"));
         }
         let name = component(final_name)?;
+        // Case-only differences name the same entry on a case-insensitive folder (#506 LOW).
+        if final_name.to_lowercase() == String::from_utf16_lossy(&self.name).to_lowercase() {
+            return Err(refused("final name equals the staging name"));
+        }
         let file = relative(
             self.destination.parent(),
             &self.name,
@@ -494,7 +585,112 @@ impl Staging<'_> {
             }
         }
         self.published = true;
+        self.name = name;
         Ok(())
+    }
+    /// Recovery (#506): attach to a journaled staging folder ONLY by its journaled file ID, accepting
+    /// the original or the journaled planned creation time. The journaled token name must still
+    /// resolve to that same object; a name alone never attaches anything.
+    pub fn attach<'d>(
+        destination: &'d Destination,
+        token: &str,
+        file_id: [u8; 16],
+        creations: &[i64],
+    ) -> io::Result<Staging<'d>> {
+        Self::attach_as(destination, token, file_id, creations, false)
+    }
+    /// After a crash between the rename and `committed`: attach to the published folder by the same
+    /// rule, read-only. Writes, cleanup and a second publish stay refused.
+    pub fn attach_published<'d>(
+        destination: &'d Destination,
+        final_name: &str,
+        file_id: [u8; 16],
+        creations: &[i64],
+    ) -> io::Result<Staging<'d>> {
+        Self::attach_as(destination, final_name, file_id, creations, true)
+    }
+    fn attach_as<'d>(
+        destination: &'d Destination,
+        name: &str,
+        file_id: [u8; 16],
+        creations: &[i64],
+        published: bool,
+    ) -> io::Result<Staging<'d>> {
+        let name = component(name)?;
+        let (_, recorded) = destination.by_journaled_id(file_id, creations, true)?;
+        let file = relative(
+            destination.parent(),
+            &name,
+            FILE_READ_ATTRIBUTES,
+            SHARE,
+            false,
+            0,
+        )?;
+        same(&file, &recorded)?;
+        directory(&file)?;
+        Ok(Staging {
+            destination,
+            file,
+            name,
+            recorded,
+            published,
+        })
+    }
+    /// The current identity of a journaled entry: opened by its journaled ID (original or planned
+    /// creation time), then confirmed by its journaled name under the pinned staging path.
+    pub fn resolve(
+        &self,
+        path: &[(&str, ObjectKey)],
+        name: &str,
+        file_id: [u8; 16],
+        creations: &[i64],
+        is_directory: bool,
+    ) -> io::Result<ObjectKey> {
+        let pins = self.pins(path, false)?;
+        let (_, recorded) = self
+            .destination
+            .by_journaled_id(file_id, creations, is_directory)?;
+        let named = relative(
+            pins.last().unwrap(),
+            &component(name)?,
+            FILE_READ_ATTRIBUTES,
+            SHARE,
+            false,
+            if is_directory {
+                0
+            } else {
+                FILE_NON_DIRECTORY_FILE
+            },
+        )?;
+        same(&named, &recorded)?;
+        if (identity::from_file(&named)?.attributes & FILE_ATTRIBUTE_DIRECTORY != 0) != is_directory
+        {
+            return Err(refused("journaled entry changed kind"));
+        }
+        Ok(recorded)
+    }
+    /// Current preserved metadata of a staged or published entry, read through the bound name.
+    pub fn metadata(
+        &self,
+        path: &[(&str, ObjectKey)],
+        name: &str,
+        recorded: &ObjectKey,
+    ) -> io::Result<BasicMetadata> {
+        let pins = self.pins(path, false)?;
+        let named = relative(
+            pins.last().unwrap(),
+            &component(name)?,
+            FILE_READ_ATTRIBUTES,
+            SHARE,
+            false,
+            0,
+        )?;
+        same(&named, recorded)?;
+        BasicMetadata::read(&named)
+    }
+    /// The staging (or published) folder's own preserved metadata.
+    pub fn own_metadata(&self) -> io::Result<BasicMetadata> {
+        BasicMetadata::read(&self.pin(false)?)
     }
     /// Caller must first withdraw any journaled publish intent. No adoption by name.
     /// The exclusive delete share binds identity, link count and disposition to one handle.
@@ -798,6 +994,10 @@ impl VerifiedFile {
     pub fn metadata(&self) -> io::Result<BasicMetadata> {
         BasicMetadata::read(&self.file)
     }
+    /// Named `$DATA` streams on the held destination object, as `:<name>:$DATA` with sizes (#506).
+    pub fn streams(&self) -> io::Result<Vec<(String, u64)>> {
+        streams(&self.file)
+    }
     pub fn verify_stream(&self, name: &str) -> io::Result<VerifiedFile> {
         let file = relative(
             &self.file,
@@ -1024,6 +1224,70 @@ pub(crate) fn supported_file(file: &File) -> io::Result<()> {
     Ok(())
 }
 
+/// What a copy preview needs beyond `identity::observe`: point-in-time, read-only, no content.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Probe {
+    /// The probed object; the caller binds it to its own observation of the same name.
+    pub object: ObjectKey,
+    pub ea_size: u32,
+    /// Named `$DATA` streams, bare names (no colons) with sizes.
+    pub streams: Vec<(String, u64)>,
+    /// The object carries its own (non-inherited) ACEs; reported, never copied.
+    pub explicit_aces: bool,
+}
+
+/// Observe a preview candidate without following a reparse point or recalling a placeholder.
+pub fn probe(path: &Path) -> io::Result<Probe> {
+    let handle = win::open(
+        path,
+        FILE_READ_ATTRIBUTES | FILE_READ_EA | READ_CONTROL,
+        SHARE,
+    )?;
+    let file = ManuallyDrop::new(unsafe { File::from_raw_handle(handle.0) });
+    let object = identity::from_file(&file)?.object;
+    let mut ea = FILE_EA_INFORMATION::default();
+    let mut status = IO_STATUS_BLOCK::default();
+    let code = unsafe {
+        NtQueryInformationFile(
+            file.as_raw_handle(),
+            &mut status,
+            ptr::from_mut(&mut ea).cast(),
+            size_of::<FILE_EA_INFORMATION>() as u32,
+            FileEaInformation,
+        )
+    };
+    if code < 0 {
+        return Err(nt_error(code));
+    }
+    let streams = match streams(&file) {
+        Ok(s) => s,
+        // FileStreamInfo answers ERROR_HANDLE_EOF for an object with no stream (a folder).
+        Err(e) if e.raw_os_error() == Some(38) => Vec::new(),
+        Err(e) => return Err(e),
+    }
+    .into_iter()
+    .map(|(n, size)| {
+        (
+            n.trim_start_matches(':')
+                .trim_end_matches(":$DATA")
+                .to_string(),
+            size,
+        )
+    })
+    .collect();
+    let explicit_aces = !duplicate_reader::security_metadata(&file)
+        .map_err(|e| io::Error::other(e.to_string()))?
+        .0
+        .is_empty();
+    drop(handle);
+    Ok(Probe {
+        object,
+        ea_size: ea.EaSize,
+        streams,
+        explicit_aces,
+    })
+}
+
 /// Named $DATA streams only; default data is represented by the file itself.
 /// The bounded native buffer accommodates 64 maximum-length component names.
 fn streams(file: &File) -> io::Result<Vec<(String, u64)>> {
@@ -1093,3 +1357,5 @@ fn streams(file: &File) -> io::Result<Vec<(String, u64)>> {
 
 #[cfg(test)]
 mod tests;
+
+pub mod exec;

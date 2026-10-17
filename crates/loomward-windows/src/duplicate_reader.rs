@@ -1,7 +1,7 @@
 //! Default-stream equality evidence for admitted grants. Never effect authority or reclaimability.
 use crate::{enumerate::OpenedIdentity, identity::ObservedIdentity};
 #[cfg(all(windows, feature = "copy-primitives"))]
-pub(crate) use native::CopySource;
+pub(crate) use native::{tree::security_metadata, CopySource};
 #[cfg(any(windows, test))]
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
