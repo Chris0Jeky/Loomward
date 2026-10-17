@@ -319,6 +319,58 @@ A restart never resumes an effect by itself: interrupted operations wait in a ba
 confirmation) or Abandon. Resume revalidates grants, destination identity, space and each pending source signature;
 the manifest digest is unchanged, so no fresh preview is needed unless a source changed.
 
+**The window before `committed`** (agent decision 2026-10-17, #526; reversible, for the owner to see). From the
+rename until the `committed` record, the copy is published but not yet receipted. The conservative rule:
+
+- **Never presented as committed early.** `copy.status` reports `publishing` until a post-publish confirmation
+  passes in this run or on a later open; only then is `committed` journaled. A failed or unverifiable confirmation
+  is `needs_attention` (`changed_after_verification`, outcome `published_unverified`) or stays `publishing` for a
+  later retry.
+- **Never rolled back.** No path removes or renames published data: cleanup refuses once the staging name stops
+  resolving to the staging identity (section 4).
+- **Crash** anywhere in the window, including after the confirmation passed and before `committed` was appended
+  (C6 kill point `before committed`, class CP-13): the next open re-runs the confirmation with a full re-hash, a
+  read, and commits or records `needs_attention`. The copy stays in place either way.
+- **Owner cancel** after the rename is not honoured as a cancel: the run confirms and commits (or records
+  `needs_attention`), under either Q1 setting (`a_cancel_after_the_rename_commits_and_never_removes_the_copy`).
+  Abandon on a published, uncommitted operation confirms in the same way and never cleans.
+- **Revocation or emergency stop** after the rename only annotates (`revoked_after_publish`), as described above.
+
+Known limit, accepted: the confirmation is a point-in-time check. Deny-write holds cover default-stream bytes, not
+write-attributes, extended attributes or new named streams. A change made by another process after the last
+confirmation read and before the `committed` append is not detected. The receipt states what was verified at
+confirmation; a later change counts as the owner's, like any change after `committed`. Reversal: the owner may ask
+for a second confirmation after the `committed` append that downgrades the receipt to `published_unverified`.
+
+**Resume: design note (not implemented; #526 keeps this item open).** C5 has no `copy.resume`; a stopped run
+can only be abandoned. Resume is a lane-sized change. It would need the following.
+
+- **States it resumes from.** `blocked`, after a resumable refusal (`source_in_use`, `access_denied`,
+  `insufficient_space`, `staging_in_use`, `publish_in_use`). `needs_attention`, only for causes the owner can resolve
+  outside Loomward (`staging_name_taken`, a taken final name). An interrupted `copying`, `staged` or `publishing`
+  after a restart. Never from `refused`, `cancelling` or a terminal state. Never after `source_changed`,
+  `verification_mismatch`, `changed_after_verification`, `destination_changed` or `grant_revoked`: Abandon and a
+  new preview are the only exit.
+- **Journal.** A new `resumed` record, appended under the current epoch, binding a fresh single-use native
+  confirmation to the unchanged manifest digest. The state machine already allows `blocked -> copying` and
+  `needs_attention -> copying`. Resuming a publish-time block passes through `copying` and `staged` with every item
+  already verified.
+- **Revalidation before the first step.** Grants active, with the run's epoch unmoved. Destination parent reopened
+  by its pinned identity under its grant root (`destination_changed`). Staging reopened by its journaled identity,
+  never by name. Space and reserve. Every pending item's source signature (`source_changed`).
+- **Re-verification of staged items.** The deny-write holds died with the stopped run, so a `verified` item is not
+  trusted as-is: each is re-read without caching and compared with its journaled digest and metadata before
+  publish. A mismatch takes the single permitted redo. An item with a journaled identity but no `verified` record
+  is removed by identity and redone, which needs Q1's removal setting, or else goes to `needs_attention` naming
+  it. An unjournaled name in staging is `staging_name_taken`, never adopted.
+- **Revocation fences.** The resumed worker is registered in the service's running map before its first step, so
+  `copies_fence` and identity-change fencing stop it as they stop a fresh run. Every step reads the epoch under the
+  admission lock. A fence that lands between the confirmation and the `resumed` append makes the append fail on
+  the stale epoch, and the resume is refused with `grant_revoked`.
+- **Surface and proof.** A `copy.resume` mutation (contract, semantics, generated TS, personal sessions still
+  `copy_effect_gated`), a Resume button in the copy view, and the C6 crash matrix extended with resume after every
+  kill point. That last item is lane C2's open item about the crash-then-redo path.
+
 ## 6. Metadata policy (v1)
 
 | Class | Policy | Verified by |
@@ -569,6 +621,10 @@ use this same path. No resume yet: a stopped run exits by Abandon. Evidence:
     personal data.
 
   (c) never opens the gate. Recommended: (a), because it repeats cheaply and needs no physical action after setup.
+- **Agent decisions you may reverse (#526, 2026-10-17).** First, the window before `committed` (section 5): the
+  copy is never presented as committed early and never rolled back, and a cancel after the rename commits.
+  Second, the refusal name `destination_changed` (section 7) covers a destination parent moved, replaced or removed
+  after approval, chosen to pair with `source_changed`.
 
 ### Open items for lane C2
 
