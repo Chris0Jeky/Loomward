@@ -379,3 +379,27 @@ fn approval_binds_the_exact_digest_and_is_consumed_by_start() {
         })
     );
 }
+
+/// The wire vocabulary (`contracts/v3`) is these types' serde names: states and codes cannot drift.
+#[test]
+fn contract_enums_equal_the_state_machine_and_refusal_codes() {
+    let schema: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../contracts/v3/view-service.schema.json"
+    ))
+    .unwrap();
+    let names = |def: &str| -> Vec<String> {
+        schema["$defs"][def]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect()
+    };
+    let codes: Vec<_> = Code::ALL.into_iter().map(wire).collect();
+    assert_eq!(names("CopyRefusalCode"), codes);
+    let states: Vec<_> = crate::state::OpState::ALL
+        .into_iter()
+        .map(|s| s.name().to_string())
+        .collect();
+    assert_eq!(names("CopyState"), states);
+}

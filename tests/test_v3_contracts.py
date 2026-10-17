@@ -77,9 +77,11 @@ class V3ContractTests(unittest.TestCase):
         self.assertFalse(validator.is_valid(result))
 
     def test_no_command_declares_an_effect(self):
-        # One gated exception (docs/42 ADR-V3-24): Loomward's own previewed bundle, written to a file the
-        # owner picks in a Rust-side save dialog. Every other command has no effect.
-        gated = {'diagnostics.save': 'owner_picked_export'}
+        # One open exception (docs/42 ADR-V3-24): Loomward's own previewed bundle, written to a file the
+        # owner picks in a Rust-side save dialog. The copy effects (docs/47) are declared but answer
+        # capability_unavailable until lane C8. Every other command has no effect.
+        gated = {'diagnostics.save': 'owner_picked_export', 'copy.start': 'copy_and_verify',
+                 'copy.cancel': 'copy_and_verify', 'copy.abandon': 'copy_and_verify'}
         for name, spec in self.commands['commands'].items():
             self.assertEqual(spec.get('effects', 'none'), gated.get(name, 'none'), name)
             self.assertNotRegex(name, r'(delete|move|kill|suspend|trim|apply|execute|uninstall)')
