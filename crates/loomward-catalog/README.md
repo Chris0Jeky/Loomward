@@ -140,6 +140,21 @@ scan watermark; a budget hit can return a continuation even without matches.
 Paths use one ancestor query and repeated search parents are cached. Breakdown
 uses subtree-revision caching; age and active-run results are not cached.
 
+`search_ranked` (LW-113 F2, off by default: it needs the token index, which
+`Catalog::open_with(.., &CatalogOptions { ranked_index: true })` builds; without it the call
+returns `Error::RankedIndexDisabled` and the store holds no ranked-index object, see #520)
+answers the same request by weighted reciprocal-rank
+fusion of three candidate lists: the trigram passes above, the token index
+(`search_token`, name-tuned tokens: separators, camelCase, letter/digit
+boundaries, the extension; `search_dirty` queues changed keys and the writer drains
+it in the commit that changed them) and a context list (entries under folders whose
+names, with their parents', carry the query). Exact, prefix, token-start and
+(with a caller clock) recency add boosts; ties break by index key. Pages are cut
+from one pool fixed by the query, filters, options and page size (the cursor binds
+them), at least 100 hits deep and at most 500 answered; it is not an exhaustive
+scan: a budget cut ranks what was read and says `budget_hit` without a resume position. `search` is
+unchanged. Evidence: `evidence/v3/search-relevance-f2.md`.
+
 Projections are checked against the JSON Schema. Byte counts are decimal strings;
 unknowns remain nullable. `NodeKey` and projected references are internal, not
 session wire IDs or permission. L8 must authenticate the catalogue instance,

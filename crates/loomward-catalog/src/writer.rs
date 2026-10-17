@@ -749,6 +749,8 @@ fn serve(
                         let result = apply(&save, &p.command, &mut context, prepared)
                             .and_then(|reply| {
                                 context.check_chains(&save, dirty_start)?;
+                                // Names changed by this command reach the token index with it.
+                                crate::search::drain_tokens(&save)?;
                                 Ok(reply)
                             });
                         // The witness commits atomically with the catalogue publication.
@@ -1367,6 +1369,14 @@ pub(crate) fn purge_root(conn: &Connection, root: i64) -> Result<()> {
         "INSERT INTO search_name(search_name) VALUES('optimize')",
         [],
     )?;
+    // The token index holds the same names as plain tokens: drain the deletions, then merge it the same way.
+    if crate::search::token_index_enabled(conn)? {
+        crate::search::drain_tokens(conn)?;
+        conn.execute(
+            "INSERT INTO search_token(search_token) VALUES('optimize')",
+            [],
+        )?;
+    }
     Ok(())
 }
 fn reference(conn: &mut Connection, node: NodeKey, reconcile: Option<i64>, at: i64) -> Result<i64> {

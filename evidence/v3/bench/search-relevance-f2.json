@@ -1,0 +1,2909 @@
+{
+ "build": {
+  "end_run_seconds": 46.7361271,
+  "publish_seconds": 17.0275004,
+  "token_bytes_per_entry": 42.78431603620483,
+  "token_index_bytes": 42840064,
+  "trigram_bytes_per_entry": 92.63730958560996,
+  "trigram_index_bytes": 92758016
+ },
+ "corpus": {
+  "attribute": 14,
+  "concept": 10,
+  "entries": 1001303,
+  "filler_files": 1000000,
+  "known_item": 52,
+  "planted_dirs": 60,
+  "planted_files": 243,
+  "queries": 76,
+  "relevance_at_ms_budget": 250,
+  "seed": 42
+ },
+ "lane": "LW-113 F2 relevance and latency",
+ "latency": {
+  "camel_hump": {
+   "ranked_fused": {
+    "budget_hit": false,
+    "hits": 1,
+    "more": false,
+    "timing": {
+     "max_ms": 39.7157,
+     "p50_ms": 9.4424,
+     "p95_ms": 22.9013,
+     "runs": 21
+    }
+   },
+   "text": "texture pack",
+   "v1_passes": {
+    "budget_hit": false,
+    "hits": 1,
+    "more": false,
+    "timing": {
+     "max_ms": 24.8859,
+     "p50_ms": 8.6827,
+     "p95_ms": 24.6241,
+     "runs": 21
+    }
+   }
+  },
+  "concept_folder_context": {
+   "ranked_fused": {
+    "budget_hit": false,
+    "hits": 13,
+    "more": false,
+    "timing": {
+     "max_ms": 14.1064,
+     "p50_ms": 6.5626,
+     "p95_ms": 13.0229,
+     "runs": 21
+    }
+   },
+   "text": "invoices 2023",
+   "v1_passes": {
+    "budget_hit": false,
+    "hits": 0,
+    "more": false,
+    "timing": {
+     "max_ms": 12.2685,
+     "p50_ms": 5.1231,
+     "p95_ms": 7.7043,
+     "runs": 21
+    }
+   }
+  },
+  "digits": {
+   "ranked_fused": {
+    "budget_hit": false,
+    "hits": 1,
+    "more": false,
+    "timing": {
+     "max_ms": 9.492799999999999,
+     "p50_ms": 4.915,
+     "p95_ms": 8.1461,
+     "runs": 21
+    }
+   },
+   "text": "333333",
+   "v1_passes": {
+    "budget_hit": false,
+    "hits": 1,
+    "more": false,
+    "timing": {
+     "max_ms": 6.118799999999999,
+     "p50_ms": 3.9452000000000003,
+     "p95_ms": 5.2185,
+     "runs": 21
+    }
+   }
+  },
+  "inner_substring": {
+   "ranked_fused": {
+    "budget_hit": false,
+    "hits": 50,
+    "more": true,
+    "timing": {
+     "max_ms": 4.3761,
+     "p50_ms": 1.9133,
+     "p95_ms": 3.2628000000000004,
+     "runs": 21
+    }
+   },
+   "text": "recu",
+   "v1_passes": {
+    "budget_hit": false,
+    "hits": 50,
+    "more": true,
+    "timing": {
+     "max_ms": 4.3917,
+     "p50_ms": 2.1497,
+     "p95_ms": 3.8294,
+     "runs": 21
+    }
+   }
+  },
+  "no_match": {
+   "ranked_fused": {
+    "budget_hit": false,
+    "hits": 0,
+    "more": false,
+    "timing": {
+     "max_ms": 3.7908,
+     "p50_ms": 2.1802,
+     "p95_ms": 3.2834000000000003,
+     "runs": 21
+    }
+   },
+   "text": "zzqqxx",
+   "v1_passes": {
+    "budget_hit": false,
+    "hits": 0,
+    "more": false,
+    "timing": {
+     "max_ms": 11.2433,
+     "p50_ms": 2.0374999999999996,
+     "p95_ms": 4.4795,
+     "runs": 21
+    }
+   }
+  },
+  "one_char": {
+   "ranked_fused": {
+    "budget_hit": false,
+    "hits": 50,
+    "more": true,
+    "timing": {
+     "max_ms": 39.03,
+     "p50_ms": 8.139800000000001,
+     "p95_ms": 14.4807,
+     "runs": 21
+    }
+   },
+   "text": "k",
+   "v1_passes": {
+    "budget_hit": false,
+    "hits": 0,
+    "more": false,
+    "timing": {
+     "max_ms": 6.3868,
+     "p50_ms": 1.4756,
+     "p95_ms": 4.1453,
+     "runs": 21
+    }
+   }
+  },
+  "prefix_4": {
+   "ranked_fused": {
+    "budget_hit": false,
+    "hits": 50,
+    "more": true,
+    "timing": {
+     "max_ms": 15.733799999999999,
+     "p50_ms": 10.3649,
+     "p95_ms": 15.699500000000002,
+     "runs": 21
+    }
+   },
+   "text": "brec",
+   "v1_passes": {
+    "budget_hit": false,
+    "hits": 50,
+    "more": true,
+    "timing": {
+     "max_ms": 1.7785,
+     "p50_ms": 1.1402999999999999,
+     "p95_ms": 1.5375,
+     "runs": 21
+    }
+   }
+  },
+  "two_chars": {
+   "ranked_fused": {
+    "budget_hit": false,
+    "hits": 50,
+    "more": true,
+    "timing": {
+     "max_ms": 8.408999999999999,
+     "p50_ms": 5.8153,
+     "p95_ms": 7.9977,
+     "runs": 21
+    }
+   },
+   "text": "ka",
+   "v1_passes": {
+    "budget_hit": false,
+    "hits": 50,
+    "more": true,
+    "timing": {
+     "max_ms": 1.9394,
+     "p50_ms": 1.2326,
+     "p95_ms": 1.8092,
+     "runs": 21
+    }
+   }
+  },
+  "two_words_known_item": {
+   "ranked_fused": {
+    "budget_hit": false,
+    "hits": 1,
+    "more": false,
+    "timing": {
+     "max_ms": 90.5509,
+     "p50_ms": 61.8713,
+     "p95_ms": 77.5782,
+     "runs": 21
+    }
+   },
+   "text": "ruquayo tanquagan 29065",
+   "v1_passes": {
+    "budget_hit": false,
+    "hits": 1,
+    "more": false,
+    "timing": {
+     "max_ms": 98.2016,
+     "p50_ms": 48.469199999999994,
+     "p95_ms": 76.8274,
+     "runs": 21
+    }
+   }
+  },
+  "word": {
+   "ranked_fused": {
+    "budget_hit": false,
+    "hits": 50,
+    "more": true,
+    "timing": {
+     "max_ms": 8.2229,
+     "p50_ms": 6.567,
+     "p95_ms": 7.2921000000000005,
+     "runs": 21
+    }
+   },
+   "text": "brecunor",
+   "v1_passes": {
+    "budget_hit": false,
+    "hits": 50,
+    "more": true,
+    "timing": {
+     "max_ms": 9.4489,
+     "p50_ms": 4.655600000000001,
+     "p95_ms": 8.3097,
+     "runs": 21
+    }
+   }
+  },
+  "word_and_extension": {
+   "ranked_fused": {
+    "budget_hit": false,
+    "hits": 50,
+    "more": true,
+    "timing": {
+     "max_ms": 112.1757,
+     "p50_ms": 64.3304,
+     "p95_ms": 100.0811,
+     "runs": 21
+    }
+   },
+   "text": "brecunor",
+   "v1_passes": {
+    "budget_hit": false,
+    "hits": 50,
+    "more": true,
+    "timing": {
+     "max_ms": 125.96760000000002,
+     "p50_ms": 90.3557,
+     "p95_ms": 108.8035,
+     "runs": 21
+    }
+   }
+  }
+ },
+ "queries": [
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "invoices",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 13,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "invoices 2021"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "invoices",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 14,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "invoices 2022"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "invoices",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 15,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "invoices 2023"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "invoices",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 14,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "invoices 2024"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "invoices",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 2,
+   "returned": 2,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "invoice acme corp"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": "pdf",
+   "group": "invoices",
+   "max_age_days": null,
+   "ndcg": 0.795,
+   "recall50": 0.0769,
+   "relevant": 52,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "invoice"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "thesis",
+   "max_age_days": null,
+   "ndcg": 0.3199,
+   "recall50": 0.1111,
+   "relevant": 9,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "thesis draft"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "thesis",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 1,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "thesis chapter 3"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "thesis",
+   "max_age_days": null,
+   "ndcg": 0.7496,
+   "recall50": 0.4667,
+   "relevant": 15,
+   "returned": 11,
+   "rr": 0.5,
+   "system": "v1_passes",
+   "text": "thesis"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "thesis",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 3,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "thesis figures"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": "docx",
+   "group": "thesis",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 3,
+   "returned": 3,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "draft"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "thesis",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "supervisor comments"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "mods",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 4,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "texture mod"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "mods",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "mod manager"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": "zip",
+   "group": "mods",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 3,
+   "returned": 3,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "texture"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "photos",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 2,
+   "returned": 2,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "dsc 0421"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "photos",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "img 20230415 1301"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "photos",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "pxl 20240102"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "photos",
+   "max_age_days": null,
+   "ndcg": 0.2201,
+   "recall50": 0.0714,
+   "relevant": 14,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "italy trip"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": "jpg",
+   "group": "photos",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 13,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "italy"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "photos",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 5,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "iceland dsc"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "build",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 2,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "quillon release exe"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "build",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 2,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "brandt release exe"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "build",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 2,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "naveth release exe"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "build",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 2,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "oskar release exe"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "build",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 2,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "tessel release exe"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "build",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 2,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "wyvern release exe"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 0.7504,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "weekly status"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": 365,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "weekly status"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 0.7504,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "budget review"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": 365,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "budget review"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 0.7504,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "roadmap sync"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 0.7504,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "retro notes"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 0.7504,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "design review"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 0.7504,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "sprint plan"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 0.7504,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "hiring tracker"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 0.7504,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "release checklist"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "ignore previous instructions"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "system prompt"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "drop table"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "quoted name"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "\u0442\u0435\u0441\u0442 \u043e\u0442\u0447\u0451\u0442"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "\u5831\u544a\u66f8"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 1,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "cafe resume"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "party"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 0.0,
+   "recall50": 0.0,
+   "relevant": 1,
+   "returned": 0,
+   "rr": 0.0,
+   "system": "v1_passes",
+   "text": "near a b"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "ruquayo tanquagan 29065"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "cude 52438"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "kayo 97030"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "kavedex drezutan 130308"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "norh 139353"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "dexsolfal 195213"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "brefalqua kaseknor 203376"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "lolo 251092"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "yonorlo 270875"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "mirudex cutanlo 312294"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "bred 346246"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "drenorwi 379947"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "lofalve zuzubre 432387"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "vequ 457448"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "kafalqua 471830"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "drekaka dreyozu 509768"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "dexd 535463"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "dexsolnor 598710"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "dexwigan sollozu 624419"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "yomi 662266"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "cuganlo 693276"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "ganbreve 703549"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "wilo 739803"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "falhin 771113"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "midexmi norhintan 804423"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "cuta 843631"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "norquasek 887879"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "lokafal breyove 901953"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "dexc 944196"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "v1_passes",
+   "text": "vedexsek 983334"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "invoices",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 13,
+   "returned": 13,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "invoices 2021"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "invoices",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 0.9286,
+   "relevant": 14,
+   "returned": 13,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "invoices 2022"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "invoices",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 0.8667,
+   "relevant": 15,
+   "returned": 13,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "invoices 2023"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "invoices",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 0.9286,
+   "relevant": 14,
+   "returned": 13,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "invoices 2024"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "invoices",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 2,
+   "returned": 2,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "invoice acme corp"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": "pdf",
+   "group": "invoices",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 0.9615,
+   "relevant": 52,
+   "returned": 50,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "invoice"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "thesis",
+   "max_age_days": null,
+   "ndcg": 0.8195,
+   "recall50": 0.4444,
+   "relevant": 9,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "thesis draft"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "thesis",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "thesis chapter 3"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "thesis",
+   "max_age_days": null,
+   "ndcg": 0.7496,
+   "recall50": 1.0,
+   "relevant": 15,
+   "returned": 19,
+   "rr": 0.5,
+   "system": "ranked_fused",
+   "text": "thesis"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "thesis",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 3,
+   "returned": 3,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "thesis figures"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": "docx",
+   "group": "thesis",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 3,
+   "returned": 3,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "draft"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "thesis",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "supervisor comments"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "mods",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "texture mod"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "mods",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "mod manager"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": "zip",
+   "group": "mods",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 3,
+   "returned": 3,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "texture"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "photos",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 2,
+   "returned": 2,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "dsc 0421"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "photos",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "img 20230415 1301"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "photos",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "pxl 20240102"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "photos",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 14,
+   "returned": 14,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "italy trip"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": "jpg",
+   "group": "photos",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 13,
+   "returned": 13,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "italy"
+  },
+  {
+   "budget_hit": false,
+   "class": "concept",
+   "extension": null,
+   "group": "photos",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 5,
+   "returned": 5,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "iceland dsc"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "build",
+   "max_age_days": null,
+   "ndcg": 0.8262,
+   "recall50": 0.5,
+   "relevant": 2,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "quillon release exe"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "build",
+   "max_age_days": null,
+   "ndcg": 0.8262,
+   "recall50": 0.5,
+   "relevant": 2,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "brandt release exe"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "build",
+   "max_age_days": null,
+   "ndcg": 0.8262,
+   "recall50": 0.5,
+   "relevant": 2,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "naveth release exe"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "build",
+   "max_age_days": null,
+   "ndcg": 0.8262,
+   "recall50": 0.5,
+   "relevant": 2,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "oskar release exe"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "build",
+   "max_age_days": null,
+   "ndcg": 0.8262,
+   "recall50": 0.5,
+   "relevant": 2,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "tessel release exe"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "build",
+   "max_age_days": null,
+   "ndcg": 0.8262,
+   "recall50": 0.5,
+   "relevant": 2,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "wyvern release exe"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "weekly status"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": 365,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "weekly status"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "budget review"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": 365,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "budget review"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "roadmap sync"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "retro notes"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "design review"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "sprint plan"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "hiring tracker"
+  },
+  {
+   "budget_hit": false,
+   "class": "attribute",
+   "extension": null,
+   "group": "versions",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 4,
+   "returned": 4,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "release checklist"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "ignore previous instructions"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "system prompt"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "drop table"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "quoted name"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "\u0442\u0435\u0441\u0442 \u043e\u0442\u0447\u0451\u0442"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "\u5831\u544a\u66f8"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "cafe resume"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "party"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "hostile",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "near a b"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "ruquayo tanquagan 29065"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "cude 52438"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "kayo 97030"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "kavedex drezutan 130308"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "norh 139353"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "dexsolfal 195213"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "brefalqua kaseknor 203376"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "lolo 251092"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "yonorlo 270875"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "mirudex cutanlo 312294"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "bred 346246"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "drenorwi 379947"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "lofalve zuzubre 432387"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "vequ 457448"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "kafalqua 471830"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "drekaka dreyozu 509768"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "dexd 535463"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "dexsolnor 598710"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "dexwigan sollozu 624419"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "yomi 662266"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "cuganlo 693276"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "ganbreve 703549"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "wilo 739803"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "falhin 771113"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "midexmi norhintan 804423"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "cuta 843631"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "norquasek 887879"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "lokafal breyove 901953"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "dexc 944196"
+  },
+  {
+   "budget_hit": false,
+   "class": "known_item",
+   "extension": null,
+   "group": "filler",
+   "max_age_days": null,
+   "ndcg": 1.0,
+   "recall50": 1.0,
+   "relevant": 1,
+   "returned": 1,
+   "rr": 1.0,
+   "system": "ranked_fused",
+   "text": "vedexsek 983334"
+  }
+ ],
+ "relevance": {
+  "ranked_context_only": {
+   "budget_hit_queries": 0,
+   "by_class": {
+    "attribute": {
+     "mrr_at_10": 0.1429,
+     "ndcg_at_10": 0.105,
+     "queries": 14,
+     "recall_at_50": 0.1374
+    },
+    "concept": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 0.9819,
+     "queries": 10,
+     "recall_at_50": 0.9097
+    },
+    "known_item": {
+     "mrr_at_10": 0.1538,
+     "ndcg_at_10": 0.1338,
+     "queries": 52,
+     "recall_at_50": 0.0962
+    }
+   },
+   "by_group": {
+    "build": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 0.8262,
+     "queries": 6,
+     "recall_at_50": 0.5
+    },
+    "filler": {
+     "mrr_at_10": 0.0,
+     "ndcg_at_10": 0.0,
+     "queries": 30,
+     "recall_at_50": 0.0
+    },
+    "hostile": {
+     "mrr_at_10": 0.0,
+     "ndcg_at_10": 0.0,
+     "queries": 9,
+     "recall_at_50": 0.0
+    },
+    "invoices": {
+     "mrr_at_10": 0.8333,
+     "ndcg_at_10": 0.745,
+     "queries": 6,
+     "recall_at_50": 0.7745
+    },
+    "mods": {
+     "mrr_at_10": 0.6667,
+     "ndcg_at_10": 0.6667,
+     "queries": 3,
+     "recall_at_50": 0.6667
+    },
+    "photos": {
+     "mrr_at_10": 0.5,
+     "ndcg_at_10": 0.5,
+     "queries": 6,
+     "recall_at_50": 0.4881
+    },
+    "thesis": {
+     "mrr_at_10": 0.6667,
+     "ndcg_at_10": 0.6366,
+     "queries": 6,
+     "recall_at_50": 0.5741
+    },
+    "versions": {
+     "mrr_at_10": 0.0,
+     "ndcg_at_10": 0.0,
+     "queries": 10,
+     "recall_at_50": 0.0
+    }
+   },
+   "overall": {
+    "mrr_at_10": 0.2632,
+    "ndcg_at_10": 0.2401,
+    "queries": 76,
+    "recall_at_50": 0.2108
+   }
+  },
+  "ranked_fused": {
+   "budget_hit_queries": 0,
+   "by_class": {
+    "attribute": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 14,
+     "recall_at_50": 0.9973
+    },
+    "concept": {
+     "mrr_at_10": 0.95,
+     "ndcg_at_10": 0.9569,
+     "queries": 10,
+     "recall_at_50": 0.9168
+    },
+    "known_item": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 0.98,
+     "queries": 52,
+     "recall_at_50": 0.9423
+    }
+   },
+   "by_group": {
+    "build": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 0.8262,
+     "queries": 6,
+     "recall_at_50": 0.5
+    },
+    "filler": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 30,
+     "recall_at_50": 1.0
+    },
+    "hostile": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 9,
+     "recall_at_50": 1.0
+    },
+    "invoices": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 6,
+     "recall_at_50": 0.9476
+    },
+    "mods": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 3,
+     "recall_at_50": 1.0
+    },
+    "photos": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 6,
+     "recall_at_50": 1.0
+    },
+    "thesis": {
+     "mrr_at_10": 0.9167,
+     "ndcg_at_10": 0.9282,
+     "queries": 6,
+     "recall_at_50": 0.9074
+    },
+    "versions": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 10,
+     "recall_at_50": 1.0
+    }
+   },
+   "overall": {
+    "mrr_at_10": 0.9934,
+    "ndcg_at_10": 0.9806,
+    "queries": 76,
+    "recall_at_50": 0.9491
+   }
+  },
+  "ranked_token_only": {
+   "budget_hit_queries": 0,
+   "by_class": {
+    "attribute": {
+     "mrr_at_10": 0.9286,
+     "ndcg_at_10": 0.9139,
+     "queries": 14,
+     "recall_at_50": 0.8626
+    },
+    "concept": {
+     "mrr_at_10": 0.25,
+     "ndcg_at_10": 0.129,
+     "queries": 10,
+     "recall_at_50": 0.0649
+    },
+    "known_item": {
+     "mrr_at_10": 0.8846,
+     "ndcg_at_10": 0.8846,
+     "queries": 52,
+     "recall_at_50": 0.8846
+    }
+   },
+   "by_group": {
+    "build": {
+     "mrr_at_10": 0.0,
+     "ndcg_at_10": 0.0,
+     "queries": 6,
+     "recall_at_50": 0.0
+    },
+    "filler": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 30,
+     "recall_at_50": 1.0
+    },
+    "hostile": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 9,
+     "recall_at_50": 1.0
+    },
+    "invoices": {
+     "mrr_at_10": 0.3333,
+     "ndcg_at_10": 0.2992,
+     "queries": 6,
+     "recall_at_50": 0.1795
+    },
+    "mods": {
+     "mrr_at_10": 0.6667,
+     "ndcg_at_10": 0.6667,
+     "queries": 3,
+     "recall_at_50": 0.6667
+    },
+    "photos": {
+     "mrr_at_10": 0.6667,
+     "ndcg_at_10": 0.5367,
+     "queries": 6,
+     "recall_at_50": 0.5119
+    },
+    "thesis": {
+     "mrr_at_10": 0.75,
+     "ndcg_at_10": 0.6783,
+     "queries": 6,
+     "recall_at_50": 0.5963
+    },
+    "versions": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 10,
+     "recall_at_50": 1.0
+    }
+   },
+   "overall": {
+    "mrr_at_10": 0.8092,
+    "ndcg_at_10": 0.7906,
+    "queries": 76,
+    "recall_at_50": 0.7727
+   }
+  },
+  "ranked_trigram_only": {
+   "budget_hit_queries": 0,
+   "by_class": {
+    "attribute": {
+     "mrr_at_10": 0.9286,
+     "ndcg_at_10": 0.9139,
+     "queries": 14,
+     "recall_at_50": 0.8626
+    },
+    "concept": {
+     "mrr_at_10": 0.25,
+     "ndcg_at_10": 0.129,
+     "queries": 10,
+     "recall_at_50": 0.0649
+    },
+    "known_item": {
+     "mrr_at_10": 0.8269,
+     "ndcg_at_10": 0.8269,
+     "queries": 52,
+     "recall_at_50": 0.8269
+    }
+   },
+   "by_group": {
+    "build": {
+     "mrr_at_10": 0.0,
+     "ndcg_at_10": 0.0,
+     "queries": 6,
+     "recall_at_50": 0.0
+    },
+    "filler": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 30,
+     "recall_at_50": 1.0
+    },
+    "hostile": {
+     "mrr_at_10": 0.7778,
+     "ndcg_at_10": 0.7778,
+     "queries": 9,
+     "recall_at_50": 0.7778
+    },
+    "invoices": {
+     "mrr_at_10": 0.3333,
+     "ndcg_at_10": 0.2992,
+     "queries": 6,
+     "recall_at_50": 0.1795
+    },
+    "mods": {
+     "mrr_at_10": 0.6667,
+     "ndcg_at_10": 0.6667,
+     "queries": 3,
+     "recall_at_50": 0.6667
+    },
+    "photos": {
+     "mrr_at_10": 0.6667,
+     "ndcg_at_10": 0.5367,
+     "queries": 6,
+     "recall_at_50": 0.5119
+    },
+    "thesis": {
+     "mrr_at_10": 0.5833,
+     "ndcg_at_10": 0.5116,
+     "queries": 6,
+     "recall_at_50": 0.4296
+    },
+    "versions": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 10,
+     "recall_at_50": 1.0
+    }
+   },
+   "overall": {
+    "mrr_at_10": 0.7697,
+    "ndcg_at_10": 0.7511,
+    "queries": 76,
+    "recall_at_50": 0.7332
+   }
+  },
+  "ranked_trigram_plus_token": {
+   "budget_hit_queries": 0,
+   "by_class": {
+    "attribute": {
+     "mrr_at_10": 0.9286,
+     "ndcg_at_10": 0.9139,
+     "queries": 14,
+     "recall_at_50": 0.8626
+    },
+    "concept": {
+     "mrr_at_10": 0.25,
+     "ndcg_at_10": 0.129,
+     "queries": 10,
+     "recall_at_50": 0.0649
+    },
+    "known_item": {
+     "mrr_at_10": 0.8846,
+     "ndcg_at_10": 0.8846,
+     "queries": 52,
+     "recall_at_50": 0.8846
+    }
+   },
+   "by_group": {
+    "build": {
+     "mrr_at_10": 0.0,
+     "ndcg_at_10": 0.0,
+     "queries": 6,
+     "recall_at_50": 0.0
+    },
+    "filler": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 30,
+     "recall_at_50": 1.0
+    },
+    "hostile": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 9,
+     "recall_at_50": 1.0
+    },
+    "invoices": {
+     "mrr_at_10": 0.3333,
+     "ndcg_at_10": 0.2992,
+     "queries": 6,
+     "recall_at_50": 0.1795
+    },
+    "mods": {
+     "mrr_at_10": 0.6667,
+     "ndcg_at_10": 0.6667,
+     "queries": 3,
+     "recall_at_50": 0.6667
+    },
+    "photos": {
+     "mrr_at_10": 0.6667,
+     "ndcg_at_10": 0.5367,
+     "queries": 6,
+     "recall_at_50": 0.5119
+    },
+    "thesis": {
+     "mrr_at_10": 0.75,
+     "ndcg_at_10": 0.6783,
+     "queries": 6,
+     "recall_at_50": 0.5963
+    },
+    "versions": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 10,
+     "recall_at_50": 1.0
+    }
+   },
+   "overall": {
+    "mrr_at_10": 0.8092,
+    "ndcg_at_10": 0.7906,
+    "queries": 76,
+    "recall_at_50": 0.7727
+   }
+  },
+  "v1_passes": {
+   "budget_hit_queries": 0,
+   "by_class": {
+    "attribute": {
+     "mrr_at_10": 0.9286,
+     "ndcg_at_10": 0.7713,
+     "queries": 14,
+     "recall_at_50": 0.8626
+    },
+    "concept": {
+     "mrr_at_10": 0.25,
+     "ndcg_at_10": 0.129,
+     "queries": 10,
+     "recall_at_50": 0.0649
+    },
+    "known_item": {
+     "mrr_at_10": 0.8269,
+     "ndcg_at_10": 0.8269,
+     "queries": 52,
+     "recall_at_50": 0.8269
+    }
+   },
+   "by_group": {
+    "build": {
+     "mrr_at_10": 0.0,
+     "ndcg_at_10": 0.0,
+     "queries": 6,
+     "recall_at_50": 0.0
+    },
+    "filler": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 1.0,
+     "queries": 30,
+     "recall_at_50": 1.0
+    },
+    "hostile": {
+     "mrr_at_10": 0.7778,
+     "ndcg_at_10": 0.7778,
+     "queries": 9,
+     "recall_at_50": 0.7778
+    },
+    "invoices": {
+     "mrr_at_10": 0.3333,
+     "ndcg_at_10": 0.2992,
+     "queries": 6,
+     "recall_at_50": 0.1795
+    },
+    "mods": {
+     "mrr_at_10": 0.6667,
+     "ndcg_at_10": 0.6667,
+     "queries": 3,
+     "recall_at_50": 0.6667
+    },
+    "photos": {
+     "mrr_at_10": 0.6667,
+     "ndcg_at_10": 0.5367,
+     "queries": 6,
+     "recall_at_50": 0.5119
+    },
+    "thesis": {
+     "mrr_at_10": 0.5833,
+     "ndcg_at_10": 0.5116,
+     "queries": 6,
+     "recall_at_50": 0.4296
+    },
+    "versions": {
+     "mrr_at_10": 1.0,
+     "ndcg_at_10": 0.8003,
+     "queries": 10,
+     "recall_at_50": 1.0
+    }
+   },
+   "overall": {
+    "mrr_at_10": 0.7697,
+    "ndcg_at_10": 0.7248,
+    "queries": 76,
+    "recall_at_50": 0.7332
+   }
+  }
+ },
+ "scope": "in-process generated synthetic names (loomward-lab semantic corpus); no enumeration, no HTTP; warm, uncontrolled timings on a shared host",
+ "host": "KRASPYON laptop, Windows 11 Home, 16 GB, shared with other agent lanes",
+ "code": "loomward-catalog search_ranked at the F2 PR head (ranked_index on)"
+}

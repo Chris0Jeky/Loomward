@@ -21,6 +21,11 @@ use std::{
     sync::Mutex,
 };
 
+/// The sweep runs with the ranked-search index on: its recovery is part of what is swept.
+fn ranked() -> CatalogOptions {
+    CatalogOptions { ranked_index: true }
+}
+
 const A_PATH: &str = r"C:\Synthetic\CrashPathAlpha";
 const A_NAME: &str = "CrashFolderAlpha";
 const A_SUB: &str = "crashsubalpha";
@@ -145,7 +150,7 @@ impl Ack {
 /// open, scan A (staged chunks, the form the service publishes: a root listing plus a sub directory),
 /// durable reference and labels, bulk first scan of B (one-shot listing), rescan of A (one file gone, one new), revoke A, forget A.
 fn lifecycle(store: &Path, ack: &Ack) {
-    let c = Catalog::open(store, "synthetic").unwrap();
+    let c = Catalog::open_with(store, "synthetic", &ranked()).unwrap();
     ack.log("open");
     let w = c.writer();
     let (ga, da) = register(w, A_NAME, A_PATH, 1);
@@ -247,7 +252,7 @@ fn crash_child() {
         "lifecycle" => lifecycle(&store, &ack),
         // A migration, or the recovery of a store a killed process left behind.
         "migrate" | "recover" => {
-            drop(Catalog::open(&store, "synthetic").unwrap());
+            drop(Catalog::open_with(&store, "synthetic", &ranked()).unwrap());
             ack.log("opened");
         }
         other => panic!("scenario {other}"),
@@ -269,7 +274,7 @@ fn prepare(scenario: &str, work: &Path) {
         return;
     }
     // A synthetic v4-shaped store: a seeded active grant, no v6/v7 tables, no identity_mode column.
-    let c = Catalog::open(&store, "synthetic").unwrap();
+    let c = Catalog::open_with(&store, "synthetic", &ranked()).unwrap();
     register(c.writer(), A_NAME, A_PATH, 1);
     drop(c);
     Connection::open(store.join("state.db"))
@@ -456,6 +461,28 @@ fn structural(store: &Path) -> Vec<String> {
     zero_check(&db, &mut bad, "directory unreachable from its root", "WITH RECURSIVE reach(id) AS (SELECT id FROM dir WHERE parent_id IS NULL UNION ALL SELECT d.id FROM dir d JOIN reach r ON d.parent_id=r.id JOIN dir p ON p.id=r.id WHERE d.root_id=p.root_id) SELECT (SELECT count(*) FROM dir)-(SELECT count(*) FROM reach)");
     zero_check(&db, &mut bad, "valid rollup disagrees with its rows", "SELECT count(*) FROM dir d WHERE d.sub_complete=1 AND (d.sub_files != (SELECT count(*) FROM file f WHERE f.dir_id=d.id)+coalesce((SELECT sum(c.sub_files) FROM dir c WHERE c.parent_id=d.id),0) OR d.sub_logical != coalesce((SELECT sum(logical) FROM file f WHERE f.dir_id=d.id),0)+coalesce((SELECT sum(c.sub_logical) FROM dir c WHERE c.parent_id=d.id),0))");
     zero_check(&db, &mut bad, "resolved reference bound to a missing row", "SELECT count(*) FROM st.object_ref o WHERE o.state='resolved' AND NOT ((o.kind='file' AND EXISTS(SELECT 1 FROM file WHERE id=o.row_id)) OR (o.kind='dir' AND EXISTS(SELECT 1 FROM dir WHERE id=o.row_id)))");
+    // The search indexes (trigram and token) are derived: after recovery each holds exactly the rows' keys.
+    zero_check(
+        &db,
+        &mut bad,
+        "token index changes still queued after recovery",
+        "SELECT count(*) FROM search_dirty",
+    );
+    for (index, what) in [("search_token", "token"), ("search_name", "trigram")] {
+        let keys = "SELECT id+281474976710656 AS k FROM file UNION ALL SELECT id FROM dir WHERE parent_id IS NOT NULL";
+        zero_check(
+            &db,
+            &mut bad,
+            &format!("row missing from the {what} index"),
+            &format!("SELECT count(*) FROM ({keys}) WHERE k NOT IN (SELECT rowid FROM {index})"),
+        );
+        zero_check(
+            &db,
+            &mut bad,
+            &format!("{what} index entry without a row"),
+            &format!("SELECT count(*) FROM {index} WHERE rowid NOT IN ({keys})"),
+        );
+    }
     zero_check(&db, &mut bad, "row stamped newer than the catalogue revision", "SELECT coalesce((SELECT max(listing_rev) FROM dir),0) > (SELECT catalog_rev FROM revision)");
     bad
 }
@@ -465,7 +492,7 @@ fn verify(store: &Path, acks: &[String], scenario: &str) -> Vec<String> {
     let mut bad = Vec::new();
     let acked = |step: &str| acks.iter().any(|a| a.split(' ').next() == Some(step));
     // Recovery is the open: it must succeed, twice, and the second must change nothing.
-    match Catalog::open(store, "synthetic") {
+    match Catalog::open_with(store, "synthetic", &ranked()) {
         Ok(c) => drop(c),
         Err(e) => return vec![format!("reopen after the crash failed: {e}")],
     }
@@ -474,7 +501,7 @@ fn verify(store: &Path, acks: &[String], scenario: &str) -> Vec<String> {
     }
     bad.extend(structural(store));
     let first = snapshot(store);
-    match Catalog::open(store, "synthetic") {
+    match Catalog::open_with(store, "synthetic", &ranked()) {
         Ok(c) => drop(c),
         Err(e) => bad.push(format!("second reopen failed: {e}")),
     }
@@ -605,7 +632,7 @@ fn verify(store: &Path, acks: &[String], scenario: &str) -> Vec<String> {
         }
     }
     // The recovered store must still take writes: no wedged run, grant or lock.
-    let c = match Catalog::open(store, "synthetic") {
+    let c = match Catalog::open_with(store, "synthetic", &ranked()) {
         Ok(c) => c,
         Err(e) => {
             bad.push(format!("open for the write probe failed: {e}"));
@@ -875,7 +902,7 @@ fn the_verifier_catches_planted_damage() {
 #[test]
 fn forget_leaves_no_staged_listing_names() {
     let dir = tempfile::tempdir().unwrap();
-    let c = Catalog::open(dir.path(), "synthetic").unwrap();
+    let c = Catalog::open_with(dir.path(), "synthetic", &ranked()).unwrap();
     let w = c.writer();
     let (grant, root) = register(w, A_NAME, A_PATH, 1);
     let run = begin(w, grant, "full");

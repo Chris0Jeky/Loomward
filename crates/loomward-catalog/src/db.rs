@@ -252,7 +252,12 @@ fn preserve_catalog(dir: &Path, label: &str) -> Result<()> {
     }
     Ok(())
 }
+#[cfg(test)]
 pub(crate) fn open_pair(dir: &Path, dataset: &str) -> Result<Connection> {
+    open_pair_with(dir, dataset, false)
+}
+/// `ranked`: create the ranked-search token index if the store lacks it (a store that has it keeps it).
+pub(crate) fn open_pair_with(dir: &Path, dataset: &str, ranked: bool) -> Result<Connection> {
     let state = dir.join("state.db");
     let catalog = dir.join("catalog.db");
     let sv = inspect(&state, dataset)?;
@@ -352,7 +357,7 @@ pub(crate) fn open_pair(dir: &Path, dataset: &str) -> Result<Connection> {
     }
     tx.execute("UPDATE scan_run SET state='failed',error_json='{\"code\":\"restart_interrupted\"}' WHERE state='running'",[])?;
     tx.execute("DELETE FROM stage_entry", [])?;
-    search_index(&tx)?;
+    search_index(&tx, ranked)?;
     bulk_tables(&tx, false)?;
     tx.execute("UPDATE revision SET catalog_rev=catalog_rev+1", [])?;
     tx.commit()?;
@@ -381,21 +386,36 @@ pub(crate) fn open_pair(dir: &Path, dataset: &str) -> Result<Connection> {
     }
     Ok(conn)
 }
-/// The name search index (q-34): created with its triggers by the first open that lacks it, and
-/// filled from the rows already there in the same transaction, so it is never behind the tables.
-pub(crate) fn search_index(conn: &Connection) -> Result<()> {
-    if conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='search_name')",
-        [],
-        |r| r.get::<_, bool>(0),
-    )? {
-        return Ok(());
+/// The name search indexes: the trigram table (q-34) always, the ranked-search token table (F2)
+/// only where the caller asks for it (`ranked`) or the store already has it. Each is created with
+/// its triggers by the first open that wants it and filled from the rows already there in the same
+/// transaction, so neither is ever behind the tables. A store opened without `ranked` that has no
+/// token table gets no new object.
+pub(crate) fn search_index(conn: &Connection, ranked: bool) -> Result<()> {
+    let has = |name: &str| -> Result<bool> {
+        Ok(conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name=?1)",
+            [name],
+            |r| r.get::<_, bool>(0),
+        )?)
+    };
+    if !has("search_name")? {
+        conn.execute_batch(include_str!("search.sql"))?;
+        conn.execute_batch(
+            "INSERT INTO search_name(rowid,name) SELECT id, char(1)||replace(replace(name,char(1),' '),char(2),' ')||char(2) FROM dir WHERE parent_id IS NOT NULL;
+             INSERT INTO search_name(rowid,name) SELECT id+281474976710656, char(1)||replace(replace(name,char(1),' '),char(2),' ')||char(2) FROM file;",
+        )?;
     }
-    conn.execute_batch(include_str!("search.sql"))?;
-    conn.execute_batch(
-        "INSERT INTO search_name(rowid,name) SELECT id, char(1)||replace(replace(name,char(1),' '),char(2),' ')||char(2) FROM dir WHERE parent_id IS NOT NULL;
-         INSERT INTO search_name(rowid,name) SELECT id+281474976710656, char(1)||replace(replace(name,char(1),' '),char(2),' ')||char(2) FROM file;",
-    )?;
+    if ranked && !has("search_token")? {
+        conn.execute_batch(include_str!("search-token.sql"))?;
+        // Every existing row is a new key to the queue; the drain below indexes them all.
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO search_dirty SELECT id,1 FROM dir WHERE parent_id IS NOT NULL;
+             INSERT OR IGNORE INTO search_dirty SELECT id+281474976710656,1 FROM file;",
+        )?;
+    }
+    // Keys a raw writer queued while no writer was running.
+    crate::search::drain_tokens(conn)?;
     Ok(())
 }
 /// First-scan bulk build tables (#148): the live `dir`/`file` definitions and the `dir` indexes,

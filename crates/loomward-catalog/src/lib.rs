@@ -24,9 +24,21 @@ mod slice;
 mod writer;
 pub use model::*;
 pub use query::Reader;
+pub use search::{RankOptions, ALL_TIERS, TIER_CONTEXT, TIER_TOKEN, TIER_TRIGRAM};
 pub use writer::{
     BytePermit, Cancellation, Receipt, Writer, WriterTimings, CHUNK_ENTRIES, QUEUE_BYTES,
 };
+
+/// What a catalogue is opened to do beyond the default.
+#[derive(Clone, Debug, Default)]
+pub struct CatalogOptions {
+    /// Keep the token index `search_ranked` needs (`search_token` and its change queue
+    /// `search_dirty`, F2). Off by default: nothing serves ranked search yet, and the index costs
+    /// write-path time and open-time backfill. Turning it on creates and backfills the index; a
+    /// store that already has it keeps maintaining it whatever this says. Turning it on for real
+    /// catalogues is F3/F5's job, see the F2 evidence.
+    pub ranked_index: bool,
+}
 
 pub const APPLICATION_ID: i64 = 0x4c4d5752;
 pub const SCHEMA_VERSION: i64 = 7;
@@ -50,6 +62,8 @@ pub enum Error {
     Cancelled,
     RepairRequired,
     ResourceBudget,
+    /// `search_ranked` on a store without the ranked-search token index.
+    RankedIndexDisabled,
 }
 pub type Result<T> = std::result::Result<T, Error>;
 impl From<rusqlite::Error> for Error {
@@ -139,7 +153,11 @@ impl Catalog {
             Err(e) => Err(e),
         }
     }
+    /// Open with the default options: no ranked-search index (see [`CatalogOptions`]).
     pub fn open(dir: &Path, dataset: &str) -> Result<Self> {
+        Self::open_with(dir, dataset, &CatalogOptions::default())
+    }
+    pub fn open_with(dir: &Path, dataset: &str, options: &CatalogOptions) -> Result<Self> {
         db::local_path(dir)?;
         if !matches!(dataset, "synthetic" | "personal") {
             return Err(Error::Invalid("dataset class"));
@@ -147,7 +165,7 @@ impl Catalog {
         std::fs::create_dir_all(dir)?;
         let dir = sqlite_dir(&dir.canonicalize()?);
         db::local_path(&dir)?;
-        let connection = db::open_pair(&dir, dataset)?;
+        let connection = db::open_pair_with(&dir, dataset, options.ranked_index)?;
         let writer = std::sync::Arc::new(Writer::start(connection)?);
         Ok(Self { dir, writer })
     }

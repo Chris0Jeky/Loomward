@@ -1,9 +1,9 @@
 //! Search index benchmark (LW-113): generated synthetic names only, no filesystem enumeration.
 //!
-//! `search_bench --rows 1000000 [--no-index]` builds one root through the first-scan bulk path,
+//! `search_bench --rows 1000000 [--no-index|--no-token-index]` builds one root through the first-scan bulk path,
 //! relists 100 directories as a watcher would (renames and removals), then times first pages of a
 //! fixed query set. `--no-index` drops the index and its triggers right after open, for an A/B of
-//! the write path; queries are skipped in that mode.
+//! the write path; queries are skipped in that mode. `--no-token-index` keeps the trigram index and opens the catalogue without the ranked-search token index.
 use loomward_catalog::*;
 use rusqlite::Connection;
 use serde_json::json;
@@ -82,7 +82,7 @@ fn summary(mut ms: Vec<f64>) -> serde_json::Value {
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() < 2 || args[0] != "--rows" {
-        return Err("usage: search_bench --rows 1000000 [--no-index]".into());
+        return Err("usage: search_bench --rows 1000000 [--no-index|--no-token-index]".into());
     }
     let rows: usize = args[1].parse()?;
     let indexed = !args.iter().any(|a| a == "--no-index");
@@ -90,7 +90,15 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         return Err("rows must be 1000..=2000000".into());
     }
     let temp = tempfile::tempdir()?;
-    let c = Catalog::open(temp.path(), "synthetic")?;
+    // The ranked-search token index is on unless `--no-token-index` (or `--no-index`) asks for the v1 write path.
+    let ranked = indexed && !args.iter().any(|a| a == "--no-token-index");
+    let c = Catalog::open_with(
+        temp.path(),
+        "synthetic",
+        &CatalogOptions {
+            ranked_index: ranked,
+        },
+    )?;
     let db = Connection::open(temp.path().join("catalog.db"))?;
     if !indexed {
         db.execute_batch("DROP TRIGGER search_file_insert; DROP TRIGGER search_file_delete; DROP TRIGGER search_file_rename; DROP TRIGGER search_dir_insert; DROP TRIGGER search_dir_delete; DROP TRIGGER search_dir_rename; DROP TABLE search_name;")?;
