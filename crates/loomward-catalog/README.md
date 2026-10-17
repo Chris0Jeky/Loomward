@@ -137,8 +137,12 @@ unknown allocation after known zero. Name/modified sorts are bounded to 10,000
 direct children. Children cursors bind catalogue instance, anchor, `subtree_rev`,
 sort and basis. Search binds the instance, `catalog_rev`, full filter and resumable
 scan watermark; a budget hit can return a continuation even without matches.
-Paths use one ancestor query and repeated search parents are cached. Breakdown
+Search streams each pass once per page under the work/deadline guard; rejected hits advance
+the same cursor without restarting FTS every 128 candidates. Paths use one ancestor query;
+search ancestry uses a bounded recursive query and caches repeated parents. Breakdown
 uses subtree-revision caching; age and active-run results are not cached.
+
+Synthetic 1M/10M query-cost measurements: [#552 evidence](../../evidence/v3/search-n1-552.md).
 
 `search_ranked` (LW-113 F2, off by default: it needs the token index, which
 `Catalog::open_with(.., &CatalogOptions { ranked_index: true })` builds; without it the call
