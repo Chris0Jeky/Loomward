@@ -910,6 +910,63 @@ fn a_revocation_after_the_rename_commits_annotated() {
     assert!(report.equal(), "{report:#?}");
 }
 
+/// Review of #544 (HIGH 2): a fence or a cancel landing inside a file's chunk loop stops the run. It once
+/// spun forever, because `read_exact` retries `Interrupted`. Run on a detached thread with a timeout, so
+/// a regression fails instead of hanging the suite.
+#[test]
+fn a_fence_or_cancel_mid_file_stops_the_run() {
+    for fenced in [true, false] {
+        let Some(lab) = Lab::new() else { return };
+        fs::create_dir(lab.src().join("top")).unwrap();
+        fs::write(lab.src().join("top/big.bin"), vec![5u8; 4 << 20]).unwrap();
+        let op = lab.start(&["top"]);
+        let lab = std::sync::Arc::new(lab);
+        let (reached, wait) = std::sync::mpsc::channel::<()>();
+        let (go, resume) = std::sync::mpsc::channel::<()>();
+        let resume = Mutex::new(resume);
+        let fired = AtomicBool::new(false);
+        let control = std::sync::Arc::new(Control::new(false).with_hook(move |p, _| {
+            if p == Point::Chunk(1 << 20) && !fired.swap(true, Ordering::SeqCst) {
+                reached.send(()).unwrap();
+                resume.lock().unwrap().recv().unwrap();
+            }
+            Flow::Continue
+        }));
+        let (done, outcome) = std::sync::mpsc::channel();
+        {
+            let (lab, control) = (lab.clone(), control.clone());
+            std::thread::spawn(move || {
+                let _ = done.send(run(&lab.store, op, &control).unwrap());
+            });
+        }
+        wait.recv_timeout(Duration::from_secs(60)).unwrap();
+        if fenced {
+            let ack = fence(
+                &lab.store,
+                op,
+                &control,
+                loomward_operations::FenceCause::GrantRevoked,
+            )
+            .unwrap();
+            assert_eq!(ack, Ack::StoppedBeforePublish);
+        } else {
+            control.cancel();
+        }
+        go.send(()).unwrap();
+        let outcome = outcome
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap_or_else(|_| panic!("fenced {fenced}: the run never stopped"));
+        assert_eq!(outcome.state, OpState::Cancelled, "{fenced} {outcome:?}");
+        if fenced {
+            assert_eq!(outcome.refusal, Some((Refusal::GrantRevoked, None)));
+        }
+        // No chunk after the stop: only the first 1 MiB reached the staged file.
+        let staging = lab.dest().join(&staging_dirs(&lab)[0]);
+        let len = fs::metadata(staging.join("big.bin")).unwrap().len();
+        assert!(len <= 1 << 20, "fenced {fenced}: {len} bytes");
+    }
+}
+
 /// The admission lock: a revocation waits for the one effect step in flight, and only for it; a step
 /// that does not return in time leaves the revocation `pending_in_flight_step`.
 #[test]

@@ -290,6 +290,8 @@ pub enum Point {
     AfterPublish,
     /// Before the item's preallocation and first write (lane C6 fault seam).
     Writing(u32),
+    /// Inside a stream's chunk loop, between effect steps: the bytes handed to the writer so far.
+    Chunk(u64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -528,13 +530,24 @@ fn oid(key: &ObjectKey) -> ObjectId {
     }
 }
 
+/// What a `Cancellable` read reports once the owner cancels or a fence lands. Never `Interrupted`:
+/// `read_exact` retries that forever (review of #544).
+#[derive(Debug)]
+struct Stopped;
+impl std::fmt::Display for Stopped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("copy stopped by cancel or fence")
+    }
+}
+impl std::error::Error for Stopped {}
+
 fn io_refusal(e: &io::Error) -> Stop {
     match e.raw_os_error() {
         Some(80 | 183) => Stop::Refused(Refusal::StagingNameTaken, None),
         Some(5) => Stop::Refused(Refusal::AccessDenied, None),
         Some(32 | 33) => Stop::Refused(Refusal::StagingInUse, None),
         Some(39 | 112) => Stop::Refused(Refusal::InsufficientSpace, None),
-        _ if e.kind() == io::ErrorKind::Interrupted => Stop::Cancel,
+        _ if e.get_ref().is_some_and(|r| r.is::<Stopped>()) => Stop::Cancel,
         _ => Stop::Attention(None),
     }
 }
@@ -583,16 +596,14 @@ impl<'a, R> Cancellable<'a, R> {
 impl<R: Read> Read for Cancellable<'_, R> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         self.3 = None;
+        // A test seam between chunk steps; a crash or fault here is not modelled.
+        let _ = self.1.at(Point::Chunk(self.2));
         if self.1.cancel.load(Ordering::SeqCst) {
-            return Err(io::Error::from(io::ErrorKind::Interrupted));
+            return Err(io::Error::other(Stopped));
         }
         #[cfg(test)]
         crash::hit(&format!("write@{}", self.2));
-        self.3 = Some(
-            self.1
-                .admit()
-                .map_err(|_| io::Error::from(io::ErrorKind::Interrupted))?,
-        );
+        self.3 = Some(self.1.admit().map_err(|_| io::Error::other(Stopped))?);
         let n = self.0.read(buffer)?;
         self.2 += n as u64;
         Ok(n)
