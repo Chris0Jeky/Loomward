@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { ScriptTarget, transpileModule } from 'typescript';
 import { Client, LoomwardError } from '../../src/lib/transport/client';
 import { createMockTransport } from '../../src/lib/transport/mock';
 import type { DeveloperClutterReport } from '../../src/lib/contracts.gen';
@@ -77,9 +78,51 @@ describe('mock clutter transport', () => {
   });
 });
 
-// The View has no DOM harness in this repository, so this pins the properties that must never regress by source.
+// Request state runs directly here; the browser leg covers the rendered view.
 describe('developer clutter view', () => {
   const source = readFileSync(new URL('../../src/views/clutter/View.svelte', import.meta.url), 'utf8');
+
+  // Execute the view's actual read function without adding a DOM dependency to the Node test suite.
+  function reader(call: (command: string, payload: unknown) => Promise<unknown>) {
+    const read = source.slice(source.indexOf('  async function read('), source.indexOf('\n  $effect('));
+    return new Function('session', `
+      let report = null, loading = true, error = '', generation = 0;
+      ${transpileModule(read, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText}
+      return { read, state: () => ({ report, loading, error }) };
+    `)({ client: { call }, handle: String }) as {
+      read: (id: string) => Promise<void>;
+      state: () => { report: DeveloperClutterReport | null; loading: boolean; error: string };
+    };
+  }
+
+  it('clears the previous root report while the next root read is pending', async () => {
+    const first = { root_id: 'rt_first' } as DeveloperClutterReport;
+    const second = { root_id: 'rt_second' } as DeveloperClutterReport;
+    let finish!: (reply: { result: DeveloperClutterReport }) => void;
+    const pending = new Promise<{ result: DeveloperClutterReport }>((resolve) => { finish = resolve; });
+    const view = reader(async (_command, payload) =>
+      (payload as { root_id: string }).root_id === 'rt_first' ? { result: first } : pending);
+    await view.read('rt_first');
+    expect(view.state().report).toEqual(first);
+    const reading = view.read('rt_second');
+    try {
+      expect(view.state().loading).toBe(true);
+      expect(view.state().report).toBeNull();
+    } finally {
+      finish({ result: second });
+      await reading;
+    }
+    expect(view.state().report).toEqual(second);
+    expect(view.state().loading).toBe(false);
+  });
+
+  it('ends the initial loading state when no usable root was selected', async () => {
+    let calls = 0;
+    const view = reader(async () => { calls++; throw new Error('no root should be read'); });
+    await view.read('');
+    expect(view.state()).toEqual({ report: null, loading: false, error: '' });
+    expect(calls).toBe(0);
+  });
 
   it('offers no action on a folder: only a root choice and a read-again button', () => {
     expect(source.match(/<button/g)).toHaveLength(1);

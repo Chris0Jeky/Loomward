@@ -406,7 +406,7 @@ impl Inner {
         }
         let handled = match command {
             SessionHello => self.hello(ctx),
-            HealthGet => self.health(),
+            HealthGet => self.health(work),
             AppsList | DesktopContexts => self.metadata_page(req, command, work, metadata_cursor),
             RootsList => self.roots_list(work),
             RootsRequestGrant => self.request_grant(ctx),
@@ -555,11 +555,12 @@ impl Inner {
             ScanStartRequestMode::Full => self.engine.scan_start(&granted, r.budget.clone()),
             ScanStartRequestMode::Refresh => self.engine.scan_refresh(&granted, r.budget.clone()),
         };
-        // #561: automatic watcher work never refuses the owner's scan. Fence new automatic
-        // starts, then pre-empt the running one: this full pass covers its scope, and freshness
-        // stays stale until this pass completes. The brief start/revoke fence (busy without a job)
+        // Automatic work never refuses the owner's scan: fence all automatic starts, pre-empt
+        // this root's automatic job or automatic jobs filling the shared pool. Other roots stay
+        // stale until their own full pass completes. The brief start/revoke fence (busy without a job)
         // is waited out; a revoke then answers permission_denied. An explicit scan stays busy.
         let claim = self.freshness.explicit(row);
+        let automatic = self.freshness.automatic_jobs();
         let active = |id| {
             self.engine.job_status(id).is_ok_and(|j| {
                 use loomward_protocol::JobState::*;
@@ -571,14 +572,31 @@ impl Inner {
             |w| w.deadline,
         );
         let mut job = start();
-        while let Err(loomward_engine::EngineError::Busy { detail, .. }) = &job {
-            let holder = detail.as_ref().and_then(|d| d.get("job_id")?.as_str());
-            match &claim.auto {
-                _ if detail.is_none() => {}
-                // Once the automatic job is terminal, the retry below starts the scan.
-                Some(auto) if holder == Some(auto.as_str()) => {
-                    if active(auto) {
-                        let _ = self.engine.scan_cancel(auto);
+        loop {
+            match &job {
+                Err(loomward_engine::EngineError::ResourceBudget { .. }) => {
+                    let mut stopping = false;
+                    for auto in &automatic {
+                        if active(auto) {
+                            let _ = self.engine.scan_cancel(auto);
+                            stopping = true;
+                        }
+                    }
+                    if !stopping {
+                        break;
+                    }
+                }
+                Err(loomward_engine::EngineError::Busy { detail, .. }) => {
+                    let holder = detail.as_ref().and_then(|d| d.get("job_id")?.as_str());
+                    match &claim.auto {
+                        _ if detail.is_none() => {}
+                        // Once the automatic job is terminal, the retry below starts the scan.
+                        Some(auto) if holder == Some(auto.as_str()) => {
+                            if active(auto) {
+                                let _ = self.engine.scan_cancel(auto);
+                            }
+                        }
+                        _ => break,
                     }
                 }
                 _ => break,
@@ -715,7 +733,7 @@ impl Inner {
 
     /// `Health.engine` is read now from the process itself (#163), never a retained telemetry
     /// sample under a fresh `observed_at`. Unknown stays `null`.
-    pub(crate) fn health(&self) -> Handled {
+    pub(crate) fn health(&self, work: Option<&crate::ReadWork>) -> Handled {
         let own = match loomward_telemetry::own_usage() {
             loomward_telemetry::Observation::Observed { value } => Some(value),
             _ => None,
@@ -725,7 +743,10 @@ impl Inner {
                 .ok()
                 .map(|m| m.len().to_string())
         };
-        let (files, dirs) = db::counts(&self.db()).map_err(sql_error)?;
+        let (files, dirs) = self
+            .read_reader(work)?
+            .entry_counts()
+            .map_err(catalog_error)?;
         let jobs = self.engine.job_list(&decode_exact(json!({"limit": 50}))?);
         #[cfg(test)]
         let jobs = if self
@@ -833,6 +854,10 @@ impl Inner {
             .map_err(sql_error)?
             .ok_or_else(|| fail(ErrorCode::NotFound, "unknown grant"))?;
         if state != "active" {
+            // A prior revoke may have committed its grant but failed feature cleanup.
+            self.engine
+                .learning_redact_revoked()
+                .map_err(ErrorBody::from)?;
             let at = revoked_at.ok_or_else(|| {
                 fail(
                     ErrorCode::PermissionDenied,
@@ -864,12 +889,15 @@ impl Inner {
                 .engine
                 .scan_writer_fence(&loomward_engine::scan::RootKey::Grant(grant), &id);
         }
-        // Durable already; a failed sweep is repeated at the next refit and at startup.
-        let _ = self.engine.learning_redact_revoked();
+        let redaction = self
+            .engine
+            .learning_redact_revoked()
+            .map_err(ErrorBody::from);
         let revs = self.revisions()?;
         if let Ok(list) = self.root_list(None) {
             self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));
         }
+        redaction?;
         Ok((ts_ns(at), revs))
     }
 
@@ -967,7 +995,12 @@ impl Inner {
         let _ = self
             .engine
             .scan_writer_fence(&loomward_engine::scan::RootKey::Grant(grant), id);
-        let _ = self.engine.learning_redact_revoked();
+        // This callback has no reply channel; model reads retry cleanup and fail if it still fails.
+        if self.engine.learning_redact_revoked().is_err() {
+            eprintln!(
+                "learning redaction failed after root identity changed; advice reads will retry"
+            );
+        }
         if let (Ok(revs), Ok(list)) = (self.revisions(), self.root_list(None)) {
             self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));
         }

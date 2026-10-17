@@ -22,21 +22,6 @@ impl Inner {
             return Err(fail(ErrorCode::PermissionDenied, "grant_not_active"));
         }
         self.session_root_gate(&root)?;
-        let granted = self.engine.granted_root(
-            request.root_id.clone(),
-            root.grant,
-            &CatalogRootIdentity {
-                row,
-                instance: self.instance.clone(),
-            },
-        );
-        // A replaced folder ends its grant here exactly as at scan start (#378).
-        if matches!(&granted, Err(loomward_engine::EngineError::PermissionDenied { message })
-            if message == "root_identity_changed")
-        {
-            self.identity_changed(root.grant, &request.root_id, true);
-        }
-        let granted = granted?;
         let deadline = work.map_or_else(|| Instant::now() + Duration::from_secs(5), |w| w.deadline);
         // #568: fence automatic starts through candidate selection and submission.
         let claim = self.freshness.explicit(row);
@@ -55,6 +40,21 @@ impl Inner {
         #[cfg(test)]
         self.hooks
             .gate(Command::DuplicatesInspect, "candidates_ready");
+        let granted = self.engine.granted_root(
+            request.root_id.clone(),
+            root.grant,
+            &CatalogRootIdentity {
+                row,
+                instance: self.instance.clone(),
+            },
+        );
+        // A replaced folder ends its grant here exactly as at scan start (#378).
+        if matches!(&granted, Err(loomward_engine::EngineError::PermissionDenied { message })
+            if message == "root_identity_changed")
+        {
+            self.identity_changed(root.grant, &request.root_id, true);
+        }
+        let granted = granted?;
         let start = |candidates: &loomward_catalog::DuplicateCandidates| {
             self.engine.duplicates_start(
                 granted.clone(),

@@ -147,8 +147,10 @@ fn incomplete_and_unknown_allocations_do_not_become_exact_or_zero() {
     lab.db
         .execute("UPDATE dir SET sub_alloc_unknown=1 WHERE id=?1", [target])
         .unwrap();
-    assert_eq!(lab.report(200).candidates[0].logical_bytes, Some(42));
-    assert_eq!(lab.report(200).candidates[0].allocated_bytes, None);
+    let report = lab.report(200);
+    assert!(report.partial);
+    assert_eq!(report.candidates[0].logical_bytes, Some(42));
+    assert_eq!(report.candidates[0].allocated_bytes, None);
     lab.db
         .execute(
             "UPDATE dir SET sub_complete=0,listing_state='incomplete' WHERE id=?1",
@@ -258,6 +260,40 @@ fn bounds_and_deadlines_are_enforced() {
         reader.developer_clutter(lab.root, 200),
         Err(Error::Cancelled)
     ));
+}
+
+#[test]
+fn candidate_shields_preserve_an_adjacent_positive_control() {
+    let lab = Lab::new();
+    lab.manifest(lab.dir, "Cargo.toml");
+    let target = lab.directory(lab.dir, "target", 42);
+    for (flags, attrs, state) in [
+        (EXCLUDED_FLAGS, 16, "complete"),
+        (0, 16 | 1024, "complete"),
+        (0, 16, "excluded"),
+    ] {
+        assert_eq!(
+            lab.report(200).candidates[0].directory,
+            NodeKey::Dir(target)
+        );
+        lab.db
+            .execute(
+                "UPDATE dir SET flags=?2,attrs=?3,listing_state=?4 WHERE id=?1",
+                params![target, flags, attrs, state],
+            )
+            .unwrap();
+        assert!(lab.report(200).candidates.is_empty());
+        lab.db
+            .execute(
+                "UPDATE dir SET flags=0,attrs=16,listing_state='complete' WHERE id=?1",
+                [target],
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        lab.report(200).candidates[0].directory,
+        NodeKey::Dir(target)
+    );
 }
 
 #[test]
@@ -420,8 +456,8 @@ impl Lab {
     }
 }
 
-/// One 50k-file directory with 2k child dirs and four output-named children, beside a
-/// dependency tree of about 20k dirs: the shapes #515 feared.
+/// One 50k-file directory with 3k child dirs and four output-named children, beside a
+/// dependency tree of 51k dirs: exceeding both shapes #515 feared.
 fn wide_lab() -> (Lab, Vec<i64>) {
     let lab = Lab::new();
     let mut expected = vec![];
@@ -431,7 +467,7 @@ fn wide_lab() -> (Lab, Vec<i64>) {
         lab.manifest(wide, "build.gradle");
         lab.manifest(wide, "demo.csproj");
         lab.files(wide, 50_000);
-        for i in 0..2_000 {
+        for i in 0..3_000 {
             let child = lab.directory(wide, &format!("child-{i}"), 0);
             lab.files(child, 2);
         }
@@ -442,7 +478,7 @@ fn wide_lab() -> (Lab, Vec<i64>) {
         lab.manifest(app, "package.json");
         let modules = lab.directory(app, "node_modules", 20_000);
         expected.push(modules);
-        assert_eq!(lab.dependency_tree(modules, 200, 100), 200 * 102);
+        assert_eq!(lab.dependency_tree(modules, 500, 100), 500 * 102);
     });
     (lab, expected)
 }
@@ -471,6 +507,63 @@ fn wide_directory_and_large_node_modules_stay_inside_the_work_budget() {
     // The real reader, with its 2,000,000-step WorkGuard, must answer instead of refusing.
     let report = lab.report(200);
     assert_eq!(report.candidates.len(), 5);
+}
+
+#[test]
+#[ignore = "1M-row synthetic scale benchmark; run explicitly with --ignored --nocapture"]
+fn million_row_output_interiors_do_not_increase_detector_work() {
+    let (lab, expected) = wide_lab();
+    let (before, before_steps, _) = run_sql(&lab.db, SQL_NOW, lab.dir, 200, 2_000_000);
+    let rows = || {
+        lab.db
+            .query_row(
+                "SELECT (SELECT count(*) FROM file)+(SELECT count(*) FROM dir)",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+    };
+    let initial_rows = rows();
+    let started = std::time::Instant::now();
+    lab.bulk(|lab| {
+        lab.files(
+            *expected.last().unwrap(),
+            (1_000_000 - initial_rows) as usize,
+        )
+    });
+    println!(
+        "1M-row lab: added {} output-interior files in {:?}",
+        1_000_000 - initial_rows,
+        started.elapsed()
+    );
+    assert_eq!(rows(), 1_000_000);
+    println!(
+        "v1 plan: {:#?}\ncurrent plan: {:#?}",
+        plan(&lab.db, SQL_V1),
+        plan(&lab.db, SQL_NOW)
+    );
+    for _ in 0..3 {
+        let (after, steps, elapsed) = run_sql(&lab.db, SQL_NOW, lab.dir, 200, 2_000_000);
+        println!("1M-row detector: {steps} VM steps in {elapsed:?}");
+        assert_eq!(after, before);
+        assert_eq!(steps, before_steps, "output interiors must not be visited");
+    }
+    let started = std::time::Instant::now();
+    let report = lab.report(200);
+    println!(
+        "1M-row Reader: {} candidates in {:?}",
+        report.candidates.len(),
+        started.elapsed()
+    );
+    assert_eq!(report.candidates.len(), expected.len());
+    for id in expected {
+        assert!(report
+            .candidates
+            .iter()
+            .any(|c| c.directory == NodeKey::Dir(id)));
+    }
+    assert!(!report.partial);
+    assert!(!report.truncated);
 }
 
 #[test]

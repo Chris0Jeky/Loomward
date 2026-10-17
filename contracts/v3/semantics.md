@@ -97,6 +97,14 @@ Revoking a root (or its grant ending `identity_changed`) redacts the stored feat
 human event on its nodes to empty values, withdraws those events from training and deletes every
 stored model, since a model carries name tokens; the sweep repeats at startup and before each refit.
 A revoked root's nodes cannot be labelled (`not_found`); withdrawal of an earlier label stays possible.
+Redaction is permanent for that feature snapshot, including after an `identity_changed` grant is
+replaced. A fresh label under an active grant records a new snapshot; it does not restore the old one.
+New feedback records the feature snapshot's grant in the same transaction as the event, so moves,
+pending rebinds and a rebuilt catalogue do not change its origin. Historical events without that
+provenance retain the older best-effort sweep through their current binding; a migration policy for
+those snapshots remains open in #370. Cleanup is retried before model reads; an unsuccessful retry
+returns an error rather than serving the retained candidate. An explicit revoke can report a cleanup
+error after the grant has already ended; retrying the revoke repeats cleanup.
 
 Every teacher entry point (`teacher.preview`, `grants.create_disclosure`, `teacher.run`,
 `teacher.results`) refuses a personal session with `capability_unavailable` and
@@ -113,7 +121,10 @@ events are excluded and counted in `learning.status.unresolved_human_events`.
 
 `learning.refit` produces a persisted **candidate**, without promotion (LW-027). Status and queue
 use the latest candidate for advice only; `calibrated` and `autonomy_allowed` remain false. Scores
-are **relative scores, not probabilities**. Queue order is descending review priority with a node
+are **relative scores, not probabilities**. New fits record the highest human-feedback row ID observed at commit and use that
+monotonic counter for freshness, independent of the wall clock. Older stored candidates retain
+their timestamp guard until explicitly refitted; no feature history is removed by this change.
+Queue order is descending review priority with a node
 ID tie-break. The synthetic smoke queue is bounded to 10,000 eligible files; refits accept at most
 the latest unretracted human labels for at most 10,000 resolved objects, newest event first. Human history and durable replay receipts remain intact; older objects fall outside this explicit training window.
 Feedback changed during a refit is `stale_generation`; retry explicitly. Cancellation is available
@@ -233,7 +244,7 @@ Rules:
   SHOULD page from slices (which are snapshots) during scans and use cursors once the scan finishes.
 - A page that stops on its work budget returns the items found so far, `budget_hit: true`, and a cursor that
   resumes the scan after the last examined row (not the last returned row).
-- `search.query` (LW-113, owner-local and grant-scoped; no MCP or Ask exposure before LW-067) reads a name index
+- `search.query` (LW-113; client principals require an owner-issued LW-067 grant through the LW-069 shared adapter) reads a name index
   that every catalogue commit keeps exact in the same transaction. Hits come in tiers, each tier folders first and
   then files in index-key order: `exact` (the whole name, or the name up to a dot), `prefix`, `token` (after a
   separator), `substring`, then for several words `token` (every word at a word start) and `substring` (every word
