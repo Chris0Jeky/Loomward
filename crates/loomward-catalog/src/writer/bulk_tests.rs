@@ -663,6 +663,167 @@ fn a_failed_run_discards_the_build_and_the_next_scan_is_incremental() {
     }
 }
 
+/// Refuse one real SQLite savepoint RELEASE; rusqlite then rolls its SQL back on drop.
+fn fault_writer(path: &Path) -> (Writer, Arc<AtomicBool>) {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization, TransactionOperation};
+    let conn = crate::db::open_pair(path, "synthetic").unwrap();
+    let armed = Arc::new(AtomicBool::new(false));
+    let fault = armed.clone();
+    conn.authorizer(Some(move |ctx: AuthContext<'_>| {
+        if matches!(
+            ctx.action,
+            AuthAction::Savepoint {
+                operation: TransactionOperation::Release,
+                ..
+            }
+        ) && fault.swap(false, Ordering::SeqCst)
+        {
+            Authorization::Deny
+        } else {
+            Authorization::Allow
+        }
+    }))
+    .unwrap();
+    let writer = Writer::start(conn).unwrap();
+    writer.set_bulk_first_scan(true);
+    (writer, armed)
+}
+
+fn bulk_map_rollback(fail_begin: bool) {
+    let _hang = watchdog();
+    let temp = tempfile::tempdir().unwrap();
+    let (w, fault) = fault_writer(temp.path());
+    let (grant, root_dir) = register(&w, 1);
+    let start = |mode: &str| WriteCommand::BeginRun {
+        grant_id: grant,
+        mode: mode.into(),
+        strategy: "fixture".into(),
+        started_at_ns: 1,
+    };
+    let run = if fail_begin {
+        fault.store(true, Ordering::SeqCst);
+        assert!(w.call(start("full")).is_err());
+        let WriteReply::Run(run) = w.call(start("refresh")).unwrap() else {
+            panic!("run receipt")
+        };
+        assert_eq!(run, 1, "rolled-back run ID must be reused");
+        run
+    } else {
+        let run = begin(&w, grant);
+        fault.store(true, Ordering::SeqCst);
+        assert!(end(&w, run, "completed").is_err());
+        assert_eq!(bulk_rows(temp.path()), 1);
+        run
+    };
+    w.call(WriteCommand::DirListing(DirListing {
+        run_id: run,
+        dir_id: root_dir,
+        files: vec![obs("retained.txt", 7, Some(1))],
+        dirs: vec![],
+        state: "complete".into(),
+        skipped: 0,
+        errors: 0,
+    }))
+    .expect("retry must use the tables that survived rollback");
+    assert_eq!(visible(temp.path(), root_dir).1, i64::from(fail_begin));
+    end(&w, run, "completed").unwrap();
+    assert_eq!(visible(temp.path(), root_dir), (1, 1));
+    assert_eq!(bulk_rows(temp.path()), 0);
+}
+
+#[test]
+fn bulk_map_follows_begin_savepoint_rollback() {
+    bulk_map_rollback(true);
+}
+
+#[test]
+fn bulk_map_follows_end_savepoint_rollback() {
+    bulk_map_rollback(false);
+}
+
+#[test]
+fn bulk_end_reclaims_large_freelists_without_changing_rows() {
+    let _hang = watchdog();
+    let temp = tempfile::tempdir().unwrap();
+    let catalog = open(temp.path(), true);
+    let w = catalog.writer();
+    let (grant, root_dir) = register(w, 1);
+    let run = begin(w, grant);
+    let count = 30_000;
+    for chunk in 0..30 {
+        w.call(WriteCommand::StageChunk {
+            run_id: run,
+            dir_id: root_dir,
+            seq: chunk,
+            files: (0..1000)
+                .map(|i| {
+                    Observation::file(format!("fixture-{:08}.txt", chunk * 1000 + i), 7, Some(7))
+                })
+                .collect(),
+            dirs: vec![],
+        })
+        .unwrap();
+    }
+    w.call(WriteCommand::ListingDone {
+        run_id: run,
+        dir_id: root_dir,
+        outcome: ListingOutcome::Complete,
+        skipped: 0,
+        errors: 0,
+    })
+    .unwrap();
+    let (other_grant, other_dir) = register(w, 2);
+    let other_run = begin(w, other_grant);
+    w.call(WriteCommand::DirListing(DirListing {
+        run_id: other_run,
+        dir_id: other_dir,
+        files: vec![obs("neighbour.txt", 9, Some(2))],
+        dirs: vec![],
+        state: "complete".into(),
+        skipped: 0,
+        errors: 0,
+    }))
+    .unwrap();
+    let snapshot = Connection::open(temp.path().join("catalog.db")).unwrap();
+    snapshot
+        .execute_batch("BEGIN; SELECT count(*) FROM file")
+        .unwrap();
+    end(w, run, "completed").unwrap();
+    assert_eq!(
+        snapshot
+            .query_row("SELECT count(*) FROM file", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    snapshot.execute_batch("ROLLBACK").unwrap();
+    assert_eq!(visible(temp.path(), root_dir), (1, count));
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    let free: i64 = db
+        .query_row("PRAGMA freelist_count", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(free, 0, "bulk build left unused pages");
+    assert_eq!(
+        db.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+        "ok"
+    );
+    assert_eq!(
+        db.query_row("SELECT sum(logical) FROM file", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        count * 7
+    );
+    db.execute_batch("INSERT INTO search_name(search_name,rank) VALUES('integrity-check',1)")
+        .unwrap();
+    assert_eq!(
+        bulk_rows(temp.path()),
+        2,
+        "another root's build must survive compaction"
+    );
+    assert_eq!(visible(temp.path(), other_dir), (1, 0));
+    end(w, other_run, "completed").unwrap();
+    assert_eq!(visible(temp.path(), other_dir), (1, 1));
+}
+
 /// #386: revocation, a failed `EndRun` and the swap drop a build with one cascading
 /// `DELETE FROM bulk_dir`, a trigger recursion SQLite caps at 1000 levels. That is safe only while
 /// the writer's chain limit keeps every build shallower: this builds the deepest chain the writer
