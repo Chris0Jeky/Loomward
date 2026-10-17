@@ -42,13 +42,16 @@
     notice = ''; error = ''; invalidField = '';
     const parsed = settingsFrom(form);
     if ('error' in parsed) { error = parsed.error; invalidField = parsed.field; return; }
+    // Shares load()'s generation: a reply superseded by a newer load or save is dropped, so it cannot show older thresholds.
+    const mine = ++generation;
     saving = true;
     try {
       const { result } = await session.client.call('alerts.configure', parsed.settings);
+      if (mine !== generation) return;
       report = result;
       form = formFrom(result.settings);
       notice = 'Thresholds saved. This changes what is flagged here, nothing else.';
-    } catch (e) { error = session.handle(e); }
+    } catch (e) { if (mine === generation) error = session.handle(e); }
     finally { saving = false; }
   }
 
