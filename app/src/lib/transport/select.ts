@@ -40,7 +40,7 @@ export function chooseTransport(env: Env, dev = import.meta.env.DEV): Choice {
   // `?api=` lets the Vite dev server (a different loopback origin) reach loomward-serve; loopback only.
   const api = q.get('api');
   if (api !== null && !LOOPBACK.test(api)) return { mode: 'none', reason: 'The api parameter must be a loopback http address.' };
-  return { mode: 'http', base: api ?? env.origin, token };
+  return { mode: 'http', base: api?.replace('http://localhost', 'http://127.0.0.1') ?? env.origin, token };
 }
 
 export async function buildTransport(c: Exclude<Choice, { mode: 'none' }>): Promise<Transport> {

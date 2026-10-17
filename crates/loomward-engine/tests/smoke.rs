@@ -148,6 +148,7 @@ fn implemented_infrastructure_and_unavailable_future_lanes() {
             .unwrap(),
             1,
             &json!({}),
+            None,
         ),
         Component::Learning,
     );

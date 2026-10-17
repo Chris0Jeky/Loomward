@@ -380,8 +380,10 @@ pub(crate) fn reserved_device(path: &Path) -> bool {
     let stem = stem.to_ascii_uppercase();
     ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"].contains(&stem.as_str())
         || ["COM", "LPT"].iter().any(|p| {
-            stem.strip_prefix(p)
-                .is_some_and(|n| n.len() == 1 && n.as_bytes()[0].is_ascii_digit())
+            stem.strip_prefix(p).is_some_and(|n| {
+                (n.len() == 1 && n.as_bytes()[0].is_ascii_digit())
+                    || matches!(n, "\u{00b9}" | "\u{00b2}" | "\u{00b3}")
+            })
         })
 }
 

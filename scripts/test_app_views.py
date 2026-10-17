@@ -64,6 +64,9 @@ class FakeEngine:
         self.fail_children = False
         self.stale_once = False
         self.nested = False  # tree.children lists one sub-folder (nd_dir_N+1, down to nd_dir_3) beside a file
+        self.node_prefix = ''  # a rebuild reissues IDs without changing folder names
+        self.nested_depth = 3
+        self.children_gate: tuple[str, threading.Event, threading.Event] | None = None
         self.gone: set[str] = set()  # node ids the engine no longer knows: tree.children answers not_found
         self.broken: dict[str, str] = {}  # node id -> error code tree.children answers instead of rows (e.g. an ancestor that fails)
         self.fail_proposals = False
@@ -72,8 +75,10 @@ class FakeEngine:
         self.candidate_gate = None  # one (arrived, release) event pair
         self.tier_volumes: list[dict] | None = None
         self.candidate_sources: list[str] = []
+        self.placement_groups: dict[str, list[dict]] = {}
+        self.saved_source = 'vo_x'
         self.simulate_overrides: list = []
-        self.plan_mode = 'executable'  # 'executable' or 'malformed': how placement.simulate misbehaves
+        self.plan_mode = 'executable'  # 'executable', 'malformed', or a 'safe' nonexecutable reply
         self.slice_queue: list[tuple[float, str]] = []  # (delay, root name) per tree.slice call, then the default
         self.events: queue.Queue[dict] = queue.Queue()
         self.seq = 0
@@ -124,7 +129,7 @@ class FakeEngine:
             return {
                 'protocol': 'loomward/3', 'engine_version': 'view-fake', 'adapter': 'tauri' if desktop else 'http',
                 'dataset_class': 'personal' if desktop else 'synthetic', 'session_started_at': '2026-10-01T00:00:00Z',
-                'enumeration_strategy': 'std_read_dir', 'capabilities': {'observation': {'process_observation': self.process_error is not None}, 'effects': effects},
+                'enumeration_strategy': 'std_read_dir', 'capabilities': {'observation': {'duplicate_content_read': True, 'process_observation': self.process_error is not None}, 'effects': effects},
                 'features': {**{k: k == 'grant_picker' and self.grant_picker for k in ('grant_picker', 'disclosure_dialog', 'teacher_available', 'telemetry_available', 'gpu_available')},
                              'diagnostics_save': self.diagnostics_answers is not None},
                 'limits': {'max_request_bytes': 65536, 'max_slice_nodes': 6000, 'max_page_items': 200},
@@ -215,15 +220,22 @@ class FakeEngine:
             delay, root = self.slice_queue.pop(0) if self.slice_queue else (0.0, 'Fake Root')
             time.sleep(delay)
             return {'anchor_node_id': 'nd_atlas', 'basis': 'logical', 'root_generations': [], 'complete': True, 'live': False, 'ordering': 'exact', 'truncated': False,
-                    'nodes': [{'node_id': 'nd_atlas', 'parent': None, 'name': 'Atlas'}, {'node_id': 'nd_' + root.replace(' ', '_'), 'parent': 0, 'name': root}]}
+                    'nodes': [{'node_id': 'nd_atlas', 'parent': None, 'name': 'Atlas'}, {'node_id': 'nd_' + self.node_prefix + root.replace(' ', '_'), 'parent': 0, 'name': root}]}
         if cmd == 'tree.children':
             if p['node_id'] in self.gone:
                 return ('not_found', 'fake engine: no such node')
             if p['node_id'] in self.broken:
                 return (self.broken[p['node_id']], 'fake engine: ancestor failed')
+            if self.children_gate and p['node_id'] == self.children_gate[0]:
+                _, arrived, release = self.children_gate
+                self.children_gate = None
+                arrived.set()
+                if not release.wait(9):
+                    return ('deadline_exceeded', 'synthetic children gate expired')
             if self.nested:
-                depth = int(p['node_id'].removeprefix('nd_dir_')) if p['node_id'].startswith('nd_dir_') else 0
-                sub = [{**row(f'dir-{depth + 1}', 0), 'node_id': f'nd_dir_{depth + 1}', 'kind': 'dir', 'extension': None, 'ext_family': None}] if depth < 3 else []
+                prefix = f'nd_{self.node_prefix}dir_'
+                depth = int(p['node_id'].removeprefix(prefix)) if p['node_id'].startswith(prefix) else 0
+                sub = [{**row(f'dir-{depth + 1}', 0), 'node_id': f'{prefix}{depth + 1}', 'kind': 'dir', 'extension': None, 'ext_family': None}] if depth < self.nested_depth else []
                 return {'anchor': p['node_id'], 'generation': '7', 'items': sub + [row('leaf.txt', 1)], 'next_cursor': None, 'total': len(sub) + 1, 'budget_hit': False}
             if self.fail_children:
                 return ('internal_error', 'fake engine: refresh failed')
@@ -239,19 +251,20 @@ class FakeEngine:
                     'policy': {'watch_free_fraction': 0.2, 'pressure_free_fraction': 0.1, 'reserve_note': 'r', 'note': 'n'}}
         if cmd == 'placement.candidates':
             self.candidate_sources.append(p['source_volume_id'])
+            g = {'group_id': 'cg_a', 'node_id': 'nd_a', 'root_id': 'rt_a', 'name': 'group-a', 'source_bytes': '5000', 'destination_bytes': '5000', 'transfer_bytes': '5000', 'estimate_basis': 'allocated_entries',
+                 'estimated_relief_bytes': '5000', 'relief_basis': 'verified_unique_allocation', 'heat': None, 'heat_basis': 'unknown', 'newest_modified_at': None, 'pinned': False, 'active': False, 'protected': False, 'days_since_move': 30, 'coverage': 'complete'}
+            groups = self.placement_groups.get(p['source_volume_id'], [g])
             gate, self.candidate_gate = self.candidate_gate, None
             if gate:
                 gate[0].set()
-                if not gate[1].wait(9):
+                if not gate[1].wait(60):  # every user releases in finally; slow CI runners need the headroom
                     return ('deadline_exceeded', 'synthetic candidate gate expired')
-            g = {'group_id': 'cg_a', 'node_id': 'nd_a', 'root_id': 'rt_a', 'name': 'group-a', 'source_bytes': '5000', 'destination_bytes': '5000', 'transfer_bytes': '5000', 'estimate_basis': 'allocated_entries',
-                 'estimated_relief_bytes': '5000', 'relief_basis': 'verified_unique_allocation', 'heat': None, 'heat_basis': 'unknown', 'newest_modified_at': None, 'pinned': False, 'active': False, 'protected': False, 'days_since_move': 30, 'coverage': 'complete'}
-            return {'source_volume_id': 'vo_x', 'root_generations': [], 'groups': [g], 'excluded_volumes': [], 'note': 'n'}
+            return {'source_volume_id': p['source_volume_id'], 'root_generations': [], 'groups': groups, 'excluded_volumes': [], 'note': 'n'}
         if cmd == 'volumes.declare_tier':
             return {'volume': json.loads((ROOT / 'contracts/v3/examples/commands/volumes.declare_tier.result.json').read_text())['volume'], 'preference_recorded_at': '2026-10-01T00:00:00Z'}
         if cmd == 'proposals.get':
             detail = json.loads((ROOT / 'contracts/v3/examples/commands/proposals.get.result.json').read_text())
-            detail['summary']['source_volume_id'] = 'vo_x'
+            detail['summary']['source_volume_id'] = self.saved_source
             return detail
         if cmd == 'proposals.list':
             if self.fail_proposals:
@@ -267,6 +280,12 @@ class FakeEngine:
                     'assumptions': [], 'root_generations': [], 'proposal_id': None}
             if self.plan_mode == 'malformed':
                 plan['proposals'] = 'none'
+            elif self.plan_mode == 'safe':
+                allowed = {g['group_id'] for g in self.result({'command': 'placement.candidates', 'payload': p})['groups']}
+                if any(o['group_id'] not in allowed for o in p.get('overrides', [])):
+                    return ('invalid_request', 'duplicate_or_unknown_group_override')
+                plan['proposals'][0]['group_id'] = next(iter(allowed))
+                plan['proposals'][0]['executable'] = False
             return plan
         if cmd == 'search.query':
             text = p.get('text', '')
@@ -501,15 +520,38 @@ def check_explorer_fallback(page: Page, engine: FakeEngine) -> None:
         expect(crumbs).to_contain_text(f'dir-{n}')
         expect(page.locator('main .tbl-wrap')).to_have_attribute('aria-busy', 'false')  # listed, so it is a saved breadcrumb
     engine.gone = {'nd_dir_2', 'nd_dir_3'}
+    current = crumbs.get_by_role('button', name='dir-3', exact=True)
+    current.focus()
+    page.keyboard.press('Shift+Tab')
+    page.keyboard.press('Tab')
+    expect(current).to_be_focused()
     engine.invalidate()
     expect(notice).to_contain_text('dir-3 is no longer in the catalogue')
     ok(crumbs.inner_text().split() == ['Fake', 'Root', '›', 'dir-1'], f'the view climbed to the deepest folder that still lists, not the top level: {crumbs.inner_text()!r}')
     ok('moved up to dir-1' in notice.text_content() and notice.get_attribute('role') == 'status', 'the notice names the lost folder and the folder shown, in the existing status region')
     expect(rows(page)).to_have_count(2)
+    expect(crumbs.get_by_role('button', name='dir-1', exact=True)).to_be_focused()
+    page.keyboard.press('Tab')
+    expect(page.get_by_role('checkbox', name='Select dir-2 for copy')).to_be_focused()
     # the next action the reader takes clears the notice
     engine.gone = set()
     page.locator('main table.tbl').get_by_role('button', name='dir-2', exact=True).click()
     expect(notice).to_have_text('')
+    expect(page.locator('main .tbl-wrap')).to_have_attribute('aria-busy', 'false')
+    # The focused row can vanish with its containing folder before it is activated.
+    folder = page.locator('main table.tbl').get_by_role('button', name='dir-3', exact=True)
+    folder.focus()
+    page.keyboard.press('Shift+Tab')
+    page.keyboard.press('Tab')
+    expect(folder).to_be_focused()
+    engine.gone = {'nd_dir_2', 'nd_dir_3'}
+    engine.invalidate()
+    expect(notice).to_contain_text('dir-2 is no longer in the catalogue')
+    expect(crumbs.get_by_role('button', name='dir-1', exact=True)).to_be_focused()
+    page.keyboard.press('Tab')
+    expect(page.get_by_role('checkbox', name='Select dir-2 for copy')).to_be_focused()
+    engine.gone = set()
+    page.locator('main table.tbl').get_by_role('button', name='dir-2', exact=True).click()
     page.locator('main table.tbl').get_by_role('button', name='dir-3', exact=True).click()
     expect(crumbs).to_contain_text('dir-3')
     expect(page.locator('main .tbl-wrap')).to_have_attribute('aria-busy', 'false')
@@ -529,14 +571,84 @@ def check_explorer_fallback(page: Page, engine: FakeEngine) -> None:
     expect(page.locator('main .tbl-wrap')).to_have_attribute('aria-busy', 'false')
     # no ancestor lists any more (an engine restart): the view returns to the starting points, and says so
     engine.gone = {'nd_Fake_Root', 'nd_dir_1', 'nd_dir_2', 'nd_dir_3'}
-    engine.slice_queue = [(0.0, 'New Root')]
+    # The epoch refresh and breadcrumb recovery both read the replacement starting points.
+    engine.slice_queue = [(0.0, 'New Root'), (0.0, 'New Root')]
+    current.focus()
+    page.keyboard.press('Shift+Tab')
+    page.keyboard.press('Tab')
     engine.invalidate()
     expect(notice).to_contain_text('dir-3 is no longer in the catalogue')
     expect(notice).to_contain_text('went back to the top level')
     ok(crumbs.inner_text().split() == ['New', 'Root'], f'with the whole saved chain gone the view shows the new starting point: {crumbs.inner_text()!r}')
+    expect(crumbs.get_by_role('button', name='New Root')).to_be_focused()
+    page.keyboard.press('Tab')
+    expect(page.get_by_role('checkbox', name='Select dir-1 for copy')).to_be_focused()
     engine.gone = set()
     engine.nested = False
     print('PASS a vanished folder keeps the reader at the nearest folder that still exists, and says so')
+
+
+def check_explorer_reissued_ids(page: Page, engine: FakeEngine) -> None:
+    crumbs = page.locator('main nav[aria-label="Location"]')
+    notice = page.locator('#explorer-notice')
+    engine.nested = True
+    page.goto(f'{engine.base}/#token={TOKEN}')
+    page.evaluate("location.hash = '#/explorer'")
+    for n in (1, 2, 3):
+        folder = page.locator('main table.tbl').get_by_role('button', name=f'dir-{n}', exact=True)
+        folder.focus()
+        folder.press('Enter')
+        expect(crumbs).to_contain_text(f'dir-{n}')
+        expect(page.locator('main .tbl-wrap')).to_have_attribute('aria-busy', 'false')
+    engine.gone = {'nd_Fake_Root', 'nd_dir_1', 'nd_dir_2', 'nd_dir_3'}
+    engine.node_prefix = 'new_'
+    engine.nested_depth = 1
+    crumbs.get_by_role('button', name='dir-3', exact=True).focus()
+    engine.invalidate()
+    expect(notice).to_contain_text('dir-3 is no longer in the catalogue')
+    expect(notice).to_contain_text('moved up to dir-1')
+    expect(crumbs.get_by_role('button')).to_have_count(2)
+    expect(crumbs.get_by_role('button', name='dir-1', exact=True)).to_be_focused()
+    print('PASS reissued node IDs resolve the old path to its deepest surviving ancestor')
+
+    # A second rebuild keeps the whole path. Moving focus during recovery must be respected.
+    engine.nested_depth = 3
+    engine.invalidate()
+    for n in (2, 3):
+        page.locator('main table.tbl').get_by_role('button', name=f'dir-{n}', exact=True).click()
+        expect(crumbs).to_contain_text(f'dir-{n}')
+        expect(page.locator('main .tbl-wrap')).to_have_attribute('aria-busy', 'false')
+    for prefix in ('again_', 'later_'):
+        engine.gone.update({f'nd_{engine.node_prefix}Fake_Root', *(f'nd_{engine.node_prefix}dir_{n}' for n in (1, 2, 3))})
+        engine.node_prefix = prefix
+        arrived, release = threading.Event(), threading.Event()
+        engine.children_gate = (f'nd_{prefix}Fake_Root', arrived, release)
+        crumbs.get_by_role('button', name='dir-3', exact=True).focus()
+        engine.invalidate()
+        try:
+            wait_until(page, arrived.is_set)
+            search = page.get_by_role('searchbox', name='Search names')
+            search.focus()
+            if prefix == 'later_':
+                search.fill('fast')
+                search.press('Enter')
+                expect(page.get_by_text('FAST-RESULT.txt', exact=True)).to_be_visible()
+        finally:
+            release.set()
+        if prefix == 'again_':
+            expect(notice).to_contain_text('this folder is still available')
+            expect(crumbs.get_by_role('button')).to_have_count(4)
+            expect(crumbs.get_by_role('button', name='dir-3', exact=True)).to_have_attribute('aria-current', 'location')
+        else:
+            page.wait_for_timeout(200)
+            expect(page.get_by_text('FAST-RESULT.txt', exact=True)).to_be_visible()
+            expect(notice).to_have_text('')
+            expect(crumbs).to_have_count(0)
+        expect(search).to_be_focused()
+    engine.node_prefix = ''
+    engine.nested = False
+    engine.gone = set()
+    print('PASS restored paths stay honest; recovery respects moved focus and cannot replace a newer search')
 
 
 def check_explorer_starts(page: Page, engine: FakeEngine) -> None:
@@ -668,6 +780,73 @@ def check_tiers_source_eligibility(page: Page, engine: FakeEngine) -> None:
     ok(engine.simulate_overrides and engine.simulate_overrides[-1] == [],
        f'a source replaced on refresh sends no stale group overrides ({engine.simulate_overrides[-1:] if engine.simulate_overrides else None})')
     engine.tier_volumes = None
+
+
+def check_tiers_assumption_refresh(page: Page, engine: FakeEngine) -> None:
+    template = engine.result({'command': 'tiers.model'})['volumes'][0]
+    a = engine.result({'command': 'placement.candidates', 'payload': {'source_volume_id': 'vo_x'}})['groups'][0]
+    b = {**a, 'group_id': 'cg_b', 'node_id': 'nd_b', 'name': 'group-b'}
+    engine.tier_volumes = [template, {**template, 'volume_id': 'vo_other', 'display_name': 'Other'}]
+    engine.placement_groups = {'vo_x': [a, b], 'vo_other': [a]}
+    engine.saved_scenarios = True
+    engine.plan_mode = 'safe'
+    page.goto(f'{engine.base}/#token={TOKEN}')
+    page.evaluate("location.hash = '#/tiers'")
+    panel = page.locator('section[aria-labelledby="h-vol"]')
+
+    def simulate(expected):
+        engine.simulate_overrides.clear()
+        page.get_by_role('button', name='Simulate', exact=True).click()
+        expect(page.get_by_role('heading', name='Alternatives')).to_be_visible()
+        expect(page.get_by_role('heading', name='Placement plan', level=2)).to_be_visible()
+        ok(len(engine.simulate_overrides) == 3 and all(o == expected for o in engine.simulate_overrides),
+           f'Tiers sends only current assumptions and all simulations succeed: {expected}')
+
+    release = None
+    try:
+        page.get_by_label('Assumed heat for group-a').select_option('0.9')
+        page.get_by_label('Assumed heat for group-b').select_option('0.1')
+        engine.placement_groups['vo_x'] = [b]
+        declare_tier(page, engine, panel, '2')
+        expect(page.get_by_label('Assumed heat for group-a')).to_have_count(0)
+        expect(page.get_by_label('Assumed heat for group-b')).to_have_value('0.1')
+        simulate([{'group_id': 'cg_b', 'heat': 0.1}])
+        # A vanished group's assumption must not return if its ID reappears later.
+        engine.placement_groups['vo_x'] = [a, b]
+        declare_tier(page, engine, panel, '3')
+        expect(page.get_by_label('Assumed heat for group-a')).to_have_value('')
+        page.get_by_label('Assumed heat for group-a').select_option('0.9')
+        engine.saved_source = 'vo_other'
+        page.get_by_role('button', name=re.compile('Show saved scenario')).click()
+        expect(panel.get_by_role('button', name=re.compile('^Source volume'))).to_contain_text('Other')
+        expect(page.get_by_label('Assumed heat for group-a')).to_have_value('')
+        simulate([])  # Even an ID shared across sources must lose the old assumption.
+
+        # Release an older source's response after the new candidates have been installed.
+        arrived, release = threading.Event(), threading.Event()
+        engine.candidate_gate = (arrived, release)
+        page.get_by_role('button', name=re.compile(r'^Use as source\s*:\s*X:$')).click()
+        wait_until(page, arrived.is_set)
+        page.get_by_role('button', name=re.compile(r'^Use as source\s*:\s*Other$')).click()
+        expect(page.get_by_label('Assumed heat for group-a')).to_be_visible()
+        page.get_by_label('Assumed heat for group-a').select_option('0.5')
+        with page.expect_request_finished(lambda r: r.method == 'POST' and
+                                          r.post_data_json.get('command') == 'placement.candidates' and
+                                          r.post_data_json['payload']['source_volume_id'] == 'vo_x'):
+            release.set()
+        page.evaluate('() => new Promise(requestAnimationFrame)')
+        expect(page.get_by_label('Assumed heat for group-b')).to_have_count(0)
+        expect(page.get_by_label('Assumed heat for group-a')).to_have_value('0.5')
+        simulate([{'group_id': 'cg_a', 'heat': 0.5}])
+    finally:
+        if release:
+            release.set()
+        engine.placement_groups = {}
+        engine.tier_volumes = None
+        engine.saved_source = 'vo_x'
+        engine.saved_scenarios = False
+        engine.plan_mode = 'executable'
+
 
 def check_tiers(page: Page, base: str, shoot) -> None:
     page.goto(f'{base}/?transport=mock#/tiers')
@@ -1179,7 +1358,11 @@ def check_health(page: Page, base: str, shoot) -> None:
     expect(main.get_by_role('heading', name="Loomward's own health")).to_be_visible()
     expect(main.get_by_text('Private commit')).to_be_visible()
     expect(main.get_by_text('Writer queue')).to_be_visible()
-    ok(main.get_by_text('off', exact=True).count() == 11, 'the capability matrix shows all 11 effects off')
+    ok(main.get_by_text('off', exact=True).count() == 10, 'the capability matrix shows all 10 file/process effects off')
+    reads = main.locator('.caps li').filter(has_text='Content read: duplicates only, on request')
+    expect(reads).to_contain_text('not available')
+    ok(main.locator('.caps li').filter(has_text=re.compile(r'\boff\s+content read\b', re.I)).count() == 0,
+       'content reads are separate from file/process effects')
     expect(main.get_by_text('The one exception is a diagnostic bundle you save yourself')).to_be_visible()
     ok(main.get_by_text('ON', exact=True).count() == 0, 'no effect is on')
     expect(main.get_by_text('not available').first).to_be_visible()
@@ -1358,6 +1541,10 @@ def check_add_folder(page: Page, engine: FakeEngine) -> None:
         expect(page.get_by_role('status', name='Session status')).to_contain_text('Connected')
         expect(page.get_by_role('heading', name='Grants & health', level=1)).to_be_visible()
 
+        reads = page.locator('.caps li').filter(has_text='Content read: duplicates only, on request')
+        expect(reads).to_contain_text('available')
+        expect(reads).not_to_contain_text('not available')
+
     add = page.get_by_role('button', name='Add a folder…', exact=True)
     status = page.locator('main section[aria-labelledby="h-roots"] .add p.live')
     cards = page.locator('main ul.scans li')
@@ -1508,8 +1695,10 @@ def run_views(page: Page, base: str, shots: Path | None) -> None:
         check_explorer_engine(page, engine)
         check_explorer_starts(page, engine)
         check_explorer_fallback(page, engine)
+        check_explorer_reissued_ids(page, engine)
         check_tiers_loading_followups(page, engine)
         check_tiers_source_eligibility(page, engine)
+        check_tiers_assumption_refresh(page, engine)
         check_tiers_refused(page, engine)
         check_backups_import(page, engine)
         check_diagnostics_save(page, engine)

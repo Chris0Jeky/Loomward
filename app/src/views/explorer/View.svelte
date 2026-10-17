@@ -8,7 +8,7 @@
   import { hasHiddenCharacters, escapedName } from '../../lib/format/names';
   import { formatCount, formatTime } from '../../lib/format/time';
   import { LoomwardError } from '../../lib/transport/client';
-  import { fallbackStep, onRefetchError } from './refetch';
+  import { fallbackStep, onRefetchError, resolveTrail, type Crumb } from './refetch';
   import { session } from '../../lib/stores/session.svelte';
   import NodeMeaning from '../../lib/ui/NodeMeaning.svelte';
   import AddToCollection from '../../lib/ui/AddToCollection.svelte';
@@ -18,7 +18,7 @@
   import type { Basis, EntryPage, EntryRow, NodeId, NodeDetail, SearchHit, SearchPage } from '../../lib/contracts.gen';
 
   type Sort = 'size_desc' | 'name_asc' | 'modified_desc';
-  interface Crumb { id: NodeId; name: string }
+  interface Recovery { lost: string; saved: Crumb[]; focus: HTMLElement | null }
 
   const PAGE = 50;
   const SIZES: [string, string][] = [['Any size', ''], ['1 MiB or more', '1048576'], ['100 MiB or more', '104857600'], ['1 GiB or more', '1073741824']];
@@ -67,11 +67,15 @@
   let searchEl = $state<HTMLInputElement>();
   let moreEl = $state<HTMLButtonElement>();
   let countEl = $state<HTMLElement>();
+  let locationEl = $state<HTMLElement>();
+  let noticeEl = $state<HTMLElement>();
 
   // View generation. Every action that changes what the table shows bumps it; a response that comes
   // back for an older generation is dropped (and its request aborted), so a slow answer can never
   // overwrite a newer search, folder or basis.
   let gen = 0;
+  let startsRequest = 0;
+  let startsAbort: AbortController | null = null;
   let abort: AbortController | null = null;
   /** `EntryPage.generation` of the first page of the current view; a later page from another one means the folder changed. */
   let pageGen: string | null = null;
@@ -129,7 +133,15 @@
     if (first) { e.preventDefault(); first.focus(); }
   }
 
-  async function show(append = false, restarted = false, lost?: string): Promise<void> {
+  async function restoreLocationFocus(owner: HTMLElement | null, mine: number): Promise<void> {
+    if (!owner) return;
+    await tick();
+    if (mine === gen && (document.activeElement === owner || (!owner.isConnected && document.activeElement === document.body))) {
+      (locationEl?.querySelector<HTMLButtonElement>('[aria-current="location"]') ?? noticeEl)?.focus();
+    }
+  }
+
+  async function show(append = false, restarted = false, recovery?: Recovery): Promise<void> {
     if (!session.client || (!searching && !here)) return;
     if (!append) {
       inspection++; inspectAbort?.abort(); detail = null; inspectError = '';
@@ -139,6 +151,8 @@
     const mine = gen;
     const ctl = (abort = new AbortController());
     const hadFocus = append && document.activeElement === moreEl; // Load more goes away after the last page
+    const at = document.activeElement;
+    const locationFocus = recovery ? recovery.focus : at instanceof HTMLElement && at.matches('button.crumb') ? at : null;
     busy = true;
     error = '';
     if (!restarted) {
@@ -148,7 +162,7 @@
     const restart = (why: string) => {
       notice = why;
       gone = null;
-      return show(false, true, lost);
+      return show(false, true, recovery);
     };
     try {
       const { result: page } = await fetchPage(append ? next : null, ctl.signal);
@@ -158,8 +172,8 @@
       }
       if (!append) pageGen = page.generation;
       // The fallback's notice is true only once the ancestor has listed: a failed one shows just its error.
-      if (lost && here) gone = { lost, now: here.name };
-      rows = append ? [...rows, ...page.items] : page.items;
+      if (recovery && here) gone = { lost: recovery.lost, now: here.name };
+      rows = append ? [...new Map([...rows, ...page.items].map(r => [r.node_id, r])).values()] : page.items;
       if (page.search) {
         const seen = append ? new Map(found) : new Map<NodeId, SearchHit>();
         for (const h of page.search.hits) seen.set(h.row.node_id, h);
@@ -173,6 +187,7 @@
       next = page.next_cursor;
       budgetHit = page.budget_hit;
       if (!searching && here) seenIds.add(here.id);
+      if (recovery) await restoreLocationFocus(recovery.focus, mine);
       if (hadFocus) {
         await tick();
         // only if the reader is still there: on the button, or on the body because the button just went away
@@ -189,7 +204,8 @@
         // still lists, or reload the starting points when none does, and say which folder is gone.
         // A `not_found` for a node just clicked stays an error below.
         // Forgetting the ID first keeps a reused ID from falling back twice in a row.
-        const step = fallbackStep(trail, lost);
+        const step = fallbackStep(trail, recovery?.lost);
+        recovery = { lost: step.lost, saved: recovery?.saved ?? trail, focus: locationFocus };
         seenIds.delete(here.id);
         rows = [];
         total = null;
@@ -200,12 +216,10 @@
         busy = false;
         if (step.keep.length) {
           trail = step.keep;
-          return await show(false, true, step.lost);
+          return await show(false, true, recovery);
         }
         trail = [];
-        // Set after the reload (the fresh `show()` inside clears the status region on entry),
-        // and only if no newer search, click or refresh superseded the reload meanwhile.
-        if (await loadStarts()) gone = { lost: step.lost, now: null };
+        await loadStarts(recovery);
         return;
       }
       error = session.handle(e);
@@ -244,45 +258,73 @@
   }
 
   /** True when this request completed and its view is still the newest one. */
-  async function loadStarts(): Promise<boolean> {
+  async function loadStarts(recovery?: Recovery, refreshOnly = false): Promise<boolean> {
     const c = session.client!;
-    // Same guard as show(): a newer view or a newer starting-point request supersedes this one.
-    abort?.abort();
-    const mine = ++gen;
-    const ctl = (abort = new AbortController());
+    // A background root refresh must survive a newer search without changing its rows or trail.
+    if (!refreshOnly) abort?.abort();
+    const mine = refreshOnly ? gen : ++gen;
+    const starting = ++startsRequest;
+    startsAbort?.abort();
+    const ctl = (startsAbort = new AbortController());
+    if (!refreshOnly) abort = ctl;
     try {
       const { result } = await c.call('tree.slice', { anchor: { kind: 'atlas' }, depth: 1, max_nodes: 16, min_share: 0, basis: 'logical', include_files: false }, { signal: ctl.signal });
+      if (starting !== startsRequest) return false;
+      const fresh = result.nodes.filter((n) => n.parent === 0).map((n) => ({ id: n.node_id, name: n.name }));
+      starts = fresh;
+      if (refreshOnly) return true;
       if (mine !== gen) return false;
-      starts = result.nodes.filter((n) => n.parent === 0).map((n) => ({ id: n.node_id, name: n.name }));
-      trail = starts[0] ? [starts[0]] : [];
+      const resolved = recovery ? await resolveTrail(recovery.saved, fresh, async (node_id, cursor) => {
+        ctl.signal.throwIfAborted();
+        return (await c.call('tree.children', { node_id, cursor, sort: 'name_asc', basis, limit: PAGE }, { signal: ctl.signal })).result;
+      }) : [];
+      if (mine !== gen) return false;
+      for (const crumb of resolved) seenIds.add(crumb.id);
+      trail = resolved.length ? resolved : starts[0] ? [starts[0]] : [];
       error = '';
       if (!trail.length) {
         rows = [];
         total = null;
         next = null;
+        if (recovery) {
+          gone = { lost: recovery.lost, now: null };
+          await restoreLocationFocus(recovery.focus, mine);
+        }
         return true;
       }
       await show();
       // show() advances `gen` exactly once for a fresh view; any newer action advances it further.
+      if (gen !== mine + 1 || error) return false;
+      if (recovery) {
+        if (resolved.length === recovery.saved.length) notice = 'The catalogue changed; this folder is still available, so its location was restored.';
+        else gone = { lost: recovery.lost, now: resolved.length ? here!.name : null };
+        await restoreLocationFocus(recovery.focus, mine + 1);
+      }
       return gen === mine + 1;
     } catch (e) {
-      if (mine !== gen) return false;
-      rows = [];
-      total = null;
-      next = null;
+      if (starting !== startsRequest) return false;
+      starts = [];
+      if (!refreshOnly && mine !== gen) return false;
+      if (!refreshOnly) { rows = []; total = null; next = null; }
       error = session.handle(e);
       return false;
     }
   }
 
-  $effect(() => () => { inspection++; inspectAbort?.abort(); abort?.abort(); });
+  /** Keep the user's place (refreshing starting points beside it), or find the starting points. */
+  function reload() {
+    if (trail.length || searching) { void loadStarts(undefined, true); void show(); }
+    else void loadStarts();
+  }
+
+  $effect(() => () => { startsRequest++; startsAbort?.abort(); inspection++; inspectAbort?.abort(); abort?.abort(); });
 
   // The session starts, or the engine says data may be stale (reconnect, tree.invalidated, roots.changed):
   // keep the user's place and ask again; the first time, find the starting points.
   $effect(() => {
     void session.epoch;
     if (!session.client) return;
-    untrack(() => void (trail.length ? show() : loadStarts()));
+    untrack(reload);
   });
 </script>
 
@@ -342,7 +384,7 @@
       </ul>
     {/if}
   {:else}
-    <nav class="crumbs" aria-label="Location">
+    <nav class="crumbs" aria-label="Location" bind:this={locationEl}>
       {#each trail as c, i (c.id)}
         {#if i > 0}<span aria-hidden="true">›</span>{/if}
         <button class="crumb" type="button" aria-current={i === trail.length - 1 ? 'location' : undefined} onclick={() => go(trail.slice(0, i + 1))}><VisibleName name={c.name} /></button>
@@ -351,9 +393,9 @@
   {/if}
 
   {#if error}
-    <p class="bad" role="alert">{error} <button class="btn" type="button" onclick={() => void (trail.length ? show() : loadStarts())}>Try again</button></p>
+    <p class="bad" role="alert">{error} <button class="btn" type="button" onclick={reload}>Try again</button></p>
   {/if}
-  <p id="explorer-notice" class="muted live" class:has={!!notice || !!gone} role="status">{#if gone}<q><VisibleName name={gone.lost} /></q> is no longer in the catalogue, so the view {#if gone.now}moved up to <q><VisibleName name={gone.now} /></q>, the nearest folder still there.{:else}went back to the top level.{/if}{:else}{notice}{/if}</p>
+  <p id="explorer-notice" class="muted live" class:has={!!notice || !!gone} role="status" tabindex="-1" bind:this={noticeEl}>{#if gone}<q><VisibleName name={gone.lost} /></q> is no longer in the catalogue, so the view {#if gone.now}moved up to <q><VisibleName name={gone.now} /></q>, the nearest folder still there.{:else}went back to the top level.{/if}{:else}{notice}{/if}</p>
 
   <div class="bar" role="group" aria-label="Copy selection">
     <CopyTo items={selected} />
