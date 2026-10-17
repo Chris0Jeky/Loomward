@@ -526,8 +526,8 @@
     "thesis": "workspace memory, honest by construction, agent-ready (q-25)",
     "decided_not_yet_implemented": [
       "Find & Ask beyond search v1: Everything integration (LW-114), elevated USN-journal helper behind its own gate (LW-115; invariant 2 unchanged until then), semantic layer (LW-116), Ask provider and chat (LW-117/118); design docs/46 (#426)",
-      "copy-and-verify as the first effect on existing files, behind its own gate (LW-124; invariant 1 unchanged for it); design ADR-V3-25 and docs/47 (#423)",
-      "every docs/45 readiness line at PASS (q-39); none is PASS yet",
+      "copy-and-verify on personal files, behind gate C8 (LW-124); built and lab-only since wave 10 (C1-C5, C7: #471, #503, #474, #508, #522, #516); design ADR-V3-25 and docs/47 (#423)",
+      "every docs/45 readiness line at PASS (q-39); row 4 is PASS since wave 10 (#484), the rest are not",
       "first publication to winget, Scoop or the Store (q-29; each an invariant 8 re-review); signing (q-28)",
       "updater live: needs the owner's signing key and the public key in native/tauri.conf.json (q-30)"
     ]
@@ -579,13 +579,13 @@
       "#525"
     ],
     "rust_tests_at_8a3dc6f": 1288,
-    "rust_note": "1,283 passed, 1 ignored, 4 lab-copy tests fail only in a OneDrive-synced checkout (fixed to skip by #527)",
+    "rust_note": "1,283 passed, 1 ignored, 4 lab-copy tests fail only in a OneDrive-synced checkout (#527, open at writing, makes them skip)",
     "app_vitest": 466,
     "python_tests": 279,
     "wired_commands": 64,
     "copy_and_verify": "C1 tree verifier (#471), C2 native primitives (#503), C3 journal (#474), C4 consent and contracts (#508), C5 executor for synthetic sessions on registered lab roots only (#522), C7 UI (#516); personal sessions copy_effect_gated; staging removal off until Q1; C6 crash matrix in progress; G5/G9 not run",
-    "owner_questions_posed": "copy-and-verify Q1-Q3 via agent-hq#461",
-    "soak": "72-hour run started 2026-10-17 03:45 local on KRASPYON; pass rule in docs/45 row 7",
+    "owner_questions_posed": "copy-and-verify Q1-Q3 drafted for the owner inbox in agent-hq#461 (published when it merges)",
+    "soak": "72-hour run started 2026-10-17 03:39 local on KRASPYON; pass rule in docs/45 row 7",
     "find_and_ask": "F1 contract and grammar (#476); F2 ranked search (#513), token index off by default until #520",
     "effects": "diagnostic export (owner file) plus copy-and-verify on synthetic lab roots only; no owner file or process otherwise touched"
   }

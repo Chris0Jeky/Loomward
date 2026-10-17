@@ -62,11 +62,12 @@ disable, skip or weaken a failing test to advance a milestone.
 1. **No file or process effects** (move, delete, uninstall, kill, suspend, priority, trim) until
    the specific `LW-*` issue and its Windows safety gate authorise that capability. Never add a
    general execute, shell, delete or kill endpoint, through HTTP, IPC or MCP.
-   The one file write opened so far is the q-15 diagnostic bundle (LW-055, ADR-V3-24): only the
-   previewed, redacted bytes, to a new file or an owner-confirmed overwrite chosen in the Rust-side
+   The one write that can touch an owner file is the q-15 diagnostic bundle (LW-055, ADR-V3-24): only
+   the previewed, redacted bytes, to a new file or an owner-confirmed overwrite chosen in the Rust-side
    save dialog; the path never crosses IPC. It is not a general write capability. Copy-and-verify (LW-124,
    docs/47) writes, renames and (only when enabled) removes its own staging, but only for synthetic sessions on
-   registered lab roots (#522); personal sessions get `copy_effect_gated` until gate C8 opens.
+   registered lab roots (#522). Personal sessions are refused in code (`copy_effect_gated`); agents never open
+   personal copying: gate C8 needs C6, G5, G9, the owner's Q1-Q3 answers and the owner's own decision.
 2. **No silent reach.** No automatic cloud requests, model downloads, installers, global config
    changes, elevation or whole-disk scans. Real-disk scans take an explicit root, non-elevated,
    metadata only, with state outside it; a path seen in a doc is not a grant. Owner grant
