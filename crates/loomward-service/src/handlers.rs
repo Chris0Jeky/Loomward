@@ -78,17 +78,19 @@ pub(crate) fn forget_backups(dir: &std::path::Path, path: Option<&str>) -> Resul
         let copy_name = name
             .strip_suffix("-wal")
             .or_else(|| name.strip_suffix("-shm"))
+            .or_else(|| name.strip_suffix("-journal"))
             .unwrap_or(&name);
         let migration = copy_name.starts_with("state.before-v") && copy_name.ends_with(".db");
         let sidecar = copy_name != name;
-        // A migration WAL may hold committed rows: let its copy checkpoint it before removal.
+        // Let SQLite settle migration journals and WALs before removing their sidecars.
         if migration && sidecar && file.with_file_name(copy_name).exists() {
             continue;
         }
         let archive_stem = name
             .strip_suffix(".db")
             .or_else(|| name.strip_suffix(".db-wal"))
-            .or_else(|| name.strip_suffix(".db-shm"));
+            .or_else(|| name.strip_suffix(".db-shm"))
+            .or_else(|| name.strip_suffix(".db-journal"));
         let archived = archive_stem.is_some_and(|stem| {
             stem.strip_prefix("catalog.corrupt-")
                 .or_else(|| stem.strip_prefix("catalog.before-v1-"))
@@ -98,7 +100,7 @@ pub(crate) fn forget_backups(dir: &std::path::Path, path: Option<&str>) -> Resul
             match scrub_copy(&file, &loomward_catalog::sqlite_dir(dir).join("state.db")) {
                 Ok((known, _pin)) => {
                     // SQLite is closed; keep the copy pinned while clearing even stale sidecars.
-                    for extension in ["db-wal", "db-shm"] {
+                    for extension in ["db-wal", "db-shm", "db-journal"] {
                         if let Err(e) = std::fs::remove_file(file.with_extension(extension)) {
                             if e.kind() != std::io::ErrorKind::NotFound {
                                 failed.get_or_insert_with(|| backup_scrub_error("migration"));
@@ -247,7 +249,7 @@ fn scrub_copy(
             "DELETE FROM main.object_ref WHERE id IN (SELECT id FROM gone); DROP TABLE gone",
         )?;
     }
-    if has("root_grant", "display_path")? {
+    if known {
         tx.execute_batch("UPDATE main.root_grant SET display_path='forgotten',volume_key='forgotten',root_file_id=zeroblob(8) WHERE id IN (SELECT grant_id FROM live.root_forgotten)")?;
         let uncleared: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM main.root_grant WHERE id IN (SELECT grant_id FROM live.root_forgotten)
