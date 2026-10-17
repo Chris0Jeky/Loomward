@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Duplicates } from '../../src/lib/stores/duplicates.svelte';
 import { session } from '../../src/lib/stores/session.svelte';
@@ -128,6 +129,15 @@ describe('duplicates jobs', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('duplicates root picker', () => {
+  it('names each root through the hidden-character helper, never the raw display path', () => {
+    // A native <option> holds text only, so the badge component cannot go in it: escapedName spells the hidden characters out.
+    const source = readFileSync(new URL('../../src/views/duplicates/View.svelte', import.meta.url), 'utf8');
+    expect(source).toContain('escapedName(r.display_path.text)');
+    expect(source).not.toMatch(/<option[^>]*>\{r\.display_path\.text\}<\/option>/);
   });
 });
 
