@@ -507,6 +507,11 @@ mod tests {
         let lab = tmp.path().join("lab");
         fs::create_dir(&lab).unwrap();
         let root = lab.join("soak");
+        if let Err(refused) = check_root(&root.to_string_lossy()) {
+            // A checkout under a user profile puts target/ there, which the harness refuses by design.
+            eprintln!("skipped: this checkout's test root is refused: {refused}");
+            return;
+        }
         let out = tmp.path().join("cycles.jsonl");
         run(&root, &out, std::time::Duration::ZERO, Some(3)).unwrap();
         let records: Vec<serde_json::Value> = fs::read_to_string(out)
