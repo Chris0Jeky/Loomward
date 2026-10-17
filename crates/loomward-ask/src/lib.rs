@@ -191,9 +191,13 @@ pub struct ProviderProfile {
 
 /// A model a loopback server runs elsewhere: Ollama names them `name:cloud` or `name:tag-cloud`
 /// (docs/46 section 8.1). Case-insensitive, and erring towards remote: a false "remote" only refuses.
+/// A name with whitespace or control characters is never a valid local tag (`"m:cloud "` must not
+/// slip past the suffix test), so it counts as remote too.
 pub fn is_remote_model(model: &str) -> bool {
-    let m = model.to_ascii_lowercase();
-    m.ends_with(":cloud") || m.ends_with("-cloud")
+    let m = model.trim().to_ascii_lowercase();
+    m.ends_with(":cloud")
+        || m.ends_with("-cloud")
+        || model.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
 impl ProviderProfile {
@@ -421,6 +425,11 @@ mod tests {
             "gpt-oss:120b-cloud",
             "qwen3-coder:480b-CLOUD",
             "m:Cloud",
+            "gpt-oss:120b-cloud ",
+            "m:cloud\t",
+            " m:cloud",
+            "a b",
+            "m\u{7}",
         ] {
             assert_eq!(
                 profile("http://127.0.0.1:11434", model).class(),

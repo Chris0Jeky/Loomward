@@ -205,6 +205,8 @@ fn remote_models_and_non_loopback_endpoints_send_nothing() {
     // Around the gate: the broker re-checks every call itself.
     for (endpoint, model) in [
         (url.as_str(), "big-model:cloud"),
+        (url.as_str(), "big-model:cloud "),
+        (url.as_str(), "big-model-cloud\t"),
         ("http://192.0.2.1:80/v1", "m"),
         ("https://127.0.0.1:443/v1", "m"),
         (url.as_str(), ""),
