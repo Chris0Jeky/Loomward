@@ -76,7 +76,7 @@ def fake_result(command: str):
             'protocol': 'loomward/3', 'engine_version': 'fake-engine', 'adapter': 'http', 'dataset_class': engine.dataset,
             'session_started_at': '2026-10-01T00:00:00Z', 'enumeration_strategy': 'std_read_dir',
             'capabilities': {'observation': {}, 'effects': effects},
-            'features': {k: False for k in ('grant_picker', 'disclosure_dialog', 'teacher_available', 'telemetry_available', 'gpu_available', 'diagnostics_save')},
+            'features': {k: False for k in ('grant_picker', 'disclosure_dialog', 'teacher_available', 'telemetry_available', 'gpu_available', 'diagnostics_save', 'federated_search')},
             'limits': {'max_request_bytes': 65536, 'max_slice_nodes': 6000, 'max_page_items': 200},
         }
     if command == 'roots.list':

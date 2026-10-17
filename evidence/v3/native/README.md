@@ -7,7 +7,7 @@ Synthetic fixture service only; no real paths or names.
 | File | What |
 |---|---|
 | `native-test-log.txt` | Every proving command with its output and exit code: `tauri info`, build, fmt, clippy, `cargo test` (7 + 1 ignored), the ignored real-MessageBox test, `--self-test`, the personal-mode refusals, the WebView2 probe, root `cargo test --workspace`, app check/test/build |
-| `webview2-probe.json` | The real-window run of `native/tests/webview2_probe.py`: checks, ACL refusal messages, P9 runs, the shell's teardown log |
+| `webview2-probe.json` | The real-window run of `native/tests/webview2_probe.py`: checks, ACL refusal messages, P9 runs, the shell's teardown log. The probe now writes to the cargo target dir by default; refresh this file with `--out evidence/v3/native` |
 | `webview2-shell.log` | The shell's stderr during that run (teardown lines) |
 | `desktop-home.png` | The shipped window on the tauri transport against the fixture service |
 | `desktop-atlas-p9.png` | The Atlas after the P9 runs (mock transport, 2,500-node synthetic slice) |

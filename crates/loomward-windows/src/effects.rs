@@ -1,0 +1,1095 @@
+//! Unwired native copy laboratory. These primitives confer no operation grant.
+//!
+//! No workspace consumer enables `copy-primitives`. Journal/consent, cloud-root and
+//! destination policy checks belong to later lanes; never expose these through a command.
+
+use crate::{
+    duplicate_reader, enumerate,
+    identity::{self, ObjectKey},
+    win,
+};
+use sha2::{Digest, Sha256};
+use std::{
+    fs::File,
+    io::{self, Read, Write},
+    mem::{offset_of, size_of, ManuallyDrop},
+    os::windows::io::{AsRawHandle, FromRawHandle},
+    path::Path,
+    ptr,
+};
+use windows_sys::{
+    Wdk::{
+        Foundation::OBJECT_ATTRIBUTES,
+        Storage::FileSystem::{
+            FileEaInformation, NtCreateFile, NtQueryInformationFile, FILE_CREATE,
+            FILE_EA_INFORMATION, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_NO_RECALL,
+            FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
+        },
+    },
+    Win32::{Foundation::*, Storage::FileSystem::*, System::IO::IO_STATUS_BLOCK},
+};
+
+const SHARE: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+const HOLD: u32 = FILE_SHARE_READ | FILE_SHARE_DELETE;
+const BLOCK: usize = 1024 * 1024;
+const PRESERVED: u32 = FILE_ATTRIBUTE_READONLY
+    | FILE_ATTRIBUTE_HIDDEN
+    | FILE_ATTRIBUTE_ARCHIVE
+    | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED;
+
+/// A refused metadata class, retained inside `io::Error` for typed classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnsupportedAttribute {
+    pub attributes: u32,
+}
+impl std::fmt::Display for UnsupportedAttribute {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("unsupported_attribute")
+    }
+}
+impl std::error::Error for UnsupportedAttribute {}
+
+fn supported_attributes(attributes: u32) -> io::Result<()> {
+    let attributes = attributes
+        & (FILE_ATTRIBUTE_SYSTEM
+            | FILE_ATTRIBUTE_TEMPORARY
+            | FILE_ATTRIBUTE_COMPRESSED
+            | FILE_ATTRIBUTE_SPARSE_FILE
+            | FILE_ATTRIBUTE_ENCRYPTED
+            | FILE_ATTRIBUTE_INTEGRITY_STREAM);
+    if attributes != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            UnsupportedAttribute { attributes },
+        ));
+    }
+    Ok(())
+}
+
+fn refused(message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, message)
+}
+fn source_error(error: enumerate::SourceError) -> io::Error {
+    match error {
+        enumerate::SourceError::Io(code) if code < 0 => nt_error(code),
+        enumerate::SourceError::Io(code) => io::Error::from_raw_os_error(code),
+        enumerate::SourceError::AccessDenied => io::Error::from(io::ErrorKind::PermissionDenied),
+        _ => refused("identity or path refused"),
+    }
+}
+fn nt_error(code: i32) -> io::Error {
+    io::Error::from_raw_os_error(unsafe { RtlNtStatusToDosError(code) } as i32)
+}
+fn borrowed(file: &File) -> ManuallyDrop<win::Handle> {
+    ManuallyDrop::new(win::Handle(file.as_raw_handle()))
+}
+fn info<T: Default>(file: &File, class: FILE_INFO_BY_HANDLE_CLASS) -> io::Result<T> {
+    win::info(&borrowed(file), class)
+}
+fn set<T>(file: &File, class: FILE_INFO_BY_HANDLE_CLASS, value: &T) -> io::Result<()> {
+    if unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            class,
+            ptr::from_ref(value).cast(),
+            size_of::<T>() as u32,
+        )
+    } == 0
+    {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+fn component(name: &str) -> io::Result<Vec<u16>> {
+    let wide: Vec<_> = name.encode_utf16().collect();
+    let stem = name.split('.').next().unwrap_or("").to_ascii_uppercase();
+    if wide.is_empty()
+        || wide.len() > 255
+        || name.ends_with(['.', ' '])
+        || wide
+            .iter()
+            .any(|c| *c < 32 || matches!(*c, 34 | 42 | 47 | 58 | 60 | 62 | 63 | 92 | 124))
+        || matches!(
+            stem.as_str(),
+            "CON"
+                | "PRN"
+                | "AUX"
+                | "NUL"
+                | "CONIN$"
+                | "CONOUT$"
+                | "COM¹"
+                | "COM²"
+                | "COM³"
+                | "LPT¹"
+                | "LPT²"
+                | "LPT³"
+        )
+        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.len() == 4
+            && matches!(stem.as_bytes()[3], b'1'..=b'9'))
+    {
+        return Err(refused("name_unrepresentable"));
+    }
+    Ok(wide)
+}
+fn same(file: &File, expected: &ObjectKey) -> io::Result<()> {
+    if identity::from_file(file)?.object != *expected {
+        return Err(refused("identity mismatch"));
+    }
+    Ok(())
+}
+fn directory(file: &File) -> io::Result<()> {
+    let current = identity::from_file(file)?;
+    if enumerate::refused_attributes(current.attributes)
+        || current.attributes & FILE_ATTRIBUTE_DIRECTORY == 0
+    {
+        return Err(refused("unsupported directory"));
+    }
+    supported_attributes(current.attributes)
+}
+
+// FILE_DIRECTORY_FILE and FILE_OPEN_NO_RECALL are incompatible; validate directory
+// type on the returned handle instead, as enumerate's pinned opens do.
+fn relative(
+    parent: &File,
+    name: &[u16],
+    access: u32,
+    share: u32,
+    create: bool,
+    options: u32,
+) -> io::Result<File> {
+    win::non_elevated()?;
+    let mut name = name.to_vec();
+    let mut unicode = UNICODE_STRING {
+        Length: (name.len() * 2) as u16,
+        MaximumLength: (name.len() * 2) as u16,
+        Buffer: name.as_mut_ptr(),
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: parent.as_raw_handle(),
+        ObjectName: &mut unicode,
+        Attributes: 0,
+        SecurityDescriptor: ptr::null_mut(),
+        SecurityQualityOfService: ptr::null_mut(),
+    };
+    let mut status = IO_STATUS_BLOCK::default();
+    let mut handle = ptr::null_mut();
+    let code = unsafe {
+        NtCreateFile(
+            &mut handle,
+            access | SYNCHRONIZE,
+            &attributes,
+            &mut status,
+            ptr::null(),
+            FILE_ATTRIBUTE_NORMAL,
+            share,
+            if create { FILE_CREATE } else { FILE_OPEN },
+            FILE_OPEN_REPARSE_POINT
+                | if options & windows_sys::Wdk::Storage::FileSystem::FILE_DIRECTORY_FILE == 0 {
+                    FILE_OPEN_NO_RECALL
+                } else {
+                    0
+                }
+                | FILE_SYNCHRONOUS_IO_NONALERT
+                | options,
+            ptr::null(),
+            0,
+        )
+    };
+    if code < 0 {
+        Err(nt_error(code))
+    } else {
+        Ok(unsafe { File::from_raw_handle(handle) })
+    }
+}
+
+/// Verified, pinned destination parent. No path is used for child effects.
+pub struct Destination {
+    pins: Vec<File>,
+    volume: File,
+    sector: usize,
+}
+impl Destination {
+    pub fn open(path: &Path, expected: &ObjectKey) -> io::Result<Self> {
+        let pins = enumerate::root_handles(
+            path,
+            FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+        )
+        .map_err(source_error)?;
+        let parent = pins.last().unwrap();
+        same(parent, expected)?;
+        let mut fs = [0u16; 32];
+        if unsafe {
+            GetVolumeInformationByHandleW(
+                parent.as_raw_handle(),
+                ptr::null_mut(),
+                0,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                fs.as_mut_ptr(),
+                fs.len() as u32,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let fs =
+            String::from_utf16_lossy(&fs[..fs.iter().position(|c| *c == 0).unwrap_or(fs.len())]);
+        if !matches!(fs.as_str(), "NTFS" | "ReFS") {
+            return Err(refused("identity_unverified"));
+        }
+        // This host rejects directory hints for OpenFileById (ERROR_NOT_SUPPORTED).
+        // A zero-access volume handle supplies ID lookup and geometry, never raw disk I/O.
+        let drive = match path.components().next() {
+            Some(std::path::Component::Prefix(prefix)) => match prefix.kind() {
+                std::path::Prefix::Disk(drive) | std::path::Prefix::VerbatimDisk(drive) => drive,
+                _ => return Err(refused("local drive required")),
+            },
+            _ => return Err(refused("local drive required")),
+        };
+        let volume_path: Vec<_> = format!(r"\\.\{}:", char::from(drive))
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+        let handle = unsafe {
+            CreateFileW(
+                volume_path.as_ptr(),
+                0,
+                SHARE,
+                ptr::null(),
+                OPEN_EXISTING,
+                0,
+                ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+        let volume = unsafe { File::from_raw_handle(handle) };
+        let sector = physical_sector(&volume)?;
+        Ok(Self {
+            pins,
+            volume,
+            sector,
+        })
+    }
+    fn parent(&self) -> &File {
+        self.pins.last().unwrap()
+    }
+    /// Create one new staging folder. Never adopt an existing name.
+    pub fn stage(&self, name: &str) -> io::Result<Staging<'_>> {
+        let name = component(name)?;
+        supported_attributes(identity::from_file(self.parent())?.attributes)?;
+        let file = relative(
+            self.parent(),
+            &name,
+            FILE_READ_ATTRIBUTES,
+            SHARE,
+            true,
+            windows_sys::Wdk::Storage::FileSystem::FILE_DIRECTORY_FILE,
+        )?;
+        directory(&file)?;
+        let recorded = identity::from_file(&file)?.object;
+        Ok(Staging {
+            destination: self,
+            file,
+            name,
+            recorded,
+            published: false,
+        })
+    }
+}
+
+/// Only a newly created staging tree can mint write handles.
+pub struct Staging<'a> {
+    destination: &'a Destination,
+    file: File,
+    name: Vec<u16>,
+    recorded: ObjectKey,
+    published: bool,
+}
+impl Staging<'_> {
+    pub fn identity(&self) -> &ObjectKey {
+        &self.recorded
+    }
+    /// Set the staging root's final metadata last. Journal its planned creation
+    /// time before this call; creation-time preservation changes the identity record.
+    pub fn set_metadata(&mut self, metadata: BasicMetadata) -> io::Result<()> {
+        let _guard = self.guard()?;
+        let file = relative(
+            self.destination.parent(),
+            &self.name,
+            GENERIC_WRITE | FILE_READ_ATTRIBUTES,
+            SHARE,
+            false,
+            0,
+        )?;
+        same(&file, &self.recorded)?;
+        metadata.apply(&file)?;
+        self.recorded = identity::from_file(&file)?.object;
+        Ok(())
+    }
+    // LIST_DIRECTORY makes the deny-delete share effective; attributes alone do not.
+    fn guard(&self) -> io::Result<File> {
+        if self.published {
+            return Err(refused("published staging is never cleaned or written"));
+        }
+        same(&self.file, &self.recorded)?;
+        let guard = relative(
+            self.destination.parent(),
+            &self.name,
+            FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            false,
+            0,
+        )?;
+        directory(&guard)?;
+        same(&guard, &self.recorded)?;
+        Ok(guard)
+    }
+    fn parents(&self, path: &[(&str, ObjectKey)]) -> io::Result<Vec<File>> {
+        let mut pins = vec![self.guard()?];
+        for (name, expected) in path {
+            let file = relative(
+                pins.last().unwrap(),
+                &component(name)?,
+                FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                false,
+                0,
+            )?;
+            directory(&file)?;
+            same(&file, expected)?;
+            pins.push(file);
+        }
+        Ok(pins)
+    }
+    pub fn create_directory(
+        &self,
+        path: &[(&str, ObjectKey)],
+        name: &str,
+    ) -> io::Result<ObjectKey> {
+        let pins = self.parents(path)?;
+        let file = relative(
+            pins.last().unwrap(),
+            &component(name)?,
+            FILE_READ_ATTRIBUTES,
+            SHARE,
+            true,
+            windows_sys::Wdk::Storage::FileSystem::FILE_DIRECTORY_FILE,
+        )?;
+        directory(&file)?;
+        Ok(identity::from_file(&file)?.object)
+    }
+    pub fn create_file(&self, path: &[(&str, ObjectKey)], name: &str) -> io::Result<StagedFile> {
+        let pins = self.parents(path)?;
+        let file = relative(
+            pins.last().unwrap(),
+            &component(name)?,
+            GENERIC_WRITE | FILE_READ_ATTRIBUTES | READ_CONTROL,
+            SHARE,
+            true,
+            FILE_NON_DIRECTORY_FILE,
+        )?;
+        supported_attributes(identity::from_file(&file)?.attributes)?;
+        Ok(StagedFile { file })
+    }
+    /// Reopen by recorded ID, check its current name binding, hash under a deny-write hold.
+    pub fn verify(
+        &self,
+        path: &[(&str, ObjectKey)],
+        name: &str,
+        recorded: &ObjectKey,
+    ) -> io::Result<VerifiedFile> {
+        let pins = self.parents(path)?;
+        let file = by_id(
+            &self.destination.volume,
+            recorded,
+            GENERIC_READ,
+            HOLD,
+            FILE_FLAG_NO_BUFFERING,
+        )?;
+        let named = relative(
+            pins.last().unwrap(),
+            &component(name)?,
+            FILE_READ_ATTRIBUTES,
+            SHARE,
+            false,
+            FILE_NON_DIRECTORY_FILE,
+        )?;
+        same(&named, recorded)?;
+        let (digest, size) = noncached_hash(&file, self.destination.sector)?;
+        Ok(VerifiedFile {
+            file,
+            digest,
+            size,
+            sector: self.destination.sector,
+        })
+    }
+    /// Caller must durably record publish intent and check the grant epoch first.
+    /// This one-shot syscall never replaces an entry or retries a refused rename.
+    pub fn publish(&mut self, final_name: &str) -> io::Result<()> {
+        if self.published {
+            return Err(refused("already published"));
+        }
+        let name = component(final_name)?;
+        let file = relative(
+            self.destination.parent(),
+            &self.name,
+            DELETE | FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            false,
+            0,
+        )?;
+        same(&file, &self.recorded)?;
+        let bytes = size_of::<FILE_RENAME_INFO>()
+            .max(offset_of!(FILE_RENAME_INFO, FileName) + (name.len() + 1) * 2);
+        let mut storage = vec![0u64; bytes.div_ceil(8)];
+        let rename = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+        unsafe {
+            (*rename).Anonymous.ReplaceIfExists = false;
+            (*rename).RootDirectory = self.destination.parent().as_raw_handle();
+            (*rename).FileNameLength = (name.len() * 2) as u32;
+            ptr::copy_nonoverlapping(
+                name.as_ptr(),
+                ptr::addr_of_mut!((*rename).FileName).cast::<u16>(),
+                name.len(),
+            );
+        }
+        if unsafe {
+            SetFileInformationByHandle(
+                file.as_raw_handle(),
+                FileRenameInfo,
+                rename.cast(),
+                bytes as u32,
+            )
+        } == 0
+        {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(123) {
+                return Err(error);
+            }
+            #[cfg(test)]
+            eprintln!(
+                "publish: relative Win32 rename returned 123; using native pinned-parent rename"
+            );
+            // The Win32 wrapper rejects a relative name on this host; keep the
+            // same pinned-parent buffer and no-replace semantics in the native call.
+            let mut status = IO_STATUS_BLOCK::default();
+            let code = unsafe {
+                windows_sys::Wdk::Storage::FileSystem::NtSetInformationFile(
+                    file.as_raw_handle(),
+                    &mut status,
+                    rename.cast(),
+                    bytes as u32,
+                    windows_sys::Wdk::Storage::FileSystem::FileRenameInformation,
+                )
+            };
+            if code < 0 {
+                return Err(nt_error(code));
+            }
+        }
+        self.published = true;
+        Ok(())
+    }
+    /// Caller must first withdraw any journaled publish intent. No adoption by name.
+    /// The exclusive delete share binds identity, link count and disposition to one handle.
+    pub fn cleanup_file(
+        &self,
+        path: &[(&str, ObjectKey)],
+        name: &str,
+        recorded: &ObjectKey,
+    ) -> io::Result<()> {
+        self.cleanup_entry(path, name, recorded, false)
+    }
+    pub fn cleanup_directory(
+        &self,
+        path: &[(&str, ObjectKey)],
+        name: &str,
+        recorded: &ObjectKey,
+    ) -> io::Result<()> {
+        self.cleanup_entry(path, name, recorded, true)
+    }
+    fn cleanup_entry(
+        &self,
+        path: &[(&str, ObjectKey)],
+        name: &str,
+        recorded: &ObjectKey,
+        is_directory: bool,
+    ) -> io::Result<()> {
+        let pins = self.parents(path)?;
+        let _identity_pin = by_id(
+            &self.destination.volume,
+            recorded,
+            FILE_READ_ATTRIBUTES,
+            SHARE,
+            if is_directory {
+                FILE_FLAG_BACKUP_SEMANTICS
+            } else {
+                0
+            },
+        )?;
+        let named = relative(
+            pins.last().unwrap(),
+            &component(name)?,
+            DELETE | FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES,
+            FILE_SHARE_READ,
+            false,
+            if is_directory {
+                0
+            } else {
+                FILE_NON_DIRECTORY_FILE
+            },
+        )?;
+        same(&named, recorded)?;
+        let current = identity::from_file(&named)?;
+        if (!is_directory && current.link_count != 1)
+            || (current.attributes & FILE_ATTRIBUTE_DIRECTORY != 0) != is_directory
+        {
+            return Err(refused(
+                "cleanup requires one link to a staged regular file",
+            ));
+        }
+        // POSIX unlink needs a name-opened handle on this NTFS host; the by-ID
+        // pin alone returns ERROR_INVALID_PARAMETER. Both handles must match.
+        remove(&named)
+    }
+    /// Remove only this original staging name, and only when the OS finds it empty.
+    /// Pending publish intent must already have been withdrawn by the journal owner.
+    pub fn cleanup(self) -> io::Result<()> {
+        if self.published {
+            return Err(refused("published staging is never cleaned"));
+        }
+        let file = relative(
+            self.destination.parent(),
+            &self.name,
+            DELETE | FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES,
+            FILE_SHARE_READ,
+            false,
+            0,
+        )?;
+        same(&file, &self.recorded)?;
+        directory(&file)?;
+        remove(&file)
+    }
+    /// Set child directory metadata bottom-up after writing and verifying its children.
+    /// Journal the expected new creation time before calling this operation.
+    pub fn set_directory_metadata(
+        &self,
+        path: &[(&str, ObjectKey)],
+        name: &str,
+        recorded: &ObjectKey,
+        metadata: BasicMetadata,
+    ) -> io::Result<ObjectKey> {
+        let pins = self.parents(path)?;
+        let file = relative(
+            pins.last().unwrap(),
+            &component(name)?,
+            GENERIC_WRITE | FILE_READ_ATTRIBUTES,
+            SHARE,
+            false,
+            0,
+        )?;
+        same(&file, recorded)?;
+        directory(&file)?;
+        metadata.apply(&file)?;
+        Ok(identity::from_file(&file)?.object)
+    }
+}
+
+fn disposition(file: &File, flags: u32) -> io::Result<()> {
+    set(
+        file,
+        FileDispositionInfoEx,
+        &FILE_DISPOSITION_INFO_EX { Flags: flags },
+    )
+}
+fn remove(file: &File) -> io::Result<()> {
+    let flags = FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS;
+    match disposition(
+        file,
+        flags | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
+    ) {
+        Ok(()) => Ok(()),
+        Err(error) if matches!(error.raw_os_error(), Some(1 | 50 | 87)) => {
+            let mut basic: FILE_BASIC_INFO = info(file, FileBasicInfo)?;
+            basic.FileAttributes &= !FILE_ATTRIBUTE_READONLY;
+            if basic.FileAttributes == 0 {
+                basic.FileAttributes = FILE_ATTRIBUTE_NORMAL;
+            }
+            set(file, FileBasicInfo, &basic)?;
+            disposition(file, flags)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn by_id(
+    parent: &File,
+    recorded: &ObjectKey,
+    access: u32,
+    share: u32,
+    flags: u32,
+) -> io::Result<File> {
+    win::non_elevated()?;
+    let descriptor = FILE_ID_DESCRIPTOR {
+        dwSize: size_of::<FILE_ID_DESCRIPTOR>() as u32,
+        Type: ExtendedFileIdType,
+        Anonymous: FILE_ID_DESCRIPTOR_0 {
+            ExtendedFileId: FILE_ID_128 {
+                Identifier: recorded.file_id,
+            },
+        },
+    };
+    let mut handle = unsafe {
+        OpenFileById(
+            parent.as_raw_handle(),
+            &descriptor,
+            access | SYNCHRONIZE,
+            share,
+            ptr::null(),
+            FILE_FLAG_OPEN_NO_RECALL | FILE_FLAG_OPEN_REPARSE_POINT | flags,
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE
+        && io::Error::last_os_error().raw_os_error() == Some(50)
+        && recorded.file_id[8..] == [0; 8]
+    {
+        let descriptor = FILE_ID_DESCRIPTOR {
+            dwSize: size_of::<FILE_ID_DESCRIPTOR>() as u32,
+            Type: FileIdType,
+            Anonymous: FILE_ID_DESCRIPTOR_0 {
+                FileId: i64::from_le_bytes(recorded.file_id[..8].try_into().unwrap()),
+            },
+        };
+        handle = unsafe {
+            OpenFileById(
+                parent.as_raw_handle(),
+                &descriptor,
+                access | SYNCHRONIZE,
+                share,
+                ptr::null(),
+                FILE_FLAG_OPEN_NO_RECALL | FILE_FLAG_OPEN_REPARSE_POINT | flags,
+            )
+        };
+    }
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    let file = unsafe { File::from_raw_handle(handle) };
+    same(&file, recorded)?;
+    let current = identity::from_file(&file)?;
+    if enumerate::refused_attributes(current.attributes) {
+        return Err(refused("unsupported staged attributes"));
+    }
+    supported_attributes(current.attributes)?;
+    Ok(file)
+}
+
+/// Fields preserved by v1; access/change times are deliberately not promised.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BasicMetadata {
+    pub creation_time: i64,
+    pub last_write_time: i64,
+    pub attributes: u32,
+}
+impl BasicMetadata {
+    fn read(file: &File) -> io::Result<Self> {
+        let basic: FILE_BASIC_INFO = info(file, FileBasicInfo)?;
+        supported_attributes(basic.FileAttributes)?;
+        Ok(Self {
+            creation_time: basic.CreationTime,
+            last_write_time: basic.LastWriteTime,
+            attributes: basic.FileAttributes & PRESERVED,
+        })
+    }
+    fn apply(self, file: &File) -> io::Result<()> {
+        if self.attributes & !PRESERVED != 0 || self.creation_time <= 0 || self.last_write_time <= 0
+        {
+            return Err(refused("unsupported metadata"));
+        }
+        set(
+            file,
+            FileBasicInfo,
+            &FILE_BASIC_INFO {
+                CreationTime: self.creation_time,
+                LastWriteTime: self.last_write_time,
+                FileAttributes: if self.attributes == 0 {
+                    FILE_ATTRIBUTE_NORMAL
+                } else {
+                    self.attributes
+                },
+                ..Default::default()
+            },
+        )?;
+        file.sync_all()
+    }
+}
+/// A create-new handle, never an existing destination file.
+pub struct StagedFile {
+    file: File,
+}
+impl StagedFile {
+    /// Journal this identity BEFORE preallocation, streams, metadata or writes.
+    pub fn identity(&self) -> io::Result<ObjectKey> {
+        Ok(identity::from_file(&self.file)?.object)
+    }
+    /// Journal the planned creation time before changing it; re-query `identity`
+    /// afterwards for verification and cleanup, including recovery after a crash.
+    pub fn set_metadata(&self, metadata: BasicMetadata) -> io::Result<()> {
+        metadata.apply(&self.file)
+    }
+    /// Create a named $DATA stream on this newly created file, never replace one.
+    pub fn create_stream(&self, name: &str) -> io::Result<StagedFile> {
+        let name = stream_name(name)?;
+        Ok(StagedFile {
+            file: relative(
+                &self.file,
+                &name,
+                GENERIC_WRITE | FILE_READ_ATTRIBUTES,
+                SHARE,
+                true,
+                FILE_NON_DIRECTORY_FILE,
+            )?,
+        })
+    }
+    /// Preallocate, write exactly the declared length in 1 MiB chunks, then flush once.
+    /// On failure retain staging for identity-bound cleanup, never publish it.
+    pub fn write_and_flush(&self, reader: &mut impl Read, size: u64) -> io::Result<[u8; 32]> {
+        if info::<FILE_STANDARD_INFO>(&self.file, FileStandardInfo)?.EndOfFile != 0 {
+            return Err(refused("staged writes require an empty file"));
+        }
+        let allocation = i64::try_from(size).map_err(|_| refused("file too large"))?;
+        set(
+            &self.file,
+            FileAllocationInfo,
+            &FILE_ALLOCATION_INFO {
+                AllocationSize: allocation,
+            },
+        )?;
+        let mut buffer = vec![0; BLOCK];
+        let mut digest = Sha256::new();
+        let mut remaining = size;
+        let mut writer = &self.file;
+        while remaining != 0 {
+            let count = remaining.min(BLOCK as u64) as usize;
+            reader.read_exact(&mut buffer[..count])?;
+            writer.write_all(&buffer[..count])?;
+            digest.update(&buffer[..count]);
+            remaining -= count as u64;
+        }
+        self.file.sync_all()?;
+        Ok(digest.finalize().into())
+    }
+}
+
+/// Keep this handle alive through publish and the committed journal record.
+pub struct VerifiedFile {
+    file: File,
+    pub digest: [u8; 32],
+    pub size: u64,
+    sector: usize,
+}
+impl VerifiedFile {
+    pub fn metadata(&self) -> io::Result<BasicMetadata> {
+        BasicMetadata::read(&self.file)
+    }
+    pub fn verify_stream(&self, name: &str) -> io::Result<VerifiedFile> {
+        let file = relative(
+            &self.file,
+            &stream_name(name)?,
+            GENERIC_READ,
+            HOLD,
+            false,
+            FILE_NON_DIRECTORY_FILE
+                | windows_sys::Wdk::Storage::FileSystem::FILE_NO_INTERMEDIATE_BUFFERING,
+        )?;
+        supported_attributes(identity::from_file(&file)?.attributes)?;
+        let (digest, size) = noncached_hash(&file, self.sector)?;
+        Ok(VerifiedFile {
+            file,
+            digest,
+            size,
+            sector: self.sector,
+        })
+    }
+}
+fn stream_name(name: &str) -> io::Result<Vec<u16>> {
+    component(name)?;
+    Ok(format!(":{name}:$DATA").encode_utf16().collect())
+}
+fn physical_sector(volume: &File) -> io::Result<usize> {
+    use windows_sys::Win32::System::{Ioctl::*, IO::DeviceIoControl};
+    let query = STORAGE_PROPERTY_QUERY {
+        PropertyId: StorageAccessAlignmentProperty,
+        QueryType: PropertyStandardQuery,
+        ..Default::default()
+    };
+    let mut alignment = STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR::default();
+    let mut returned = 0;
+    if unsafe {
+        DeviceIoControl(
+            volume.as_raw_handle(),
+            IOCTL_STORAGE_QUERY_PROPERTY,
+            ptr::from_ref(&query).cast(),
+            size_of::<STORAGE_PROPERTY_QUERY>() as u32,
+            ptr::from_mut(&mut alignment).cast(),
+            size_of::<STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR>() as u32,
+            &mut returned,
+            ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if returned < size_of::<STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR>() as u32 {
+        return Err(refused("truncated sector geometry"));
+    }
+    sector_alignment(
+        alignment.BytesPerLogicalSector,
+        alignment.BytesPerPhysicalSector,
+    )
+}
+fn sector_alignment(logical: u32, physical: u32) -> io::Result<usize> {
+    if !logical.is_power_of_two()
+        || !physical.is_power_of_two()
+        || physical < logical
+        || physical as usize > BLOCK
+    {
+        return Err(refused("unknown sector alignment"));
+    }
+    Ok(physical as usize)
+}
+fn noncached_hash(file: &File, sector: usize) -> io::Result<([u8; 32], u64)> {
+    let size = info::<FILE_STANDARD_INFO>(file, FileStandardInfo)?.EndOfFile;
+    if size < 0 {
+        return Err(refused("negative size"));
+    }
+    let size = size as u64;
+    let mut storage = vec![0u8; BLOCK + sector];
+    let offset = storage.as_ptr().align_offset(sector);
+    let buffer = &mut storage[offset..offset + BLOCK];
+    let mut file = file;
+    let mut remaining = size;
+    let mut digest = Sha256::new();
+    while remaining != 0 {
+        let logical = remaining.min(BLOCK as u64) as usize;
+        let request = logical.div_ceil(sector) * sector;
+        let count = file.read(&mut buffer[..request])?;
+        if count != logical {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "noncached read size changed",
+            ));
+        }
+        digest.update(&buffer[..count]);
+        remaining -= count as u64;
+    }
+    Ok((digest.finalize().into(), size))
+}
+
+/// Deny-write, no-recall source reader reusing the duplicate reader's signatures,
+/// ancestor pins, bounded reads and final reopen-by-name check unchanged.
+pub struct Source {
+    source: duplicate_reader::CopySource,
+    offset: u64,
+    size: u64,
+    streams: Vec<(String, File, u64, u64)>,
+}
+impl Source {
+    pub fn open(
+        root: &Path,
+        expected_root: &enumerate::OpenedIdentity,
+        entry: duplicate_reader::Entry,
+        budget: duplicate_reader::Budget,
+    ) -> Result<Self, duplicate_reader::Reason> {
+        let size = entry
+            .expected
+            .size
+            .parse()
+            .map_err(|_| duplicate_reader::Reason::Unsupported)?;
+        let source = duplicate_reader::CopySource::open(root, expected_root, entry, budget)?;
+        let mut held = Vec::new();
+        for (name, size) in
+            streams(source.file()).map_err(|_| duplicate_reader::Reason::Unsupported)?
+        {
+            let file = relative(
+                source.file(),
+                &name.encode_utf16().collect::<Vec<_>>(),
+                FILE_READ_DATA | FILE_READ_ATTRIBUTES,
+                HOLD,
+                false,
+                FILE_NON_DIRECTORY_FILE,
+            )
+            .map_err(|error| match error.raw_os_error() {
+                Some(32 | 33) => duplicate_reader::Reason::SharingViolation,
+                Some(5) => duplicate_reader::Reason::AccessDenied,
+                _ => duplicate_reader::Reason::Unsupported,
+            })?;
+            held.push((name, file, size, 0));
+        }
+        source.finish()?;
+        Ok(Self {
+            source,
+            offset: 0,
+            size,
+            streams: held,
+        })
+    }
+    pub fn streams(&self) -> Vec<(String, u64)> {
+        self.streams
+            .iter()
+            .map(|(name, _, size, _)| (name.clone(), *size))
+            .collect()
+    }
+    /// Stream names are exactly the enumerated `:<name>:$DATA` values.
+    pub fn stream_reader(&mut self, name: &str) -> io::Result<NamedSource<'_>> {
+        let index = self
+            .streams
+            .iter()
+            .position(|(n, _, _, _)| n == name)
+            .ok_or_else(|| refused("unknown source stream"))?;
+        Ok(NamedSource {
+            source: self,
+            index,
+        })
+    }
+    pub fn finish(&self) -> Result<(), duplicate_reader::Reason> {
+        self.source.finish()?;
+        if streams(self.source.file()).map_err(|_| duplicate_reader::Reason::Unsupported)?
+            != self.streams()
+        {
+            return Err(duplicate_reader::Reason::ChangedDuringRead);
+        }
+        Ok(())
+    }
+}
+pub struct NamedSource<'a> {
+    source: &'a mut Source,
+    index: usize,
+}
+impl Read for NamedSource<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let (_, file, size, offset) = &mut self.source.streams[self.index];
+        let count = (*size - *offset).min(buffer.len() as u64) as usize;
+        if count == 0 {
+            return Ok(0);
+        }
+        self.source
+            .source
+            .read_stream(file, *offset, &mut buffer[..count])
+            .map_err(|e| io::Error::other(format!("source stream read: {e:?}")))?;
+        *offset += count as u64;
+        Ok(count)
+    }
+}
+impl Read for Source {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let count = (self.size - self.offset).min(buffer.len() as u64) as usize;
+        if count == 0 {
+            return Ok(0);
+        }
+        self.source
+            .read(self.offset, &mut buffer[..count])
+            .map_err(|e| io::Error::other(format!("source read: {e:?}")))?;
+        self.offset += count as u64;
+        Ok(count)
+    }
+}
+pub(crate) fn supported_file(file: &File) -> io::Result<()> {
+    let current = identity::from_file(file)?;
+    supported_attributes(current.attributes)?;
+    let mut ea = FILE_EA_INFORMATION::default();
+    let mut status = IO_STATUS_BLOCK::default();
+    let code = unsafe {
+        NtQueryInformationFile(
+            file.as_raw_handle(),
+            &mut status,
+            ptr::from_mut(&mut ea).cast(),
+            size_of::<FILE_EA_INFORMATION>() as u32,
+            FileEaInformation,
+        )
+    };
+    if code < 0 {
+        return Err(nt_error(code));
+    }
+    if ea.EaSize != 0 {
+        return Err(refused("extended_attributes"));
+    }
+    streams(file)?;
+    Ok(())
+}
+
+/// Named $DATA streams only; default data is represented by the file itself.
+/// The bounded native buffer accommodates 64 maximum-length component names.
+fn streams(file: &File) -> io::Result<Vec<(String, u64)>> {
+    let mut buffer = vec![0u64; 64 * 1024 / 8];
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileStreamInfo,
+            buffer.as_mut_ptr().cast(),
+            (buffer.len() * 8) as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let bytes = buffer.len() * 8;
+    let mut offset = 0;
+    let mut result = Vec::new();
+    loop {
+        let header = offset_of!(FILE_STREAM_INFO, StreamName);
+        if offset + size_of::<FILE_STREAM_INFO>() > bytes {
+            return Err(refused("invalid stream record"));
+        }
+        let entry = unsafe {
+            ptr::read_unaligned(
+                buffer
+                    .as_ptr()
+                    .cast::<u8>()
+                    .add(offset)
+                    .cast::<FILE_STREAM_INFO>(),
+            )
+        };
+        let len = entry.StreamNameLength as usize;
+        if len % 2 != 0 || offset + header + len > bytes || entry.StreamSize < 0 {
+            return Err(refused("invalid stream record"));
+        }
+        let name = unsafe {
+            std::slice::from_raw_parts(
+                buffer
+                    .as_ptr()
+                    .cast::<u8>()
+                    .add(offset + header)
+                    .cast::<u16>(),
+                len / 2,
+            )
+        };
+        let name = String::from_utf16(name).map_err(|_| refused("unrepresentable stream name"))?;
+        if name != "::$DATA" {
+            if !name.starts_with(':') || !name.ends_with(":$DATA") {
+                return Err(refused("unsupported stream type"));
+            }
+            result.push((name, entry.StreamSize as u64));
+            if result.len() > 64 {
+                return Err(refused("too_many_streams"));
+            }
+        }
+        if entry.NextEntryOffset == 0 {
+            break;
+        }
+        if (entry.NextEntryOffset as usize) < header + len || entry.NextEntryOffset % 8 != 0 {
+            return Err(refused("invalid stream offset"));
+        }
+        offset += entry.NextEntryOffset as usize;
+    }
+    Ok(result)
+}
+
+#[cfg(test)]
+mod tests;

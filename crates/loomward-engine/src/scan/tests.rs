@@ -224,7 +224,7 @@ fn duplicate_grant_returns_evidence(class: DatasetClass) {
     assert_eq!(err.to_body().message.as_str(), "grant_not_active");
 }
 
-fn duplicate_budget() -> loomward_windows::duplicate_reader::Budget {
+pub(super) fn duplicate_budget() -> loomward_windows::duplicate_reader::Budget {
     loomward_windows::duplicate_reader::Budget {
         bytes: 100,
         time: std::time::Duration::from_secs(10),
@@ -311,7 +311,10 @@ fn tree_comparison_requires_both_durable_grants_and_final_cancellation_gate() {
     );
 }
 
-fn duplicate_grant_store(state: &std::path::Path, root: &GrantedRoot) -> rusqlite::Connection {
+pub(super) fn duplicate_grant_store(
+    state: &std::path::Path,
+    root: &GrantedRoot,
+) -> rusqlite::Connection {
     duplicate_grant_store_as(state, root, "synthetic")
 }
 
@@ -1422,7 +1425,8 @@ fn native_scan_job_reports_exact_final_progress() {
     let e = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Synthetic)).unwrap();
     e.set_scan_sink(Arc::new(MemorySink::default())).unwrap();
     let job = e.scan_start(&root, None).unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    // A liveness bound only: the claim is the exact final counts, not how fast a loaded host scans.
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
     let job = loop {
         let j = e.job_status(&job.job_id).unwrap();
         if j.state == loomward_protocol::JobState::Completed {
@@ -2006,7 +2010,7 @@ fn targeted_pipeline_never_establishes_absence_outside_scope() {
 /// Native roots are opened component by component and refuse reparse ancestors, so tests grant a
 /// canonical temp base (hosted runners may junction the temp folder), as a real grant would.
 #[cfg(windows)]
-fn canonical_tempdir() -> tempfile::TempDir {
+pub(super) fn canonical_tempdir() -> tempfile::TempDir {
     tempfile::tempdir_in(std::fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap()
 }
 
@@ -2028,7 +2032,7 @@ fn explain(path: &std::path::Path) -> String {
 /// Hosted CI runners hold an elevated token, and the native scan refuses elevation by design
 /// (AGENTS.md invariant 2). There, pin the refusal and skip; elsewhere run the native test.
 #[cfg(windows)]
-fn skip_elevated() -> bool {
+pub(super) fn skip_elevated() -> bool {
     if !loomward_windows::enumerate::running_elevated() {
         return false;
     }

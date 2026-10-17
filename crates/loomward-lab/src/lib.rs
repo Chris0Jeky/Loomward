@@ -1,4 +1,6 @@
 //! Deterministic synthetic plans and a checked Windows directory-buffer decoder.
+#[cfg(windows)]
+pub mod pathological;
 pub mod semantic;
 use serde::{Deserialize, Serialize};
 use std::{

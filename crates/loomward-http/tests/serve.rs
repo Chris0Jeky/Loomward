@@ -701,6 +701,14 @@ fn open_events(h: &Handle, extra: &str) -> Result<Sse, Response> {
             break;
         }
     }
+    if head.is_empty() {
+        // Closed before any response (status 0): a caller decides whether that is a failure.
+        return Err(Response {
+            status: 0,
+            head,
+            body: Vec::new(),
+        });
+    }
     let status: u16 = head[9..12].parse().unwrap();
     if status != 200 {
         let mut rest = Vec::new();
@@ -1283,39 +1291,55 @@ fn followup_lifetime_expiry_drains_an_in_flight_call() {
 
 #[test]
 fn followup_finished_sse_restores_the_lifetime_cap() {
-    let (_, released) = std::sync::mpsc::channel();
-    let (end, ended) = std::sync::mpsc::channel();
-    let h = serve(
-        Arc::new(FollowupService {
-            fixture: fixture(),
-            call_entered: None,
-            call_release: std::sync::Mutex::new(released),
-            stream_end: std::sync::Mutex::new(Some(ended)),
-        }),
-        Options {
-            connection_lifetime: Duration::from_millis(300),
-            write_timeout: Duration::from_millis(300),
-            read_timeout: Duration::from_secs(5),
-            ..Options::default()
-        },
-    )
-    .unwrap();
-    let mut sse = open_events(&h, "").ok().unwrap();
-    assert_eq!(sse.next().event, "stream.hello");
-    std::thread::sleep(Duration::from_millis(500));
-    end.send(()).unwrap();
-    sse.reader
-        .get_ref()
-        .set_read_timeout(Some(Duration::from_secs(2)))
+    let lifetime = Duration::from_millis(300);
+    // The cap exempts a stream only once it is open. On a loaded host the lifetime can expire
+    // before the server answers, which closes the connection correctly but proves nothing here.
+    // An attempt counts only when the head arrived within the lifetime measured from before the
+    // connect: the server marks the stream open before it writes the head, so it was open before
+    // the cap fired (#320).
+    for _ in 0..20 {
+        let (_, released) = std::sync::mpsc::channel();
+        let (end, ended) = std::sync::mpsc::channel();
+        let h = serve(
+            Arc::new(FollowupService {
+                fixture: fixture(),
+                call_entered: None,
+                call_release: std::sync::Mutex::new(released),
+                stream_end: std::sync::Mutex::new(Some(ended)),
+            }),
+            Options {
+                connection_lifetime: lifetime,
+                write_timeout: Duration::from_millis(300),
+                read_timeout: Duration::from_secs(5),
+                ..Options::default()
+            },
+        )
         .unwrap();
-    let mut rest = Vec::new();
-    sse.reader
-        .read_to_end(&mut rest)
-        .expect("connection remained exempt after SSE ended");
-    assert_eq!(
-        rest, b"0\r\n\r\n",
-        "SSE must finish before the connection closes"
-    );
+        let connecting = Instant::now();
+        let Ok(mut sse) = open_events(&h, "") else {
+            continue;
+        };
+        if connecting.elapsed() >= lifetime {
+            continue;
+        }
+        assert_eq!(sse.next().event, "stream.hello");
+        std::thread::sleep(Duration::from_millis(500));
+        end.send(()).unwrap();
+        sse.reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut rest = Vec::new();
+        sse.reader
+            .read_to_end(&mut rest)
+            .expect("connection remained exempt after SSE ended");
+        assert_eq!(
+            rest, b"0\r\n\r\n",
+            "SSE must finish before the connection closes"
+        );
+        return;
+    }
+    panic!("no attempt opened the stream within the connection lifetime");
 }
 
 #[cfg(windows)]

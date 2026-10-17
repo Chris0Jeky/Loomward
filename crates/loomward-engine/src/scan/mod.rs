@@ -4,6 +4,8 @@ pub mod sink;
 pub mod source;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tree_gate_tests;
 #[cfg(any(windows, test))]
 pub mod watch;
 use crate::{Component, Engine, EngineError, EngineResult};
@@ -212,7 +214,11 @@ impl Engine {
             Ok::<_, EngineError>(tree)
         };
         let left = read(source, left_cancel.clone())?;
+        #[cfg(test)]
+        tree_gate_tests::point(tree_gate_tests::TreePoint::AfterSourceRead);
         let right = read(destination, right_cancel.clone())?;
+        #[cfg(test)]
+        tree_gate_tests::point(tree_gate_tests::TreePoint::AfterDestinationRead);
         let report = loomward_operations::tree::compare(&left, &right);
         // Recheck both durable grants and cancellation after both observations, as in q-10.
         for (root, cancel) in [(source, left_cancel), (destination, right_cancel)] {
@@ -223,6 +229,8 @@ impl Engine {
                 });
             }
         }
+        #[cfg(test)]
+        tree_gate_tests::point(tree_gate_tests::TreePoint::BeforeGuard);
         let mut gates = vec![
             self.scan_root_gate(source.key()),
             self.scan_root_gate(destination.key()),
@@ -623,6 +631,13 @@ impl Engine {
                 Err(e) => return Err(e),
             };
         #[cfg(windows)]
+        {
+            let existing = self.scan_watches.lock().unwrap().remove(root.root_id());
+            if let Some(watch) = existing {
+                watch.stop();
+            }
+        }
+        #[cfg(windows)]
         if !watched {
             let io = source::native_cancel();
             let interrupt = io.clone();
@@ -667,15 +682,6 @@ impl Engine {
         #[cfg(windows)]
         {
             let watch = {
-                let existing = self
-                    .scan_watches
-                    .lock()
-                    .unwrap()
-                    .get(root.root_id())
-                    .cloned();
-                if let Some(watch) = existing {
-                    watch.stop();
-                }
                 let watch = watch::RootWatch::start(&root, sink.clone())?;
                 let replaced = self
                     .scan_watches

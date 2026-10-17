@@ -29,6 +29,8 @@ pub(crate) struct Hooks {
     pub opened: std::sync::Condvar,
     /// How far ahead of the wall clock the collection page loop reads time (`Inner::past`).
     pub skew: Mutex<Duration>,
+    /// How far ahead of the wall clock a read's receiver reads time once it starts waiting.
+    pub read_ahead: Mutex<Duration>,
     /// (profile, profiles directory) for the scan-time fence instead of the OS folders (#312).
     pub profile: Mutex<Option<(std::path::PathBuf, std::path::PathBuf)>>,
     /// #219: the filesystem name grant-time probes observe instead of the volume's.
@@ -1420,10 +1422,13 @@ fn hardening_grant_checks_the_registered_digest_before_writes() {
     assert!(svc.inner.grant(&root, "cli_flag", false).is_ok());
 }
 
+/// Requests carry the protocol maximum deadline: a test that pins a deadline sets its own, and the
+/// 2 to 5 s defaults turned every handler into a race on a loaded host (#320).
 fn request(command: &str, payload: Value) -> RequestEnvelope {
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     serde_json::from_value(json!({
-        "protocol": "loomward/3", "request_id": format!("r{n}"), "command": command, "payload": payload
+        "protocol": "loomward/3", "request_id": format!("r{n}"), "command": command, "payload": payload,
+        "deadline_ms": 60_000
     }))
     .unwrap()
 }
@@ -2418,6 +2423,20 @@ fn dropping_the_service_waits_for_workers_that_already_replied() {
         std::fs::remove_file(tmp.path().join("catalog.db")).unwrap();
         opener.join().unwrap();
     }
+}
+
+#[test]
+fn revoke_distinguishes_missing_grants_from_store_failures() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    assert_eq!(svc.inner.revoke(1).unwrap_err().code, ErrorCode::NotFound);
+    let (_, grant) = register(&svc, 1);
+    // Only this service connection loses the store; the catalogue writer remains intact.
+    svc.inner.db().execute_batch("DETACH DATABASE st").unwrap();
+    assert_eq!(
+        svc.inner.revoke(grant).unwrap_err().code,
+        ErrorCode::InternalError
+    );
 }
 
 /// H1: a rebuilt catalogue reassigns root and volume rows. An ID minted before the rebuild is
@@ -4373,3 +4392,6 @@ mod backups_tests;
 #[cfg(test)]
 #[path = "diagnostics_tests.rs"]
 mod diagnostics_tests;
+
+#[path = "gap_tests.rs"]
+mod gap_tests;

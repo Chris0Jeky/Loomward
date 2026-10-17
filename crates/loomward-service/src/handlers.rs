@@ -11,8 +11,11 @@ use loomward_catalog::{
 };
 use loomward_engine::EngineResult;
 use loomward_protocol::*;
+use rusqlite::OptionalExtension;
 use serde::Serialize;
 use serde_json::{json, Value};
+
+mod root_view;
 
 type Handled = Result<Out, ErrorBody>;
 
@@ -44,7 +47,7 @@ fn basis(b: Basis) -> CBasis {
     }
 }
 
-fn grant_number(id: &str) -> Result<i64, ErrorBody> {
+pub(crate) fn grant_number(id: &str) -> Result<i64, ErrorBody> {
     id.strip_prefix("gr_")
         .and_then(|n| n.parse().ok())
         .filter(|n: &i64| *n > 0 && format!("gr_{n}") == id)
@@ -54,22 +57,33 @@ fn grant_number(id: &str) -> Result<i64, ErrorBody> {
 /// After a forget (#288) no file of the state directory may still hold the root's name. The rolling
 /// `state.start-*.db` copies are dropped (the next open makes a fresh one). The one-off
 /// `state.before-v*.db` migration copies are the owner's way back to an older build, so each is
-/// scrubbed in place instead; a copy that still holds `path` afterwards (a shape the scrub does not
-/// know, or a failed scrub) is removed.
-fn forget_backups(dir: &std::path::Path, path: &str) {
+/// scrubbed in place instead; a copy that still holds `path` after a successful scrub (a shape the
+/// scrub does not know) is removed. A failed scrub preserves the rollback copy and reports failure.
+fn forget_backups(dir: &std::path::Path, path: &str) -> Result<(), ErrorBody> {
+    // Every copy is visited even after a failure, so one failed scrub never leaves another copy unswept.
+    let mut failed = None;
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         if !name.ends_with(".db") {
             continue;
         }
         let file = entry.path();
-        let clean = name.starts_with("state.before-v")
-            && scrub_copy(&file, &loomward_catalog::sqlite_dir(dir).join("state.db")).is_ok()
-            && !holds(&file, path);
+        let clean = if name.starts_with("state.before-v") {
+            match scrub_copy(&file, &loomward_catalog::sqlite_dir(dir).join("state.db")) {
+                Ok(()) => !holds(&file, path),
+                Err(e) => {
+                    failed.get_or_insert(sql_error(e));
+                    continue; // the rollback copy is kept
+                }
+            }
+        } else {
+            false
+        };
         if !clean && (name.starts_with("state.start-") || name.starts_with("state.before-v")) {
             let _ = std::fs::remove_file(&file);
         }
     }
+    failed.map_or(Ok(()), Err)
 }
 
 /// Removes from an older-schema copy what the forget removed from `state.db`: every reference
@@ -77,7 +91,7 @@ fn forget_backups(dir: &std::path::Path, path: &str) {
 /// path and identity of every forgotten grant. Freed pages are zeroed and VACUUM rewrites the file.
 fn scrub_copy(copy: &std::path::Path, state: &std::path::Path) -> rusqlite::Result<()> {
     let conn = rusqlite::Connection::open(copy)?;
-    // A busy live file must not read as "cannot scrub": that would discard the copy.
+    // Allow transient store contention to settle before reporting a failed scrub.
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.execute(
         "ATTACH DATABASE ?1 AS live",
@@ -119,7 +133,7 @@ fn scrub_copy(copy: &std::path::Path, state: &std::path::Path) -> rusqlite::Resu
 }
 
 /// Whether `file` holds `needle` as UTF-8 or UTF-16LE.
-fn holds(file: &std::path::Path, needle: &str) -> bool {
+pub(crate) fn holds(file: &std::path::Path, needle: &str) -> bool {
     let Ok(bytes) = std::fs::read(file) else {
         return true;
     };
@@ -504,42 +518,6 @@ impl Inner {
         ))
     }
 
-    fn root_json(&self, r: &db::RootRow, reader: Option<&mut Reader>) -> Result<Value, ErrorBody> {
-        let (state, coverage) = scan_view(r);
-        let active = r.grant_state == "active";
-        let totals = match (reader, r.dir, active && r.state != "never_scanned") {
-            (Some(reader), Some(dir), true) => match reader.inspect(NodeKey::Dir(dir)) {
-                // Mid-scan or awaiting repair, the aggregates are unsettled: unknown, not an error.
-                Err(loomward_catalog::Error::RepairRequired) => None,
-                result => result
-                    .map_err(catalog_error)?
-                    .subtree
-                    .map(|s| encode(&s))
-                    .transpose()?,
-            },
-            _ => None,
-        };
-        let display: String = r.display_path.chars().take(1024).collect();
-        Ok(json!({
-            "root_id": self.root_id(r.root),
-            "display_path": {"text": display, "truncated": r.display_path.chars().count() > 1024},
-            "origin": r.origin,
-            "dataset_class": self.dataset,
-            "volume_id": r.volume.map(|v| self.volume_id(v)),
-            "granted_at": ts_ns(r.granted_at_ns),
-            "granted_via": r.granted_via,
-            "grant_state": r.grant_state,
-            "scan": {
-                "state": state,
-                "last_job_id": null,
-                "generation": r.generation.map(|g| g.to_string()),
-                "finished_at": r.finished_at_ns.map(ts_ns),
-                "coverage": coverage,
-            },
-            "totals": totals,
-        }))
-    }
-
     fn root_list(&self, work: Option<&crate::ReadWork>) -> Result<Value, ErrorBody> {
         let rows = db::roots(&self.db(), None).map_err(sql_error)?;
         let mut reader = self.read_reader(work)?;
@@ -576,7 +554,9 @@ impl Inner {
                 [grant],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
-            .map_err(|_| fail(ErrorCode::NotFound, "unknown grant"))?;
+            .optional()
+            .map_err(sql_error)?
+            .ok_or_else(|| fail(ErrorCode::NotFound, "unknown grant"))?;
         if state != "active" {
             let at = revoked_at.ok_or_else(|| {
                 fail(
@@ -655,17 +635,26 @@ impl Inner {
                 ),
                 e => catalog_error(e),
             })?;
-        forget_backups(&self.state_dir, &path);
+        let backups = forget_backups(&self.state_dir, &path);
         let revs = self.revisions()?;
         if let Ok(list) = self.root_list(None) {
             self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));
         }
+        // The live forget is committed and announced; only a kept migration copy may still hold the name.
+        backups.map_err(|_| {
+            with_reason(
+                fail(
+                    ErrorCode::InternalError,
+                    "the root was forgotten, but a migration backup copy could not be scrubbed and still holds its name",
+                ),
+                "forget_backup_scrub_failed",
+            )
+        })?;
         Ok(out(
             json!({"root_id": r.root_id, "forgotten_at": ts_ns(at)}),
             Some(revs),
         ))
     }
-
     /// The granted folder no longer has the grant's identity (docs/41 section 7 step 1): the
     /// grant ends `identity_changed`, committed in `state.db` first as a revocation is; then the
     /// root's jobs are cancelled and its writer fenced, and `roots.changed` stops the UI from
