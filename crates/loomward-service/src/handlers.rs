@@ -632,11 +632,21 @@ impl Inner {
                 ),
                 e => catalog_error(e),
             })?;
-        forget_backups(&self.state_dir, &path)?;
+        let backups = forget_backups(&self.state_dir, &path);
         let revs = self.revisions()?;
         if let Ok(list) = self.root_list(None) {
             self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));
         }
+        // The live forget is committed and announced; only a kept migration copy may still hold the name.
+        backups.map_err(|_| {
+            with_reason(
+                fail(
+                    ErrorCode::InternalError,
+                    "the root was forgotten, but a migration backup copy could not be scrubbed and still holds its name",
+                ),
+                "forget_backup_scrub_failed",
+            )
+        })?;
         Ok(out(
             json!({"root_id": r.root_id, "forgotten_at": ts_ns(at)}),
             Some(revs),

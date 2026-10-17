@@ -430,7 +430,19 @@ fn failed_migration_scrub_preserves_rollback_copy_and_reports_failure() {
         !start.exists(),
         "a failed scrub stopped the sweep of the other copies"
     );
-    assert_eq!(err(response).code, ErrorCode::InternalError);
+    let error = err(response);
+    assert_eq!(error.code, ErrorCode::InternalError);
+    assert_eq!(
+        error.detail.unwrap()["reason"],
+        "forget_backup_scrub_failed"
+    );
+    // The live forget committed and was announced: the root is gone from roots.list.
+    let listed = serde_json::Value::Object(ok("roots.list", call(&svc, "roots.list", json!({}))).0)
+        .to_string();
+    assert!(
+        !listed.contains(NAME_A),
+        "the forgotten root is still listed"
+    );
 }
 
 #[test]
