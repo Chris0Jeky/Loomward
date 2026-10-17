@@ -238,8 +238,14 @@ fn a_scanned_hostile_lab_root_never_reaches_the_bundle() {
     assert_eq!(r["filesystem"], "ntfs");
     assert_eq!(r["identity_mode"], "verified");
     assert_eq!(bundle["counts"]["roots_active"], 1);
-    assert_eq!(bundle["stores"]["catalog_schema_version"], 8);
-    assert_eq!(bundle["stores"]["state_schema_version"], 8);
+    assert_eq!(
+        bundle["stores"]["catalog_schema_version"],
+        loomward_catalog::SCHEMA_VERSION
+    );
+    assert_eq!(
+        bundle["stores"]["state_schema_version"],
+        loomward_catalog::SCHEMA_VERSION
+    );
     assert_eq!(bundle["host"]["os_family"], "windows");
     assert!(bundle["host"]["os_build"].as_u64().is_some_and(|b| b > 0));
     assert!(bundle["host"]["logical_processors"].as_u64().is_some());

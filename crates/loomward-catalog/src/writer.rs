@@ -1147,7 +1147,7 @@ fn prepare_state(
             } else {
                 "verified"
             };
-            tx.execute("INSERT INTO st.root_grant(volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns,lab_root_id,identity_mode) VALUES (?1,?2,?3,?4,?5,'active',?6,?7,?8)",params![o.volume_key,o.root_file_id,o.display_path,o.origin,o.granted_via,o.observed_at_ns,lab,mode])?;
+            tx.execute("INSERT INTO st.root_grant(volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns,lab_root_id,identity_mode,volume_guid) VALUES (?1,?2,?3,?4,?5,'active',?6,?7,?8,?9)",params![o.volume_key,o.root_file_id,o.display_path,o.origin,o.granted_via,o.observed_at_ns,lab,mode,o.volume_guid])?;
             let grant = tx.last_insert_rowid();
             state_revision(&tx)?;
             tx.commit()?;
@@ -1327,7 +1327,7 @@ fn forget_state(conn: &mut Connection, grant: i64, at: i64, expected: Option<i64
         )?;
     }
     tx.execute(
-        "UPDATE st.root_grant SET display_path='forgotten',volume_key='forgotten',root_file_id=zeroblob(8),lab_root_id=NULL WHERE id=?1",
+        "UPDATE st.root_grant SET display_path='forgotten',volume_key='forgotten',volume_guid=NULL,root_file_id=zeroblob(8),lab_root_id=NULL WHERE id=?1",
         [grant],
     )?;
     tx.execute(
@@ -2420,6 +2420,7 @@ mod tests {
         let writer = Writer::start(conn).unwrap();
         writer
             .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_guid: None,
                 volume_key: "fixture".into(),
                 display_name: "Fixture".into(),
                 display_path: "Fixture root".into(),
@@ -2524,6 +2525,7 @@ mod tests {
             Writer::start(crate::db::open_pair(temp.path(), "synthetic").unwrap()).unwrap();
         writer
             .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_guid: None,
                 volume_key: "fixture".into(),
                 display_name: "Fixture".into(),
                 display_path: "Fixture root".into(),
@@ -2595,6 +2597,7 @@ mod tests {
             Writer::start(crate::db::open_pair(temp.path(), "synthetic").unwrap()).unwrap();
         writer
             .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_guid: None,
                 volume_key: "fixture".into(),
                 display_name: "Fixture".into(),
                 display_path: "Fixture root".into(),
@@ -2670,6 +2673,7 @@ mod tests {
         let writer = Writer::start(conn).unwrap();
         writer
             .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_guid: None,
                 volume_key: "fixture".into(),
                 display_name: "Fixture".into(),
                 display_path: "Fixture root".into(),
@@ -2768,6 +2772,7 @@ mod tests {
             result
         };
         let root = enqueue(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "fixture".into(),
             display_name: "Fixture".into(),
             display_path: "Fixture root".into(),
@@ -2856,6 +2861,7 @@ mod tests {
             Writer::start(crate::db::open_pair(temp.path(), "synthetic").unwrap()).unwrap();
         writer
             .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_guid: None,
                 volume_key: "fixture".into(),
                 display_name: "Fixture".into(),
                 display_path: "Fixture root".into(),

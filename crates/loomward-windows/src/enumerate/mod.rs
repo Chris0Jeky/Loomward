@@ -128,6 +128,8 @@ pub struct OpenedIdentity {
     pub basis: IdBasis,
     /// Volume serial observed from the same handle.
     pub volume_serial: Option<u64>,
+    /// Handle-derived volume GUID; absent only for non-native sources.
+    pub volume_guid: Option<u128>,
     /// Attributes read after the open.
     pub attributes: u32,
     /// Reparse tag read after the open.

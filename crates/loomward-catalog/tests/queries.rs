@@ -166,6 +166,7 @@ fn setup() -> (tempfile::TempDir, Catalog, i64, i64, i64) {
     } = c
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "fixture".into(),
             display_name: "Root".into(),
             display_path: "Synthetic root".into(),
@@ -370,6 +371,13 @@ fn v3_upgrade_preserves_observations_and_legacy_coverage() {
         .unwrap();
     db.close().unwrap();
     let state = Connection::open(tmp.path().join("state.db")).unwrap();
+    // Keep this observation-migration fixture's explicit volume binding across its version rewind.
+    state
+        .execute(
+            "UPDATE root_grant SET volume_guid='00000000000000000000000000000001'",
+            [],
+        )
+        .unwrap();
     state.pragma_update(None, "user_version", 3).unwrap();
     state.close().unwrap();
     let c = Catalog::open(tmp.path(), "synthetic").unwrap();
@@ -1255,6 +1263,7 @@ fn atlas_arithmetic_is_checked_and_unscanned_generations_are_null() {
         } = c
             .writer()
             .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_guid: None,
                 volume_key: format!("fixture-{i}"),
                 display_name: format!("Fixture-{i}"),
                 display_path: "Fixture root".into(),

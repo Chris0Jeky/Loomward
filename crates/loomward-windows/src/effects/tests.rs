@@ -788,6 +788,7 @@ fn source_fixture(
     let expected = enumerate::OpenedIdentity {
         id: Some(enumerate::FileIdObs::Id128(root.object.file_id)),
         basis: enumerate::IdBasis::PostOpen,
+        volume_guid: None,
         volume_serial: Some(root.object.volume_serial.parse().unwrap()),
         attributes: root.attributes,
         reparse_tag: Some(0),

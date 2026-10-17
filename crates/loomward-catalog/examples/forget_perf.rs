@@ -19,6 +19,7 @@ fn main() {
         } = c
             .writer()
             .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_guid: None,
                 volume_key: "synthetic-forget".into(),
                 display_name: "Synthetic forget probe".into(),
                 display_path: "Synthetic forget probe path".into(),

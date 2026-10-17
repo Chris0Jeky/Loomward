@@ -1,6 +1,6 @@
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;   -- dataset_class, instance_id
 CREATE TABLE root_grant (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, volume_key TEXT NOT NULL,
+  id INTEGER PRIMARY KEY AUTOINCREMENT, volume_key TEXT NOT NULL, volume_guid TEXT,
   root_file_id BLOB NOT NULL CHECK (length(root_file_id) IN (8,16)), display_path TEXT NOT NULL,
   origin TEXT NOT NULL CHECK (origin IN ('fixture','lab_generated','owner_granted')),
   granted_via TEXT NOT NULL CHECK (granted_via IN ('desktop_picker','cli_flag','fixture')),

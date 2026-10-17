@@ -646,6 +646,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(report.complete, cap == 10);
+            assert!(!report.coverage_complete());
             assert_eq!(report.limit_hit, cap == 6);
             assert_eq!(report.enumeration_attempts, if cap == 10 { 8 } else { 6 });
             if cap == 10 {

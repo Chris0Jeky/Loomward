@@ -295,7 +295,7 @@ fn unpaired_surrogate_scanned_queried_and_forgotten() {
 
 fn cycle(profile: Profile) {
     let Some(lab) = lab(profile) else { return };
-    assert_eq!(lab.scan("full")["coverage"], "complete");
+    assert_eq!(lab.scan("full")["coverage"], "partial");
     let db = lab.db();
     let excluded: i64 = db
         .query_row(

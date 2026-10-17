@@ -8,6 +8,7 @@ fn root(c: &Catalog, id: u8) -> (i64, i64) {
     } = c
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "synthetic-volume".into(),
             display_name: format!("Synthetic root {id}"),
             display_path: format!("Synthetic root {id}"),

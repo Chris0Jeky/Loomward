@@ -831,7 +831,7 @@ impl Inner {
             .optional()
             .map_err(sql_error)?
             .ok_or_else(|| fail(ErrorCode::NotFound, "unknown grant"))?;
-        if state != "active" {
+        if state != "active" && state != "identity_changed" {
             let at = revoked_at.ok_or_else(|| {
                 fail(
                     ErrorCode::PermissionDenied,

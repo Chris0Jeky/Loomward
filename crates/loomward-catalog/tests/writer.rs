@@ -9,6 +9,7 @@ fn setup() -> (tempfile::TempDir, Catalog, i64, i64, i64) {
     } = c
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "fixture-volume".into(),
             display_name: "Synthetic volume".into(),
             display_path: "Synthetic root".into(),
@@ -235,6 +236,7 @@ fn root_origins_must_match_the_dataset_before_any_grant_is_written() {
             }
             let accepted = (dataset == "personal") == (origin == "owner_granted");
             let result = c.writer().call(WriteCommand::RegisterRoot(RootObservation {
+                volume_guid: None,
                 volume_key: "fixture".into(),
                 display_name: "Fixture".into(),
                 display_path: "Fixture root".into(),
@@ -1710,6 +1712,7 @@ fn revoking_one_root_clears_the_other_roots_cross_root_link_flag() {
         ..
     } = w
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "fixture-volume".into(),
             display_name: "Synthetic volume".into(),
             display_path: "Second synthetic root".into(),
@@ -1789,6 +1792,7 @@ fn multilink_flags_cover_both_roots_in_either_finalisation_order_and_clear_after
             ..
         } = w
             .call(WriteCommand::RegisterRoot(RootObservation {
+                volume_guid: None,
                 volume_key: "fixture-volume".into(),
                 display_name: "Synthetic volume".into(),
                 display_path: "Second synthetic root".into(),
@@ -1894,6 +1898,7 @@ fn grant_survives_a_crash_between_precious_and_derived_commits() {
     assert!(c
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "fixture".into(),
             display_name: "Fixture".into(),
             display_path: "Fixture root".into(),

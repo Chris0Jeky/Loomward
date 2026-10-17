@@ -215,6 +215,7 @@ fn dir_entry(key: u8, index: usize, name: &str) -> Observation {
 
 fn register(key: u8) -> WriteCommand {
     WriteCommand::RegisterRoot(RootObservation {
+        volume_guid: None,
         volume_key: "fixture".into(),
         display_name: format!("Fixture {key}"),
         display_path: format!("Synthetic root {key}"),

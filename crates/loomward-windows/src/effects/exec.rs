@@ -50,6 +50,7 @@ impl Plan {
         enumerate::OpenedIdentity {
             id: Some(enumerate::FileIdObs::Id128(self.source_root_id)),
             basis: enumerate::IdBasis::PostOpen,
+            volume_guid: None,
             volume_serial: Some(self.source_root_volume),
             attributes: self.source_root_attributes,
             reparse_tag: Some(0),

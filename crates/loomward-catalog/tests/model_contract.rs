@@ -9,6 +9,7 @@ fn setup() -> (tempfile::TempDir, Catalog, i64, i64, i64) {
     } = c
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "fixture-volume".into(),
             display_name: "Synthetic volume".into(),
             display_path: "Synthetic root".into(),

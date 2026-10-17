@@ -12,6 +12,7 @@ fn setup_with_files(files: Vec<Observation>) -> (tempfile::TempDir, Catalog, i64
     } = catalog
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "fixture".into(),
             display_name: "Root".into(),
             display_path: "Synthetic root".into(),

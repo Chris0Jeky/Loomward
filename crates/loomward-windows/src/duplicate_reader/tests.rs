@@ -558,6 +558,7 @@ mod native {
         crate::enumerate::OpenedIdentity {
             id: None,
             basis: crate::enumerate::IdBasis::None,
+            volume_guid: None,
             volume_serial: None,
             attributes: 0x10,
             reparse_tag: None,

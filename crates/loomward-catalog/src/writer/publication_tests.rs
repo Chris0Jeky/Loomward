@@ -632,6 +632,7 @@ fn fixture() -> (tempfile::TempDir, Connection, WriteCommand) {
     let writer = Writer::start(crate::db::open_pair(temp.path(), "synthetic").unwrap()).unwrap();
     writer
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "fixture".into(),
             display_name: "Fixture".into(),
             display_path: "Synthetic root".into(),
@@ -1342,8 +1343,9 @@ fn v2_upgrade_preserves_bindings_membership_and_catalogue_instance() {
             r.get(0)
         })
         .unwrap();
+    // Keep this reference-migration fixture's known volume binding across its version rewind.
     conn.execute_batch(
-        "DROP TABLE st.pending_reference; PRAGMA main.user_version=2; PRAGMA st.user_version=2",
+        "UPDATE st.root_grant SET volume_guid='00000000000000000000000000000001'; DROP TABLE st.pending_reference; PRAGMA main.user_version=2; PRAGMA st.user_version=2",
     )
     .unwrap();
     drop(conn);

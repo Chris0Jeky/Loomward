@@ -16,6 +16,7 @@ fn register(w: &Writer, key: u8) -> (i64, i64) {
         grant_id, dir_id, ..
     } = w
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "fixture".into(),
             display_name: format!("Fixture {key}"),
             display_path: format!("Fixture root {key}"),

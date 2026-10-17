@@ -466,6 +466,7 @@ fn a_supplied_identity_mismatch_is_identity_changed_on_every_open_path() {
     let at = |n: u8, serial: Option<u64>| OpenedIdentity {
         id: Some(FileIdObs::Id128([n; 16])),
         basis: IdBasis::Listed,
+        volume_guid: None,
         volume_serial: serial,
         attributes: 0,
         reparse_tag: None,

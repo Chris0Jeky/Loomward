@@ -62,6 +62,7 @@ fn row_id(store: &Path, sql: &str) -> i64 {
 fn register(w: &Writer, name: &str, path: &str, id: u8) -> (i64, i64) {
     match w
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "vol".into(),
             display_name: name.into(),
             display_path: path.into(),
@@ -528,8 +529,8 @@ fn verify(store: &Path, acks: &[String], scenario: &str) -> Vec<String> {
             "the v5, v6 and v7 additions",
         );
         want(
-            one(&db, &format!("SELECT count(*) FROM st.root_grant WHERE id=1 AND display_path='{A_PATH}' AND identity_mode='verified' AND state='active'")).map(|n| n == 1),
-            "the seeded grant survives the migration",
+            one(&db, &format!("SELECT count(*) FROM st.root_grant WHERE id=1 AND display_path='{A_PATH}' AND identity_mode='verified' AND volume_guid IS NULL AND state='identity_changed'")).map(|n| n == 1),
+            "the seeded grant survives without inventing a volume binding",
         );
         return bad;
     }

@@ -147,6 +147,15 @@ fn migrate(path: &Path, schema: &str, version: i64, dataset: &str, precious: boo
         if precious && version < 8 {
             tx.execute_batch(include_str!("client-grant.sql"))?;
         }
+        if precious && !tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('root_grant') WHERE name='volume_guid')", [], |r| r.get::<_, bool>(0))? {
+            tx.execute_batch("ALTER TABLE root_grant ADD COLUMN volume_guid TEXT")?;
+        }
+        if precious && version > 0 && version < 9 {
+            // Serial-only grants cannot be rebound to whichever volume is currently mounted.
+            tx.execute_batch(
+                "UPDATE root_grant SET state='identity_changed' WHERE state='active' AND volume_guid IS NULL",
+            )?;
+        }
         if !precious && !tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('dir') WHERE name='listing_outcome')", [], |r| r.get::<_, bool>(0))? {
             tx.execute_batch("ALTER TABLE dir ADD COLUMN listing_outcome TEXT CHECK (listing_outcome IN ('complete','partial','denied','excluded','cancelled','unscanned','stale'))")?;
         }
@@ -204,7 +213,7 @@ pub(crate) fn derive_root(
         [grant],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
     )?;
-    if state != "active" {
+    if state != "active" && state != "identity_changed" {
         return Err(Error::NotFound);
     }
     let name = observation.map_or(path.as_str(), |o| o.display_name.as_str());
@@ -282,7 +291,7 @@ pub(crate) fn open_pair_with(dir: &Path, dataset: &str, ranked: bool) -> Result<
             [catalog.to_string_lossy().as_ref()],
         )?;
         let tx = st.transaction()?;
-        tx.execute_batch("INSERT INTO root_grant(id,volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns,revoked_at_ns) SELECT g.id,v.volume_key,coalesce(g.root_file_id,zeroblob(8)),g.display_path,g.origin,g.granted_via,CASE WHEN g.root_file_id IS NULL THEN 'identity_changed' ELSE g.state END,g.granted_at_ns,g.revoked_at_ns FROM old.root_grant g JOIN old.volume v ON v.id=g.volume_id WHERE NOT EXISTS(SELECT 1 FROM root_grant n WHERE n.id=g.id)")?;
+        tx.execute_batch("INSERT INTO root_grant(id,volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns,revoked_at_ns) SELECT g.id,v.volume_key,coalesce(g.root_file_id,zeroblob(8)),g.display_path,g.origin,g.granted_via,CASE WHEN g.root_file_id IS NULL OR g.state='active' THEN 'identity_changed' ELSE g.state END,g.granted_at_ns,g.revoked_at_ns FROM old.root_grant g JOIN old.volume v ON v.id=g.volume_id WHERE NOT EXISTS(SELECT 1 FROM root_grant n WHERE n.id=g.id)")?;
         tx.commit()?;
         drop(st);
         preserve_catalog(dir, "before-v1")?;
@@ -334,7 +343,8 @@ pub(crate) fn open_pair_with(dir: &Path, dataset: &str, ranked: bool) -> Result<
     }
     let tx = conn.transaction()?;
     let grants = {
-        let mut s = tx.prepare("SELECT id FROM st.root_grant WHERE state='active'")?;
+        let mut s = tx
+            .prepare("SELECT id FROM st.root_grant WHERE state IN ('active','identity_changed')")?;
         let rows = s
             .query_map([], |r| r.get::<_, i64>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;

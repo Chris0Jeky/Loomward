@@ -273,8 +273,8 @@ fn tree_comparison_requires_both_durable_grants_and_final_cancellation_gate() {
     let FileIdObs::Id128(id) = identity.id.unwrap() else {
         panic!("fixture needs native identity")
     };
-    conn.execute("INSERT INTO root_grant(id,display_path,volume_key,root_file_id,state) VALUES(2,?1,?2,?3,'active')",
-        rusqlite::params![b.path().to_str().unwrap(), format!("vsn_{}", identity.volume_serial.unwrap()), id.as_slice()]).unwrap();
+    conn.execute("INSERT INTO root_grant(id,display_path,volume_key,root_file_id,state,volume_guid) VALUES(2,?1,?2,?3,'active',?4)",
+        rusqlite::params![b.path().to_str().unwrap(), format!("vsn_{}", identity.volume_serial.unwrap()), id.as_slice(), identity.volume_guid.map(|g| format!("{g:032x}"))]).unwrap();
     let report = engine
         .compare_trees(&left, &right, duplicate_budget(), 100)
         .unwrap();
@@ -325,7 +325,7 @@ fn duplicate_grant_store_as(
 ) -> rusqlite::Connection {
     let conn = rusqlite::Connection::open(state.join("state.db")).unwrap();
     conn.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);
-        CREATE TABLE root_grant(id INTEGER PRIMARY KEY,display_path TEXT,volume_key TEXT,root_file_id BLOB,state TEXT,identity_mode TEXT NOT NULL DEFAULT 'verified');").unwrap();
+        CREATE TABLE root_grant(id INTEGER PRIMARY KEY,display_path TEXT,volume_key TEXT,root_file_id BLOB,state TEXT,identity_mode TEXT NOT NULL DEFAULT 'verified',volume_guid TEXT);").unwrap();
     conn.execute("INSERT INTO meta VALUES('dataset_class',?1)", [class])
         .unwrap();
     let expected = root.expected.unwrap();
@@ -334,11 +334,12 @@ fn duplicate_grant_store_as(
         FileIdObs::Id64(id) => id.to_le_bytes().to_vec(),
     };
     conn.execute(
-        "INSERT INTO root_grant(id,display_path,volume_key,root_file_id,state) VALUES(1,?1,?2,?3,'active')",
+        "INSERT INTO root_grant(id,display_path,volume_key,root_file_id,state,volume_guid) VALUES(1,?1,?2,?3,'active',?4)",
         rusqlite::params![
             root.path.to_str().unwrap(),
             format!("vsn_{}", expected.volume_serial.unwrap()),
-            id
+            id,
+            expected.volume_guid.map(|g| format!("{g:032x}")),
         ],
     )
     .unwrap();
@@ -540,7 +541,7 @@ fn duplicate_admission_rechecks_durable_class_identity_and_ambiguity() {
             "grant_not_active"
         );
     }
-    conn.execute("INSERT INTO root_grant(id,display_path,volume_key,root_file_id,state) SELECT 2,display_path,volume_key,root_file_id,'active' FROM root_grant WHERE id=1", []).unwrap();
+    conn.execute("INSERT INTO root_grant(id,display_path,volume_key,root_file_id,state,volume_guid) SELECT 2,display_path,volume_key,root_file_id,'active',volume_guid FROM root_grant WHERE id=1", []).unwrap();
     assert_eq!(
         engine
             .duplicate_read_admission(&grant)
@@ -613,6 +614,7 @@ pub(super) fn identity(id: u64) -> OpenedIdentity {
     OpenedIdentity {
         id: Some(FileIdObs::Id64(id)),
         basis: IdBasis::Listed,
+        volume_guid: None,
         volume_serial: Some(42),
         attributes: 0x10,
         reparse_tag: None,
@@ -996,6 +998,75 @@ impl DirSource for Tree {
     }
 }
 #[test]
+fn skipped_subtree_keeps_listing_eof_but_makes_run_partial() {
+    struct Junction;
+    impl DirSource for Junction {
+        type Dir = u64;
+        fn strategy(&self) -> Strategy {
+            Strategy::Portable
+        }
+        fn open_root(&self, path: &std::path::Path) -> Result<(u64, OpenedIdentity), SourceError> {
+            Tree.open_root(path)
+        }
+        fn open_child(
+            &self,
+            _: &u64,
+            _: &RawEntry<'_>,
+        ) -> Result<(u64, OpenedIdentity), SourceError> {
+            panic!("a junction must never be opened")
+        }
+        fn list(&self, dir: &u64, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+            let files = Tree.list(&2, &mut |mut entry| {
+                entry.name = &[102];
+                sink(entry)
+            });
+            if files != ListOutcome::Complete {
+                return files;
+            }
+            Tree.list(dir, &mut |mut entry| {
+                entry.attributes |= 0x400;
+                sink(entry)
+            })
+        }
+    }
+    let sink = Arc::new(OrderProbe::default());
+    let root = root();
+    // First observe an ordinary child, then replace it with an excluded junction at EOF.
+    run_scan(
+        &Tree,
+        &root,
+        1,
+        sink.clone(),
+        Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        Default::default(),
+        ScanOptions::default(),
+    )
+    .unwrap();
+    let report = run_scan(
+        &Junction,
+        &root,
+        2,
+        sink.clone(),
+        Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        Default::default(),
+        ScanOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(report.skipped, 1);
+    assert_eq!(report.failed, 0);
+    assert_eq!(
+        sink.outcomes.lock().unwrap().last(),
+        Some(&ListOutcome::Complete)
+    );
+    assert!(
+        !report.coverage_complete(),
+        "a skipped subtree is not complete coverage"
+    );
+    assert!(report.complete, "every traversed directory reached EOF");
+    assert!(sink.sink.sweep_allowed(root.root_id()));
+}
+
+#[test]
 fn staged_pipeline_has_exact_totals_and_releases_bytes() {
     let sink = Arc::new(MemorySink::default());
     let root = root();
@@ -1033,6 +1104,7 @@ fn staged_pipeline_has_exact_totals_and_releases_bytes() {
 #[derive(Default)]
 struct OrderProbe {
     sink: MemorySink,
+    outcomes: std::sync::Mutex<Vec<ListOutcome>>,
     published: std::sync::Mutex<Vec<u64>>,
     early: std::sync::Mutex<Vec<u64>>,
 }
@@ -1067,7 +1139,11 @@ impl ScanSink for OrderProbe {
         self.sink.refresh_listing(root, run, ticket)
     }
     fn consume(&self, root: &RootId, message: ScanMessage) -> crate::EngineResult<()> {
-        if let ScanMessage::ListingDone { ticket, .. } = &message {
+        if let ScanMessage::ListingDone {
+            ticket, outcome, ..
+        } = &message
+        {
+            self.outcomes.lock().unwrap().push(*outcome);
             self.published.lock().unwrap().push(ticket.dir);
         }
         self.sink.consume(root, message)
@@ -1327,25 +1403,29 @@ fn root_identity_mismatch_never_enters_writer() {
             panic!("a mismatched grant must not list the opened root")
         }
     }
-    let mut root = root();
-    root.expected = Some(identity(999));
-    let sink = Arc::new(MemorySink::default());
-    let error = run_scan(
-        &NeverList,
-        &root,
-        1,
-        sink.clone(),
-        Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
-        Arc::new(AtomicBool::new(false)),
-        ScanOptions::default(),
-    )
-    .unwrap_err();
-    assert_eq!(error.to_body().message.as_str(), "root_identity_changed");
-    assert!(sink.totals(root.root_id()).is_none());
-    assert!(
-        sink.identity_changed(root.root_id()),
-        "the writer is told, so it can record the transition (#206)"
-    );
+    let mut changed_guid = identity(1);
+    changed_guid.volume_guid = Some(1);
+    for expected in [identity(999), changed_guid] {
+        let mut root = root();
+        root.expected = Some(expected);
+        let sink = Arc::new(MemorySink::default());
+        let error = run_scan(
+            &NeverList,
+            &root,
+            1,
+            sink.clone(),
+            Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+            Arc::new(AtomicBool::new(false)),
+            ScanOptions::default(),
+        )
+        .unwrap_err();
+        assert_eq!(error.to_body().message.as_str(), "root_identity_changed");
+        assert!(sink.totals(root.root_id()).is_none());
+        assert!(
+            sink.identity_changed(root.root_id()),
+            "the writer is told, so it can record the transition (#206)"
+        );
+    }
 }
 
 struct BlockingSource {
@@ -2125,6 +2205,47 @@ pub(super) fn skip_elevated() -> bool {
 /// row's path, identity and dataset class; a mismatched class is refused at start and refresh.
 #[cfg(windows)]
 #[test]
+fn grant_rejects_same_serial_and_file_id_with_a_different_volume_guid() {
+    if skip_elevated() {
+        return;
+    }
+    let state = canonical_tempdir();
+    let directory = canonical_tempdir();
+    let (_, identity) = loomward_windows::enumerate::NativeSource::default()
+        .open_root(directory.path())
+        .unwrap();
+    let grant = GrantedRoot::new(
+        RootId::new("rt_guid_fixture").unwrap(),
+        directory.path().into(),
+        DatasetClass::Synthetic,
+        identity,
+    );
+    let conn = duplicate_grant_store(state.path(), &grant);
+    conn.execute(
+        "UPDATE root_grant SET volume_guid='00000000000000000000000000000001' WHERE id=1",
+        [],
+    )
+    .unwrap();
+    rusqlite::Connection::open(state.path().join("catalog.db")).unwrap().execute_batch(
+        "CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT); INSERT INTO meta VALUES('instance_id','fixture-instance');
+         CREATE TABLE root(id INTEGER PRIMARY KEY,grant_id INTEGER); INSERT INTO root VALUES(1,1);"
+    ).unwrap();
+    let engine = Engine::open(EngineConfig::new(
+        state.path().into(),
+        DatasetClass::Synthetic,
+    ))
+    .unwrap();
+    assert!(
+        matches!(
+            engine.granted_root(grant.root_id().clone(), 1, &CatalogRootIdentity { row: 1, instance: "fixture-instance".into() }),
+            Err(EngineError::PermissionDenied { message }) if message == "root_identity_changed"
+        ),
+        "same serial and file ID must not authorise a different volume GUID"
+    );
+}
+
+#[cfg(windows)]
+#[test]
 fn granted_root_comes_only_from_an_active_durable_grant() {
     if skip_elevated() {
         return;
@@ -2143,14 +2264,14 @@ fn granted_root_comes_only_from_an_active_durable_grant() {
     conn.execute_batch(
         "CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);
          INSERT INTO meta VALUES('dataset_class','synthetic');
-         CREATE TABLE root_grant(id INTEGER PRIMARY KEY,display_path TEXT,volume_key TEXT,root_file_id BLOB,state TEXT,identity_mode TEXT NOT NULL DEFAULT 'verified');",
+         CREATE TABLE root_grant(id INTEGER PRIMARY KEY,display_path TEXT,volume_key TEXT,root_file_id BLOB,state TEXT,identity_mode TEXT NOT NULL DEFAULT 'verified',volume_guid TEXT);",
     )
     .unwrap();
     let path = root_dir.path().to_string_lossy().into_owned();
     let insert = |id: i64, file_id: &[u8], state: &str| {
         conn.execute(
-            "INSERT INTO root_grant(id,display_path,volume_key,root_file_id,state) VALUES(?1,?2,?3,?4,?5)",
-            rusqlite::params![id, path, volume, file_id, state],
+            "INSERT INTO root_grant(id,display_path,volume_key,root_file_id,state,volume_guid) VALUES(?1,?2,?3,?4,?5,?6)",
+            rusqlite::params![id, path, volume, file_id, state, identity.volume_guid.map(|g| format!("{g:032x}"))],
         )
         .unwrap();
     };

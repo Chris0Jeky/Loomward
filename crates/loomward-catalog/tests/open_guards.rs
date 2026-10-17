@@ -3,6 +3,7 @@ use rusqlite::Connection;
 
 fn observation() -> RootObservation {
     RootObservation {
+        volume_guid: None,
         volume_key: "fixture-volume".into(),
         display_name: "Synthetic volume".into(),
         display_path: "Synthetic root".into(),

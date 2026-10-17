@@ -37,6 +37,7 @@ pub(crate) fn root(svc: &Service, name: &str, id: u8, files: Option<&[(&str, u64
         dir_id,
     } = w
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "fixture".into(),
             display_name: name.into(),
             display_path: format!(r"Synthetic Parent\Synthetic Owner\{name}"),

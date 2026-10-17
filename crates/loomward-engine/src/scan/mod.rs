@@ -381,11 +381,12 @@ impl Engine {
             .query_row(
                 "SELECT count(CASE WHEN state='active' THEN 1 END),
                     (SELECT value FROM meta WHERE key='dataset_class')
-             FROM root_grant WHERE display_path=?1 AND volume_key=?2 AND root_file_id=?3",
+             FROM root_grant WHERE display_path=?1 AND volume_key=?2 AND root_file_id=?3 AND volume_guid IS ?4",
                 rusqlite::params![
                     root.path.to_str().ok_or_else(|| denied("invalid_path"))?,
                     format!("vsn_{volume}"),
-                    id
+                    id,
+                    expected.volume_guid.map(|g| format!("{g:032x}")),
                 ],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
@@ -421,17 +422,18 @@ impl Engine {
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .map_err(|_| denied("grant store unavailable"))?;
-        let row: Option<(String, String, Vec<u8>, String, String)> = conn
+        type GrantRow = (String, String, Vec<u8>, String, String, Option<String>);
+        let row: Option<GrantRow> = conn
             .query_row(
                 "SELECT g.display_path,g.volume_key,g.root_file_id,
-                        (SELECT value FROM meta WHERE key='dataset_class'),g.identity_mode
+                        (SELECT value FROM meta WHERE key='dataset_class'),g.identity_mode,g.volume_guid
                  FROM root_grant g WHERE g.id=?1 AND g.state='active'",
                 [grant_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
             )
             .optional()
             .map_err(|_| denied("grant store unavailable"))?;
-        let (path, volume_key, file_id, class, identity_mode) =
+        let (path, volume_key, file_id, class, identity_mode, volume_guid) =
             row.ok_or_else(|| denied("grant_not_active"))?;
         // #219: only the grant record allows identity-unverified listing, never the caller.
         let unverified = identity_mode == "unverified";
@@ -477,7 +479,11 @@ impl Engine {
                 Some(FileIdObs::Id64(id)) => file_id == id.to_le_bytes(),
                 None => false,
             };
-            if !same_id || identity.volume_serial.map(|s| format!("vsn_{s}")) != Some(volume_key) {
+            if !same_id
+                || identity.volume_serial.map(|s| format!("vsn_{s}")) != Some(volume_key)
+                || volume_guid.is_none()
+                || identity.volume_guid.map(|g| format!("{g:032x}")) != volume_guid
+            {
                 return Err(denied("root_identity_changed"));
             }
             let mut root = GrantedRoot::new(root_id, path, dataset_class, identity);
@@ -496,6 +502,7 @@ impl Engine {
                 root_id,
                 path,
                 volume_key,
+                volume_guid,
                 file_id,
                 dataset_class,
                 unverified,
@@ -678,7 +685,7 @@ impl Engine {
                     );
                 }
                 ctx.set_scan_report(&report)?;
-                Ok(if report.complete {
+                Ok(if report.coverage_complete() {
                     loomward_protocol::CoverageState::Complete
                 } else {
                     loomward_protocol::CoverageState::Partial
@@ -732,7 +739,7 @@ impl Engine {
                     );
                 }
                 ctx.set_scan_report(&report)?;
-                Ok(if report.complete {
+                Ok(if report.coverage_complete() {
                     loomward_protocol::CoverageState::Complete
                 } else {
                     loomward_protocol::CoverageState::Partial

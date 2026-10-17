@@ -9,6 +9,7 @@ fn register(c: &Catalog, key: u8) -> Result<(i64, i64, i64)> {
     match c
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: format!("synthetic-perf-{key}"),
             display_name: format!("Synthetic {key}"),
             display_path: format!("Synthetic root {key}"),

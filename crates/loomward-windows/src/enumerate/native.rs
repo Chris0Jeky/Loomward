@@ -36,6 +36,7 @@ use windows_sys::{
 #[cfg(test)]
 thread_local! {
     static OPEN_ACCESSES: std::cell::RefCell<Option<Vec<u32>>> = const { std::cell::RefCell::new(None) };
+    static CANCEL_BETWEEN_COMPONENTS: std::cell::RefCell<Option<IoCancellation>> = const { std::cell::RefCell::new(None) };
 }
 #[cfg(test)]
 pub(crate) fn record_open_accesses(run: impl FnOnce()) -> Vec<u32> {
@@ -57,26 +58,37 @@ fn record_access(access: u32) {
 pub struct IoCancellation {
     cancelled: Arc<AtomicBool>,
     threads: Arc<Mutex<Vec<Weak<OwnedHandle>>>>,
+    #[cfg(test)]
+    interrupt_attempts: Arc<std::sync::atomic::AtomicUsize>,
 }
 impl IoCancellation {
-    /// Requests cancellation immediately; blocked synchronous calls are interrupted after 500 ms.
+    /// Requests cancellation immediately; retries synchronous interruption after 500 ms until work exits.
     pub fn cancel(&self) {
         if self.cancelled.swap(true, Ordering::AcqRel) {
             return;
         }
         let threads = self.threads.clone();
+        #[cfg(test)]
+        let attempts = self.interrupt_attempts.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(500));
-            let handles: Vec<_> = threads
-                .lock()
-                .unwrap()
-                .iter()
-                .filter_map(Weak::upgrade)
-                .collect();
-            for handle in handles {
-                unsafe {
-                    CancelSynchronousIo(handle.as_raw_handle());
+            loop {
+                {
+                    // Deregistration shares this lock so retries cannot reach later work on the thread.
+                    let mut threads = threads.lock().unwrap();
+                    threads.retain(|h| h.strong_count() != 0);
+                    if threads.is_empty() {
+                        break;
+                    }
+                    for handle in threads.iter().filter_map(Weak::upgrade) {
+                        unsafe {
+                            CancelSynchronousIo(handle.as_raw_handle());
+                        }
+                    }
                 }
+                #[cfg(test)]
+                attempts.fetch_add(1, Ordering::Release);
+                std::thread::sleep(Duration::from_millis(50));
             }
         });
     }
@@ -84,7 +96,15 @@ impl IoCancellation {
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
     }
-    fn register(&self) -> Result<Arc<OwnedHandle>, SourceError> {
+    fn check(&self) -> Result<(), SourceError> {
+        if self.is_cancelled() {
+            Err(SourceError::Io(ERROR_OPERATION_ABORTED as i32))
+        } else {
+            Ok(())
+        }
+    }
+    fn register(&self) -> Result<IoRegistration, SourceError> {
+        self.check()?;
         let mut handle = null_mut();
         if unsafe {
             DuplicateHandle(
@@ -102,9 +122,25 @@ impl IoCancellation {
         }
         let handle = Arc::new(unsafe { OwnedHandle::from_raw_handle(handle) });
         let mut threads = self.threads.lock().unwrap();
+        self.check()?;
         threads.retain(|h| h.strong_count() != 0);
         threads.push(Arc::downgrade(&handle));
-        Ok(handle)
+        Ok(IoRegistration {
+            handle,
+            threads: self.threads.clone(),
+        })
+    }
+}
+struct IoRegistration {
+    handle: Arc<OwnedHandle>,
+    threads: Arc<Mutex<Vec<Weak<OwnedHandle>>>>,
+}
+impl Drop for IoRegistration {
+    fn drop(&mut self) {
+        self.threads
+            .lock()
+            .unwrap()
+            .retain(|h| h.as_ptr() != Arc::as_ptr(&self.handle));
     }
 }
 
@@ -166,6 +202,7 @@ impl NativeSource {
 pub struct NativeDir {
     file: Arc<File>,
     root: Arc<File>,
+    volume_guid: u128,
     refs: bool,
     reopen_safe: bool,
     unverified: bool,
@@ -445,13 +482,14 @@ fn validate_directory_attributes(
     Ok(attr)
 }
 pub(crate) fn root_handles(path: &Path, access: u32, share: u32) -> Result<Vec<File>, SourceError> {
-    root_handles_mode(path, access, share, false)
+    root_handles_mode(path, access, share, false, None)
 }
 fn root_handles_mode(
     path: &Path,
     access: u32,
     share: u32,
     asynchronous: bool,
+    cancel: Option<&IoCancellation>,
 ) -> Result<Vec<File>, SourceError> {
     non_elevated()?;
     if !path.is_absolute() || path.as_os_str().encode_wide().any(|c| c == 0) {
@@ -475,6 +513,9 @@ fn root_handles_mode(
         .encode_utf16()
         .chain(Some(0))
         .collect();
+    if let Some(cancel) = cancel {
+        cancel.check()?;
+    }
     let _profile = profile::OPEN.start();
     #[cfg(test)]
     record_access(if components.peek().is_none() {
@@ -509,6 +550,15 @@ fn root_handles_mode(
     directory_attributes(&file)?;
     let mut pins = vec![file];
     while let Some(component) = components.next() {
+        #[cfg(test)]
+        CANCEL_BETWEEN_COMPONENTS.with_borrow_mut(|cancel| {
+            if let Some(cancel) = cancel.take() {
+                cancel.cancel();
+            }
+        });
+        if let Some(cancel) = cancel {
+            cancel.check()?;
+        }
         let Component::Normal(name) = component else {
             return Err(SourceError::Refused);
         };
@@ -524,6 +574,9 @@ fn root_handles_mode(
             share,
             asynchronous && components.peek().is_none(),
         )?;
+        if let Some(cancel) = cancel {
+            cancel.check()?;
+        }
         directory_attributes(&file)?;
         pins.push(file);
     }
@@ -545,12 +598,14 @@ fn opened(
     source: &NativeSource,
     file: Arc<File>,
     listed: Option<FileIdObs>,
-    root: Option<Arc<File>>,
+    root: Option<&NativeDir>,
 ) -> Result<(NativeDir, OpenedIdentity), SourceError> {
+    source.cancel.check()?;
     let preferred = source.strategy();
     let _profile = profile::IDENTITY.start();
     let h = file.as_raw_handle();
     let attr = directory_attributes(&file)?;
+    source.cancel.check()?;
     let mut fs_name = [0u16; 64];
     if unsafe {
         GetVolumeInformationByHandleW(
@@ -582,8 +637,10 @@ fn opened(
         return Err(SourceError::IdentityUnverified);
     }
     let refs = fs_name.eq_ignore_ascii_case("ReFS");
+    source.cancel.check()?;
     let mut basic: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
     let basic_ok = unsafe { GetFileInformationByHandle(h, &mut basic) } != 0;
+    source.cancel.check()?;
     let ext: Option<FILE_ID_INFO> = information(h, FileIdInfo);
     // A 64-bit listing must be compared with the compatible 64-bit query, never truncation.
     let legacy = basic_ok
@@ -606,11 +663,27 @@ fn opened(
     } else {
         validate_identity(listed, id, refs)?
     };
-    let root = root.unwrap_or_else(|| file.clone());
+    source.cancel.check()?;
+    let volume_guid = match root {
+        Some(root) => root.volume_guid,
+        None => {
+            let device = volume_device(&file)?;
+            let device = String::from_utf16(&device[..device.len() - 1])
+                .map_err(|_| SourceError::IdentityUnverified)?;
+            let guid = device
+                .strip_prefix(r"\\?\Volume{")
+                .and_then(|s| s.strip_suffix('}'))
+                .ok_or(SourceError::IdentityUnverified)?;
+            u128::from_str_radix(&guid.replace('-', ""), 16)
+                .map_err(|_| SourceError::IdentityUnverified)?
+        }
+    };
+    let root = root.map_or_else(|| file.clone(), |root| root.root.clone());
     Ok((
         NativeDir {
             file,
             root,
+            volume_guid,
             refs,
             // FAT/exFAT IDs can be recycled when a directory entry is reused after handle release.
             reopen_safe: verifies_identity(&fs_name),
@@ -621,6 +694,7 @@ fn opened(
         OpenedIdentity {
             id,
             basis,
+            volume_guid: Some(volume_guid),
             volume_serial: ext
                 .map(|i| i.VolumeSerialNumber)
                 .or_else(|| basic_ok.then_some(u64::from(basic.dwVolumeSerialNumber))),
@@ -651,6 +725,7 @@ fn open_tracking_root(
         FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         overlapped,
+        None,
     )?;
     let (dir, identity) = opened(
         &NativeSource::default(),
@@ -726,10 +801,12 @@ impl DirSource for NativeSource {
         if self.cancel.is_cancelled() {
             return Err(SourceError::Io(ERROR_OPERATION_ABORTED as i32));
         }
-        let mut pins = root_handles(
+        let mut pins = root_handles_mode(
             path,
             FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            false,
+            Some(&self.cancel),
         )?;
         opened(self, Arc::new(pins.pop().unwrap()), None, None)
     }
@@ -752,12 +829,7 @@ impl DirSource for NativeSource {
             FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         )?;
-        opened(
-            self,
-            Arc::new(file),
-            entry.file_id,
-            Some(parent.root.clone()),
-        )
+        opened(self, Arc::new(file), entry.file_id, Some(parent))
     }
     fn can_reopen(&self, dir: &NativeDir, identity: OpenedIdentity) -> bool {
         dir.reopen_safe
@@ -775,15 +847,15 @@ impl DirSource for NativeSource {
         if !self.can_reopen(root, identity) {
             return Err(SourceError::IdentityUnverified);
         }
-        let (_, observed) = opened(self, root.file.clone(), None, Some(root.root.clone()))?;
-        if observed.id != root_identity.id || observed.volume_serial != root_identity.volume_serial
+        let _thread = self.cancel.register()?;
+        let (_, observed) = opened(self, root.file.clone(), None, Some(root))?;
+        if observed.id != root_identity.id
+            || observed.volume_serial != root_identity.volume_serial
+            || observed.volume_guid != root_identity.volume_guid
         {
             return Err(SourceError::IdentityChanged);
         }
-        let _thread = self.cancel.register()?;
-        if self.cancel.is_cancelled() {
-            return Err(SourceError::Io(ERROR_OPERATION_ABORTED as i32));
-        }
+        self.cancel.check()?;
         let mut descriptor: FILE_ID_DESCRIPTOR = unsafe { zeroed() };
         descriptor.dwSize = size_of::<FILE_ID_DESCRIPTOR>() as u32;
         match identity.id.unwrap() {
@@ -812,8 +884,10 @@ impl DirSource for NativeSource {
             }
             other => other?,
         };
-        let result = opened(self, Arc::new(file), identity.id, Some(root.root.clone()))?;
-        if result.1.volume_serial != identity.volume_serial {
+        let result = opened(self, Arc::new(file), identity.id, Some(root))?;
+        if result.1.volume_serial != identity.volume_serial
+            || result.1.volume_guid != root_identity.volume_guid
+        {
             return Err(SourceError::IdentityChanged);
         }
         Ok(result)
@@ -831,7 +905,10 @@ impl DirSource for NativeSource {
         let sink = &mut callback as &mut dyn FnMut(RawEntry<'_>) -> Flow;
         let _thread = match self.cancel.register() {
             Ok(h) => h,
-            Err(_) => return ListOutcome::Incomplete(IncompleteReason::Io(-1)),
+            Err(SourceError::Io(code)) if code == ERROR_OPERATION_ABORTED as i32 => {
+                return ListOutcome::Incomplete(IncompleteReason::Cancelled)
+            }
+            Err(error) => return incomplete(error),
         };
         // Find proves containment after taking its namespace pins.
         if dir.strategy() != Strategy::Find {
@@ -1282,10 +1359,12 @@ impl NativeSource {
         path.truncate(n);
         let directory = std::path::PathBuf::from(std::ffi::OsString::from_wide(&path));
         // Find is path-based: pin and validate every ancestor while its search handle lives.
-        let pins = match root_handles(
+        let pins = match root_handles_mode(
             &directory,
             FILE_READ_ATTRIBUTES | SYNCHRONIZE,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
+            false,
+            Some(&self.cancel),
         ) {
             Ok(pins) => pins,
             Err(error) => return incomplete(error),
@@ -1388,11 +1467,41 @@ impl NativeSource {
 mod cancellation_tests {
     use super::*;
     #[test]
+    fn cancelled_io_cannot_register_new_work() {
+        let cancel = IoCancellation::default();
+        cancel.cancel();
+        assert!(
+            matches!(cancel.register(), Err(SourceError::Io(code)) if code == ERROR_OPERATION_ABORTED as i32)
+        );
+    }
+    #[test]
+    fn root_walk_checks_cancellation_between_components() {
+        if running_elevated() {
+            return;
+        }
+        let temp = super::super::tests::canonical_tempdir();
+        let cancel = IoCancellation::default();
+        CANCEL_BETWEEN_COMPONENTS.with_borrow_mut(|hook| *hook = Some(cancel.clone()));
+        let mut result = None;
+        let accesses = record_open_accesses(|| {
+            result = Some(NativeSource::new(cancel).open_root(temp.path()));
+        });
+        assert!(
+            matches!(result.unwrap(), Err(SourceError::Io(code)) if code == ERROR_OPERATION_ABORTED as i32)
+        );
+        assert_eq!(
+            accesses.len(),
+            1,
+            "cancelled walk must not open the next component"
+        );
+    }
+    #[test]
     fn handle_release_requires_ntfs_or_refs_and_verified_identity() {
         let source = NativeSource::default();
         let identity = OpenedIdentity {
             id: Some(FileIdObs::Id128([1; 16])),
             basis: IdBasis::Listed,
+            volume_guid: None,
             volume_serial: Some(1),
             attributes: FILE_ATTRIBUTE_DIRECTORY,
             reparse_tag: None,
@@ -1404,6 +1513,7 @@ mod cancellation_tests {
             let dir = NativeDir {
                 file: file.clone(),
                 root: file,
+                volume_guid: 1,
                 refs: name.eq_ignore_ascii_case("ReFS"),
                 reopen_safe: verifies_identity(name),
                 unverified: !verifies_identity(name),
@@ -1785,6 +1895,7 @@ mod cancellation_tests {
                     &OpenedIdentity {
                         id: None,
                         basis: IdBasis::None,
+                        volume_guid: None,
                         volume_serial: None,
                         attributes: 0x10,
                         reparse_tag: None
@@ -1804,7 +1915,8 @@ mod cancellation_tests {
                 temp.path().ancestors().last().unwrap(),
                 FILE_READ_ATTRIBUTES | SYNCHRONIZE,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                false
+                false,
+                None,
             ),
             Err(SourceError::Refused)
         ));
@@ -1840,11 +1952,20 @@ mod cancellation_tests {
     }
     #[test]
     fn cancels_blocked_native_io_without_closing_its_handle() {
+        cancellation_scenario(false);
+    }
+    #[test]
+    fn cancellation_retries_when_first_interrupt_falls_between_calls() {
+        cancellation_scenario(true);
+    }
+    fn cancellation_scenario(between_calls: bool) {
         use windows_sys::Win32::System::Pipes::{ConnectNamedPipe, CreateNamedPipeW};
         let cancel = IoCancellation::default();
         let io = cancel.clone();
         let entered = Arc::new(AtomicBool::new(false));
         let ready = entered.clone();
+        let (proceed, proceed_rx) = std::sync::mpsc::channel();
+        let (done, done_rx) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
             let name: Vec<u16> = format!(
                 r"\\.\pipe\loomward-scan-cancel-{}-{}",
@@ -1864,6 +1985,9 @@ mod cancellation_tests {
             let handle = unsafe { File::from_raw_handle(h) };
             let _thread = io.register().unwrap();
             ready.store(true, Ordering::Release);
+            if between_calls {
+                proceed_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            }
             let result = unsafe { ConnectNamedPipe(handle.as_raw_handle(), null_mut()) };
             let error = unsafe { GetLastError() };
             assert_eq!(result, 0);
@@ -1874,6 +1998,7 @@ mod cancellation_tests {
                 unsafe { GetHandleInformation(handle.as_raw_handle(), &mut flags) },
                 0
             );
+            done.send(()).unwrap();
         });
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         while !entered.load(Ordering::Acquire) {
@@ -1883,7 +2008,34 @@ mod cancellation_tests {
         let started = std::time::Instant::now();
         cancel.cancel();
         assert!(started.elapsed() < Duration::from_millis(250));
+        if between_calls {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while cancel.interrupt_attempts.load(Ordering::Acquire) == 0 {
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            proceed.send(()).unwrap();
+        }
+        let completed = done_rx.recv_timeout(Duration::from_secs(3));
+        if completed.is_err() {
+            // Rescue the intentionally blocked fixture so a regression never strands the suite.
+            for handle in cancel
+                .threads
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(Weak::upgrade)
+            {
+                unsafe {
+                    CancelSynchronousIo(handle.as_raw_handle());
+                }
+            }
+        }
         worker.join().unwrap();
+        assert!(
+            completed.is_ok(),
+            "cancellation missed the next synchronous call"
+        );
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 }

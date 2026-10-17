@@ -46,7 +46,7 @@ pub struct CatalogOptions {
 }
 
 pub const APPLICATION_ID: i64 = 0x4c4d5752;
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 /// Maximum directory identities in a parent chain, including the root.
 pub const MAX_DIRECTORY_CHAIN_LENGTH: usize = 512;
 

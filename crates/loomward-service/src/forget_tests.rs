@@ -17,6 +17,7 @@ fn named(svc: &Service, id: u8, name: &str, path: &str) -> (i64, i64) {
         .catalog
         .writer()
         .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_guid: None,
             volume_key: "fixture".into(),
             display_name: name.into(),
             display_path: path.into(),
@@ -798,7 +799,7 @@ fn v1_migration_forget_preserves_the_other_grant_and_clears_every_copy() {
     let root = count(&svc, "SELECT id FROM main.root WHERE grant_id=41");
     svc.inner.revoke(41).unwrap();
     ok("roots.forget", forget(&svc, root, None));
-    assert_eq!(count(&svc, "SELECT count(*) FROM st.root_grant WHERE id=7 AND display_path='KeepServicePathBeta' AND state='active'"), 1);
+    assert_eq!(count(&svc, "SELECT count(*) FROM st.root_grant WHERE id=7 AND display_path='KeepServicePathBeta' AND state='identity_changed' AND volume_guid IS NULL"), 1);
     drop(svc);
     assert!(holders(dir.path(), PATH_A).is_empty());
 }
