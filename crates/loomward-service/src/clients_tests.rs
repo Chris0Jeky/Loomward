@@ -819,3 +819,48 @@ fn an_inspect_of_a_directory_is_scoped_by_its_root() {
         );
     }
 }
+fn listing(text: &str) -> Value {
+    let mut p = search(text, 10, Value::Null);
+    p["extension"] = json!("pdf");
+    p
+}
+
+/// A text that cleans to nothing is the same extension-only, largest-first listing as "": the
+/// size guard must read it the way the catalogue does (trimmed, control characters dropped).
+#[test]
+fn a_text_that_cleans_to_nothing_is_still_a_listing_that_needs_size() {
+    let tmp = temp_root();
+    let svc = open(tmp.path());
+    let alpha = root(&svc, "Alpha", 1, Some(ALPHA));
+    svc.grant_client("mcp:names", std::slice::from_ref(&alpha), &["path"], None)
+        .unwrap();
+    svc.grant_client("mcp:sizes", std::slice::from_ref(&alpha), &["size"], None)
+        .unwrap();
+    let want = names(&ok(as_owner(&svc, "search.query", listing(""))));
+    assert_eq!(want, ["report.pdf"]);
+    for text in [
+        "   ",
+        "\t\n",
+        "\u{1}",
+        " \u{1} ",
+        "\u{7}\u{7f}",
+        "\u{85}\u{1f}",
+    ] {
+        let e = err(as_client(&svc, "mcp:names", "search.query", listing(text)));
+        assert_eq!(e.code, ErrorCode::InvalidRequest, "{text:?}");
+        // With `size` the same text is the owner's listing: the catalogue agrees it is empty.
+        let page = ok(as_client(&svc, "mcp:sizes", "search.query", listing(text)));
+        assert_eq!(names(&page), want, "{text:?}");
+        let owner = ok(as_owner(&svc, "search.query", listing(text)));
+        assert_eq!(names(&owner), want, "{text:?}");
+    }
+    // A zero-width space survives the catalogue cleaning, so it is a text search, never a
+    // largest-first listing (the second half of the Muse claim).
+    let page = ok(as_client(
+        &svc,
+        "mcp:names",
+        "search.query",
+        listing("\u{200b}"),
+    ));
+    assert_eq!(names(&page), Vec::<String>::new());
+}
