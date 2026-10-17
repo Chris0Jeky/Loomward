@@ -24,7 +24,9 @@ pub use envelope::{
 };
 pub use error::{ErrorBody, ErrorCode};
 pub use event::{EventEnvelope, EventName};
-pub use service::{CallContext, CloseReason, EventStream, NativeDialogs, RecvOutcome, ViewService};
+pub use service::{
+    CallContext, CloseReason, EventStream, NativeDialogs, Principal, RecvOutcome, ViewService,
+};
 pub use types::*;
 
 /// Protocol bounds of docs/41 section 5.1.
