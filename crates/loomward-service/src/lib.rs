@@ -20,6 +20,7 @@ mod apps;
 mod ask;
 mod backups;
 mod clients;
+mod clutter;
 mod collections;
 mod copy;
 mod cursors;

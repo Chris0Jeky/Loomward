@@ -13,6 +13,8 @@ mod ask;
 pub use ask::*;
 mod backups;
 pub use backups::*;
+mod clutter;
+pub use clutter::*;
 mod inventory;
 pub use inventory::*;
 mod common;
