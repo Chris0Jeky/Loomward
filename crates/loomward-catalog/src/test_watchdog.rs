@@ -58,6 +58,14 @@ pub(crate) mod linux {
             .to_owned()
     }
 
+    /// The run state, which follows the parenthesised command name: R running, S sleeping, D disk.
+    fn state(tid: &str) -> String {
+        let stat = read(tid, "stat");
+        stat.rsplit_once(") ")
+            .map_or("?", |(_, rest)| &rest[..1])
+            .to_owned()
+    }
+
     /// Kernel state (run state, wait channel, current syscall) of every thread of this process,
     /// then the Rust backtrace of each thread `wanted` selects, waiting at most two seconds each.
     pub(crate) fn thread_report(wanted: impl Fn(i32) -> bool) -> String {
@@ -70,13 +78,11 @@ pub(crate) mod linux {
             })
             .unwrap_or_default();
         for tid in &tids {
-            let stat = read(tid, "stat");
-            // The run state follows the parenthesised command name: R running, S sleeping, D disk.
-            let state = stat.rsplit_once(") ").map_or("?", |(_, rest)| &rest[..1]);
             let _ = writeln!(
                 report,
-                "thread {tid} {:?} state {state} wchan {:?} syscall {:?}",
+                "thread {tid} {:?} state {} wchan {:?} syscall {:?}",
                 read(tid, "comm"),
+                state(tid),
                 read(tid, "wchan"),
                 read(tid, "syscall"),
             );
@@ -123,6 +129,14 @@ pub(crate) mod linux {
             .spawn(move || parked_for_the_watchdog_report(send, wait))
             .unwrap();
         let tid = receive.recv_timeout(Duration::from_secs(30)).unwrap();
+        // The send returns before the thread blocks: wait until the kernel has it asleep.
+        let give_up = Instant::now() + Duration::from_secs(30);
+        while state(&tid.to_string()) != "S"
+            || !read(&tid.to_string(), "wchan").starts_with("futex")
+        {
+            assert!(Instant::now() < give_up, "the parked thread never blocked");
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let report = thread_report(|t| t == tid);
         assert!(
             report.contains(&format!("thread {tid} \"parked-495\" state S")),
