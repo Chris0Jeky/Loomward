@@ -406,7 +406,7 @@ impl Inner {
         }
         let handled = match command {
             SessionHello => self.hello(ctx),
-            HealthGet => self.health(),
+            HealthGet => self.health(work),
             AppsList | DesktopContexts => self.metadata_page(req, command, work, metadata_cursor),
             RootsList => self.roots_list(work),
             RootsRequestGrant => self.request_grant(ctx),
@@ -733,7 +733,7 @@ impl Inner {
 
     /// `Health.engine` is read now from the process itself (#163), never a retained telemetry
     /// sample under a fresh `observed_at`. Unknown stays `null`.
-    pub(crate) fn health(&self) -> Handled {
+    pub(crate) fn health(&self, work: Option<&crate::ReadWork>) -> Handled {
         let own = match loomward_telemetry::own_usage() {
             loomward_telemetry::Observation::Observed { value } => Some(value),
             _ => None,
@@ -743,7 +743,10 @@ impl Inner {
                 .ok()
                 .map(|m| m.len().to_string())
         };
-        let (files, dirs) = db::counts(&self.db()).map_err(sql_error)?;
+        let (files, dirs) = self
+            .read_reader(work)?
+            .entry_counts()
+            .map_err(catalog_error)?;
         let jobs = self.engine.job_list(&decode_exact(json!({"limit": 50}))?);
         #[cfg(test)]
         let jobs = if self
