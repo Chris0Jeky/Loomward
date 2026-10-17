@@ -551,11 +551,21 @@ mod lab_copy {
             ok("copy.approve", call(svc, "copy.approve", consent.clone()));
             let (reached, wait) = std::sync::mpsc::channel();
             let (after, was_fenced) = std::sync::mpsc::channel();
+            // #571: the hook waits for the fence itself, with no deadline sized for an idle host; the
+            // fence lands whenever `identity_changed` gets there, however loaded the host is. Only a
+            // test that is already failing (the guard drops on a panic) lets the hook go unfenced.
+            struct GiveUp(Arc<std::sync::atomic::AtomicBool>);
+            impl Drop for GiveUp {
+                fn drop(&mut self) {
+                    self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+            let give_up = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let _release = GiveUp(give_up.clone());
             *svc.inner.copies.hook.lock().unwrap() = Some(Arc::new(move |p, c| {
                 if p == point {
                     reached.send(()).unwrap();
-                    let until = Instant::now() + Duration::from_secs(5);
-                    while !c.fenced() && Instant::now() < until {
+                    while !c.fenced() && !give_up.load(std::sync::atomic::Ordering::SeqCst) {
                         std::thread::sleep(Duration::from_millis(1));
                     }
                     after.send(c.fenced()).unwrap();
