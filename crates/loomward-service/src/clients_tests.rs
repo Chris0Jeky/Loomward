@@ -228,7 +228,7 @@ fn an_ungranted_client_reaches_nothing_and_learns_nothing() {
         assert!(!e.message.contains("Alpha"));
     }
     // Every other command is closed to a client, granted or not: no roots, grants or effects.
-    svc.grant_client("mcp:granted", &[alpha.clone()], &["path"], None)
+    svc.grant_client("mcp:granted", std::slice::from_ref(&alpha), &["path"], None)
         .unwrap();
     for (command, payload) in [
         ("roots.list", json!({})),
@@ -257,8 +257,13 @@ fn an_ungranted_client_reaches_nothing_and_learns_nothing() {
         "a client never revokes"
     );
     // An expired grant and a revoked one read exactly as no grant.
-    svc.grant_client("mcp:expired", &[alpha.clone()], &["path"], Some(1))
-        .unwrap();
+    svc.grant_client(
+        "mcp:expired",
+        std::slice::from_ref(&alpha),
+        &["path"],
+        Some(1),
+    )
+    .unwrap();
     assert_eq!(refused("mcp:expired"), no_grant);
     assert!(svc.revoke_client("mcp:granted").unwrap());
     assert!(!svc.revoke_client("mcp:granted").unwrap());
@@ -294,7 +299,7 @@ fn a_one_root_grant_reads_a_multi_root_index_as_a_one_root_index() {
         .grant_client("ask:local", &[a1], &fields, None)
         .unwrap();
     shared
-        .grant_client("ask:local", &[a2.clone()], &fields, None)
+        .grant_client("ask:local", std::slice::from_ref(&a2), &fields, None)
         .unwrap();
     for (text, limit) in [
         ("report", 2),
@@ -352,10 +357,15 @@ fn excluded_fields_are_absent_and_excluded_roots_do_not_reach_the_totals() {
     let alpha = root(&svc, "Alpha", 1, Some(ALPHA));
     // Beta is granted to the owner but never scanned: the owner's page is partial.
     let _beta = root(&svc, "Beta", 2, None);
-    svc.grant_client("mcp:names", &[alpha.clone()], &[], None)
+    svc.grant_client("mcp:names", std::slice::from_ref(&alpha), &[], None)
         .unwrap();
-    svc.grant_client("mcp:sizes", &[alpha.clone()], &["path", "size"], None)
-        .unwrap();
+    svc.grant_client(
+        "mcp:sizes",
+        std::slice::from_ref(&alpha),
+        &["path", "size"],
+        None,
+    )
+    .unwrap();
     let owner = ok(as_owner(
         &svc,
         "search.query",
@@ -443,7 +453,7 @@ fn cursors_are_bound_to_their_client_and_its_grant_epoch() {
     let svc = open(tmp.path());
     let alpha = root(&svc, "Alpha", 1, Some(ALPHA));
     for client in ["mcp:one", "mcp:two"] {
-        svc.grant_client(client, &[alpha.clone()], &["path"], None)
+        svc.grant_client(client, std::slice::from_ref(&alpha), &["path"], None)
             .unwrap();
     }
     let first = ok(as_client(
@@ -498,7 +508,7 @@ fn a_revocation_between_list_and_explain_refuses_the_explain_and_the_next_page()
     let svc = open(tmp.path());
     let alpha = root(&svc, "Alpha", 1, Some(ALPHA));
     let _beta = root(&svc, "Beta", 2, Some(BETA));
-    svc.grant_client("ask:local", &[alpha.clone()], &["size"], None)
+    svc.grant_client("ask:local", std::slice::from_ref(&alpha), &["size"], None)
         .unwrap();
     let list = ok(as_client(
         &svc,
@@ -555,7 +565,7 @@ fn a_revocation_between_list_and_explain_refuses_the_explain_and_the_next_page()
         ErrorCode::PermissionDenied
     );
     // Granting again opens a new epoch; the pre-revocation cursor stays dead.
-    svc.grant_client("ask:local", &[alpha.clone()], &["size"], None)
+    svc.grant_client("ask:local", std::slice::from_ref(&alpha), &["size"], None)
         .unwrap();
     assert_eq!(
         err(as_client(&svc, "ask:local", "search.query", next)).code,

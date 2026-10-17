@@ -834,6 +834,7 @@ fn assert_memberships(dir: &std::path::Path) {
             cursor: None,
             work_budget: 2_000_000,
             time_budget: None,
+            scope: None,
         })
         .unwrap();
     assert_eq!(page.hits.len(), 4);
