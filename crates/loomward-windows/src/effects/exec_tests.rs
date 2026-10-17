@@ -754,3 +754,277 @@ fn a_leftover_staging_token_is_reported_in_status() {
     let s = status(&lab.store, op).unwrap();
     assert_eq!(s.leftover_staging, vec!["~lw-staging-orphan".to_string()]);
 }
+
+/// #526: the bounded publish retry (10 x 3 s) ends at once when the owner cancels or the service shuts
+/// down: the run waits `blocked` (`publish_in_use`, resumable) with the intent kept, never ~30 s later.
+#[test]
+fn cancel_ends_the_publish_retry_wait_at_once() {
+    let Some(lab) = Lab::new() else { return };
+    fs::create_dir(lab.src().join("top")).unwrap();
+    fs::write(lab.src().join("top/f.txt"), b"data").unwrap();
+    fs::write(lab.src().join("top/f.txt:note"), b"kept").unwrap();
+    let op = lab.start(&["top"]);
+    let dest = lab.dest();
+    // A held named-stream handle under staging refuses the rename (H2 negative for streams).
+    let blocker: std::sync::Arc<Mutex<Option<fs::File>>> = Default::default();
+    let held = blocker.clone();
+    let control = Control::new(false).with_hook(move |p, c| {
+        if p == Point::BeforePublish {
+            let staging = fs::read_dir(&dest).unwrap().next().unwrap().unwrap().path();
+            *held.lock().unwrap() = Some(fs::File::open(staging.join("f.txt:note")).unwrap());
+            c.cancel();
+        }
+        Flow::Continue
+    });
+    let started = std::time::Instant::now();
+    let outcome = run(&lab.store, op, &control).unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "cancel waited {:?}",
+        started.elapsed()
+    );
+    assert_eq!(outcome.state, OpState::Blocked, "{outcome:?}");
+    assert_eq!(outcome.refusal, Some((Refusal::PublishInUse, None)));
+    drop(blocker);
+    assert!(!lab.dest().join("top").exists(), "never published");
+}
+
+/// Run `op` on its own thread; when `at` first fires, the run waits there while the test revokes it
+/// (`fence`), then goes on. Returns the run's outcome and the revocation's acknowledgement.
+fn fenced_at(lab: &Lab, op: u64, at: fn(Point) -> bool) -> (Outcome, Ack) {
+    let (reached, wait) = std::sync::mpsc::channel::<()>();
+    let (go, resume) = std::sync::mpsc::channel::<()>();
+    let resume = Mutex::new(resume);
+    let fired = AtomicBool::new(false);
+    let control = Control::new(false).with_hook(move |p, _| {
+        if at(p) && !fired.swap(true, Ordering::SeqCst) {
+            reached.send(()).unwrap();
+            resume.lock().unwrap().recv().unwrap();
+        }
+        Flow::Continue
+    });
+    std::thread::scope(|s| {
+        let worker = s.spawn(|| run(&lab.store, op, &control).unwrap());
+        wait.recv().unwrap();
+        let ack = fence(
+            &lab.store,
+            op,
+            &control,
+            loomward_operations::FenceCause::GrantRevoked,
+        )
+        .unwrap();
+        go.send(()).unwrap();
+        (worker.join().unwrap(), ack)
+    })
+}
+
+fn journal_kinds(lab: &Lab, op: u64) -> Vec<String> {
+    lab.store
+        .lock()
+        .unwrap()
+        .rows(op)
+        .unwrap()
+        .iter()
+        .map(|r| {
+            let e: loomward_operations::Entry = serde_json::from_str(&r.body).unwrap();
+            let v = serde_json::to_value(e.record).unwrap();
+            v["kind"].as_str().unwrap_or("?").to_string()
+        })
+        .collect()
+}
+
+/// #526 revocation wiring (docs/47 section 5): a revocation acknowledged before the rename step stops
+/// the run at its next effect step; nothing more is created, written or renamed, a journaled publish
+/// intent is withdrawn, and the run is cancelled with `grant_revoked` (Q1 default: staging left).
+#[test]
+fn a_revocation_before_the_rename_cancels_the_run() {
+    let points: [fn(Point) -> bool; 3] = [
+        |p| p == Point::StagingCreated,
+        |p| matches!(p, Point::Identities(_)),
+        |p| p == Point::BeforePublish,
+    ];
+    for (n, at) in points.into_iter().enumerate() {
+        let Some(lab) = Lab::new() else { return };
+        tree_fixture(&lab.src());
+        let before = source_snapshot(&lab.src());
+        let op = lab.start(&["top"]);
+        let (outcome, ack) = fenced_at(&lab, op, at);
+        assert_eq!(ack, Ack::StoppedBeforePublish, "point {n}");
+        assert_eq!(outcome.state, OpState::Cancelled, "point {n} {outcome:?}");
+        assert_eq!(
+            outcome.refusal,
+            Some((Refusal::GrantRevoked, None)),
+            "point {n}"
+        );
+        assert!(
+            !lab.dest().join("top").exists(),
+            "point {n}: never published"
+        );
+        assert_eq!(staging_dirs(&lab).len(), 1, "point {n}: staging left");
+        // Nothing advanced the run after the fence: no create, write or publish record follows it.
+        let kinds = journal_kinds(&lab, op);
+        let fenced = kinds.iter().position(|k| k == "fenced").unwrap();
+        assert!(
+            kinds[fenced + 1..].iter().all(|k| matches!(
+                k.as_str(),
+                "transition" | "publish_withdrawn" | "staging_left"
+            )),
+            "point {n}: {kinds:?}"
+        );
+        assert_eq!(
+            kinds.contains(&"publish_withdrawn".to_string()),
+            n == 2,
+            "point {n}: {kinds:?}"
+        );
+        if n == 1 {
+            // The first batch's files exist empty: no byte was written after the fence.
+            let staging = lab.dest().join(&staging_dirs(&lab)[0]);
+            let written: u64 = fs::read_dir(&staging)
+                .unwrap()
+                .map(|e| e.unwrap().metadata().unwrap())
+                .filter(|m| m.is_file())
+                .map(|m| m.len())
+                .sum();
+            assert_eq!(written, 0, "bytes written after the fence");
+        }
+        assert_eq!(
+            source_snapshot(&lab.src()),
+            before,
+            "point {n}: the source changed"
+        );
+    }
+}
+
+/// After the rename step read an unchanged epoch, the revocation only annotates: the post-publish
+/// confirmation still runs and the copy commits, reported with `grant_revoked`.
+#[test]
+fn a_revocation_after_the_rename_commits_annotated() {
+    let Some(lab) = Lab::new() else { return };
+    tree_fixture(&lab.src());
+    let op = lab.start(&["top"]);
+    let (outcome, ack) = fenced_at(&lab, op, |p| p == Point::AfterPublish);
+    assert_eq!(ack, Ack::Published);
+    assert_eq!(outcome.state, OpState::Committed, "{outcome:?}");
+    assert_eq!(outcome.refusal, Some((Refusal::GrantRevoked, None)));
+    let report = tree::compare(&c1(&lab.src().join("top")), &c1(&lab.dest().join("top")));
+    assert!(report.equal(), "{report:#?}");
+}
+
+/// Review of #544 (HIGH 2): a fence or a cancel landing inside a file's chunk loop stops the run. It once
+/// spun forever, because `read_exact` retries `Interrupted`. Run on a detached thread with a timeout, so
+/// a regression fails instead of hanging the suite.
+#[test]
+fn a_fence_or_cancel_mid_file_stops_the_run() {
+    for fenced in [true, false] {
+        let Some(lab) = Lab::new() else { return };
+        fs::create_dir(lab.src().join("top")).unwrap();
+        fs::write(lab.src().join("top/big.bin"), vec![5u8; 4 << 20]).unwrap();
+        let op = lab.start(&["top"]);
+        let lab = std::sync::Arc::new(lab);
+        let (reached, wait) = std::sync::mpsc::channel::<()>();
+        let (go, resume) = std::sync::mpsc::channel::<()>();
+        let resume = Mutex::new(resume);
+        let fired = AtomicBool::new(false);
+        let control = std::sync::Arc::new(Control::new(false).with_hook(move |p, _| {
+            if p == Point::Chunk(1 << 20) && !fired.swap(true, Ordering::SeqCst) {
+                reached.send(()).unwrap();
+                resume.lock().unwrap().recv().unwrap();
+            }
+            Flow::Continue
+        }));
+        let (done, outcome) = std::sync::mpsc::channel();
+        {
+            let (lab, control) = (lab.clone(), control.clone());
+            std::thread::spawn(move || {
+                let _ = done.send(run(&lab.store, op, &control).unwrap());
+            });
+        }
+        wait.recv_timeout(Duration::from_secs(60)).unwrap();
+        if fenced {
+            let ack = fence(
+                &lab.store,
+                op,
+                &control,
+                loomward_operations::FenceCause::GrantRevoked,
+            )
+            .unwrap();
+            assert_eq!(ack, Ack::StoppedBeforePublish);
+        } else {
+            control.cancel();
+        }
+        go.send(()).unwrap();
+        let outcome = outcome
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap_or_else(|_| panic!("fenced {fenced}: the run never stopped"));
+        assert_eq!(outcome.state, OpState::Cancelled, "{fenced} {outcome:?}");
+        if fenced {
+            assert_eq!(outcome.refusal, Some((Refusal::GrantRevoked, None)));
+        }
+        // No chunk after the stop: only the first 1 MiB reached the staged file.
+        let staging = lab.dest().join(&staging_dirs(&lab)[0]);
+        let len = fs::metadata(staging.join("big.bin")).unwrap().len();
+        assert!(len <= 1 << 20, "fenced {fenced}: {len} bytes");
+    }
+}
+
+/// The admission lock: a revocation waits for the one effect step in flight, and only for it; a step
+/// that does not return in time leaves the revocation `pending_in_flight_step`.
+#[test]
+fn a_fence_waits_for_the_in_flight_step_only() {
+    let control = Control::new(false);
+    std::thread::scope(|s| {
+        let (entered, wait) = std::sync::mpsc::channel();
+        let control = &control;
+        s.spawn(move || {
+            let _step = control.admit().ok().unwrap();
+            entered.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+        });
+        wait.recv().unwrap();
+        assert_eq!(control.fence(Duration::from_millis(20)), None, "pending");
+        let started = std::time::Instant::now();
+        assert_eq!(control.fence(Duration::from_secs(30)), Some(false));
+        assert!(started.elapsed() < Duration::from_secs(5));
+    });
+    // Every later step reads the fence under the lock and stops.
+    assert!(control.admit().is_err());
+}
+
+/// #526: folders are checked for named streams and EAs too (section 6 refuses both on folders at
+/// preview, so any found later was added). Before publish (the staging folder) and after the rename
+/// (a subfolder, checked by the post-publish confirmation): never committed.
+#[test]
+fn a_stream_planted_on_a_staged_folder_is_never_committed() {
+    for after_rename in [false, true] {
+        let Some(lab) = Lab::new() else { return };
+        fs::create_dir_all(lab.src().join("top/sub")).unwrap();
+        fs::write(lab.src().join("top/sub/f.txt"), b"data").unwrap();
+        let op = lab.start(&["top"]);
+        let dest = lab.dest();
+        let control = Control::new(false).with_hook(move |p, _| {
+            let folder = || fs::read_dir(&dest).unwrap().next().unwrap().unwrap().path();
+            match p {
+                Point::Verified(_) if !after_rename => {
+                    let mut stream = folder().into_os_string();
+                    stream.push(":planted");
+                    fs::write(stream, b"x").unwrap()
+                }
+                Point::AfterPublish if after_rename => {
+                    fs::write(folder().join("sub:planted"), b"x").unwrap()
+                }
+                _ => {}
+            }
+            Flow::Continue
+        });
+        let outcome = run(&lab.store, op, &control).unwrap();
+        assert_eq!(
+            outcome.state,
+            OpState::NeedsAttention,
+            "{after_rename} {outcome:?}"
+        );
+        assert_eq!(
+            outcome.refusal,
+            Some((Refusal::ChangedAfterVerification, None))
+        );
+    }
+}

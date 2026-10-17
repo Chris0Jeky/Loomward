@@ -75,6 +75,28 @@ adapters, the HTTP approval refused as `copy_personal_approval_http`.
   `CopyStatus.leftover_staging_folders`. EA addition after verification is covered by code, not a test
   (writing an EA needs `NtSetEaFile`).
 
+## Follow-ups from #526 (2026-10-17, KRASPYON, Windows 11 Home, NTFS temp volume)
+
+- **H7 is positive on this host.** A child process maps a staged file writable (`PAGE_READWRITE`,
+  `FILE_MAP_WRITE`), closes its file and section handles and keeps only the view; the executor's
+  deny-write verification open then fails with error 32, and succeeds again once the child exits.
+  Pinned by `effects::tests::h7_writable_mapped_view_blocks_the_deny_write_hold`. ReFS not measured.
+- **Revocation fence and admission lock (doc 47 section 5).** `exec::fence` commits a `fenced` record at
+  a new epoch, raises the run's in-memory fence, and waits up to 30 s for the run's admission lock.
+  Every effect step (staging create, each item create, preallocation and each 1 MiB chunk write with
+  its flush, each stream create, each metadata set, the rename) takes that lock and reads the fence
+  first. Before the rename the run cancels (a journaled publish intent is withdrawn); after it the run
+  confirms and commits, reported with `grant_revoked`. `roots.revoke` and `grants.revoke` fence every
+  copy whose plan names the grant, join a running worker, and cancel a waiting one (blocked or
+  interrupted; `needs_attention` stays for the owner). Tests: `a_revocation_before_the_rename_cancels_the_run`
+  (at staging, after an identity batch, after the publish intent), `a_revocation_after_the_rename_commits_annotated`,
+  `a_fence_waits_for_the_in_flight_step_only`, service `revoking_the_root_cancels_a_blocked_copy`.
+- **Publish retry honours cancel.** The 10 x 3 s retry wait ends within 20 ms of a cancel or shutdown;
+  the run waits `blocked` (`publish_in_use`) with its intent kept (`cancel_ends_the_publish_retry_wait_at_once`).
+- **Folders are checked for named streams and EAs** at the pre-publish tree check, after the rename and
+  in recovery's confirmation (`a_stream_planted_on_a_staged_folder_is_never_committed`; EA addition is
+  covered by code, not a test).
+
 ## Throughput (release build, `throughput_lab`, two runs)
 
 | Tree | Run 1 | Run 2 |
@@ -91,8 +113,13 @@ lanes' load were not controlled.
 ## NOT verified
 
 - No resume: `blocked`, `needs_attention` and interrupted runs exit only by Abandon in C5.
-- In-run revocation and emergency stop: no admission lock or fence wiring yet; a fence record makes the
-  executor's next journal append fail (stale epoch), but effects between appends are not fenced.
+- Emergency stop has no command yet (the fence takes `FenceCause::EmergencyStop`, unused). The revocation
+  acknowledgement (position, `pending_in_flight_step`) is internal: `roots.revoke` does not report it.
+  A step stuck past 30 s leaves the revocation unacknowledged and the worker unjoined. A fence landing
+  mid create batch leaves that batch's created items unjournaled (rule 6 refuses their identity commit):
+  reported as staging content, never adopted. Cleanup outside the run does not take the admission lock.
+- Between the last post-publish check and `committed`, attributes and new named streams can still be
+  added (a hold denies neither); only content is held.
 - Process-kill crashes (crash points here stop the run in-process; the OS cache survives), the C6 fault and
   crash matrix, G5 power cuts and G9 restore.
 - `publish_in_use` retries (10 x 3 s), `staging_in_use`, the 30-minute expiry over the wire, a real small

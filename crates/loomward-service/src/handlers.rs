@@ -589,6 +589,8 @@ impl Inner {
                 revoked_at_ns: at,
             })
             .map_err(catalog_error)?;
+        // Copies using the grant are fenced next (docs/47 section 5): no effect step starts after.
+        self.copies_fence(grant);
         let root = db::root_for_grant(&self.db(), grant).map_err(sql_error)?;
         if let Some(root) = root {
             self.freshness.remove(root);

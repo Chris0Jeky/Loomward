@@ -35,6 +35,10 @@ pub struct Plan {
     /// The destination grant's verified root: (volume serial, file ID). The pinned destination's
     /// ancestry must contain it at preview and again at run (lab roots only, invariant 2).
     pub destination_root: (u64, [u8; 16]),
+    /// The service's grant numbers for the source and destination roots: revoking either fences the
+    /// run (docs/47 section 5). Empty for plans journaled before #526 and in the lab suite.
+    #[serde(default)]
+    pub grants: Vec<i64>,
     pub manifest: Manifest,
     /// Per manifest item, in order: the path relative to `source_root` and the observed identity whose
     /// signature `Source::open` re-checks through pinned handles.
@@ -264,6 +268,7 @@ pub fn prepare(request: &Request) -> io::Result<(loomward_operations::Preview, P
         destination: request.destination.to_path_buf(),
         destination_key: dest_observed.object,
         destination_root: request.destination_root,
+        grants: Vec::new(),
         manifest: preview.manifest.clone(),
         sources,
     };
@@ -285,6 +290,8 @@ pub enum Point {
     AfterPublish,
     /// Before the item's preallocation and first write (lane C6 fault seam).
     Writing(u32),
+    /// Inside a stream's chunk loop, between effect steps: the bytes handed to the writer so far.
+    Chunk(u64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -364,7 +371,8 @@ fn hit(label: &str) {
 
 type Hook = Box<dyn Fn(Point, &Control) -> Flow + Send + Sync>;
 
-/// One run's controls: the owner's cancel and the staging-removal policy.
+/// One run's controls: the owner's cancel, the staging-removal policy, and the revocation fence with
+/// its admission lock (docs/47 section 5).
 pub struct Control {
     cancel: AtomicBool,
     /// docs/47 Q1 (`loomward-copy-staging-removal`, OPEN, agent-hq#461). Off by default: cancel and
@@ -372,7 +380,31 @@ pub struct Control {
     /// journaled staging by identity, and a first verification mismatch is redone.
     pub removal: bool,
     hook: Option<Hook>,
+    /// Set once a revocation or emergency stop has committed its `fenced` record (the new epoch).
+    fenced: AtomicBool,
+    /// The per-run admission lock: every effect step holds it from its fence read until its one
+    /// bounded OS call returns, so a revocation waits for at most the step in flight.
+    admission: Mutex<()>,
+    /// Set inside the rename step when the rename succeeded: the run is on the published side.
+    renamed: AtomicBool,
 }
+
+/// What an acknowledged revocation says about the run (docs/47 section 5, revocation step 3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ack {
+    /// Already terminal or cancelled: nothing fenced.
+    Settled,
+    /// No effect step starts after the acknowledgement; the run cancels before publish.
+    StoppedBeforePublish,
+    /// The rename had completed: the run confirms and commits, annotated `grant_revoked`.
+    Published,
+    /// The step in flight did not return within the wait (stuck I/O); the fence is durable and every
+    /// later step still reads it.
+    PendingInFlightStep,
+}
+
+/// docs/47 section 5 revocation step 3 (assumption: 30 s, to be measured).
+const FENCE_WAIT: Duration = Duration::from_secs(30);
 
 impl Control {
     pub fn new(removal: bool) -> Self {
@@ -380,6 +412,9 @@ impl Control {
             cancel: AtomicBool::new(false),
             removal,
             hook: None,
+            fenced: AtomicBool::new(false),
+            admission: Mutex::new(()),
+            renamed: AtomicBool::new(false),
         }
     }
     pub fn with_hook(
@@ -406,6 +441,47 @@ impl Control {
                 Err(io_refusal(&io::Error::from_raw_os_error(code)))
             }
         }
+    }
+    /// Start one effect step: take the admission lock, then read the fence. Hold the guard until the
+    /// step's single OS call has returned. A fenced run starts no further step.
+    fn admit(&self) -> Result<std::sync::MutexGuard<'_, ()>, Stop> {
+        let step = self.admission.lock().unwrap_or_else(|e| e.into_inner());
+        if self.fenced.load(Ordering::SeqCst) {
+            return Err(Stop::Cancel);
+        }
+        Ok(step)
+    }
+    /// Raise the in-memory fence (after the journal committed it), then wait up to `wait` for the step
+    /// in flight. `Some(renamed)` once acknowledged; `None` while that step has not returned.
+    fn fence(&self, wait: Duration) -> Option<bool> {
+        self.fenced.store(true, Ordering::SeqCst);
+        let until = std::time::Instant::now() + wait;
+        loop {
+            match self.admission.try_lock() {
+                Ok(_) | Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Some(self.renamed.load(Ordering::SeqCst))
+                }
+                Err(std::sync::TryLockError::WouldBlock) if std::time::Instant::now() < until => {
+                    std::thread::sleep(Duration::from_millis(1))
+                }
+                Err(_) => return None,
+            }
+        }
+    }
+    /// A revocation or emergency stop has fenced this run.
+    pub fn fenced(&self) -> bool {
+        self.fenced.load(Ordering::SeqCst)
+    }
+    /// Sleep up to `wait`, ending early once the owner cancels or a fence lands. False when cancelled.
+    fn pause(&self, wait: Duration) -> bool {
+        let until = std::time::Instant::now() + wait;
+        while std::time::Instant::now() < until
+            && !self.cancel.load(Ordering::SeqCst)
+            && !self.fenced()
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        !self.cancel.load(Ordering::SeqCst)
     }
     fn check(&self) -> Result<(), Stop> {
         if self.cancel.load(Ordering::SeqCst) {
@@ -455,13 +531,24 @@ fn oid(key: &ObjectKey) -> ObjectId {
     }
 }
 
+/// What a `Cancellable` read reports once the owner cancels or a fence lands. Never `Interrupted`:
+/// `read_exact` retries that forever (review of #544).
+#[derive(Debug)]
+struct Stopped;
+impl std::fmt::Display for Stopped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("copy stopped by cancel or fence")
+    }
+}
+impl std::error::Error for Stopped {}
+
 fn io_refusal(e: &io::Error) -> Stop {
     match e.raw_os_error() {
         Some(80 | 183) => Stop::Refused(Refusal::StagingNameTaken, None),
         Some(5) => Stop::Refused(Refusal::AccessDenied, None),
         Some(32 | 33) => Stop::Refused(Refusal::StagingInUse, None),
         Some(39 | 112) => Stop::Refused(Refusal::InsufficientSpace, None),
-        _ if e.kind() == io::ErrorKind::Interrupted => Stop::Cancel,
+        _ if e.get_ref().is_some_and(|r| r.is::<Stopped>()) => Stop::Cancel,
         _ => Stop::Attention(None),
     }
 }
@@ -492,14 +579,32 @@ fn with_item(stop: Stop, item: u32) -> Stop {
 
 /// Reads the source in the writer's chunks, stopping at the next chunk once the owner cancels. The
 /// third field counts the bytes handed to the writer so far (a lane C6 mid-write kill point per chunk).
-struct Cancellable<'a, R>(&'a mut R, &'a Control, u64);
+/// The fourth is the effect step in progress (docs/47 section 5): taken at construction for the
+/// preallocation, then retaken before each chunk's read, so that chunk's write (and the final flush)
+/// runs under it; a fence stops the next chunk.
+struct Cancellable<'a, R>(
+    &'a mut R,
+    &'a Control,
+    u64,
+    Option<std::sync::MutexGuard<'a, ()>>,
+);
+impl<'a, R> Cancellable<'a, R> {
+    fn new(reader: &'a mut R, control: &'a Control) -> Result<Self, Stop> {
+        let step = control.admit()?;
+        Ok(Cancellable(reader, control, 0, Some(step)))
+    }
+}
 impl<R: Read> Read for Cancellable<'_, R> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.3 = None;
+        // A test seam between chunk steps; a crash or fault here is not modelled.
+        let _ = self.1.at(Point::Chunk(self.2));
         if self.1.cancel.load(Ordering::SeqCst) {
-            return Err(io::Error::from(io::ErrorKind::Interrupted));
+            return Err(io::Error::other(Stopped));
         }
         #[cfg(test)]
         crash::hit(&format!("write@{}", self.2));
+        self.3 = Some(self.1.admit().map_err(|_| io::Error::other(Stopped))?);
         let n = self.0.read(buffer)?;
         self.2 += n as u64;
         Ok(n)
@@ -684,7 +789,11 @@ fn copy(journal: &Journal, plan: &Plan, control: &Control, dest: &Destination) -
     })?;
     // No staging identity exists yet, so the run cannot block or wait: `preparing -> refused` with the
     // cause (a token-named folder the OS may have left is reported as a leftover by `status`).
-    let staging = match dest.stage(&token) {
+    let staged = {
+        let _step = control.admit()?;
+        dest.stage(&token)
+    };
+    let staging = match staged {
         Ok(staging) => {
             hit("staging folder made");
             staging
@@ -741,6 +850,13 @@ impl Runner<'_, '_> {
         let mut failure = None;
         for &i in batch {
             let item = self.item(i).clone();
+            let step = match self.control.admit() {
+                Ok(step) => step,
+                Err(stop) => {
+                    failure = Some(stop);
+                    break;
+                }
+            };
             let made = path_of(&item.name, &self.keys).and_then(|(path, name)| {
                 match item.kind {
                     Kind::Directory => self
@@ -754,6 +870,7 @@ impl Runner<'_, '_> {
                 }
                 .map_err(|e| io_refusal(&e))
             });
+            drop(step);
             match made {
                 Ok((key, file)) => {
                     hit("created item");
@@ -806,10 +923,11 @@ impl Runner<'_, '_> {
         })?;
         for (i, file) in &open {
             let meta = preserved(self.item(*i));
-            let key = file
-                .set_metadata(meta)
-                .and_then(|_| file.identity())
-                .map_err(|e| with_item(io_refusal(&e), *i as u32));
+            let key = self.control.admit().and_then(|_step| {
+                file.set_metadata(meta)
+                    .and_then(|_| file.identity())
+                    .map_err(|e| with_item(io_refusal(&e), *i as u32))
+            });
             match key {
                 Ok(key) => {
                     hit("metadata set");
@@ -872,9 +990,17 @@ impl Runner<'_, '_> {
         let name = self.item(i).name.clone();
         let key = self.files.remove(&i).ok_or(Stop::Attention(None))?;
         let (path, last) = path_of(&name, &self.keys)?;
-        self.staging
-            .cleanup_file(&path, last, &key)
-            .map_err(|_| Stop::Attention(None))?;
+        {
+            // A cleanup step takes the admission lock but is not fenced (section 5, rule 4).
+            let _step = self
+                .control
+                .admission
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            self.staging
+                .cleanup_file(&path, last, &key)
+                .map_err(|_| Stop::Attention(None))?;
+        }
         self.journal.log(Record::ItemRemoved {
             item: i as u32,
             id: journaled,
@@ -930,16 +1056,19 @@ impl Runner<'_, '_> {
         }
         self.control.at(Point::Writing(i as u32))?;
         let digest = file
-            .write_and_flush(&mut Cancellable(&mut source, self.control, 0), item.size)
+            .write_and_flush(&mut Cancellable::new(&mut source, self.control)?, item.size)
             .map_err(|e| self.write_error(&e))?;
         let mut streams = Vec::new();
         for (name, size) in &item.streams {
-            let stream = file.create_stream(name).map_err(|e| io_refusal(&e))?;
+            let stream = {
+                let _step = self.control.admit()?;
+                file.create_stream(name).map_err(|e| io_refusal(&e))?
+            };
             let mut reader = source
                 .stream_reader(&format!(":{name}:$DATA"))
                 .map_err(|_| Stop::Refused(Refusal::SourceChanged, None))?;
             let d = stream
-                .write_and_flush(&mut Cancellable(&mut reader, self.control, 0), *size)
+                .write_and_flush(&mut Cancellable::new(&mut reader, self.control)?, *size)
                 .map_err(|e| self.write_error(&e))?;
             streams.push((name.clone(), d, *size));
         }
@@ -1027,6 +1156,7 @@ impl Runner<'_, '_> {
             let item = self.item(i).clone();
             let (path, name) = path_of(&item.name, &self.keys)?;
             let key = &self.keys[&item.name];
+            let step = self.control.admit()?;
             let changed = self
                 .staging
                 .set_directory_metadata(&path, name, key, preserved(&item))
@@ -1034,6 +1164,7 @@ impl Runner<'_, '_> {
                     let now = self.staging.metadata(&path, name, &key)?;
                     Ok((key, now))
                 });
+            drop(step);
             match changed {
                 Ok((key, now)) if now == preserved(&item) => {
                     hit("directory metadata set");
@@ -1053,11 +1184,13 @@ impl Runner<'_, '_> {
         }
         if let Some(root) = &self.plan.manifest.root {
             let meta = preserved(root);
+            let step = self.control.admit()?;
             let ok = self
                 .staging
                 .set_metadata(meta)
                 .and_then(|_| self.staging.own_metadata())
                 .map(|now| now == meta);
+            drop(step);
             hit("staging metadata set");
             if !matches!(ok, Ok(true)) {
                 let stop = Stop::Attention(None);
@@ -1096,11 +1229,25 @@ impl Runner<'_, '_> {
         hit("rename");
         let mut tries = 0;
         loop {
-            match self.staging.publish(&final_name) {
+            // The rename step: its fence read under the admission lock is the pre-rename check.
+            let renamed = {
+                let _step = self.control.admit()?;
+                let renamed = self.staging.publish(&final_name);
+                if renamed.is_ok() {
+                    self.control.renamed.store(true, Ordering::SeqCst);
+                }
+                renamed
+            };
+            match renamed {
                 Ok(()) => break,
-                Err(e) if matches!(e.raw_os_error(), Some(5 | 32)) && tries + 1 < PUBLISH_TRIES => {
+                // Bounded retries (section 7). The owner's cancel or a shutdown ends the wait at once
+                // and leaves the run blocked with its intent kept; a fence is read by the next step.
+                Err(e)
+                    if matches!(e.raw_os_error(), Some(5 | 32))
+                        && tries + 1 < PUBLISH_TRIES
+                        && self.control.pause(PUBLISH_WAIT) =>
+                {
                     tries += 1;
-                    std::thread::sleep(PUBLISH_WAIT);
                 }
                 Err(e) if matches!(e.raw_os_error(), Some(5 | 32)) => {
                     self.journal.log(Record::Transition {
@@ -1167,6 +1314,7 @@ impl Runner<'_, '_> {
         listing(&self.plan.destination.join(folder)).is_ok_and(|got| got == want)
     }
 
+    /// Preserved metadata of every entry, and no named stream or EA on any folder (#526).
     fn metadata_matches(&self) -> bool {
         self.plan
             .manifest
@@ -1183,14 +1331,14 @@ impl Runner<'_, '_> {
                     self.staging
                         .metadata(&path, name, key)
                         .is_ok_and(|m| m == preserved(item))
+                        && (item.kind == Kind::File
+                            || self.staging.folder_plain(&path, name, key).is_ok_and(|p| p))
                 })
             })
-            && self
-                .plan
-                .manifest
-                .root
-                .as_ref()
-                .is_none_or(|r| self.staging.own_metadata().is_ok_and(|m| m == preserved(r)))
+            && self.plan.manifest.root.as_ref().is_none_or(|r| {
+                self.staging.own_metadata().is_ok_and(|m| m == preserved(r))
+                    && self.staging.own_plain().is_ok_and(|p| p)
+            })
     }
 }
 
@@ -1225,6 +1373,36 @@ fn bare(stream: &str) -> &str {
     stream.trim_start_matches(':').trim_end_matches(":$DATA")
 }
 
+/// Revocation or emergency stop of one operation (docs/47 section 5, steps 1 to 4): commit the fence
+/// (a new epoch) unless the operation is already settled, then wait for at most the run's in-flight
+/// effect step and say which side of publish it is on. Every later step reads the fence under the
+/// admission lock and stops; the journal refuses any advancing record still carrying the old epoch.
+pub fn fence(
+    store: &Mutex<Store>,
+    op: u64,
+    control: &Control,
+    cause: loomward_operations::FenceCause,
+) -> Result<Ack, Fault> {
+    {
+        // One store lock across the read and the append: no record slips between them.
+        let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
+        let r = s
+            .replay(op)
+            .map_err(|e| Fault::Journal(e.to_string()))?
+            .map_err(|e| Fault::Journal(format!("{e:?}")))?;
+        if r.state.is_terminal() {
+            return Ok(Ack::Settled);
+        }
+        s.append(op, r.epoch + 1, Record::Fenced { cause })
+            .map_err(|e| Fault::Journal(format!("{e:?}")))?;
+    }
+    Ok(match control.fence(FENCE_WAIT) {
+        None => Ack::PendingInFlightStep,
+        Some(true) => Ack::Published,
+        Some(false) => Ack::StoppedBeforePublish,
+    })
+}
+
 /// Turn where `copy` stopped into the journal's terminal or waiting state.
 fn finish(
     store: &Mutex<Store>,
@@ -1236,6 +1414,9 @@ fn finish(
     match stopped {
         Ok(()) => {}
         Err(Stop::Crashed) => return Err(Fault::Crashed),
+        // A fenced run's advancing records carry the old epoch and are refused (section 5, rule 6):
+        // the fence, not the journal, stopped it. Cancel, withdrawing any publish intent.
+        Err(Stop::Journal(_)) if control.fenced() => return cancel(store, op, plan, control),
         Err(Stop::Journal(e)) => return Err(Fault::Journal(e)),
         Err(Stop::Cancel) => return cancel(store, op, plan, control),
         // Already journaled by `refuse`: blocked or needs_attention, staging kept.
@@ -1647,11 +1828,17 @@ fn confirm(
                 source.finish().map_err(source_unverifiable)?;
                 holds.push(held);
             } else {
+                check(
+                    published
+                        .folder_plain(&path, name, &key)
+                        .map_err(|e| unverifiable(&e))?,
+                )?;
                 keys.insert(item.name.clone(), key);
             }
         }
         if let Some(root) = &plan.manifest.root {
             check(published.own_metadata().map_err(|e| unverifiable(&e))? == preserved(root))?;
+            check(published.own_plain().map_err(|e| unverifiable(&e))?)?;
         }
         Ok(holds)
     })();

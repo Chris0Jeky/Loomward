@@ -28,6 +28,10 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage
 proptest.workspace = true
 tempfile.workspace = true
 
+# H7 measurement only: a child process keeps a writable mapped view of a staged file.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Memory"] }
+
 [[bin]]
 name = "loomward-fixtures"
 path = "src/bin/loomward-fixtures.rs"
