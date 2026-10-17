@@ -6,7 +6,8 @@ use crate::{
     budgets::{ByteBudget, BytePermit},
     EngineError, EngineResult,
 };
-use loomward_protocol::RootId;
+use loomward_catalog::MAX_DIRECTORY_CHAIN_LENGTH;
+use loomward_protocol::{RootId, ScanLimitReason};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
@@ -20,7 +21,6 @@ use std::{
 const CHUNK_BYTES: usize = 128 * 1024;
 const CHUNK_ENTRIES: usize = 256;
 const CHUNK_ENTRY_BYTES: usize = CHUNK_ENTRIES * std::mem::size_of::<Entry>();
-const MAX_DEPTH: usize = 128;
 const TASK_CAPACITY: usize = 1024;
 /// Finite scan caps; the memory budget additionally bounds the directory arena.
 #[derive(Clone, Debug)]
@@ -62,6 +62,8 @@ pub struct ScanReport {
     pub strategy: Strategy,
     /// A finite entry, depth or directory limit was reached.
     pub limit_hit: bool,
+    /// Specific limiting cause when known; generic resource caps retain `limit_hit` only.
+    pub limit_reason: Option<ScanLimitReason>,
     /// Entries in each directory's latest listing, including excluded metadata.
     pub examined: u64,
     /// Enumeration attempts across all listings, including relists; used for the run limit.
@@ -136,6 +138,7 @@ fn directory_limit_releases_pending_identity_before_parent_relist() {
         enumeration_ns: Default::default(),
         strategy: Mutex::new(Strategy::Portable),
         limit_hit: Default::default(),
+        depth_limit_hit: Default::default(),
         excluded: vec![],
         max_dirs: 1,
         held: Default::default(),
@@ -254,6 +257,7 @@ struct Shared<'a, S: DirSource> {
     enumeration_ns: AtomicU64,
     strategy: Mutex<Strategy>,
     limit_hit: AtomicBool,
+    depth_limit_hit: AtomicBool,
     excluded: Vec<OpenedIdentity>,
     max_dirs: usize,
     /// Child directories sighted by a listing but not yet adopted, across all workers:
@@ -485,33 +489,35 @@ impl<S: DirSource> Shared<'_, S> {
                 return Flow::Stop;
             }
             counts[0] += 1;
+            if raw.attributes & 0x10 != 0 && task.depth + 1 >= MAX_DIRECTORY_CHAIN_LENGTH {
+                // The writer cannot represent another directory, even an excluded/unlisted one.
+                complete = false;
+                stopped = Some(IncompleteReason::Limit);
+                self.limit_hit.store(true, Ordering::Release);
+                self.depth_limit_hit.store(true, Ordering::Release);
+                counts[1] += 1;
+                return Flow::Continue;
+            }
             let mut excluded = refused_attributes(raw.attributes)
                 || raw.name == [46, 108, 111, 111, 109, 119, 97, 114, 100];
             let mut child = None;
             let mut traversal_error = None;
             if !excluded && raw.attributes & 0x10 != 0 {
-                if task.depth >= MAX_DEPTH {
-                    // Not opened, but not an exclusion either: it stays a plain, unlisted entry.
-                    complete = false;
-                    stopped = Some(IncompleteReason::Limit);
-                    counts[1] += 1;
-                } else {
-                    match self.source.open_child(&task.dir, &raw) {
-                        Ok((dir, identity)) => {
-                            excluded = self.excluded.iter().any(|e| {
-                                e.id.is_some()
-                                    && e.id == identity.id
-                                    && e.volume_serial == identity.volume_serial
-                            });
-                            if !excluded {
-                                child = Some((dir, identity));
-                            }
+                match self.source.open_child(&task.dir, &raw) {
+                    Ok((dir, identity)) => {
+                        excluded = self.excluded.iter().any(|e| {
+                            e.id.is_some()
+                                && e.id == identity.id
+                                && e.volume_serial == identity.volume_serial
+                        });
+                        if !excluded {
+                            child = Some((dir, identity));
                         }
-                        Err(reason) => {
-                            traversal_error = Some(reason);
-                            complete = false;
-                            counts[2] += 1;
-                        }
+                    }
+                    Err(reason) => {
+                        traversal_error = Some(reason);
+                        complete = false;
+                        counts[2] += 1;
                     }
                 }
             }
@@ -1049,6 +1055,7 @@ pub fn run_scan<S: DirSource>(
         enumeration_ns: AtomicU64::new(0),
         strategy: Mutex::new(source.strategy()),
         limit_hit: AtomicBool::new(false),
+        depth_limit_hit: AtomicBool::new(false),
         excluded,
         max_dirs,
         held: Mutex::new((0, 0)),
@@ -1279,6 +1286,10 @@ pub fn run_scan<S: DirSource>(
         complete,
         strategy,
         limit_hit: shared.limit_hit.load(Ordering::Acquire),
+        limit_reason: shared
+            .depth_limit_hit
+            .load(Ordering::Acquire)
+            .then_some(ScanLimitReason::DepthLimit),
         examined: counts[0],
         enumeration_attempts: shared
             .attempted

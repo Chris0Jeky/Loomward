@@ -497,6 +497,7 @@ fn reconcile<S: DirSource>(
         report.skipped = next.skipped;
         report.failed = next.failed;
         report.limit_hit |= next.limit_hit;
+        report.limit_reason = next.limit_reason.or(report.limit_reason);
         report.strategy = next.strategy;
     }
     sink.watch_dirty(root.root_id())?;

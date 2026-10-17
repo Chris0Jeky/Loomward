@@ -41,6 +41,7 @@ function merge(cur: Job, job: Job): Job {
       allocated_bytes: maxBytes(a.allocated_bytes, b.allocated_bytes),
       elapsed_ms: Math.max(a.elapsed_ms, b.elapsed_ms),
       limit_hit: a.limit_hit || b.limit_hit,
+      limit_reason: b.limit_reason ?? a.limit_reason,
     };
   }
   return {
@@ -137,7 +138,7 @@ export function viewOf(job: Job, nowMs: number): ScanView {
       if (job.coverage === 'complete' && !stopped && !gaps) {
         return { activity: 'completed', active: false, headline: 'Finished, complete coverage', detail: countsText(p), elapsedMs: final };
       }
-      const why = stopped ? 'Stopped at its entry budget' : job.coverage === null ? 'Finished, coverage not reported' : 'Finished, partial coverage';
+      const why = stopped ? p?.limit_reason === 'depth_limit' ? 'Stopped at its directory depth limit' : 'Stopped at its entry budget' : job.coverage === null ? 'Finished, coverage not reported' : 'Finished, partial coverage';
       return { activity: 'partial', active: false, headline: why, detail: `${countsText(p)} Totals are lower bounds, not the whole root.`, elapsedMs: final };
     }
   }

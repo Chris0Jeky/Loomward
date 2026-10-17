@@ -15,6 +15,7 @@
     "writer_queue_depth": 4,
     "entries_per_second": 182340.5,
     "elapsed_ms": 264,
-    "limit_hit": false
+    "limit_hit": true,
+    "limit_reason": "depth_limit"
   }
 }

@@ -792,6 +792,79 @@ fn reparent_invalidates_both_chains_and_restart_repairs() {
 }
 pub(super) struct Tree;
 
+#[test]
+fn iterative_depth_cap_preserves_boundary_files_for_every_strategy() {
+    struct Chain(Strategy, u64);
+    impl DirSource for Chain {
+        type Dir = u64;
+        fn strategy(&self) -> Strategy {
+            self.0
+        }
+        fn open_root(&self, path: &std::path::Path) -> Result<(u64, OpenedIdentity), SourceError> {
+            Tree.open_root(path)
+        }
+        fn open_child(
+            &self,
+            _: &u64,
+            entry: &RawEntry<'_>,
+        ) -> Result<(u64, OpenedIdentity), SourceError> {
+            let Some(FileIdObs::Id64(id)) = entry.file_id else {
+                unreachable!()
+            };
+            assert!(id <= 512, "opened a directory beyond the writer limit");
+            Ok((id, identity(id)))
+        }
+        fn list(&self, dir: &u64, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+            Tree.list(&2, &mut |mut entry| {
+                // A file precedes any child, including at the deepest accepted directory.
+                entry.file_id = None;
+                let flow = sink(entry.clone());
+                if flow == Flow::Stop || *dir == self.1 {
+                    return flow;
+                }
+                entry.name = &[100];
+                entry.file_id = Some(FileIdObs::Id64(dir + 1));
+                entry.attributes = 0x10;
+                sink(entry)
+            })
+        }
+    }
+    for strategy in [
+        Strategy::Extended,
+        Strategy::Both,
+        Strategy::Find,
+        Strategy::Portable,
+    ] {
+        for levels in [512, 513] {
+            let bytes = Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES));
+            let sink = Arc::new(MemorySink::default());
+            let root = root();
+            let report = run_scan(
+                &Chain(strategy, levels),
+                &root,
+                1,
+                sink.clone(),
+                bytes.clone(),
+                Arc::new(AtomicBool::new(false)),
+                ScanOptions {
+                    workers: 1,
+                    ..ScanOptions::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(report.complete, levels == 512, "{strategy:?}: {report:?}");
+            assert_eq!(report.limit_hit, levels == 513);
+            assert_eq!(
+                report.limit_reason,
+                (levels == 513).then_some(loomward_protocol::ScanLimitReason::DepthLimit)
+            );
+            assert_eq!((report.totals.dirs, report.totals.files), (511, 512));
+            assert_eq!(sink.totals(root.root_id()), Some(report.totals));
+            assert_eq!(bytes.used(), 0);
+        }
+    }
+}
+
 struct ReplacementTree {
     id: u64,
     attributes: u32,

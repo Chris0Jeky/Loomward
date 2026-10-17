@@ -18,6 +18,7 @@ pub const QUEUE_BYTES: usize = 64 * 1024 * 1024;
 const WRITER_BYTES: usize = 32 * 1024 * 1024;
 const TRANSACTION_BYTES: usize = 64 * 1024 * 1024;
 const TRANSACTION_TIME: Duration = Duration::from_millis(250);
+const REFERENCE_PUBLICATION_ATTEMPTS: usize = 8;
 #[cfg(test)]
 thread_local! {
     static TRANSACTION_WINDOW: std::cell::Cell<Duration> =
@@ -410,12 +411,12 @@ impl Context {
                 break;
             }
             path.push(id);
-            if path.len() > 512 {
+            if path.len() > MAX_DIRECTORY_CHAIN_LENGTH {
                 return Err(Error::Invalid("tree depth limit"));
             }
             current = self.parent(conn, t, id)?;
         }
-        if path.len() + length > 512 {
+        if path.len() + length > MAX_DIRECTORY_CHAIN_LENGTH {
             return Err(Error::Invalid("tree depth limit"));
         }
         for id in path.into_iter().rev() {
@@ -455,7 +456,7 @@ impl Context {
                 current = self.parent(conn, t, id)?;
                 count += 1;
                 // Backstop only: check_chains already bounded every seed inside its savepoint.
-                if count > 512 {
+                if count > MAX_DIRECTORY_CHAIN_LENGTH {
                     return Err(Error::Invalid("directory identity cycle"));
                 }
             }
@@ -473,6 +474,7 @@ enum PublicationCrash {
     BeforeCatalog,
     AfterCatalog,
     Observe(fn(&Connection, bool)),
+    BeforeFence(fn(&Connection)),
 }
 /// Test seam (#356): holds the writer after a publication's precious staging has committed and
 /// before its catalogue transaction begins, so a test can act inside that window. Only commands
@@ -651,11 +653,13 @@ fn serve(
         // The transaction borrows the connection only until the batch is applied.
         {
             // Precious writes commit before the catalogue transaction, which writes main only.
+            let mut attempts = 0;
             let opened = loop {
+                attempts += 1;
                 // A reference bound after this mark is invisible to the staging below (#356).
                 let mark = match stages.then(|| reference_mark(&conn)).transpose() {
                     Ok(mark) => mark,
-                    Err(e) => break Err((e, false)),
+                    Err(e) => break Err((Error::Sql(e), false)),
                 };
                 batchable = listing_command(&batch[0].command)
                     && !conn
@@ -681,6 +685,10 @@ fn serve(
                 if let Some(window) = window.as_ref().filter(|_| stages) {
                     window.pause();
                 }
+                #[cfg(test)]
+                if let Some(PublicationCrash::BeforeFence(observe)) = crash.filter(|_| stages) {
+                    observe(&conn);
+                }
                 let durability = conn.query_row(
                     "SELECT EXISTS(SELECT 1 FROM st.pending_reference)",
                     [],
@@ -696,7 +704,7 @@ fn serve(
                     conn.transaction()
                 }) {
                     Ok(tx) => tx,
-                    Err(e) => break Err((e, true)),
+                    Err(e) => break Err((Error::Sql(e), true)),
                 };
                 let Some(mark) = mark else {
                     break Ok(tx);
@@ -705,13 +713,16 @@ fn serve(
                     Ok(true) => break Ok(tx),
                     Ok(false) => {}
                     // The command fails unpublished; reconciliation discards its intents.
-                    Err(e) => break Err((e, false)),
+                    Err(e) => break Err((Error::Sql(e), false)),
                 }
                 drop(tx);
                 // Nothing is published: drop this attempt's intents and stage again over every reference.
                 let unpublished = "DELETE FROM st.pending_reference WHERE publication_token IS NOT (SELECT value FROM meta WHERE key='reference_publication')";
                 if let Err(e) = conn.execute(unpublished, []) {
-                    break Err((e, false));
+                    break Err((Error::Sql(e), false));
+                }
+                if attempts == REFERENCE_PUBLICATION_ATTEMPTS {
+                    break Err((Error::Invalid("reference publication retry limit"), false));
                 }
             };
             #[cfg(test)]
@@ -842,7 +853,7 @@ fn serve(
                 }
                 Err((e, fatal)) => {
                     failed = fatal;
-                    results.push(Err(Error::Sql(e)));
+                    results.push(Err(e));
                 }
             }
         }
@@ -1500,7 +1511,8 @@ fn retire_files(
         tx.execute("INSERT INTO st.pending_reference(object_ref_id,catalog_instance,publication_token,row_id,born_run) SELECT o.id,o.catalog_instance,?1,
             (SELECT s.id FROM old_file s JOIN file f ON f.id=o.row_id WHERE s.used=1 AND s.identity=f.file_id AND s.created_ft IS f.created_ft ORDER BY s.id LIMIT 1),
             (SELECT f.born_run FROM file f JOIN old_file s ON s.id=f.id WHERE s.used=1 AND s.identity=o.file_id AND s.created_ft IS o.creation_ft ORDER BY s.id LIMIT 1)
-            FROM st.object_ref o WHERE o.kind='file' AND o.state='resolved' AND o.catalog_instance=(SELECT value FROM meta WHERE key='instance_id') AND EXISTS(SELECT 1 FROM file f JOIN old_file x ON x.id=f.id WHERE f.id=o.row_id AND f.born_run=o.born_run AND x.used=0 AND EXISTS(SELECT 1 FROM old_file s WHERE s.used=1 AND s.identity=f.file_id AND s.created_ft IS f.created_ft))", [token])?;
+            FROM st.object_ref o WHERE o.kind='file' AND o.state='resolved' AND o.catalog_instance=(SELECT value FROM meta WHERE key='instance_id') AND EXISTS(SELECT 1 FROM file f JOIN old_file x ON x.id=f.id WHERE f.id=o.row_id AND f.born_run=o.born_run AND x.used=0 AND EXISTS(SELECT 1 FROM old_file s WHERE s.used=1 AND s.identity=f.file_id AND s.created_ft IS f.created_ft))", [&token])?;
+        crate::db::resolve_pending_collisions(&tx, &token)?;
         tx.commit()?;
     }
     retire_selected(conn,"WITH RECURSIVE replaced(id) AS (SELECT d.id FROM dir d JOIN continuity_entry e ON e.kind=0 AND e.identity IS d.file_id AND e.created_ft IS NOT d.created_ft AND (d.file_id IS NOT NULL OR (d.parent_id=?1 AND e.name=d.name AND e.raw IS d.name_utf16)) WHERE d.root_id=(SELECT root_id FROM dir WHERE id=?1) UNION ALL SELECT d.id FROM dir d JOIN replaced x ON d.parent_id=x.id) SELECT o.id FROM st.object_ref o JOIN file f ON f.id=o.row_id WHERE o.kind='file' AND o.state='resolved' AND f.dir_id=?1 AND o.catalog_instance=(SELECT value FROM meta WHERE key='instance_id') AND o.born_run=f.born_run AND NOT EXISTS(SELECT 1 FROM continuity_entry e WHERE e.kind=1 AND e.identity=f.file_id AND e.created_ft IS f.created_ft) AND (?2 OR EXISTS(SELECT 1 FROM continuity_entry e WHERE e.kind=1 AND ((e.name=f.name AND e.raw IS f.name_utf16) OR e.identity=f.file_id))) UNION SELECT o.id FROM st.object_ref o WHERE o.state='resolved' AND o.catalog_instance=(SELECT value FROM meta WHERE key='instance_id') AND ((o.kind='dir' AND o.row_id IN (SELECT id FROM replaced)) OR (o.kind='file' AND o.row_id IN (SELECT id FROM file WHERE dir_id IN (SELECT id FROM replaced))))",params![dir,complete])?;
@@ -2099,7 +2111,7 @@ fn publish(
         for id in moved {
             let too_deep: bool = conn.prepare_cached(
                 &format!("WITH RECURSIVE subtree(id,height) AS (SELECT ?1,0 UNION ALL SELECT d.id,s.height+1 FROM {d} d JOIN subtree s ON d.parent_id=s.id WHERE s.height<?2) SELECT EXISTS(SELECT 1 FROM subtree WHERE height=?2)"),
-            )?.query_row(params![id, 512 - destination as i64], |r| r.get(0))?;
+            )?.query_row(params![id, MAX_DIRECTORY_CHAIN_LENGTH as i64 - destination as i64], |r| r.get(0))?;
             if too_deep {
                 return Err(Error::Invalid("tree depth limit"));
             }

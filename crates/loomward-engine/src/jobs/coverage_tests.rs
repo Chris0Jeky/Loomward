@@ -25,6 +25,7 @@ fn counters(strategy: ScanStrategy, allocated: Option<u64>) -> ScanReport {
         complete: true,
         strategy,
         limit_hit: true,
+        limit_reason: None,
         examined: 7,
         enumeration_attempts: 9,
         duplicate_identity: 0,
@@ -264,7 +265,6 @@ fn a_cancelled_duplicates_job_whose_runner_errors_clears_retained_names_and_keep
 }
 
 #[test]
-#[ignore = "#190: strategy Both has no wire enumeration value, so its scan publishes no final progress"]
 fn a_scan_whose_actual_strategy_is_both_publishes_final_progress() {
     let e = engine();
     e.register_job_runner(

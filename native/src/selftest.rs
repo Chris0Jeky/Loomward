@@ -157,6 +157,18 @@ pub fn run(log: &mut dyn FnMut(&str)) -> bool {
         (|| {
             for &command in Command::ALL {
                 let r = desktop.call(&envelope(command.as_str(), example_payload(command)))?;
+                // docs/47 C4: every copy command is refused while its effect gate is closed.
+                if command.as_str().starts_with("copy.") {
+                    let ResponseEnvelope::Err(e) = &r else {
+                        return Err(format!("{} answered", command.as_str()));
+                    };
+                    let reason = e.error.detail.as_ref().and_then(|d| d.get("reason"));
+                    check(
+                        reason == Some(&json!("copy_effect_gated")),
+                        "copy command gated",
+                    )?;
+                    continue;
+                }
                 match &r {
                     ResponseEnvelope::Ok(ok) => ok
                         .validate_for(command)

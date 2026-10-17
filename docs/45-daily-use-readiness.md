@@ -78,7 +78,7 @@ service scan of that root into a real catalogue with `tree.slice` and a forget; 
 
 | Case | Exists | Gap |
 |---|---|---|
-| Deep | Deep forget test; lab `pathological::Profile::DepthLimit` creates 512 directory identities including the root; engine regression `writer_depth_limit_512_scanned_end_to_end` | **#414: scanner cap 128 truncates the writer's 512-directory chain.** Reproduced partial coverage with `limit_hit=true`; regression retained `#[ignore]` with the defect named (#483) |
+| Deep | Scanner and writer share `MAX_DIRECTORY_CHAIN_LENGTH=512`, including the root; unignored `writer_depth_limit_512_scanned_end_to_end` scans, queries and forgets the full chain. A 513-directory regression requires partial coverage, `limit_hit=true`, `limit_reason="depth_limit"`, preserved boundary files and no over-depth catalogue rows | Run and resource measurements for #483 below; deeper directories remain unscanned and totals stay lower bounds |
 | Very long paths | Lab `LongPath`; engine `past_max_path_scanned_queried_and_forgotten` exercises native scan, catalogue query and forget beyond MAX_PATH | No remaining gap in this case on KRASPYON; see run record |
 | Odd Unicode | Lab `UnpairedSurrogate`; engine checks exact UTF-16LE bytes, lossy display/name flag and forget | No remaining gap in this case on KRASPYON; see run record |
 | Link loops | Lab `JunctionCycle` and `SymlinkCycle`; separate engine tests require visible/excluded cycle entries, no traversal, then forget | Both ran on KRASPYON; other hosts report symlink privilege error 1314 as UNVERIFIED, never elevate |
@@ -87,14 +87,26 @@ service scan of that root into a real catalogue with `tree.slice` and a forget; 
 | Offline or placeholder files | `directory_becoming_reparse_or_offline_matches_fresh_scan`, `excluded_entries_stay_visible_uncounted_and_complete_a_full_traversal` | no Cloud Files provider; refusal is tested against synthetic attributes only |
 
 **Prove.** `cargo test -p loomward-engine -p loomward-lab --test pathological -- --nocapture`.
-`cargo test -p loomward-engine --test pathological writer_depth_limit_512 -- --ignored --nocapture`
-explicitly reruns the open depth defect. The tests live in new files under each crate's `tests/`.
+`cargo test -p loomward-engine --test pathological depth_limit -- --nocapture`
+explicitly reruns both depth boundaries. The tests live under each crate's `tests/`.
 The engine integration tests exercise the real engine through the service's existing catalogue sink;
 no fixture sink substitutes for durable publication/query/forget. Generation uses isolated temporary
 directories under `CARGO_TARGET_DIR` (the system temporary directory when unset), outside the worktree.
 Elevated hosts report native cases UNVERIFIED, as do hosts missing symlink privilege; the recorded
 KRASPYON run was non-elevated and both link types actually ran. With `LOOMWARD_REQUIRE_NATIVE=1` those
 skips fail instead, so a host that cannot run a native case cannot pass it vacuously.
+
+**Depth resource bounds (#483).** `pipeline.rs` visits a `VecDeque` in worker loops and aggregates
+an arena bottom-up; neither traversal nor rollup recurses. `source.rs` delegates to `DirSource`.
+Extended/Both native listings retain the root anchor and current directory, releasing listed
+directories when identity reopening is available. Other sources can retain at most the arena's
+directory/byte caps (512 on one accepted chain). Find additionally pins the current absolute path
+with an iterative `root_handles` loop, dropping those pins after each listing: 512 granted-tree
+components plus the grant's ancestors per active worker, with 1..=32 workers and the Windows path
+length bound. It does not retain one set of pins for every depth. Portable-strategy fixtures use
+the same iterative queue and bounded arena. The strategy-matrix regression checks both boundaries,
+boundary files, sink/report totals and release of the byte reservation for all four strategies;
+this is fixture evidence, not a native Find performance measurement.
 
 ## 4. Churn during scans: PASS
 
@@ -267,9 +279,20 @@ The 2026-10-17 soak-r7 checks use `CARGO_BUILD_JOBS=4`,
 All 2026-10-17 patho-r34 cargo commands below used
 `--manifest-path C:/lw/wt/patho-r34/Cargo.toml`, `CARGO_BUILD_JOBS=4` and
 `CARGO_TARGET_DIR=C:\lw\target\patho-r34`. Raw logs stay outside Git in that lane target.
+The depth-483 commands use `--manifest-path C:/lw/wt/depth-483/Cargo.toml`,
+`CARGO_BUILD_JOBS=4`, `CARGO_TARGET_DIR=C:\lw\target\depth-483` and
+`RUST_TEST_THREADS=1`; app tests use `--maxWorkers=2`.
 
 | Date | Commit | Host | Command | Result |
 |---|---|---|---|---|
+| 2026-10-17 | 7bac459 + final depth-483 working diff (#483) | KRASPYON, Windows 11 Home, shared host | `cargo test --workspace --no-fail-fast` | Exit 0: **1,131 passed, 0 failed, 1 ignored** across 70 test/doc-test targets. Only ignore is the existing #190 Both-strategy wire-progress test. All five named #292 host-failure cases passed here. Pathological engine target 9/9 passed again; no failing test disabled, skipped or weakened. Fresh workspace test build took 14m 02s; timing is shared-host evidence, not a performance gate |
+| 2026-10-17 | 7bac459 + depth-483 working diff (#483) | KRASPYON, Windows 11 Home, shared host | `cargo test -p loomward-engine -p loomward-catalog -p loomward-protocol -p loomward-lab --no-fail-fast` | Exit 0: **533 passed, 0 failed, 1 ignored** across ordinary and doc tests: engine 233 passed/1 existing #190 ignore, catalogue 207 passed, protocol 53 passed, lab 40 passed. Engine pathological target **9/9 passed**, including the unignored 512 regression and new partial 513 case; strategy matrix passed. The four named #292 engine cases passed in this run; no tests disabled or weakened |
+| 2026-10-17 | same | same | `cargo clippy --workspace --all-targets -- -D warnings`; `PYTHONPATH=C:/lw/wt/depth-483/python py -3 -m unittest discover -s tests` | Both exit 0. Workspace clippy completed in 1m 24s. Python: 276 run, 275 passed, 1 skipped (optional `mistune` HTML renderer unavailable); JSON Schema validator available. Initial standalone Python invocation omitted the wrapper's `PYTHONPATH` and failed imports; corrected process-scoped environment, no source change |
+| 2026-10-17 | 7bac459 + depth-483 working diff (#483) | KRASPYON, Windows 11 Home, shared host | `cargo fmt --all --check`; `cargo clippy -p loomward-engine -p loomward-catalog -p loomward-protocol -p loomward-lab --all-targets -- -D warnings`; `py -3 scripts/gen_contracts_ts.py --check`; `git diff --check` | All exit 0; touched-crate clippy completed in 2m 39s; generated TypeScript matches the schema |
+| 2026-10-17 | same | same | `npm.cmd --prefix app run check`; `npm.cmd --prefix app run test -- --maxWorkers=2`; `npm.cmd --prefix app run build` | All exit 0: 0 check errors/warnings, 437 unit tests passed (including two new depth-reason cases), production build succeeded. Initial new cases failed 2/37 against the old wording/legacy merge before the fix; no desktop/browser inspection in this lane |
+| 2026-10-17 | 7bac459 + depth-483 working diff (#483) | KRASPYON, Windows 11 Home, non-elevated debug build, shared host | `pathological-824a8787e307113d.exe --exact writer_depth_limit_512_scanned_end_to_end --nocapture --test-threads=1`, monitored by the lane's temporary PowerShell helper | 1 passed, exit 0. Scan **14.003 s**, 512 directory identities including root (max stored depth 511), one leaf file; query and forget passed. **212 peak sampled process handles**, 583 samples from process start through scan completion (includes setup/generation; excludes query, forget and fixture cleanup), requested sleep 1 ms; shared-host scheduling makes this sampled evidence, not an exact transient maximum. Test wall time 26.177 s. Receipt and logs remain in `C:/lw/target/depth-483/`; no personal metadata recorded |
+| 2026-10-17 | 7bac459 + regression tests before the cap fix | same | `cargo test -p loomward-engine --test pathological depth_limit -- --nocapture` | 0 passed, 2 failed as expected: the 512-chain scan was partial at 128 children with no leaf file; the 513 case had no `depth_limit` reason |
+| 2026-10-17 | 7bac459 + cap fix, before matching the fixture sink's guard | same | `cargo test -p loomward-engine --lib iterative_depth_cap_preserves_boundary_files_for_every_strategy -- --nocapture` | 0 passed, 1 failed as expected: the pipeline reported 512 files/511 children but the in-memory sink's separate 128-depth rollup guard returned 130 files/129 children. That guard now uses the same shared constant |
 | 2026-10-17 | 89df386 + soak-r7 working diff | KRASPYON, Windows 11 Home, shared host | `cargo test --manifest-path C:\lw\wt\soak-r7\Cargo.toml --workspace --no-fail-fast`; retry with `-j 1` | Final completed run: exit 101, **989 passed, 6 failed, 0 ignored**. Five are the known #292 host failures: three `scan::tests::followups::native_relist_containment_*`, `scan::tests::native_dirty_epoch_relists_by_verified_identity`, and `enumerate::tests::reopen_follows_identity_after_rename_and_rejects_changed_volume_or_root`. The sixth is the unchanged service test below. Initial builds failed with MSVC LNK1201, then LNK1285 identifying a corrupt `root_coverage` PDB; only that generated PDB in this lane's target directory was removed, and the serial rebuild completed. No tests disabled or weakened. |
 | 2026-10-17 | same | same | `C:\lw\target\soak-r7\debug\deps\loomward_service-2cd7cfb8d03ab454.exe --exact inventory::tests::wrong_dataset_and_timed_out_providers_never_publish_fallback --nocapture --test-threads=1` | Exit 101: 0 passed, 1 failed, 179 filtered. Reproduces the full-run failure at `inventory/tests.rs:166`: the API returned the expected `deadline_exceeded`, but the test expected the provider to have started within its 20 ms deadline (observed calls 0, expected 1). Service sources are unchanged; this additional timing assertion remains unresolved, not dismissed as flaky. No repair in the soak lane. |
 | 2026-10-17 | 89df386 + soak-r7 working diff | KRASPYON, Windows 11 Home, shared host | `cargo fmt --manifest-path C:\lw\wt\soak-r7\Cargo.toml --all --check`; `cargo clippy --manifest-path C:\lw\wt\soak-r7\Cargo.toml -p loomward-lab --all-targets -- -D warnings`; `cargo clippy --manifest-path C:\lw\wt\soak-r7\Cargo.toml --workspace --all-targets -- -D warnings`; `git -C C:\lw\wt\soak-r7 diff --check` | All exit 0; formatting and both clippy scopes clean. |

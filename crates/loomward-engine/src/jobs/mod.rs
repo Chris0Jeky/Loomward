@@ -58,10 +58,15 @@ impl JobContext {
             crate::scan::source::Strategy::Portable => {
                 loomward_protocol::EnumerationStrategy::StdReadDir
             }
-            // FileIdBothDirectoryInfo has no wire value yet (#190 item 3): stay unknown.
-            crate::scan::source::Strategy::Both => return Ok(()),
+            crate::scan::source::Strategy::Both => {
+                loomward_protocol::EnumerationStrategy::FileIdBothDirectoryInfo
+            }
         };
-        let progress=serde_json::from_value(serde_json::json!({"phase":"done","strategy":strategy,"examined":report.examined,"indexed_files":report.totals.files,"indexed_dirs":report.totals.dirs,"skipped":report.skipped,"failed":report.failed,"logical_bytes":report.totals.logical.to_string(),"allocated_bytes":report.totals.allocated.map(|n|n.to_string()),"pending_dirs":0,"writer_queue_depth":0,"entries_per_second":report.examined as f64/report.elapsed_seconds.max(0.000001),"elapsed_ms":(report.elapsed_seconds*1000.) as u64,"limit_hit":report.limit_hit})).expect("bounded scan progress");
+        let mut progress = serde_json::json!({"phase":"done","strategy":strategy,"examined":report.examined,"indexed_files":report.totals.files,"indexed_dirs":report.totals.dirs,"skipped":report.skipped,"failed":report.failed,"logical_bytes":report.totals.logical.to_string(),"allocated_bytes":report.totals.allocated.map(|n|n.to_string()),"pending_dirs":0,"writer_queue_depth":0,"entries_per_second":report.examined as f64/report.elapsed_seconds.max(0.000001),"elapsed_ms":(report.elapsed_seconds*1000.) as u64,"limit_hit":report.limit_hit});
+        if let Some(reason) = report.limit_reason {
+            progress["limit_reason"] = serde_json::to_value(reason).expect("scan limit reason");
+        }
+        let progress = serde_json::from_value(progress).expect("bounded scan progress");
         if let Some(registry) = self.registry.upgrade() {
             if let Some(r) = registry.records.lock().unwrap().get_mut(&self.job_id) {
                 if r.job.progress.as_ref() == Some(&progress) {
@@ -689,6 +694,7 @@ mod tests {
             complete: true,
             strategy: crate::scan::source::Strategy::Portable,
             limit_hit: false,
+            limit_reason: None,
             examined: 1,
             enumeration_attempts: 1,
             duplicate_identity: 0,

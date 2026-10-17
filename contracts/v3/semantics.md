@@ -589,8 +589,31 @@ network, device or verbatim path, a device name, a stream name, a parent folder 
 that is not a regular file or is a link, reparse point or cloud placeholder is `unsupported_target`; a write
 that fails is `write_failed`. Neither writes anything: the bytes go to a temporary file beside the target that is
 renamed over it, or removed. `saved` reports `bytes_written`. The path is never returned. Send `deadline_ms`
-up to 60,000: the call waits on the owner. It is the only command whose `effects` is not `none`
+up to 60,000: the call waits on the owner. It is the only open command whose `effects` is not `none`
 (`owner_picked_export`, docs/42 ADR-V3-24).
+
+## Copy and verify (docs/47 lane C4, contract only)
+
+| Command | Request | Result | Effects |
+|---|---|---|---|
+| `copy.preview` | `sources` (node IDs), `destination_node_id` (a folder under an active grant) | `CopyPreview` | none |
+| `copy.approve` | `operation_id`, `digest` | `CopyApproval` | none |
+| `copy.start` | `operation_id`, `digest` | `CopyStatus` | `copy_and_verify` |
+| `copy.cancel`, `copy.abandon` | `operation_id` | `CopyStatus` | `copy_and_verify` (own staging only) |
+| `copy.status` | `operation_id` | `CopyStatus` | none |
+
+Every copy command answers `capability_unavailable` with `detail.reason` `copy_effect_gated`, on both adapters
+and in every dataset class, until docs/47 lane C8 opens the gate; `capabilities.effects` stays all false. A
+personal session's `copy.approve` over HTTP is refused by its own rule, `copy_personal_approval_http` (docs/47
+G6): personal approvals come only from the desktop's native confirmation. When the lab path opens (C5), the
+rules are these. A node ID only selects what the engine observes afresh; the manifest records the native
+identities, sizes and metadata observed, and its `digest` (SHA-256 over the destination grant, parent identity and
+new folder name, every exact item name in sorted order, bytes, identities and preserved metadata) is what the
+owner approves. An approval is single use and expires after 30 minutes. `copy.start` rebuilds the manifest from
+fresh observations and is refused unless it has no refusal and exactly the approved digest: another membership
+or destination is `digest_mismatch`, other bytes or identities under the same membership are `source_changed`,
+a revocation since approval is `grant_revoked`. v1 always creates one new folder inside the destination parent
+(" (2)", " (3)" when the name is taken) and never writes into an existing folder (docs/47 Q3 open).
 
 ## Lazy meaning threads
 

@@ -46,7 +46,7 @@
     "Basis": { "enum": ["logical", "allocated"] },
     "CoverageState": { "enum": ["complete", "partial", "stale", "unscanned", "denied", "excluded", "cancelled", "unknown"] },
     "EnumerationStrategy": {
-      "enum": ["file_id_extd_directory_info", "nt_query_directory_file_ex", "find_first_file_ex_large_fetch", "std_read_dir"],
+      "enum": ["file_id_extd_directory_info", "nt_query_directory_file_ex", "find_first_file_ex_large_fetch", "std_read_dir", "file_id_both_directory_info"],
       "$comment": "Default pending the LW-101 spike: file_id_extd_directory_info (ADR-V3-05)."
     },
     "ExtFamily": { "enum": ["document", "spreadsheet", "presentation", "image", "video", "audio", "archive", "code", "data", "model", "executable", "system", "font", "other", "none"] },
@@ -667,7 +667,8 @@
         "writer_queue_depth": { "$ref": "#/$defs/Count" },
         "entries_per_second": { "type": "number", "minimum": 0 },
         "elapsed_ms": { "$ref": "#/$defs/Count" },
-        "limit_hit": { "type": "boolean" }
+        "limit_hit": { "type": "boolean" },
+        "limit_reason": { "enum": ["depth_limit"] }
       }
     },
     "Job": {
@@ -2993,6 +2994,16 @@
     "DiagnosticsSaveRequest": {"type": "object", "additionalProperties": false, "required": ["digest"], "properties": {"digest": {"$ref": "#/$defs/Digest"}}, "$comment": "Tauri adapter only. The digest of the preview the owner saw; Rust opens the native save dialog and the webview never supplies a path."},
     "DiagnosticsSaveOutcome": {"enum": ["saved", "cancelled_by_user", "refused"]},
     "DiagnosticsSaveRefusal": {"enum": ["preview_changed", "unsupported_target", "write_failed"]},
-    "DiagnosticsSaveResult": {"type": "object", "additionalProperties": false, "required": ["outcome", "bytes_written", "refusal"], "properties": {"outcome": {"$ref": "#/$defs/DiagnosticsSaveOutcome"}, "bytes_written": {"$ref": "#/$defs/NullableBytes"}, "refusal": {"anyOf": [{"$ref": "#/$defs/DiagnosticsSaveRefusal"}, {"type": "null"}]}}, "$comment": "Never the chosen path: it stays in Rust."}
+    "DiagnosticsSaveResult": {"type": "object", "additionalProperties": false, "required": ["outcome", "bytes_written", "refusal"], "properties": {"outcome": {"$ref": "#/$defs/DiagnosticsSaveOutcome"}, "bytes_written": {"$ref": "#/$defs/NullableBytes"}, "refusal": {"anyOf": [{"$ref": "#/$defs/DiagnosticsSaveRefusal"}, {"type": "null"}]}}, "$comment": "Never the chosen path: it stays in Rust."},
+    "CopyOperationId": {"type": "string", "pattern": "^cp_[A-Za-z0-9_-]{1,64}$", "$comment": "Copy-and-verify operation (docs/47)."},
+    "CopyState": {"enum": ["draft", "refused", "approved", "expired", "preparing", "copying", "staged", "blocked", "needs_attention", "publishing", "committed", "cancelling", "cancelled"], "$comment": "docs/47 section 5 operation states."},
+    "CopyRefusalCode": {"enum": ["identity_unverified", "cloud_placeholder", "reparse_point", "unsupported_attribute", "extended_attributes", "alternate_streams_unsupported", "too_many_streams", "special_file", "source_changed", "staging_name_taken", "staging_in_use", "changed_after_verification", "source_in_use", "access_denied", "insufficient_space", "destination_inside_source", "destination_cloud_synced", "destination_unsupported_volume", "destination_protected", "case_collision", "name_unrepresentable", "path_too_long", "publish_in_use", "verification_mismatch", "grant_revoked", "elevated", "approval_expired", "digest_mismatch", "manifest_limit"], "$comment": "docs/47 section 7. Codes with a P or S entry are refused before any write handle exists."},
+    "CopyRefusal": {"type": "object", "additionalProperties": false, "required": ["code", "node_id"], "properties": {"code": {"$ref": "#/$defs/CopyRefusalCode"}, "node_id": {"anyOf": [{"$ref": "#/$defs/NodeId"}, {"type": "null"}], "$comment": "null: operation-wide."}}},
+    "CopyPreviewRequest": {"type": "object", "additionalProperties": false, "required": ["sources", "destination_node_id"], "properties": {"sources": {"type": "array", "minItems": 1, "maxItems": 1000, "uniqueItems": true, "items": {"$ref": "#/$defs/NodeId"}}, "destination_node_id": {"$ref": "#/$defs/NodeId"}}, "$comment": "Node IDs select what the engine observes afresh; the approval binds the digest of the observed native identities, never a node ID (invariant 5). The destination is a folder under an active grant; v1 creates exactly one new folder inside it and never writes into an existing folder (docs/47 section 1, Q3)."},
+    "CopyPreview": {"type": "object", "additionalProperties": false, "required": ["operation_id", "state", "digest", "folder_name", "files", "folders", "bytes", "space_needed", "space_reserve", "same_volume", "explicit_acl_items", "hard_link_names", "refusals", "refusal_count"], "properties": {"operation_id": {"$ref": "#/$defs/CopyOperationId"}, "state": {"$ref": "#/$defs/CopyState"}, "digest": {"$ref": "#/$defs/Digest"}, "folder_name": {"type": "string", "minLength": 1, "maxLength": 255}, "files": {"$ref": "#/$defs/Count"}, "folders": {"$ref": "#/$defs/Count"}, "bytes": {"$ref": "#/$defs/ByteCount"}, "space_needed": {"$ref": "#/$defs/ByteCount"}, "space_reserve": {"$ref": "#/$defs/ByteCount"}, "same_volume": {"type": "boolean"}, "explicit_acl_items": {"$ref": "#/$defs/Count"}, "hard_link_names": {"$ref": "#/$defs/Count"}, "refusals": {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/CopyRefusal"}}, "refusal_count": {"$ref": "#/$defs/Count"}}, "$comment": "Built without any effect. state is draft (approvable) or refused (deselect and preview again). The digest covers membership, destination (grant, parent identity, new folder name), bytes and identities."},
+    "CopyConsentRequest": {"type": "object", "additionalProperties": false, "required": ["operation_id", "digest"], "properties": {"operation_id": {"$ref": "#/$defs/CopyOperationId"}, "digest": {"$ref": "#/$defs/Digest"}}, "$comment": "The digest the owner saw. approve binds a single-use approval to it; start is refused unless an unexpired approval matches the digest of a manifest rebuilt from fresh observations exactly (digest_mismatch, source_changed, approval_expired, grant_revoked)."},
+    "CopyApproval": {"type": "object", "additionalProperties": false, "required": ["operation_id", "digest", "approved_at", "expires_at"], "properties": {"operation_id": {"$ref": "#/$defs/CopyOperationId"}, "digest": {"$ref": "#/$defs/Digest"}, "approved_at": {"$ref": "#/$defs/Timestamp"}, "expires_at": {"$ref": "#/$defs/Timestamp"}}},
+    "CopyOperationRequest": {"type": "object", "additionalProperties": false, "required": ["operation_id"], "properties": {"operation_id": {"$ref": "#/$defs/CopyOperationId"}}},
+    "CopyStatus": {"type": "object", "additionalProperties": false, "required": ["operation_id", "state", "digest", "items_total", "items_verified", "refusal"], "properties": {"operation_id": {"$ref": "#/$defs/CopyOperationId"}, "state": {"$ref": "#/$defs/CopyState"}, "digest": {"$ref": "#/$defs/Digest"}, "items_total": {"$ref": "#/$defs/Count"}, "items_verified": {"$ref": "#/$defs/Count"}, "refusal": {"anyOf": [{"$ref": "#/$defs/CopyRefusal"}, {"type": "null"}]}}}
   }
 }
