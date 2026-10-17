@@ -2819,6 +2819,87 @@ fn dropping_the_service_waits_for_workers_that_already_replied() {
 }
 
 #[test]
+fn drop_waits_for_a_weak_upgrade_after_its_last_count_check() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let hooks = svc.inner.hooks.clone();
+    struct Release(Arc<Hooks>);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            self.0.open(Command::TelemetrySubscribe, "drop_ready");
+        }
+    }
+    let _release = Release(hooks.clone());
+    hooks
+        .closed
+        .lock()
+        .unwrap()
+        .push((Command::TelemetrySubscribe, "drop_ready"));
+    let weak = Arc::downgrade(&svc.inner);
+    let (done, finished) = std::sync::mpsc::channel();
+    let dropper = std::thread::spawn(move || {
+        drop(svc);
+        done.send(()).unwrap();
+    });
+    hooks.until("drop ready", |h| {
+        h.arrived
+            .lock()
+            .unwrap()
+            .contains(&(Command::TelemetrySubscribe, "drop_ready"))
+    });
+    // The pump can acquire this same transient reference after the count check.
+    let transient = weak.upgrade().unwrap();
+    hooks.open(Command::TelemetrySubscribe, "drop_ready");
+    let escaped = finished.recv_timeout(Duration::from_millis(200)).is_ok();
+    drop(transient);
+    if !escaped {
+        finished.recv_timeout(Duration::from_secs(15)).unwrap();
+    }
+    dropper.join().unwrap();
+    assert!(
+        !escaped,
+        "Drop returned while a transient upgrade held Inner"
+    );
+    assert!(weak.upgrade().is_none());
+    std::fs::remove_file(tmp.path().join("catalog.db")).unwrap();
+}
+
+#[test]
+#[cfg(windows)]
+fn drop_closes_the_catalogue_with_an_active_telemetry_lease() {
+    for _ in 0..20 {
+        let tmp = temp_root();
+        // No roots or process channel: only aggregate system counters leave the sampler.
+        let svc = open(tmp.path(), DatasetClass::Personal);
+        let mut events = svc.subscribe(None);
+        ok(
+            "telemetry.subscribe",
+            call(
+                &svc,
+                "telemetry.subscribe",
+                json!({"subscription_id": null, "channels": ["system"], "interval_ms": 1000}),
+            ),
+        );
+        let until = Instant::now() + Duration::from_secs(15);
+        loop {
+            if matches!(events.recv_timeout(Duration::from_millis(250)), RecvOutcome::Event(e) if e.event == EventName::TelemetrySample)
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < until,
+                "the telemetry pump never published a sample"
+            );
+        }
+        drop(events);
+        let weak = Arc::downgrade(&svc.inner);
+        drop(svc);
+        assert!(weak.upgrade().is_none());
+        std::fs::remove_file(tmp.path().join("catalog.db")).unwrap();
+    }
+}
+
+#[test]
 fn revoke_distinguishes_missing_grants_from_store_failures() {
     let tmp = temp_root();
     let svc = open(tmp.path(), DatasetClass::Synthetic);

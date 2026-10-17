@@ -73,9 +73,20 @@ pub struct Config {
 
 /// The engine service. Cheap to share; `call` may run on any thread.
 pub struct Service {
-    inner: Arc<Inner>,
+    inner: OwnedInner,
     /// A handle an Ask turn borrows for its tool calls (ask.rs): dropping it shuts nothing down.
     peer: bool,
+}
+
+/// Shared borrows stay unchanged; shutdown can take and atomically reclaim the owning Arc.
+struct OwnedInner(Option<Arc<Inner>>);
+
+impl std::ops::Deref for OwnedInner {
+    type Target = Arc<Inner>;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().expect("service is not being dropped")
+    }
 }
 
 pub(crate) struct Inner {
@@ -118,18 +129,31 @@ pub(crate) struct Inner {
     pub(crate) hooks: Arc<tests::Hooks>,
 }
 
-/// Detached workers (reads, mutations, a telemetry sampling turn) hold the shared state, hence
-/// every catalogue connection, until their closure ends, which is after the caller has its reply.
-/// Dropping the service therefore waits for them: on return its files are closed and removable.
-/// Bounded, so a worker stuck in a blocking native call cannot hang the owner's shutdown.
+/// Waits up to ten seconds for detached workers' shared state, then reclaims it atomically so
+/// weak upgrades cannot outlive successful reclamation. Workers past that deadline, or scans
+/// retaining a separate sink, may still hold catalogue connections after this returns.
+/// Destruction of the reclaimed state also runs the engine and copy workers' own shutdowns.
 impl Drop for Service {
     fn drop(&mut self) {
         if self.peer {
             return;
         }
-        self.inner.freshness.stop();
+        let mut inner = self.inner.0.take().expect("service owns its state");
+        inner.freshness.stop();
         let give_up = Instant::now() + Duration::from_secs(10);
-        while Arc::strong_count(&self.inner) > 1 && Instant::now() < give_up {
+        #[cfg(test)]
+        inner.hooks.gate(Command::TelemetrySubscribe, "drop_ready");
+        loop {
+            match Arc::try_unwrap(inner) {
+                Ok(inner) => {
+                    drop(inner);
+                    return;
+                }
+                Err(shared) => inner = shared,
+            }
+            if Instant::now() >= give_up {
+                return;
+            }
             std::thread::sleep(Duration::from_millis(1));
         }
     }
@@ -309,7 +333,10 @@ impl Service {
         }
         spawn_telemetry_pump(Arc::downgrade(&inner));
         spawn_backup_scrub_retry(Arc::downgrade(&inner));
-        Ok(Service { inner, peer: false })
+        Ok(Service {
+            inner: OwnedInner(Some(inner)),
+            peer: false,
+        })
     }
 
     pub fn dataset(&self) -> DatasetClass {
