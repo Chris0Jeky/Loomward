@@ -140,7 +140,10 @@ scan watermark; a budget hit can return a continuation even without matches.
 Paths use one ancestor query and repeated search parents are cached. Breakdown
 uses subtree-revision caching; age and active-run results are not cached.
 
-`search_ranked` (LW-113 F2) answers the same request by weighted reciprocal-rank
+`search_ranked` (LW-113 F2, off by default: it needs the token index, which
+`Catalog::open_with(.., &CatalogOptions { ranked_index: true })` builds; without it the call
+returns `Error::RankedIndexDisabled` and the store holds no ranked-index object, see #520)
+answers the same request by weighted reciprocal-rank
 fusion of three candidate lists: the trigram passes above, the token index
 (`search_token`, name-tuned tokens: separators, camelCase, letter/digit
 boundaries, the extension; `search_dirty` queues changed keys and the writer drains

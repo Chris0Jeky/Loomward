@@ -220,7 +220,8 @@ fn main() -> Res<()> {
             temp.path().to_path_buf()
         }
     };
-    let catalog = Catalog::open(&dir, "synthetic")?;
+    // Ranked search needs the token index, which a catalogue builds only when asked.
+    let catalog = Catalog::open_with(&dir, "synthetic", &CatalogOptions { ranked_index: true })?;
     let db = Connection::open(dir.join("catalog.db"))?;
     catalog.writer().set_bulk_first_scan(true);
     let WriteReply::Root {

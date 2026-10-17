@@ -18,7 +18,7 @@ mod analyze;
 mod rank;
 mod tokens;
 pub use rank::{RankOptions, ALL_TIERS, TIER_CONTEXT, TIER_TOKEN, TIER_TRIGRAM};
-pub(crate) use tokens::drain_tokens;
+pub(crate) use tokens::{drain_tokens, enabled as token_index_enabled};
 
 /// A file's index key is its id plus this; a folder's is its id.
 pub(crate) const FILE_KEY: i64 = 1 << 48;
@@ -502,6 +502,7 @@ impl Reader {
                 pass,
                 last_key,
                 last_size,
+                revision: None,
             });
             let (index_state, partial) = index_meta(&roots);
             Ok(SearchPage {

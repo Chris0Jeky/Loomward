@@ -5,10 +5,18 @@ use std::path::Path;
 
 const PATH_A: &str = r"C:\Synthetic\ForgetPathAlpha";
 const NAME_A: &str = "ForgetFolderAlpha";
-const FILE_A: &str = "forgetfileA.zzqx";
+const FILE_A: &str = "ForgetFileVornel.zzqx";
+/// A token of FILE_A that exists only lowercased, in the ranked-search token index: no stored
+/// name or path spells it this way, so finding it on disk before the forget proves the index holds it.
+const TOKEN_A: &str = "vornel";
 const PATH_B: &str = r"C:\Synthetic\KeepPathBeta";
 const NAME_B: &str = "KeepFolderBeta";
-const FILE_B: &str = "keepfileB.yyqx";
+const FILE_B: &str = "KeepFileBrovix.yyqx";
+const TOKEN_B: &str = "brovix";
+
+fn ranked() -> CatalogOptions {
+    CatalogOptions { ranked_index: true }
+}
 
 struct Fixture {
     temp: tempfile::TempDir,
@@ -80,7 +88,7 @@ fn fixture() -> Fixture {
 /// `bulk`: each root's first full scan builds in the bulk tables and EndRun swaps it live (#148).
 fn fixture_with(bulk: bool) -> Fixture {
     let temp = tempfile::tempdir().unwrap();
-    let catalog = Catalog::open(temp.path(), "synthetic").unwrap();
+    let catalog = Catalog::open_with(temp.path(), "synthetic", &ranked()).unwrap();
     catalog.writer().set_bulk_first_scan(bulk);
     let (grant_a, dir_a, _) = root(&catalog, "vol", NAME_A, PATH_A, 1, FILE_A);
     let (grant_b, dir_b, _) = root(&catalog, "vol", NAME_B, PATH_B, 2, FILE_B);
@@ -207,7 +215,7 @@ fn forgetting_purges_every_named_row_and_leaves_the_other_root_untouched() {
     let f = fixture();
     fold_wal(&f);
     // The check below means something only if the names really are on disk before the purge.
-    for needle in [PATH_A, NAME_A, FILE_A, "zzqx"] {
+    for needle in [PATH_A, NAME_A, FILE_A, "zzqx", TOKEN_A] {
         assert!(
             on_disk(&f, needle),
             "{needle} should be stored before the forget"
@@ -218,7 +226,7 @@ fn forgetting_purges_every_named_row_and_leaves_the_other_root_untouched() {
     forget(&f, f.grant_a, Some(before)).unwrap();
 
     // Nothing of root A survives on disk: not in state.db, catalog.db or either WAL.
-    for needle in [PATH_A, NAME_A, FILE_A, "zzqx"] {
+    for needle in [PATH_A, NAME_A, FILE_A, "zzqx", TOKEN_A] {
         assert!(!on_disk(&f, needle), "{needle} survived the forget");
     }
     // The catalogue half: rows, aggregates, vocabulary.
@@ -300,7 +308,7 @@ fn forgetting_purges_every_named_row_and_leaves_the_other_root_untouched() {
         )
         .unwrap();
     assert_eq!(kept, PATH_B);
-    assert!(on_disk(&f, PATH_B) && on_disk(&f, FILE_B));
+    assert!(on_disk(&f, PATH_B) && on_disk(&f, FILE_B) && on_disk(&f, TOKEN_B));
 }
 
 #[test]
@@ -355,7 +363,9 @@ fn the_last_root_of_a_volume_takes_the_volume_row_with_it() {
     assert_eq!(catalog_count(&f, "SELECT count(*) FROM root"), 0);
     assert_eq!(catalog_count(&f, "SELECT count(*) FROM file"), 0);
     assert_eq!(state_count(&f, "SELECT count(*) FROM object_ref"), 0);
-    for needle in [PATH_A, NAME_A, FILE_A, PATH_B, NAME_B, FILE_B] {
+    for needle in [
+        PATH_A, NAME_A, FILE_A, TOKEN_A, PATH_B, NAME_B, FILE_B, TOKEN_B,
+    ] {
         assert!(!on_disk(&f, needle), "{needle} survived");
     }
     assert_eq!(
@@ -388,7 +398,7 @@ fn a_forget_that_stopped_after_its_state_half_finishes_on_the_next_open() {
         ))
         .unwrap();
     drop(state);
-    let _reopened = Catalog::open(temp.path(), "synthetic").unwrap();
+    let _reopened = Catalog::open_with(temp.path(), "synthetic", &ranked()).unwrap();
     let db = Connection::open(temp.path().join("catalog.db")).unwrap();
     let rows: i64 = db
         .query_row(
@@ -403,7 +413,7 @@ fn a_forget_that_stopped_after_its_state_half_finishes_on_the_next_open() {
     let utf16: Vec<u8> = FILE_A.encode_utf16().flat_map(u16::to_le_bytes).collect();
     for name in ["catalog.db", "catalog.db-wal"] {
         let bytes = std::fs::read(temp.path().join(name)).unwrap_or_default();
-        for needle in [FILE_A.as_bytes(), utf16.as_slice()] {
+        for needle in [FILE_A.as_bytes(), utf16.as_slice(), TOKEN_A.as_bytes()] {
             assert!(
                 !bytes.windows(needle.len()).any(|w| w == needle),
                 "{FILE_A} survived the recovered purge in {name}"
@@ -593,7 +603,7 @@ fn a_bound_object_another_root_still_observes_keeps_its_labels_and_membership() 
 fn a_root_whose_first_scan_was_a_bulk_build_is_purged_like_any_other() {
     let f = fixture_with(true);
     fold_wal(&f);
-    for needle in [PATH_A, NAME_A, FILE_A] {
+    for needle in [PATH_A, NAME_A, FILE_A, TOKEN_A] {
         assert!(
             on_disk(&f, needle),
             "{needle} should be stored before the forget"
@@ -601,7 +611,7 @@ fn a_root_whose_first_scan_was_a_bulk_build_is_purged_like_any_other() {
     }
     revoke(&f, f.grant_a);
     forget(&f, f.grant_a, None).unwrap();
-    for needle in [PATH_A, NAME_A, FILE_A] {
+    for needle in [PATH_A, NAME_A, FILE_A, TOKEN_A] {
         assert!(!on_disk(&f, needle), "{needle} survived the forget");
     }
     assert_eq!(

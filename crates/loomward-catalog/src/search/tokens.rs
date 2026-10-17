@@ -13,9 +13,20 @@ pub(crate) fn analysed(name: &str) -> String {
     tokens(name).join(" ")
 }
 
+/// Whether this store has the token index (it is created only on request, see `CatalogOptions`).
+pub(crate) fn enabled(conn: &Connection) -> Result<bool> {
+    Ok(conn
+        .prepare_cached("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='search_dirty')")?
+        .query_row([], |r| r.get(0))?)
+}
+
 /// Apply every queued key: drop its old entry (unless the key was new), then index the row's
-/// current name if the row still exists. Idempotent; a no-op on an empty queue.
+/// current name if the row still exists. Idempotent; a no-op on an empty queue and on a store
+/// without the token index.
 pub(crate) fn drain_tokens(conn: &Connection) -> Result<()> {
+    if !enabled(conn)? {
+        return Ok(());
+    }
     loop {
         let rows: Vec<(i64, bool, Option<String>)> = {
             let mut select = conn.prepare_cached(&format!(

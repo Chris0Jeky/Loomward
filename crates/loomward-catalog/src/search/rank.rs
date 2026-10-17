@@ -18,7 +18,11 @@
 //! while the catalogue is unchanged. The pool is at least 100 hits deep (twice the page size above
 //! 50), so a query answers at most [`HORIZON`] hits and usually fewer: it is not an exhaustive
 //! enumeration (use `search` for that), and a budget cut during candidate collection ranks what was
-//! seen and says `budget_hit`, without a scan position to resume.
+//! seen and says `budget_hit`, without a scan position to resume. The cursor also binds the
+//! catalogue revision: after any publication it is refused with `StaleGeneration`. Continuity is
+//! not promised across a `budget_hit` page (a later page's pool may be cut elsewhere).
+//! `search_ranked` returns `RankedIndexDisabled` on a store opened without
+//! `CatalogOptions::ranked_index`.
 use super::analyze::{query_tokens, shape, tokens};
 use super::*;
 use crate::query::Raw;
@@ -316,12 +320,21 @@ fn context_list(walk: &mut Walk, conn: &Connection, qtokens: &[String], k: usize
     Ok(out)
 }
 
+/// An FTS5 error caused by the query text (a phrase or syntax the index refuses), not by the store.
+fn is_fts_syntax(e: &Error) -> bool {
+    matches!(e, Error::Sql(rusqlite::Error::SqliteFailure(_, Some(m)))
+        if m.contains("phrase queries are not supported") || m.starts_with("fts5: syntax error"))
+}
+
 impl Reader {
     /// `search` ranked by fusion (see the module docs). An empty text has nothing to rank and is
     /// answered by `search`. A ranked cursor does not work with `search`, nor the reverse.
     pub fn search_ranked(&mut self, req: &SearchRequest, opts: &RankOptions) -> Result<SearchPage> {
         let deadline = self.deadline;
         let text = clean(req, deadline)?;
+        if !self.read(super::tokens::enabled)? {
+            return Err(Error::RankedIndexDisabled);
+        }
         if text.is_empty() {
             return self.search(req);
         }
@@ -345,11 +358,12 @@ impl Reader {
         self.read(|conn| {
             let revisions = revisions(conn, req.root_id)?;
             let catalog_instance = instance(conn)?;
+            let rev: i64 = conn.query_row("SELECT catalog_rev FROM revision", [], |r| r.get(0))?;
             if let Some(c) = &req.cursor {
                 if c.filters != filters {
                     return Err(Error::Invalid("search cursor binding"));
                 }
-                if c.catalog_instance != catalog_instance {
+                if c.catalog_instance != catalog_instance || c.revision != Some(rev) {
                     return Err(Error::StaleGeneration);
                 }
             }
@@ -406,6 +420,9 @@ impl Reader {
                 };
                 match r {
                     Ok(()) => Ok(false),
+                    // A query text the index cannot parse has no token or context candidates; the
+                    // trigram list still answers it. (The budget is handled below.)
+                    Err(e) if tier > 0 && is_fts_syntax(&e) => Ok(false),
                     Err(e) if guard.hit() && is_budget_interrupt(&e) => Ok(true),
                     Err(e) => Err(e),
                 }
@@ -497,6 +514,7 @@ impl Reader {
                 pass: RANKED_PASS,
                 last_key: end as i64,
                 last_size: None,
+                revision: Some(rev),
             });
             let (index_state, partial) = index_meta(&roots);
             // Names changed by a raw writer still wait for the token index: say it is catching up.

@@ -13,6 +13,9 @@ struct Root {
     root: i64,
     dir: i64,
 }
+fn ranked_on() -> CatalogOptions {
+    CatalogOptions { ranked_index: true }
+}
 const DAY: i64 = 864_000_000_000;
 fn now() -> i64 {
     filetime("2026-10-17T00:00:00Z").unwrap()
@@ -31,7 +34,7 @@ fn obs(lab: &mut Lab, name: &str, age_days: i64) -> Observation {
 }
 fn lab() -> Lab {
     let temp = tempfile::tempdir().unwrap();
-    let c = Catalog::open(temp.path(), "synthetic").unwrap();
+    let c = Catalog::open_with(temp.path(), "synthetic", &ranked_on()).unwrap();
     Lab {
         temp,
         c,
@@ -563,7 +566,7 @@ fn a_store_without_the_token_index_gains_it_filled_on_open() {
     db.execute_batch("DROP TABLE search_token; DROP TRIGGER search_tok_file_insert; DROP TRIGGER search_tok_file_delete; DROP TRIGGER search_tok_file_rename; DROP TRIGGER search_tok_dir_insert; DROP TRIGGER search_tok_dir_delete; DROP TRIGGER search_tok_dir_rename;").unwrap();
     drop(db);
     let lab = Lab {
-        c: Catalog::open(&dir, "synthetic").unwrap(),
+        c: Catalog::open_with(&dir, "synthetic", &ranked_on()).unwrap(),
         temp: lab.temp,
         next_id: 0,
     };
@@ -596,7 +599,7 @@ fn rows_written_outside_the_writer_wait_in_the_queue_until_the_next_open() {
     assert!(only_tokens.hits.is_empty());
     drop(db);
     drop(lab.c);
-    let c = Catalog::open(&dir, "synthetic").unwrap();
+    let c = Catalog::open_with(&dir, "synthetic", &ranked_on()).unwrap();
     let page = c
         .reader()
         .unwrap()
@@ -709,4 +712,191 @@ fn every_page_ranks_the_same_pool_and_the_cursor_is_bound_to_it() {
     }
     q.limit = 20;
     assert!(reader.search_ranked(&q, &opts).is_err());
+}
+
+fn has_object(dir: &std::path::Path, name: &str) -> bool {
+    Connection::open(dir.join("catalog.db"))
+        .unwrap()
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name=?1)",
+            [name],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn the_ranked_index_is_off_by_default_and_a_store_opened_without_it_is_untouched() {
+    let temp = tempfile::tempdir().unwrap();
+    let ranked_objects = |dir: &std::path::Path| {
+        [
+            "search_token",
+            "search_dirty",
+            "search_tok_file_insert",
+            "search_tok_dir_rename",
+        ]
+        .map(|n| has_object(dir, n))
+    };
+    // Default: a working v1 search, writes, and no ranked-index object at all.
+    let mut lab = Lab {
+        c: Catalog::open(temp.path(), "synthetic").unwrap(),
+        temp,
+        next_id: 0,
+    };
+    let r = register(&lab, "Alpha", 1);
+    let run = begin(&lab, &r);
+    let f = vec![obs(&mut lab, "report.pdf", 1)];
+    list(&lab, run, r.dir, f, vec![]);
+    end(&lab, run);
+    assert_eq!(order(&plain(&lab, &req("report"))), ["report.pdf"]);
+    assert_eq!(ranked_objects(lab.temp.path()), [false; 4]);
+    let off = lab
+        .c
+        .reader()
+        .unwrap()
+        .search_ranked(&req("report"), &RankOptions::default());
+    assert!(matches!(off, Err(Error::RankedIndexDisabled)), "{off:?}");
+    // Not even an empty text slips past the typed refusal.
+    assert!(matches!(
+        lab.c
+            .reader()
+            .unwrap()
+            .search_ranked(&req(""), &RankOptions::default()),
+        Err(Error::RankedIndexDisabled)
+    ));
+    // Reopened without the option: still untouched, still writing and forgetting fine.
+    let dir = lab.temp.path().to_path_buf();
+    let temp = lab.temp;
+    drop(lab.c);
+    let lab = Lab {
+        c: Catalog::open(&dir, "synthetic").unwrap(),
+        temp,
+        next_id: 100,
+    };
+    assert_eq!(ranked_objects(&dir), [false; 4]);
+    let mut lab = lab;
+    let run = begin(&lab, &r);
+    let f = vec![
+        obs(&mut lab, "report.pdf", 1),
+        obs(&mut lab, "second report.txt", 1),
+    ];
+    list(&lab, run, r.dir, f, vec![]);
+    end(&lab, run);
+    assert_eq!(ranked_objects(&dir), [false; 4]);
+    // Asking for it creates and fills it, and ranked search works at once.
+    drop(lab.c);
+    let temp = lab.temp;
+    let lab = Lab {
+        c: Catalog::open_with(&dir, "synthetic", &ranked_on()).unwrap(),
+        temp,
+        next_id: 200,
+    };
+    assert_eq!(ranked_objects(&dir), [true; 4]);
+    assert_eq!(order(&ranked(&lab, &req("report")))[0], "report.pdf");
+    assert_eq!(ranked(&lab, &req("report")).hits.len(), 2);
+    // A store that has the index keeps it, and keeps it exact, when reopened without the option.
+    let mut lab = lab;
+    drop(lab.c);
+    let temp = lab.temp;
+    lab = Lab {
+        c: Catalog::open(&dir, "synthetic").unwrap(),
+        temp,
+        next_id: 300,
+    };
+    let run = begin(&lab, &r);
+    let f = vec![obs(&mut lab, "third report.txt", 1)];
+    list(&lab, run, r.dir, f, vec![]);
+    end(&lab, run);
+    assert_eq!(ranked_objects(&dir), [true; 4]);
+    assert_eq!(ranked(&lab, &req("third")).hits.len(), 1);
+    assert_eq!(ranked(&lab, &req("third")).index_state, "current");
+}
+
+#[test]
+fn marks_and_scripts_the_default_tokenizer_would_split_on_stay_one_token() {
+    let mut lab = lab();
+    let r = register(&lab, "Alpha", 1);
+    let run = begin(&lab, &r);
+    // Thai and Devanagari words carry vowel signs and a virama: combining marks (Mn, Mc).
+    let thai = "\u{0e2a}\u{0e27}\u{0e31}\u{0e2a}\u{0e14}\u{0e35}";
+    let hindi = "\u{0939}\u{093f}\u{0928}\u{094d}\u{0926}\u{0940}";
+    let arabic = "\u{0643}\u{0650}\u{062a}\u{064e}\u{0627}\u{0628}";
+    let files = vec![
+        obs(&mut lab, &format!("{thai} notes.txt"), 1),
+        obs(
+            &mut lab,
+            &format!("{hindi} \u{0928}\u{094b}\u{091f}.txt"),
+            1,
+        ),
+        obs(&mut lab, &format!("{arabic}.txt"), 1),
+        obs(&mut lab, "plain.txt", 1),
+    ];
+    list(&lab, run, r.dir, files, vec![]);
+    end(&lab, run);
+    let only_tokens = RankOptions {
+        tiers: TIER_TOKEN,
+        ..RankOptions::default()
+    };
+    let mut reader = lab.c.reader().unwrap();
+    for (query, want) in [
+        (thai, format!("{thai} notes.txt")),
+        (hindi, format!("{hindi} \u{0928}\u{094b}\u{091f}.txt")),
+        (arabic, format!("{arabic}.txt")),
+    ] {
+        let page = reader.search_ranked(&req(query), &only_tokens).unwrap();
+        assert_eq!(order(&page), [want.as_str()], "{query:?}");
+    }
+    // A prefix that ends mid-word, and queries made of bare marks, hyphens or odd punctuation,
+    // never fail the call.
+    let half: String = thai.chars().take(3).collect();
+    assert_eq!(
+        reader
+            .search_ranked(&req(&half), &only_tokens)
+            .unwrap()
+            .hits
+            .len(),
+        1
+    );
+    for odd in [
+        "\u{0e31}",
+        "\u{093f}",
+        "x\u{0301}",
+        "e\u{0301}\u{0301}",
+        "\u{200d}",
+        "a\u{200d}b",
+        "-\u{0e31}-",
+        "\u{20dd}",
+        "\u{1f600}",
+    ] {
+        reader
+            .search_ranked(&req(odd), &RankOptions::default())
+            .unwrap_or_else(|e| panic!("{odd:?}: {e:?}"));
+    }
+}
+
+#[test]
+fn a_ranked_cursor_is_refused_once_the_catalogue_has_moved() {
+    let (mut lab, r) = corpus();
+    let mut q = req("report");
+    q.limit = 2;
+    let cursor = ranked(&lab, &q).next_cursor.unwrap();
+    q.cursor = Some(cursor.clone());
+    // Unchanged catalogue: the cursor works.
+    assert!(lab
+        .c
+        .reader()
+        .unwrap()
+        .search_ranked(&q, &RankOptions::default())
+        .is_ok());
+    // Any publication moves the revision.
+    let run = begin(&lab, &r);
+    let f = vec![obs(&mut lab, "another report.txt", 1)];
+    list(&lab, run, r.dir, f, vec![]);
+    end(&lab, run);
+    let moved = lab
+        .c
+        .reader()
+        .unwrap()
+        .search_ranked(&q, &RankOptions::default());
+    assert!(matches!(moved, Err(Error::StaleGeneration)), "{moved:?}");
 }

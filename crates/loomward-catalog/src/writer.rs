@@ -1370,11 +1370,13 @@ pub(crate) fn purge_root(conn: &Connection, root: i64) -> Result<()> {
         [],
     )?;
     // The token index holds the same names as plain tokens: drain the deletions, then merge it the same way.
-    crate::search::drain_tokens(conn)?;
-    conn.execute(
-        "INSERT INTO search_token(search_token) VALUES('optimize')",
-        [],
-    )?;
+    if crate::search::token_index_enabled(conn)? {
+        crate::search::drain_tokens(conn)?;
+        conn.execute(
+            "INSERT INTO search_token(search_token) VALUES('optimize')",
+            [],
+        )?;
+    }
     Ok(())
 }
 fn reference(conn: &mut Connection, node: NodeKey, reconcile: Option<i64>, at: i64) -> Result<i64> {

@@ -9,13 +9,16 @@
 -- was an insert, so there is no old entry to delete. Raw writers (tests, tools) are therefore
 -- safe: their keys wait in the queue, and a ranked search over a non-empty queue says "building".
 --
--- unicode61 then splits the analysed text on spaces and folds diacritics. prefix='1 2 3' indexes
+-- unicode61 then splits the analysed text on spaces and folds diacritics. Its token characters are
+-- widened to letters, marks, numbers and symbols (a superset of what the analyser calls a token
+-- character, which includes Thai and Devanagari vowel signs that the default set would split on),
+-- so one analysed token is always one index token and a query term is never a phrase. prefix='1 2 3' indexes
 -- one- to three-character prefixes (the short-query path). detail=none: the ranker uses
 -- membership only (AND of prefixes), never phrases or bm25. contentless_delete: a delete needs only the key. Root directories
 -- are not indexed. Context (the two nearest ancestor names) is not a column: a folder rename would
 -- have to reindex everything below it, so the ranker joins the folder rows of this table at query
 -- time instead.
-CREATE VIRTUAL TABLE IF NOT EXISTS search_token USING fts5(name, tokenize='unicode61 remove_diacritics 2', prefix='1 2 3', detail=none, content='', contentless_delete=1);
+CREATE VIRTUAL TABLE IF NOT EXISTS search_token USING fts5(name, tokenize='unicode61 remove_diacritics 2 categories ''L* M* N* S* Co''', prefix='1 2 3', detail=none, content='', contentless_delete=1);
 INSERT INTO search_token(search_token, rank) VALUES('hashsize', 67108864);
 CREATE TABLE IF NOT EXISTS search_dirty(key INTEGER PRIMARY KEY, fresh INTEGER NOT NULL) STRICT;
 CREATE TRIGGER IF NOT EXISTS search_tok_file_insert AFTER INSERT ON file BEGIN

@@ -331,6 +331,10 @@ pub struct SearchCursor {
     pub last_key: i64,
     /// Extension-only listings run largest first: the size of the last examined file.
     pub last_size: Option<i64>,
+    /// Ranked search only: the `catalog_rev` its pool was ranked at. A ranked cursor is refused
+    /// once the catalogue has moved (`StaleGeneration`); the keyset cursor above never is.
+    #[serde(default)]
+    pub revision: Option<i64>,
 }
 #[derive(Clone, Debug, Default)]
 pub struct SearchRequest {
