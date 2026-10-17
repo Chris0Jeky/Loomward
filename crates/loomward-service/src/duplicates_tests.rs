@@ -223,7 +223,7 @@ fn duplicates_native_service_job_reads_synthetic_content_and_never_counts_links_
     if !native_identity_available() {
         return;
     }
-    let tmp = tempfile::tempdir_in(std::fs::canonicalize(".").unwrap()).unwrap();
+    let tmp = tempfile::tempdir_in(crate::paths::test_roots_base()).unwrap();
     let state = tmp.path().join("state");
     let root = tmp.path().join("fixture");
     crate::lab::register(

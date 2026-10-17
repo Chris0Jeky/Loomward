@@ -170,7 +170,7 @@ mod tests {
         .unwrap();
         let error = service(&args).err().unwrap();
         assert_eq!(error, "network_or_removable_unsupported");
-        let tmp = tempfile::tempdir_in(".").unwrap();
+        let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
         let state = tmp.path().join("state");
         let missing = tmp.path().join("missing");
         let args = parse(
@@ -206,14 +206,17 @@ mod tests {
 
     #[test]
     fn http_options_consume_exactly_the_validated_canonical_roots() {
-        let base = std::env::current_dir()
-            .unwrap()
+        // #465: not the current directory, which a `%TEMP%` worktree puts under `AppData`.
+        let base = loomward_service::paths::test_roots_base()
             .join(format!("lw-http-startup-{}", std::process::id()));
         let grant = base.join("grant");
         let state = base.join("state");
         std::fs::create_dir_all(&grant).unwrap();
         std::fs::create_dir_all(&state).unwrap();
-        let raw = grant.join("..").join("grant");
+        // Not verbatim (`\\?\`): pushing `..` onto a verbatim path pops instead of staying raw.
+        let raw = PathBuf::from(grant.to_str().unwrap().trim_start_matches(r"\\?\"))
+            .join("..")
+            .join("grant");
         let args = parse(
             [
                 "--dataset".into(),

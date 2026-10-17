@@ -5,8 +5,9 @@ import { Client } from '../../src/lib/transport/client';
 import { TransportError } from '../../src/lib/transport/transport';
 import { createMockTransport } from '../../src/lib/transport/mock';
 import { DUPLICATES_FIXTURE } from '../../src/lib/transport/mock-scan';
-import type { EventEnvelope, Job } from '../../src/lib/contracts.gen';
+import type { DuplicateReport, EventEnvelope, Job } from '../../src/lib/contracts.gen';
 import type { Transport } from '../../src/lib/transport/transport';
+import { sanitizeDuplicatesReport } from '../../src/views/duplicates/View.svelte';
 
 const job = (patch: Partial<Job> = {}): Job => ({ job_id: 'jb_fixture', kind: 'duplicates', root_id: 'rt_fixture', seq: 1, rev: 0, state: 'queued', created_at: '2026-10-01T00:00:00Z', started_at: null, finished_at: null, coverage: null, error: null, progress: null, ...patch });
 afterEach(() => { session.client = null; vi.useRealTimers(); });
@@ -109,5 +110,65 @@ describe('duplicates jobs', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('duplicates report index guard', () => {
+  const baseReport = (patch: Partial<DuplicateReport> = {}): DuplicateReport => ({
+    entries: [{ relative_path: 'a.txt', logical_bytes: '16' }],
+    groups: [],
+    links: [],
+    links_not_compared: 0,
+    skipped: [],
+    bytes_read: '16',
+    partial: false,
+    truncated: false,
+    stop: null,
+    ...patch,
+  });
+  const renderGuarded = (report: DuplicateReport | undefined) => {
+    const guarded = sanitizeDuplicatesReport(report);
+    // Mirror the View.svelte render path: every kept index must resolve to an entry.
+    for (const group of guarded.report?.groups ?? []) {
+      for (const i of group) void guarded.report!.entries[i]!.relative_path;
+      void guarded.report!.entries[group[0]!]!.logical_bytes;
+    }
+    for (const links of guarded.report?.links ?? []) {
+      for (const i of links) void guarded.report!.entries[i]!.relative_path;
+    }
+    for (const skip of guarded.report?.skipped ?? []) {
+      void guarded.report!.entries[skip.entry]!.relative_path;
+    }
+    return guarded;
+  };
+  it('skips an out-of-range group index without throwing', () => {
+    const store = new Duplicates();
+    store.apply(job({ state: 'completed', duplicates: baseReport({ groups: [[999]] }) }));
+    const report = store.book.rt_fixture?.duplicates;
+    let guarded: ReturnType<typeof sanitizeDuplicatesReport> | undefined;
+    expect(() => { guarded = renderGuarded(report); }).not.toThrow();
+    expect(guarded?.report?.groups).toEqual([]);
+    expect(guarded?.problem || 'empty').toBeTruthy();
+    expect(guarded?.problem).toBeTruthy();
+  });
+  it('skips an out-of-range link index without throwing', () => {
+    const store = new Duplicates();
+    store.apply(job({ state: 'completed', duplicates: baseReport({ links: [[999]] }) }));
+    const report = store.book.rt_fixture?.duplicates;
+    let guarded: ReturnType<typeof sanitizeDuplicatesReport> | undefined;
+    expect(() => { guarded = renderGuarded(report); }).not.toThrow();
+    expect(guarded?.report?.links).toEqual([]);
+    expect(guarded?.problem || 'empty').toBeTruthy();
+    expect(guarded?.problem).toBeTruthy();
+  });
+  it('skips an out-of-range skipped index without throwing', () => {
+    const store = new Duplicates();
+    store.apply(job({ state: 'completed', duplicates: baseReport({ skipped: [{ entry: 999, reason: 'changed_during_read' }] }) }));
+    const report = store.book.rt_fixture?.duplicates;
+    let guarded: ReturnType<typeof sanitizeDuplicatesReport> | undefined;
+    expect(() => { guarded = renderGuarded(report); }).not.toThrow();
+    expect(guarded?.report?.skipped).toEqual([]);
+    expect(guarded?.problem || 'empty').toBeTruthy();
+    expect(guarded?.problem).toBeTruthy();
   });
 });

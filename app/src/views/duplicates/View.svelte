@@ -1,5 +1,54 @@
 <script module lang="ts">
+  import type { DuplicateReport } from '../../lib/contracts.gen';
+
   export const meta = { title: 'Duplicates', order: 35 };
+
+  export function sanitizeDuplicatesReport(report: DuplicateReport | undefined | null): {
+    report: DuplicateReport | undefined;
+    problem: string;
+  } {
+    if (!report) return { report: undefined, problem: '' };
+    const count = Array.isArray(report.entries) ? report.entries.length : 0;
+    const valid = (i: unknown): i is number =>
+      typeof i === 'number' && Number.isInteger(i) && i >= 0 && i < count;
+    let malformed = false;
+    const cleanLists = (lists: unknown): number[][] => {
+      if (!Array.isArray(lists)) {
+        malformed = true;
+        return [];
+      }
+      const out: number[][] = [];
+      for (const list of lists) {
+        if (!Array.isArray(list)) {
+          malformed = true;
+          continue;
+        }
+        const kept = (list as unknown[]).filter((i) => {
+          const ok = valid(i);
+          if (!ok) malformed = true;
+          return ok;
+        });
+        if (kept.length > 0) out.push(kept);
+      }
+      return out;
+    };
+    const groups = cleanLists(report.groups);
+    const links = cleanLists(report.links);
+    const skipped = Array.isArray(report.skipped)
+      ? report.skipped.filter((skip) => {
+          const ok = !!skip && valid(skip.entry);
+          if (!ok) malformed = true;
+          return ok;
+        })
+      : [];
+    if (!Array.isArray(report.groups) || !Array.isArray(report.links) || !Array.isArray(report.skipped)) {
+      malformed = true;
+    }
+    return {
+      report: { ...report, groups, links, skipped },
+      problem: malformed ? 'Some inspection references were invalid and were skipped.' : '',
+    };
+  }
 </script>
 
 <script lang="ts">
@@ -18,6 +67,9 @@
   let resultHeading = $state<HTMLElement>();
   const job = $derived(duplicates.book[selected]);
   const report = $derived(job?.duplicates);
+  const guarded = $derived(sanitizeDuplicatesReport(report));
+  const safeReport = $derived(guarded.report);
+  const indexProblem = $derived(guarded.problem);
   const active = $derived(job ? isActive(job.state) : false);
   // A session reads its own class of root only: lab roots when synthetic, folders you granted when personal (q-10).
   const origin = $derived(session.datasetClass === 'personal' ? 'owner_granted' : 'lab_generated');
@@ -82,28 +134,29 @@
 <section class="panel" aria-labelledby="duplicate-results">
   <h2 id="duplicate-results" tabindex="-1" bind:this={resultHeading}>Inspection result</h2>
   {#if job?.error}<p class="bad">{job.error.message}</p>{/if}
-  {#if report}
-    <p class="evidence">Bytes read <strong class="num">{formatBytes(report.bytes_read)}</strong> · Partial <strong class:warn={report.partial}>{report.partial ? 'yes' : 'no'}</strong> · Truncated <strong class:warn={report.truncated}>{report.truncated ? 'yes' : 'no'}</strong> · Stop <strong>{report.stop ?? 'none'}</strong></p>
+  {#if safeReport}
+    <p class="evidence">Bytes read <strong class="num">{formatBytes(safeReport.bytes_read)}</strong> · Partial <strong class:warn={safeReport.partial}>{safeReport.partial ? 'yes' : 'no'}</strong> · Truncated <strong class:warn={safeReport.truncated}>{safeReport.truncated ? 'yes' : 'no'}</strong> · Stop <strong>{safeReport.stop ?? 'none'}</strong></p>
+    {#if indexProblem}<p class="bad">{indexProblem}</p>{/if}
     <h3>Verified groups</h3>
-    {#if report.groups.length}
+    {#if safeReport.groups.length}
       <div class="tbl-wrap"><table class="tbl"><caption class="sr-only">Verified equal default streams</caption>
         <thead><tr><th scope="col">Members</th><th scope="col">Logical size per file</th></tr></thead>
-        <tbody>{#each report.groups as group}<tr><th scope="row">{#each group as i}<div><VisibleName name={report.entries[i]!.relative_path} /></div>{/each}</th><td class="num">{formatBytes(report.entries[group[0]!]!.logical_bytes)}</td></tr>{/each}</tbody>
+        <tbody>{#each safeReport.groups as group}<tr><th scope="row">{#each group as i}<div><VisibleName name={safeReport.entries[i]!.relative_path} /></div>{/each}</th><td class="num">{formatBytes(safeReport.entries[group[0]!]!.logical_bytes)}</td></tr>{/each}</tbody>
       </table></div>
     {:else}<p class="empty">No verified groups in this inspection. Unexamined content remains unknown.</p>{/if}
     <h3>Link sets</h3>
-    <p class="muted">One object per set, with no space to reclaim. {report.links_not_compared} listed names were not compared.</p>
-    {#if report.links.length}
+    <p class="muted">One object per set, with no space to reclaim. {safeReport.links_not_compared} listed names were not compared.</p>
+    {#if safeReport.links.length}
       <div class="tbl-wrap"><table class="tbl"><caption class="sr-only">Names of the same native object</caption>
         <thead><tr><th scope="col">Names</th><th scope="col">Observation</th></tr></thead>
-        <tbody>{#each report.links as links}<tr><th scope="row">{#each links as i}<div><VisibleName name={report.entries[i]!.relative_path} /></div>{/each}</th><td>One object · no space to reclaim</td></tr>{/each}</tbody>
+        <tbody>{#each safeReport.links as links}<tr><th scope="row">{#each links as i}<div><VisibleName name={safeReport.entries[i]!.relative_path} /></div>{/each}</th><td>One object · no space to reclaim</td></tr>{/each}</tbody>
       </table></div>
     {/if}
     <h3>Skipped entries</h3>
-    {#if report.skipped.length}
+    {#if safeReport.skipped.length}
       <div class="tbl-wrap"><table class="tbl"><caption class="sr-only">Skipped entries and reasons</caption>
         <thead><tr><th scope="col">Name</th><th scope="col">Reason</th></tr></thead>
-        <tbody>{#each report.skipped as skip}<tr><th scope="row"><VisibleName name={report.entries[skip.entry]!.relative_path} /></th><td>{skip.reason}</td></tr>{/each}</tbody>
+        <tbody>{#each safeReport.skipped as skip}<tr><th scope="row"><VisibleName name={safeReport.entries[skip.entry]!.relative_path} /></th><td>{skip.reason}</td></tr>{/each}</tbody>
       </table></div>
     {:else}<p class="empty">No listed entries were skipped.</p>{/if}
   {:else}<p class="empty">{active ? 'Inspection is running; verified evidence will appear when it ends.' : 'Start an inspection to see its evidence.'}</p>{/if}

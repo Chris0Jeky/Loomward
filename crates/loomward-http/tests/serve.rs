@@ -25,8 +25,29 @@ fn start() -> (Handle, Arc<FixtureService>) {
     start_with(fixture(), Options::default())
 }
 
+/// #441: a `Connection: close` reply makes the server close first, so every exchange leaves a
+/// server-side TIME_WAIT for its address pair, for minutes. Windows picks connect-time client
+/// ports out of order (measured against one server: 19042, 19055, ..., 32899, 52954) and can repeat
+/// one within a test's hundred connections; the SYN then matches that TIME_WAIT, is dropped, and
+/// connect fails after its 21 s of retries (10060). So bind a port not yet used against `addr`.
 fn connect(addr: SocketAddr) -> TcpStream {
-    let s = TcpStream::connect(addr).unwrap();
+    static USED: std::sync::Mutex<std::collections::BTreeSet<(SocketAddr, u16)>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    // Rejected sockets stay bound until a fresh port turns up, so the next bind cannot repeat them.
+    let mut rejected = Vec::new();
+    let s: TcpStream = loop {
+        let socket =
+            socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
+        socket
+            .bind(&SocketAddr::from(([127, 0, 0, 1], 0)).into())
+            .unwrap();
+        let port = socket.local_addr().unwrap().as_socket().unwrap().port();
+        if USED.lock().unwrap().insert((addr, port)) {
+            socket.connect(&addr.into()).unwrap();
+            break socket.into();
+        }
+        rejected.push(socket);
+    };
     s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     s
 }
@@ -1134,7 +1155,7 @@ fn sse_connections_outlive_the_non_sse_lifetime_cap() {
 /// `loomward-serve`'s real configuration: the engine service behind the same boundary.
 #[test]
 fn the_engine_service_answers_through_the_adapter() {
-    let tmp = tempfile::tempdir_in(".").unwrap();
+    let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
     let service = loomward_service::Service::open(loomward_service::Config {
         state_dir: tmp.path().into(),
         dataset: DatasetClass::Synthetic,
@@ -1343,7 +1364,7 @@ fn followup_refused_start(
 fn followup_stored_grants_refuse_static_without_recording_new_grants() {
     if loomward_windows::enumerate::running_elevated() {
         // Native identity refuses elevation (invariant 2, #217), so no lab root can be registered.
-        let tmp = tempfile::tempdir_in(".").unwrap();
+        let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
         let err = loomward_service::lab::register(
             &tmp.path().join("state"),
             &tmp.path().join("lab"),
@@ -1357,7 +1378,7 @@ fn followup_stored_grants_refuse_static_without_recording_new_grants() {
     }
     use loomward_protocol::{CallContext, RequestEnvelope, ViewService};
     use loomward_service::{lab, Config, Service};
-    let tmp = tempfile::tempdir_in(".").unwrap();
+    let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
     let state = tmp.path().join("state");
     let dist = tmp.path().join("dist");
     let old = dist.join("stored-lab");
@@ -1407,7 +1428,7 @@ fn followup_stored_grants_refuse_static_without_recording_new_grants() {
 fn followup_proposed_static_overlap_leaves_no_active_grant() {
     if loomward_windows::enumerate::running_elevated() {
         // Native identity refuses elevation (invariant 2, #217), so no lab root can be registered.
-        let tmp = tempfile::tempdir_in(".").unwrap();
+        let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
         let err = loomward_service::lab::register(
             &tmp.path().join("state"),
             &tmp.path().join("lab"),
@@ -1421,7 +1442,7 @@ fn followup_proposed_static_overlap_leaves_no_active_grant() {
     }
     use loomward_protocol::{CallContext, RequestEnvelope, ViewService};
     use loomward_service::{lab, Config, Service};
-    let tmp = tempfile::tempdir_in(".").unwrap();
+    let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
     let state = tmp.path().join("state");
     let grant = tmp.path().join("dist/lab");
     lab::register(
@@ -1464,7 +1485,7 @@ fn followup_stored_picker_grant_refuses_static() {
             Ok(false)
         }
     }
-    let tmp = tempfile::tempdir_in(".").unwrap();
+    let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
     let state = tmp.path().join("state");
     let dist = tmp.path().join("dist");
     let root = dist.join("picked-fixture");
@@ -2033,7 +2054,7 @@ fn revoked_duplicates_are_redacted_from_last_event_id_replay_and_cancel_receipts
     if loomward_windows::enumerate::running_elevated() {
         return;
     }
-    let tmp = tempfile::tempdir_in(".").unwrap();
+    let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
     let state = tmp.path().join("state");
     let root = tmp.path().join("fixture");
     loomward_service::lab::register(

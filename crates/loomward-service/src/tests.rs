@@ -83,21 +83,19 @@ fn open(dir: &Path, dataset: DatasetClass) -> Service {
 }
 
 pub(crate) fn temp_root() -> tempfile::TempDir {
-    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-roots");
-    std::fs::create_dir_all(&target).unwrap();
-    tempfile::tempdir_in(target.canonicalize().unwrap()).unwrap()
+    tempfile::tempdir_in(crate::paths::test_roots_base()).unwrap()
 }
 
+/// Fixtures stay outside the source tree and inside the profile fence wherever the checkout is
+/// (#465: a `%TEMP%` worktree sits under the protected `AppData` store).
 #[test]
 fn followup_test_roots_are_outside_source() {
     let tmp = temp_root();
-    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-roots");
-    std::fs::create_dir_all(&target).unwrap();
-    assert!(tmp
-        .path()
-        .canonicalize()
-        .unwrap()
-        .starts_with(target.canonicalize().unwrap()));
+    let path = tmp.path().canonicalize().unwrap();
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    assert!(!path.starts_with(crates.canonicalize().unwrap()));
+    assert!(path.starts_with(crate::paths::test_roots_base()));
+    assert_eq!(crate::paths::check_profile(&path), Ok(()));
 }
 
 #[test]
@@ -2740,6 +2738,51 @@ fn grants_past_64_active_roots_are_refused_by_rule() {
     let grant = crate::db::roots(&svc.inner.db(), Some(granted[0])).unwrap()[0].grant;
     svc.inner.revoke(grant).unwrap();
     assert!(svc.inner.grant(&dirs[64], "cli_flag", false).unwrap().1);
+}
+
+/// Invalid revisions stay unknown in both events and responses.
+#[test]
+fn publish_clamps_negative_revision_to_unknown() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let mut events = svc.subscribe(None);
+    match events.recv_timeout(Duration::from_secs(5)) {
+        RecvOutcome::Event(e) => assert_eq!(e.event, EventName::StreamHello),
+        other => panic!("expected hello, got {other:?}"),
+    }
+    let warning =
+        || json!({"code": "scan_throttled", "message": "test", "at": "2026-01-01T00:00:00Z"});
+    let next_warning = |events: &mut Box<dyn EventStream>| loop {
+        match events.recv_timeout(Duration::from_secs(5)) {
+            RecvOutcome::Event(e) if e.event == EventName::HealthWarning => break e,
+            RecvOutcome::Event(_) => continue,
+            other => panic!("{other:?}"),
+        }
+    };
+    svc.inner
+        .publish(EventName::HealthWarning, warning(), Some(-1), Some(-1));
+    let event = next_warning(&mut events);
+    event.validate().unwrap();
+    assert_eq!(event.catalog_rev, None);
+    assert_eq!(event.state_rev, None);
+    // ResponseMeta agrees on the same negative input.
+    let meta = svc.inner.meta(
+        std::time::Instant::now(),
+        &Payload::new(),
+        Some(-1),
+        Some(-1),
+    );
+    assert_eq!(meta.catalog_rev, None);
+    assert_eq!(meta.state_rev, None);
+    assert_eq!(event.catalog_rev, meta.catalog_rev);
+    assert_eq!(event.state_rev, meta.state_rev);
+    // Non-negative values pass through unchanged.
+    svc.inner
+        .publish(EventName::HealthWarning, warning(), Some(3), Some(7));
+    let event = next_warning(&mut events);
+    event.validate().unwrap();
+    assert_eq!(event.catalog_rev, Some(Generation(3)));
+    assert_eq!(event.state_rev, Some(Generation(7)));
 }
 
 fn native_identity_available() -> bool {

@@ -35,8 +35,8 @@ impl EventResume {
 pub(crate) fn timestamp() -> Timestamp {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     timestamp_seconds(seconds)
 }
 pub(crate) fn timestamp_ns(ns: i64) -> Timestamp {

@@ -185,6 +185,31 @@ pub(crate) fn check_profile_with(
         .map_err(|_| Refusal::ProtectedProfileOrStore)
 }
 
+/// Where tests create synthetic grant fixtures (#465): the workspace's `target/test-roots`, unless
+/// the profile fence refuses it, as it rightly does for a checkout under `%LOCALAPPDATA%` (every
+/// `%TEMP%` worktree). Then `loomward-test-roots` at the root of the same volume, which no store
+/// rule names. The fixtures move; the fence never relaxes. Panics if neither place is eligible.
+#[cfg(any(test, feature = "test-support"))]
+pub fn test_roots_base() -> PathBuf {
+    let eligible = |dir: PathBuf| {
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        check_profile(&dir).is_ok().then_some(dir)
+    };
+    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-roots");
+    eligible(target.clone())
+        .or_else(|| {
+            let volume = target
+                .canonicalize()
+                .unwrap()
+                .ancestors()
+                .last()?
+                .to_owned();
+            eligible(volume.join("loomward-test-roots"))
+        })
+        .expect("no fixture location outside protected profile stores (#465)")
+}
+
 pub(crate) fn check_new_root(root: &Path, state: &Path) -> Result<PathBuf, String> {
     let root = prospective_dir(root)?;
     if root.parent().is_none() {

@@ -1,6 +1,9 @@
-import { expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { Client } from '../../src/lib/transport/client';
 import { createMockTransport } from '../../src/lib/transport/mock';
+import { session } from '../../src/lib/stores/session.svelte';
+import { TransportError, type Transport } from '../../src/lib/transport/transport';
 import type { BackupEvidence, BackupRefusal } from '../../src/lib/contracts.gen';
 import {
   conditions, coverage, formatAge, IMPORT_REFUSAL_WORDS, observations, parseRequired, REFUSAL_WORDS, topology,
@@ -76,4 +79,53 @@ it('the mock forgets a record, refuses an unknown one and has no file dialog to 
   })).rejects.toMatchObject({ code: 'capability_unavailable' });
   // a fresh transport starts from the synthetic fixture again
   expect((await new Client(createMockTransport()).call('backups.list', {})).result.evidence).toHaveLength(2);
+});
+
+describe('backups volumes read errors', () => {
+  afterEach(() => {
+    session.client = null;
+    session.state = 'connecting';
+    session.info = null;
+    session.reason = '';
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it('surfaces a volumes.list rejection in error via session.handle and marks unavailable on TransportError', async () => {
+    vi.useFakeTimers();
+    session.state = 'connected';
+    // Mirrors View.svelte load: backups.list succeeds, volumes.list rejects with a transport fault.
+    const client = new Client({
+      call: async (req: { request_id: string; command: string }) => {
+        if (req.command === 'backups.list') {
+          return { protocol: 'loomward/3', request_id: req.request_id, ok: true, result: { evidence: [] }, meta: {} };
+        }
+        throw new TransportError('engine not reachable');
+      },
+    } as unknown as Transport);
+    session.client = client;
+    expect((await client.call('backups.list', {})).result.evidence).toEqual([]);
+    let error = '';
+    let volumes: unknown = [{ volume_id: 'vol_old' }];
+    try {
+      volumes = (await client.call('volumes.list', {})).result.volumes;
+    } catch (e) {
+      error = session.handle(e);
+      volumes = [];
+    }
+    expect(error).toContain('engine not reachable');
+    expect(volumes).toEqual([]);
+    expect(session.state).toBe('unavailable');
+    expect(session.reason).toContain('engine not reachable');
+  });
+
+  it('routes the View volumes.list catch through session.handle with a generation guard', () => {
+    const source = readFileSync(new URL('../../src/views/backups/View.svelte', import.meta.url), 'utf8');
+    expect(source).toContain('volumes.list');
+    const volumesCatch = source.slice(source.indexOf('volumes.list'));
+    expect(volumesCatch).toContain('session.handle');
+    expect(volumesCatch).toContain('mine !== generation');
+    expect(volumesCatch).toContain('volumes = []');
+    expect(source).not.toContain('catch { volumes = []; }');
+  });
 });
