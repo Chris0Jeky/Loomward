@@ -9,6 +9,7 @@ import { createScanMock } from './mock-scan';
 import { createViewMock } from './mock-views';
 import { createInventoryMock } from './mock-inventory';
 import { createAlertMock } from './mock-alerts';
+import { createAskMock } from './mock-ask';
 import { createBackupMock } from './mock-backups';
 import diagnosticsFixture from '../../../../contracts/v3/examples/commands/diagnostics.preview.result.json';
 import { generateTree, prng, type SynthNode } from './synth';
@@ -372,6 +373,9 @@ export function createMockTransport(opts: MockOptions = {}): Transport {
     ...scan.handlers,
     'telemetry.snapshot': telemetry, // after the spread: wraps the view mock's sample with gpu and disks
   };
+
+  // LW-118: a scripted fake model over this transport's own roots and search; no endpoint, no network.
+  Object.assign(handlers, createAskMock(now, failWith, { roots: () => handlers['roots.list']!({}) as RootList, search }));
 
   const collections = createCollectionMock(now, failWith, nodeFor, entryRow,
     (n) => topOf(n).some((a) => views.revokedRoots.has(rootId(a))), views.stateRev);
