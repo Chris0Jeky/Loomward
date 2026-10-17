@@ -14,6 +14,7 @@ content-read = []
 shortcut-read = []
 
 [dependencies]
+loomward-operations = { path = "../loomward-operations" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
