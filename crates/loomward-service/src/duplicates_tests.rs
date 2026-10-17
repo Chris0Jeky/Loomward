@@ -3,6 +3,28 @@ use super::*;
 fn duplicate_request(root: &str, bytes: u64) -> Value {
     json!({"root_id":root,"budget":{"max_candidates":200,"max_bytes":bytes.to_string(),"max_ms":5000}})
 }
+
+#[cfg(windows)]
+#[test]
+fn duplicates_select_candidates_before_opening_root_metadata() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    // Make the root unopenable: candidate selection must still happen before that refusal.
+    std::fs::rename(&lab.path, lab.path.with_file_name("lab-moved")).unwrap();
+    let error = err(call(
+        svc,
+        "duplicates.inspect",
+        duplicate_request(&lab.root, 1024),
+    ));
+    assert_eq!(error.code, ErrorCode::PermissionDenied);
+    assert!(svc
+        .inner
+        .hooks
+        .arrived
+        .lock()
+        .unwrap()
+        .contains(&(Command::DuplicatesInspect, "candidates_ready")));
+}
 #[cfg(windows)]
 fn terminal(svc: &Service, id: &JobId) -> Job {
     let until = Instant::now() + Duration::from_secs(10);

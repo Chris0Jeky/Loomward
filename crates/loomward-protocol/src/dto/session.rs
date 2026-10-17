@@ -19,6 +19,8 @@ pub struct CapabilitiesEffects {
     pub file_delete: ConstFalse,
     pub file_rename: ConstFalse,
     pub file_write: ConstFalse,
+    /// Arbitrary file-content access through the API; bounded local hashing for duplicate
+    /// inspection is observation and does not return file contents.
     pub content_read: ConstFalse,
     pub process_kill: ConstFalse,
     pub process_suspend: ConstFalse,
