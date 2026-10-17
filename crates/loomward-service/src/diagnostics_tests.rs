@@ -4,7 +4,7 @@
 use super::*;
 #[cfg(windows)]
 use crate::diagnostics::write_export;
-use crate::diagnostics::{canonical, digest, SAVE_TITLE};
+use crate::diagnostics::{canonical, check_target, digest, write_to, SAVE_TITLE};
 use std::path::PathBuf;
 
 /// Answers each save dialog with the next queued path (`None` = the owner cancelled).
@@ -15,6 +15,8 @@ struct Saves {
     /// file names it was shown.
     replace: Mutex<Vec<bool>>,
     replace_asked: Mutex<Vec<String>>,
+    /// A dialog that never opens: answered instead of the queue.
+    closed: Mutex<Option<SaveDialog>>,
 }
 
 impl Saves {
@@ -24,7 +26,13 @@ impl Saves {
             asked: Mutex::default(),
             replace: Mutex::default(),
             replace_asked: Mutex::default(),
+            closed: Mutex::default(),
         })
+    }
+    fn never_opens(why: SaveDialog) -> Arc<Self> {
+        let saves = Self::new(vec![]);
+        *saves.closed.lock().unwrap() = Some(why);
+        saves
     }
     fn count(&self) -> usize {
         self.asked.lock().unwrap().len()
@@ -38,12 +46,18 @@ impl NativeDialogs for Saves {
     fn pick_file(&self, _: &str) -> Option<PathBuf> {
         panic!("a diagnostic save opened the open-file dialog")
     }
-    fn save_file(&self, title: &str, default_name: &str) -> Option<PathBuf> {
+    fn save_file(&self, title: &str, default_name: &str) -> SaveDialog {
         self.asked
             .lock()
             .unwrap()
             .push((title.to_owned(), default_name.to_owned()));
-        self.queue.lock().unwrap().pop().flatten()
+        if let Some(why) = self.closed.lock().unwrap().clone() {
+            return why;
+        }
+        match self.queue.lock().unwrap().pop().flatten() {
+            Some(path) => SaveDialog::Chosen(path),
+            None => SaveDialog::Cancelled,
+        }
     }
     fn confirm_replace(&self, name: &str) -> bool {
         self.replace_asked.lock().unwrap().push(name.to_owned());
@@ -508,6 +522,113 @@ fn a_failed_write_leaves_the_target_and_no_partial_file() {
     assert_eq!(result, Err(DiagnosticsSaveRefusal::WriteFailed));
     assert_eq!(std::fs::read(&target).unwrap(), b"keep");
     assert_eq!(names(tmp.path()), ["read-only.json"]);
+}
+
+/// Only the owner closing the dialog is `cancelled_by_user` (#437). A dialog that never opened
+/// (another one open, no owner window yet, no dialog on the adapter) is a refusal that says so, and
+/// writes nothing, so a retry after the cause clears is not read as the owner declining.
+#[test]
+fn a_dialog_that_never_opened_is_not_reported_as_a_cancel() {
+    let tmp = temp_root();
+    let out = tmp.path().join("out");
+    std::fs::create_dir(&out).unwrap();
+    let svc = open(&tmp.path().join("state"), DatasetClass::Synthetic);
+    let (_, _, d) = preview(&svc);
+    for (why, expected) in [
+        (SaveDialog::Busy, "dialog_busy"),
+        (SaveDialog::Unavailable, "dialog_unavailable"),
+    ] {
+        let saves = Saves::never_opens(why);
+        let r = save(&svc, &saves, &d);
+        assert_eq!(r["outcome"], "refused", "{expected}: {r:?}");
+        assert_eq!(r["refusal"], expected);
+        assert_eq!(r["bytes_written"], Value::Null);
+        assert_eq!(saves.count(), 1);
+    }
+    assert!(names(&out).is_empty());
+    // The default adapter dialogs have none: the same honest answer, not a cancel.
+    struct NoDialog;
+    impl NativeDialogs for NoDialog {
+        fn pick_folder(&self) -> Option<PathBuf> {
+            None
+        }
+        fn confirm_disclosure(&self, _: &DisclosureSummary) -> Result<bool, ErrorBody> {
+            Ok(false)
+        }
+    }
+    assert_eq!(NoDialog.save_file("t", "n"), SaveDialog::Unavailable);
+}
+
+/// More than 64 roots cannot be listed whole: the bundle says so by name instead of cutting the
+/// list or calling the store unreadable (#437). Revoked roots still count, so 64 active grants and
+/// one revoked-then-regranted make 65.
+#[test]
+fn more_than_64_roots_are_one_unknown_naming_the_cap() {
+    let tmp = temp_root();
+    let svc = open(&tmp.path().join("state"), DatasetClass::Personal);
+    if !native_identity_available() {
+        return;
+    }
+    let dirs: Vec<PathBuf> = (0..65)
+        .map(|i| {
+            let d = tmp.path().join(format!("owner-{i}"));
+            std::fs::create_dir(&d).unwrap();
+            d.canonicalize().unwrap()
+        })
+        .collect();
+    let mut first = 0;
+    for (i, d) in dirs[..64].iter().enumerate() {
+        let (root, _) = svc.inner.grant(d, "cli_flag", false).unwrap();
+        if i == 0 {
+            first = root;
+        }
+    }
+    let (bundle, _, _) = preview(&svc);
+    assert_eq!(bundle["roots"].as_array().map(Vec::len), Some(64));
+    let grant = crate::db::roots(&svc.inner.db(), Some(first)).unwrap()[0].grant;
+    svc.inner.revoke(grant).unwrap();
+    svc.inner.grant(&dirs[64], "cli_flag", false).unwrap();
+    let (bundle, _, _) = preview(&svc);
+    assert_eq!(bundle["roots"], json!({"unknown": "root_cap_exceeded"}));
+}
+
+/// An online-only cloud file is named (#437), not folded into "not a plain local file".
+#[test]
+fn cloud_placeholder_attributes_are_recognised() {
+    use crate::paths::placeholder_bits;
+    const OFFLINE: u32 = 0x1000;
+    const RECALL_ON_OPEN: u32 = 0x4_0000;
+    const RECALL_ON_DATA_ACCESS: u32 = 0x40_0000;
+    const REPARSE_POINT: u32 = 0x400;
+    const ARCHIVE: u32 = 0x20;
+    for bits in [
+        OFFLINE,
+        RECALL_ON_OPEN,
+        RECALL_ON_DATA_ACCESS,
+        ARCHIVE | OFFLINE,
+    ] {
+        assert!(placeholder_bits(bits), "{bits:#x}");
+    }
+    // A plain file and a plain link are not placeholders: those keep the general refusal.
+    assert!(!placeholder_bits(ARCHIVE));
+    assert!(!placeholder_bits(REPARSE_POINT));
+}
+
+/// A file that appears between the replace check and the rename was never confirmed: it is left
+/// as it was and no temporary file survives (#437).
+#[test]
+fn a_file_that_appears_after_the_check_is_not_replaced() {
+    let tmp = temp_root();
+    let target = tmp.path().join("late.json");
+    let checked = check_target(&target).unwrap();
+    assert!(!checked.exists);
+    std::fs::write(&target, b"keep").unwrap();
+    assert_eq!(
+        write_to(&checked, b"{}"),
+        Err(DiagnosticsSaveRefusal::WriteFailed)
+    );
+    assert_eq!(std::fs::read(&target).unwrap(), b"keep");
+    assert_eq!(names(tmp.path()), ["late.json"]);
 }
 
 #[test]

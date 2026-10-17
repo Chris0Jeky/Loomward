@@ -579,16 +579,20 @@ store versions, counts, jobs counted by kind and state over the newest 50, and e
 origin, grant and scan state, coverage, filesystem family and identity mode. It never carries a path, file or
 folder name, volume label, serial or key, process name or argument, label, prompt, collection name, receipt or
 error message. A value the service could not read is `{"unknown": "<reason>"}` with a fixed snake_case reason,
-never omitted, `null` or zero; `recent_errors` is always `{"unknown": "not_retained"}`.
+never omitted, `null` or zero; `recent_errors` is always `{"unknown": "not_retained"}`. More than 64 roots
+(revoked ones count) cannot be listed whole, so `roots` is `{"unknown": "root_cap_exceeded"}`, never a cut list.
 
 `diagnostics.save {digest}` exists on the desktop adapter only (HTTP answers `capability_unavailable`), in every
 dataset class. A digest other than the held preview's is `refused` / `preview_changed` before any dialog opens.
 Rust opens the native save dialog (one dialog at a time with the pickers, 2 s cooldown: `busy`). When the
 chosen file exists, Loomward asks its own question naming it (Cancel the default) before replacing it. Cancel
-in either is `cancelled_by_user` and writes nothing. A relative,
+in either is `cancelled_by_user` and writes nothing; it is the only thing that is. A save dialog that never opened is
+`refused` and says why: `dialog_busy` (another dialog is open) or `dialog_unavailable` (no owner window yet, no start
+folder, or no dialog on the adapter). A relative,
 network, device or verbatim path, a device name, a stream name, a parent folder that is missing or resolves (through a junction or link) to a share, or an existing target
-that is not a regular file or is a link, reparse point or cloud placeholder is `unsupported_target`; a write
-that fails is `write_failed`. Neither writes anything: the bytes go to a temporary file beside the target that is
+that is not a regular file or is a link or reparse point is `unsupported_target`; an existing online-only cloud
+placeholder is `cloud_placeholder`; a write
+that fails (or finds a file that appeared after the replace check) is `write_failed`. Neither writes anything: the bytes go to a temporary file beside the target that is
 renamed over it, or removed. `saved` reports `bytes_written`. The path is never returned. Send `deadline_ms`
 up to 60,000: the call waits on the owner. It is the only open command whose `effects` is not `none`
 (`owner_picked_export`, docs/42 ADR-V3-24).

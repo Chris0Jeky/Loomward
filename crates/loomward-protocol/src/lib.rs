@@ -25,7 +25,8 @@ pub use envelope::{
 pub use error::{ErrorBody, ErrorCode};
 pub use event::{EventEnvelope, EventName};
 pub use service::{
-    CallContext, CloseReason, EventStream, NativeDialogs, Principal, RecvOutcome, ViewService,
+    CallContext, CloseReason, EventStream, NativeDialogs, Principal, RecvOutcome, SaveDialog,
+    ViewService,
 };
 pub use types::*;
 
