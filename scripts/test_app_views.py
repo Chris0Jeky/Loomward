@@ -766,7 +766,7 @@ def check_alerts(page: Page, base: str, shoot) -> None:
     expect(partial).to_contain_text('Partial coverage')
     ok('+' not in partial.inner_text(), 'a partial-coverage check shows no growth figure')
     ok(not any(FORBIDDEN_BUTTONS.search(b.inner_text()) for b in main.get_by_role('button').all()), 'alerts: no effect control')
-    notify = main.get_by_label('Notify me (off by default)')
+    notify = main.get_by_label('Notify me when notifications arrive (stored now; no notification is sent yet)')
     expect(notify).not_to_be_checked()
     shoot('alerts')
     # a bad threshold is named on its field and nothing is saved

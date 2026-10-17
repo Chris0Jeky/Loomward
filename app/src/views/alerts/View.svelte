@@ -123,7 +123,7 @@
         <input type="text" inputmode="numeric" bind:value={form.days} maxlength="3" autocomplete="off" aria-invalid={invalidField === 'days' ? 'true' : undefined} aria-describedby={invalidField === 'days' ? 'alerts-error' : undefined} /></label>
       <label class="lw-field"><span class="lbl">Growth: GiB added within the window</span>
         <input type="text" inputmode="decimal" bind:value={form.growthGib} maxlength="12" autocomplete="off" aria-invalid={invalidField === 'growthGib' ? 'true' : undefined} aria-describedby={invalidField === 'growthGib' ? 'alerts-error' : undefined} /></label>
-      <label class="check"><input type="checkbox" bind:checked={form.notifications} /> Notify me (off by default)</label>
+      <label class="check"><input type="checkbox" bind:checked={form.notifications} /> Notify me when notifications arrive (stored now; no notification is sent yet)</label>
       <button class="btn primary" type="submit" aria-disabled={saving} onclick={(e) => { if (saving) e.preventDefault(); }}>{saving ? 'Saving' : 'Save thresholds'}</button>
       <button class="btn" type="button" onclick={reset}>Fill in defaults</button>
     </form>
