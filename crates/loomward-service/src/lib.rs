@@ -935,7 +935,10 @@ impl Inner {
                 "the service produced an invalid result",
             )),
         });
+        // A saved simulation or a started scan is an effect that happened: report it, never
+        // `deadline_exceeded` (#565 review; scan.start bounds its own pre-emption wait).
         let out = if work.is_some_and(|work| Instant::now() >= work.deadline)
+            && command != Command::ScanStart
             && !(command == Command::PlacementSimulate
                 && request.payload.get("save").and_then(Value::as_bool) == Some(true))
         {

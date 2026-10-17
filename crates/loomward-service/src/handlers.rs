@@ -374,8 +374,11 @@ impl Inner {
             let holder = detail.as_ref().and_then(|d| d.get("job_id")?.as_str());
             match &claim.auto {
                 _ if detail.is_none() => {}
-                Some(auto) if holder == Some(auto.as_str()) && active(auto) => {
-                    let _ = self.engine.scan_cancel(auto);
+                // Once the automatic job is terminal, the retry below starts the scan.
+                Some(auto) if holder == Some(auto.as_str()) => {
+                    if active(auto) {
+                        let _ = self.engine.scan_cancel(auto);
+                    }
                 }
                 _ => break,
             }
