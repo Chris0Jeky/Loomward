@@ -446,3 +446,100 @@ fn every_model_bound_string_is_cleaned_and_bounded() {
     assert_eq!(row["modified_at"].as_str().unwrap().len(), 255);
     assert!(row.get("location_hint").is_none());
 }
+
+/// A row whose size and counts are null (the service's "unknown") and whose `modified_at` the
+/// grant withheld, so the field is absent from the row altogether (#583 follow-up a).
+struct NullView;
+impl ViewService for NullView {
+    fn call(&self, _: RequestEnvelope, _: &CallContext) -> ResponseEnvelope {
+        let mut r = row("n_1", "report.pdf");
+        r.as_object_mut().unwrap().remove("modified_at");
+        // A folder: no extension and no family (not unknown), child counts unknown.
+        let mut d = row("d_1", "Reports");
+        let o = d.as_object_mut().unwrap();
+        o.insert("kind".into(), "dir".into());
+        o.insert("extension".into(), Value::Null);
+        o.insert("ext_family".into(), Value::Null);
+        ok(json!({
+            "hits": [{"row": d, "root_id": "rt_1", "match_kind": "name"},
+                     {"row": r, "root_id": "rt_1",
+                      "path": {"text": "Alpha\\report.pdf", "truncated": false}, "match_kind": "name"}],
+            "next_cursor": null, "roots": [], "generation": "g1"
+        }))
+    }
+    fn subscribe(&self, _: Option<(String, u64)>) -> Box<dyn EventStream> {
+        unimplemented!()
+    }
+}
+
+#[test]
+fn a_null_reaches_the_model_as_unknown_and_a_withheld_field_stays_absent() {
+    let (p, answer, _) = run(
+        &NullView,
+        vec![
+            Upstream::Reply(calls(vec![call("c1", "find", r#"{"text":"report"}"#)])),
+            Upstream::Reply(text("done")),
+        ],
+    );
+    answer.unwrap();
+    let seen = p.seen.lock().unwrap();
+    let Message::Tool { content, .. } = &seen[1].messages[3] else {
+        panic!()
+    };
+    let v: Value = serde_json::from_str(content).unwrap();
+    let dir = &v["rows"][0];
+    assert_eq!(dir["files"], "unknown");
+    assert_eq!(dir["dirs"], "unknown");
+    assert!(
+        dir.get("extension").is_none() && dir.get("ext_family").is_none(),
+        "{dir}"
+    );
+    let row = &v["rows"][1];
+    assert_eq!(row["allocated_bytes"], "unknown");
+    // A file has no child counts: those nulls are "not applicable", not unknown.
+    assert!(
+        row.get("files").is_none() && row.get("dirs").is_none(),
+        "{row}"
+    );
+    assert_eq!(row["logical_bytes"], 4000);
+    assert!(row.get("modified_at").is_none(), "{row}");
+    assert_eq!(row["handle"], "h2");
+}
+
+/// Every character of `range` must come out as its `\u{..}` escape, as the bidi and zero-width
+/// ranges already do.
+fn assert_escaped(range: std::ops::RangeInclusive<u32>) {
+    for cp in range {
+        let c = char::from_u32(cp).expect("a scalar value");
+        assert_eq!(
+            clean(&c.to_string()),
+            format!("\\u{{{cp:x}}}"),
+            "U+{cp:04X}"
+        );
+    }
+}
+
+#[test]
+fn u2060_to_u2064_word_joiners_and_invisible_operators_are_escaped() {
+    assert_escaped(0x2060..=0x2064);
+}
+
+#[test]
+fn u061c_arabic_letter_mark_is_escaped() {
+    assert_escaped(0x061C..=0x061C);
+}
+
+#[test]
+fn u180e_mongolian_vowel_separator_is_escaped() {
+    assert_escaped(0x180E..=0x180E);
+}
+
+#[test]
+fn u2028_and_u2029_line_and_paragraph_separators_are_escaped() {
+    assert_escaped(0x2028..=0x2029);
+}
+
+#[test]
+fn the_tag_block_e0000_to_e007f_is_escaped() {
+    assert_escaped(0xE0000..=0xE007F);
+}
