@@ -2154,3 +2154,43 @@ fn revoked_duplicates_are_redacted_from_last_event_id_replay_and_cancel_receipts
         "queued, running and terminal snapshots must replay"
     );
 }
+
+/// docs/47 G6 over the real adapter: a personal session refuses a copy approval on HTTP by its own
+/// rule, and every copy command is gated (lane C4 opens no effect).
+#[test]
+fn http_refuses_personal_copy_approvals_and_gates_every_copy_command() {
+    let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
+    let service = loomward_service::Service::open(loomward_service::Config {
+        state_dir: tmp.path().join("state"),
+        dataset: DatasetClass::Personal,
+        allow_personal: true,
+        allow_identity_unverified: false,
+        grant_roots: vec![],
+    })
+    .unwrap();
+    let h = serve(Arc::new(service), Options::default()).unwrap();
+    let digest = format!("sha256:{}", "a".repeat(64));
+    for (command, payload, reason) in [
+        (
+            "copy.approve",
+            json!({"operation_id": "cp_1", "digest": digest}),
+            "copy_personal_approval_http",
+        ),
+        (
+            "copy.preview",
+            json!({"sources": ["nd_1"], "destination_node_id": "nd_2"}),
+            "copy_effect_gated",
+        ),
+        (
+            "copy.start",
+            json!({"operation_id": "cp_1", "digest": digest}),
+            "copy_effect_gated",
+        ),
+    ] {
+        let body = json!({"protocol": "loomward/3", "request_id": "r_c", "command": command, "payload": payload})
+            .to_string();
+        let v = call(&h, &body).json();
+        assert_eq!(v["error"]["code"], "capability_unavailable", "{v}");
+        assert_eq!(v["error"]["detail"]["reason"], reason, "{v}");
+    }
+}

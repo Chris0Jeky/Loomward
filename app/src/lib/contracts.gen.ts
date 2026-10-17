@@ -1901,6 +1901,71 @@ export interface DiagnosticsSaveResult {
   refusal: DiagnosticsSaveRefusal | null;
 }
 
+/** Copy-and-verify operation (docs/47). */
+export type CopyOperationId = string;
+
+/** docs/47 section 5 operation states. */
+export type CopyState = "draft" | "refused" | "approved" | "expired" | "preparing" | "copying" | "staged" | "blocked" | "needs_attention" | "publishing" | "committed" | "cancelling" | "cancelled";
+
+/** docs/47 section 7. Codes with a P or S entry are refused before any write handle exists. */
+export type CopyRefusalCode = "identity_unverified" | "cloud_placeholder" | "reparse_point" | "unsupported_attribute" | "extended_attributes" | "alternate_streams_unsupported" | "too_many_streams" | "special_file" | "source_changed" | "staging_name_taken" | "staging_in_use" | "changed_after_verification" | "source_in_use" | "access_denied" | "insufficient_space" | "destination_inside_source" | "destination_cloud_synced" | "destination_unsupported_volume" | "destination_protected" | "case_collision" | "name_unrepresentable" | "path_too_long" | "publish_in_use" | "verification_mismatch" | "grant_revoked" | "elevated" | "approval_expired" | "digest_mismatch" | "manifest_limit";
+
+export interface CopyRefusal {
+  code: CopyRefusalCode;
+  /** null: operation-wide. */
+  node_id: NodeId | null;
+}
+
+/** Node IDs select what the engine observes afresh; the approval binds the digest of the observed native identities, never a node ID (invariant 5). The destination is a folder under an active grant; v1 creates exactly one new folder inside it and never writes into an existing folder (docs/47 section 1, Q3). */
+export interface CopyPreviewRequest {
+  sources: NodeId[];
+  destination_node_id: NodeId;
+}
+
+/** Built without any effect. state is draft (approvable) or refused (deselect and preview again). The digest covers membership, destination (grant, parent identity, new folder name), bytes and identities. */
+export interface CopyPreview {
+  operation_id: CopyOperationId;
+  state: CopyState;
+  digest: Digest;
+  folder_name: string;
+  files: Count;
+  folders: Count;
+  bytes: ByteCount;
+  space_needed: ByteCount;
+  space_reserve: ByteCount;
+  same_volume: boolean;
+  explicit_acl_items: Count;
+  hard_link_names: Count;
+  refusals: CopyRefusal[];
+  refusal_count: Count;
+}
+
+/** The digest the owner saw. approve binds a single-use approval to it; start is refused unless an unexpired approval matches the digest of a manifest rebuilt from fresh observations exactly (digest_mismatch, source_changed, approval_expired, grant_revoked). */
+export interface CopyConsentRequest {
+  operation_id: CopyOperationId;
+  digest: Digest;
+}
+
+export interface CopyApproval {
+  operation_id: CopyOperationId;
+  digest: Digest;
+  approved_at: Timestamp;
+  expires_at: Timestamp;
+}
+
+export interface CopyOperationRequest {
+  operation_id: CopyOperationId;
+}
+
+export interface CopyStatus {
+  operation_id: CopyOperationId;
+  state: CopyState;
+  digest: Digest;
+  items_total: Count;
+  items_verified: Count;
+  refusal: CopyRefusal | null;
+}
+
 // ---- commands (commands.json)
 
 export interface CommandMap {
@@ -1960,6 +2025,12 @@ export interface CommandMap {
   "backups.forget": { request: BackupForgetRequest; result: BackupForgetResult };
   "diagnostics.preview": { request: EmptyRequest; result: DiagnosticsPreviewResult };
   "diagnostics.save": { request: DiagnosticsSaveRequest; result: DiagnosticsSaveResult };
+  "copy.preview": { request: CopyPreviewRequest; result: CopyPreview };
+  "copy.approve": { request: CopyConsentRequest; result: CopyApproval };
+  "copy.start": { request: CopyConsentRequest; result: CopyStatus };
+  "copy.cancel": { request: CopyOperationRequest; result: CopyStatus };
+  "copy.abandon": { request: CopyOperationRequest; result: CopyStatus };
+  "copy.status": { request: CopyOperationRequest; result: CopyStatus };
 }
 
 export type CommandKey = keyof CommandMap;
@@ -2022,6 +2093,12 @@ export const COMMANDS = {
   "backups.forget": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "diagnostics.preview": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "diagnostics.save": { adapters: ["tauri"], wave: 3, events: [] },
+  "copy.preview": { adapters: ["tauri", "http"], wave: 3, events: [] },
+  "copy.approve": { adapters: ["tauri", "http"], wave: 3, events: [] },
+  "copy.start": { adapters: ["tauri", "http"], wave: 3, events: [] },
+  "copy.cancel": { adapters: ["tauri", "http"], wave: 3, events: [] },
+  "copy.abandon": { adapters: ["tauri", "http"], wave: 3, events: [] },
+  "copy.status": { adapters: ["tauri", "http"], wave: 3, events: [] },
 } as const satisfies Record<CommandKey, {
   adapters: readonly ("tauri" | "http")[];
   wave: number;
