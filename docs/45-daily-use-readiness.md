@@ -21,7 +21,7 @@ Rules for this file:
 | 3 | Pathological trees | PARTIAL |
 | 4 | Churn during scans | PASS |
 | 5 | Injected I/O faults and a full disk | PARTIAL |
-| 6 | Fuzzing every parser and contract | UNVERIFIED |
+| 6 | Fuzzing every parser and contract | PARTIAL |
 | 7 | 72-hour soak | PARTIAL |
 | 8 | Power-cut simulation, per effect | UNVERIFIED |
 | 9 | Proven restore, per effect | UNVERIFIED |
@@ -134,15 +134,58 @@ The test lives in the writer's test module rather than `crash_sweep.rs`.
 **Gap.** No read-error, access-denied-mid-scan or short-write injection below SQLite. A disk that fills below SQLite
 (an OS write failure, not the page limit) is not exercised; the page limit drives only SQLite's own `SQLITE_FULL`.
 
-## 6. Fuzzing every parser and contract: UNVERIFIED
+## 6. Fuzzing every parser and contract: PARTIAL
 
 **Exists.** Fixed negative examples (`contracts/v3` valid and invalid examples), the offline mutation check
-`crates/loomward-backup/tests/mutations.py`, decoder corruption tests in `loomward-lab`. No fuzzer.
+`crates/loomward-backup/tests/mutations.py`, decoder corruption tests in `loomward-lab`, and (#414) one
+property-fuzz target per parser below.
 
-**Gap.** No `cargo-fuzz` or property tests on: the directory-buffer decoder, backup receipt normaliser, protocol
-and HTTP envelope parsers, cursors, idempotency keys, the Tauri IPC surface, the snapshot importer.
+**Substitution (stated).** The pinned toolchain is stable MSVC Rust 1.97.1 with no nightly, so these are
+**property tests on `proptest` (a dev-dependency only), not `cargo-fuzz`/libFuzzer**: no coverage guidance and no
+persistent corpus (regression files are off; a failing input is printed in full and shrunk). Each strategy is seeded
+from the existing fixtures (the `contracts/v3/examples` requests, the synthetic restic documents of `receipts.rs`,
+the synthetic links of `shell.rs`) and from record builders for the binary decoders. Default case counts keep every
+target under about 10 s in a debug build; `LOOMWARD_FUZZ_CASES=100000` (any positive integer) runs every property
+that many cases. The seed is fixed by default so CI never meets a new input on an unrelated change;
+`LOOMWARD_FUZZ_SEED=random` (or a number) explores further. Shared helpers: `fixtures/fuzz/support.rs` (`#[path]`-included by each test, not a crate).
 
-**Prove.** A fuzz target per parser with a corpus seeded from the fixtures; a recorded bounded run per target.
+Properties, per target: never panics on arbitrary bytes or JSON; a valid input round-trips; a mutated valid input is
+refused with a typed error or accepted with exactly the semantics an independent reading gives it (no silent
+coercion, invariant 4). The binary decoders are also compared with a second, independently written reference
+decoder on field-edited chains, and overlapping records are refused.
+
+| Parser | Target | Seeds |
+|---|---|---|
+| Directory-buffer decoder `enumerate::decode_buffer` (both native classes) and change-notification decoder `watch::decode` | `crates/loomward-windows/tests/fuzz_decoders.rs` | record builders |
+| Lab directory-buffer decoder `decode_records` | `crates/loomward-lab/tests/fuzz_records.rs` | record builders |
+| Backup receipt normaliser `normalise_backup_receipt` (the parse core of `backups.import`, the snapshot importer): snapshots JSON, check summary, supplied source | `crates/loomward-backup/tests/fuzz_receipt.rs` | `receipts.rs` documents |
+| Protocol ingress `RequestEnvelope::from_slice` (the path HTTP and the Tauri `lw_call` both decode through), cursor, `client_event_id`, request id, epoch, snapshot id, digest and decimal-counter wire grammars | `crates/loomward-protocol/tests/fuzz_envelope.rs` | every `contracts/v3/examples/commands/*.request.json`, `envelopes/`, `invalid/` |
+| HTTP `dispatch`, `parse_last_event_id`, `static_relative` | `crates/loomward-http/tests/fuzz_http.rs` | the same command examples through `FixtureService` |
+| Service cursor table `Cursors` (handles are random tokens; no edit resumes another entry) | `crates/loomward-service/src/cursors_fuzz.rs` | issued handles |
+| MS-SHLLINK `shortcuts::parse` (beyond the row's list; adds to the fixed-seed loop in `shell.rs`) | `crates/loomward-shell/tests/fuzz_shortcut.rs` | the `shell.rs` links |
+
+Mutation check of the targets themselves (the property must fail when the parser is weakened; each reverted):
+the first versions of the lab, protocol and backup targets did **not** catch a weakened bound, a disabled
+canonical-shape check and an accepted `.` segment, so the overlap, positional-array and hostile-path properties
+and the reference decoders were added; after that all five mutants failed their targets (see the run record).
+
+**Gap (why PARTIAL).**
+- The Tauri IPC surface is not fuzzed directly: `Desktop::dispatch_bytes` (`native/src/lib.rs`) needs the Tauri crate
+  built and a live service, and `native/` is outside the workspace. Its parsing entry, `RequestEnvelope::from_slice`,
+  is covered above; its size gate, the `Adapter::Tauri` availability filter and the `lw_events` arguments are not.
+- The HTTP header and body gate (`call_header_refusal`, `route`, `origin_check`, `token_ok`) is private and async; it
+  stays pinned by `security_pins.rs` and `serve.rs`, not fuzzed.
+- The snapshot importer's file side, `read_receipt` (picker bytes, `pub(crate)`) and `summary_document` (private), is
+  not fuzzed; durable `client_event_id` replay (`feedback.record`) is store behaviour, covered only by its wire grammar.
+- Not covered: protocol result and event decoding, other DTO payload types beyond what the command request examples
+  exercise, the Python reference's parsers, and any coverage-guided search (`cargo-fuzz` on a nightly host).
+
+**Prove.** Row 6 reaches PASS when the Tauri entry and the two private HTTP/importer seams are fuzzed (or the owner
+accepts them as covered by the pins) and a coverage-guided run has been recorded on a nightly host.
+
+Finding: none in this wave. No target found a defect at the default counts, at 100,000 cases per property, or at
+1,000,000 cases for the two decoders. One behaviour noted, not a defect: `parse_last_event_id` accepts leading zeros
+in the sequence (`id.007` resumes at 7); the value means the same number and the server only ever emits canonical ids.
 
 ## 7. 72-hour soak: PARTIAL
 
@@ -259,3 +302,15 @@ All 2026-10-17 patho-r34 cargo commands below used
 | 2026-10-17 | same final lane | same, `RUST_TEST_THREADS=1`, default 4,000-file churn size | `cargo test --workspace --no-fail-fast` | 997 passed, 8 failed, 1 ignored; exit 101. All new cases passed: engine pathological target 7 passed/1 ignored (depth cap), lab pathological target 5 passed. Full lab crate 32 passed; full engine crate 213 passed/4 known #292 failures/1 ignored, including doc tests. The known Windows reopen test also failed (#292). Three additional unchanged service tests failed on timing/deadlines: `wrong_dataset_and_timed_out_providers_never_publish_fallback` (20 ms deadline, provider call count 0), `forgetting_a_revoked_root_purges_its_names_and_keeps_an_anonymised_record` (`roots.revoke` deadline), `placement_refuses_identity_unverified_rows` (read deadline). Both earlier engine timeout cases passed in this run. No failing existing test was edited or skipped |
 | 2026-10-17 | same final lane, exact service test binary from the workspace run | same | `C:/lw/target/patho-r34/debug/deps/loomward_service-2cd7cfb8d03ab454.exe --exact inventory::tests::wrong_dataset_and_timed_out_providers_never_publish_fallback --nocapture --test-threads=1`; repeat for exact names `tests::forget_tests::forgetting_a_revoked_root_purges_its_names_and_keeps_an_anonymised_record` and `tests::placement_refuses_identity_unverified_rows` | All three passed separately (1 each), 0.92 s / 2.30 s / 1.47 s, with the same assertions, deadlines and binary. This does not turn the full workspace run green. A package-only cargo recheck was interrupted during compilation because it rebuilt a different feature graph; these checks reuse the workspace binary |
 | 2026-10-17 | same final lane | same | `git -C C:/lw/wt/patho-r34 diff --check` | Exit 0. New pathological fixture directory empty after tests. Removed 60 disposable synthetic databases left by existing tests under this worktree's ignored `target/test-roots` (created during this run; absolute scope and absence of reparse entries checked). Raw logs remain under the external lane target, not in Git |
+| 2026-10-17 | 912a491 (row 6 targets) | KRASPYON, Windows 11, debug build, stable MSVC 1.97.1 | default mode: `cargo test -p loomward-windows --test fuzz_decoders`, `-p loomward-lab --test fuzz_records`, `-p loomward-backup --test fuzz_receipt`, `-p loomward-protocol --test fuzz_envelope`, `-p loomward-http --test fuzz_http`, `-p loomward-shell --test fuzz_shortcut`, `-p loomward-service --lib cursors` | 8, 6, 9, 10, 7, 4 and 8 (3 new) passed in 2.4, 1.7, 7.7, 4.5, 6.5, 1.9 and 7.3 s on a loaded host |
+| 2026-10-17 | 912a491 | same | `LOOMWARD_FUZZ_CASES=100000 cargo test -p loomward-windows --test fuzz_decoders` (`enumerate::decode_buffer` Extended and Both, `watch::decode`) | 8 properties x 100,000 cases passed in 39 s; no panic, no reference disagreement |
+| 2026-10-17 | 912a491 | same | `LOOMWARD_FUZZ_CASES=1000000 cargo test -p loomward-windows --test fuzz_decoders` | 8 properties x 1,000,000 cases passed in 538 s |
+| 2026-10-17 | 912a491 | same | `LOOMWARD_FUZZ_CASES=100000 cargo test -p loomward-lab --test fuzz_records` (`decode_records`) | 6 x 100,000 passed in 39 s |
+| 2026-10-17 | 912a491 | same | `LOOMWARD_FUZZ_CASES=1000000 cargo test -p loomward-lab --test fuzz_records` | 6 x 1,000,000 passed in 373 s |
+| 2026-10-17 | 912a491 | same | `LOOMWARD_FUZZ_CASES=100000 cargo test -p loomward-backup --test fuzz_receipt` (`normalise_backup_receipt`) | 9 x 100,000 passed in 187 s |
+| 2026-10-17 | 912a491 | same | `LOOMWARD_FUZZ_CASES=100000 cargo test -p loomward-protocol --test fuzz_envelope` (`RequestEnvelope::from_slice`, cursor, `client_event_id` and the other wire grammars) | 10 x 100,000 passed in 62 s |
+| 2026-10-17 | 912a491 | same | `LOOMWARD_FUZZ_CASES=100000 cargo test -p loomward-http --test fuzz_http` (`dispatch`, `parse_last_event_id`, `static_relative`) | 7 x 100,000 passed in 276 s |
+| 2026-10-17 | 912a491 | same | `LOOMWARD_FUZZ_CASES=100000 cargo test -p loomward-service --lib cursors::fuzz` (`Cursors`) | 3 x 100,000 passed in 88 s |
+| 2026-10-17 | 912a491 | same | `LOOMWARD_FUZZ_CASES=100000 cargo test -p loomward-shell --test fuzz_shortcut` (`shortcuts::parse`) | 4 x 100,000 passed in 68 s |
+| 2026-10-17 | 912a491, each with one parser check weakened (mutants, reverted) | same | `cargo test -p <crate> --test <target>` after: windows `name_len > record_len - header` to `name_len > record_len`; windows `next < header ||` removed; lab `next < end` removed; protocol `same_json(&canonical, &value)` to `true`; backup `part != "."` removed from `provider_path` | all five failed their target (panic at `enumerate/mod.rs`, overlap property, reference disagreement, `positional_arrays_are_refused`, `hostile_provider_paths_are_refused_on_the_bound_snapshot_only`). Earlier drafts of the lab, protocol and backup targets passed the same three mutants; the directed properties above were added in response |
+| 2026-10-17 | this PR merged with main fe3176c (the merge brought #292, r5, r7 and documentation) | same | `cargo fmt --all --check`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo test --workspace --no-fail-fast`; `git diff --check` | fmt and clippy clean; 1,068 passed, 1 ignored, 0 failed; diff check clean. Before the merge, the same test run showed the 5 host failures of #292 plus 2 `loomward-service` tests that depend on host load (a 20 ms deadline in `wrong_dataset_and_timed_out_providers_never_publish_fallback`); neither pair touches this PR's code |
