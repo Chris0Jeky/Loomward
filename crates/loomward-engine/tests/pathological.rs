@@ -48,9 +48,20 @@ fn service(state: PathBuf, path: PathBuf) -> Arc<Service> {
     )
 }
 
+// A host that cannot run a native case reports it UNVERIFIED, unless LOOMWARD_REQUIRE_NATIVE=1 turns
+// that skip into a failure (the native gate must not pass vacuously on a host that cannot run it).
+fn unverified(reason: &str) {
+    if std::env::var("LOOMWARD_REQUIRE_NATIVE").as_deref() == Ok("1") {
+        panic!("LOOMWARD_REQUIRE_NATIVE=1 but the native case cannot run: {reason}");
+    }
+    eprintln!("UNVERIFIED: {reason}");
+}
+
 fn lab(profile: Profile) -> Option<Lab> {
     if loomward_windows::enumerate::running_elevated() {
-        eprintln!("UNVERIFIED: native pathological scan requires a non-elevated token; no elevation attempted");
+        unverified(
+            "native pathological scan requires a non-elevated token; no elevation attempted",
+        );
         return None;
     }
     let base = std::env::var_os("CARGO_TARGET_DIR")
@@ -82,7 +93,7 @@ fn lab(profile: Profile) -> Option<Lab> {
     let tree = match generate(&path, profile) {
         Ok(tree) => tree,
         Err(error) if profile == Profile::SymlinkCycle && error.raw_os_error() == Some(1314) => {
-            eprintln!("UNVERIFIED: symlink cycle requires Developer Mode or symlink privilege (1314); no elevation attempted");
+            unverified("symlink cycle requires Developer Mode or symlink privilege (1314); no elevation attempted");
             return None;
         }
         Err(error) => panic!("{profile:?} generation: {error}"),
@@ -364,6 +375,72 @@ fn observations(db: &Connection) -> Vec<Vec<rusqlite::types::Value>> {
         .unwrap()
 }
 
+// A batch overlaps enumeration only while the job is running and the catalogue has published no file
+// rows. No live entry counter is exposed (progress is set only at completion), and staged rows only
+// cover large listings, so they cannot serve as the signal. A fresh full scan publishes its files in
+// one commit, so an empty file table marks enumeration. Pre-commit publish work shares the running
+// state and cannot be separated from enumeration here; the overlap floor in the test bounds that.
+fn enumerating(lab: &Lab, db: &Connection, job: &str) -> bool {
+    let running =
+        call(&lab.service, "jobs.get", json!({"job_id":job}))["job"]["state"] == "running";
+    let published: i64 = db
+        .query_row("SELECT count(*) FROM file", [], |r| r.get(0))
+        .unwrap();
+    running && published == 0
+}
+
+// The filesystem's own truth: every regular file under `root` with its logical length, reached with
+// std::fs and never following a reparse point (the churn fixture has none, asserted below).
+fn walk_files(root: &std::path::Path) -> Vec<(String, i64)> {
+    use std::os::windows::fs::MetadataExt;
+    const REPARSE_POINT: u32 = 0x400;
+    let mut files = Vec::new();
+    let mut pending = vec![(root.to_path_buf(), String::new())];
+    while let Some((directory, prefix)) = pending.pop() {
+        for entry in fs::read_dir(&directory).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let name = entry
+                .file_name()
+                .into_string()
+                .expect("synthetic names are UTF-8");
+            let relative = format!("{prefix}/{name}");
+            let metadata = fs::symlink_metadata(&path).unwrap();
+            assert_eq!(
+                metadata.file_attributes() & REPARSE_POINT,
+                0,
+                "unexpected reparse point in the churn fixture: {relative}"
+            );
+            if metadata.is_dir() {
+                pending.push((path, relative));
+            } else if metadata.is_file() {
+                files.push((relative, metadata.len() as i64));
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+// The catalogue's view of the same files: (relative path, logical bytes), sorted.
+fn catalogue_files(db: &Connection) -> Vec<(String, i64)> {
+    let mut statement = db
+        .prepare(
+            "WITH RECURSIVE paths(id,path) AS (
+        SELECT id,'' FROM dir WHERE parent_id IS NULL UNION ALL
+        SELECT d.id,p.path||'/'||d.name FROM dir d JOIN paths p ON d.parent_id=p.id)
+        SELECT p.path||'/'||f.name,f.logical FROM file f JOIN paths p ON f.dir_id=p.id",
+        )
+        .unwrap();
+    let mut files: Vec<(String, i64)> = statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    files.sort();
+    files
+}
+
 #[test]
 fn concurrent_create_delete_rename_grow_reconciles_exactly_to_fresh_scan() {
     let files = std::env::var("LOOMWARD_CHURN_FILES")
@@ -374,19 +451,30 @@ fn concurrent_create_delete_rename_grow_reconciles_exactly_to_fresh_scan() {
         return;
     };
     let job = lab.start("full");
+    // The writer starts only after the job is observed running, so it cannot race a scan that has not
+    // begun. A scan that reaches a terminal state before that observation fails here, explicitly.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let state = call(&lab.service, "jobs.get", json!({"job_id":job}))["job"]["state"].clone();
+        if state == "running" {
+            break;
+        }
+        assert_eq!(
+            state, "queued",
+            "scan reached a terminal state before it was observed running"
+        );
+        assert!(
+            Instant::now() < deadline,
+            "scan never ran while the writer was ready"
+        );
+        std::thread::yield_now();
+    }
     let (overlap, batches, done) = std::thread::scope(|scope| {
         let writer = scope.spawn(|| {
-            let deadline = Instant::now() + Duration::from_secs(30);
-            while call(&lab.service, "jobs.get", json!({"job_id":job}))["job"]["state"] != "running"
-            {
-                assert!(
-                    Instant::now() < deadline,
-                    "scan never ran while writer was ready"
-                );
-                std::thread::yield_now();
-            }
+            let db = lab.db();
             let mut overlap = 0;
             for batch in 0..128 {
+                let before = enumerating(&lab, &db, &job);
                 let directory = lab
                     .tree
                     .root
@@ -412,9 +500,8 @@ fn concurrent_create_delete_rename_grow_reconciles_exactly_to_fresh_scan() {
                 if deleted.exists() {
                     fs::remove_file(deleted).unwrap();
                 }
-                if call(&lab.service, "jobs.get", json!({"job_id":job}))["job"]["state"]
-                    == "running"
-                {
+                let after = enumerating(&lab, &db, &job);
+                if before && after {
                     overlap += 1;
                 }
                 std::thread::sleep(Duration::from_millis(1));
@@ -425,9 +512,24 @@ fn concurrent_create_delete_rename_grow_reconciles_exactly_to_fresh_scan() {
         let (overlap, batches) = writer.join().unwrap();
         (overlap, batches, done)
     });
-    assert!(overlap > 0, "no mutation batch overlapped a running scan");
+    assert!(
+        overlap >= 8,
+        "only {overlap} of {batches} mutation batches overlapped enumeration (floor 8)"
+    );
     assert_eq!(done["state"], "completed", "{done}");
     assert_eq!(lab.scan("refresh")["coverage"], "complete");
+    // Filesystem truth first: the catalogue must hold exactly the files on disk, with their lengths.
+    let walked = walk_files(&lab.tree.root);
+    let catalogued = catalogue_files(&lab.db());
+    assert_eq!(
+        catalogued.len(),
+        walked.len(),
+        "catalogue file count differs from the filesystem walk"
+    );
+    assert_eq!(
+        catalogued, walked,
+        "catalogue (path, logical bytes) differs from the filesystem walk"
+    );
     let actual = observations(&lab.db());
     let fresh_state = lab._temp.path().join("fresh-state");
     let fresh = service(fresh_state.clone(), lab.tree.root.clone());
@@ -461,5 +563,5 @@ fn concurrent_create_delete_rename_grow_reconciles_exactly_to_fresh_scan() {
     for (actual, expected) in actual.iter().zip(&expected) {
         assert_eq!(actual, expected, "catalogue observation differs");
     }
-    eprintln!("CHURN VERIFIED: {files} initial files, {batches} mutation batches, {overlap} batches during scan, {} exact catalogue observations",actual.len());
+    eprintln!("CHURN VERIFIED: {files} initial files, {batches} mutation batches, {overlap} batches during enumeration, {} exact catalogue observations, {} files equal to the filesystem walk", actual.len(), walked.len());
 }

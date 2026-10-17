@@ -9,6 +9,11 @@ fn temp() -> Option<tempfile::TempDir> {
         assert!(
             matches!(generate(temp.path(), Profile::LongPath), Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied)
         );
+        // LOOMWARD_REQUIRE_NATIVE=1 makes a host that cannot run the native case a failure.
+        assert!(
+            std::env::var("LOOMWARD_REQUIRE_NATIVE").as_deref() != Ok("1"),
+            "LOOMWARD_REQUIRE_NATIVE=1 but native pathological fixtures refuse an elevated token"
+        );
         eprintln!("UNVERIFIED: native pathological fixtures refuse an elevated token");
         return None;
     }
