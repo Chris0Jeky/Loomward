@@ -75,6 +75,24 @@ describe('duplicates jobs', () => {
       expect((await client.call('jobs.list', { kinds: ['duplicates'], limit: 50 })).result.jobs[0]?.duplicates).toBeUndefined();
     }
   });
+  it('drops a jobs.list answer that arrives after the engine restarted', async () => {
+    let requestId = '';
+    let answer!: () => void;
+    const listed = new Promise<void>((resolve) => { answer = resolve; });
+    session.client = new Client({ call: async (r: { request_id: string; command: string }) => {
+      requestId = r.request_id;
+      await listed;
+      return { protocol: 'loomward/3', request_id: r.request_id, ok: true, result: { jobs: [job({ rev: 3, state: 'completed', duplicates: DUPLICATES_FIXTURE })] }, meta: {} };
+    } } as unknown as Transport);
+    const store = new Duplicates();
+    store.onEvent({ event: 'stream.hello', epoch: 'one' } as EventEnvelope);
+    const syncing = store.sync();
+    await vi.waitFor(() => expect(requestId).not.toBe(''));
+    store.onEvent({ event: 'stream.hello', epoch: 'two' } as EventEnvelope); // the engine restarted: the old lifetime is gone
+    answer();
+    await syncing;
+    expect(store.book).toEqual({});
+  });
   it('shows a root refusal as a problem without inventing a result', async () => {
     // q-10: personal reads are open, so no refusal is a special gated state any more.
     session.client = new Client({ call: async (r: { request_id: string }) => ({ protocol: 'loomward/3', request_id: r.request_id, ok: false, error: { code: 'permission_denied', message: 'a personal session scans the folders you granted only', retryable: false, detail: { reason: 'personal_session_requires_owner_grant' } } }) } as unknown as Transport);

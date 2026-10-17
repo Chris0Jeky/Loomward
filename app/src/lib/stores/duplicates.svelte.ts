@@ -9,6 +9,8 @@ export class Duplicates {
   pending = $state(false);
   problem = $state('');
   private epoch: string | null = null;
+  /** Bumped when the engine restarts: an answer requested before that belongs to the previous lifetime and is dropped (as Explorer's generation does). */
+  private generation = 0;
 
   apply(job: Job): void {
     if (job.kind !== 'duplicates' || !job.root_id) return;
@@ -17,21 +19,32 @@ export class Duplicates {
     this.book = { ...this.book, [job.root_id]: job };
   }
   onEvent(event: EventEnvelope): void {
-    if (this.epoch !== null && this.epoch !== event.epoch) this.book = {};
+    if (this.epoch !== null && this.epoch !== event.epoch) { this.book = {}; this.generation++; }
     this.epoch = event.epoch;
     if (event.event === 'job.state') this.apply((event.data as unknown as JobResult).job);
   }
   async sync(): Promise<void> {
     const c = session.client;
     if (!c) return;
+    const generation = this.generation;
     const { result } = await c.call('jobs.list', { kinds: ['duplicates'], limit: 50 });
+    if (generation !== this.generation) return;
     for (const job of result.jobs) this.apply(job);
-    for (const job of Object.values(this.book)) if (isActive(job.state)) await this.refresh(job);
+    for (const job of Object.values(this.book)) {
+      if (generation !== this.generation) return;
+      if (isActive(job.state)) await this.refresh(job);
+    }
   }
   async refresh(job: Job): Promise<void> {
     if (!session.client) return;
-    try { this.apply((await session.client.call('jobs.get', { job_id: job.job_id })).result.job); }
-    catch (e) { this.problem = session.handle(e); }
+    const generation = this.generation;
+    try {
+      const { result } = await session.client.call('jobs.get', { job_id: job.job_id });
+      if (generation === this.generation) this.apply(result.job);
+    } catch (e) {
+      const message = session.handle(e); // a transport fault is still a fault; the problem text only for this lifetime
+      if (generation === this.generation) this.problem = message;
+    }
   }
   async start(rootId: string): Promise<void> {
     if (!session.client || this.pending) return;
