@@ -628,7 +628,11 @@ new folder name, every exact item name in sorted order, bytes, identities and pr
 owner approves. An approval is single use and expires after 30 minutes. `copy.start` rebuilds the manifest from
 fresh observations and is refused unless it has no refusal and exactly the approved digest: another membership
 or destination is `digest_mismatch`, other bytes or identities under the same membership are `source_changed`,
-a revocation since approval is `grant_revoked`. v1 always creates one new folder inside the destination parent
+a revocation since approval is `grant_revoked`, and a destination parent that no longer opens as its pinned
+identity under its grant's root (renamed, replaced, removed or moved) is `destination_changed`, before any effect.
+A refusal's `node_id` names the refused entry's catalogue node when the catalogue holds that source path with the
+same native file ID; it is null for an operation-wide refusal and for an entry the catalogue does not hold under
+that identity, never a guessed node. v1 always creates one new folder inside the destination parent
 (" (2)", " (3)" when the name is taken) and never writes into an existing folder (docs/47 Q3 open).
 
 ## Lazy meaning threads

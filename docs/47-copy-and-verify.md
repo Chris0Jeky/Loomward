@@ -363,6 +363,7 @@ Checked at preview (P), at start or resume (S) and per item at open (I). "Resuma
 | `insufficient_space` | caller-available bytes < need + reserve, or preallocation failed | P, S, I | yes |
 | `destination_inside_source` | a copied folder is the destination parent or one of its ancestors (compared by identity) | P, S | no |
 | `destination_cloud_synced`, `destination_unsupported_volume`, `destination_protected` | sync root; removable, network or non-NTFS/ReFS volume; state directory or the scan fences of #284/#286 | P, S | no |
+| `destination_changed` | the destination parent no longer opens as its pinned identity, or its ancestry no longer holds its grant's root (renamed, replaced, removed or moved after approval) | S | no |
 | `case_collision` | two names fold equal under the destination's rules (CompareStringOrdinal, ignore case) | P | no |
 | `name_unrepresentable` | reserved device name, trailing dot or space, component over 255 units [W13] | P | no |
 | `path_too_long` | final path over 32,767 units [W13] (over 259 is a warning: many apps and the shell cannot open it [W13]) | P | no |
