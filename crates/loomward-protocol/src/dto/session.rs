@@ -45,6 +45,8 @@ pub struct SessionInfoFeatures {
     pub gpu_available: bool,
     /// The desktop adapter's Rust-side save dialog for `diagnostics.save` (docs/42 ADR-V3-24).
     pub diagnostics_save: bool,
+    /// The engine honours the federated `search.query` fields (docs/46 section 4, F1).
+    pub federated_search: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -675,12 +675,14 @@ dependencies = [
 name = "loomward-lab"
 version = "0.1.0"
 dependencies = [
+ "loomward-catalog",
  "loomward-engine",
  "loomward-protocol",
+ "loomward-service",
  "loomward-windows",
+ "rusqlite",
  "serde",
  "serde_json",
- "sha2",
  "tempfile",
  "windows-sys",
 ]

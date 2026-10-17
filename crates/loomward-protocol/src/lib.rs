@@ -12,6 +12,7 @@ pub mod dto;
 pub mod envelope;
 pub mod error;
 pub mod event;
+pub mod query_grammar;
 pub mod service;
 pub mod types;
 

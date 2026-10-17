@@ -118,6 +118,8 @@ pub struct NativeSource {
     path_query_error: Option<i32>,
     #[cfg(any(test, feature = "fixtures"))]
     filesystem: Option<&'static str>,
+    #[cfg(any(test, feature = "fixtures"))]
+    root_hint_error: Option<u32>,
 }
 impl NativeSource {
     /// A source sharing this run's cancellation.
@@ -150,6 +152,12 @@ impl NativeSource {
     #[cfg(any(test, feature = "fixtures"))]
     pub fn with_filesystem(mut self, name: &'static str) -> Self {
         self.filesystem = Some(name);
+        self
+    }
+    /// Fail reopen's root-hinted `OpenFileById` with this Win32 code, in disposable fixtures only.
+    #[cfg(any(test, feature = "fixtures"))]
+    pub fn with_root_hint_failure(mut self, code: u32) -> Self {
+        self.root_hint_error = Some(code);
         self
     }
 }
@@ -777,32 +785,23 @@ impl DirSource for NativeSource {
                 descriptor.Anonymous.ExtendedFileId.Identifier = id;
             }
         }
-        let handle = {
-            let _profile = profile::OPEN.start();
-            let handle = unsafe {
-                OpenFileById(
-                    root.file.as_raw_handle(),
-                    &descriptor,
-                    FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                    null(),
-                    FILE_FLAG_BACKUP_SEMANTICS
-                        | FILE_FLAG_OPEN_REPARSE_POINT
-                        | FILE_FLAG_OPEN_NO_RECALL,
-                )
-            };
-            // Read the thread's last error before the timer's drop can run platform code.
-            if handle == INVALID_HANDLE_VALUE {
-                return Err(last_error());
-            }
-            handle
+        #[cfg(any(test, feature = "fixtures"))]
+        let hinted = match self.root_hint_error {
+            Some(code) => Err(SourceError::Io(code as i32)),
+            None => open_by_id(&root.file, &descriptor),
         };
-        let result = opened(
-            self,
-            Arc::new(unsafe { File::from_raw_handle(handle) }),
-            identity.id,
-            Some(root.root.clone()),
-        )?;
+        #[cfg(not(any(test, feature = "fixtures")))]
+        let hinted = open_by_id(&root.file, &descriptor);
+        let file = match hinted {
+            // #292: a filter on some Windows 11 hosts refuses ID opens relative to a directory
+            // under AppData. Any handle on the volume is an equally valid hint, and the identity
+            // and volume checks below still bind whatever this opens.
+            Err(SourceError::Io(code)) if code == ERROR_NOT_SUPPORTED as i32 => {
+                open_by_id(&volume_root(&root.file)?, &descriptor)?
+            }
+            other => other?,
+        };
+        let result = opened(self, Arc::new(file), identity.id, Some(root.root.clone()))?;
         if result.1.volume_serial != identity.volume_serial {
             return Err(SourceError::IdentityChanged);
         }
@@ -832,6 +831,65 @@ impl DirSource for NativeSource {
         }
         self.list_validated(dir, sink, directory_attributes(&dir.file).map(|_| ()))
     }
+}
+
+/// Open a directory by file ID on the volume `hint` lives on, without following reparse points.
+fn open_by_id(hint: &File, descriptor: &FILE_ID_DESCRIPTOR) -> Result<File, SourceError> {
+    let _profile = profile::OPEN.start();
+    let handle = unsafe {
+        OpenFileById(
+            hint.as_raw_handle(),
+            descriptor,
+            FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            null(),
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_OPEN_NO_RECALL,
+        )
+    };
+    // Read the thread's last error before the timer's drop can run platform code.
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(last_error());
+    }
+    Ok(unsafe { File::from_raw_handle(handle) })
+}
+
+/// A metadata handle on the root directory of the volume `file` lives on, by volume GUID.
+fn volume_root(file: &File) -> Result<File, SourceError> {
+    let mut path = vec![0u16; 32768];
+    let n = unsafe {
+        GetFinalPathNameByHandleW(
+            file.as_raw_handle(),
+            path.as_mut_ptr(),
+            path.len() as u32,
+            FILE_NAME_NORMALIZED | VOLUME_NAME_GUID,
+        )
+    } as usize;
+    if n == 0 {
+        return Err(last_error());
+    }
+    if n >= path.len() {
+        return Err(SourceError::Io(ERROR_FILENAME_EXCED_RANGE as i32));
+    }
+    // `\\?\Volume{GUID}\rest`: keep through the separator after the GUID, then terminate.
+    let end = (4..n)
+        .find(|&i| path[i] == u16::from(b'\\'))
+        .ok_or(SourceError::Refused)?;
+    path[end + 1] = 0;
+    let handle = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            null(),
+            OPEN_EXISTING,
+            crate::win::metadata_open_flags(),
+            null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(last_error());
+    }
+    Ok(unsafe { File::from_raw_handle(handle) })
 }
 
 fn normalized_path(file: &File) -> Result<Vec<u16>, i32> {

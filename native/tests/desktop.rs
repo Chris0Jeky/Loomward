@@ -563,7 +563,7 @@ fn identity_refused(root: &std::path::Path) -> bool {
 fn nonstandard_profile_parent_does_not_fence_unrelated_siblings() {
     use loomward_desktop::dialogs::validate_picked_folder;
     // The system temp directory is inside AppData, which the shared grant validator refuses.
-    let tmp = tempfile::tempdir_in(".").unwrap();
+    let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
     let profile = tmp.path().join("fixture-home");
     let sibling = tmp.path().join("fixture-dataset");
     std::fs::create_dir(&profile).unwrap();
@@ -582,7 +582,7 @@ fn nonstandard_profile_parent_does_not_fence_unrelated_siblings() {
 #[test]
 fn picker_fences_additional_credential_stores_case_insensitively() {
     use loomward_desktop::dialogs::validate_picked_folder;
-    let tmp = tempfile::tempdir_in(".").unwrap();
+    let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
     let profile = tmp.path().join("profiles/fixture-user");
     for store in [".docker", ".CARGO", ".npm", ".terraform.d", ".gemini"] {
         let path = profile.join(store).join("nested");
@@ -870,7 +870,7 @@ fn raw_ipc_enforces_encoded_size_duplicates_and_remote_origin_denial() {
 #[test]
 fn picked_folder_uses_grant_rules_and_fences_profiles_and_stores() {
     use loomward_desktop::dialogs::validate_picked_folder;
-    let tmp = tempfile::tempdir_in(".").unwrap();
+    let tmp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
     let profile = tmp.path().join("profiles").join("fixture-user");
     let allowed = profile.join("Documents").join("lab");
     for path in [
@@ -1195,7 +1195,7 @@ fn state_kept_inside_the_install_directory_moves_out_once() {
 #[test]
 fn a_synthetic_session_cannot_read_personal_state() {
     let base = tempfile::tempdir().unwrap();
-    let folder = tempfile::tempdir_in(".").unwrap();
+    let folder = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
     std::fs::write(folder.path().join("fixture.txt"), b"synthetic").unwrap();
     let personal = engine_desktop(&launch_args(&[]).unwrap(), base.path(), folder.path());
     let granted = ok(
@@ -1240,7 +1240,7 @@ fn a_synthetic_session_cannot_read_personal_state() {
 fn engine_events_revocation_cancellation_and_budgets_flow_through_the_adapter() {
     use loomward_protocol::{EventEnvelope, EventName};
     let base = tempfile::tempdir().unwrap();
-    let folder = tempfile::tempdir_in(".").unwrap();
+    let folder = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
     for i in 0..3 {
         std::fs::write(folder.path().join(format!("fixture-{i}.txt")), b"synthetic").unwrap();
     }
@@ -1400,7 +1400,7 @@ impl NativeDialogs for FilePicker {
 #[test]
 fn the_picked_receipt_path_stays_in_rust() {
     let base = tempfile::tempdir().unwrap();
-    let folder = tempfile::tempdir_in(".").unwrap();
+    let folder = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
     let receipt = folder.path().join("synthetic-receipt-marker.json");
     let snapshot = import_payload()["snapshot_id"].clone();
     std::fs::write(

@@ -1,7 +1,6 @@
 use super::{capability_names, command_line, Role};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::{
     ffi::OsStr,
     fs::{self, File},
@@ -36,8 +35,6 @@ use windows_sys::Win32::{
     },
 };
 
-const PINNED_CODEX: &str = "9e7c59c05cc1ce5677b1f94e835b2ac038ca3be14504e78d558eacdb0ea3f55d";
-const SYNTHETIC_PROMPT: &str = "Reply with the fixed synthetic string LOOMWARD_SYNTHETIC_ONLY.";
 /// The one profile the owner authorised (agent-hq decision loomward-teacher-sandbox-path, (c)).
 pub(super) const PROFILE: &str = "Loomward.L15b.Measure";
 /// HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS).
@@ -699,71 +696,10 @@ fn measure(root: &Path, registered: Option<&str>) -> io::Result<Value> {
         // A failed first launch is a stop, never an invitation to register a profile.
         launch_blocked = cases.last().unwrap()["launch"]["create_process"]["ok"] != true;
     }
-    let source = PathBuf::from(std::env::var_os("APPDATA").ok_or_else(|| io::Error::other("APPDATA missing"))?).join("npm/node_modules/@openai/codex/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe");
-    let codex = match fs::read(&source) {
-        Ok(binary) => {
-            let digest = format!("{:x}", Sha256::digest(&binary));
-            if digest != PINNED_CODEX {
-                json!({"blocked": "pinned_binary_mismatch", "sha256": digest})
-            } else if cases.first().unwrap()["launch"]["create_process"]["ok"] != true {
-                json!({"blocked": "container_launch_failed", "sha256": digest})
-            } else {
-                let native = lab.join("codex.exe");
-                fs::write(&native, binary)?;
-                let job = job()?;
-                let mut results = Vec::new();
-                for (tag, args, stdin) in [
-                    ("codex-version", vec!["--version".into()], ""),
-                    (
-                        "codex-exec",
-                        vec![
-                            "--no-daemon".into(),
-                            "exec".into(),
-                            "--ignore-user-config".into(),
-                            "--ignore-rules".into(),
-                            "--ephemeral".into(),
-                            "--skip-git-repo-check".into(),
-                            "-s".into(),
-                            "read-only".into(),
-                            "-m".into(),
-                            "gpt-6.1-sol".into(),
-                            "-c".into(),
-                            "model_reasoning_effort=\"medium\"".into(),
-                            "-c".into(),
-                            "approval_policy=\"never\"".into(),
-                            "--disable".into(),
-                            "code_mode_host".into(),
-                            "--disable".into(),
-                            "shell_tool".into(),
-                            "--disable".into(),
-                            "multi_agent".into(),
-                            "--json".into(),
-                            "-".into(),
-                        ],
-                        SYNTHETIC_PROMPT,
-                    ),
-                ] {
-                    let result = match launch(Launch {
-                        exe: &native,
-                        args: args.clone(),
-                        lab: &lab,
-                        tag,
-                        container: sid.0,
-                        internet: false,
-                        job: Some(&job),
-                        stdin,
-                    }) {
-                        Ok(v) => v,
-                        Err(e) => json!({"setup": outcome::<()>(Err(e))}),
-                    };
-                    let clean = |suffix| public_log(&lab.join(format!("{tag}.{suffix}")), root);
-                    results.push(json!({"role": tag, "argv": args, "launch": result, "stdout": clean("stdout"), "stderr": clean("stderr")}));
-                }
-                json!({"sha256": digest, "capabilities": [], "auth": "fresh empty CODEX_HOME; owner auth never copied or granted", "runs": results, "tool_canaries": "blocked-by-design: no owner authentication; no authenticated inference attempted"})
-            }
-        }
-        Err(e) => json!({"discovery": outcome::<()>(Err(e))}),
-    };
+    // #292: Codex is not launched. The teacher broker path never runs Codex inside the container,
+    // and its pinned binary hash went stale with every Codex update (the last pin, 9e7c59c0...3f55d,
+    // was refused as `pinned_binary_mismatch` in evidence/v3/teacher-sandbox-registered.json).
+    let codex = json!({"skipped": "not launched since #292: the teacher broker path runs no Codex in the container"});
     Ok(
         json!({"schema": 1, "platform": "Windows", "measured_at_unix_seconds": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(), "elevated": false, "profile_registered": registered.is_some(), "profile_lookup": profile_lookup, "container_sid": container, "controls": {"process_launch": launch_control, "identity": control_identity, "stderr": control_stderr, "ungranted_canary": outcome(fs::read(canary)), "granted_canary": outcome(fs::read(allowed)), "system_root_listing": outcome(fs::read_dir(&system_root)), "network": controls}, "cases": cases, "codex": codex}),
     )

@@ -1,0 +1,37 @@
+{
+  "def": "SearchRequest",
+  "value": {
+    "root_id": null,
+    "text": "",
+    "extension": null,
+    "min_bytes": null,
+    "max_bytes": null,
+    "modified_after": null,
+    "modified_before": null,
+    "kind": "any",
+    "limit": 50,
+    "cursor": null,
+    "sources": [
+      "own",
+      "everything"
+    ],
+    "terms": [
+      {
+        "text": "report",
+        "mode": "token",
+        "negated": false
+      },
+      {
+        "text": "draft",
+        "mode": "substring",
+        "negated": true
+      }
+    ],
+    "extensions": [
+      "docx",
+      "pdf"
+    ],
+    "collection_id": "co_synth1",
+    "under_node_id": "nd_0010"
+  }
+}
