@@ -102,6 +102,16 @@ mod lab_copy {
         let slice = lab_slice(&lab.svc, &lab.root);
         let a = child_named(&slice, "a").unwrap();
         let b = child_named(&slice, "b").unwrap();
+        // A checkout inside a cloud-synced folder (OneDrive) puts the lab there, and the copy rightly
+        // refuses a cloud-synced destination: skip with the reason rather than fail.
+        let probe = preview(&lab.svc, &a, &b);
+        if probe["refusals"]
+            .as_array()
+            .is_some_and(|r| r.iter().any(|x| x["code"] == "destination_cloud_synced"))
+        {
+            eprintln!("skipped: this checkout's lab destination is cloud-synced (destination_cloud_synced)");
+            return None;
+        }
         Some((lab, a, b))
     }
 
