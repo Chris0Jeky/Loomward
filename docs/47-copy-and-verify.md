@@ -512,7 +512,9 @@ file ID with the original or planned creation time. Measured in C5: a held named
 ancestor rename (H2 negative for streams), so stream holds are released for publish and the streams
 re-hashed after it. Revocation follows section 5 (#526): each plan names its grants, a revoke fences
 the journal, and every effect step reads the fence under the run's admission lock; H7 measured positive
-on NTFS. No resume yet: a stopped run exits by Abandon. Evidence:
+on NTFS. `copy.start` re-checks its grants and registers the run under the same lock a revocation
+holds, so a revoke either refuses the start or fences the live run. A revocation waits up to 30 s per
+running copy for its in-flight step, then joins it, while holding that lock (lab only; noted for C8). No resume yet: a stopped run exits by Abandon. Evidence:
 `evidence/v3/copy-executor-lab.md`.
 
 **Gate evidence (what C8 must show, beside doc 45's bar and HUMAN_TODO q-39).**

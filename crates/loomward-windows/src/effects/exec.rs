@@ -468,7 +468,8 @@ impl Control {
             }
         }
     }
-    fn fenced(&self) -> bool {
+    /// A revocation or emergency stop has fenced this run.
+    pub fn fenced(&self) -> bool {
         self.fenced.load(Ordering::SeqCst)
     }
     /// Sleep up to `wait`, ending early once the owner cancels or a fence lands. False when cancelled.

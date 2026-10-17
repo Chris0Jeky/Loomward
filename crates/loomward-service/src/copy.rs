@@ -39,6 +39,24 @@ pub(crate) struct Copies {
     running: Mutex<HashMap<u64, Run>>,
     /// The Q1 setting for this service (tests flip it; production reads the constant).
     pub(crate) removal: AtomicBool,
+    /// Test seams: `copy.start` calls the gate at "prepared" (tree walked, nothing registered) and
+    /// "spawned" (worker running, not yet in `running`); new runs get the hook on their control.
+    #[cfg(all(test, windows))]
+    pub(crate) gate: Mutex<Option<Arc<dyn Fn(&str) + Send + Sync>>>,
+    #[cfg(all(test, windows))]
+    #[allow(clippy::type_complexity)]
+    pub(crate) hook: Mutex<
+        Option<
+            Arc<
+                dyn Fn(
+                        loomward_windows::effects::exec::Point,
+                        &loomward_windows::effects::exec::Control,
+                    ) -> loomward_windows::effects::exec::Flow
+                    + Send
+                    + Sync,
+            >,
+        >,
+    >,
 }
 
 #[cfg(windows)]
@@ -122,6 +140,10 @@ impl Copies {
                 ops: Mutex::new(ops),
                 running: Mutex::default(),
                 removal,
+                #[cfg(test)]
+                gate: Mutex::default(),
+                #[cfg(test)]
+                hook: Mutex::default(),
             }
         }
         #[cfg(not(windows))]
@@ -132,6 +154,16 @@ impl Copies {
                 ops: Mutex::default(),
                 removal,
             }
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
+impl Copies {
+    fn at(&self, point: &str) {
+        let gate = self.gate.lock().unwrap().clone();
+        if let Some(gate) = gate {
+            gate(point);
         }
     }
 }
@@ -523,6 +555,29 @@ impl Inner {
                 ));
             }
             let (fresh, mut plan) = self.copy_prepare(&sources, &destination)?;
+            #[cfg(test)]
+            self.copies.at("prepared");
+            // Review of #544: the grant check above ran before the tree walk, and a revocation
+            // may have landed since. Revocation holds `mutation` from its commit through
+            // `copies_fence`, so under it the grants are re-checked and the run is registered in
+            // `ops` and `running` atomically: a revoke either refuses this start or fences this run.
+            let _registering = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
+            for &grant in &plan.grants {
+                let state: Option<String> = self
+                    .db()
+                    .query_row(
+                        "SELECT state FROM st.root_grant WHERE id=?1",
+                        [grant],
+                        |r| r.get(0),
+                    )
+                    .ok();
+                if state.as_deref() != Some("active") {
+                    return Err(with_reason(
+                        fail(ErrorCode::PermissionDenied, "the copy cannot start"),
+                        "grant_revoked",
+                    ));
+                }
+            }
             let admitted = approval
                 .admit(&fresh, 0, now_ns() / 1_000_000)
                 .map_err(|code| {
@@ -543,11 +598,17 @@ impl Inner {
             };
             self.copies.pending.lock().unwrap().remove(&id);
             self.copies.ops.lock().unwrap().insert(id.clone(), op);
-            let control = Arc::new(exec::Control::new(
+            let control = exec::Control::new(
                 self.copies
                     .removal
                     .load(std::sync::atomic::Ordering::SeqCst),
-            ));
+            );
+            #[cfg(test)]
+            let control = match self.copies.hook.lock().unwrap().clone() {
+                Some(hook) => control.with_hook(move |p, c| hook(p, c)),
+                None => control,
+            };
+            let control = Arc::new(control);
             let (worker_store, worker_control) = (store.clone(), control.clone());
             let thread = std::thread::Builder::new()
                 .name("lw-copy".into())
@@ -559,6 +620,8 @@ impl Inner {
                     let _ = exec::cancel(&store, op, &plan, &control);
                     fail(ErrorCode::ResourceBudget, "no worker")
                 })?;
+            #[cfg(test)]
+            self.copies.at("spawned");
             self.copies
                 .running
                 .lock()
@@ -593,6 +656,9 @@ impl Inner {
         #[cfg(windows)]
         {
             use loomward_windows::effects::exec;
+            // Serialised with `copies_fence` (review of #544): one of them stops and joins the run,
+            // the other finds it settled.
+            let _m = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
             let running = self.copies.running.lock().unwrap().remove(&op);
             if let Some(run) = running {
                 run.control.cancel();

@@ -271,6 +271,107 @@ mod lab_copy {
         }
     }
 
+    fn lab_grant(svc: &Service) -> i64 {
+        svc.inner
+            .db()
+            .query_row("SELECT id FROM st.root_grant", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// Bytes in every file under `p` (0 when `p` holds only empty files and folders).
+    fn bytes_under(p: &Path) -> u64 {
+        contents(p).values().flatten().map(|b| b.len() as u64).sum()
+    }
+
+    /// Review of #544 (HIGH 1, scenario A): a revoke that lands while `copy.start` walks the tree,
+    /// after its first grant check, refuses the start: nothing is journaled, created or published.
+    #[test]
+    fn a_revoke_during_the_start_walk_refuses_the_start() {
+        let Some((lab, a, b)) = scanned() else { return };
+        let svc = &lab.svc;
+        let grant = lab_grant(svc);
+        let p = preview(svc, &a, &b);
+        let consent = json!({"operation_id": p["operation_id"], "digest": digest(&p)});
+        ok("copy.approve", call(svc, "copy.approve", consent.clone()));
+        let inner = Arc::downgrade(&svc.inner);
+        *svc.inner.copies.gate.lock().unwrap() = Some(Arc::new(move |point: &str| {
+            if point == "prepared" {
+                inner.upgrade().unwrap().revoke(grant).unwrap();
+            }
+        }));
+        let e = err(call(svc, "copy.start", consent));
+        assert_eq!(reason(&e), Some("grant_revoked"), "{e:?}");
+        assert_eq!(std::fs::read_dir(lab.path.join("b")).unwrap().count(), 0);
+    }
+
+    /// Review of #544 (HIGH 1, scenario B): a revoke between the run's registration in `ops` and in
+    /// `running` (its worker already live) must fence the live worker, not a throwaway control. The
+    /// worker waits after its first identity batch until fenced (10 s at most): unfenced, it would go
+    /// on to write bytes after the revoke.
+    #[test]
+    fn a_revoke_while_the_run_registers_fences_the_live_worker() {
+        let Some((lab, a, b)) = scanned() else { return };
+        let svc = &lab.svc;
+        let grant = lab_grant(svc);
+        let p = preview(svc, &a, &b);
+        let op = p["operation_id"].as_str().unwrap().to_owned();
+        let consent = json!({"operation_id": op, "digest": digest(&p)});
+        ok("copy.approve", call(svc, "copy.approve", consent.clone()));
+        let (reached, wait) = std::sync::mpsc::channel::<()>();
+        let (after, was_fenced) = std::sync::mpsc::channel::<bool>();
+        let fired = std::sync::atomic::AtomicBool::new(false);
+        *svc.inner.copies.hook.lock().unwrap() = Some(Arc::new(move |p, c| {
+            use loomward_windows::effects::exec::{Flow, Point};
+            if matches!(p, Point::Identities(_))
+                && !fired.swap(true, std::sync::atomic::Ordering::SeqCst)
+            {
+                reached.send(()).unwrap();
+                let until = Instant::now() + Duration::from_secs(10);
+                while !c.fenced() && Instant::now() < until {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                after.send(c.fenced()).unwrap();
+            }
+            Flow::Continue
+        }));
+        let revoker: Arc<Mutex<Option<std::thread::JoinHandle<()>>>> = Default::default();
+        let (inner, slot) = (Arc::downgrade(&svc.inner), revoker.clone());
+        let wait = Mutex::new(wait);
+        *svc.inner.copies.gate.lock().unwrap() = Some(Arc::new(move |point: &str| {
+            if point != "spawned" {
+                return;
+            }
+            wait.lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(60))
+                .unwrap();
+            let inner = inner.upgrade().unwrap();
+            let (done, finished) = std::sync::mpsc::channel();
+            *slot.lock().unwrap() = Some(std::thread::spawn(move || {
+                inner.revoke(grant).unwrap();
+                let _ = done.send(());
+            }));
+            // Unserialised, the revoke completes inside this window; serialised, it waits.
+            let _ = finished.recv_timeout(Duration::from_secs(2));
+        }));
+        ok("copy.start", call(svc, "copy.start", consent));
+        // The live worker itself must see the fence (a throwaway control leaves it running).
+        assert!(
+            was_fenced.recv_timeout(Duration::from_secs(30)).unwrap(),
+            "the revoke fenced a control the live worker does not read"
+        );
+        // Serialised, the revoke joins the stopped worker before it returns.
+        revoker.lock().unwrap().take().unwrap().join().unwrap();
+        let s = settle_copy(svc, &op);
+        assert_eq!(s["state"], "cancelled", "{s:?}");
+        assert_eq!(s["refusal"]["code"], "grant_revoked", "{s:?}");
+        assert_eq!(
+            bytes_under(&lab.path.join("b")),
+            0,
+            "bytes written after the revoke"
+        );
+    }
+
     /// #526 revocation wiring: revoking the lab root a copy uses fences it in the journal and cancels a
     /// waiting run (docs/47 section 5: blocked -> cancelling), reported `grant_revoked`; the Q1 default
     /// leaves the staging. A running run stops at its next effect step (the windows lab suite).
