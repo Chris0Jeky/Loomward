@@ -221,6 +221,20 @@ identity is in the journal. Nothing is ever adopted by name. Three ordering rule
   Creates are batched, up to 256 items per identity commit.
 - `verified` records may be group-committed (every 256 items or 250 ms), because a missing one only causes a re-check.
 
+The journal stores a per-operation head (last sequence and chain hash) in the same SQLite transaction as
+each append, including `started`. Store replay and recovery compare the tail with that head in one read
+snapshot; a mismatch or missing head is `needs_attention`, never an earlier Resume or Confirm. Operations
+whose rows were all lost remain listed by their head. Inserts over an existing `(op_id, seq)` are refused
+before SQLite's REPLACE conflict handling, and updates and deletes are refused by triggers.
+
+On the first open of a legacy database without the head table, Store creates the table and anchors each
+current tail in one `BEGIN IMMEDIATE` transaction. This preserves existing synthetic C5 sessions without
+rewriting their journals. Legacy tail loss before this migration cannot be detected retrospectively; the
+existing hash chain and state-machine validation still apply. Once the table exists, opens never fill
+missing heads or rewrite mismatching ones. The anchor detects independent journal damage, not coordinated
+rewriting of both the journal and its head or restoration of an older whole database. Transaction rollback
+tests inject a head-write failure after the row insert; real power-cut evidence remains the G5 gate.
+
 | Crash between | Disk shows | Recovery decides |
 |---|---|---|
 | approval consumed and staging intent | nothing | `approved` again only with a fresh confirmation; else `cancelled` |

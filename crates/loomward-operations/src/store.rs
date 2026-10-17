@@ -2,7 +2,7 @@
 //! `BEGIN IMMEDIATE` transaction, so a rejected record (stale epoch, illegal step) is never stored.
 use crate::journal::{Entry, Invalid, Record, Replay, Row};
 use crate::manifest::Admitted;
-use crate::recovery::{recover, Disk, Recovery};
+use crate::recovery::{from_replay, Disk, Recovery};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use std::{collections::HashMap, path::Path, time::Duration};
 
@@ -48,6 +48,25 @@ fn load(conn: &Connection, op: u64) -> rusqlite::Result<Vec<Row>> {
     rows.collect()
 }
 
+/// Called inside a transaction, so the head and tail belong to the same SQLite snapshot.
+fn checked_tail(conn: &Connection, op: u64) -> rusqlite::Result<Result<(u64, Vec<u8>), Invalid>> {
+    let read = |sql| -> rusqlite::Result<Option<(u64, Vec<u8>)>> {
+        conn.query_row(sql, [op as i64], |r| {
+            Ok((r.get::<_, i64>(0)? as u64, r.get(1)?))
+        })
+        .optional()
+    };
+    let head = read("SELECT seq,chain FROM op_journal_head WHERE op_id=?1")?;
+    let tail = read("SELECT seq,chain FROM op_journal WHERE op_id=?1 ORDER BY seq DESC LIMIT 1")?;
+    Ok(match (head, tail) {
+        (Some(head), Some(tail)) if head == tail => Ok(tail),
+        (head, _) => Err(Invalid {
+            seq: head.map_or(0, |(seq, _)| seq),
+            why: "journal head does not match tail",
+        }),
+    })
+}
+
 impl Store {
     /// Open the journal's database with the precious-state pragmas of ADR-V3-22 and ensure its tables.
     pub fn open(path: &Path) -> rusqlite::Result<Store> {
@@ -55,11 +74,25 @@ impl Store {
     }
 
     /// Adopt a connection to `state.db`, forcing the precious-state pragmas whatever it was set to.
-    pub fn new(conn: Connection) -> rusqlite::Result<Store> {
+    pub fn new(mut conn: Connection) -> rusqlite::Result<Store> {
         conn.busy_timeout(Duration::from_secs(5))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "FULL")?;
-        conn.execute_batch(SCHEMA_SQL)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let anchored: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='op_journal_head')",
+            [], |r| r.get(0),
+        )?;
+        tx.execute_batch(SCHEMA_SQL)?;
+        if !anchored {
+            // Trust legacy tails once, only when introducing the head table, never on later opens.
+            tx.execute_batch(
+                "INSERT INTO op_journal_head(op_id,seq,chain)
+                SELECT op_id,seq,chain FROM op_journal AS j
+                WHERE seq=(SELECT max(seq) FROM op_journal WHERE op_id=j.op_id)",
+            )?;
+        }
+        tx.commit()?;
         Ok(Store {
             conn,
             cache: HashMap::new(),
@@ -73,9 +106,10 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let op: i64 = tx.query_row("SELECT coalesce(max(op_id),0)+1 FROM op_journal", [], |r| {
-            r.get(0)
-        })?;
+        let op: i64 = tx.query_row(
+            "SELECT coalesce(max(op_id),0)+1 FROM (SELECT op_id FROM op_journal UNION SELECT op_id FROM op_journal_head)",
+            [], |r| r.get(0),
+        )?;
         let op = op as u64;
         let mut replay = Replay::new(op);
         let row = replay.row_for(&Entry {
@@ -93,21 +127,9 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let tail: Option<(i64, Vec<u8>)> = tx
-            .query_row(
-                "SELECT seq,chain FROM op_journal WHERE op_id=?1 ORDER BY seq DESC LIMIT 1",
-                [op as i64],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
-        let Some((seq, chain)) = tail else {
-            return Err(AppendError::Rejected(Invalid {
-                seq: 0,
-                why: "unknown operation",
-            }));
-        };
+        let (seq, chain) = checked_tail(&tx, op)??;
         let mut replay = match self.cache.remove(&op) {
-            Some(r) if r.seq == seq as u64 && r.chain.as_slice() == chain => r,
+            Some(r) if r.seq == seq && r.chain.as_slice() == chain => r,
             _ => Replay::from_rows(op, &load(&tx, op)?)?,
         };
         let row = replay.row_for(&Entry { epoch, record });
@@ -148,20 +170,26 @@ impl Store {
     }
 
     pub fn operations(&self) -> rusqlite::Result<Vec<u64>> {
-        let mut s = self
-            .conn
-            .prepare("SELECT DISTINCT op_id FROM op_journal ORDER BY op_id")?;
+        let mut s = self.conn.prepare(
+            "SELECT op_id FROM op_journal UNION SELECT op_id FROM op_journal_head ORDER BY op_id",
+        )?;
         let ops = s.query_map([], |r| Ok(r.get::<_, i64>(0)? as u64))?;
         ops.collect()
     }
 
     /// The current fence epoch and state as the journal replays them (`Err` when it does not replay).
     pub fn replay(&self, op: u64) -> rusqlite::Result<Result<Replay, Invalid>> {
-        Ok(Replay::from_rows(op, &self.rows(op)?))
+        let tx = self.conn.unchecked_transaction()?;
+        let replay = match checked_tail(&tx, op)? {
+            Ok(_) => Replay::from_rows(op, &load(&tx, op)?),
+            Err(e) => Err(e),
+        };
+        tx.commit()?;
+        Ok(replay)
     }
 
     pub fn recover(&self, op: u64, disk: &impl Disk) -> rusqlite::Result<Recovery> {
-        Ok(recover(op, &self.rows(op)?, disk))
+        Ok(from_replay(op, self.replay(op)?, disk))
     }
 }
 
@@ -169,6 +197,11 @@ fn insert(conn: &Connection, op: u64, row: &Row) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT INTO op_journal(op_id,seq,body,chain) VALUES(?1,?2,?3,?4)",
         params![op as i64, row.seq as i64, row.body, row.chain],
+    )?;
+    conn.execute(
+        "INSERT INTO op_journal_head(op_id,seq,chain) VALUES(?1,?2,?3)
+         ON CONFLICT(op_id) DO UPDATE SET seq=excluded.seq,chain=excluded.chain",
+        params![op as i64, row.seq as i64, row.chain],
     )?;
     Ok(())
 }
