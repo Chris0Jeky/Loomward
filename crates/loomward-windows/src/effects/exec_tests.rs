@@ -7,6 +7,124 @@ use std::{fs, sync::atomic::AtomicU32};
 
 pub(super) const DATE: &str = "2026-10-17";
 
+#[test]
+fn prepare_bounds_pending_before_observing_a_wide_tree() {
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+    let Some(lab) = Lab::new() else { return };
+    let (src, dest) = (lab.src(), lab.dest());
+    fs::create_dir(src.join("wide")).unwrap();
+    for n in 0..8 {
+        fs::write(src.join(format!("wide/{n}")), b"").unwrap();
+    }
+    let invalid = src
+        .join("wide")
+        .join(OsString::from_wide(&[b'z' as u16, 0xD800]));
+    fs::write(&invalid, b"").unwrap();
+    // NTFS lists the synthetic invalid name after the valid children: stop before decoding it.
+    assert!(fs::read_dir(src.join("wide")).unwrap().take(8).all(|e| e
+        .unwrap()
+        .file_name()
+        .to_str()
+        .is_some()));
+    let selected = [PathBuf::from("wide")];
+    let error = prepare_with_limit(&lab.request(&src, &dest, &selected), 8).unwrap_err();
+    assert_eq!(error.to_string(), "manifest_limit");
+    assert!(lab.dest_names().is_empty());
+    fs::remove_file(invalid).unwrap();
+    let (preview, _) = prepare_with_limit(&lab.request(&src, &dest, &selected), 9).unwrap();
+    assert!(preview.refusals.is_empty(), "{:?}", preview.refusals);
+    assert_eq!((preview.files, preview.folders), (8, 1));
+}
+
+#[test]
+fn prepare_bounds_the_initial_selection_before_observing_it() {
+    let Some(lab) = Lab::new() else { return };
+    let (src, dest) = (lab.src(), lab.dest());
+    let selected = vec![PathBuf::from("absent"); 9];
+    let error = prepare_with_limit(&lab.request(&src, &dest, &selected), 8).unwrap_err();
+    assert_eq!(error.to_string(), "manifest_limit");
+    assert!(lab.dest_names().is_empty());
+}
+
+#[test]
+fn unpaired_surrogate_staging_entries_are_never_committed() {
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+    for inject in [Point::Verified(0), Point::AfterPublish] {
+        let Some(lab) = Lab::new() else { return };
+        fs::write(lab.src().join("f"), b"payload").unwrap();
+        let op = lab.start(&["f"]);
+        let dest = lab.dest();
+        let control = Control::new(false).with_hook(move |point, _| {
+            if point == inject {
+                let staging = fs::read_dir(&dest).unwrap().next().unwrap().unwrap().path();
+                let name = OsString::from_wide(&[b'x' as u16, 0xD800]);
+                fs::write(staging.join(name), b"extra").unwrap();
+                assert_incomplete_listing(&staging);
+            }
+            Flow::Continue
+        });
+        let outcome = run(&lab.store, op, &control).unwrap();
+        assert_eq!(
+            outcome.state,
+            OpState::NeedsAttention,
+            "{inject:?}: {outcome:?}"
+        );
+        assert_eq!(
+            outcome.refusal,
+            Some((Refusal::ChangedAfterVerification, None))
+        );
+        assert_eq!(fs::read(lab.src().join("f")).unwrap(), b"payload");
+    }
+}
+
+#[test]
+#[cfg(feature = "fixtures")]
+fn over_limit_staging_entries_are_never_committed() {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f"), b"payload").unwrap();
+    let op = lab.start(&["f"]);
+    let dest = lab.dest();
+    let control = Control::new(false).with_hook(move |point, _| {
+        if point == Point::BeforePublish {
+            let staging = fs::read_dir(&dest).unwrap().next().unwrap().unwrap().path();
+            for n in 0..loomward_operations::MAX_ITEMS {
+                fs::write(staging.join(format!("extra-{n:06}")), b"").unwrap();
+            }
+            assert_eq!(
+                fs::read_dir(&staging).unwrap().count(),
+                loomward_operations::MAX_ITEMS as usize + 1
+            );
+            assert_incomplete_listing(&staging);
+        }
+        Flow::Continue
+    });
+    let outcome = run(&lab.store, op, &control).unwrap();
+    assert_eq!(outcome.state, OpState::NeedsAttention, "{outcome:?}");
+    assert_eq!(
+        outcome.refusal,
+        Some((Refusal::ChangedAfterVerification, None))
+    );
+    assert_eq!(fs::read(lab.src().join("f")).unwrap(), b"payload");
+}
+
+fn assert_incomplete_listing(folder: &Path) {
+    let parent = folder.parent().unwrap();
+    let destination =
+        Destination::open(parent, &identity::observe(parent).unwrap().object).unwrap();
+    let key = identity::observe(folder).unwrap().object;
+    let staging = Staging::attach_published(
+        &destination,
+        folder.file_name().unwrap().to_str().unwrap(),
+        key.file_id,
+        &[key.creation_time.parse().unwrap()],
+    )
+    .unwrap();
+    assert_eq!(
+        staging.entries(&[]).unwrap_err().to_string(),
+        "incomplete staging listing"
+    );
+}
+
 pub(super) struct Lab {
     pub(super) tmp: tempfile::TempDir,
     pub(super) store: Mutex<Store>,

@@ -421,6 +421,8 @@ volume (assumption, to be measured in C5).
    on the source".
 4. **Copy** opens a native confirmation rendered from the stored manifest (not from the webview), showing the
    digest's last 8 characters. Confirm writes the approval (single use, 30-minute expiry, assumption).
+   An unapproved stored preview also expires after 30 minutes; approval then refuses with `preview_expired`
+   and requires a new preview, even if no later preview has triggered cache eviction.
 5. Progress shows phases (preparing, copying n of m, verifying, publishing), bytes, rate and **Cancel** (until
    publishing starts).
 6. The result shows the receipt: completed and verified, or blocked (reason, Resume, Abandon), or needs attention
