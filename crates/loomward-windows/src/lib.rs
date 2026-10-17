@@ -7,6 +7,7 @@ pub mod enumerate;
 pub mod identity;
 pub mod jobs;
 pub mod linkcount;
+pub mod usn;
 pub mod volumes;
 pub mod watch;
 

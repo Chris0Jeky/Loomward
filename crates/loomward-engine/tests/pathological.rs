@@ -470,6 +470,44 @@ fn catalogue_files(db: &Connection) -> Vec<(String, i64)> {
     files
 }
 
+fn wait_quiescent(service: &Service, root: &str) {
+    let deadline = Instant::now() + Duration::from_secs(300);
+    loop {
+        let page = call(
+            service,
+            "search.query",
+            json!({
+                "root_id":root,"text":"bin","extension":null,"min_bytes":null,"max_bytes":null,
+                "modified_after":null,"modified_before":null,"kind":"file","limit":1,"cursor":null
+            }),
+        );
+        let jobs = call(service, "jobs.list", json!({"limit":50}));
+        let idle = jobs["jobs"].as_array().unwrap().iter().all(|job| {
+            !matches!(
+                job["state"].as_str(),
+                Some("queued" | "running" | "cancel_requested")
+            )
+        });
+        // Foreground completion can precede a watcher's targeted pass and full-root fallback.
+        if idle
+            && !page["partial"].as_bool().unwrap()
+            && page["hits"].as_array().unwrap().iter().any(|hit| {
+                matches!(
+                    hit["freshness"]["state"].as_str(),
+                    Some("live" | "caught_up")
+                )
+            })
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "catalogue never became fresh and idle: search={page}; jobs={jobs}"
+        );
+        std::thread::yield_now();
+    }
+}
+
 #[test]
 fn concurrent_create_delete_rename_grow_reconciles_exactly_to_fresh_scan() {
     let files = std::env::var("LOOMWARD_CHURN_FILES")
@@ -550,6 +588,7 @@ fn concurrent_create_delete_rename_grow_reconciles_exactly_to_fresh_scan() {
     );
     assert_eq!(done["state"], "completed", "{done}");
     assert_eq!(lab.scan("refresh")["coverage"], "complete");
+    wait_quiescent(&lab.service, &lab.root);
     // Filesystem truth first: the catalogue must hold exactly the files on disk, with their lengths.
     let walked = walk_files(&lab.tree.root);
     let catalogued = catalogue_files(&lab.db());
@@ -590,6 +629,7 @@ fn concurrent_create_delete_rename_grow_reconciles_exactly_to_fresh_scan() {
     }
     let fresh_db =
         Connection::open(loomward_catalog::sqlite_dir(&fresh_state).join("catalog.db")).unwrap();
+    wait_quiescent(&fresh, &fresh_root);
     let expected = observations(&fresh_db);
     assert_eq!(actual.len(), expected.len(), "catalogue row count differs");
     for (actual, expected) in actual.iter().zip(&expected) {
