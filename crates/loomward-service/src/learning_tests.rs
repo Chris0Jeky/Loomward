@@ -49,6 +49,39 @@ pub(super) fn finish_refit(svc: &Service) -> Payload {
 }
 
 #[test]
+fn both_grant_endings_redact_learning_before_returning() {
+    for identity_changed in [false, true] {
+        let dir = temp_root();
+        let svc = open(dir.path(), DatasetClass::Synthetic);
+        let node = learning_node(&svc);
+        ok(
+            "feedback.record",
+            call(
+                &svc,
+                "feedback.record",
+                feedback(&node, "ce_end_grant", Some("Documents"), false),
+            ),
+        );
+        assert_eq!(count(&svc, "SELECT count(*) FROM st.human_feedback WHERE features_json LIKE '%report-000.txt%'"), 1);
+        let (root, grant): (i64, i64) = svc
+            .inner
+            .db()
+            .query_row("SELECT id,grant_id FROM main.root", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        if identity_changed {
+            svc.inner
+                .identity_changed(grant, &RootId::new(svc.inner.root_id(root)).unwrap(), true);
+        } else {
+            svc.inner.revoke(grant).unwrap();
+        }
+        // Read the persisted rows directly: a refit/status request could sweep them lazily.
+        assert_eq!(count(&svc, "SELECT count(*) FROM st.human_feedback WHERE features_json!='{\"name\":\"\",\"extension\":\"\",\"context\":\"\",\"size_bytes\":0}'"), 0, "identity_changed={identity_changed}");
+    }
+}
+
+#[test]
 fn learning_refuses_nondurable_invalid_and_unresolved_labels() {
     let dir = temp_root();
     let svc = open(dir.path(), DatasetClass::Synthetic);

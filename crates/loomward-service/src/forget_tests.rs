@@ -307,6 +307,125 @@ fn holders(dir: &Path, needle: &str) -> Vec<String> {
 }
 
 #[test]
+fn forgetting_removes_state_copy_sidecars_including_orphans() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    svc.inner.revoke(grant).unwrap();
+    // Orphan sidecars and sidecars beside a real migration copy are both owned state.
+    let copy = dir.path().join("state.before-v6.db");
+    svc.inner
+        .db()
+        .execute("VACUUM st INTO ?1", [copy.to_string_lossy().as_ref()])
+        .unwrap();
+    let utf16: Vec<u8> = PATH_A.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    for stem in [
+        "state.before-v6.db",
+        "state.before-v0.db",
+        "state.start-123.db",
+    ] {
+        for suffix in ["-wal", "-shm"] {
+            let mut bytes = PATH_A.as_bytes().to_vec();
+            bytes.extend_from_slice(&utf16);
+            std::fs::write(dir.path().join(format!("{stem}{suffix}")), bytes).unwrap();
+        }
+    }
+    ok("roots.forget", forget(&svc, root, None));
+    assert!(holders(dir.path(), PATH_A).is_empty());
+    for stem in [
+        "state.before-v6.db",
+        "state.before-v0.db",
+        "state.start-123.db",
+    ] {
+        for suffix in ["-wal", "-shm"] {
+            assert!(!dir.path().join(format!("{stem}{suffix}")).exists());
+        }
+    }
+    assert!(copy.exists(), "keep the scrubbed migration copy");
+}
+
+#[test]
+fn wal_reader_keeps_forget_pending_until_the_copy_can_be_checkpointed() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    svc.inner.revoke(grant).unwrap();
+    let copy = dir.path().join("state.before-v6.db");
+    svc.inner
+        .db()
+        .execute("VACUUM st INTO ?1", [copy.to_string_lossy().as_ref()])
+        .unwrap();
+    let reader = rusqlite::Connection::open(&copy).unwrap();
+    reader
+        .execute_batch("PRAGMA journal_mode=WAL; BEGIN; SELECT * FROM root_grant")
+        .unwrap();
+    let error = err(forget(&svc, root, None));
+    assert_eq!(reason(&error), Some("forget_backup_scrub_failed"));
+    assert!(svc.inner.backup_scrub_pending().unwrap().is_some());
+    assert!(!holders(dir.path(), PATH_A).is_empty());
+    drop(reader);
+    // The committed live forget is not repeated; settle only the outstanding copy obligation.
+    let _guard = svc.inner.mutation.lock().unwrap();
+    svc.inner.scrub_backups(None).unwrap();
+    assert!(holders(dir.path(), PATH_A).is_empty());
+    assert!(svc.inner.backup_scrub_pending().unwrap().is_none());
+}
+
+#[test]
+fn health_reports_live_store_scrub_pending_without_a_path() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    // Hold the mutation lock so the service's backup retry cannot mask the writer marker.
+    let _guard = svc.inner.mutation.lock().unwrap();
+    svc.inner
+        .db()
+        .execute("INSERT INTO st.meta VALUES('scrub_pending','1')", [])
+        .unwrap();
+    let (health, _) = ok("health.get", call(&svc, "health.get", json!({})));
+    assert_eq!(health["last_error"]["code"], "internal_error");
+    assert_eq!(
+        health["last_error"]["detail"]["reason"],
+        "forget_scrub_pending"
+    );
+    assert!(!health["last_error"]
+        .to_string()
+        .contains(&dir.path().display().to_string()));
+    svc.inner
+        .db()
+        .execute("DELETE FROM st.meta WHERE key='scrub_pending'", [])
+        .unwrap();
+    let (health, _) = ok("health.get", call(&svc, "health.get", json!({})));
+    assert!(health["last_error"].is_null());
+}
+
+#[test]
+fn forget_deletes_only_the_forgotten_grants_freshness() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+    let (_, kept) = named(&svc, 2, "KeepServiceFolderBeta", PATH_B);
+    for id in [grant, kept] {
+        svc.inner.db().execute("INSERT INTO st.root_freshness(grant_id,catalog_instance,journal_id,next_usn,at_ns) VALUES(?1,?2,zeroblob(8),0,0)", rusqlite::params![id, svc.inner.instance]).unwrap();
+    }
+    svc.inner.revoke(grant).unwrap();
+    ok("roots.forget", forget(&svc, root, None));
+    assert_eq!(
+        count(
+            &svc,
+            &format!("SELECT count(*) FROM st.root_freshness WHERE grant_id={grant}")
+        ),
+        0
+    );
+    assert_eq!(
+        count(
+            &svc,
+            &format!("SELECT count(*) FROM st.root_freshness WHERE grant_id={kept}")
+        ),
+        1
+    );
+}
+
+#[test]
 fn forgetting_scrubs_the_migration_copies_so_no_file_keeps_the_name() {
     let dir = temp_root();
     let svc = open(dir.path(), DatasetClass::Synthetic);
