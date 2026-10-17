@@ -8,7 +8,7 @@ import { createMockTransport } from '../../src/lib/transport/mock';
 import { DUPLICATES_FIXTURE } from '../../src/lib/transport/mock-scan';
 import type { DuplicateReport, EventEnvelope, Job } from '../../src/lib/contracts.gen';
 import type { Transport } from '../../src/lib/transport/transport';
-import { sanitizeDuplicatesReport } from '../../src/views/duplicates/View.svelte';
+import { sanitizeDuplicatesReport, skippedNotice } from '../../src/views/duplicates/View.svelte';
 
 const job = (patch: Partial<Job> = {}): Job => ({ job_id: 'jb_fixture', kind: 'duplicates', root_id: 'rt_fixture', seq: 1, rev: 0, state: 'queued', created_at: '2026-10-01T00:00:00Z', started_at: null, finished_at: null, coverage: null, error: null, progress: null, ...patch });
 afterEach(() => { session.client = null; vi.useRealTimers(); });
@@ -220,5 +220,61 @@ describe('duplicates report index guard', () => {
     expect(guarded?.report?.skipped).toEqual([]);
     expect(guarded?.problem || 'empty').toBeTruthy();
     expect(guarded?.problem).toBeTruthy();
+  });
+  const twoEntries = (patch: Partial<DuplicateReport> = {}): DuplicateReport => baseReport({
+    entries: [{ relative_path: 'a.txt', logical_bytes: '16' }, { relative_path: 'b.txt', logical_bytes: '16' }],
+    ...patch,
+  });
+  it('withholds a verified group that lost its only other member to an invalid reference', () => {
+    const guarded = sanitizeDuplicatesReport(twoEntries({ groups: [[0, 999]] }));
+    expect(guarded.report?.groups).toEqual([]);
+    expect(guarded.withheldGroups).toBe(1);
+    expect(guarded.problem).toContain('1 verified group was withheld as incomplete.');
+  });
+  it('withholds a mixed-reference group but keeps an intact group beside it', () => {
+    const guarded = sanitizeDuplicatesReport(twoEntries({ groups: [[0, 1], [0, 999]] }));
+    expect(guarded.report?.groups).toEqual([[0, 1]]);
+    expect(guarded.withheldGroups).toBe(1);
+    expect(guarded.problem).toContain('withheld as incomplete');
+  });
+  it('keeps an all-valid verified group unchanged and withholds nothing', () => {
+    const report = twoEntries({ groups: [[0, 1]] });
+    const guarded = sanitizeDuplicatesReport(report);
+    expect(guarded.report).toEqual(report);
+    expect(guarded.withheldGroups).toBe(0);
+    expect(guarded.problem).toBe('');
+  });
+  it('renders a fully valid report exactly as before', () => {
+    const report = twoEntries({ groups: [[0, 1]], links: [[0, 1]], skipped: [{ entry: 1, reason: 'changed_during_read' }] });
+    const guarded = sanitizeDuplicatesReport(report);
+    expect(guarded.report).toEqual(report);
+    expect(guarded.problem).toBe('');
+    expect(guarded.unreadableSkipped).toBe(0);
+    expect(skippedNotice(guarded.unreadableSkipped, guarded.report!.skipped.length)).toBe('');
+  });
+  it('says unreadable skipped evidence is unknown when none survive, never the empty-state text', () => {
+    const guarded = sanitizeDuplicatesReport(baseReport({ skipped: [{ entry: 999, reason: 'changed_during_read' }] }));
+    expect(guarded.report?.skipped).toEqual([]);
+    expect(guarded.unreadableSkipped).toBe(1);
+    const notice = skippedNotice(guarded.unreadableSkipped, 0);
+    expect(notice).toBe('1 skipped record could not be read, so its reason is unknown.');
+    expect(notice).not.toContain('No listed entries were skipped');
+  });
+  it('a skipped list or group list that is not a list reads as unknown, not empty', () => {
+    const guarded = sanitizeDuplicatesReport(twoEntries({ groups: 'x' as unknown as number[][], skipped: 'x' as unknown as [] }));
+    expect(guarded.skippedUnknown).toBe(true);
+    expect(skippedNotice(guarded.unreadableSkipped, guarded.report!.skipped.length, guarded.skippedUnknown)).toBe(
+      'The skipped list could not be read, so what was skipped is unknown.',
+    );
+    expect(guarded.problem).toContain('The verified groups could not be read, so they are unknown.');
+  });
+
+  it('lists surviving skipped entries beside the unreadable count', () => {
+    const guarded = sanitizeDuplicatesReport(twoEntries({ skipped: [{ entry: 1, reason: 'changed_during_read' }, { entry: 999, reason: 'changed_during_read' }] }));
+    expect(guarded.report?.skipped).toEqual([{ entry: 1, reason: 'changed_during_read' }]);
+    expect(guarded.unreadableSkipped).toBe(1);
+    expect(skippedNotice(guarded.unreadableSkipped, guarded.report!.skipped.length)).toBe('1 skipped record could not be read, so its reason is unknown.');
+    const plural = sanitizeDuplicatesReport(baseReport({ skipped: [{ entry: 999, reason: 'changed_during_read' }, { entry: 998, reason: 'changed_during_read' }] }));
+    expect(skippedNotice(plural.unreadableSkipped, 0)).toBe('2 skipped records could not be read, so their reasons are unknown.');
   });
 });
