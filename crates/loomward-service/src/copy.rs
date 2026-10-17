@@ -134,6 +134,28 @@ impl Copies {
     }
 }
 
+/// Shutdown never detaches a copy: every running worker is cancelled (it stops at its next item or
+/// 1 MiB chunk, before publish) and joined, so no effect or journal write outlives the service and a
+/// reopened service never recovers alongside an old executor (review of #522).
+#[cfg(windows)]
+impl Drop for Copies {
+    fn drop(&mut self) {
+        let runs: Vec<Run> = self
+            .running
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain()
+            .map(|(_, r)| r)
+            .collect();
+        for run in &runs {
+            run.control.cancel();
+        }
+        for run in runs {
+            let _ = run.thread.join();
+        }
+    }
+}
+
 /// One resolved node: its root row, the granted root's verbatim path, and its path below it.
 struct Resolved {
     root: db::RootRow,
@@ -462,7 +484,11 @@ impl Inner {
                 .spawn(move || {
                     let _ = exec::run(&worker_store, op, &worker_control);
                 })
-                .map_err(|_| fail(ErrorCode::ResourceBudget, "no worker"))?;
+                .map_err(|_| {
+                    // Nothing was created: settle the started operation as cancelled, never stuck.
+                    let _ = exec::cancel(&store, op, &plan, &control);
+                    fail(ErrorCode::ResourceBudget, "no worker")
+                })?;
             self.copies
                 .running
                 .lock()

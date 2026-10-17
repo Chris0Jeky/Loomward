@@ -1185,6 +1185,7 @@ fn clean(store: &Mutex<Store>, op: u64, plan: &Plan, control: &Control) -> Resul
     held.sort_by(|a, b| a.name.cmp(&b.name));
     let mut keys: HashMap<String, ObjectKey> = HashMap::new();
     let mut resolved = Vec::new();
+    let mut gone = Vec::new();
     for h in &held {
         let is_dir = plan
             .manifest
@@ -1202,11 +1203,21 @@ fn clean(store: &Mutex<Store>, op: u64, plan: &Plan, control: &Control) -> Resul
                 )
                 .ok()
         });
+        // Nothing at all under the journaled name: removed before its record (a crash mid-cleanup).
+        // Journal the removal; nothing is touched (C3 recovery's `gone`).
+        let absent = || {
+            let path = h
+                .name
+                .split('/')
+                .fold(plan.destination.join(&token), |p, c| p.join(c));
+            matches!(std::fs::symlink_metadata(path), Err(e) if e.kind() == io::ErrorKind::NotFound)
+        };
         match key {
             Some(key) => {
                 keys.insert(h.name.clone(), key.clone());
                 resolved.push((h, key, is_dir));
             }
+            None if absent() => gone.push(h),
             None => {
                 attention(&log)?;
                 return status(store, op);
@@ -1225,6 +1236,12 @@ fn clean(store: &Mutex<Store>, op: u64, plan: &Plan, control: &Control) -> Resul
             attention(&log)?;
             return status(store, op);
         }
+        log(Record::ItemRemoved {
+            item: h.item,
+            id: h.id,
+        })?;
+    }
+    for h in gone {
         log(Record::ItemRemoved {
             item: h.item,
             id: h.id,

@@ -532,3 +532,49 @@ fn publish_accepts_short_final_names() {
         assert!(lab.dest().join(name).is_dir());
     }
 }
+
+/// Review of #522: a cleanup that crashed after removing an entry but before its `item_removed` record
+/// finishes on recovery (the entry is journaled gone), instead of stopping in `needs_attention`.
+#[test]
+fn cleanup_after_a_crash_mid_removal_journals_the_gone_entry_and_finishes() {
+    let Some(mut lab) = Lab::new() else { return };
+    fs::create_dir(lab.src().join("top")).unwrap();
+    fs::write(lab.src().join("top/a.bin"), b"aaaa").unwrap();
+    fs::write(lab.src().join("top/b.bin"), b"bbbb").unwrap();
+    let op = lab.start(&["top"]);
+    let crash = Control::new(true).with_hook(|p, _| {
+        if matches!(p, Point::Verified(_)) {
+            Flow::Crash
+        } else {
+            Flow::Continue
+        }
+    });
+    assert!(matches!(run(&lab.store, op, &crash), Err(Fault::Crashed)));
+    let staging = fs::read_dir(lab.dest())
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    // Abandon was journaled; the first removal happened; the process died before its record.
+    {
+        let r = replay(&lab.store, op).unwrap();
+        lab.store
+            .lock()
+            .unwrap()
+            .append(
+                op,
+                r.epoch,
+                Record::Transition {
+                    to: OpState::Cancelling,
+                    code: None,
+                },
+            )
+            .unwrap();
+    }
+    fs::remove_file(staging.join("a.bin")).unwrap();
+    lab.reopen();
+    let outcome = recover(&lab.store, op, &Control::new(true)).unwrap();
+    assert_eq!(outcome.state, OpState::Cancelled, "{outcome:?}");
+    assert!(lab.dest_names().is_empty(), "{:?}", lab.dest_names());
+}

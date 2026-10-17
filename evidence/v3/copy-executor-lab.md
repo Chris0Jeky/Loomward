@@ -25,6 +25,10 @@ G9 proven-restore runs have not happened. MCP has no copy command. HTTP still re
   report the staging folder's name in `CopyStatus.staging_folder`. With it on, Loomward removes only its own
   journaled staging by identity (children first, then the folder). Both settings are tested.
 
+- Shutting the service down cancels and joins running copies (no worker outlives the service), so a copy
+  interrupted by shutdown ends `cancelled` under the Q1 setting. A worker that cannot be spawned settles
+  its started operation as cancelled (nothing was created). Neither path has its own test yet.
+
 ## Lab suite (`cargo test -p loomward-windows --all-features effects::exec`)
 
 | Case | Result |
