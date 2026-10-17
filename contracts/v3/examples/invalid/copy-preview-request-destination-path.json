@@ -1,0 +1,11 @@
+{
+  "def": "CopyPreviewRequest",
+  "reason": "the destination is a granted folder node picked in Rust, never a path from the webview",
+  "value": {
+    "sources": [
+      "nd_s1_401"
+    ],
+    "destination_node_id": "nd_s1_88",
+    "path": "C:\\fixture\\out"
+  }
+}

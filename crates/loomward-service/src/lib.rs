@@ -343,6 +343,10 @@ pub(crate) fn is_mutation(c: Command) -> bool {
             | BackupsImport
             | BackupsForget
             | DiagnosticsSave
+            // docs/47: refused before dispatch while the gate is closed; mutations when it opens.
+            | CopyStart
+            | CopyCancel
+            | CopyAbandon
     )
 }
 
@@ -494,6 +498,32 @@ impl ViewService for Service {
                 ErrorCode::CapabilityUnavailable,
                 "this command is not offered by this adapter",
             );
+            return ResponseEnvelope::error(Some(id), e, None);
+        }
+        // docs/47: copy-and-verify is contract only until lane C8 opens its effect gate (AGENTS.md
+        // invariant 1). Nothing below this point ever sees a copy command. A personal approval over
+        // HTTP is refused by its own rule (G6), which stays when the synthetic lab path opens (C5).
+        if command.as_str().starts_with("copy.") {
+            let personal_http = command == Command::CopyApprove
+                && ctx.adapter == loomward_protocol::Adapter::Http
+                && self.inner.dataset == DatasetClass::Personal;
+            let e = if personal_http {
+                with_reason(
+                    fail(
+                        ErrorCode::CapabilityUnavailable,
+                        "a personal copy is approved only in the desktop's native confirmation",
+                    ),
+                    "copy_personal_approval_http",
+                )
+            } else {
+                with_reason(
+                    fail(
+                        ErrorCode::CapabilityUnavailable,
+                        "copy-and-verify is not open: its effect gate (docs/47 lane C8) is closed",
+                    ),
+                    "copy_effect_gated",
+                )
+            };
             return ResponseEnvelope::error(Some(id), e, None);
         }
         // q-11 opens local learning only: no teacher path ever sees personal data (q-5 unmet).

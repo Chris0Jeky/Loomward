@@ -1635,14 +1635,64 @@ fn property_any_mid_journal_damage_needs_attention() {
 
 // ---- state.db storage ----
 
+/// A consumed approval through the public consent path: the only way to start a journal.
+fn admitted(n: u8) -> Admitted {
+    let id = |b: u8| Identity {
+        volume: 1,
+        file_id: [b; 16],
+    };
+    let dest = DestinationFacts {
+        grant: 1,
+        parent: id(200),
+        ancestors: vec![id(200)],
+        verified_volume: true,
+        cloud_synced: false,
+        unsupported_volume: false,
+        protected: false,
+        case_sensitive: false,
+        existing_names: vec![],
+        parent_path_units: 10,
+        available_bytes: 10 << 30,
+        volume_bytes: 100 << 30,
+        cluster_bytes: 4096,
+    };
+    let ctx = Context {
+        elevated: false,
+        grants_active: true,
+        named_streams: false,
+        date: "2026-10-17".into(),
+    };
+    let entry = SourceEntry {
+        name: "a.bin".into(),
+        kind: loomward_operations::tree::Kind::File,
+        identity: id(n),
+        size: 1,
+        creation_ft: 1,
+        last_write_ft: 1,
+        change_ft: 1,
+        attributes: 0x20,
+        reparse_tag: None,
+        ea_size: 0,
+        streams: vec![],
+        link_count: 1,
+        explicit_aces: false,
+        verified_volume: true,
+    };
+    let p = preview(vec![entry], &dest, &ctx);
+    approve(&p, p.manifest.digest(), 0, 0)
+        .unwrap()
+        .admit(&p, 0, 1)
+        .unwrap()
+}
+
 #[test]
 fn store_is_append_only_full_sync_and_validates_appends() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
     let mut store = Store::open(&path).unwrap();
-    let op = store.start(1, [5; 32], 1).unwrap();
+    let op = store.start(1, admitted(5)).unwrap();
     assert_eq!(op, 1);
-    assert_eq!(store.start(1, [6; 32], 1).unwrap(), 2);
+    assert_eq!(store.start(1, admitted(6)).unwrap(), 2);
     store
         .append(
             op,
