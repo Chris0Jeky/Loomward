@@ -999,6 +999,11 @@ impl VerifiedFile {
     pub fn streams(&self) -> io::Result<Vec<(String, u64)>> {
         streams(&self.file)
     }
+    /// Extended-attribute bytes on the held object. A deny-write hold does not deny FILE_WRITE_EA,
+    /// so this is re-read before `committed` (section 6: EAs are refused, never copied).
+    pub fn ea_size(&self) -> io::Result<u32> {
+        ea_size(&self.file)
+    }
     pub fn verify_stream(&self, name: &str) -> io::Result<VerifiedFile> {
         let file = relative(
             &self.file,
@@ -1201,9 +1206,7 @@ impl Read for Source {
         Ok(count)
     }
 }
-pub(crate) fn supported_file(file: &File) -> io::Result<()> {
-    let current = identity::from_file(file)?;
-    supported_attributes(current.attributes)?;
+fn ea_size(file: &File) -> io::Result<u32> {
     let mut ea = FILE_EA_INFORMATION::default();
     let mut status = IO_STATUS_BLOCK::default();
     let code = unsafe {
@@ -1218,7 +1221,12 @@ pub(crate) fn supported_file(file: &File) -> io::Result<()> {
     if code < 0 {
         return Err(nt_error(code));
     }
-    if ea.EaSize != 0 {
+    Ok(ea.EaSize)
+}
+pub(crate) fn supported_file(file: &File) -> io::Result<()> {
+    let current = identity::from_file(file)?;
+    supported_attributes(current.attributes)?;
+    if ea_size(file)? != 0 {
         return Err(refused("extended_attributes"));
     }
     streams(file)?;
@@ -1246,20 +1254,7 @@ pub fn probe(path: &Path) -> io::Result<Probe> {
     )?;
     let file = ManuallyDrop::new(unsafe { File::from_raw_handle(handle.0) });
     let object = identity::from_file(&file)?.object;
-    let mut ea = FILE_EA_INFORMATION::default();
-    let mut status = IO_STATUS_BLOCK::default();
-    let code = unsafe {
-        NtQueryInformationFile(
-            file.as_raw_handle(),
-            &mut status,
-            ptr::from_mut(&mut ea).cast(),
-            size_of::<FILE_EA_INFORMATION>() as u32,
-            FileEaInformation,
-        )
-    };
-    if code < 0 {
-        return Err(nt_error(code));
-    }
+    let ea_bytes = ea_size(&file)?;
     let streams = match streams(&file) {
         Ok(s) => s,
         // FileStreamInfo answers ERROR_HANDLE_EOF for an object with no stream (a folder).
@@ -1283,7 +1278,7 @@ pub fn probe(path: &Path) -> io::Result<Probe> {
     drop(handle);
     Ok(Probe {
         object,
-        ea_size: ea.EaSize,
+        ea_size: ea_bytes,
         streams,
         explicit_aces,
     })

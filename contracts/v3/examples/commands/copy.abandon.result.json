@@ -5,6 +5,7 @@
   "items_total": 3,
   "items_verified": 1,
   "staging_folder": null,
+  "leftover_staging_folders": [],
   "refusal": {
     "code": "source_changed",
     "node_id": "nd_s1_402"

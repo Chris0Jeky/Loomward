@@ -136,6 +136,9 @@ pub struct CopyStatus {
     /// parent on cancel or abandon, for the owner to remove; `null` otherwise.
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub staging_folder: Option<BoundedStr<1, 255>>,
+    /// Staging folders intended but never identity-journaled: possibly empty leftovers, never adopted
+    /// or removed by Loomward; names only.
+    pub leftover_staging_folders: BoundedVec<BoundedStr<1, 255>, 0, 64>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub refusal: Option<CopyRefusal>,
 }

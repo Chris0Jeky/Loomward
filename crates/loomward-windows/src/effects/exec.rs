@@ -32,6 +32,9 @@ pub struct Plan {
     pub source_root_attributes: u32,
     pub destination: PathBuf,
     pub destination_key: ObjectKey,
+    /// The destination grant's verified root: (volume serial, file ID). The pinned destination's
+    /// ancestry must contain it at preview and again at run (lab roots only, invariant 2).
+    pub destination_root: (u64, [u8; 16]),
     pub manifest: Manifest,
     /// Per manifest item, in order: the path relative to `source_root` and the observed identity whose
     /// signature `Source::open` re-checks through pinned handles.
@@ -62,6 +65,17 @@ pub struct Request<'a> {
     /// Loomward's state directory or a scan fence contains the destination.
     pub protected: bool,
     pub date: &'a str,
+    /// The destination grant's verified root identity: (volume serial, file ID).
+    pub destination_root: (u64, [u8; 16]),
+}
+
+/// The pinned destination lies under the given root object (by identity, never by path).
+fn within(dest: &Destination, root: (u64, [u8; 16])) -> io::Result<bool> {
+    let serial = root.0.to_string();
+    Ok(dest
+        .ancestry()?
+        .iter()
+        .any(|k| k.file_id == root.1 && k.volume_serial == serial))
 }
 
 fn invalid(message: &str) -> io::Error {
@@ -190,6 +204,9 @@ pub fn prepare(request: &Request) -> io::Result<(loomward_operations::Preview, P
 
     let dest_observed = identity::observe(request.destination)?;
     let dest = Destination::open(request.destination, &dest_observed.object)?;
+    if !within(&dest, request.destination_root)? {
+        return Err(invalid("destination_outside_grant"));
+    }
     let mut ancestors = dest
         .ancestry()?
         .iter()
@@ -246,6 +263,7 @@ pub fn prepare(request: &Request) -> io::Result<(loomward_operations::Preview, P
         source_root_attributes: root.attributes,
         destination: request.destination.to_path_buf(),
         destination_key: dest_observed.object,
+        destination_root: request.destination_root,
         manifest: preview.manifest.clone(),
         sources,
     };
@@ -333,6 +351,9 @@ pub struct Outcome {
     pub staging_left: Option<String>,
     pub items_total: u32,
     pub items_verified: u32,
+    /// Staging tokens intended but never identity-committed: a folder under such a name may exist,
+    /// empty and unjournaled. Never adopted or removed; reported for the owner.
+    pub leftover_staging: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -490,6 +511,10 @@ pub fn status(store: &Mutex<Store>, op: u64) -> Result<Outcome, Fault> {
             .flatten(),
         items_total: r.items.len() as u32,
         items_verified: r.items.iter().filter(|i| i.verified).count() as u32,
+        leftover_staging: match r.staging {
+            Some(_) => r.staging_tokens[..r.staging_tokens.len() - 1].to_vec(),
+            None => r.staging_tokens.clone(),
+        },
     })
 }
 
@@ -552,6 +577,12 @@ pub fn run(store: &Mutex<Store>, op: u64, control: &Control) -> Result<Outcome, 
                 code,
             })
         }
+        // The pinned parent must still sit under its grant's root (a swapped ancestor is refused).
+        Ok(destination) if !within(&destination, plan.destination_root).unwrap_or(false) => journal
+            .log(Record::Transition {
+                to: OpState::Refused,
+                code: None,
+            }),
         Ok(destination) => copy(&journal, &plan, control, &destination),
     };
     finish(store, op, &plan, control, stopped)
@@ -565,10 +596,22 @@ fn copy(journal: &Journal, plan: &Plan, control: &Control, dest: &Destination) -
     journal.log(Record::StagingIntent {
         token: token.clone(),
     })?;
-    let staging = dest.stage(&token).map_err(|e| match io_refusal(&e) {
-        Stop::Refused(Refusal::StagingNameTaken, _) => Stop::Attention(None),
-        other => other,
-    })?;
+    // No staging identity exists yet, so the run cannot block or wait: `preparing -> refused` with the
+    // cause (a token-named folder the OS may have left is reported as a leftover by `status`).
+    let staging = match dest.stage(&token) {
+        Ok(staging) => staging,
+        Err(e) => {
+            let code = match io_refusal(&e) {
+                Stop::Refused(code, _) if code != Refusal::StagingNameTaken => Some(code),
+                _ => None,
+            };
+            journal.log(Record::Transition {
+                to: OpState::Refused,
+                code,
+            })?;
+            return Err(Stop::Refused(code.unwrap_or(Refusal::AccessDenied), None));
+        }
+    };
     journal.log(Record::StagingCreated {
         id: oid(staging.identity()),
     })?;
@@ -853,6 +896,7 @@ impl Runner<'_, '_> {
             || held.size != item.size
             || held.metadata().map_err(|e| io_refusal(&e))? != preserved(item)
             || streams != wanted
+            || held.ea_size().map_err(|e| io_refusal(&e))? != 0
         {
             return Err(mismatch);
         }
@@ -987,16 +1031,30 @@ impl Runner<'_, '_> {
         }
         self.journal.log(Record::Committed)?;
         self.holds.clear();
+        self.stream_holds.clear();
         Ok(())
     }
 
-    fn streams_match(&self) -> bool {
-        self.holds.iter().all(|(held, streams)| {
-            streams.iter().all(|(name, digest, size)| {
-                held.verify_stream(name)
-                    .is_ok_and(|s| s.digest == *digest && s.size == *size)
-            })
-        })
+    /// After the rename: every held file still carries exactly its verified named streams (the full
+    /// list, so an added stream is caught) with the verified digests, and no extended attributes (a
+    /// hold does not deny FILE_WRITE_EA). The re-hash handles are kept until `committed`.
+    fn streams_match(&mut self) -> bool {
+        let mut rehashed = Vec::new();
+        let ok = self.holds.iter().all(|(held, streams)| {
+            let mut want: Vec<(String, u64)> =
+                streams.iter().map(|(n, _, s)| (n.clone(), *s)).collect();
+            want.sort();
+            exact_streams(held, &want)
+                && streams.iter().all(|(name, digest, size)| {
+                    held.verify_stream(name).is_ok_and(|s| {
+                        let same = s.digest == *digest && s.size == *size;
+                        rehashed.push(s);
+                        same
+                    })
+                })
+        });
+        self.stream_holds = rehashed;
+        ok
     }
 
     /// Exactly the manifest's names under the folder, nothing more (a read; no handle kept).
@@ -1109,11 +1167,17 @@ pub fn cancel(
     if let Some(final_name) = &r.publish {
         // A rename may already have happened: never withdraw, never clean a published copy.
         let disk = PathDisk::new(plan, &r);
-        if r.staging.is_some_and(|s| {
+        if let Some(s) = r.staging.filter(|s| {
             disk.in_parent(final_name)
                 .is_some_and(|o| s.matches(&o, r.staging_planned))
         }) {
-            return status(store, op);
+            // Published but not yet committed: abandon settles it by confirming now (a read). It is
+            // committed, or recorded needs_attention with its cause; the copy is never touched.
+            return if r.state == OpState::Publishing {
+                confirm(store, op, plan, &r, s, final_name, true)
+            } else {
+                status(store, op)
+            };
         }
         log(Record::PublishWithdrawn)?;
     } else if r.state != OpState::Cancelling {
@@ -1358,14 +1422,46 @@ pub fn recover(store: &Mutex<Store>, op: u64, control: &Control) -> Result<Outco
         Decision::Confirm {
             staging,
             final_name,
-        } => confirm(store, op, &plan, &r, staging, &final_name),
+        } => confirm(store, op, &plan, &r, staging, &final_name, false),
         Decision::Settled | Decision::Resume(_) | Decision::NeedsAttention(_) => status(store, op),
     }
 }
 
+/// Why the post-publish confirmation did not pass.
+enum Unconfirmed {
+    /// The published copy differs from what was verified (shape, identity, metadata, streams, bytes).
+    Changed,
+    /// It could not be read now (sharing, access, a source changed or unreadable): not a finding about
+    /// the copy. Recovery retries at the next open; abandon settles it with this cause.
+    Unverifiable(Option<Refusal>),
+}
+
+fn unverifiable(e: &io::Error) -> Unconfirmed {
+    match e.raw_os_error() {
+        Some(32 | 33) => Unconfirmed::Unverifiable(Some(Refusal::StagingInUse)),
+        Some(5) => Unconfirmed::Unverifiable(Some(Refusal::AccessDenied)),
+        // Gone, or bound to another object: the published tree changed.
+        Some(2 | 3) => Unconfirmed::Changed,
+        _ if e.kind() == io::ErrorKind::InvalidInput => Unconfirmed::Changed,
+        _ => Unconfirmed::Unverifiable(None),
+    }
+}
+
+fn source_unverifiable(reason: duplicate_reader::Reason) -> Unconfirmed {
+    use duplicate_reader::Reason as R;
+    Unconfirmed::Unverifiable(Some(match reason {
+        R::SharingViolation => Refusal::SourceInUse,
+        R::AccessDenied => Refusal::AccessDenied,
+        R::ChangedDuringRead | R::InvalidPath => Refusal::SourceChanged,
+        _ => return Unconfirmed::Unverifiable(None),
+    }))
+}
+
 /// Crash between the rename and `committed`: attach to the published folder by journaled ID, re-hash
-/// every file by ID against a fresh read of the unchanged source, check shape and metadata, then
-/// `committed`; any difference is `needs_attention` (outcome published_unverified), never cleanup.
+/// every file by ID against a fresh read of the unchanged source, check shape, metadata, the full
+/// stream lists and EAs, then `committed`. A real difference is `needs_attention`
+/// (`changed_after_verification`, outcome published_unverified). An unverifiable read journals nothing
+/// unless `settle` (owner abandon): then `needs_attention` with that cause. Never cleanup.
 fn confirm(
     store: &Mutex<Store>,
     op: u64,
@@ -1373,6 +1469,7 @@ fn confirm(
     r: &Replay,
     staging_id: ObjectId,
     final_name: &str,
+    settle: bool,
 ) -> Result<Outcome, Fault> {
     let journal = Journal {
         store,
@@ -1382,25 +1479,26 @@ fn confirm(
     let creations = |id: ObjectId, planned: Option<i64>| -> Vec<i64> {
         std::iter::once(id.creation_ft).chain(planned).collect()
     };
-    let confirmed = (|| -> Option<Vec<VerifiedFile>> {
-        let dest = Destination::open(&plan.destination, &plan.destination_key).ok()?;
+    use Unconfirmed::Changed;
+    let check = |ok: bool| if ok { Ok(()) } else { Err(Changed) };
+    let confirmed = (|| -> Result<Vec<VerifiedFile>, Unconfirmed> {
+        let dest = Destination::open(&plan.destination, &plan.destination_key)
+            .map_err(|e| unverifiable(&e))?;
         let published = Staging::attach_published(
             &dest,
             final_name,
             staging_id.file_id,
             &creations(staging_id, r.staging_planned),
         )
-        .ok()?;
+        .map_err(|e| unverifiable(&e))?;
         let want: BTreeSet<String> = plan.manifest.items.iter().map(|i| i.name.clone()).collect();
-        if listing(&plan.destination.join(final_name)).ok()? != want {
-            return None;
-        }
+        check(listing(&plan.destination.join(final_name)).map_err(|e| unverifiable(&e))? == want)?;
         let mut keys = HashMap::new();
         let mut holds = Vec::new();
         for (i, item) in plan.manifest.items.iter().enumerate() {
             let journaled = &r.items[i];
-            let id = journaled.id?;
-            let (path, name) = path_of(&item.name, &keys).ok()?;
+            let id = journaled.id.ok_or(Changed)?;
+            let (path, name) = path_of(&item.name, &keys).map_err(|_| Changed)?;
             let key = published
                 .resolve(
                     &path,
@@ -1409,12 +1507,18 @@ fn confirm(
                     &creations(id, journaled.planned_ft),
                     item.kind == Kind::Directory,
                 )
-                .ok()?;
-            if published.metadata(&path, name, &key).ok()? != preserved(item) {
-                return None;
-            }
+                .map_err(|e| unverifiable(&e))?;
+            check(
+                published
+                    .metadata(&path, name, &key)
+                    .map_err(|e| unverifiable(&e))?
+                    == preserved(item),
+            )?;
             if item.kind == Kind::File {
-                let held = published.verify(&path, name, &key).ok()?;
+                let held = published
+                    .verify(&path, name, &key)
+                    .map_err(|e| unverifiable(&e))?;
+                check(exact_streams(&held, &item.streams))?;
                 let (relative, expected) = &plan.sources[i];
                 let mut source = Source::open(
                     &plan.source_root,
@@ -1425,49 +1529,49 @@ fn confirm(
                     },
                     SOURCE_BUDGET,
                 )
-                .ok()?;
+                .map_err(source_unverifiable)?;
                 let mut digest = Sha256::new();
-                io::copy(&mut source, &mut DigestWriter(&mut digest)).ok()?;
-                if <[u8; 32]>::from(digest.finalize()) != held.digest {
-                    return None;
-                }
+                io::copy(&mut source, &mut DigestWriter(&mut digest))
+                    .map_err(|_| Unconfirmed::Unverifiable(Some(Refusal::SourceChanged)))?;
+                check(<[u8; 32]>::from(digest.finalize()) == held.digest)?;
                 for (stream, size) in &item.streams {
-                    let s = held.verify_stream(stream).ok()?;
+                    let s = held.verify_stream(stream).map_err(|e| unverifiable(&e))?;
                     let mut d = Sha256::new();
-                    io::copy(
-                        &mut source.stream_reader(&format!(":{stream}:$DATA")).ok()?,
-                        &mut DigestWriter(&mut d),
-                    )
-                    .ok()?;
-                    if s.size != *size || <[u8; 32]>::from(d.finalize()) != s.digest {
-                        return None;
-                    }
+                    let mut reader = source
+                        .stream_reader(&format!(":{stream}:$DATA"))
+                        .map_err(|_| Unconfirmed::Unverifiable(Some(Refusal::SourceChanged)))?;
+                    io::copy(&mut reader, &mut DigestWriter(&mut d))
+                        .map_err(|_| Unconfirmed::Unverifiable(Some(Refusal::SourceChanged)))?;
+                    check(s.size == *size && <[u8; 32]>::from(d.finalize()) == s.digest)?;
                     holds.push(s);
                 }
-                source.finish().ok()?;
+                source.finish().map_err(source_unverifiable)?;
                 holds.push(held);
             } else {
                 keys.insert(item.name.clone(), key);
             }
         }
         if let Some(root) = &plan.manifest.root {
-            if published.own_metadata().ok()? != preserved(root) {
-                return None;
-            }
+            check(published.own_metadata().map_err(|e| unverifiable(&e))? == preserved(root))?;
         }
-        Some(holds)
+        Ok(holds)
     })();
+    let attention = |code| {
+        journal
+            .log(Record::Transition {
+                to: OpState::NeedsAttention,
+                code,
+            })
+            .map_err(fault)
+    };
     match confirmed {
-        Some(holds) => {
+        Ok(holds) => {
             journal.log(Record::Committed).map_err(fault)?;
             drop(holds);
         }
-        None => journal
-            .log(Record::Transition {
-                to: OpState::NeedsAttention,
-                code: Some(Refusal::ChangedAfterVerification),
-            })
-            .map_err(fault)?,
+        Err(Changed) => attention(Some(Refusal::ChangedAfterVerification))?,
+        Err(Unconfirmed::Unverifiable(code)) if settle => attention(code)?,
+        Err(Unconfirmed::Unverifiable(_)) => {}
     }
     status(store, op)
 }
@@ -1486,3 +1590,16 @@ impl Write for DigestWriter<'_> {
 #[cfg(test)]
 #[path = "exec_tests.rs"]
 mod tests;
+
+/// The held file's named streams are exactly `want` (bare names, sorted) and it has no EAs.
+fn exact_streams(held: &VerifiedFile, want: &[(String, u64)]) -> bool {
+    let Ok(found) = held.streams() else {
+        return false;
+    };
+    let mut found: Vec<(String, u64)> = found
+        .into_iter()
+        .map(|(n, s)| (bare(&n).to_string(), s))
+        .collect();
+    found.sort();
+    found == want && held.ea_size().is_ok_and(|n| n == 0)
+}

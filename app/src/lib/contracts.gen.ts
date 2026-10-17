@@ -2007,6 +2007,8 @@ export interface CopyStatus {
   items_verified: Count;
   /** docs/47 Q1 default: the name (never a path) of the staging folder Loomward left in the destination parent on cancel or abandon, for the owner to remove; null otherwise. */
   staging_folder: string | null;
+  /** Names (never paths) of staging folders that were intended but never identity-journaled (a crash between intent and identity): possibly empty leftovers Loomward never adopts or removes; reported for the owner (docs/47 section 5). */
+  leftover_staging_folders: string[];
   refusal: CopyRefusal | null;
 }
 

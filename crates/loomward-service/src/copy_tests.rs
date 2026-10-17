@@ -159,6 +159,7 @@ mod lab_copy {
         assert_eq!(done["state"], "committed", "{done:?}");
         assert_eq!(done["items_verified"], done["items_total"]);
         assert_eq!(done["staging_folder"], Value::Null);
+        assert_eq!(done["leftover_staging_folders"], json!([]));
         // A started operation never starts again, approved or not.
         let e = err(call(svc, "copy.start", consent));
         assert_eq!(reason(&e), Some("copy_already_started"));

@@ -60,8 +60,20 @@ adapters, the HTTP approval refused as `copy_personal_approval_http`.
 - The Win32 relative rename returned **87** (not only 123) in the service lab run for the final name `a`;
   the native no-replace rename succeeded. C2's fallback now covers both codes. Why 87 rather than 123 was
   not isolated (a direct short-name test does not reproduce it).
-- Paths past 260 units need the verbatim (`\\?\`) form; the service canonicalizes granted roots and binds
-  the observed root to the grant's verified identity before anything else.
+- Paths past 260 units need the verbatim (`\\?\`) form, so the service canonicalizes granted roots. A path
+  is never trusted for that: the source root opened for observation must equal the source grant's
+  verified (volume serial, file ID), and the pinned destination's ancestry must contain the destination
+  grant's verified root, checked at preview and again at run before staging (`destination_outside_grant`,
+  `refused`). A junction swapped between the grant check and canonicalization is therefore refused before
+  any write. Tested by constructing the mismatch, not by a live junction race.
+- Review round 1 (#522) also added: the full named-stream list and a zero EA size are re-checked on every
+  held file after the rename (a hold denies neither adding a stream nor FILE_WRITE_EA), with the re-hash
+  handles kept until `committed`; a staging-create failure ends `refused` with its cause; the post-rename
+  confirmation tells an unverifiable read (retried at the next open; abandon settles it as
+  `needs_attention` with the cause, never touching the published copy) from a real change
+  (`changed_after_verification`); and intended-but-unjournaled staging tokens are reported in
+  `CopyStatus.leftover_staging_folders`. EA addition after verification is covered by code, not a test
+  (writing an EA needs `NtSetEaFile`).
 
 ## Throughput (release build, `throughput_lab`, two runs)
 

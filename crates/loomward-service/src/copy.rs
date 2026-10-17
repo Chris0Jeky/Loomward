@@ -160,7 +160,8 @@ impl Drop for Copies {
 struct Resolved {
     root: db::RootRow,
     root_path: PathBuf,
-    root_id: [u8; 16],
+    /// The grant's verified root identity: (volume serial, file ID).
+    root_id: (u64, [u8; 16]),
     relative: PathBuf,
     is_dir: bool,
 }
@@ -211,8 +212,8 @@ impl Inner {
                 instance: self.instance.clone(),
             },
         )?;
-        let root_id = match granted.expected().and_then(|e| e.id) {
-            Some(loomward_windows::enumerate::FileIdObs::Id128(id)) => id,
+        let root_id = match granted.expected().and_then(|e| e.id.zip(e.volume_serial)) {
+            Some((loomward_windows::enumerate::FileIdObs::Id128(id), volume)) => (volume, id),
             _ => {
                 return Err(with_reason(
                     fail(
@@ -288,6 +289,8 @@ impl Inner {
             grants_active: true,
             protected: dest_path.starts_with(&state),
             date: &date,
+            // The pinned destination must sit under its own grant's verified root (review of #522).
+            destination_root: dest.root_id,
         })
         .map_err(|e| {
             with_reason(
@@ -303,7 +306,7 @@ impl Inner {
             )
         })?;
         // The root opened for observation is the granted object, never a substitute at that path.
-        if plan.source_root_id != first.root_id {
+        if (plan.source_root_volume, plan.source_root_id) != first.root_id {
             return Err(with_reason(
                 fail(ErrorCode::PermissionDenied, "the granted root changed"),
                 "root_identity_changed",
@@ -579,6 +582,7 @@ impl Inner {
                     "items_total": outcome.items_total,
                     "items_verified": outcome.items_verified,
                     "staging_folder": outcome.staging_left,
+                    "leftover_staging_folders": outcome.leftover_staging.iter().take(64).collect::<Vec<_>>(),
                     // Item refusals name a manifest entry, not a catalogue node: node_id stays null.
                     "refusal": outcome.refusal.map(|(code, _)| json!({"code": code_name(code), "node_id": null})),
                 }),

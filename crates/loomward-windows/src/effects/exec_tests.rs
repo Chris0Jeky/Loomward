@@ -40,16 +40,28 @@ impl Lab {
             grants_active: true,
             protected: false,
             date: DATE,
+            destination_root: self.grant(),
         }
+    }
+    /// The lab's own folder stands for the destination's lab-root grant: (volume serial, file ID).
+    fn grant(&self) -> (u64, [u8; 16]) {
+        let o = identity::observe(&fs::canonicalize(self.tmp.path()).unwrap())
+            .unwrap()
+            .object;
+        (o.volume_serial.parse().unwrap(), o.file_id)
     }
     /// Preview, approve, start (fresh rebuild plus admit), journal the plan: the C4 to C3 hand-over.
     fn start(&self, selected: &[&str]) -> u64 {
+        self.start_with(selected, |_| {})
+    }
+    fn start_with(&self, selected: &[&str], edit: impl FnOnce(&mut Plan)) -> u64 {
         let selected: Vec<PathBuf> = selected.iter().map(PathBuf::from).collect();
         let (root, dest) = (self.src(), self.dest());
         let (preview, _) = prepare(&self.request(&root, &dest, &selected)).unwrap();
         assert!(preview.refusals.is_empty(), "{:?}", preview.refusals);
         let approval = approve(&preview, preview.manifest.digest(), 0, 0).unwrap();
-        let (fresh, plan) = prepare(&self.request(&root, &dest, &selected)).unwrap();
+        let (fresh, mut plan) = prepare(&self.request(&root, &dest, &selected)).unwrap();
+        edit(&mut plan);
         let admitted = approval.admit(&fresh, 0, 1).unwrap();
         let mut store = self.store.lock().unwrap();
         let op = store.start(0, admitted).unwrap();
@@ -577,4 +589,164 @@ fn cleanup_after_a_crash_mid_removal_journals_the_gone_entry_and_finishes() {
     let outcome = recover(&lab.store, op, &Control::new(true)).unwrap();
     assert_eq!(outcome.state, OpState::Cancelled, "{outcome:?}");
     assert!(lab.dest_names().is_empty(), "{:?}", lab.dest_names());
+}
+
+// ---- Review round 1 of #522 ----
+
+/// (1) The destination must lie under its own lab-root grant, by identity: preview and run both refuse a
+/// destination whose pinned ancestry does not contain the grant's verified root, before any write.
+#[test]
+fn a_destination_outside_its_grant_identity_is_refused_before_any_write() {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f"), b"x").unwrap();
+    let sel = [PathBuf::from("f")];
+    let (src, dest) = (lab.src(), lab.dest());
+    let mut request = lab.request(&src, &dest, &sel);
+    request.destination_root = (request.destination_root.0, [0xAB; 16]);
+    let e = prepare(&request).unwrap_err();
+    assert_eq!(e.to_string(), "destination_outside_grant");
+    let mut request = lab.request(&src, &dest, &sel);
+    request.destination_root = (
+        request.destination_root.0.wrapping_add(1),
+        request.destination_root.1,
+    );
+    assert_eq!(
+        prepare(&request).unwrap_err().to_string(),
+        "destination_outside_grant"
+    );
+    // At run time (an ancestor swapped after start): refused, nothing created.
+    let op = lab.start_with(&["f"], |plan| plan.destination_root.1 = [0xCD; 16]);
+    let outcome = run(&lab.store, op, &Control::new(false)).unwrap();
+    assert_eq!(outcome.state, OpState::Refused, "{outcome:?}");
+    assert!(lab.dest_names().is_empty());
+}
+
+/// (2) A named stream added to a staged file after verification (stream holds are released for the
+/// rename) is caught before `committed`.
+#[test]
+fn a_stream_added_after_verification_is_never_committed() {
+    let Some(lab) = Lab::new() else { return };
+    fs::create_dir(lab.src().join("top")).unwrap();
+    fs::write(lab.src().join("top/f.txt"), b"data").unwrap();
+    fs::write(lab.src().join("top/f.txt:note"), b"kept").unwrap();
+    let op = lab.start(&["top"]);
+    let dest = lab.dest();
+    let control = Control::new(false).with_hook(move |p, _| {
+        if p == Point::BeforePublish {
+            let staging = fs::read_dir(&dest).unwrap().next().unwrap().unwrap().path();
+            fs::write(staging.join("f.txt:planted"), b"new").unwrap();
+        }
+        Flow::Continue
+    });
+    let outcome = run(&lab.store, op, &control).unwrap();
+    assert_eq!(outcome.state, OpState::NeedsAttention, "{outcome:?}");
+    assert_eq!(
+        outcome.refusal,
+        Some((Refusal::ChangedAfterVerification, None))
+    );
+}
+
+/// Deny "create folder" on the test's own destination for everyone; removed again on drop.
+struct DenyCreate(PathBuf);
+impl DenyCreate {
+    fn new(path: &Path) -> Self {
+        let ok = std::process::Command::new("icacls")
+            .arg(path)
+            .args(["/deny", "*S-1-1-0:(AD)"])
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "icacls deny");
+        DenyCreate(path.to_path_buf())
+    }
+}
+impl Drop for DenyCreate {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("icacls")
+            .arg(&self.0)
+            .args(["/remove:d", "*S-1-1-0"])
+            .output();
+    }
+}
+
+/// (3) A staging folder that cannot be created ends `refused` with its cause, never `preparing`.
+#[test]
+fn a_failed_staging_create_is_a_journaled_refusal() {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f"), b"x").unwrap();
+    let op = lab.start(&["f"]);
+    let deny = DenyCreate::new(&lab.dest());
+    let outcome = run(&lab.store, op, &Control::new(false)).unwrap();
+    drop(deny);
+    assert_eq!(outcome.state, OpState::Refused, "{outcome:?}");
+    assert_eq!(outcome.refusal, Some((Refusal::AccessDenied, None)));
+    assert!(lab.dest_names().is_empty());
+}
+
+/// (4) Recovery after the rename tells an unverifiable read (the source held by a writer) from a real
+/// mismatch. Unverifiable: recovery leaves `publishing` to retry; abandon settles it as needs_attention
+/// with the cause and never touches the published copy. Mismatch: `changed_after_verification`.
+#[test]
+fn confirm_tells_unverifiable_from_changed_and_abandon_settles_it() {
+    for changed in [false, true] {
+        let Some(mut lab) = Lab::new() else { return };
+        fs::create_dir(lab.src().join("top")).unwrap();
+        fs::write(lab.src().join("top/f.bin"), b"payload").unwrap();
+        let op = lab.start(&["top"]);
+        let crash = Control::new(false).with_hook(|p, _| {
+            if p == Point::AfterPublish {
+                Flow::Crash
+            } else {
+                Flow::Continue
+            }
+        });
+        assert!(matches!(run(&lab.store, op, &crash), Err(Fault::Crashed)));
+        lab.reopen();
+        let published = lab.dest().join("top").join("f.bin");
+        if changed {
+            fs::write(&published, b"PAYLOAD").unwrap();
+            let r = recover(&lab.store, op, &Control::new(false)).unwrap();
+            assert_eq!(r.state, OpState::NeedsAttention, "{r:?}");
+            assert_eq!(r.refusal, Some((Refusal::ChangedAfterVerification, None)));
+        } else {
+            let writer = fs::OpenOptions::new()
+                .append(true)
+                .open(lab.src().join("top/f.bin"))
+                .unwrap();
+            let r = recover(&lab.store, op, &Control::new(false)).unwrap();
+            assert_eq!(r.state, OpState::Publishing, "retried later: {r:?}");
+            let settled = cancel(&lab.store, op, &lab.plan(op), &Control::new(true)).unwrap();
+            drop(writer);
+            assert_eq!(settled.state, OpState::NeedsAttention, "{settled:?}");
+            assert_eq!(settled.refusal, Some((Refusal::SourceInUse, None)));
+            assert_eq!(
+                fs::read(&published).unwrap(),
+                b"payload",
+                "published copy kept"
+            );
+        }
+    }
+}
+
+/// (5) A staging token intended but never identity-committed is reported, not silent.
+#[test]
+fn a_leftover_staging_token_is_reported_in_status() {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f"), b"x").unwrap();
+    let op = lab.start(&["f"]);
+    let epoch = replay(&lab.store, op).unwrap().epoch;
+    lab.store
+        .lock()
+        .unwrap()
+        .append(
+            op,
+            epoch,
+            Record::StagingIntent {
+                token: "~lw-staging-orphan".into(),
+            },
+        )
+        .unwrap();
+    let s = status(&lab.store, op).unwrap();
+    assert_eq!(s.leftover_staging, vec!["~lw-staging-orphan".to_string()]);
 }
