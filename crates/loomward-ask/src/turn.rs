@@ -369,10 +369,15 @@ impl Tools<'_> {
                 out.insert(key.into(), v);
             }
         }
-        let text = |v: Option<&Value>| {
-            v.and_then(|p| p.get("text"))
-                .and_then(Value::as_str)
-                .map(clean)
+        // A present null is the service's unknown; a text field the grant withheld stays absent.
+        let text = |v: Option<&Value>| match v {
+            Some(Value::Null) => Some("unknown".to_owned()),
+            Some(p) => match p.get("text") {
+                Some(Value::Null) => Some("unknown".to_owned()),
+                Some(Value::String(s)) => Some(clean(s)),
+                _ => None,
+            },
+            None => None,
         };
         // Search hits carry `path`, inspect carries `display_path`: both only with the `path` field.
         if let Some(p) = text(item.get("path")).or_else(|| text(item.get("display_path"))) {
@@ -385,11 +390,13 @@ impl Tools<'_> {
     }
 }
 
-/// The one gate for a value on its way to the model: strings cleaned, numbers as they are.
+/// The one gate for a value on its way to the model: strings cleaned, numbers as they are, and a
+/// null (the service's "unknown", invariant 4) as the string `unknown`. Other types are dropped.
 fn model_value(v: &Value) -> Option<Value> {
     match v {
         Value::String(s) => Some(clean(s).into()),
         Value::Number(_) => Some(v.clone()),
+        Value::Null => Some("unknown".into()),
         _ => None,
     }
 }
@@ -398,14 +405,25 @@ fn tool_error(message: &str) -> Value {
     json!({"error": message})
 }
 
-/// Names are untrusted data (docs/46 section 8.4): control and bidi characters escaped, at most
-/// 255 characters before escaping.
+/// Names are untrusted data (docs/46 section 8.4): control, bidi, invisible format and line or
+/// paragraph separator characters escaped, at most 255 characters before escaping.
 pub fn clean(s: &str) -> String {
     s.chars()
         .take(255)
         .flat_map(|c| {
             let hostile = c.is_control()
-                || matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}');
+                || matches!(
+                    c,
+                    '\u{061C}'
+                        | '\u{180E}'
+                        | '\u{200B}'..='\u{200F}'
+                        | '\u{202A}'..='\u{202E}'
+                        | '\u{2028}'..='\u{2029}'
+                        | '\u{2060}'..='\u{2064}'
+                        | '\u{2066}'..='\u{2069}'
+                        | '\u{FEFF}'
+                        | '\u{E0000}'..='\u{E007F}'
+                );
             let escaped: Vec<char> = if hostile {
                 c.escape_unicode().collect()
             } else {
