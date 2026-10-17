@@ -2540,6 +2540,73 @@ impl ScanSink for FenceProbe {
 }
 
 #[test]
+fn both_grant_endings_call_the_scan_writer_fence_after_commit() {
+    for ending in ["revoke", "identity_changed", "identity_changed_from_scan"] {
+        let tmp = temp_root();
+        let svc = Service::open_with(
+            Config {
+                state_dir: tmp.path().into(),
+                dataset: DatasetClass::Synthetic,
+                allow_personal: false,
+                allow_identity_unverified: false,
+                grant_roots: vec![],
+            },
+            crate::idem::TTL,
+            false,
+        )
+        .unwrap();
+        let probe = Arc::new(FenceProbe {
+            state: svc.inner.state_dir.clone(),
+            seen: Mutex::new(vec![]),
+        });
+        svc.inner.engine.set_scan_sink(probe.clone()).unwrap();
+        let (root, grant) = register(&svc, 3);
+        let id = RootId::new(svc.inner.root_id(root)).unwrap();
+        let state = if ending == "revoke" {
+            svc.inner.revoke(grant).unwrap();
+            "revoked"
+        } else {
+            svc.inner
+                .identity_changed(grant, &id, ending == "identity_changed");
+            "identity_changed"
+        };
+        assert_eq!(
+            *probe.seen.lock().unwrap(),
+            vec![format!("{id}:{state}")],
+            "{ending}"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn identity_change_cancels_an_active_scan_before_returning() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    svc.inner.scan.gate.arm();
+    let job = start(svc, &lab.root, "full");
+    svc.inner.scan.gate.wait_reached();
+    let grant = svc
+        .inner
+        .db()
+        .query_row("SELECT grant_id FROM main.root WHERE id=1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    svc.inner
+        .identity_changed(grant, &RootId::new(lab.root.clone()).unwrap(), true);
+    // Observe cancellation while the writer is still held, before it can fail on its own fence.
+    let job_id = JobId::new(job.clone()).unwrap();
+    let state = svc.inner.engine.job_status(&job_id).unwrap().state;
+    svc.inner.scan.gate.release();
+    assert!(
+        matches!(state, JobState::CancelRequested | JobState::Cancelled),
+        "{state:?}"
+    );
+    assert_eq!(settle(svc, &job)["state"], "cancelled");
+}
+
+#[test]
 fn revocation_commits_first_then_fences_then_emits_and_is_monotone() {
     let tmp = temp_root();
     let svc = Service::open_with(

@@ -23,6 +23,7 @@ fn grant_ids_accept_only_the_canonical_positive_form() {
         "gr_9223372036854775808",
         "1",
         "GR_1",
+        "Gr_1",
         "grant_1",
         "",
     ] {
