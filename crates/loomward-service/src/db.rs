@@ -229,11 +229,16 @@ pub fn lab_root(conn: &Connection, volume_key: &str, file_id: &[u8]) -> Sql<Opti
     .optional()
 }
 
-pub fn active_grant(conn: &Connection, volume_key: &str, file_id: &[u8]) -> Sql<Option<i64>> {
+pub fn active_grant(
+    conn: &Connection,
+    volume_key: &str,
+    file_id: &[u8],
+    display_path: &str,
+) -> Sql<Option<(i64, String)>> {
     conn.query_row(
-        "SELECT id FROM st.root_grant WHERE volume_key=?1 AND root_file_id=?2 AND state='active' ORDER BY id DESC LIMIT 1",
-        params![volume_key, file_id],
-        |r| r.get(0),
+        "SELECT id,identity_mode FROM st.root_grant WHERE volume_key=?1 AND root_file_id=?2 AND state='active' AND (identity_mode='verified' OR display_path=?3) ORDER BY id DESC LIMIT 1",
+        params![volume_key, file_id, display_path],
+        |r| Ok((r.get(0)?, r.get(1)?)),
     )
     .optional()
 }

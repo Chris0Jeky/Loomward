@@ -5806,6 +5806,158 @@ fn identity_unverified_cli_grants_need_explicit_confirmation() {
     assert_eq!(grant_identity(&svc, root).0, "verified");
 }
 
+#[cfg(windows)]
+#[test]
+fn regrant_backfills_a_legacy_null_filesystem_without_replacing_the_grant() {
+    assert!(
+        !loomward_windows::enumerate::running_elevated(),
+        "native regression needs a non-elevated host"
+    );
+    let tmp = temp_root();
+    let folder = tmp.path().join("synthetic-folder");
+    std::fs::create_dir(&folder).unwrap();
+    let folder = folder.canonicalize().unwrap();
+    let svc = open(&tmp.path().join("state"), DatasetClass::Personal);
+    let (root, _) = svc.inner.grant(&folder, "cli_flag", false).unwrap();
+    let before = crate::db::active_grants(&svc.inner.db()).unwrap();
+    svc.inner
+        .db()
+        .execute_batch(
+            "UPDATE main.volume SET filesystem=NULL; UPDATE st.root_grant SET filesystem=NULL",
+        )
+        .unwrap();
+    assert_eq!(
+        svc.inner.grant(&folder, "cli_flag", false).unwrap(),
+        (root, false)
+    );
+    let filesystem: Option<String> = svc
+        .inner
+        .db()
+        .query_row("SELECT filesystem FROM main.volume", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(filesystem.as_deref(), Some("NTFS"));
+    assert_eq!(
+        svc.inner
+            .db()
+            .query_row("SELECT filesystem FROM st.root_grant", [], |r| r
+                .get::<_, String>(0))
+            .unwrap(),
+        "NTFS"
+    );
+    assert_eq!(crate::db::active_grants(&svc.inner.db()).unwrap(), before);
+}
+
+#[cfg(windows)]
+#[test]
+fn stored_unverified_grant_needs_no_second_cli_confirmation_after_restart() {
+    assert!(
+        !loomward_windows::enumerate::running_elevated(),
+        "native regression needs a non-elevated host"
+    );
+    let tmp = temp_root();
+    let folder = tmp.path().join("synthetic-folder");
+    std::fs::create_dir(&folder).unwrap();
+    let folder = folder.canonicalize().unwrap();
+    let state = tmp.path().join("state");
+    let svc = open(&state, DatasetClass::Personal);
+    *svc.inner.hooks.filesystem.lock().unwrap() = Some("exFAT");
+    let (root, _) = svc.inner.grant(&folder, "cli_flag", true).unwrap();
+    drop(svc);
+    let svc = open(&state, DatasetClass::Personal);
+    *svc.inner.hooks.filesystem.lock().unwrap() = Some("exFAT");
+    assert_eq!(
+        svc.inner.grant(&folder, "cli_flag", false).unwrap(),
+        (root, false)
+    );
+    assert_eq!(grant_identity(&svc, root).0, "unverified");
+    let (key, id) = crate::lab::identity(&folder).unwrap();
+    assert_eq!(
+        crate::db::active_grant(&svc.inner.db(), &key, &id, "Another synthetic root").unwrap(),
+        None,
+        "a recyclable ID cannot transfer the saved permission to another path"
+    );
+    let other = tmp.path().join("synthetic-other");
+    std::fs::create_dir(&other).unwrap();
+    assert_eq!(
+        svc.inner
+            .grant(&other.canonicalize().unwrap(), "cli_flag", false),
+        Err(crate::Refused::IdentityUnverified)
+    );
+    svc.inner
+        .catalog
+        .writer()
+        .call(WriteCommand::RevokeGrant {
+            grant_id: svc
+                .inner
+                .db()
+                .query_row("SELECT grant_id FROM main.root WHERE id=?1", [root], |r| {
+                    r.get(0)
+                })
+                .unwrap(),
+            revoked_at_ns: crate::now_ns(),
+        })
+        .unwrap();
+    assert_eq!(
+        svc.inner.grant(&folder, "cli_flag", false),
+        Err(crate::Refused::IdentityUnverified)
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn revocation_between_regrant_lookup_and_write_cannot_reuse_confirmation() {
+    assert!(
+        !loomward_windows::enumerate::running_elevated(),
+        "native regression needs a non-elevated host"
+    );
+    let tmp = temp_root();
+    let folder = tmp.path().join("synthetic-folder");
+    std::fs::create_dir(&folder).unwrap();
+    let folder = folder.canonicalize().unwrap();
+    let svc = open(&tmp.path().join("state"), DatasetClass::Personal);
+    *svc.inner.hooks.filesystem.lock().unwrap() = Some("exFAT");
+    let (root, _) = svc.inner.grant(&folder, "cli_flag", true).unwrap();
+    let grant = svc
+        .inner
+        .db()
+        .query_row("SELECT grant_id FROM main.root WHERE id=?1", [root], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    svc.inner
+        .hooks
+        .closed
+        .lock()
+        .unwrap()
+        .push((Command::RootsRequestGrant, "grant_observed"));
+    let peer = svc.inner.clone();
+    let regrant = std::thread::spawn(move || peer.grant(&folder, "cli_flag", false));
+    svc.inner.hooks.until("regrant observed", |hooks| {
+        hooks
+            .arrived
+            .lock()
+            .unwrap()
+            .contains(&(Command::RootsRequestGrant, "grant_observed"))
+    });
+    // The catalogue connection can revoke independently of the service's mutation mutex.
+    svc.inner
+        .catalog
+        .writer()
+        .call(WriteCommand::RevokeGrant {
+            grant_id: grant,
+            revoked_at_ns: crate::now_ns(),
+        })
+        .unwrap();
+    svc.inner
+        .hooks
+        .open(Command::RootsRequestGrant, "grant_observed");
+    assert!(
+        regrant.join().unwrap().is_err(),
+        "a revoked grant cannot supply a saved confirmation"
+    );
+    assert_eq!(crate::db::active_grants(&svc.inner.db()).unwrap(), 0);
+}
+
 /// #219: the desktop picker asks the one-line native confirmation only for a volume that cannot
 /// verify identity; declining grants nothing and reports `cancelled_by_user`.
 #[cfg(windows)]
@@ -5819,7 +5971,9 @@ fn picker_confirms_identity_unverified_volumes_explicitly() {
         fn confirm_disclosure(&self, _: &DisclosureSummary) -> Result<bool, ErrorBody> {
             Ok(false)
         }
-        fn confirm_identity_unverified(&self) -> bool {
+        fn confirm_identity_unverified(&self, folder: &Path, filesystem: &str) -> bool {
+            assert_eq!(folder, self.0.canonicalize().unwrap());
+            assert_eq!(filesystem, "FAT32");
             self.2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.1
         }

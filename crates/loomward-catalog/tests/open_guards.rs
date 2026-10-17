@@ -14,6 +14,224 @@ fn observation() -> RootObservation {
     }
 }
 
+#[test]
+fn grant_filesystem_survives_catalogue_rebuild() {
+    for filesystem in [
+        Some("NTFS"),
+        Some("ReFS"),
+        Some("FAT32"),
+        Some("exFAT"),
+        Some("unknown"),
+        None,
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(temp.path(), "synthetic").unwrap();
+        let mut root = observation();
+        root.filesystem = filesystem.map(str::to_owned);
+        catalog
+            .writer()
+            .call(WriteCommand::RegisterRoot(root))
+            .unwrap();
+        drop(catalog);
+        std::fs::remove_file(temp.path().join("catalog.db")).unwrap();
+        let catalog = Catalog::open(temp.path(), "synthetic").unwrap();
+        let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+        let actual: Option<String> = db
+            .query_row("SELECT filesystem FROM volume", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(actual.as_deref(), filesystem);
+        drop(catalog);
+    }
+}
+
+#[test]
+fn regrant_filesystem_updates_the_same_grant_without_changing_identity_mode() {
+    let temp = tempfile::tempdir().unwrap();
+    let catalog = Catalog::open(temp.path(), "synthetic").unwrap();
+    let mut root = observation();
+    root.filesystem = None;
+    let original = catalog
+        .writer()
+        .call(WriteCommand::RegisterRoot(root.clone()))
+        .unwrap();
+    let WriteReply::Root { grant_id, .. } = original else {
+        panic!()
+    };
+    root.filesystem = Some("NTFS".into());
+    assert_eq!(
+        catalog
+            .writer()
+            .call(WriteCommand::RefreshRoot {
+                grant_id,
+                observation: root.clone()
+            })
+            .unwrap(),
+        original
+    );
+    let state = Connection::open(temp.path().join("state.db")).unwrap();
+    assert_eq!(
+        state
+            .query_row("SELECT count(*) FROM root_grant", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        state
+            .query_row("SELECT filesystem FROM root_grant", [], |r| r
+                .get::<_, String>(0))
+            .unwrap(),
+        "NTFS"
+    );
+}
+
+#[test]
+fn regrant_filesystem_cannot_change_identity_permission() {
+    let temp = tempfile::tempdir().unwrap();
+    let catalog = Catalog::open(temp.path(), "synthetic").unwrap();
+    let mut root = observation();
+    let WriteReply::Root { grant_id, .. } = catalog
+        .writer()
+        .call(WriteCommand::RegisterRoot(root.clone()))
+        .unwrap()
+    else {
+        panic!()
+    };
+    root.filesystem = Some("exFAT".into());
+    assert!(
+        catalog
+            .writer()
+            .call(WriteCommand::RefreshRoot {
+                grant_id,
+                observation: root
+            })
+            .is_err(),
+        "a filesystem observation cannot change the stored identity permission"
+    );
+    let state = Connection::open(temp.path().join("state.db")).unwrap();
+    assert_eq!(
+        state
+            .query_row("SELECT identity_mode FROM root_grant", [], |r| r
+                .get::<_, String>(0))
+            .unwrap(),
+        "verified"
+    );
+}
+
+#[test]
+fn an_unverified_recycled_root_id_at_another_path_is_a_new_grant() {
+    let temp = tempfile::tempdir().unwrap();
+    let catalog = Catalog::open(temp.path(), "synthetic").unwrap();
+    let mut root = observation();
+    root.filesystem = Some("exFAT".into());
+    let first = catalog
+        .writer()
+        .call(WriteCommand::RegisterRoot(root.clone()))
+        .unwrap();
+    let WriteReply::Root { grant_id, .. } = first else {
+        panic!()
+    };
+    root.display_path = "Another synthetic root".into();
+    assert!(matches!(
+        catalog.writer().call(WriteCommand::RefreshRoot {
+            grant_id,
+            observation: root.clone()
+        }),
+        Err(Error::NotFound)
+    ));
+    let second = catalog
+        .writer()
+        .call(WriteCommand::RegisterRoot(root))
+        .unwrap();
+    assert_ne!(first, second);
+}
+
+#[test]
+fn refresh_requires_an_active_matching_grant_and_never_registers_one() {
+    let temp = tempfile::tempdir().unwrap();
+    let catalog = Catalog::open(temp.path(), "synthetic").unwrap();
+    let (grant_id, _, _) = register_root(&catalog);
+    let mut changed = observation();
+    changed.root_file_id = Some(vec![2; 16]);
+    assert!(matches!(
+        catalog.writer().call(WriteCommand::RefreshRoot {
+            grant_id,
+            observation: changed
+        }),
+        Err(Error::NotFound)
+    ));
+    catalog
+        .writer()
+        .call(WriteCommand::RevokeGrant {
+            grant_id,
+            revoked_at_ns: 2,
+        })
+        .unwrap();
+    assert!(matches!(
+        catalog.writer().call(WriteCommand::RefreshRoot {
+            grant_id,
+            observation: observation()
+        }),
+        Err(Error::NotFound)
+    ));
+    let state = Connection::open(temp.path().join("state.db")).unwrap();
+    assert_eq!(
+        state
+            .query_row(
+                "SELECT count(*),count(*) FILTER(WHERE state='active') FROM root_grant",
+                [],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+            )
+            .unwrap(),
+        (1, 0)
+    );
+}
+
+#[test]
+fn v8_grant_filesystem_is_recovered_before_catalogue_rebuild() {
+    let temp = tempfile::tempdir().unwrap();
+    let catalog = Catalog::open(temp.path(), "synthetic").unwrap();
+    register_root(&catalog);
+    drop(catalog);
+    let state = Connection::open(temp.path().join("state.db")).unwrap();
+    let has_column: bool = state
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('root_grant') WHERE name='filesystem')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    if has_column {
+        state
+            .execute_batch("ALTER TABLE root_grant DROP COLUMN filesystem")
+            .unwrap();
+    }
+    state.pragma_update(None, "user_version", 8).unwrap();
+    drop(state);
+    drop(Catalog::open(temp.path(), "synthetic").unwrap());
+    let state = Connection::open(temp.path().join("state.db")).unwrap();
+    assert_eq!(
+        state
+            .query_row("SELECT filesystem FROM root_grant", [], |r| r
+                .get::<_, Option<String>>(0))
+            .unwrap()
+            .as_deref(),
+        Some("NTFS")
+    );
+    drop(state);
+    std::fs::remove_file(temp.path().join("catalog.db")).unwrap();
+    let catalog = Catalog::open(temp.path(), "synthetic").unwrap();
+    let db = Connection::open(temp.path().join("catalog.db")).unwrap();
+    assert_eq!(
+        db.query_row("SELECT filesystem FROM volume", [], |r| r
+            .get::<_, Option<String>>(0))
+            .unwrap()
+            .as_deref(),
+        Some("NTFS")
+    );
+    drop(catalog);
+}
+
 fn register_root(catalog: &Catalog) -> (i64, i64, i64) {
     let WriteReply::Root {
         grant_id,
