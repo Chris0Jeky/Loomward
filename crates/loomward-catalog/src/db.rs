@@ -391,9 +391,9 @@ pub(crate) fn open_pair_with(dir: &Path, dataset: &str, ranked: bool) -> Result<
 }
 /// The name search indexes: the trigram table (q-34) always, the ranked-search token table (F2)
 /// only where the caller asks for it (`ranked`) or the store already has it. Each is created with
-/// its triggers by the first open that wants it and filled from the rows already there in the same
-/// transaction, so neither is ever behind the tables. A store opened without `ranked` that has no
-/// token table gets no new object.
+/// its triggers by the first open that wants it. The trigram table is filled from the rows already
+/// there in the same transaction; the token table's rows are queued for the writer's background
+/// backfill (#520). A store opened without `ranked` that has no token table gets no new object.
 pub(crate) fn search_index(conn: &Connection, ranked: bool) -> Result<()> {
     let has = |name: &str| -> Result<bool> {
         Ok(conn.query_row(
@@ -411,11 +411,9 @@ pub(crate) fn search_index(conn: &Connection, ranked: bool) -> Result<()> {
     }
     if ranked && !has("search_token")? {
         conn.execute_batch(include_str!("search-token.sql"))?;
-        // Every existing row is a new key to the queue; the drain below indexes them all.
-        conn.execute_batch(
-            "INSERT OR IGNORE INTO search_dirty SELECT id,1 FROM dir WHERE parent_id IS NOT NULL;
-             INSERT OR IGNORE INTO search_dirty SELECT id+281474976710656,1 FROM file;",
-        )?;
+        // Every existing row waits for the writer's background backfill (#520): indexing them here
+        // would hold the open for about 10 s per million names. `search_ranked` says "building" until it is done.
+        crate::search::start_backfill(conn)?;
     }
     // Keys a raw writer queued while no writer was running.
     crate::search::drain_tokens(conn)?;
