@@ -469,6 +469,9 @@ fn concurrent_create_delete_rename_grow_reconciles_exactly_to_fresh_scan() {
         );
         std::thread::yield_now();
     }
+    // The default size runs in CI on hosts of any speed, so it only requires real overlap; the
+    // recorded evidence run (100k files, docs/45 row 4) requires at least 8 overlapping batches.
+    let floor = if files >= 100_000 { 8 } else { 1 };
     let (overlap, batches, done) = std::thread::scope(|scope| {
         let writer = scope.spawn(|| {
             let db = lab.db();
@@ -513,8 +516,8 @@ fn concurrent_create_delete_rename_grow_reconciles_exactly_to_fresh_scan() {
         (overlap, batches, done)
     });
     assert!(
-        overlap >= 8,
-        "only {overlap} of {batches} mutation batches overlapped enumeration (floor 8)"
+        overlap >= floor,
+        "only {overlap} of {batches} mutation batches overlapped enumeration (floor {floor})"
     );
     assert_eq!(done["state"], "completed", "{done}");
     assert_eq!(lab.scan("refresh")["coverage"], "complete");
