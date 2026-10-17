@@ -644,3 +644,165 @@ fn a_client_path_starts_at_the_granted_root_and_the_owner_keeps_the_absolute_one
         json!(r"Synthetic Parent\Synthetic Owner\Alpha\report drafts\report outline.txt")
     );
 }
+
+const ALL_FIELDS: [&str; 4] = ["path", "size", "modified", "attributes"];
+
+#[test]
+fn an_owner_revoked_root_leaves_a_multi_root_grant_and_cannot_be_granted() {
+    let tmp = temp_root();
+    let svc = open(tmp.path());
+    let alpha = root(&svc, "Alpha", 1, Some(ALPHA));
+    let beta = root(&svc, "Beta", 2, Some(BETA));
+    svc.grant_client(
+        "ask:local",
+        &[alpha.clone(), beta.clone()],
+        &ALL_FIELDS,
+        None,
+    )
+    .unwrap();
+    let query = |text: &str| {
+        ok(as_client(
+            &svc,
+            "ask:local",
+            "search.query",
+            search(text, 100, Value::Null),
+        ))
+    };
+    assert_eq!(query("report")["roots"].as_array().unwrap().len(), 2);
+    let revoked = as_owner(
+        &svc,
+        "roots.revoke",
+        json!({"root_id": beta.as_ref(), "purge_catalog": false}),
+    );
+    assert!(matches!(revoked, ResponseEnvelope::Ok(_)), "{revoked:?}");
+    // The client keeps its grant but sees only the still-active root, and nothing of Beta.
+    let page = query("report");
+    assert_eq!(
+        page["roots"],
+        json!([{"root_id": alpha.as_ref(), "scan_state": "complete", "coverage": "complete"}])
+    );
+    assert!(!names(&page).iter().any(|n| n.contains("beta")));
+    for hit in page["hits"].as_array().unwrap() {
+        assert_eq!(hit["root_id"], json!(alpha.as_ref()));
+    }
+    // A revoked root, alone or among live ones, cannot be granted, and a refused grant replaces
+    // nothing; an unknown root reads the same.
+    let mut forged = beta.as_ref().to_owned();
+    forged.push('0');
+    let forged = RootId::new(forged).unwrap();
+    let held = query("notes");
+    for roots in [
+        vec![beta.clone()],
+        vec![alpha.clone(), beta.clone()],
+        vec![forged],
+    ] {
+        let e = svc
+            .grant_client("ask:local", &roots, &ALL_FIELDS, None)
+            .unwrap_err();
+        assert_eq!(e.code, ErrorCode::NotFound);
+        assert_eq!(e.message.as_str(), "unknown root");
+        let e = svc
+            .grant_client("mcp:other", &roots, &["path"], None)
+            .unwrap_err();
+        assert_eq!(e.code, ErrorCode::NotFound);
+    }
+    assert_eq!(unsealed(query("notes")), unsealed(held));
+    let other = as_client(
+        &svc,
+        "mcp:other",
+        "search.query",
+        search("notes", 5, Value::Null),
+    );
+    assert_eq!(err(other).code, ErrorCode::PermissionDenied);
+}
+
+/// The explain of a size-only grant carries the row's size fields and nothing else the grant
+/// does not name; with every field it is the owner's row, root and path.
+#[test]
+fn an_inspect_projects_the_row_to_the_granted_fields() {
+    let tmp = temp_root();
+    let svc = open(tmp.path());
+    let alpha = root(&svc, "Alpha", 1, Some(ALPHA));
+    svc.grant_client("mcp:sizes", std::slice::from_ref(&alpha), &["size"], None)
+        .unwrap();
+    svc.grant_client("mcp:all", std::slice::from_ref(&alpha), &ALL_FIELDS, None)
+        .unwrap();
+    let owner = ok(as_owner(
+        &svc,
+        "search.query",
+        search("report.pdf", 1, Value::Null),
+    ));
+    let node = owner["hits"][0]["row"]["node_id"].clone();
+    let inspect = |client: &str| {
+        ok(as_client(
+            &svc,
+            client,
+            "node.inspect",
+            json!({"node_id": node}),
+        ))
+    };
+    let owner_row = ok(as_owner(&svc, "node.inspect", json!({"node_id": node})))["row"].clone();
+    for k in ["modified_at", "attributes", "flags"] {
+        assert!(owner_row.get(k).is_some(), "the fixture has {k}");
+    }
+    let sizes = inspect("mcp:sizes");
+    let row = sizes["row"].as_object().unwrap();
+    for k in ["location_hint", "modified_at", "attributes", "flags"] {
+        assert!(!row.contains_key(k), "{k}");
+    }
+    assert_eq!(row["logical_bytes"], owner_row["logical_bytes"]);
+    assert!(sizes.get("display_path").is_none());
+    let all = inspect("mcp:all");
+    assert_eq!(all["row"], owner_row);
+    assert!(all["display_path"]["text"].is_string());
+}
+
+/// A directory resolves to its root for the scope check, as a file does.
+#[test]
+fn an_inspect_of_a_directory_is_scoped_by_its_root() {
+    let tmp = temp_root();
+    let svc = open(tmp.path());
+    let alpha = root(&svc, "Alpha", 1, Some(ALPHA));
+    let beta = root(&svc, "Beta", 2, Some(BETA));
+    svc.grant_client("ask:local", std::slice::from_ref(&alpha), &ALL_FIELDS, None)
+        .unwrap();
+    let mut dirs = search("report drafts", 10, Value::Null);
+    dirs["kind"] = json!("dir");
+    let owner = ok(as_owner(&svc, "search.query", dirs));
+    let dir_of = |root: &RootId| {
+        let hit = owner["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|h| h["root_id"] == json!(root.as_ref()))
+            .unwrap();
+        assert_eq!(hit["row"]["kind"], json!("dir"));
+        hit["row"]["node_id"].clone()
+    };
+    let (mine, theirs) = (dir_of(&alpha), dir_of(&beta));
+    let inspect = |node: &Value, generation: Option<u64>| {
+        let mut r = request("node.inspect", json!({"node_id": node}));
+        r.expected_generation = generation.map(Generation);
+        svc.call(r, &CallContext::client("ask:local"))
+    };
+    let seen = ok(inspect(&mine, None));
+    assert_eq!(seen["root_id"], json!(alpha.as_ref()));
+    assert_eq!(seen["row"]["kind"], json!("dir"));
+    // Another root's directory is an unknown node, before a generation check could tell it apart.
+    let forged = {
+        let mut s = theirs.as_str().unwrap().to_owned();
+        s.replace_range(s.len() - 2.., "00");
+        json!(s)
+    };
+    for generation in [None, Some(999)] {
+        let (other, unknown) = (
+            err(inspect(&theirs, generation)),
+            err(inspect(&forged, generation)),
+        );
+        assert_eq!(other.code, ErrorCode::NotFound, "{generation:?}");
+        assert_eq!(
+            (other.message, other.detail),
+            (unknown.message, unknown.detail)
+        );
+    }
+}
