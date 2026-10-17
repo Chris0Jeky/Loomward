@@ -63,9 +63,10 @@ jobs:
       - run: npm ci --prefix app
       - run: npm --prefix app run build
       - run: cargo +stable fmt --manifest-path native/Cargo.toml --check
-      - run: cargo +stable build --manifest-path native/Cargo.toml
-      - run: cargo +stable test --manifest-path native/Cargo.toml
-      - run: cargo +stable clippy --manifest-path native/Cargo.toml --all-targets -- -D warnings
+      - run: python scripts/build_broker.py
+      - run: cargo +stable build --locked --manifest-path native/Cargo.toml
+      - run: cargo +stable test --locked --manifest-path native/Cargo.toml
+      - run: cargo +stable clippy --locked --manifest-path native/Cargo.toml --all-targets -- -D warnings
       - run: ./native/target/debug/loomward-desktop.exe --self-test
       # The WebView2 probe (native/tests/webview2_probe.py) is a local proving check, not a hosted one:
       # on windows-latest the shell starts and its WebView2 processes run, but WebView2 never opens a

@@ -21,6 +21,7 @@
       "capabilities": {
         "observation": {
           "metadata_scan": true,
+          "duplicate_content_read": true,
           "process_observation": true,
           "gpu_observation": false,
           "disk_io_observation": true,
@@ -121,6 +122,6 @@
       "unknown": "not_retained"
     }
   },
-  "bytes": "2868",
-  "digest": "sha256:8187274109dca01b02036ee3836fb68504c1f18731450e8080888117a53c2628"
+  "bytes": "2908",
+  "digest": "sha256:7056fdb82a61867195910c4e27f72f0742202844355f3b70f346d1a4d112ad66"
 }

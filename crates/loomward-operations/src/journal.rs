@@ -60,6 +60,8 @@ pub enum Refusal {
     VerificationMismatch,
     ChangedAfterVerification,
     GrantRevoked,
+    /// The destination parent no longer opens as its pinned identity under its grant's root (at start).
+    DestinationChanged,
 }
 
 impl Refusal {
@@ -75,7 +77,10 @@ impl Refusal {
     fn is_item(self) -> bool {
         !matches!(
             self,
-            Refusal::PublishInUse | Refusal::ChangedAfterVerification | Refusal::GrantRevoked
+            Refusal::PublishInUse
+                | Refusal::ChangedAfterVerification
+                | Refusal::GrantRevoked
+                | Refusal::DestinationChanged
         )
     }
 }

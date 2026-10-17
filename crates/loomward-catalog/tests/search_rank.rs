@@ -135,6 +135,27 @@ fn ranked(lab: &Lab, r: &SearchRequest) -> SearchPage {
         .search_ranked(r, &RankOptions::default())
         .unwrap()
 }
+/// Wait for the writer's background backfill of a store that has just opted in (#520): until it
+/// is done ranked search refuses with `RankedIndexBuilding`, never a partial token tier.
+fn backfilled(lab: &Lab) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        match lab
+            .c
+            .reader()
+            .unwrap()
+            .search_ranked(&req("x"), &RankOptions::default())
+        {
+            Err(Error::RankedIndexBuilding) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            other => {
+                other.unwrap();
+                return;
+            }
+        }
+    }
+}
 fn plain(lab: &Lab, r: &SearchRequest) -> SearchPage {
     lab.c.reader().unwrap().search(r).unwrap()
 }
@@ -627,6 +648,7 @@ fn a_store_without_the_token_index_gains_it_filled_on_open() {
         temp: lab.temp,
         next_id: 0,
     };
+    backfilled(&lab);
     let p = ranked(&lab, &req("ledger"));
     assert_eq!(order(&p), ["ledgers", "legacyLedger.csv"]);
 }
@@ -840,7 +862,7 @@ fn the_ranked_index_is_off_by_default_and_a_store_opened_without_it_is_untouched
     list(&lab, run, r.dir, f, vec![]);
     end(&lab, run);
     assert_eq!(ranked_objects(&dir), [false; 4]);
-    // Asking for it creates and fills it, and ranked search works at once.
+    // Asking for it creates it and the writer fills it in the background (#520).
     drop(lab.c);
     let temp = lab.temp;
     let lab = Lab {
@@ -849,6 +871,8 @@ fn the_ranked_index_is_off_by_default_and_a_store_opened_without_it_is_untouched
         next_id: 200,
     };
     assert_eq!(ranked_objects(&dir), [true; 4]);
+    backfilled(&lab);
+    assert!(!has_object(&dir, "search_backfill"));
     assert_eq!(order(&ranked(&lab, &req("report")))[0], "report.pdf");
     assert_eq!(ranked(&lab, &req("report")).hits.len(), 2);
     // A store that has the index keeps it, and keeps it exact, when reopened without the option.

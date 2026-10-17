@@ -468,6 +468,56 @@ fn an_unreachable_model_fails_the_turn_honestly_and_one_turn_runs_at_a_time() {
 }
 
 #[test]
+fn a_failed_ask_turn_keeps_successful_and_refused_lookups() {
+    let tmp = temp_root();
+    let (svc, rt) = configured(tmp.path());
+    ok(owner(
+        &svc,
+        "ask.grant",
+        json!({"roots": [rt], "fields": []}),
+    ));
+    fake(
+        &svc,
+        vec![
+            Upstream::Reply(calls(vec![
+                call("c1", "find", r#"{"text":"report.pdf"}"#),
+                call("c2", "delete", r#"{"handle":"h1"}"#),
+            ])),
+            Upstream::Down,
+        ],
+    );
+    let t = settled(&svc, &ok(owner(&svc, "ask.turn", json!({"question": "q"}))));
+    assert_eq!(t["state"], "failed");
+    assert_eq!(t["tool_calls_total"], 2);
+    assert_eq!(t["tool_calls"][0]["name"], "find");
+    assert_eq!(t["tool_calls"][0]["ok"], true);
+    assert_eq!(t["tool_calls"][1]["name"], "delete");
+    assert_eq!(t["tool_calls"][1]["ok"], false);
+}
+
+#[test]
+fn a_failed_ask_turn_reports_any_round_that_was_sent() {
+    let tmp = temp_root();
+    let (svc, rt) = configured(tmp.path());
+    ok(owner(
+        &svc,
+        "ask.grant",
+        json!({"roots": [rt], "fields": []}),
+    ));
+    fake(
+        &svc,
+        vec![
+            Upstream::Reply(calls(vec![call("c1", "find", r#"{"text":"report.pdf"}"#)])),
+            Upstream::Down,
+        ],
+    );
+    let t = settled(&svc, &ok(owner(&svc, "ask.turn", json!({"question": "q"}))));
+    assert_eq!(t["rounds"][0]["dispatched"], true);
+    assert_eq!(t["rounds"][1]["dispatched"], false);
+    assert_eq!(t["failure"]["dispatched"], true);
+}
+
+#[test]
 fn the_contract_holds_every_handle_a_turn_can_mint() {
     // AskTurnRecord.citations is BoundedVec<_, 0, 160>: a ledger-backed citation is never cut.
     assert_eq!(loomward_ask::turn::MAX_LEDGER, 160);

@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import ts from 'typescript';
+import { describe, expect, it, vi } from 'vitest';
+import * as askModel from '../../src/views/ask/model';
 import { Client, LoomwardError } from '../../src/lib/transport/client';
 import { createMockTransport } from '../../src/lib/transport/mock';
 import { MOCK_ASK_PROFILE_DIGEST_INPUT } from '../../src/lib/transport/mock-ask';
@@ -72,11 +75,54 @@ describe('ask model', () => {
     ]);
   });
 
+  it('marks sentences without a ledger-backed citation unsupported, including invented handles', () => {
+    const t = { answer: 'h1 is report.pdf. secret.txt exists! h99 is a guess?\nNo citation here', citations: [{ handle: 'h1', node_id: 'nd_1', resolved: false, name: null, root_id: null }] } as unknown as AskTurnRecord;
+    expect(askModel).toHaveProperty('sentencesOf');
+    const sentences = askModel.sentencesOf(t);
+    expect(sentences.map((s) => s.unsupported)).toEqual([false, true, true, true]);
+    expect(sentences.flatMap((s) => s.pieces).filter((p) => 'text' in p).map((p) => p.text).join('')).toBe(' is report.pdf. secret.txt exists!  is a guess?\nNo citation here');
+    expect(sentences[0]!.pieces[0]).toEqual({ handle: 'h1', citation: t.citations[0] });
+    expect(sentences[2]!.pieces.find((p) => 'handle' in p)).toEqual({ handle: 'h99', citation: null });
+    expect(askModel.sentencesOf({ ...t, answer: '<img src="https://invalid.test">' })[0]!.unsupported).toBe(true);
+    for (const answer of ['"h1 exists." secret.txt exists.', 'h1 exists。secret.txt exists。']) {
+      expect(askModel.sentencesOf({ ...t, answer }).map((s) => s.unsupported)).toEqual([false, true]);
+    }
+  });
+
   it('says unreachable only after a turn tried, and not configured without a profile', () => {
     const base = { provider: 'local', profile: { base_url: 'http://127.0.0.1:1/v1', model: 'm' } } as unknown as AskStatus;
     expect(providerOf(base, null).label).toBe('Local · m');
     const failed = { failure: { kind: 'unreachable', message: 'x', dispatched: false } } as unknown as AskTurnRecord;
     expect(providerOf(base, failed).tone).toBe('bad');
     expect(providerOf({ ...base, provider: 'not_configured', profile: null }, null).label).toBe('Not configured');
+  });
+});
+
+// Run the actual View load/read functions without a DOM dependency; resync performs the effect's cleanup.
+describe('ask view resync', () => {
+  it.each(['tree.invalidated', 'roots.changed', 'stream.lagged'])('resumes the current running turn after %s', async () => {
+    vi.useFakeTimers();
+    try {
+      const source = readFileSync(new URL('../../src/views/ask/View.svelte', import.meta.url), 'utf8');
+      const functions = source.slice(source.indexOf('async function load()'), source.indexOf('async function ask()'));
+      const js = ts.transpileModule(functions, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText;
+      let reads = 0;
+      const session = { client: { call: vi.fn(async (command: string) => ({ result: command === 'ask.status' ? { last_turn: 'at_1' } : command === 'roots.list' ? { roots: [] } : { turn_id: 'at_1', state: ++reads >= 3 ? 'completed' : 'running' } })) }, handle: String };
+      const view = new Function('session', `
+        let generation = 0, pollTimer, turn = null, status, roots, loading, error, notice;
+        const POLL_MS = 400;
+        ${js}
+        return { load, state: () => turn?.state, resync: () => { generation++; clearTimeout(pollTimer); } };
+      `)(session) as { load(): Promise<void>; state(): string; resync(): void };
+      await view.load();
+      expect(view.state()).toBe('running');
+      view.resync();
+      await view.load();
+      await vi.advanceTimersByTimeAsync(400);
+      expect(view.state()).toBe('completed');
+      expect(reads).toBe(3);
+      await view.load();
+      expect(reads).toBe(3); // A settled, unchanged turn needs no polling.
+    } finally { vi.clearAllTimers(); vi.useRealTimers(); }
   });
 });
