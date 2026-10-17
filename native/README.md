@@ -79,7 +79,7 @@ and personal, each in a scratch state directory that it removes.
 | Command layer, dialog guards, Tauri IPC + ACL (mock runtime) | `cargo test --manifest-path native/Cargo.toml` |
 | The real Win32 disclosure box (needs an interactive desktop) | `cargo test --manifest-path native/Cargo.toml -- --ignored native_disclosure` |
 | Self test | `native/target/debug/loomward-desktop.exe --self-test` |
-| Real WebView2 over the engine service (synthetic, scratch state): raw IPC, ACL, CSP, navigation, heartbeat, renderer lag, teardown; then the personal default (scratch state): the real native picker and confirmation, declined (no grant) and then accepted, grant, scan and revoke a disposable `.loomward/` folder; a dialog still open at the end is cancelled | `py -3 native/tests/webview2_probe.py` (Playwright over CDP; writes `evidence/v3/native/`, or `--out DIR`) |
+| Real WebView2 over the engine service (synthetic, scratch state): raw IPC, ACL, CSP, navigation, heartbeat, renderer lag, teardown; then the personal default (scratch state): the real native picker and confirmation, declined (no grant) and then accepted, grant, scan and revoke a disposable `.loomward/` folder; a dialog still open at the end is cancelled | `py -3 native/tests/webview2_probe.py` (Playwright over CDP; writes to `<cargo target dir>/webview2-probe/` by default, the target dir `cargo metadata` reports, so `CARGO_TARGET_DIR` is honoured; `--out DIR` overrides it, and `--out evidence/v3/native` refreshes the committed evidence) |
 
 CI runs the build, format, test, clippy and headless self-test checks in one cached
 `windows-latest` desktop job, after building `app/dist`. The WebView2 probe is a local proving

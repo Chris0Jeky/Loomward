@@ -1498,7 +1498,8 @@ fn native_scan_job_reports_exact_final_progress() {
     let e = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Synthetic)).unwrap();
     e.set_scan_sink(Arc::new(MemorySink::default())).unwrap();
     let job = e.scan_start(&root, None).unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    // A liveness bound only: the claim is the exact final counts, not how fast a loaded host scans.
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
     let job = loop {
         let j = e.job_status(&job.job_id).unwrap();
         if j.state == loomward_protocol::JobState::Completed {

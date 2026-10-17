@@ -1,6 +1,8 @@
-//! Read-only native observations. Identity is never an operation grant.
+//! Read-only observations by default, with opt-in lab effects. Identity is never an operation grant.
 #[cfg(any(feature = "content-read", test))]
 pub mod duplicate_reader;
+#[cfg(all(windows, feature = "copy-primitives"))]
+pub mod effects;
 pub mod enumerate;
 pub mod identity;
 pub mod jobs;

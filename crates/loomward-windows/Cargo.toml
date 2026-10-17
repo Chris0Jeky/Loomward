@@ -12,6 +12,8 @@ fixtures = []
 content-read = []
 # Capped shortcut bytes: only loomward-shell enables this in the workspace.
 shortcut-read = []
+# Unwired copy laboratory primitives; no service, transport or desktop enables this.
+copy-primitives = ["content-read"]
 
 [dependencies]
 loomward-operations = { path = "../loomward-operations" }
