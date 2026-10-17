@@ -185,6 +185,8 @@ stateDiagram-v2
   copying --> blocked: resumable item refusal
   copying --> needs_attention: non-resumable item refusal, or journal and disk disagree
   blocked --> copying: owner resumes (native confirmation)
+  blocked --> needs_attention: recovery finds journal and staging disagree
+  staged --> needs_attention: recovery finds journal and staging disagree
   copying --> cancelling: owner cancels
   blocked --> cancelling: owner abandons
   copying --> cancelling: grant revoked or emergency stop (fenced)

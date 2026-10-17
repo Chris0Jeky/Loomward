@@ -838,6 +838,7 @@ impl Inner {
                     "the grant's root identity changed",
                 )
             })?;
+            self.copies_fence(grant)?;
             return Ok((ts_ns(at), self.revisions()?));
         }
         let at = now_ns();
@@ -849,7 +850,7 @@ impl Inner {
             })
             .map_err(catalog_error)?;
         // Copies using the grant are fenced next (docs/47 section 5): no effect step starts after.
-        self.copies_fence(grant);
+        let copy_fence = self.copies_fence(grant);
         let root = db::root_for_grant(&self.db(), grant).map_err(sql_error)?;
         if let Some(root) = root {
             self.freshness.remove(root);
@@ -869,6 +870,7 @@ impl Inner {
         if let Ok(list) = self.root_list(None) {
             self.publish(EventName::RootsChanged, list, Some(revs.0), Some(revs.1));
         }
+        copy_fence?;
         Ok((ts_ns(at), revs))
     }
 
@@ -953,7 +955,7 @@ impl Inner {
         if changed.is_err() {
             return;
         }
-        self.copies_fence(grant);
+        let _ = self.copies_fence(grant);
         let row = db::root_for_grant(&self.db(), grant);
         if let Ok(Some(row)) = row {
             self.freshness.remove(row);

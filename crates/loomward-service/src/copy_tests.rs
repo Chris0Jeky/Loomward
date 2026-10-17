@@ -411,6 +411,85 @@ mod lab_copy {
     }
 
     #[test]
+    fn copy_detached_source_open_cannot_write_after_reopened_service_cancels() {
+        use crate::copy::{Flow, Point};
+        let Some((lab, a, b)) = scanned() else { return };
+        let p = preview(&lab.svc, &a, &b);
+        let op = p["operation_id"].as_str().unwrap().to_owned();
+        let consent = json!({"operation_id": op, "digest": digest(&p)});
+        ok(
+            "copy.approve",
+            call(&lab.svc, "copy.approve", consent.clone()),
+        );
+        let (reached, wait) = std::sync::mpsc::channel();
+        let (release, resume) = std::sync::mpsc::channel::<()>();
+        let (alive, gone) = std::sync::mpsc::channel::<()>();
+        let (resume, alive) = (Mutex::new(resume), Mutex::new(alive));
+        let wrote = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writing = wrote.clone();
+        *lab.svc.inner.copies.hook.lock().unwrap() = Some(Arc::new(move |p, _| {
+            let _ = &alive;
+            if matches!(p, Point::Chunk(_)) {
+                writing.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            if matches!(p, Point::OpeningSource(_)) {
+                reached.send(()).unwrap();
+                let _ = resume
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(120));
+            }
+            Flow::Continue
+        }));
+        lab.svc
+            .inner
+            .copies
+            .shutdown_wait_ms
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+        ok("copy.start", call(&lab.svc, "copy.start", consent));
+        wait.recv_timeout(Duration::from_secs(60)).unwrap();
+        let state = lab.path.parent().unwrap().join("state");
+        let Lab {
+            _tmp, path, svc, ..
+        } = lab;
+        drop(svc);
+        let svc = Service::open(Config {
+            state_dir: state,
+            dataset: DatasetClass::Synthetic,
+            allow_personal: false,
+            allow_identity_unverified: false,
+            grant_roots: vec![],
+        })
+        .unwrap();
+        ok(
+            "copy.cancel",
+            call(&svc, "copy.cancel", json!({"operation_id": op})),
+        );
+        let staging = std::fs::read_dir(path.join("b"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let before = contents(&staging);
+        release.send(()).unwrap();
+        assert!(matches!(
+            gone.recv_timeout(Duration::from_secs(60)),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+        ));
+        assert!(
+            !wrote.load(std::sync::atomic::Ordering::SeqCst),
+            "detached worker entered writer after new service cancelled"
+        );
+        assert_eq!(
+            contents(&staging),
+            before,
+            "detached worker wrote after new service cancelled"
+        );
+        assert_eq!(settle_copy(&svc, &op)["state"], "cancelled");
+    }
+
+    #[test]
     fn a_source_changed_after_approval_refuses_the_start() {
         let Some((lab, a, b)) = scanned() else { return };
         let svc = &lab.svc;
@@ -753,6 +832,48 @@ mod lab_copy {
         let left: Vec<_> = std::fs::read_dir(lab.path.join("b")).unwrap().collect();
         assert_eq!(left.len(), 1, "staging left (Q1 default)");
         assert!(s["staging_folder"].as_str().is_some(), "{s:?}");
+    }
+
+    #[test]
+    fn copy_fence_failure_is_reported_by_revoke_and_retried() {
+        use loomward_operations::{
+            store::fault::{Kind, Stage},
+            Record,
+        };
+        let Some((lab, a, b)) = scanned() else { return };
+        let svc = &lab.svc;
+        let p = preview(svc, &a, &b);
+        let op = p["operation_id"].as_str().unwrap().to_owned();
+        let consent = json!({"operation_id": op, "digest": digest(&p)});
+        ok("copy.approve", call(svc, "copy.approve", consent.clone()));
+        let writer = std::fs::OpenOptions::new()
+            .append(true)
+            .open(lab.path.join("a/deep/x.bin"))
+            .unwrap();
+        ok("copy.start", call(svc, "copy.start", consent));
+        assert_eq!(settle_copy(svc, &op)["state"], "blocked");
+        drop(writer);
+        let mut fail_once = true;
+        svc.inner
+            .copies
+            .store
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .set_fault(Some(Box::new(move |record, stage| {
+                if fail_once && matches!(record, Record::Fenced { .. }) && stage == Stage::Row {
+                    fail_once = false;
+                    Some(Kind::Full)
+                } else {
+                    None
+                }
+            })));
+        let request = json!({"root_id": lab.root, "purge_catalog": false});
+        let e = err(call(svc, "roots.revoke", request.clone()));
+        assert_eq!(reason(&e), Some("copy_fence_pending"));
+        ok("roots.revoke", call(svc, "roots.revoke", request));
+        assert_eq!(settle_copy(svc, &op)["state"], "cancelled");
     }
 
     /// The ID of the child named `name` in a depth-3 slice, at any depth.

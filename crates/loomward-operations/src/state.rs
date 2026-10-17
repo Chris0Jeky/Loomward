@@ -51,8 +51,8 @@ impl OpState {
                 | (Approved, Expired | Preparing)
                 | (Preparing, Copying | Refused | Cancelling)
                 | (Copying, Staged | Blocked | NeedsAttention | Cancelling)
-                | (Blocked, Copying | Cancelling)
-                | (Staged, Cancelling | Publishing)
+                | (Blocked, Copying | Cancelling | NeedsAttention)
+                | (Staged, Cancelling | Publishing | NeedsAttention)
                 | (
                     Publishing,
                     Cancelling | Committed | Blocked | NeedsAttention
@@ -168,7 +168,7 @@ mod tests {
         let edges = doc_edges();
         assert_eq!(
             edges.len(),
-            23,
+            25,
             "diagram edge count changed: review the state machine"
         );
         for from in OpState::ALL {
@@ -180,6 +180,13 @@ mod tests {
                     assert_eq!(from.transition(to), Err(IllegalTransition { from, to }));
                 }
             }
+        }
+    }
+
+    #[test]
+    fn copy_recovery_can_mark_waiting_staging_needs_attention() {
+        for state in [OpState::Blocked, OpState::Staged] {
+            assert!(state.can_transition(OpState::NeedsAttention), "{state:?}");
         }
     }
 

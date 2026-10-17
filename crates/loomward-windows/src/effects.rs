@@ -16,6 +16,7 @@ use std::{
     os::windows::io::{AsRawHandle, FromRawHandle},
     path::Path,
     ptr,
+    sync::Arc,
 };
 use windows_sys::{
     Wdk::{
@@ -478,12 +479,15 @@ impl Staging<'_> {
             pins.last().unwrap(),
             &component(name)?,
             GENERIC_WRITE | FILE_READ_ATTRIBUTES | READ_CONTROL,
-            SHARE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
             true,
             FILE_NON_DIRECTORY_FILE,
         )?;
         supported_attributes(identity::from_file(&file)?.attributes)?;
-        Ok(StagedFile { file })
+        Ok(StagedFile {
+            file,
+            _pins: Arc::new(pins),
+        })
     }
     /// Reopen by recorded ID, check its current name binding, hash under a deny-write hold.
     pub fn verify(
@@ -1014,6 +1018,8 @@ impl BasicMetadata {
 /// A create-new handle, never an existing destination file.
 pub struct StagedFile {
     file: File,
+    // Keep the staging name and every parent immovable until writes and metadata finish.
+    _pins: Arc<Vec<File>>,
 }
 impl StagedFile {
     /// Journal this identity BEFORE preallocation, streams, metadata or writes.
@@ -1034,10 +1040,11 @@ impl StagedFile {
                 &self.file,
                 &name,
                 GENERIC_WRITE | FILE_READ_ATTRIBUTES,
-                SHARE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
                 true,
                 FILE_NON_DIRECTORY_FILE,
             )?,
+            _pins: self._pins.clone(),
         })
     }
     /// Preallocate, write exactly the declared length in 1 MiB chunks, then flush once.

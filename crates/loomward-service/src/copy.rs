@@ -438,13 +438,14 @@ impl Inner {
     /// flight completes, waited for up to 30 s) and joined: before the rename it cancels itself, after
     /// it commits annotated `grant_revoked`. A run left waiting (blocked, interrupted, publishing) is
     /// then cancelled through the abandon path; `needs_attention` stays for the owner. Q1 applies.
-    pub(crate) fn copies_fence(&self, grant: i64) {
+    pub(crate) fn copies_fence(&self, grant: i64) -> Result<(), ErrorBody> {
         #[cfg(windows)]
         {
             use loomward_windows::effects::exec;
             let Some(store) = &self.copies.store else {
-                return;
+                return Ok(());
             };
+            let mut pending = false;
             let ops: Vec<u64> = self.copies.ops.lock().unwrap().values().copied().collect();
             for op in ops {
                 let plan: Option<exec::Plan> = store
@@ -467,12 +468,16 @@ impl Inner {
                     |r| r.control.clone(),
                 );
                 let cause = loomward_operations::FenceCause::GrantRevoked;
-                if !matches!(
-                    exec::fence(store, op, &control, cause),
-                    Ok(exec::Ack::StoppedBeforePublish | exec::Ack::Published)
-                ) {
-                    // Settled, a journal fault, or a step stuck past the wait: the fence (if any) is
-                    // durable and read by every later step; nothing more to do here.
+                let stopped = match exec::fence(store, op, &control, cause) {
+                    Ok(exec::Ack::StoppedBeforePublish | exec::Ack::Published) => true,
+                    Ok(exec::Ack::Settled) => false,
+                    _ => {
+                        pending = true;
+                        false
+                    }
+                };
+                if !stopped {
+                    // Keep the live control for retry; a failed append still fenced it in memory.
                     if let Some(run) = running {
                         self.copies.running.lock().unwrap().insert(op, run);
                     }
@@ -480,24 +485,39 @@ impl Inner {
                 }
                 if let Some(run) = running {
                     if let Err(run) = run.join() {
+                        pending = true;
                         self.copies.running.lock().unwrap().insert(op, run);
                         continue;
                     }
                 }
-                let waiting = exec::status(store, op).map(|s| s.state);
-                if !matches!(
-                    waiting,
-                    Ok(loomward_operations::OpState::NeedsAttention
+                match exec::status(store, op).map(|s| s.state) {
+                    Ok(
+                        loomward_operations::OpState::NeedsAttention
                         | loomward_operations::OpState::Cancelled
-                        | loomward_operations::OpState::Committed)
-                        | Err(_)
-                ) {
-                    let _ = exec::cancel(store, op, &plan, &exec::Control::new(removal));
+                        | loomward_operations::OpState::Committed,
+                    ) => {}
+                    Ok(_) => {
+                        pending |=
+                            exec::cancel(store, op, &plan, &exec::Control::new(removal)).is_err();
+                    }
+                    Err(_) => pending = true,
                 }
+            }
+            if pending {
+                let mut error = with_reason(
+                    fail(
+                        ErrorCode::InternalError,
+                        "the grant ended, but a copy fence is pending; retry revocation",
+                    ),
+                    "copy_fence_pending",
+                );
+                error.retryable = true;
+                return Err(error);
             }
         }
         #[cfg(not(windows))]
         let _ = grant;
+        Ok(())
     }
 
     fn copies_store(&self) -> Result<&Arc<Mutex<loomward_operations::Store>>, ErrorBody> {
