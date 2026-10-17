@@ -117,6 +117,9 @@ fn scrub_copy(copy: &std::path::Path, state: &std::path::Path) -> rusqlite::Resu
             .query_map([], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         for table in keyed {
+            // A name read from the copy is an identifier: its own quotes are doubled, so it can
+            // never end the quoted name and run as SQL.
+            let table = table.replace('"', "\"\"");
             tx.execute_batch(&format!(
                 "DELETE FROM main.\"{table}\" WHERE object_ref_id IN (SELECT id FROM gone)"
             ))?;
