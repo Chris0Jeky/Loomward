@@ -123,16 +123,16 @@ Unset `LOOMWARD_CHURN_FILES` afterwards. The final workspace test uses the small
 **Exists.** SQL-level fault injection: a `BEFORE INSERT` trigger that aborts leaves the grant intact and the
 store usable (`grant_survives_a_crash_between_precious_and_derived_commits`, `invalid_listing_rolls_back_and_...`);
 the corrupt-database paths in `tests/open.rs`; `evidence/v3/backups-import.md` refusals.
+Whole-store full disk (#414): `crates/loomward-catalog/src/writer/full_disk_tests.rs`. Twelve roots of scan-shaped
+writes (registration, runs, listings, a staged chunk, references, run ends) drive the real writer until
+`PRAGMA max_page_count` refuses growth, first on catalog.db, then on state.db (`st.`). The first `SQLITE_FULL` is a
+typed `Error::Sql` with `DiskFull`, and a reader's snapshot of both files is unchanged by it. The cap is lifted by a
+reopen, the remaining roots are written, and the closed and reopened store equals a fresh store given the same
+successful writes (every table row for row with its rowid, and the public `Reader` children pages).
+The test lives in the writer's test module rather than `crash_sweep.rs`.
 
-**Gap.** No read-error, access-denied-mid-scan or short-write injection below SQLite (still open). Full disk is
-covered only per command: `writer/publication_tests.rs` (`auto_rollback_never_commits_a_failed_receipt_...` and
-`real_disk_full_auto_rollback_also_allows_a_new_implicit_transaction`) caps the writer connection's `max_page_count`
-from an in-crate unit test, so one listing fails with `DiskFull` while its neighbours commit and the old listing
-survives. There is no whole-store case yet: write until full, require a clean error and no partial commit visible
-to a reader, free space, reopen, and require the final state to equal a fresh store given the same successful
-writes. That case can live beside those unit tests; an integration test under `tests/` cannot cap the
-connection, because `db::open_pair` hands it to the writer thread (`Writer::start` is `pub(crate)`), and the
-existing unit test caps `main` only (state.db unchecked). Checked 2026-10-17 (#414).
+**Gap.** No read-error, access-denied-mid-scan or short-write injection below SQLite. A disk that fills below SQLite
+(an OS write failure, not the page limit) is not exercised; the page limit drives only SQLite's own `SQLITE_FULL`.
 
 ## 6. Fuzzing every parser and contract: UNVERIFIED
 
@@ -243,6 +243,9 @@ All 2026-10-17 patho-r34 cargo commands below used
 | 2026-10-12 | same | same | `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --no-fail-fast`; `py -3 scripts/verify.py`; `git diff --check` | fmt and clippy clean; 951 passed, 0 ignored, 0 failed; verify.py exit 0; diff check clean |
 | 2026-10-17 | 89df386 (docs-only branch; code at this commit) | KRASPYON, Windows 11 Home, debug build | `LOOMWARD_CRASH_SWEEP=full cargo test -p loomward-catalog --features test-hooks --test crash_sweep` | 9 passed in 3690 s, exit 0, no violation. The harness prints per-scenario counts only on failure, so they were recovered by replaying the sweep's child runs with the same env vars: lifecycle 334 of 334 boundaries (all 334 first crashes exited 86), 6,652 double crashes |
 | 2026-10-17 | same | same | `LOOMWARD_CRASH_SWEEP=full cargo test -p loomward-catalog --features test-hooks --test crash_sweep -- every_write_of_a_schema_migration_recovers --exact --nocapture` | 1 passed in 6.4 s: migrate 14 boundaries, killing at 14 of them |
+| 2026-10-17 | a5a4d59 (origin/main) + the #414 branch | KRASPYON, Windows 11 Home, debug build | `cargo test -p loomward-catalog --all-features --lib full_disk` | 2 passed in 48 s: catalogue cap first hit SQLITE_FULL at a staged `ListingDone` after 73 successful writes; state cap at an `ObjectReference` after 146; each reader snapshot unchanged, each store equal to its fresh replay |
+| 2026-10-17 | same, with `Writer::call` mapping `DiskFull` to `Ok(WriteReply::Done)` (mutant, reverted; run before the boxing and format-only edits) | same | `cargo test -p loomward-catalog --all-features --lib full_disk` | failed: catalogue `unexpected Closed for ObjectReference`; state `the page limit was never reached` |
+| 2026-10-17 | same | same | `cargo fmt --all --check`; `cargo clippy -p loomward-catalog --all-targets --all-features -- -D warnings`; `cargo test -p loomward-catalog --all-features`; `git diff --check` | fmt and clippy clean; 216 passed (lib 55 including the 2 new, crash_sweep 9), 0 failed; diff check clean |
 | 2026-10-17 | 80eabd0 (test code 12ef08a) | KRASPYON, Windows 11 Home, non-elevated debug build | `cargo test -p loomward-engine --test pathological` | 7 passed, 0 failed, 1 ignored (depth-cap defect #483), exit 0. Both cycle types and real ACL denial/restoration ran. Includes the default 4,000-file churn test (next three rows) |
 | 2026-10-17 | 12ef08a (same tree as 80eabd0) | same | `cargo test -p loomward-engine --test pathological concurrent_create_delete_rename_grow` run three times, default 4,000 files | All three passed, exit 0. Batches overlapping enumeration: 45, 21 and 20 of 128 (floor 8). 4,041 exact observations matched the fresh scan; 4,000 files equal to the `std::fs` walk each time |
 | 2026-10-17 | 12ef08a with the walk's first file length +1 (mutant, reverted before commit) | same | the default churn command | Failed at the walk comparison with "catalogue (path, logical bytes) differs from the filesystem walk" (32.03 s). An earlier mutant run, before the writer reused one catalogue connection, stopped at the overlap floor (5 of 128) and never reached the walk |
