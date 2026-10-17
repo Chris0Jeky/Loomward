@@ -10,20 +10,21 @@ impl Inner {
         r: &db::RootRow,
         reader: Option<&mut Reader>,
     ) -> Result<Value, ErrorBody> {
-        let (state, coverage) = scan_view(r);
+        let (state, mut coverage) = scan_view(r);
         let active = r.grant_state == "active";
         let totals = match (reader, r.dir, active && r.state != "never_scanned") {
             (Some(reader), Some(dir), true) => match reader.inspect(NodeKey::Dir(dir)) {
                 // Mid-scan or awaiting repair, the aggregates are unsettled: unknown, not an error.
                 Err(loomward_catalog::Error::RepairRequired) => None,
-                result => result
-                    .map_err(catalog_error)?
-                    .subtree
-                    .map(|s| encode(&s))
-                    .transpose()?,
+                result => result.map_err(catalog_error)?.subtree,
             },
             _ => None,
         };
+        // The aggregates were read later than the root row and may already need repair.
+        if coverage == "complete" && !totals.as_ref().is_some_and(|s| s.complete) {
+            coverage = "partial";
+        }
+        let totals = totals.map(|s| encode(&s)).transpose()?;
         let display: String = r.display_path.chars().take(1024).collect();
         Ok(json!({
             "root_id": self.root_id(r.root),
@@ -55,7 +56,12 @@ mod tests {
     use std::path::Path;
     use std::time::Duration;
 
-    fn fixture() -> (tempfile::TempDir, Service, rusqlite::Connection, db::RootRow) {
+    fn fixture() -> (
+        tempfile::TempDir,
+        Service,
+        rusqlite::Connection,
+        db::RootRow,
+    ) {
         let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-roots");
         std::fs::create_dir_all(&target).unwrap();
         let tmp = tempfile::tempdir_in(target.canonicalize().unwrap()).unwrap();
@@ -121,10 +127,9 @@ mod tests {
             grant_roots: vec![],
         })
         .unwrap();
-        let connection = rusqlite::Connection::open(
-            loomward_catalog::sqlite_dir(tmp.path()).join("catalog.db"),
-        )
-        .unwrap();
+        let connection =
+            rusqlite::Connection::open(loomward_catalog::sqlite_dir(tmp.path()).join("catalog.db"))
+                .unwrap();
         connection.busy_timeout(Duration::from_secs(5)).unwrap();
         // Capture exactly the first read used by root_list, before the controlled interleaving.
         let row = db::roots(&service.inner.db(), Some(root_id))
