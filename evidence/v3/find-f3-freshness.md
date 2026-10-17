@@ -419,3 +419,134 @@ hosted CI, app/Tauri, exhaustive crash sweep and the existing ignored throughput
 a full refresh even for an unrelated outside event. `HUMAN_TODO.md` and protected
 files are unchanged; no new owner decision. No commit, push, PR mutation or merge;
 the uncommitted worktree is not removal-ready.
+
+## Issue #550: bounded identity-gap probe and replay edges (2026-10-17)
+
+KRASPYON / Windows 11 Home, lane `fix/550-f3-identity-gap`, starting HEAD
+`de301c4bf660a0d4b3c39678755667d178b374b0`. Synthetic SQLite fixtures only.
+Commands use `--manifest-path C:/lw/wt/f3-gap/Cargo.toml`,
+`CARGO_TARGET_DIR=C:/lw/target/f3-gap`, `CARGO_BUILD_JOBS=3`,
+`RUST_TEST_THREADS=1`. Raw logs stay in that target directory, outside Git.
+
+### Query measurement
+
+Before changing the production gap query, `LOOMWARD_F3_GAP_SCALE=1 cargo test
+-p loomward-service --lib f3_gap_probe_scale -- --nocapture` built a complete,
+fully identified synthetic root with **1,000,000 directories** (one root and
+999,999 direct children). The old gap probe took **384.0116 ms / 7,000,016 VM
+steps**. A replay selection with one decoded file record under the final directory
+took **716.2383 ms / 7,000,414 VM steps**, with a progress callback counting each
+SQLite instruction (`gap-baseline.log`). That callback adds overhead; this is not
+an uninstrumented wall-time claim.
+
+The replacement reads the root directory's current `sub_noid` aggregate by its
+primary key and probes `dir_missing_identity(root_id)`, a partial index containing
+only NULL directory IDs that are not `absent_pending`. Fresh catalogues and existing
+catalogues gain the index; it is derived state, so no precious-state migration or
+schema-version change is needed. Index construction is a one-time directory scan
+when an existing catalogue first opens. No directory scan remains in the no-gap
+catch-up query.
+
+The retained comparison test runs both SQL paths on the same fixture. It asserts
+the identical target set and fewer than 100 VM steps for the replacement gap probe.
+The million-directory fixture is opt-in; ordinary suites use ten directories and
+retain the existing 100k resolver test. Timing covers gap detection plus catalogue
+target selection, excluding fixture construction, native journal IO, refresh jobs,
+and bookmark persistence. VM counts are measured separately from uninstrumented
+wall times.
+
+Same-fixture comparison (`gap-comparison.log`, 1 passed / 0 failed):
+
+| Measured work | Before | After |
+|---|---:|---:|
+| Gap probe, uninstrumented | 290.7282 ms | 10.7 us |
+| Gap probe, VM steps | 7,000,016 | 31 |
+| One decoded-record catch-up selection, uninstrumented | 306.3406 ms | 671.8 us |
+| Same selection, VM steps (separate counted run) | 7,000,414 | 429 |
+| Counted selection wall time, including callback overhead | 511.2199 ms | 592.7 us |
+
+Both selections returned exactly `{1000000}`. These are single warm in-memory runs
+on a shared host, not a disk benchmark or a latency guarantee. The instruction count
+demonstrates removal of the per-directory scan independent of host timing.
+
+### Unidentifiable directories: conservative stale remains necessary
+
+The proposed bounded parent `OpenFileById` resolution is **not implemented**.
+The current native journal API provides a bounded journal read, not a bounded
+historical-ancestry resolver. Even a successful parent open would establish the
+parent's location now, not its location when an earlier journal record occurred.
+A parent may have moved outside the root during the replay window; unidentifiable
+ancestors prevent the existing catalogue from associating that earlier event with
+the root. Treating a current outside location as historical outside coverage could
+discard a relevant event. A lookup-count cap alone would not supply that proof.
+
+Until a complete window-aware ancestry proof exists, unresolved events plus a live
+identity gap still require a full refresh. A genuine NULL-ID directory can therefore
+continue to prevent incremental catch-up for unrelated volume events. This is an
+explicit conservative limitation, not evidence that no in-root change occurred.
+The #548 production replay regression, identified-root control, and root `sub_noid`
+control remain in place.
+
+### Small replay edges
+
+- `absent_pending` directories retained beneath excluded directories no longer count
+  as NULL-directory gaps. Their old subtree counters also cannot override the current
+  root aggregate. The regression failed against the original query
+  (`gap-retired-red.log`); visible NULL directories and root file gaps still require
+  conservative refresh.
+- An in-root directory record supersedes a cached `Outside` classification when
+  following its newly observed child chain. A currently visible directory still uses
+  its precise catalogue scope. The cross-batch regression failed with `None` instead
+  of targets `{1,4}` before the change (`recreated-red.log`); the existing catalogue
+  rename test still pins precise child scopes. Journal identities select existing
+  refresh scopes only and do not authorise native access.
+- Existing catalogues lacking the partial index gain it on reopen. The reopen test
+  failed with `QueryReturnedNoRows` before the change (`gap-index-red.log`).
+
+### Verification and driver handoff
+
+| Command (manifest omitted) | Result / receipt |
+|---|---|
+| `cargo test -p loomward-service --lib freshness:: -- --nocapture` | 11 passed, 0 failed; `freshness-green.log` |
+| `LOOMWARD_F3_GAP_SCALE=1 cargo test -p loomward-service --lib f3_gap_probe_scale -- --nocapture` | 1 passed, 0 failed; `gap-comparison.log` |
+| `cargo test -p loomward-service` twice | Each 294 passed, 0 failed, 1 ignored; `service-1.log`, `service-2.log` |
+| `cargo test -p loomward-windows --all-features` | 196 passed, 0 failed, 1 ignored; `windows.log` |
+| `cargo test -p loomward-catalog` | 264 passed, 0 failed, 0 ignored across 18 targets; `catalog.log` |
+| `cargo fmt --all --check` | Exit 0; `fmt.log` |
+| `cargo clippy --workspace --all-targets -- -D warnings` | Exit 0, no warnings; `clippy.log` |
+| `cargo test --workspace --no-fail-fast` once | **1,446 passed, 1 failed, 2 ignored**, 82 targets; exit 101; `workspace.log` |
+| `cargo test -p loomward-service --lib tests::f3_completed_foreground_job_does_not_mean_background_catalogue_is_quiescent -- --exact --nocapture` | Isolated rerun: 1 passed, 0 failed, 1.87 s; `quiescent-rerun.log` |
+| `git -C C:/lw/wt/f3-gap diff --check` | Exit 0; `diff-check.log` |
+
+The ignored service test is the existing manual 1 GiB streaming-memory probe; the
+ignored Windows test is the existing copy throughput lab. Neither was enabled or
+weakened for this change.
+
+**Workspace failure:** the unchanged
+`f3_completed_foreground_job_does_not_mean_background_catalogue_is_quiescent`
+test exhausted its final 30-second wait. The tracker retained
+`epoch=4 full=true auto=true attempts=3 paths=0 targets=0 started=None failed=false`
+after completed full scans. Its exact isolated rerun passed, as did both dedicated
+service runs. This test uses a fresh service and live watcher, not restart replay;
+the live-watch completion/retry path is unchanged by this patch. A timing or
+refresh-budget interaction is suspected, not proved. The original HEAD has not
+been shown to reproduce it, so this is **not** a confirmed regression attribution
+or a clean workspace result. Follow-up is tracked in
+[#586](https://github.com/Chris0Jeky/Loomward/issues/586); no test or retry budget was
+weakened, and the workspace run was not repeated to hide the failed receipt.
+
+`HUMAN_TODO.md` is unchanged; no new owner decision or safety gate is opened.
+Protected checkpoint/status files remain unchanged. This Sol lane leaves the diff
+uncommitted for the driver; no push, PR mutation, merge, or deployment is performed.
+The only GitHub write was the synthetic failure report in issue #586.
+
+**NOT verified:** genuine NTFS identity-query failure, non-Windows execution,
+hosted CI, app/Tauri, the ignored manual memory/throughput probes, and physical
+power-cut/restore behaviour. A fully green workspace run and the cause of #586
+remain unverified. No new native parent resolver is claimed.
+
+**Residual risk:** index creation scans existing directory rows once at catalogue
+open; live identity gaps can still require a full refresh on unrelated unresolved
+volume events. Synthetic fixtures remain in ignored `target/test-roots/`; raw
+receipts are already outside the worktree in `C:/lw/target/f3-gap/`. The worktree
+is not removal-ready until the driver preserves/commits the uncommitted diff.

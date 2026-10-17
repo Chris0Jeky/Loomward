@@ -360,6 +360,8 @@ pub(crate) fn open_pair_with(dir: &Path, dataset: &str, ranked: bool) -> Result<
     }
     tx.execute("UPDATE scan_run SET state='failed',error_json='{\"code\":\"restart_interrupted\"}' WHERE state='running'",[])?;
     tx.execute("DELETE FROM stage_entry", [])?;
+    // Add the derived catch-up index to existing catalogues without migrating precious state.
+    tx.execute_batch("CREATE INDEX IF NOT EXISTS dir_missing_identity ON dir(root_id) WHERE file_id IS NULL AND listing_state!='absent_pending'")?;
     search_index(&tx, ranked)?;
     bulk_tables(&tx, false)?;
     tx.execute("UPDATE revision SET catalog_rev=catalog_rev+1", [])?;
