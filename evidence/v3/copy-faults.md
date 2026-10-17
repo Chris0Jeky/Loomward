@@ -152,15 +152,22 @@ refusal (`identity::observe` fails), then skips with the reason, like `effects::
 
 Without `LOOMWARD_CRASH_SWEEP=full` the matrix kills each scenario once per crash-point class it reaches
 (Run, Refused and Confirm with removal off, AbandonVerified under both policies, AbandonPublish with removal
-on). It also kills at the first and last `staging folder made` and `created item`, the effect-before-journal
-gaps, with Run under both policies. That is 35 kills covering all 22 classes, including two
-`needs_attention` endings from unjournaled creates, plus 4 random kills. Measured: 42 s for the earlier
-29-kill selection, and 184 s for the 35-kill selection with the laptop under heavy parallel load. A child that
-does not exit within 120 s fails the run instead of hanging it.
+on). It also kills at the first and last of four labels, with Run under both policies: the
+effect-before-journal gaps `staging folder made` and `created item`, and the folder metadata sets
+`directory metadata set` and `staging metadata set`, which change journaled creation times one at a time.
+That is 41 kills covering all 22 classes, including two `needs_attention` endings from unjournaled creates,
+plus 4 random kills. At `04fb4ca` it passed in 195 s, 0 source changes and 0 false commits, with the laptop
+under heavy parallel load (the first 29-kill selection took 42 s on a quieter host). A child that does not
+exit within 120 s fails the run instead of hanging it.
+
+**Folder-metadata kill points came after the full run.** They were added in `04fb4ca` from the Codex review of
+#532, so the full run at `dcf6077` has no kill between partial folder metadata sets. They are covered by the
+default-mode run above. The full re-run at `04fb4ca` was refused at preview with `insufficient_space`: C: had
+9.1 GB free, below the 1% reserve, because of other lanes' build directories. It is owed when space allows.
 
 The preview refuses with `insufficient_space` when C: has less free than the reserve (the larger of 1 GiB and
 1% of the volume). On this 1 TB host, shared with other lanes' build directories, that refusal was seen
-once at 7.5 GB free, before this lane's own build cache was cleaned.
+at 7.5 GB and at 9.1 GB free.
 
 ## Not covered here
 
