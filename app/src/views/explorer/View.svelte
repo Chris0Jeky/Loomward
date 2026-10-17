@@ -311,6 +311,12 @@
     }
   }
 
+  /** Keep the user's place (refreshing starting points beside it), or find the starting points. */
+  function reload() {
+    if (trail.length || searching) { void loadStarts(undefined, true); void show(); }
+    else void loadStarts();
+  }
+
   $effect(() => () => { startsRequest++; startsAbort?.abort(); inspection++; inspectAbort?.abort(); abort?.abort(); });
 
   // The session starts, or the engine says data may be stale (reconnect, tree.invalidated, roots.changed):
@@ -318,10 +324,7 @@
   $effect(() => {
     void session.epoch;
     if (!session.client) return;
-    untrack(() => {
-      if (trail.length || searching) { void loadStarts(undefined, true); void show(); }
-      else void loadStarts();
-    });
+    untrack(reload);
   });
 </script>
 
@@ -390,7 +393,7 @@
   {/if}
 
   {#if error}
-    <p class="bad" role="alert">{error} <button class="btn" type="button" onclick={() => void (trail.length ? show() : loadStarts())}>Try again</button></p>
+    <p class="bad" role="alert">{error} <button class="btn" type="button" onclick={reload}>Try again</button></p>
   {/if}
   <p id="explorer-notice" class="muted live" class:has={!!notice || !!gone} role="status" tabindex="-1" bind:this={noticeEl}>{#if gone}<q><VisibleName name={gone.lost} /></q> is no longer in the catalogue, so the view {#if gone.now}moved up to <q><VisibleName name={gone.now} /></q>, the nearest folder still there.{:else}went back to the top level.{/if}{:else}{notice}{/if}</p>
 

@@ -34,6 +34,7 @@ function viewScript(view: string, state: Record<string, unknown>, effectContaini
     show(append?: boolean): Promise<void>;
     loadStarts(recovery?: unknown, refreshOnly?: boolean): Promise<boolean>;
     effect(): void;
+    reload(): void;
   };
 }
 
@@ -146,6 +147,9 @@ describe('Explorer starting points after invalidation', () => {
     code.effect();
     await vi.waitFor(() => expect(state.starts).toEqual([]));
     await vi.waitFor(() => expect(state.error).toContain('synthetic offline catalogue'));
+    fail = false;
+    code.reload(); // the "Try again" button
+    await vi.waitFor(() => expect(state.starts).toEqual([rootA, rootB]));
   });
 
   it('does not let a delayed starting-point response rewind a newer search', async () => {
