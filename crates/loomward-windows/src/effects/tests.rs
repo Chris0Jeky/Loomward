@@ -955,3 +955,45 @@ fn physical_sector_geometry_requires_known_compatible_powers_of_two() {
         assert!(sector_alignment(logical, physical).is_err());
     }
 }
+
+/// A `subst` alias for `target`, removed on drop. A subst letter names a folder, not a volume.
+struct Subst(char);
+
+impl Subst {
+    fn new(target: &Path) -> Option<Self> {
+        let letter = ('D'..='Z')
+            .rev()
+            .find(|c| !Path::new(&format!("{c}:\\")).exists())?;
+        let status = std::process::Command::new("subst")
+            .arg(format!("{letter}:"))
+            .arg(target)
+            .status()
+            .ok()?;
+        status.success().then_some(Self(letter))
+    }
+}
+
+impl Drop for Subst {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("subst")
+            .arg(format!("{}:", self.0))
+            .arg("/D")
+            .status();
+    }
+}
+
+#[test]
+fn destination_volume_hint_follows_the_observed_volume_not_the_drive_letter() {
+    if skip_elevated() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let expected = identity::observe(temp.path()).unwrap().object;
+    let subst = Subst::new(temp.path()).expect("a free drive letter for a subst alias");
+    // The alias names the same folder on the same volume, through a drive letter that is not a volume.
+    let alias = std::path::PathBuf::from(format!("{}:\\", subst.0));
+    let destination = Destination::open(&alias, &expected)
+        .expect("the alias opens its pinned parent through the observed volume");
+    let _stage = destination.stage("staging").unwrap();
+    assert!(temp.path().join("staging").is_dir());
+}
