@@ -907,6 +907,80 @@ mod lab_copy {
         assert_eq!(reason(&e), Some("approval_required"), "{e:?}");
     }
 
+    #[test]
+    fn copy_approval_retry_replays_without_restoring_consumed_approval() {
+        let Some((lab, a, b)) = scanned() else { return };
+        let svc = &lab.svc;
+        let p = preview(svc, &a, &b);
+        let op = p["operation_id"].as_str().unwrap();
+        let consent = json!({"operation_id": op, "digest": digest(&p)});
+        let approve = request("copy.approve", consent.clone());
+        let first = ok(
+            "copy.approve",
+            svc.call(approve.clone(), &CallContext::http()),
+        )
+        .0;
+        // A refused start still consumes approval, before it creates any staging.
+        let refused = err(call(
+            svc,
+            "copy.start",
+            json!({"operation_id": op, "digest": format!("sha256:{}", "0".repeat(64))}),
+        ));
+        assert_eq!(reason(&refused), Some("digest_mismatch"));
+        let replay = ok("copy.approve", svc.call(approve, &CallContext::http())).0;
+        assert_eq!(
+            svc.inner
+                .hooks
+                .runs
+                .lock()
+                .unwrap()
+                .get(&Command::CopyApprove),
+            Some(&1),
+            "a retry must not run approval again"
+        );
+        assert_eq!(
+            replay, first,
+            "replay preserves the original approval timestamps"
+        );
+        assert_eq!(
+            reason(&err(call(svc, "copy.start", consent))),
+            Some("approval_required")
+        );
+        assert_eq!(std::fs::read_dir(lab.path.join("b")).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn copy_approval_request_id_cannot_be_reused_for_another_operation() {
+        let Some((lab, a, b)) = scanned() else { return };
+        let svc = &lab.svc;
+        let first = preview(svc, &a, &b);
+        let second = preview(svc, &a, &b);
+        assert_ne!(first["operation_id"], second["operation_id"]);
+        let mut approve = request(
+            "copy.approve",
+            json!({"operation_id": first["operation_id"], "digest": digest(&first)}),
+        );
+        ok(
+            "copy.approve",
+            svc.call(approve.clone(), &CallContext::http()),
+        );
+        approve.payload = serde_json::from_value(
+            json!({"operation_id": second["operation_id"], "digest": digest(&second)}),
+        )
+        .unwrap();
+        let e = err(svc.call(approve, &CallContext::http()));
+        assert_eq!(e.code, ErrorCode::InvalidRequest);
+        assert_eq!(reason(&e), Some("idempotency_conflict"));
+        assert_eq!(
+            reason(&err(call(
+                svc,
+                "copy.start",
+                json!({"operation_id": second["operation_id"], "digest": digest(&second)})
+            ))),
+            Some("approval_required")
+        );
+    }
+
     /// A digest that is not `sha256:` followed by exactly 64 lowercase hex digits is refused at
     /// copy_approve and copy_start as InvalidRequest, before any approval is looked at. The wire type
     /// `Digest` checks it on decode, so parse_digest's own `malformed digest` branch is not reachable
