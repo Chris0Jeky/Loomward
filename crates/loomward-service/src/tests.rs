@@ -1194,6 +1194,7 @@ fn placement_registered_lab_simulation_preserves_every_file_and_mtime() {
         settle(&lab.svc, &start(&lab.svc, &lab.root, "full"))["state"],
         "completed"
     );
+    // #561: a background watcher publication would otherwise race the saved simulation.
     f3_wait_live(&lab.svc);
     fn contents(
         root: &Path,
@@ -3887,6 +3888,152 @@ fn f3_successful_full_scan_with_late_hints_restarts_refresh_budget() {
     f3_wait_live(&lab.svc);
 }
 
+/// #561: an explicit scan.start is never refused because an automatic watcher refresh holds the
+/// root. It pre-empts that refresh, the root stays stale across the hand-over, and a second
+/// explicit scan is still refused while the first runs.
+#[cfg(windows)]
+#[test]
+fn f3_explicit_scan_preempts_a_running_watcher_refresh() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    svc.inner.scan.gate.arm();
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    svc.inner.freshness.ready_targeted_hint(1);
+    svc.inner.scan.gate.wait_reached();
+    let held = (Command::ScanStart, "full_catalogue_published");
+    svc.inner.hooks.closed.lock().unwrap().push(held);
+    let (jobs, _) = ok("jobs.list", call(svc, "jobs.list", json!({"limit":50})));
+    let auto = jobs["jobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|j| j["state"] == "running")
+        .expect("the watcher refresh holds the root")["job_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let state = |job: &str| {
+        let (j, _) = ok("jobs.get", call(svc, "jobs.get", json!({"job_id": job})));
+        j["job"]["state"].as_str().unwrap().to_owned()
+    };
+    let (explicit, stale_in_hand_over) = std::thread::scope(|s| {
+        let asking = s.spawn(|| {
+            call(
+                svc,
+                "scan.start",
+                json!({"root_id": lab.root, "mode": "full"}),
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !asking.is_finished() && state(&auto) == "running" && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        let stale = svc.inner.freshness.stale(1);
+        // Release before asserting so a regression cannot strand the scan worker.
+        svc.inner.scan.gate.release();
+        (asking.join().unwrap(), stale)
+    });
+    let (job, _) = ok("scan.start", explicit);
+    let explicit = job["job"]["job_id"].as_str().unwrap().to_owned();
+    assert_ne!(explicit, auto);
+    assert!(stale_in_hand_over, "the hand-over must stay visibly stale");
+    assert_eq!(settle(svc, &auto)["state"], "cancelled");
+    // The cancelled run has ended and the explicit pass has not yet reported: still stale.
+    svc.inner
+        .hooks
+        .until("explicit pass held before freshness", |h| {
+            h.arrived.lock().unwrap().contains(&held)
+        });
+    let stale_between = svc.inner.freshness.stale(1);
+    let hits_between = f3_hits(svc);
+    svc.inner.hooks.open(held.0, held.1);
+    assert!(stale_between, "a cancelled run must not make the root live");
+    assert!(hits_between["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|h| h["freshness"]["state"] == "stale"));
+    assert_eq!(settle(svc, &explicit)["coverage"], "complete");
+    f3_wait_live(svc);
+
+    // An explicit scan is never pre-empted: a second one is refused at once.
+    svc.inner.scan.gate.arm();
+    let first = start(svc, &lab.root, "full");
+    let second = call(
+        svc,
+        "scan.start",
+        json!({"root_id": lab.root, "mode": "full"}),
+    );
+    svc.inner.scan.gate.release();
+    assert_eq!(err(second).code, ErrorCode::Busy);
+    assert_eq!(settle(svc, &first)["state"], "completed");
+    f3_wait_live(svc);
+}
+
+/// #565 review: a scan that started just past its request deadline reports the real job, and a
+/// retry with the same request_id gets that job, never `deadline_exceeded` for an effect that ran.
+#[cfg(windows)]
+#[test]
+fn a_scan_started_past_its_deadline_reports_the_started_job() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    let after = (Command::ScanStart, "after");
+    svc.inner.hooks.closed.lock().unwrap().push(after);
+    let mut req = request("scan.start", json!({"root_id": lab.root, "mode": "full"}));
+    req.deadline_ms = Some(Int::new(200).unwrap());
+    let sent = Instant::now();
+    let first = std::thread::scope(|s| {
+        let asking = s.spawn(|| svc.call(req.clone(), &CallContext::http()));
+        svc.inner.hooks.until("started, past the deadline", |h| {
+            h.arrived.lock().unwrap().contains(&after)
+                && sent.elapsed() > Duration::from_millis(250)
+        });
+        svc.inner.hooks.open(after.0, after.1);
+        asking.join().unwrap()
+    });
+    assert_eq!(err(first).code, ErrorCode::DeadlineExceeded);
+    let (job, _) = ok("scan.start", svc.call(req, &CallContext::http()));
+    let job = job["job"]["job_id"].as_str().unwrap().to_owned();
+    assert_eq!(settle(svc, &job)["state"], "completed");
+}
+
+/// #565 review: a request that gives up at its deadline releases its claim, so an automatic
+/// refresh can run again and the root returns to live.
+#[cfg(windows)]
+#[test]
+fn an_expired_explicit_request_releases_the_automatic_refresh_fence() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    svc.inner.scan.gate.arm();
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    svc.inner.freshness.ready_targeted_hint(1);
+    svc.inner.scan.gate.wait_reached();
+    // The held refresh cannot observe its cancel, so the explicit request runs out of time.
+    let mut req = request("scan.start", json!({"root_id": lab.root, "mode": "full"}));
+    req.deadline_ms = Some(Int::new(300).unwrap());
+    let refused = err(svc.call(req, &CallContext::http())).code;
+    svc.inner
+        .hooks
+        .until("the request settled", |_| svc.inner.freshness.unclaimed(1));
+    svc.inner.scan.gate.release();
+    assert!(matches!(
+        refused,
+        ErrorCode::Busy | ErrorCode::DeadlineExceeded
+    ));
+    // The cancelled refresh leaves the root stale; only a new automatic pass makes it live.
+    f3_wait_live(svc);
+}
+
 /// #184 MEDIUM-1 for the durable writer: a directory deleted and recreated under the same name
 /// (same creation time, new file ID) is a new row; the old row and its subtree are absent.
 #[cfg(windows)]
@@ -3918,6 +4065,8 @@ fn absence_is_decided_by_identity_when_a_directory_is_replaced_at_its_name() {
         settle(svc, &start(svc, &lab.root, "refresh"))["state"],
         "completed"
     );
+    // #561: late watcher hints may start a refresh; read once freshness is idle.
+    f3_wait_live(svc);
     let slice = lab_slice(svc, &lab.root);
     assert_eq!(slice_totals(&slice), walk(&lab.path));
     assert_eq!(slice_totals(&slice), (2, 2, 107));
@@ -3956,6 +4105,8 @@ fn a_junction_replacing_a_directory_stays_visible_as_excluded() {
     let done = settle(svc, &start(svc, &lab.root, "refresh"));
     assert_eq!(done["state"], "completed", "{done:?}");
     assert!(done["progress"]["skipped"].as_u64().unwrap() >= 1);
+    // #561: late watcher hints may start a refresh; read once freshness is idle.
+    f3_wait_live(svc);
     let slice = lab_slice(svc, &lab.root);
     let b = slice["nodes"]
         .as_array()
@@ -4537,6 +4688,7 @@ fn a_wide_lab_tree_matches_the_walk_under_parallel_workers() {
     let done = settle(svc, job["job"]["job_id"].as_str().unwrap());
     assert_eq!(done["state"], "completed", "{done:?}");
     assert_eq!(done["coverage"], "complete");
+    // #561: late watcher hints from the tree build may start a refresh; read once it is idle.
     f3_wait_live(svc);
     assert_eq!(slice_totals(&lab_slice(svc, &lab.root)), walk(&lab.path));
 }
@@ -5100,6 +5252,7 @@ fn label_and_collect_live(svc: &Service, root: &str, file: &str) {
     );
     let job = settle(svc, &start(svc, root, "full"));
     assert_eq!(job["state"], "completed", "{job:?}");
+    // #561: a background watcher publication would otherwise race the collection read below.
     f3_wait_live(svc);
     let node = child_named(&lab_slice(svc, root), file).unwrap();
     let (inspected, _) = ok(

@@ -818,12 +818,15 @@ impl Service {
                                 deadline,
                                 interrupt: Mutex::new(None),
                             };
+                            // Deadline-bound mutations (#561: scan.start may wait for a pre-emption).
+                            let bounded =
+                                matches!(command, Command::PlacementSimulate | Command::ScanStart);
                             settle.outcome = Some(inner.respond(
                                 &request,
                                 command,
                                 &ctx,
                                 started,
-                                (command == Command::PlacementSimulate).then_some(&work),
+                                bounded.then_some(&work),
                                 None,
                             ));
                             drop(settle);
@@ -932,7 +935,10 @@ impl Inner {
                 "the service produced an invalid result",
             )),
         });
+        // A saved simulation or a started scan is an effect that happened: report it, never
+        // `deadline_exceeded` (#565 review; scan.start bounds its own pre-emption wait).
         let out = if work.is_some_and(|work| Instant::now() >= work.deadline)
+            && command != Command::ScanStart
             && !(command == Command::PlacementSimulate
                 && request.payload.get("save").and_then(Value::as_bool) == Some(true))
         {

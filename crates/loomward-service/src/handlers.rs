@@ -256,7 +256,7 @@ impl Inner {
             CollectionsMembers => self.collections_members(req, work),
             DuplicatesInspect => self.duplicates_inspect(req),
             DuplicatesCancel => self.duplicates_cancel(req.decode_payload()?),
-            ScanStart => self.scan_start(req.decode_payload()?),
+            ScanStart => self.scan_start(req.decode_payload()?, work),
             ScanCancel => engine(
                 self.engine
                     .scan_cancel(&req.decode_payload::<JobRefRequest>()?.job_id)
@@ -313,7 +313,7 @@ impl Inner {
     /// a lab root. Metadata only: personal scans opened once gates #184, #206, #240 and #269
     /// closed. The engine mints the root from the active grant row and checks its identity; the
     /// job's events (`job.state`, final `scan.progress`, `tree.invalidated`) follow the commits.
-    fn scan_start(&self, r: ScanStartRequest) -> Handled {
+    fn scan_start(&self, r: ScanStartRequest, work: Option<&crate::ReadWork>) -> Handled {
         #[cfg(windows)]
         if let Some(inner) = self.weak.upgrade() {
             crate::freshness::ensure_roots(&inner);
@@ -350,11 +350,46 @@ impl Inner {
             self.identity_changed(root.grant, &id, true);
         }
         let granted = granted?;
-        let job = match r.mode {
-            ScanStartRequestMode::Full => self.engine.scan_start(&granted, r.budget),
-            ScanStartRequestMode::Refresh => self.engine.scan_refresh(&granted, r.budget),
-        }?;
-        Ok(out(encode(&JobResult { job })?, None))
+        let start = || match r.mode {
+            ScanStartRequestMode::Full => self.engine.scan_start(&granted, r.budget.clone()),
+            ScanStartRequestMode::Refresh => self.engine.scan_refresh(&granted, r.budget.clone()),
+        };
+        // #561: automatic watcher work never refuses the owner's scan. Fence new automatic
+        // starts, then pre-empt the running one: this full pass covers its scope, and freshness
+        // stays stale until this pass completes. The brief start/revoke fence (busy without a job)
+        // is waited out; a revoke then answers permission_denied. An explicit scan stays busy.
+        let claim = self.freshness.explicit(row);
+        let active = |id| {
+            self.engine.job_status(id).is_ok_and(|j| {
+                use loomward_protocol::JobState::*;
+                matches!(j.state, Queued | Running | CancelRequested)
+            })
+        };
+        let deadline = work.map_or_else(
+            || std::time::Instant::now() + std::time::Duration::from_secs(5),
+            |w| w.deadline,
+        );
+        let mut job = start();
+        while let Err(loomward_engine::EngineError::Busy { detail, .. }) = &job {
+            let holder = detail.as_ref().and_then(|d| d.get("job_id")?.as_str());
+            match &claim.auto {
+                _ if detail.is_none() => {}
+                // Once the automatic job is terminal, the retry below starts the scan.
+                Some(auto) if holder == Some(auto.as_str()) => {
+                    if active(auto) {
+                        let _ = self.engine.scan_cancel(auto);
+                    }
+                }
+                _ => break,
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            job = start();
+        }
+        drop(claim);
+        Ok(out(encode(&JobResult { job: job? })?, None))
     }
 
     /// The root a session may scan or read (scan.start, duplicates.inspect): a synthetic session
