@@ -16,7 +16,9 @@ from playwright.sync_api import expect
 
 def _check_answer(page, unverified: str) -> None:
     answer = page.get_by_test_id('ask-answer')
-    expect(answer).to_be_visible(timeout=20000)
+    failure = page.get_by_test_id('ask-failure')
+    expect(answer.or_(failure)).to_be_visible(timeout=20000)
+    assert not failure.count(), f'the turn failed: {failure.inner_text()}'
     cite = answer.get_by_role('button', name=re.compile(r'^Citation h1: ')).first
     expect(cite).to_be_visible()
     expect(answer.get_by_text(f'{unverified} · unverified reference')).to_be_visible()
@@ -137,6 +139,7 @@ def live_ask_isolated(browser, exe: Path, dist: Path, check, live_call) -> None:
             db.executescript("""
             INSERT INTO volume(id,volume_key,display_name,filesystem,identity_json,capabilities_json,device_json,online,observed_at_ns) VALUES(1,'ask-fixture','Synthetic','NTFS','{}','{}','{}',1,0);
             INSERT INTO root(id,grant_id,volume_id,root_file_id,generation,state) VALUES(1,1,1,zeroblob(16),1,'complete');
+            INSERT INTO root(id,grant_id,volume_id,root_file_id,generation,state) VALUES(2,2,1,zeroblob(16),NULL,'never_scanned');
             INSERT INTO dir(id,root_id,parent_id,name,file_id,id_quality,id_basis,depth,attrs,created_ft,listing_state,born_run,seen_run,sub_files,sub_logical,sub_allocated,sub_complete) VALUES(1,1,NULL,'Synthetic ask root',zeroblob(16),'native_file_id_128','listed',0,0,123,'complete',1,1,2,40,40,1);
             INSERT INTO file(id,dir_id,name,file_id,logical,allocated,created_ft,attrs,born_run,seen_run) VALUES(1,1,'synthetic report.txt',CAST('ask-file-0000001' AS BLOB),17,17,123,0,1,1);
             INSERT INTO file(id,dir_id,name,file_id,logical,allocated,created_ft,attrs,born_run,seen_run) VALUES(2,1,'notes.txt',CAST('ask-file-0000002' AS BLOB),23,23,123,0,1,1);
@@ -172,7 +175,7 @@ def live_ask_isolated(browser, exe: Path, dist: Path, check, live_call) -> None:
         check(len(stub.bodies) == 2, 'nothing was sent after the revocation')
         # A stopped model server is unreachable, said plainly, never an empty answer.
         stub.server.shutdown()
-        stub.server.server_close()
+        stub.server.server_close()  # the port is closed: connection refused
         page.locator('fieldset', has_text='Folders').locator('label', has_text='Synthetic ask root').get_by_role('checkbox').check()
         page.get_by_role('button', name='Let Ask see these folders').click()
         page.get_by_role('textbox', name='Question').fill('where is my report?')
@@ -184,6 +187,6 @@ def live_ask_isolated(browser, exe: Path, dist: Path, check, live_call) -> None:
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=10)
-        stub.server.server_close()
+        stub.server.shutdown()
         state.cleanup()
     print('PASS ask (live): not configured, configure refused over HTTP, grant empty state, unknown scope, real broker over a loopback stub, citation resolves, digests equal the received bytes, revoke holds, unreachable')

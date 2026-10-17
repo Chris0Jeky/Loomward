@@ -716,7 +716,8 @@ def live_diagnostics(page: Page, token: str) -> None:
 def run_live_serve(browser_path: str | None) -> None:
     """The app's http transport against the real loomward-serve binary (lane L6) and engine service (L8)."""
     # loomward-broker lands beside loomward-serve: the service spawns it per Ask round (LW-118).
-    subprocess.run(['cargo', 'build', '-q', '-p', 'loomward-http', '--bin', 'loomward-serve', '-p', 'loomward-broker'], cwd=ROOT, check=True)
+    subprocess.run(['cargo', 'build', '-q', '-p', 'loomward-http', '--bin', 'loomward-serve'], cwd=ROOT, check=True)
+    subprocess.run(['cargo', 'build', '-q', '-p', 'loomward-broker', '--bin', 'loomward-broker'], cwd=ROOT, check=True)
     target = Path(os.environ.get('CARGO_TARGET_DIR') or ROOT / 'target')
     exe = target / 'debug' / ('loomward-serve.exe' if sys.platform == 'win32' else 'loomward-serve')
     state = tempfile.TemporaryDirectory(prefix='lw-live-serve-')
