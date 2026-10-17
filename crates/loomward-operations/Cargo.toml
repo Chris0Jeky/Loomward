@@ -6,6 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 description = "Copy-and-verify state machine, write-ahead journal and recovery reader (doc 47 lane C3); no file effects"
 
+[features]
+# Test-only append fault seam (lane C6, #535): a hook that fails a chosen `Store::append` as SQLITE_FULL or
+# SQLITE_BUSY. Enabled only by loomward-windows' dev-dependency; no production build turns it on.
+fault-injection = []
+
 [dependencies]
 # Same version as loomward-catalog: one bundled SQLite in the build.
 rusqlite = { version = "0.38.0", features = ["bundled"] }
