@@ -6,7 +6,7 @@ use crate::{
 use rusqlite::Connection;
 use std::{
     cmp::Reverse,
-    collections::{BinaryHeap, HashMap},
+    collections::{hash_map::Entry, BinaryHeap, HashMap},
 };
 
 struct Node {
@@ -356,7 +356,15 @@ fn slice(
         }
     }
     let mut output = Vec::new();
-    flatten(conn, &nodes, 0, None, req.basis, &mut output)?;
+    flatten(
+        conn,
+        &nodes,
+        0,
+        None,
+        req.basis,
+        &mut output,
+        &mut HashMap::new(),
+    )?;
     Ok((
         TreeSlice {
             anchor_node_id: req.anchor.reference(),
@@ -395,12 +403,18 @@ fn flatten(
     parent: Option<usize>,
     basis: Basis,
     out: &mut Vec<SliceNode>,
+    thread_cache: &mut HashMap<(i64, String, u32), Threads>,
 ) -> Result<()> {
     let n = &nodes[i];
     let r = &n.row;
     let index = out.len();
     let node_threads = if r.grant != 0 {
-        threads(conn, r.grant, &r.coverage(), r.flags)?
+        match thread_cache.entry((r.grant, r.coverage(), r.flags)) {
+            Entry::Occupied(entry) => entry.get().clone(),
+            Entry::Vacant(entry) => entry
+                .insert(threads(conn, r.grant, &r.coverage(), r.flags)?)
+                .clone(),
+        }
     } else {
         Threads {
             meaning: MeaningThread {
@@ -463,7 +477,7 @@ fn flatten(
         threads: node_threads,
     });
     for child in &n.children {
-        flatten(conn, nodes, *child, Some(index), basis, out)?;
+        flatten(conn, nodes, *child, Some(index), basis, out, thread_cache)?;
     }
     Ok(())
 }
@@ -480,5 +494,88 @@ fn difference(parent: u64, children: u64, live: bool, clamps: &mut u64) -> Resul
             Ok(0)
         }
         None => Err(Error::Invalid("inconsistent committed aggregate")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    #[test]
+    fn flatten_reuses_threads_without_mixing_roots_coverage_or_flags() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("ATTACH ':memory:' AS st;
+            CREATE TABLE root_grant(id INTEGER PRIMARY KEY,volume_id INTEGER);
+            CREATE TABLE volume(id INTEGER PRIMARY KEY,volume_key TEXT);
+            CREATE TABLE st.tier_declaration(id INTEGER PRIMARY KEY,volume_key TEXT,tier INTEGER,declared_at_ns INTEGER);
+            INSERT INTO root_grant VALUES(1,11),(2,22);
+            INSERT INTO volume VALUES(11,'fixture-a'),(22,'fixture-b');
+            INSERT INTO st.tier_declaration VALUES(1,'fixture-a',3,1);").unwrap();
+        let mut nodes = vec![Node {
+            row: virtual_row(NodeKey::Atlas, "Atlas".into()),
+            kind: "atlas".into(),
+            depth: 0,
+            live: false,
+            children: (1..=100).collect(),
+            folded: None,
+        }];
+        let mut expected = Vec::new();
+        for i in 1..=100 {
+            let mut row = virtual_row(NodeKey::Dir(i), format!("dir-{i}"));
+            row.grant = if i % 4 == 0 { 2 } else { 1 };
+            row.state = if i % 4 == 1 { "denied" } else { "complete" }.into();
+            row.flags = if i % 4 == 2 { 1 } else { 0 };
+            expected.push(
+                serde_json::to_vec(&threads(&conn, row.grant, &row.coverage(), row.flags).unwrap())
+                    .unwrap(),
+            );
+            nodes.push(Node {
+                row,
+                kind: "dir".into(),
+                depth: 1,
+                live: false,
+                children: vec![],
+                folded: None,
+            });
+        }
+        let tier_reads = Arc::new(AtomicUsize::new(0));
+        let counter = tier_reads.clone();
+        conn.authorizer(Some(move |ctx: AuthContext<'_>| {
+            if matches!(
+                ctx.action,
+                AuthAction::Read {
+                    table_name: "tier_declaration",
+                    column_name: "tier"
+                }
+            ) {
+                counter.fetch_add(1, Ordering::Relaxed);
+            }
+            Authorization::Allow
+        }))
+        .unwrap();
+        let mut out = Vec::new();
+        flatten(
+            &conn,
+            &nodes,
+            0,
+            None,
+            Basis::Logical,
+            &mut out,
+            &mut HashMap::new(),
+        )
+        .unwrap();
+        for (node, expected) in out.iter().skip(1).zip(expected) {
+            assert_eq!(serde_json::to_vec(&node.threads).unwrap(), expected);
+        }
+        assert_eq!(
+            tier_reads.load(Ordering::Relaxed),
+            4,
+            "one lookup per distinct root/coverage/flags tuple"
+        );
     }
 }
