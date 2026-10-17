@@ -47,7 +47,7 @@ fn basis(b: Basis) -> CBasis {
     }
 }
 
-fn grant_number(id: &str) -> Result<i64, ErrorBody> {
+pub(crate) fn grant_number(id: &str) -> Result<i64, ErrorBody> {
     id.strip_prefix("gr_")
         .and_then(|n| n.parse().ok())
         .filter(|n: &i64| *n > 0 && format!("gr_{n}") == id)
@@ -133,7 +133,7 @@ fn scrub_copy(copy: &std::path::Path, state: &std::path::Path) -> rusqlite::Resu
 }
 
 /// Whether `file` holds `needle` as UTF-8 or UTF-16LE.
-fn holds(file: &std::path::Path, needle: &str) -> bool {
+pub(crate) fn holds(file: &std::path::Path, needle: &str) -> bool {
     let Ok(bytes) = std::fs::read(file) else {
         return true;
     };
