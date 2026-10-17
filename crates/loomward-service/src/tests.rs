@@ -63,6 +63,8 @@ pub(crate) struct Hooks {
     pub fail_explicit_retry: std::sync::atomic::AtomicBool,
     #[cfg(windows)]
     pub fail_automatic_start: std::sync::atomic::AtomicBool,
+    #[cfg(windows)]
+    pub fail_freshness_checkpoint: std::sync::atomic::AtomicBool,
 }
 
 /// What a personal space read answers in tests: wait on an explicit gate, or report fixed space.
@@ -4112,6 +4114,196 @@ fn f3_completed_automatic_start_preserves_the_reset_budget() {
         0,
         "late start bookkeeping overwrote the successful pass's reset"
     );
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_issue617_completed_catchup_retries_its_checkpoint() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    svc.inner.freshness.pause_pump();
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    for _ in 0..2 {
+        svc.inner.freshness.ready_targeted_hint(1);
+        svc.inner
+            .hooks
+            .fail_automatic_start
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        crate::freshness::refresh(&svc.inner);
+    }
+    svc.inner.freshness.ready_targeted_hint(1);
+    svc.inner
+        .hooks
+        .fail_freshness_checkpoint
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    crate::freshness::refresh(&svc.inner);
+    let auto = svc.inner.freshness.explicit(1).auto.clone().unwrap();
+    assert_eq!(settle(svc, auto.as_str())["coverage"], "complete");
+    assert!(
+        svc.inner.freshness.stale(1),
+        "unconfirmed coverage must stay stale"
+    );
+    assert_eq!(svc.inner.freshness.attempts(1), 3);
+    crate::freshness::refresh(&svc.inner);
+    assert!(
+        !svc.inner.freshness.stale(1),
+        "completed catch-up lost its settle witness"
+    );
+    assert_eq!(svc.inner.freshness.attempts(1), 0);
+    assert!(f3_hits(svc)["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|h| h["freshness"]["state"] == "live"));
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_issue617_explicit_scan_preempts_another_roots_pool() {
+    if loomward_windows::enumerate::running_elevated() {
+        return;
+    }
+    let tmp = temp_root();
+    let state = tmp.path().join("state");
+    let mut paths = Vec::new();
+    for name in ["lab-first", "lab-second"] {
+        let path = tmp.path().join(name);
+        crate::lab::register(
+            &state,
+            &path,
+            name,
+            "S",
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .unwrap();
+        std::fs::create_dir(path.join("child")).unwrap();
+        std::fs::write(path.join("child/file.bin"), b"synthetic").unwrap();
+        paths.push(path.canonicalize().unwrap());
+    }
+    let svc = Service::open(Config {
+        state_dir: state,
+        dataset: DatasetClass::Synthetic,
+        allow_personal: false,
+        allow_identity_unverified: false,
+        grant_roots: paths,
+    })
+    .unwrap();
+    svc.inner.freshness.pause_pump();
+    let rows = crate::db::roots(&svc.inner.db(), None).unwrap();
+    let first = svc.inner.root_id(rows[0].root);
+    let second = svc.inner.root_id(rows[1].root);
+    for root in [&first, &second] {
+        assert_eq!(
+            settle(&svc, &start(&svc, root, "full"))["coverage"],
+            "complete"
+        );
+    }
+    svc.inner.freshness.record(
+        rows[0].root,
+        vec![loomward_windows::watch::Change::RootDirty],
+    );
+    svc.inner.freshness.ready_targeted_hint(rows[0].root);
+    svc.inner.scan.gate.arm();
+    crate::freshness::refresh(&svc.inner);
+    svc.inner.scan.gate.wait_reached();
+    let auto = svc
+        .inner
+        .freshness
+        .explicit(rows[0].root)
+        .auto
+        .clone()
+        .unwrap();
+    let held = (Command::ScanStart, "full_catalogue_published");
+    svc.inner
+        .hooks
+        .arrived
+        .lock()
+        .unwrap()
+        .retain(|at| *at != held);
+    svc.inner.hooks.closed.lock().unwrap().push(held);
+    let (answer, stale) = std::thread::scope(|s| {
+        let asking = s.spawn(|| call(&svc, "scan.start", json!({"root_id":second,"mode":"full"})));
+        svc.inner
+            .hooks
+            .until("explicit response or automatic cancellation", |_| {
+                asking.is_finished()
+                    || svc.inner.engine.job_status(&auto).unwrap().state
+                        == JobState::CancelRequested
+            });
+        let stale = svc.inner.freshness.stale(rows[0].root);
+        svc.inner.scan.gate.release();
+        (asking.join().unwrap(), stale)
+    });
+    let (job, _) = ok("scan.start", answer);
+    assert!(stale, "pre-emption cannot make the other root fresh");
+    assert_eq!(settle(&svc, auto.as_str())["state"], "cancelled");
+    svc.inner.hooks.until("owner scan holds the pool", |h| {
+        h.arrived.lock().unwrap().contains(&held)
+    });
+    for _ in 0..3 {
+        crate::freshness::refresh(&svc.inner);
+    }
+    let attempts = svc.inner.freshness.attempts(rows[0].root);
+    svc.inner.hooks.open(held.0, held.1);
+    assert_eq!(
+        settle(&svc, job["job"]["job_id"].as_str().unwrap())["coverage"],
+        "complete"
+    );
+    assert!(svc.inner.freshness.stale(rows[0].root));
+    assert_eq!(
+        attempts, 0,
+        "pool pressure spent the deferred catch-up's retries"
+    );
+    crate::freshness::refresh(&svc.inner);
+    let retry = svc
+        .inner
+        .freshness
+        .explicit(rows[0].root)
+        .auto
+        .clone()
+        .unwrap();
+    assert_eq!(settle(&svc, retry.as_str())["coverage"], "complete");
+    assert!(!svc.inner.freshness.stale(rows[0].root));
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_issue617_deferred_checkpoint_preserves_newer_hints() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    svc.inner.freshness.pause_pump();
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    svc.inner.freshness.ready_targeted_hint(1);
+    svc.inner
+        .hooks
+        .fail_freshness_checkpoint
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    crate::freshness::refresh(&svc.inner);
+    let auto = svc.inner.freshness.explicit(1).auto.clone().unwrap();
+    assert_eq!(settle(svc, auto.as_str())["coverage"], "complete");
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    let claim = svc.inner.freshness.explicit(1);
+    crate::freshness::refresh(&svc.inner);
+    assert!(
+        svc.inner.freshness.stale(1),
+        "old completion cleared a newer hint"
+    );
+    drop(claim);
+    svc.inner.freshness.ready_targeted_hint(1);
+    crate::freshness::refresh(&svc.inner);
+    let auto = svc.inner.freshness.explicit(1).auto.clone().unwrap();
+    assert_eq!(settle(svc, auto.as_str())["coverage"], "complete");
+    assert!(!svc.inner.freshness.stale(1));
 }
 
 #[cfg(windows)]
