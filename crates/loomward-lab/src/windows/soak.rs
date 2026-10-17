@@ -69,6 +69,15 @@ pub(super) fn cli(args: &[String]) -> io::Result<()> {
     if parent.ancestors().any(|p| p.join(".git").exists()) {
         return Err(invalid("out must be outside Git"));
     }
+    let root_parent = loomward_service::paths::prospective_dir(
+        Path::new(options["--root"])
+            .parent()
+            .ok_or_else(|| invalid("root parent missing"))?,
+    )
+    .map_err(invalid)?;
+    if root_parent.ancestors().any(|p| p.join(".git").exists()) {
+        return Err(invalid("root must be outside Git"));
+    }
     run(
         Path::new(options["--root"]),
         out,
@@ -242,6 +251,15 @@ fn append(out: &mut File, record: &Value) -> io::Result<()> {
     out.flush()
 }
 
+// Wall-clock milliseconds since the Unix epoch. Unlike Instant, SystemTime keeps counting
+// through a suspend, so soak_summary.py can tell a sleep from a stall.
+fn unix_ms() -> io::Result<u64> {
+    let since_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(io::Error::other)?;
+    u64::try_from(since_epoch.as_millis()).map_err(io::Error::other)
+}
+
 fn operation(
     out: &mut File,
     state: &Path,
@@ -264,6 +282,7 @@ fn operation(
     record["cycle"] = json!(cycle);
     record["operation"] = json!(name);
     record["elapsed_s"] = json!(start.elapsed().as_secs_f64());
+    record["unix_ms"] = json!(unix_ms()?);
     record["latency_ms"] = json!(latency_ms);
     record["error"] = json!(error);
     append(out, &record)?;
@@ -288,6 +307,9 @@ fn run(root: &Path, out: &Path, duration: Duration, cycles: Option<u64>) -> io::
     {
         return Err(invalid("out must be outside the generated root"));
     }
+    // The out file is created before any root: a pre-existing out stops the run with no orphan root.
+    fs::create_dir_all(&out_parent)?;
+    let mut out = OpenOptions::new().write(true).create_new(true).open(out)?;
     // Pin checked ancestors for the whole run, as the existing scale generator does.
     fs::create_dir_all(root.parent().unwrap())?;
     let mut pins = Vec::new();
@@ -310,8 +332,6 @@ fn run(root: &Path, out: &Path, duration: Duration, cycles: Option<u64>) -> io::
         marker: None,
     };
     let _busy = Busy::take(&scope)?;
-    fs::create_dir_all(&out_parent)?;
-    let mut out = OpenOptions::new().write(true).create_new(true).open(out)?;
     let expected = expected(128, 42, Profile::Dev)?;
     let manifest = json!({"schema_version": 1, "seed": 42, "profile": "dev", "expected": expected});
     let bytes = serde_json::to_vec_pretty(&manifest)?;
@@ -337,7 +357,7 @@ fn run(root: &Path, out: &Path, duration: Duration, cycles: Option<u64>) -> io::
         &json!({"kind": "start", "schema_version": 1, "manifest": manifest,
         "requested_seconds": duration.as_secs_f64(), "pid": std::process::id(),
         "unix_seconds": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(io::Error::other)?.as_secs(),
-        "cadence_seconds": 5, "watch_mode": "native hint then explicit service refresh"}),
+        "cadence_seconds": 5, "wall_clock": true, "watch_mode": "native hint then explicit service refresh"}),
     )?;
     out.sync_all()?;
     let mut service = None;
@@ -467,10 +487,12 @@ fn run(root: &Path, out: &Path, duration: Duration, cycles: Option<u64>) -> io::
         Ok(())
     })();
     drop(service);
+    let end_unix_ms = unix_ms()?;
     append(
         &mut out,
         &json!({"kind": "end", "cycles": cycle, "elapsed_s": start.elapsed().as_secs_f64(),
-        "success": result.is_ok(), "error": result.as_ref().err().map(ToString::to_string)}),
+        "unix_ms": end_unix_ms, "success": result.is_ok(),
+        "error": result.as_ref().err().map(ToString::to_string)}),
     )?;
     out.sync_all()?;
     result
@@ -492,6 +514,74 @@ mod tests {
         ] {
             assert!(check_root(root).is_err(), "{root}");
         }
+    }
+
+    #[test]
+    fn samples_carry_wall_clock_unix_ms_even_when_sampling_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("samples.jsonl");
+        let mut out = File::create(&path).unwrap();
+        // No state directory exists, so sample() fails on purpose; the record must still be stamped.
+        let missing_state = dir.path().join("no-such-state");
+        let before = unix_ms().unwrap();
+        let _ = operation(&mut out, &missing_state, Instant::now(), 1, "grant", || {
+            Ok(())
+        });
+        let after = unix_ms().unwrap();
+        drop(out);
+        let line = fs::read_to_string(&path).unwrap();
+        let record: Value = serde_json::from_str(line.lines().next().unwrap()).unwrap();
+        assert_eq!(record["kind"], "sample");
+        let stamped = record["unix_ms"].as_u64().expect("sample carries unix_ms");
+        assert!(
+            before <= stamped && stamped <= after,
+            "{before} <= {stamped} <= {after}"
+        );
+    }
+
+    #[test]
+    fn cli_refuses_a_root_inside_a_git_tree_before_touching_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        let root = repo.join("lab").join("soak");
+        let out = tmp.path().join("run.jsonl");
+        let args: Vec<String> = [
+            "--hours",
+            "0.01",
+            "--root",
+            root.to_str().unwrap(),
+            "--out",
+            out.to_str().unwrap(),
+        ]
+        .map(String::from)
+        .to_vec();
+        let refused = cli(&args).unwrap_err();
+        assert!(refused.to_string().contains("outside Git"), "{refused}");
+        assert!(!root.exists() && !out.exists());
+    }
+
+    #[test]
+    fn existing_out_file_is_refused_before_any_root_is_created() {
+        if let Err(refused) = require_non_elevated() {
+            eprintln!("skipped under an elevated token: {refused}");
+            return;
+        }
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-roots");
+        fs::create_dir_all(&base).unwrap();
+        let tmp = tempfile::tempdir_in(base.canonicalize().unwrap()).unwrap();
+        let lab = tmp.path().join("lab");
+        fs::create_dir(&lab).unwrap();
+        let root = lab.join("soak");
+        let out = tmp.path().join("cycles.jsonl");
+        fs::write(&out, b"earlier run\n").unwrap();
+        let refused = run(&root, &out, Duration::ZERO, Some(1)).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::AlreadyExists, "{refused}");
+        assert!(
+            !root.exists(),
+            "a refused out must not leave an orphan root"
+        );
+        assert_eq!(fs::read(&out).unwrap(), b"earlier run\n");
     }
 
     #[test]
@@ -523,6 +613,7 @@ mod tests {
             .collect();
         assert_eq!(records.last().unwrap()["cycles"], 3);
         assert_eq!(records.last().unwrap()["success"], true);
+        assert!(records.last().unwrap()["unix_ms"].as_u64().is_some());
         for cycle in 1..=3 {
             let samples: Vec<_> = records
                 .iter()
@@ -532,6 +623,7 @@ mod tests {
             assert!(samples
                 .iter()
                 .all(|s| s["error"].is_null() && s["handles"].as_u64().unwrap() > 0));
+            assert!(samples.iter().all(|s| s["unix_ms"].as_u64().is_some()));
             assert_eq!(
                 samples.iter().find(|s| s["operation"] == "forget").unwrap()["rows"]["file"],
                 0

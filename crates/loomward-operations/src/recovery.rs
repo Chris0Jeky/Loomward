@@ -86,7 +86,11 @@ pub struct Recovery {
 }
 
 pub fn recover(op: u64, rows: &[Row], disk: &impl Disk) -> Recovery {
-    match Replay::from_rows(op, rows) {
+    from_replay(op, Replay::from_rows(op, rows), disk)
+}
+
+pub(crate) fn from_replay(op: u64, replay: Result<Replay, Invalid>, disk: &impl Disk) -> Recovery {
+    match replay {
         Err(e) => Recovery {
             op,
             state: None,

@@ -1636,6 +1636,264 @@ fn property_any_mid_journal_damage_needs_attention() {
 
 // ---- state.db storage ----
 
+fn fenced_store(path: &std::path::Path) -> (Store, u64) {
+    let mut store = Store::open(path).unwrap();
+    let op = store.start(1, admitted(5)).unwrap();
+    store
+        .append(
+            op,
+            1,
+            Record::StagingIntent {
+                token: TOKEN.into(),
+            },
+        )
+        .unwrap();
+    store
+        .append(op, 1, Record::StagingCreated { id: id(S) })
+        .unwrap();
+    store
+        .append(
+            op,
+            2,
+            Record::Fenced {
+                cause: FenceCause::EmergencyStop,
+            },
+        )
+        .unwrap();
+    (store, op)
+}
+
+#[test]
+fn store_tail_truncation_needs_attention_even_after_reopen() {
+    for lost in 1..=4 {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let (mut store, op) = fenced_store(&path);
+        let disk = FakeDisk::default().staging();
+        assert!(matches!(
+            store.recover(op, &disk).unwrap().decision,
+            Decision::Cleanup(_)
+        ));
+        let raw = rusqlite::Connection::open(&path).unwrap();
+        raw.execute_batch("DROP TRIGGER op_journal_no_delete")
+            .unwrap();
+        raw.execute(
+            "DELETE FROM op_journal WHERE op_id=?1 AND seq>?2",
+            rusqlite::params![op as i64, 4 - lost],
+        )
+        .unwrap();
+        assert!(store.replay(op).unwrap().is_err(), "lost {lost} rows");
+        assert!(matches!(
+            store.append(
+                op,
+                2,
+                Record::Fenced {
+                    cause: FenceCause::EmergencyStop
+                }
+            ),
+            Err(AppendError::Rejected(_))
+        ));
+        drop(store);
+        let mut store = Store::open(&path).unwrap();
+        assert_eq!(store.operations().unwrap(), vec![op]);
+        assert!(
+            matches!(
+                store.recover(op, &disk).unwrap().decision,
+                Decision::NeedsAttention(Attention::InvalidJournal(_))
+            ),
+            "lost {lost} rows"
+        );
+        assert_eq!(store.start(1, admitted(6)).unwrap(), op + 1);
+    }
+}
+
+#[test]
+fn store_insert_or_replace_cannot_replace_a_fence() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let (mut store, op) = fenced_store(&path);
+    let rows = store.rows(op).unwrap();
+    let prefix = Replay::from_rows(op, &rows[..3]).unwrap();
+    let replacement = prefix.row_for(&Entry {
+        epoch: 1,
+        record: Record::Transition {
+            to: OpState::Blocked,
+            code: Some(Refusal::AccessDenied),
+        },
+    });
+    let raw = rusqlite::Connection::open(&path).unwrap();
+    let recursive: i64 = raw
+        .query_row("PRAGMA recursive_triggers", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(recursive, 0);
+    assert!(raw
+        .execute(
+            "INSERT OR REPLACE INTO op_journal(op_id,seq,body,chain) VALUES(?1,?2,?3,?4)",
+            rusqlite::params![
+                op as i64,
+                replacement.seq as i64,
+                replacement.body,
+                replacement.chain
+            ]
+        )
+        .is_err());
+    assert_eq!(store.rows(op).unwrap(), rows);
+    assert!(store.replay(op).unwrap().unwrap().fenced);
+
+    // Simulate damage that bypasses the trigger: an otherwise valid replacement with the same seq.
+    raw.execute_batch("DROP TRIGGER op_journal_no_replace")
+        .unwrap();
+    raw.execute(
+        "INSERT OR REPLACE INTO op_journal(op_id,seq,body,chain) VALUES(?1,?2,?3,?4)",
+        rusqlite::params![
+            op as i64,
+            replacement.seq as i64,
+            replacement.body,
+            replacement.chain
+        ],
+    )
+    .unwrap();
+    assert!(
+        !Replay::from_rows(op, &store.rows(op).unwrap())
+            .unwrap()
+            .fenced
+    );
+    assert!(store.replay(op).unwrap().is_err());
+    assert!(matches!(
+        store
+            .recover(op, &FakeDisk::default().staging())
+            .unwrap()
+            .decision,
+        Decision::NeedsAttention(Attention::InvalidJournal(_))
+    ));
+    assert!(matches!(
+        store.append(
+            op,
+            2,
+            Record::Fenced {
+                cause: FenceCause::EmergencyStop
+            }
+        ),
+        Err(AppendError::Rejected(_))
+    ));
+    drop(store);
+    assert!(Store::open(&path).unwrap().replay(op).unwrap().is_err());
+}
+
+#[test]
+fn store_anchors_legacy_tails_once_and_never_repairs_a_missing_head() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let (store, op) = fenced_store(&path);
+    let original = store.rows(op).unwrap();
+    drop(store);
+    let raw = rusqlite::Connection::open(&path).unwrap();
+    // The legacy schema has no head table, but already contains C5 journals.
+    raw.execute_batch("DROP TABLE IF EXISTS op_journal_head")
+        .unwrap();
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(store.rows(op).unwrap(), original);
+    assert!(store.replay(op).unwrap().unwrap().fenced);
+    store
+        .append(
+            op,
+            2,
+            Record::Transition {
+                to: OpState::Cancelling,
+                code: None,
+            },
+        )
+        .unwrap();
+    drop(store);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.replay(op).unwrap().unwrap().seq, 5);
+    raw.execute("DELETE FROM op_journal_head WHERE op_id=?1", [op as i64])
+        .unwrap();
+    drop(store);
+    let mut store = Store::open(&path).unwrap();
+    assert!(store.replay(op).unwrap().is_err());
+    assert!(matches!(
+        store.recover(op, &FakeDisk::default()).unwrap().decision,
+        Decision::NeedsAttention(Attention::InvalidJournal(_))
+    ));
+    assert!(matches!(
+        store.append(
+            op,
+            2,
+            Record::Transition {
+                to: OpState::Cancelled,
+                code: None
+            }
+        ),
+        Err(AppendError::Rejected(_))
+    ));
+}
+
+#[test]
+fn store_rolls_back_row_when_head_write_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let mut store = Store::open(&path).unwrap();
+    let raw = rusqlite::Connection::open(&path).unwrap();
+    // Fail precisely after the journal insert, for both start and append.
+    raw.execute_batch(
+        "CREATE TRIGGER fail_head_insert BEFORE INSERT ON op_journal_head
+        WHEN EXISTS(SELECT 1 FROM op_journal WHERE op_id=NEW.op_id AND seq=NEW.seq)
+        BEGIN SELECT RAISE(FAIL, 'head write interrupted'); END;",
+    )
+    .unwrap();
+    assert!(matches!(
+        store.start(1, admitted(5)),
+        Err(AppendError::Sql(_))
+    ));
+    assert!(store.rows(1).unwrap().is_empty());
+    assert!(store.operations().unwrap().is_empty());
+    raw.execute_batch("DROP TRIGGER fail_head_insert").unwrap();
+    let op = store.start(1, admitted(5)).unwrap();
+    let before = store.rows(op).unwrap();
+    raw.execute_batch(
+        "CREATE TRIGGER fail_head_update BEFORE UPDATE ON op_journal_head
+        WHEN EXISTS(SELECT 1 FROM op_journal WHERE op_id=NEW.op_id AND seq=NEW.seq)
+        BEGIN SELECT RAISE(FAIL, 'head write interrupted'); END;",
+    )
+    .unwrap();
+    assert!(matches!(
+        store.append(
+            op,
+            1,
+            Record::StagingIntent {
+                token: TOKEN.into()
+            }
+        ),
+        Err(AppendError::Sql(_))
+    ));
+    assert_eq!(store.rows(op).unwrap(), before);
+    drop(store);
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(store.replay(op).unwrap().unwrap().seq, 1);
+    assert_eq!(
+        store.recover(op, &FakeDisk::default()).unwrap().decision,
+        Decision::Reconfirm
+    );
+    raw.execute_batch("DROP TRIGGER fail_head_update").unwrap();
+    store
+        .append(
+            op,
+            1,
+            Record::StagingIntent {
+                token: TOKEN.into(),
+            },
+        )
+        .unwrap();
+    drop(store);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.replay(op).unwrap().unwrap().seq, 2);
+    assert!(matches!(
+        store.recover(op, &FakeDisk::default()).unwrap().decision,
+        Decision::Resume(_)
+    ));
+}
+
 /// A consumed approval through the public consent path: the only way to start a journal.
 fn admitted(n: u8) -> Admitted {
     let id = |b: u8| Identity {

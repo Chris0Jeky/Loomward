@@ -38,6 +38,9 @@ pub(crate) struct Hooks {
     pub filesystem: Mutex<Option<&'static str>>,
     /// #519 review: a personal space read for one volume key answers this instead of the OS.
     pub space: Mutex<Vec<(String, SpaceFake)>>,
+    /// #530: the personal space wait a test sets instead of the production 500 ms bound (`None`
+    /// keeps it), so a host loaded enough to delay a read's worker start is not read as unknown.
+    pub personal_space_wait: Mutex<Option<Duration>>,
 }
 
 /// What a personal space read answers in tests: stall past the caller's deadline, or report fixed
@@ -536,6 +539,9 @@ fn volumes_list_observes_space_for_an_active_personal_grant() {
     let Some((svc, _folder)) = personal_grant_session(&tmp) else {
         return;
     };
+    // #530: under CPU load a read's worker can start after the production 500 ms wait (the read itself
+    // takes milliseconds), which reads as unknown. This test asserts an observed value, so it alone waits longer.
+    *svc.inner.hooks.personal_space_wait.lock().unwrap() = Some(Duration::from_secs(30));
     let (volumes, _) = ok("volumes.list", call(&svc, "volumes.list", json!({})));
     let rows = volumes["volumes"].as_array().unwrap();
     assert_eq!(rows.len(), 1, "{:?}", volumes);

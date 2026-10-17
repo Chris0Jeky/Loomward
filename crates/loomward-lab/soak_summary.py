@@ -7,15 +7,42 @@ from collections import defaultdict
 
 STAGES = ("grant", "scan", "tree.slice", "search.query", "watch", "refresh", "revoke", "forget", "restart")
 MIB = 1024 * 1024
+GAP_SECONDS = 60
+LEGACY_NOTE = "wall-clock continuity not checked (legacy receipt)"
+WALL_GAP = "wall-clock continuity gap or divergence from monotonic time"
+WALL_MIXED = "wall-clock field missing or mixed across samples"
+
+
+def _is_ms(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _check_wall(errors, wall, elapsed, previous):
+    """Check one wall-clock step against the monotonic step; return the new reference."""
+    if not _is_ms(wall):
+        errors.add("invalid wall-clock timestamp")
+        return previous
+    if previous is not None:
+        wall_s = (wall - previous[0]) / 1000
+        mono_s = elapsed - previous[1]
+        # A small backward step (an NTP correction) is normal; a large one shows as divergence below.
+        if wall_s > GAP_SECONDS or abs(wall_s - mono_s) > GAP_SECONDS:
+            errors.add(WALL_GAP)
+    return (wall, elapsed)
 
 
 def evaluate(records, smoke=False):
     errors = set()
+    notes = []
     start = end = None
     restarts = []
     latencies = defaultdict(list)
     peaks = defaultdict(int)
     previous = 0
+    # Wall-clock state: wall_mode is "wall" when samples carry unix_ms (SystemTime, which
+    # keeps counting through suspend), "legacy" when none do, and None before the first sample.
+    wall_mode = None
+    wall_prev = None  # (unix_ms, elapsed_s) of the last sample with a valid wall clock
     cycle = 1
     stage_index = 0
     samples = 0
@@ -29,6 +56,9 @@ def evaluate(records, smoke=False):
             start = record
             if start["schema_version"] != 1:
                 errors.add("unsupported schema")
+            seconds = record.get("unix_seconds")
+            if isinstance(seconds, int) and not isinstance(seconds, bool):
+                wall_prev = (seconds * 1000, 0)  # origin: start is elapsed 0
         elif kind == "end":
             end = record
         elif kind == "sample":
@@ -43,8 +73,14 @@ def evaluate(records, smoke=False):
                 cycle += 1
                 stage_index = 0
             elapsed = record["elapsed_s"]
-            if not math.isfinite(elapsed) or elapsed < previous or elapsed - previous > 60:
+            if not math.isfinite(elapsed) or elapsed < previous or elapsed - previous > GAP_SECONDS:
                 errors.add("sample continuity gap or invalid timestamp")
+            if wall_mode is None:
+                wall_mode = "wall" if "unix_ms" in record else "legacy"
+            if (wall_mode == "wall") != ("unix_ms" in record):
+                errors.add(WALL_MIXED)
+            elif wall_mode == "wall":
+                wall_prev = _check_wall(errors, record["unix_ms"], elapsed, wall_prev)
             previous = elapsed
             if record["error"] is not None:
                 errors.add("operation error: " + str(record["error"]))
@@ -87,8 +123,20 @@ def evaluate(records, smoke=False):
     duration = end["elapsed_s"] if end else previous
     if end:
         if (not end["success"] or end["error"] is not None or stage_index
-                or end["cycles"] != cycle - 1 or duration < previous or duration - previous > 60):
+                or end["cycles"] != cycle - 1 or duration < previous or duration - previous > GAP_SECONDS):
             errors.add("incomplete lifecycle or unsuccessful end")
+        if wall_mode == "legacy":
+            if "unix_ms" in end:
+                errors.add(WALL_MIXED)
+        elif not _is_ms(end.get("unix_ms")):
+            errors.add("end record lacks unix_ms")
+        else:
+            _check_wall(errors, end["unix_ms"], end["elapsed_s"], wall_prev)
+    if wall_mode == "legacy":
+        if start and start.get("wall_clock") is True:
+            # The run declared wall-clock samples, so a receipt without them is damaged, not legacy.
+            errors.add("receipt declares wall_clock but its samples lack unix_ms")
+        notes.append(LEGACY_NOTE)
     if not math.isfinite(duration) or duration < minimum:
         errors.add(f"duration below {minimum} seconds")
     if start and (not math.isfinite(start["requested_seconds"]) or start["requested_seconds"] < minimum or duration < start["requested_seconds"]):
@@ -110,7 +158,7 @@ def evaluate(records, smoke=False):
             "duration_seconds": duration, "cycles": cycle - 1, "samples": samples,
             "comparison_cycles": [len(first), len(last)], "growth": growth, "peaks": dict(peaks),
             "latency_ms": {k: {"median": statistics.median(v), "max": max(v)} for k, v in latencies.items()},
-            "errors": sorted(errors)}
+            "errors": sorted(errors), "notes": notes}
 
 
 def main():

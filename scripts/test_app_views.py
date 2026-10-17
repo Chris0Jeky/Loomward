@@ -3,7 +3,7 @@
 Called from scripts/test_app.py (`run_views`). Mock-transport scenarios run against the page that
 test_app.py already serves; the Explorer's stale-response and invalidation scenarios need an engine
 that can be slow or fail on demand, so this module starts its own tiny loopback fake engine.
-Requires a built app/dist (`npm.cmd --prefix app run build`).
+Serves the development build that test_app.py makes in .loomward/app-e2e, never app/dist (which can be stale).
 """
 from __future__ import annotations
 
@@ -21,7 +21,9 @@ from urllib.parse import urlsplit
 from playwright.sync_api import Page, expect
 
 ROOT = Path(__file__).resolve().parents[1]
-DIST = ROOT / 'app' / 'dist'
+# The same directory test_app.py builds (.loomward/app-e2e). test_app.py also assigns this before running any leg,
+# so the fake engine's page is the build under test, not a stale app/dist.
+DIST = ROOT / '.loomward' / 'app-e2e'
 TOKEN = '0f1e2d3c4b5a69788796a5b4c3d2e1f0'
 EPOCH = 'e_fake_epoch'
 MIME = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml'}

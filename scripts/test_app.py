@@ -41,6 +41,7 @@ from playwright.sync_api import Page, expect, sync_playwright
 
 from test_app_collections import run_collections, run_live_collections
 from test_app_a11y import run_a11y
+import test_app_views
 from test_app_views import run_views, wait_until
 from test_app_copy import run_copy
 from test_app_inventory import run_inventory
@@ -807,6 +808,7 @@ def main() -> None:
     DIST = ROOT / '.loomward/app-e2e'
     build_app(DIST, development=True)
     assert (DIST / 'index.html').is_file(), 'development fixtures were not built'
+    test_app_views.DIST = DIST  # the views' fake engine serves this build, the one just made
 
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     server.daemon_threads = True

@@ -8,9 +8,9 @@
 //! it is never authority on its own, and it only ever names identities and staging-relative names that the
 //! journal recorded.
 //!
-//! The per-operation hash chain detects damage in the middle of a journal (an edited, truncated, duplicated,
-//! reordered or missing record). It does not detect tail truncation: losing the last records looks exactly
-//! like a crash before they were written, and recovery treats it so.
+//! The per-operation hash chain detects edited, duplicated, reordered or missing records. Store also
+//! checks a separately stored tail anchor, committed atomically with each append, to detect tail loss.
+//! Pure row-only replay cannot detect tail truncation; durable recovery must go through Store.
 #![forbid(unsafe_code)]
 
 pub mod journal;
