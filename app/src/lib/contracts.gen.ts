@@ -1902,6 +1902,47 @@ export interface DiagnosticsSaveResult {
   refusal: DiagnosticsSaveRefusal | null;
 }
 
+/** Low free space when free < max(capacity x low_space_free_percent, low_space_free_bytes). Fast growth when a granted root's net logical growth between the oldest and newest complete scans inside growth_window_days reaches growth_bytes. alerts.configure replaces the whole record. */
+export interface AlertSettings {
+  /** Off until the owner enables it; gates local OS notifications only. The in-app list is always available. */
+  notifications_enabled: boolean;
+  low_space_free_percent: number;
+  low_space_free_bytes: ByteCount;
+  growth_window_days: number;
+  growth_bytes: ByteCount;
+}
+
+export type AlertKind = "low_space" | "fast_growth";
+
+/** alert is the only active alert. unknown (capacity, free space or volume not observed), insufficient_history (fewer than two complete scans in the window) and incomplete_coverage (partial scans are not comparable) say why none was raised; none reads as zero. */
+export type AlertStatus = "alert" | "ok" | "unknown" | "insufficient_history" | "incomplete_coverage";
+
+export interface AlertItem {
+  kind: AlertKind;
+  status: AlertStatus;
+  label: string;
+  volume_id: VolumeId | null;
+  root_id: RootId | null;
+  /** Free bytes (low_space) or net growth (fast_growth); null is unknown. */
+  measured_bytes: NullableBytes;
+  threshold_bytes: NullableBytes;
+  capacity_bytes: NullableBytes;
+  window_start: NullableTimestamp;
+  window_end: NullableTimestamp;
+  coverage: CoverageState;
+  note: string;
+}
+
+/** Advice only, evaluated on demand from the volume space observation and the catalogue's completed scan history; no file or process effect. */
+export interface AlertReport {
+  evaluated_at: Timestamp;
+  settings: AlertSettings;
+  defaults: AlertSettings;
+  active_count: Count;
+  items: AlertItem[];
+  notifications_note: string;
+}
+
 // ---- commands (commands.json)
 
 export interface CommandMap {
@@ -1961,6 +2002,8 @@ export interface CommandMap {
   "backups.forget": { request: BackupForgetRequest; result: BackupForgetResult };
   "diagnostics.preview": { request: EmptyRequest; result: DiagnosticsPreviewResult };
   "diagnostics.save": { request: DiagnosticsSaveRequest; result: DiagnosticsSaveResult };
+  "alerts.list": { request: EmptyRequest; result: AlertReport };
+  "alerts.configure": { request: AlertSettings; result: AlertReport };
 }
 
 export type CommandKey = keyof CommandMap;
@@ -2023,6 +2066,8 @@ export const COMMANDS = {
   "backups.forget": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "diagnostics.preview": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "diagnostics.save": { adapters: ["tauri"], wave: 3, events: [] },
+  "alerts.list": { adapters: ["tauri", "http"], wave: 2, events: [] },
+  "alerts.configure": { adapters: ["tauri", "http"], wave: 2, events: [] },
 } as const satisfies Record<CommandKey, {
   adapters: readonly ("tauri" | "http")[];
   wave: number;

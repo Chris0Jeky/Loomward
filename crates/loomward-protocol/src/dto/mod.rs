@@ -7,6 +7,8 @@ use crate::error::ErrorBody;
 use crate::types::*;
 use serde::{Deserialize, Serialize};
 
+mod alerts;
+pub use alerts::*;
 mod backups;
 pub use backups::*;
 mod inventory;
