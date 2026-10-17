@@ -1,0 +1,11 @@
+{
+  "def": "CopyPreviewRequest",
+  "reason": "a source is selected once",
+  "value": {
+    "sources": [
+      "nd_s1_401",
+      "nd_s1_401"
+    ],
+    "destination_node_id": "nd_s1_88"
+  }
+}

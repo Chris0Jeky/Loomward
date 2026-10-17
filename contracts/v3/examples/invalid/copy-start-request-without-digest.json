@@ -1,0 +1,7 @@
+{
+  "def": "CopyConsentRequest",
+  "reason": "start names the approved digest; without it nothing can be matched",
+  "value": {
+    "operation_id": "cp_7f3a9c"
+  }
+}
