@@ -201,7 +201,7 @@ fn scrub_copy(
     state: &std::path::Path,
 ) -> rusqlite::Result<(bool, std::fs::File)> {
     let pin = pin_backup(copy).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-    let conn = rusqlite::Connection::open(copy)?;
+    let conn = rusqlite::Connection::open(loomward_catalog::sqlite_dir(copy))?;
     // Allow transient store contention to settle before reporting a failed scrub.
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     // Checkpoint old WAL frames before scrubbing; a held reader keeps cleanup pending.
@@ -679,6 +679,7 @@ impl Inner {
                         // session, granted folders in a personal one); telemetry observes
                         // personal hosts only; the teacher stays disabled (confinement_not_enforced).
                         "metadata_scan": cfg!(windows),
+                        "duplicate_content_read": cfg!(windows),
                         "process_observation": personal,
                         "gpu_observation": f,
                         "disk_io_observation": personal,
@@ -698,9 +699,9 @@ impl Inner {
                     "gpu_available": f,
                     // Every session may save its redacted bundle where a native dialog exists.
                     "diagnostics_save": ctx.dialogs.is_some(),
-                    // docs/46 F1 is the contract only; the lane that serves the federated
-                    // fields (F2 to F4) flips this, and the guard in `search` goes with it.
-                    "federated_search": f,
+                    // The lane that serves the federated fields (F2 to F4) flips this constant,
+                    // and the guard in `search` goes with it.
+                    "federated_search": crate::FEDERATED_SEARCH,
                 },
                 "limits": {
                     "max_request_bytes": limits::MAX_REQUEST_BYTES,

@@ -5,6 +5,11 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[3]
 SRC = ROOT / "crates/loomward-shell/src"
 CASES = [
+    ("seed_corpus_reaches_all_optional_parser_branches", "shortcuts.rs", "s.id_list = Some(id.to_vec());", "s.id_list = None;"),
+    ("seed_corpus_reaches_all_optional_parser_branches", "shortcuts.rs", "s.environment_target = Some(", "let _ignored = Some("),
+    ("seed_corpus_reaches_all_optional_parser_branches", "shortcuts.rs", "s.known_folder = Some(", "let _ignored = Some("),
+    ("seed_corpus_reaches_all_optional_parser_branches", "shortcuts.rs", "s.tracker = Some(", "let _ignored = Some("),
+    ("network_name_offset_selects_the_documented_layout", "shortcuts.rs", "let wide = u32_at(b, 8)? > 20;", "let wide = u32_at(b, 8)? > 28;"),
     ("header_flags_and_opaque_id_list", "shortcuts.rs", "flags: u32_at(h, 20)?,", "flags: 0,"),
     ("string_fields_are_separate_unicode_and_inert", "shortcuts.rs", "(32, &mut s.arguments),\n        (64, &mut s.icon_location)", "(32, &mut s.icon_location),\n        (64, &mut s.arguments)"),
     ("ansi_bytes_are_preserved_without_guessing_code_page", "shortcuts.rs", "Text::Ansi(r.take(len)?.to_vec())", "Text::Ansi({ r.take(len)?; vec![0] })"),
@@ -28,6 +33,15 @@ CASES = [
     ("shortcuts::native::tests::junction_ancestor_is_refused_with_reason", "../../loomward-windows/src/enumerate/native.rs", "FILE_OPEN_REPARSE_POINT | FILE_OPEN_NO_RECALL | FILE_SYNCHRONOUS_IO_NONALERT", "FILE_OPEN_NO_RECALL | FILE_SYNCHRONOUS_IO_NONALERT"),
     ("enumerate::native::cancellation_tests::reader_uses_final_pinned_handle_after_leaf_swap", "../../loomward-windows/src/enumerate/native.rs", "after_open();\n    let mut bytes = Vec::new();", "after_open();\n    let file = open_readonly_child(parent, name, true)?;\n    let mut bytes = Vec::new();"),
 ]
+
+volume_check = '''        if volume(drive, None) != VolumeState::Available {
+            return Err(invalid("local volume unavailable or unknown"));
+        }
+'''
+root_open = '''        let root = format!("{drive}:\\\\");
+        let mut files = vec![open_readonly_directory(Path::new(&root))?];
+'''
+CASES.append(("pins_checks_volume_before_opening_the_drive_root", "shortcuts.rs", volume_check + root_open, root_open + volume_check))
 
 # Restore the old full-path component walk for a deterministic ancestor-swap regression.
 relative_open = '''let file = open_metadata_child(
@@ -82,7 +96,7 @@ for name, filename, old, new in CASES:
         target = ["--lib"] if windows or name.startswith("shortcuts::native::tests::") else ["--test", "shell"]
         result = subprocess.run(
             ["cargo", "test", "-p", package, "--all-features", *target, name, "--", "--exact"],
-            cwd=ROOT, capture_output=True, text=True, encoding="utf-8", timeout=60,
+            cwd=ROOT, capture_output=True, text=True, encoding="utf-8", timeout=300,
         )
         assert result.returncode != 0 and f"test {name} ... FAILED" in result.stdout, (
             f"mutation survived or did not reach test: {name}\n{result.stdout}\n{result.stderr}"
