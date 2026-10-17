@@ -2,7 +2,7 @@
 use super::*;
 use crate::enumerate::{DirSource, Flow, ListOutcome, NativeSource};
 use loomward_operations::tree::{Kind, MetadataClass as Class, Node, Observation, Tree};
-use std::{collections::BTreeMap, os::windows::ffi::OsStringExt};
+use std::{collections::BTreeMap, mem::ManuallyDrop, os::windows::ffi::OsStringExt};
 use windows_sys::{
     Wdk::Storage::FileSystem::{
         FileAlternateNameInformation, FileEaInformation, NtQueryInformationFile,
