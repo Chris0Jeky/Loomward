@@ -10,8 +10,10 @@
 #![forbid(unsafe_code)]
 use std::path::Path;
 mod crashpoint;
+mod developer_clutter;
 #[cfg(feature = "test-hooks")]
 pub use crashpoint::CRASH_EXIT;
+pub use developer_clutter::{DeveloperClutter, DeveloperClutterCandidate};
 mod db;
 mod duplicates;
 pub use duplicates::{DuplicateCandidate, DuplicateCandidates};
