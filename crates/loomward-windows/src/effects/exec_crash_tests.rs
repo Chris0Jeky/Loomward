@@ -17,13 +17,19 @@
 //! of every scenario under both Q1 policies and adds 240 random kills (random tree x random scenario x
 //! random boundary, seed `LOOMWARD_CRASH_SEED`, default below). A kill keeps the OS cache: this proves
 //! crash consistency, not power-loss durability (G5).
+//!
+//! The journal-append fault matrix (#535, bottom of the file) fails a chosen `Store::append` instead of
+//! killing the process: SQLITE_FULL or SQLITE_BUSY, before the row, before the head anchor, or after the
+//! commit (a lost acknowledgement), at every journal record the scenario appends, in this process.
 use super::tests::{c1, set_attributes, source_snapshot, DenyCreate, Lab};
 use super::*;
+use loomward_operations::store::fault::{Hook, Kind as Fail, Stage};
 use loomward_operations::{tree, Entry};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     process::Command,
+    sync::Arc,
 };
 
 const CHILD: &str = "effects::exec::crash_tests::crash_child";
@@ -874,4 +880,193 @@ fn a_source_changed_mid_copy_or_before_confirmation_is_never_committed() {
     assert_ne!(recovered, OpState::Committed);
     assert_eq!(abandoned, OpState::NeedsAttention);
     assert_eq!(fs::read(&published).unwrap(), copy, "published copy kept");
+}
+
+// ---- journal append faults (#535) ----------------------------------------------------------------
+
+/// What the fault hook saw: the record kind of every append attempt in the step, and the destination at
+/// the moment of the failure.
+#[derive(Default)]
+struct Appends {
+    labels: Vec<String>,
+    at_fault: Option<Snap>,
+    /// Append attempts after the failed one: the executor must stop at once.
+    after: usize,
+}
+
+/// The journal record's `kind`, with the target state for a transition.
+fn record_label(record: &Record) -> String {
+    let v = serde_json::to_value(record).unwrap();
+    let kind = v["kind"].as_str().unwrap();
+    match v["to"].as_str() {
+        Some(to) => format!("{kind}:{to}"),
+        None => kind.to_string(),
+    }
+}
+
+/// Count every append; fail the `n`th (1-based, counted from the step's start) at `stage` with `kind`.
+fn append_hook(
+    seen: Arc<Mutex<Appends>>,
+    dest: PathBuf,
+    fault: Option<(usize, Fail, Stage)>,
+) -> Hook {
+    Box::new(move |record, stage| {
+        let mut a = seen.lock().unwrap();
+        if stage == Stage::Row {
+            a.after += usize::from(a.at_fault.is_some());
+            a.labels.push(record_label(record));
+        }
+        let (n, kind, at) = fault?;
+        if stage == at && a.labels.len() == n && a.at_fault.is_none() {
+            a.at_fault = Some(dest_snapshot(&dest));
+            return Some(kind);
+        }
+        None
+    })
+}
+
+/// The scenario's step, in this process (what `crash_child` runs in a child).
+fn act(p: &Prepared, control: &Control) -> Result<Outcome, Fault> {
+    let store = &p.lab.store;
+    match p.case.scenario.action() {
+        "run" => run(store, p.op, control),
+        "recover" => recover(store, p.op, control),
+        _ => {
+            let r = recover(store, p.op, control)?;
+            if r.state.is_terminal() {
+                return Ok(r);
+            }
+            cancel(store, p.op, &p.lab.plan(p.op), control)
+        }
+    }
+}
+
+/// The record kind of every journal append the case's step makes when nothing fails.
+fn enumerate_appends(case: Case) -> Option<Vec<String>> {
+    let p = Prepared::new(case)?;
+    let seen = Arc::new(Mutex::new(Appends::default()));
+    let hook = append_hook(seen.clone(), p.lab.dest(), None);
+    p.lab.store.lock().unwrap().set_fault(Some(hook));
+    act(&p, &Control::new(case.removal)).unwrap();
+    let labels = std::mem::take(&mut seen.lock().unwrap().labels);
+    assert!(!labels.is_empty(), "{case:?}: no journal append");
+    Some(labels)
+}
+
+/// Fail the case's `n`th append as `kind` at `stage`, then hold the executor and the journal to the oracle:
+/// the fault surfaces as that database error; no further append and no further effect follows it; the
+/// failed append stored nothing (Ack: its record is durable); the journal replays and the receipt agrees;
+/// then recovery and the owner's Abandon settle it under the same oracle as every kill.
+fn fail_append(
+    case: Case,
+    n: usize,
+    labels: &[String],
+    kind: Fail,
+    stage: Stage,
+    tally: &mut Tally,
+) {
+    let Some(mut p) = Prepared::new(case) else {
+        return;
+    };
+    let ctx = format!("{case:?} append {n} ({}) {kind:?}@{stage:?}", labels[n - 1]);
+    let rows_before = p.lab.store.lock().unwrap().rows(p.op).unwrap().len();
+    let seen = Arc::new(Mutex::new(Appends::default()));
+    let hook = append_hook(seen.clone(), p.lab.dest(), Some((n, kind, stage)));
+    p.lab.store.lock().unwrap().set_fault(Some(hook));
+    let result = act(&p, &Control::new(case.removal));
+    p.lab.store.lock().unwrap().set_fault(None);
+    let want = match kind {
+        Fail::Full => "DiskFull",
+        Fail::Busy => "DatabaseBusy",
+    };
+    let a = seen.lock().unwrap();
+    assert_eq!(a.labels[n - 1], labels[n - 1], "{ctx}: appends drifted");
+    assert!(
+        matches!(&result, Err(Fault::Journal(m)) if m.contains(want)),
+        "{ctx}: the failed append was swallowed or misreported: {result:?}"
+    );
+    assert_eq!(
+        a.after, 0,
+        "{ctx}: the executor appended after a failed append"
+    );
+    let at_fault = a.at_fault.clone().expect("the fault never fired");
+    drop(a);
+    let now = dest_snapshot(&p.lab.dest());
+    assert_eq!(
+        now, at_fault,
+        "{ctx}: an effect ran after its record failed"
+    );
+    let rows = p.lab.store.lock().unwrap().rows(p.op).unwrap().len();
+    assert_eq!(
+        rows,
+        rows_before + (n - 1) + usize::from(stage == Stage::Ack),
+        "{ctx}: the failed append left a different journal"
+    );
+    let receipt = status(&p.lab.store, p.op).unwrap_or_else(|e| panic!("{ctx}: {e:?}"));
+    p.oracle(&format!("{ctx} after fault"), &now, &receipt);
+    let (recovered, abandoned) = p.recover_then_abandon(&ctx, &now);
+    tally.record(&format!("before {}", labels[n - 1]), recovered, abandoned);
+}
+
+/// Every kind at every stage: the six ways an append can fail.
+const VARIANTS: [(Fail, Stage); 6] = [
+    (Fail::Full, Stage::Row),
+    (Fail::Busy, Stage::Head),
+    (Fail::Full, Stage::Head),
+    (Fail::Busy, Stage::Ack),
+    (Fail::Full, Stage::Ack),
+    (Fail::Busy, Stage::Row),
+];
+
+/// The record classes the fault matrix must have failed: the "before <record>" boundaries of the kill map.
+const APPEND_CLASSES: [&str; 13] = [
+    "CP-01", "CP-02", "CP-03", "CP-04", "CP-10", "CP-11", "CP-13", "CP-15", "CP-17", "CP-19",
+    "CP-20", "CP-21", "CP-22",
+];
+
+/// Default: each journal append of each scenario fails once, rotating through the six variants. Full:
+/// every append under every variant, both Q1 policies.
+#[test]
+fn a_failed_journal_append_stops_the_executor_and_recovers_under_the_oracle() {
+    if lab().is_none() {
+        return;
+    }
+    let mut tally = Tally::default();
+    let mut lines = Vec::new();
+    for scenario in Scenario::ALL {
+        let policies: &[bool] = match (full(), scenario) {
+            (true, _) => &[false, true],
+            (false, Scenario::AbandonVerified) => &[false, true],
+            (false, Scenario::AbandonPublish) => &[true],
+            (false, _) => &[false],
+        };
+        for &removal in policies {
+            let case = Case {
+                scenario,
+                removal,
+                tree: None,
+            };
+            let labels = enumerate_appends(case).unwrap();
+            let before = tally.kills;
+            for n in 1..=labels.len() {
+                let picks = if full() {
+                    &VARIANTS[..]
+                } else {
+                    &VARIANTS[n % VARIANTS.len()..][..1]
+                };
+                for &(kind, stage) in picks {
+                    fail_append(case, n, &labels, kind, stage, &mut tally);
+                }
+            }
+            lines.push(format!(
+                "C6 append {scenario:?} removal={removal}: {} appends, {} faults",
+                labels.len(),
+                tally.kills - before
+            ));
+        }
+    }
+    report("append", &tally, &lines);
+    for cp in APPEND_CLASSES {
+        assert!(tally.by_class.contains_key(cp), "{cp} never faulted");
+    }
 }

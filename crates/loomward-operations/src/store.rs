@@ -28,8 +28,59 @@ impl From<Invalid> for AppendError {
     }
 }
 
+/// Lane C6 (#535) test seam: fail a chosen append as the database would, to prove the executor stops
+/// without a record and recovery settles honestly. Compiled only with the `fault-injection` feature.
+#[cfg(feature = "fault-injection")]
+pub mod fault {
+    use crate::journal::Record;
+    use rusqlite::ffi;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Kind {
+        /// SQLITE_FULL: the database or disk is full.
+        Full,
+        /// SQLITE_BUSY: another connection holds the write lock past the busy timeout.
+        Busy,
+    }
+
+    /// Where inside one append the failure lands. `Row` and `Head` roll the transaction back; `Ack` is a
+    /// commit that is durable while its caller is told it failed (a lost acknowledgement).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Stage {
+        /// After validation, before the journal row is inserted.
+        Row,
+        /// After the row, before the head anchor is written.
+        Head,
+        /// After the commit: the record is stored, the append still reports the error.
+        Ack,
+    }
+
+    /// Called at each stage of every append with the record being appended; `Some` fails that stage.
+    pub type Hook = Box<dyn FnMut(&Record, Stage) -> Option<Kind> + Send>;
+
+    pub(super) fn fire(
+        hook: &mut Option<Hook>,
+        record: &Record,
+        stage: Stage,
+    ) -> rusqlite::Result<()> {
+        let Some(kind) = hook.as_mut().and_then(|h| h(record, stage)) else {
+            return Ok(());
+        };
+        let (code, text) = match kind {
+            Kind::Full => (ffi::SQLITE_FULL, "database or disk is full"),
+            Kind::Busy => (ffi::SQLITE_BUSY, "database is locked"),
+        };
+        Err(rusqlite::Error::SqliteFailure(
+            ffi::Error::new(code),
+            Some(text.into()),
+        ))
+    }
+}
+
 pub struct Store {
     conn: Connection,
+    #[cfg(feature = "fault-injection")]
+    fault: Option<fault::Hook>,
     /// Replays by operation, reused while the stored tail still matches (another writer, such as the
     /// revocation path, invalidates it by appending).
     cache: HashMap<u64, Replay>,
@@ -95,8 +146,16 @@ impl Store {
         tx.commit()?;
         Ok(Store {
             conn,
+            #[cfg(feature = "fault-injection")]
+            fault: None,
             cache: HashMap::new(),
         })
+    }
+
+    /// Install (or clear) the append fault hook. Test builds only.
+    #[cfg(feature = "fault-injection")]
+    pub fn set_fault(&mut self, hook: Option<fault::Hook>) {
+        self.fault = hook;
     }
 
     /// Start a journal from a consumed approval (only `Approval::admit` makes an `Admitted`, and this
@@ -117,7 +176,8 @@ impl Store {
             record: Record::Started { digest, items },
         });
         replay.apply(&row)?;
-        insert(&tx, op, &row)?;
+        insert_row(&tx, op, &row)?;
+        insert_head(&tx, op, &row)?;
         tx.commit()?;
         self.cache.insert(op, replay);
         Ok(op)
@@ -132,10 +192,19 @@ impl Store {
             Some(r) if r.seq == seq && r.chain.as_slice() == chain => r,
             _ => Replay::from_rows(op, &load(&tx, op)?)?,
         };
-        let row = replay.row_for(&Entry { epoch, record });
+        let entry = Entry { epoch, record };
+        let row = replay.row_for(&entry);
         replay.apply(&row)?;
-        insert(&tx, op, &row)?;
+        // A fault returns here with `tx` dropped: SQLite rolls the append back, row and head together.
+        #[cfg(feature = "fault-injection")]
+        fault::fire(&mut self.fault, &entry.record, fault::Stage::Row)?;
+        insert_row(&tx, op, &row)?;
+        #[cfg(feature = "fault-injection")]
+        fault::fire(&mut self.fault, &entry.record, fault::Stage::Head)?;
+        insert_head(&tx, op, &row)?;
         tx.commit()?;
+        #[cfg(feature = "fault-injection")]
+        fault::fire(&mut self.fault, &entry.record, fault::Stage::Ack)?;
         self.cache.insert(op, replay);
         Ok(row.seq)
     }
@@ -193,11 +262,15 @@ impl Store {
     }
 }
 
-fn insert(conn: &Connection, op: u64, row: &Row) -> rusqlite::Result<()> {
+fn insert_row(conn: &Connection, op: u64, row: &Row) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT INTO op_journal(op_id,seq,body,chain) VALUES(?1,?2,?3,?4)",
         params![op as i64, row.seq as i64, row.body, row.chain],
     )?;
+    Ok(())
+}
+
+fn insert_head(conn: &Connection, op: u64, row: &Row) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT INTO op_journal_head(op_id,seq,chain) VALUES(?1,?2,?3)
          ON CONFLICT(op_id) DO UPDATE SET seq=excluded.seq,chain=excluded.chain",
