@@ -634,12 +634,23 @@ fn opened(
 pub(crate) fn open_watch_root(
     path: &Path,
 ) -> Result<(Vec<File>, File, OpenedIdentity), SourceError> {
+    open_tracking_root(path, true)
+}
+pub(crate) fn open_journal_root(
+    path: &Path,
+) -> Result<(Vec<File>, File, OpenedIdentity), SourceError> {
+    open_tracking_root(path, false)
+}
+fn open_tracking_root(
+    path: &Path,
+    overlapped: bool,
+) -> Result<(Vec<File>, File, OpenedIdentity), SourceError> {
     non_elevated()?;
     let mut pins = root_handles_mode(
         path,
         FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        true,
+        overlapped,
     )?;
     let (dir, identity) = opened(
         &NativeSource::default(),

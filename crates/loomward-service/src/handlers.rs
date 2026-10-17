@@ -314,6 +314,10 @@ impl Inner {
     /// closed. The engine mints the root from the active grant row and checks its identity; the
     /// job's events (`job.state`, final `scan.progress`, `tree.invalidated`) follow the commits.
     fn scan_start(&self, r: ScanStartRequest) -> Handled {
+        #[cfg(windows)]
+        if let Some(inner) = self.weak.upgrade() {
+            crate::freshness::ensure_roots(&inner);
+        }
         let row = self.root_row(&r.root_id)?;
         let root = db::roots(&self.db(), Some(row))
             .map_err(sql_error)?
@@ -585,7 +589,9 @@ impl Inner {
                 revoked_at_ns: at,
             })
             .map_err(catalog_error)?;
-        if let Some(root) = db::root_for_grant(&self.db(), grant).map_err(sql_error)? {
+        let root = db::root_for_grant(&self.db(), grant).map_err(sql_error)?;
+        if let Some(root) = root {
+            self.freshness.remove(root);
             let id = RootId::new(self.root_id(root)).expect("rt_ id");
             // The revocation is durable whatever happens next; a missing scan writer or job only
             // means there is nothing to cancel or fence.
@@ -646,6 +652,9 @@ impl Inner {
                 ),
                 e => catalog_error(e),
             })?;
+        self.db()
+            .execute("DELETE FROM st.root_freshness WHERE grant_id=?1", [grant])
+            .map_err(sql_error)?;
         let backups = forget_backups(&self.state_dir, &path);
         let revs = self.revisions()?;
         if let Ok(list) = self.root_list(None) {
@@ -679,6 +688,10 @@ impl Inner {
             .call(WriteCommand::GrantIdentityChanged { grant_id: grant });
         if changed.is_err() {
             return;
+        }
+        let row = db::root_for_grant(&self.db(), grant);
+        if let Ok(Some(row)) = row {
+            self.freshness.remove(row);
         }
         if cancel {
             let _ = self
@@ -1150,6 +1163,13 @@ impl Inner {
             self.cursors
                 .issue(Command::SearchQuery, bind, Position::Search(c), None)
         });
+        let mut freshness = std::collections::BTreeMap::new();
+        for hit in &page.hits {
+            freshness
+                .entry(hit.root_id)
+                .or_insert_with(|| self.hit_freshness(hit.root_id));
+        }
+        let stale_scope = page.roots.iter().any(|r| self.freshness.stale(r.root_id));
         let hits = page
             .hits
             .iter()
@@ -1159,6 +1179,7 @@ impl Inner {
                     "root_id": self.root_id(h.root_id),
                     "path": encode(&h.path)?,
                     "match_kind": h.match_kind,
+                    "freshness": freshness[&h.root_id],
                     "highlights": h.highlights,
                 }))
             })
@@ -1170,8 +1191,8 @@ impl Inner {
             .map(|r| {
                 json!({
                     "root_id": self.root_id(r.root_id),
-                    "scan_state": if r.scan_state == "repairing" { "partial" } else { r.scan_state.as_str() },
-                    "coverage": r.coverage,
+                    "scan_state": if self.freshness.stale(r.root_id) { "stale" } else if r.scan_state == "repairing" { "partial" } else { r.scan_state.as_str() },
+                    "coverage": if self.freshness.stale(r.root_id) { "stale" } else { r.coverage.as_str() },
                 })
             })
             .collect();
@@ -1180,8 +1201,8 @@ impl Inner {
             "hits": hits,
             "next_cursor": next,
             "budget_hit": page.budget_hit,
-            "index_state": page.index_state,
-            "partial": page.partial,
+            "index_state": if stale_scope { "stale" } else { page.index_state.as_str() },
+            "partial": page.partial || stale_scope,
             "substring_searched": page.substring_searched,
             "roots": roots,
         });

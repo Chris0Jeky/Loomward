@@ -158,6 +158,10 @@ impl GrantedRoot {
     pub fn path(&self) -> &Path {
         &self.path
     }
+    /// Handle-derived identity for a grant-scoped, read-only watcher or journal open.
+    pub fn expected_identity(&self) -> Option<source::OpenedIdentity> {
+        self.expected
+    }
     /// The identity the durable grant verified at admission (docs/47 C5 binds its observations to it).
     pub fn expected(&self) -> Option<&source::OpenedIdentity> {
         self.expected.as_ref()
@@ -531,6 +535,10 @@ impl Engine {
         budget: Option<ScanBudget>,
     ) -> EngineResult<Job> {
         self.start_scan(root, budget, RunScope::FullRoot)
+    }
+    /// Internal hint reconciliation; directory row IDs are resolved inside the granted root.
+    pub fn scan_refresh_scopes(&self, root: &GrantedRoot, dirs: Vec<u64>) -> EngineResult<Job> {
+        self.start_scan(root, None, RunScope::Targeted(dirs))
     }
     fn scan_root_gate(&self, root: &RootKey) -> Arc<std::sync::Mutex<RootGate>> {
         self.scan_roots

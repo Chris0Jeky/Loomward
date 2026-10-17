@@ -1,0 +1,709 @@
+//! F3: persistent grant-scoped watches; journal hints select refresh scopes, never grant reach.
+use crate::{db, now_ns, ts_ns, Inner};
+use loomward_engine::scan::RunScope;
+#[cfg(windows)]
+use loomward_protocol::RootId;
+use loomward_protocol::{SearchFreshness, SearchFreshnessState};
+#[cfg(windows)]
+use loomward_windows::usn::Bookmark;
+#[cfg(windows)]
+use rusqlite::{params, OptionalExtension};
+use std::sync::Arc;
+#[cfg(windows)]
+mod reach;
+#[cfg(windows)]
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex, Weak,
+    },
+    time::{Duration, Instant},
+};
+
+#[derive(Default)]
+pub(crate) struct Tracker {
+    #[cfg(windows)]
+    enabled: AtomicBool,
+    #[cfg(windows)]
+    roots: Mutex<BTreeMap<i64, Tracked>>,
+    #[cfg(windows)]
+    stopped: AtomicBool,
+    #[cfg(windows)]
+    pump: Mutex<Option<std::thread::JoinHandle<()>>>,
+    #[cfg(windows)]
+    setup: Mutex<()>,
+}
+
+#[cfg(windows)]
+struct Tracked {
+    #[cfg(windows)]
+    watch: Option<Arc<loomward_windows::watch::Watcher>>,
+    epoch: u64,
+    stale_since: Option<i64>,
+    at: i64,
+    caught_up: bool,
+    full: bool,
+    paths: BTreeSet<Vec<Vec<u16>>>,
+    targets: BTreeSet<u64>,
+    auto: bool,
+    attempts: u8,
+    changed: Instant,
+    job: Option<loomward_protocol::JobId>,
+    started: Option<(u64, Option<Bookmark>)>,
+}
+
+#[cfg(windows)]
+impl Tracked {
+    fn dirty(&mut self, full: bool) {
+        self.epoch += 1;
+        self.stale_since.get_or_insert(self.at);
+        self.full |= full;
+        self.auto = true;
+        self.changed = Instant::now();
+    }
+}
+
+impl Tracker {
+    #[cfg(all(test, windows))]
+    pub(crate) fn ready_targeted_hint(&self, row: i64) {
+        let mut roots = self.roots.lock().unwrap();
+        let root = roots.get_mut(&row).unwrap();
+        // The fixture starts idle; discard completed fallback bookkeeping, not newer events.
+        root.job = None;
+        root.full = false;
+        root.changed = Instant::now() - Duration::from_secs(1);
+    }
+    #[cfg(all(test, windows))]
+    pub(crate) fn exhaust_budget(&self, row: i64) {
+        self.roots.lock().unwrap().get_mut(&row).unwrap().attempts = 3;
+    }
+    #[cfg(all(test, windows))]
+    pub(crate) fn debug(&self, row: i64) -> String {
+        let roots = self.roots.lock().unwrap();
+        roots.get(&row).map(|r|format!("epoch={} full={} auto={} attempts={} paths={} targets={} started={:?} failed={}",r.epoch,r.full,r.auto,r.attempts,r.paths.len(),r.targets.len(),r.started.map(|s|s.0),r.watch.as_ref().is_none_or(|w|w.failed()))).unwrap_or_default()
+    }
+    #[cfg(windows)]
+    pub(crate) fn record(&self, row: i64, changes: Vec<loomward_windows::watch::Change>) {
+        if let Some(root) = self.roots.lock().unwrap().get_mut(&row) {
+            for change in changes {
+                match change {
+                    loomward_windows::watch::Change::RootDirty => root.dirty(true),
+                    loomward_windows::watch::Change::Name { name, .. } => {
+                        root.dirty(false);
+                        let mut path: Vec<Vec<u16>> =
+                            name.split(|c| *c == 92).map(<[u16]>::to_vec).collect();
+                        path.pop();
+                        if root.paths.len() < 1024 {
+                            root.paths.insert(path);
+                        } else {
+                            root.full = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    pub(crate) fn stop(&self) {
+        #[cfg(windows)]
+        {
+            self.stopped.store(true, Ordering::Release);
+            if let Some(thread) = self.pump.lock().unwrap().take() {
+                let _ = thread.join();
+            }
+            let _setup = self.setup.lock().unwrap();
+            let roots = std::mem::take(&mut *self.roots.lock().unwrap());
+            for root in roots.into_values() {
+                if let Some(watch) = root.watch {
+                    watch.stop();
+                }
+            }
+        }
+    }
+    pub(crate) fn remove(&self, row: i64) {
+        #[cfg(windows)]
+        {
+            // A revoke acknowledgement must also fence a watch whose native open is in flight.
+            let _setup = self.setup.lock().unwrap();
+            let old = self.roots.lock().unwrap().remove(&row);
+            if let Some(root) = old {
+                if let Some(watch) = root.watch {
+                    watch.stop();
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = row;
+    }
+    pub(crate) fn stale(&self, row: i64) -> bool {
+        #[cfg(windows)]
+        {
+            self.roots
+                .lock()
+                .unwrap()
+                .get(&row)
+                .is_some_and(|r| r.stale_since.is_some())
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = row;
+            false
+        }
+    }
+}
+
+pub(crate) fn start(inner: &Arc<Inner>) {
+    #[cfg(windows)]
+    {
+        inner.freshness.enabled.store(true, Ordering::Release);
+        // Arm before returning the opened service, so its first scan cannot precede its watch.
+        ensure_roots(inner);
+        let weak = Arc::downgrade(inner);
+        *inner.freshness.pump.lock().unwrap() = Some(std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_millis(200));
+            let Some(inner) = weak.upgrade() else { break };
+            if inner.freshness.stopped.load(Ordering::Acquire) {
+                break;
+            }
+            ensure_roots(&inner);
+            refresh(&inner);
+        }));
+    }
+    #[cfg(not(windows))]
+    let _ = inner;
+}
+
+impl Inner {
+    pub(crate) fn hit_freshness(&self, row: i64) -> SearchFreshness {
+        #[cfg(windows)]
+        {
+            let watch = self
+                .freshness
+                .roots
+                .lock()
+                .unwrap()
+                .get(&row)
+                .and_then(|r| r.watch.clone());
+            if let Some(watch) = watch {
+                if watch.checkpoint().is_err() {
+                    if let Some(root) = self.freshness.roots.lock().unwrap().get_mut(&row) {
+                        root.dirty(true);
+                    }
+                }
+            }
+        }
+        #[cfg(windows)]
+        if let Some(root) = self.freshness.roots.lock().unwrap().get(&row) {
+            return match root.stale_since {
+                Some(at) => SearchFreshness {
+                    state: SearchFreshnessState::Stale,
+                    at: Some(ts_ns(at)),
+                },
+                None if root.caught_up => SearchFreshness {
+                    state: SearchFreshnessState::CaughtUp,
+                    at: Some(ts_ns(root.at)),
+                },
+                None => SearchFreshness {
+                    state: SearchFreshnessState::Live,
+                    at: None,
+                },
+            };
+        }
+        // A fixture, offline root or unsupported volume has no watch coverage.
+        let at = db::roots(&self.db(), Some(row))
+            .ok()
+            .and_then(|r| {
+                r.first()
+                    .map(|r| r.finished_at_ns.unwrap_or(r.granted_at_ns))
+            })
+            .unwrap_or_else(now_ns);
+        SearchFreshness {
+            state: SearchFreshnessState::Stale,
+            at: Some(ts_ns(at)),
+        }
+    }
+
+    pub(crate) fn freshness_begin(&self, grant: i64, scope: &RunScope) {
+        #[cfg(windows)]
+        {
+            let row = db::root_for_grant(&self.db(), grant).ok().flatten();
+            let Some(row) = row else { return };
+            let bookmark = if matches!(scope, RunScope::FullRoot) {
+                journal(self, row).and_then(|j| j.head().ok()).map(|h| h.0)
+            } else {
+                None
+            };
+            if let Some(root) = self.freshness.roots.lock().unwrap().get_mut(&row) {
+                root.started = Some((root.epoch, bookmark));
+                root.stale_since.get_or_insert(root.at);
+                root.paths.clear();
+                root.targets.clear();
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = (grant, scope);
+    }
+
+    pub(crate) fn freshness_finish(&self, grant: i64, scope: &RunScope, complete: bool) {
+        #[cfg(windows)]
+        {
+            let Some(row) = db::root_for_grant(&self.db(), grant).ok().flatten() else {
+                return;
+            };
+            // Flush kernel notifications before comparing the scan's start epoch.
+            let watch = self
+                .freshness
+                .roots
+                .lock()
+                .unwrap()
+                .get(&row)
+                .and_then(|r| r.watch.clone());
+            let healthy = watch.is_some_and(|w| w.checkpoint().is_ok() && !w.failed());
+            let saved = {
+                let mut roots = self.freshness.roots.lock().unwrap();
+                let Some(root) = roots.get_mut(&row) else {
+                    return;
+                };
+                let started = root.started.take();
+                // A successful scan followed by newer hints is new work, not a failed retry.
+                if complete && healthy && matches!(scope, RunScope::FullRoot) {
+                    root.attempts = 0;
+                }
+                if complete
+                    && matches!(scope, RunScope::FullRoot)
+                    && healthy
+                    && started.is_some_and(|s| s.0 == root.epoch)
+                {
+                    root.at = now_ns();
+                    root.stale_since = None;
+                    root.full = false;
+                    root.auto = false;
+                    root.attempts = 0;
+                    root.caught_up = false;
+                    Some((root.at, started.unwrap().1))
+                } else {
+                    None
+                }
+            };
+            if let Some((at, bookmark)) = saved {
+                // Save the pre-scan head only after publication. Replaying extra hints is safe;
+                // saving a post-scan head could skip a change racing the last directory listing.
+                if save(self, grant, bookmark, at).is_err() {
+                    if let Some(root) = self.freshness.roots.lock().unwrap().get_mut(&row) {
+                        root.dirty(true);
+                        root.auto = false;
+                    }
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = (grant, scope, complete);
+    }
+}
+
+#[cfg(windows)]
+fn save(inner: &Inner, grant: i64, bookmark: Option<Bookmark>, at: i64) -> rusqlite::Result<()> {
+    inner.db().execute("INSERT INTO st.root_freshness(grant_id,catalog_instance,journal_id,next_usn,at_ns) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(grant_id) DO UPDATE SET catalog_instance=excluded.catalog_instance,journal_id=excluded.journal_id,next_usn=excluded.next_usn,at_ns=excluded.at_ns",
+        params![grant, inner.instance, bookmark.map(|b| b.journal_id.to_le_bytes().to_vec()), bookmark.map(|b| b.next_usn), at])?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn granted(inner: &Inner, row: &db::RootRow) -> Option<loomward_engine::scan::GrantedRoot> {
+    inner.session_root_gate(row).ok()?;
+    let id = RootId::new(inner.root_id(row.root)).ok()?;
+    inner.scan.bind(&id, row.grant, row.dir?);
+    inner
+        .engine
+        .granted_root(
+            id,
+            row.grant,
+            &loomward_engine::scan::CatalogRootIdentity {
+                row: row.root,
+                instance: inner.instance.clone(),
+            },
+        )
+        .ok()
+}
+
+#[cfg(windows)]
+fn journal(inner: &Inner, row: i64) -> Option<loomward_windows::usn::Journal> {
+    let row = db::roots(&inner.db(), Some(row)).ok()?.pop()?;
+    let root = granted(inner, &row)?;
+    loomward_windows::usn::Journal::open(root.path(), root.expected_identity()?).ok()
+}
+
+#[cfg(windows)]
+pub(crate) fn ensure_roots(inner: &Arc<Inner>) {
+    if !inner.freshness.enabled.load(Ordering::Acquire)
+        || inner.freshness.stopped.load(Ordering::Acquire)
+    {
+        return;
+    }
+    let Ok(rows) = db::roots(&inner.db(), None) else {
+        return;
+    };
+    for row in rows.iter().filter(|r| r.grant_state == "active") {
+        let Ok(_setup) = inner.freshness.setup.try_lock() else {
+            return;
+        };
+        if inner.freshness.stopped.load(Ordering::Acquire) {
+            return;
+        }
+        if inner
+            .freshness
+            .roots
+            .lock()
+            .unwrap()
+            .contains_key(&row.root)
+        {
+            continue;
+        }
+        let Some(grant) = granted(inner, row) else {
+            continue;
+        };
+        let Some(expected) = grant.expected_identity() else {
+            continue;
+        };
+        if expected.basis == loomward_windows::enumerate::IdBasis::Unverified {
+            continue;
+        }
+        #[cfg(test)]
+        inner.hooks.gate(
+            loomward_protocol::Command::ScanStart,
+            "persistent_watch_resolved",
+        );
+        // Every event after insertion must invalidate restart continuity, including watch setup.
+        let epoch = 0;
+        inner.freshness.roots.lock().unwrap().insert(
+            row.root,
+            Tracked {
+                watch: None,
+                epoch,
+                stale_since: Some(row.finished_at_ns.unwrap_or_else(now_ns)),
+                at: row.finished_at_ns.unwrap_or_else(now_ns),
+                caught_up: false,
+                full: true,
+                paths: BTreeSet::new(),
+                targets: BTreeSet::new(),
+                auto: false,
+                attempts: 0,
+                changed: Instant::now(),
+                job: None,
+                started: None,
+            },
+        );
+        let weak: Weak<Inner> = Arc::downgrade(inner);
+        let root_row = row.root;
+        let watch =
+            loomward_windows::watch::Watcher::start(grant.path(), Some(expected), move |changes| {
+                if let Some(inner) = weak.upgrade() {
+                    inner.freshness.record(root_row, changes);
+                }
+            });
+        if let Ok(watch) = watch {
+            inner
+                .freshness
+                .roots
+                .lock()
+                .unwrap()
+                .get_mut(&row.root)
+                .unwrap()
+                .watch = Some(Arc::new(watch));
+            // Setup fences native handle creation only. Revoke must not wait for journal IO.
+            drop(_setup);
+            if row.finished_at_ns.is_some() {
+                #[cfg(test)]
+                inner.hooks.gate(
+                    loomward_protocol::Command::ScanStart,
+                    "persistent_watch_started",
+                );
+                catch_up(inner, row, epoch);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn catch_up(inner: &Inner, row: &db::RootRow, epoch: u64) {
+    if row.state != "complete" || !row.subtree_complete {
+        return;
+    }
+    // shortcut: V2/FILE_ID_128 matching is qualified on NTFS only; qualify ReFS before using USN there.
+    if !inner
+        .root_filesystem(std::path::Path::new(&row.display_path))
+        .is_ok_and(|fs| fs.eq_ignore_ascii_case("NTFS"))
+    {
+        return;
+    }
+    let saved: Option<(Option<Vec<u8>>, Option<i64>, i64)> = inner.db().query_row(
+        "SELECT journal_id,next_usn,at_ns FROM st.root_freshness WHERE grant_id=?1 AND catalog_instance=?2", params![row.grant, inner.instance],
+        |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().ok().flatten();
+    let Some((Some(id), Some(next_usn), at)) = saved else {
+        // A pre-F3 scan has no continuity witness. Only a full refresh can repair it.
+        return;
+    };
+    let Ok(id) = <[u8; 8]>::try_from(id) else {
+        return;
+    };
+    let Some(journal) = journal(inner, row.root) else {
+        return;
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    #[cfg(test)]
+    inner.hooks.gate(
+        loomward_protocol::Command::ScanStart,
+        "persistent_journal_read",
+    );
+    // The native reader is bounded to 16 MiB. Decode before taking any catalogue lock.
+    let mut records = Vec::new();
+    let result = journal.catch_up(
+        Bookmark {
+            journal_id: u64::from_le_bytes(id),
+            next_usn,
+        },
+        |record| records.push(record),
+    );
+    let targets = result.as_ref().ok().and_then(|_| {
+        reach::targets(&records, deadline, |ids| {
+            if !inner
+                .freshness
+                .roots
+                .lock()
+                .unwrap()
+                .contains_key(&row.root)
+            {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+            reach::lookup(&inner.db(), row.root, ids)
+        })
+    });
+    let mut roots = inner.freshness.roots.lock().unwrap();
+    let Some(root) = roots.get_mut(&row.root) else {
+        return;
+    };
+    root.stale_since = Some(at);
+    if let (Ok(head), Some(targets)) = (result, targets) {
+        if root.epoch == epoch {
+            root.full = false;
+        }
+        root.targets = targets;
+        if root.targets.is_empty() && root.epoch == epoch {
+            root.stale_since = None;
+            root.at = now_ns();
+            root.caught_up = true;
+            let at = root.at;
+            drop(roots);
+            if save(inner, row.grant, Some(head), at).is_err() {
+                if let Some(root) = inner.freshness.roots.lock().unwrap().get_mut(&row.root) {
+                    root.dirty(true);
+                    root.auto = false;
+                }
+            }
+        } else {
+            root.auto = true;
+        }
+        return;
+    }
+    // Wrapped/recreated/unsupported journals and read budgets are loss of coverage, never empty.
+    root.full = true;
+    root.auto = false;
+}
+
+#[cfg(windows)]
+fn refresh(inner: &Inner) {
+    let rows = db::roots(&inner.db(), None).unwrap_or_default();
+    for row in rows {
+        if row.grant_state != "active" {
+            inner.freshness.remove(row.root);
+            continue;
+        }
+        let action = {
+            let mut roots = inner.freshness.roots.lock().unwrap();
+            let Some(root) = roots.get_mut(&row.root) else {
+                continue;
+            };
+            if let Some(job) = &root.job {
+                if inner.engine.job_status(job).is_ok_and(|j| {
+                    matches!(
+                        j.state,
+                        loomward_protocol::JobState::Queued
+                            | loomward_protocol::JobState::Running
+                            | loomward_protocol::JobState::CancelRequested
+                    )
+                }) {
+                    continue;
+                }
+                root.job = None;
+                // Targeted scans deliberately leave root coverage partial. One full fallback
+                // establishes a clean baseline before claiming live/caught_up.
+                root.full = true;
+            }
+            if !root.auto
+                || root.attempts >= 3
+                || root.stale_since.is_none()
+                || root.changed.elapsed() < Duration::from_millis(500)
+            {
+                continue;
+            }
+            (root.full, root.paths.clone(), root.targets.clone())
+        };
+        let Some(grant) = granted(inner, &row) else {
+            inner.freshness.remove(row.root);
+            continue;
+        };
+        let mut targets = action.2;
+        let mut full = action.0;
+        for path in action.1 {
+            match resolve(inner, row.root, &path) {
+                Some(dir) => {
+                    targets.insert(dir);
+                }
+                None => full = true,
+            }
+        }
+        let job = if full || targets.is_empty() {
+            inner.engine.scan_refresh(&grant, None)
+        } else {
+            inner
+                .engine
+                .scan_refresh_scopes(&grant, targets.into_iter().collect())
+        };
+        if let Some(root) = inner.freshness.roots.lock().unwrap().get_mut(&row.root) {
+            match job {
+                Ok(job) => {
+                    root.job = Some(job.job_id);
+                    root.attempts += 1;
+                }
+                Err(loomward_engine::EngineError::Busy { .. }) => {}
+                Err(_) => {
+                    root.attempts += 1;
+                    root.changed = Instant::now();
+                }
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn resolve(inner: &Inner, root: i64, path: &[Vec<u16>]) -> Option<u64> {
+    let conn = inner.db();
+    let mut dir: u64 = conn
+        .query_row(
+            "SELECT id FROM main.dir WHERE root_id=?1 AND parent_id IS NULL",
+            [root],
+            |r| r.get::<_, i64>(0).map(|v| v as u64),
+        )
+        .ok()?;
+    for name in path {
+        let text = String::from_utf16(name).ok()?;
+        dir=conn.query_row("SELECT id FROM main.dir WHERE parent_id=?1 AND name=?2 AND listing_state NOT IN ('absent_pending','excluded')",params![dir as i64,text],|r|r.get::<_,i64>(0).map(|v|v as u64)).ok()?;
+    }
+    Some(dir)
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    // Retain the reviewed query only as the before-measurement, never on the production path.
+    const OLD_PARENT: &str = "WITH RECURSIVE visible(id) AS (SELECT id FROM main.dir WHERE root_id=?1 AND parent_id IS NULL UNION ALL SELECT d.id FROM main.dir d JOIN visible v ON d.parent_id=v.id WHERE d.listing_state NOT IN ('absent_pending','excluded')) SELECT d.id FROM main.dir d JOIN visible v ON v.id=d.id WHERE d.file_id=?2 OR (length(d.file_id)=8 AND d.file_id=substr(?2,1,8) AND substr(?2,9,8)=zeroblob(8)) LIMIT 1";
+
+    pub(super) fn catalogue(dirs: u64) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../../loomward-catalog/src/catalog.sql"))
+            .unwrap();
+        conn.execute_batch("BEGIN; INSERT INTO root(id,grant_id,state) VALUES(1,1,'complete');")
+            .unwrap();
+        {
+            let mut insert = conn.prepare("INSERT INTO dir(id,root_id,parent_id,name,file_id,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run) VALUES(?1,1,?2,?3,?4,'native_file_id_128','post_open',?5,0,'complete',1,1)").unwrap();
+            for id in 1..=dirs {
+                let mut native = id.to_le_bytes().to_vec();
+                native.resize(16, 0);
+                insert
+                    .execute(params![
+                        id as i64,
+                        (id != 1).then_some(1),
+                        format!("synthetic-{id}"),
+                        native,
+                        i64::from(id != 1)
+                    ])
+                    .unwrap();
+            }
+        }
+        conn.execute_batch("COMMIT").unwrap();
+        conn
+    }
+
+    #[test]
+    fn f3_identity_resolution_uses_directory_identity_index() {
+        let conn = catalogue(10);
+        let mut id = 10u64.to_le_bytes().to_vec();
+        id.resize(16, 0);
+        let (sql, args) = reach::lookup_sql(&BTreeSet::from([id]), 1);
+        let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        let plan: Vec<String> = stmt
+            .query_map(rusqlite::params_from_iter(args), |r| r.get(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            plan.iter()
+                .any(|line| line.contains("dir_identity") && line.contains("file_id=?")),
+            "{plan:#?}"
+        );
+        assert!(
+            plan.iter()
+                .any(|line| line.contains("file_identity") && line.contains("file_id=?")),
+            "{plan:#?}"
+        );
+        eprintln!("F3 indexed query plan: {plan:#?}");
+    }
+
+    #[test]
+    fn f3_catch_up_100k_directories() {
+        let conn = catalogue(100_000);
+        let records: Vec<_> = (99_873u64..=100_000)
+            .map(|id| loomward_windows::usn::Record {
+                file_id: (id + 100_000).to_le_bytes().to_vec(),
+                parent_id: id.to_le_bytes().to_vec(),
+                reason: 0x100,
+                is_directory: false,
+            })
+            .collect();
+        let expected: BTreeSet<u64> = (99_873..=100_000).collect();
+        // The slow before-measurement is opt-in; normal suites still prove the 100k indexed path.
+        if std::env::var_os("LOOMWARD_F3_BASELINE").is_some() {
+            let began = Instant::now();
+            let mut before = BTreeSet::new();
+            for record in &records {
+                let mut native = record.parent_id.clone();
+                native.resize(16, 0);
+                let parent: i64 = conn
+                    .query_row(OLD_PARENT, params![1, native], |r| r.get(0))
+                    .unwrap();
+                before.insert(parent as u64);
+                let mut file = record.file_id.clone();
+                file.resize(16, 0);
+                let previous: Option<i64> = conn.query_row("SELECT parent_id FROM main.dir WHERE root_id=?1 AND (file_id=?2 OR (length(file_id)=8 AND file_id=substr(?2,1,8) AND substr(?2,9,8)=zeroblob(8))) AND parent_id IS NOT NULL UNION ALL SELECT f.dir_id FROM main.file f JOIN main.dir d ON d.id=f.dir_id WHERE d.root_id=?1 AND (f.file_id=?2 OR (length(f.file_id)=8 AND f.file_id=substr(?2,1,8) AND substr(?2,9,8)=zeroblob(8))) LIMIT 1", params![1,file], |r| r.get(0)).optional().unwrap();
+                if let Some(previous) = previous {
+                    before.insert(previous as u64);
+                }
+            }
+            eprintln!(
+                "F3 before: 100000 directories, 128 decoded records: {:?}",
+                began.elapsed()
+            );
+            assert_eq!(before, expected);
+        }
+        let began = Instant::now();
+        let after = reach::targets(&records, began + Duration::from_secs(5), |ids| {
+            reach::lookup(&conn, 1, ids)
+        });
+        eprintln!(
+            "F3 after: 100000 directories, 128 decoded records: {:?}",
+            began.elapsed()
+        );
+        assert_eq!(after, Some(expected));
+    }
+}
