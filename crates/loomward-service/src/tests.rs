@@ -5801,3 +5801,7 @@ mod gap_tests;
 #[cfg(test)]
 #[path = "alerts_tests.rs"]
 mod alerts_tests;
+
+#[cfg(test)]
+#[path = "clutter_tests.rs"]
+mod clutter_tests;
