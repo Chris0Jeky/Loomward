@@ -86,8 +86,8 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     }
     let rows: usize = args[1].parse()?;
     let indexed = !args.iter().any(|a| a == "--no-index");
-    if !(1000..=2_000_000).contains(&rows) {
-        return Err("rows must be 1000..=2000000".into());
+    if !(1000..=10_000_000).contains(&rows) {
+        return Err("rows must be 1000..=10000000".into());
     }
     let temp = tempfile::tempdir()?;
     // The ranked-search token index is on unless `--no-token-index` (or `--no-index`) asks for the v1 write path.
@@ -200,6 +200,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         r.wait()?;
     }
     let publish_s = started.elapsed().as_secs_f64();
+    eprintln!("staged {rows} files in {publish_s:.3} s; publishing EndRun");
     let started = Instant::now();
     c.writer().call(WriteCommand::EndRun {
         run_id: run,
@@ -207,6 +208,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         finished_at_ns: 1,
     })?;
     let end_run_s = started.elapsed().as_secs_f64();
+    eprintln!("EndRun: {end_run_s:.3} s");
     // A watcher's targeted relist of 100 directories: 10 renames and 10 removals in each.
     let run = begin("targeted")?;
     let started = Instant::now();
@@ -243,18 +245,25 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         0
     };
     let entries = rows + directories;
+    let indexed_entries: i64 = db.query_row(
+        "SELECT (SELECT count(*) FROM file)+(SELECT count(*) FROM dir WHERE parent_id IS NOT NULL)",
+        [],
+        |r| r.get(0),
+    )?;
     let mut receipt = json!({
         "scope": "in-process generated synthetic names; no enumeration, no HTTP",
         "indexed": indexed,
+        "ranked_index": ranked,
         "files": rows, "directories": directories + 1,
+        "indexed_entries_after_relist": indexed_entries,
         "publish_seconds": publish_s,
         "end_run_seconds": end_run_s,
         "through_end_run_rows_per_second": entries as f64 / (publish_s + end_run_s),
         "targeted_relist_100_dirs_seconds": relist_s,
         "catalog_bytes": catalog_bytes,
-        "catalog_bytes_per_entry": catalog_bytes as f64 / entries as f64,
+        "catalog_bytes_per_entry": catalog_bytes as f64 / indexed_entries as f64,
         "index_bytes": index_bytes,
-        "index_bytes_per_entry": index_bytes as f64 / entries as f64,
+        "index_bytes_per_entry": index_bytes as f64 / indexed_entries as f64,
     });
     if indexed {
         let mut reader = c.reader()?;
@@ -342,21 +351,112 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             r.root_id = Some(root_id);
             r.work_budget = 50_000_000;
             r.time_budget = Some(std::time::Duration::from_millis(250));
-            let page = reader.search(&r)?;
+            let page = match reader.search(&r) {
+                Ok(page) => page,
+                Err(Error::ResourceBudget) => {
+                    queries.insert(label.into(), json!({"text": r.text, "refusal": "resource_budget", "note": "warm-up could not advance; no latency claim"}));
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            };
             let mut ms = Vec::new();
+            let mut refused = 0;
             for _ in 0..21 {
                 let t = Instant::now();
-                let page = reader.search(&r)?;
-                serde_json::to_vec(&page.hits)?;
+                match reader.search(&r) {
+                    Ok(page) => {
+                        serde_json::to_vec(&page.hits)?;
+                    }
+                    Err(Error::ResourceBudget) => refused += 1,
+                    Err(e) => return Err(e.into()),
+                }
                 ms.push(t.elapsed().as_secs_f64() * 1000.0);
             }
-            queries.insert(label.into(), json!({"text": r.text, "hits": page.hits.len(), "first_kind": page.hits.first().map(|h| h.match_kind.clone()), "budget_hit": page.budget_hit, "more": page.next_cursor.is_some(), "timing": summary(ms)}));
+            queries.insert(label.into(), json!({"text": r.text, "hits": page.hits.len(), "first_kind": page.hits.first().map(|h| h.match_kind.clone()), "budget_hit": page.budget_hit, "more": page.next_cursor.is_some(), "refused_runs": refused, "timing": summary(ms)}));
         }
         receipt["queries"] = json!(queries);
         receipt["query_note"] = json!("first page, limit 50, warm, 21 runs after one warm-up, including hit serialisation; P8 target p95 300 ms");
+        // Resume directly at the common-word NOT pass identified in #442.
+        let mut request = SearchRequest {
+            text: "budget".into(),
+            kind: "any".into(),
+            root_id: Some(root_id),
+            limit: 1,
+            work_budget: 50_000_000,
+            ..Default::default()
+        };
+        let mut cursor = reader
+            .search(&request)?
+            .next_cursor
+            .ok_or("missing common-word cursor")?;
+        cursor.pass = 3;
+        cursor.last_key = (1 << 48) - 1;
+        request.cursor = Some(cursor.clone());
+        request.time_budget = Some(std::time::Duration::from_millis(250));
+        let mut times = Vec::new();
+        let mut refused = 0;
+        let mut budget_hits = 0;
+        for _ in 0..21 {
+            let started = Instant::now();
+            match reader.search(&request) {
+                Ok(page) => {
+                    assert!(
+                        page.next_cursor.as_ref() != Some(&cursor),
+                        "zero-progress cursor"
+                    );
+                    budget_hits += usize::from(page.budget_hit);
+                }
+                Err(Error::ResourceBudget) => refused += 1,
+                Err(e) => return Err(e.into()),
+            }
+            times.push(started.elapsed().as_secs_f64() * 1000.0);
+        }
+        receipt["common_word_not_pass"] = json!({"text": request.text, "runs": 21, "refusals": refused, "budget_hits": budget_hits, "timing": summary(times), "note": "same resumed pass-3 cursor each run; each response must advance, finish or refuse"});
     }
     drop(db);
     drop(c);
+    if indexed {
+        // Recreate a pre-search store, then time the real on-open backfill transaction.
+        let db = Connection::open(temp.path().join("catalog.db"))?;
+        db.execute_batch("DROP TABLE search_name; DROP TRIGGER search_file_insert; DROP TRIGGER search_file_delete; DROP TRIGGER search_file_rename; DROP TRIGGER search_dir_insert; DROP TRIGGER search_dir_delete; DROP TRIGGER search_dir_rename;")?;
+        if ranked {
+            db.execute_batch("DROP TABLE search_token; DROP TABLE search_dirty; DROP TRIGGER search_tok_file_insert; DROP TRIGGER search_tok_file_delete; DROP TRIGGER search_tok_file_rename; DROP TRIGGER search_tok_dir_insert; DROP TRIGGER search_tok_dir_delete; DROP TRIGGER search_tok_dir_rename;")?;
+        }
+        drop(db);
+        let started = Instant::now();
+        let c = Catalog::open_with(
+            temp.path(),
+            "synthetic",
+            &CatalogOptions {
+                ranked_index: ranked,
+            },
+        )?;
+        receipt["backfill_open_seconds"] = json!(started.elapsed().as_secs_f64());
+        eprintln!("backfill open: {} s", receipt["backfill_open_seconds"]);
+        let mut db = Connection::open(temp.path().join("catalog.db"))?;
+        db.execute_batch("PRAGMA secure_delete=ON;")?;
+        // The same optimize statement as purge_root, with a large surviving index.
+        let tx = db.transaction()?;
+        tx.execute("DELETE FROM file WHERE id%2=0", [])?;
+        let started = Instant::now();
+        tx.execute(
+            "INSERT INTO search_name(search_name) VALUES('optimize')",
+            [],
+        )?;
+        receipt["purge_optimize_statement_seconds"] = json!(started.elapsed().as_secs_f64());
+        receipt["purge_optimize_note"] = json!("same trigram optimize statement as purge_root, after deleting half the files in one transaction; remaining half survives; transaction rolled back; excludes deletion and commit");
+        eprintln!(
+            "optimize: {} s",
+            receipt["purge_optimize_statement_seconds"]
+        );
+        tx.rollback()?;
+        let remaining: i64 = db.query_row("SELECT count(*) FROM search_name", [], |r| r.get(0))?;
+        assert_eq!(
+            remaining, indexed_entries,
+            "rollback must restore every search entry"
+        );
+        drop(c);
+    }
     println!("{}", serde_json::to_string_pretty(&receipt)?);
     Ok(())
 }

@@ -394,7 +394,7 @@ pub struct EntryRow {
     pub name: String,
     pub extension: Option<String>,
     pub ext_family: Option<String>,
-    pub logical_bytes: String,
+    pub logical_bytes: Option<String>,
     pub allocated_bytes: Option<String>,
     pub files: Option<u64>,
     pub dirs: Option<u64>,

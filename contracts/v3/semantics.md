@@ -244,8 +244,13 @@ Rules:
   index entry. `index_state` is `building` while a searched root is scanned (a first scan publishes at its end),
   `stale` when one is stale or failed; `partial` is true when any searched root lacks complete coverage, so an
   empty page is not proof of absence; `substring_searched` is false when the text, or a word of it, was too
-  short for a trigram (under three characters), and then only whole names, name starts and word starts were
-  searched.
+  short for a trigram (under three characters). In v1, one character searches whole names (including the name
+  up to a dot) only; two characters also search name and word starts. Matching words separately requires
+  at least two characters per word for starts and three for inner matches. Ranked search additionally uses
+  short token prefixes. An unsettled folder aggregate is returned with null sizes and counts and `unknown`
+  coverage. A hit with cyclic or over-depth ancestry is skipped and the page is partial. A budget cut that
+  cannot advance its input cursor is refused with `resource_budget`; narrow the query or increase the budget
+  rather than retrying an unchanged cursor.
 - Node IDs are bound to the session and catalogue instance and carry the row's incarnation. A deleted row's ID
   is `not_found`; IDs are never reissued for another row.
 

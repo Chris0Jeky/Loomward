@@ -1,0 +1,201 @@
+{
+  "backfill_open_seconds": 600.9071104,
+  "catalog_bytes": 3758628864,
+  "catalog_bytes_per_entry": 375.52491397742034,
+  "common_word_not_pass": {
+    "budget_hits": 0,
+    "note": "same resumed pass-3 cursor each run; each response must advance, finish or refuse",
+    "refusals": 0,
+    "runs": 21,
+    "text": "budget",
+    "timing": {
+      "max_ms": 17.0061,
+      "p50_ms": 11.2792,
+      "p95_ms": 16.445,
+      "runs": 21
+    }
+  },
+  "directories": 10001,
+  "end_run_seconds": 583.6652088,
+  "files": 10000000,
+  "index_bytes": 1034407936,
+  "index_bytes_per_entry": 103.34778059746229,
+  "indexed": true,
+  "indexed_entries_after_relist": 10009000,
+  "publish_seconds": 190.5645264,
+  "purge_optimize_note": "same trigram optimize statement as purge_root, after deleting half the files in one transaction; remaining half survives; transaction rolled back; excludes deletion and commit",
+  "purge_optimize_statement_seconds": 188.9726295,
+  "queries": {
+    "digits": {
+      "budget_hit": false,
+      "first_kind": "token",
+      "hits": 50,
+      "more": true,
+      "refused_runs": 0,
+      "text": "4242",
+      "timing": {
+        "max_ms": 13.9192,
+        "p50_ms": 9.6116,
+        "p95_ms": 13.7508,
+        "runs": 21
+      }
+    },
+    "extension_only_largest": {
+      "budget_hit": false,
+      "first_kind": "filter",
+      "hits": 50,
+      "more": true,
+      "refused_runs": 0,
+      "text": "",
+      "timing": {
+        "max_ms": 5.7112,
+        "p50_ms": 3.9646999999999997,
+        "p95_ms": 4.894,
+        "runs": 21
+      }
+    },
+    "inner_substring": {
+      "budget_hit": false,
+      "first_kind": "substring",
+      "hits": 50,
+      "more": true,
+      "refused_runs": 0,
+      "text": "udge",
+      "timing": {
+        "max_ms": 10.1331,
+        "p50_ms": 7.7653,
+        "p95_ms": 10.0787,
+        "runs": 21
+      }
+    },
+    "no_match": {
+      "budget_hit": false,
+      "first_kind": null,
+      "hits": 0,
+      "more": false,
+      "refused_runs": 0,
+      "text": "zzqqxx",
+      "timing": {
+        "max_ms": 14.0412,
+        "p50_ms": 7.934200000000001,
+        "p95_ms": 12.3923,
+        "runs": 21
+      }
+    },
+    "rare_filter": {
+      "budget_hit": false,
+      "first_kind": "prefix",
+      "hits": 50,
+      "more": true,
+      "refused_runs": 0,
+      "text": "report",
+      "timing": {
+        "max_ms": 8.926,
+        "p50_ms": 7.6958,
+        "p95_ms": 8.424299999999999,
+        "runs": 21
+      }
+    },
+    "two_chars": {
+      "budget_hit": false,
+      "first_kind": "prefix",
+      "hits": 50,
+      "more": true,
+      "refused_runs": 0,
+      "text": "pl",
+      "timing": {
+        "max_ms": 7.1981,
+        "p50_ms": 4.1171999999999995,
+        "p95_ms": 6.011,
+        "runs": 21
+      }
+    },
+    "two_words": {
+      "budget_hit": false,
+      "first_kind": "prefix",
+      "hits": 50,
+      "more": true,
+      "refused_runs": 0,
+      "text": "annual report",
+      "timing": {
+        "max_ms": 40.3459,
+        "p50_ms": 21.0481,
+        "p95_ms": 36.7455,
+        "runs": 21
+      }
+    },
+    "word": {
+      "budget_hit": false,
+      "first_kind": "prefix",
+      "hits": 50,
+      "more": true,
+      "refused_runs": 0,
+      "text": "budget",
+      "timing": {
+        "max_ms": 11.8519,
+        "p50_ms": 9.3744,
+        "p95_ms": 11.777,
+        "runs": 21
+      }
+    },
+    "word_and_extension": {
+      "budget_hit": false,
+      "first_kind": "prefix",
+      "hits": 50,
+      "more": true,
+      "refused_runs": 0,
+      "text": "invoice",
+      "timing": {
+        "max_ms": 46.7893,
+        "p50_ms": 26.551499999999997,
+        "p95_ms": 36.855,
+        "runs": 21
+      }
+    },
+    "word_size_and_time": {
+      "budget_hit": true,
+      "first_kind": null,
+      "hits": 0,
+      "more": true,
+      "refused_runs": 0,
+      "text": "photo",
+      "timing": {
+        "max_ms": 533.1999,
+        "p50_ms": 254.74069999999998,
+        "p95_ms": 294.477,
+        "runs": 21
+      }
+    }
+  },
+  "query_note": "first page, limit 50, warm, 21 runs after one warm-up, including hit serialisation; P8 target p95 300 ms",
+  "ranked_index": false,
+  "scope": "in-process generated synthetic names; no enumeration, no HTTP",
+  "targeted_relist_100_dirs_seconds": 25.9959938,
+  "through_end_run_rows_per_second": 12928.97901604645,
+  "measurement": {
+    "host": "KRASPYON",
+    "os": "Windows 11 Home",
+    "rows_requested": 10000000,
+    "peak_sampled_working_set_bytes": 1546186752,
+    "peak_sampled_private_bytes": 1581125632,
+    "sample_interval_seconds": 1,
+    "memory_ceiling_bytes": 3221225472,
+    "stopped_for_memory": false,
+    "exit_code": 0,
+    "wall_seconds": 2649.1037077,
+    "token_index": false,
+    "exit_code_source": "held process handle watcher",
+    "base_head": "04cb397ee2604113acfa0babe29dc1b0827d9b27",
+    "source_diff_sha256": "f87de49a812f47aadbd0981c95479a82b1108c390417899b0bc1fc0d14e621c2",
+    "source_diff_scope": "git diff --binary -- app contracts crates",
+    "build_jobs": 3,
+    "test_threads": 2,
+    "toolchain": {
+      "rustc": "1.97.1",
+      "cargo": "1.97.1",
+      "node": "24.19.0",
+      "python": "3.14.7"
+    },
+    "optimize_context": "separate rusqlite connection; secure_delete ON; default page cache; half the files deleted in the same transaction; deletion, rollback and commit excluded from statement timer"
+  }
+}

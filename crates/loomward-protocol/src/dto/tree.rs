@@ -277,7 +277,8 @@ pub struct EntryRow {
     pub extension: Option<Text<32>>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub ext_family: Option<ExtFamily>,
-    pub logical_bytes: Bytes,
+    #[serde(deserialize_with = "crate::types::required_nullable")]
+    pub logical_bytes: Option<Bytes>,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub allocated_bytes: Option<Bytes>,
     #[serde(deserialize_with = "crate::types::required_nullable")]

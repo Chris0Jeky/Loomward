@@ -148,6 +148,63 @@ fn at(p: &SearchPage, path: &str) -> usize {
         .unwrap_or_else(|| panic!("{path} missing from {:?}", order(p)))
 }
 
+#[test]
+fn unsettled_folder_sizes_are_unknown_without_losing_other_hits() {
+    let mut lab = lab();
+    let root = register(&lab, "Alpha", 1);
+    let run = begin(&lab, &root);
+    let folder = obs(&mut lab, "report", 0);
+    let file = obs(&mut lab, "report.txt", 0);
+    list(&lab, run, root.dir, vec![file], vec![folder]);
+    // The folder has not been listed and its ancestors have not rolled up yet.
+    for page in [plain(&lab, &req("report")), ranked(&lab, &req("report"))] {
+        assert_eq!(page.hits.len(), 2);
+        let row = &page.hits.iter().find(|h| h.row.kind == "dir").unwrap().row;
+        let row = serde_json::to_value(row).unwrap();
+        for field in ["logical_bytes", "allocated_bytes", "files", "dirs"] {
+            assert!(row[field].is_null(), "{field}: {row}");
+        }
+        assert_eq!(row["coverage"], "unknown");
+        let file = &page.hits.iter().find(|h| h.row.kind == "file").unwrap().row;
+        assert_eq!(serde_json::to_value(file).unwrap()["logical_bytes"], "10");
+    }
+    let mut filtered = req("report");
+    filtered.min_bytes = Some(0);
+    for page in [plain(&lab, &filtered), ranked(&lab, &filtered)] {
+        assert_eq!(
+            order(&page),
+            ["report.txt"],
+            "unknown sizes cannot satisfy size filters"
+        );
+    }
+    let folder = child(&lab, root.dir, "report");
+    list(&lab, run, folder, vec![], vec![]);
+    end(&lab, run);
+    let page = plain(&lab, &req("report"));
+    let row = &page.hits.iter().find(|h| h.row.kind == "dir").unwrap().row;
+    assert_eq!(serde_json::to_value(row).unwrap()["logical_bytes"], "0");
+}
+
+#[test]
+fn a_cyclic_hit_does_not_fail_other_search_hits() {
+    let mut lab = lab();
+    let root = register(&lab, "Alpha", 1);
+    let run = begin(&lab, &root);
+    let folder = obs(&mut lab, "report-cycle", 0);
+    let file = obs(&mut lab, "report.txt", 0);
+    list(&lab, run, root.dir, vec![file], vec![folder]);
+    let folder = child(&lab, root.dir, "report-cycle");
+    list(&lab, run, folder, vec![], vec![]);
+    end(&lab, run);
+    let db = Connection::open(lab.temp.path().join("catalog.db")).unwrap();
+    db.execute("UPDATE dir SET parent_id=id WHERE id=?1", [folder])
+        .unwrap();
+    for page in [plain(&lab, &req("report")), ranked(&lab, &req("report"))] {
+        assert_eq!(order(&page), ["report.txt"]);
+        assert!(page.partial, "a skipped hit must leave coverage partial");
+    }
+}
+
 /// A root with names that exercise every tier: word, camel hump, digits, substring and context.
 fn corpus() -> (Lab, Root) {
     let mut lab = lab();

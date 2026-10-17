@@ -31,7 +31,10 @@ pub(super) fn features_of(
         .join(" ");
     let row: EntryRow = serde_json::from_value(json!(detail.row))
         .map_err(|_| fail(ErrorCode::InternalError, "learning row"))?;
-    let features = json!({"name":row.name.as_str().chars().take(256).collect::<String>(),"extension":row.extension.as_ref().map_or("",|e|e.as_str()),"context":context.chars().take(512).collect::<String>(),"size_bytes":row.logical_bytes.get().min((1<<53)-1)});
+    let size = row
+        .logical_bytes
+        .ok_or_else(|| fail(ErrorCode::PartialCoverage, "unsettled folder size"))?;
+    let features = json!({"name":row.name.as_str().chars().take(256).collect::<String>(),"extension":row.extension.as_ref().map_or("",|e|e.as_str()),"context":context.chars().take(512).collect::<String>(),"size_bytes":size.get().min((1<<53)-1)});
     Ok((row, features))
 }
 
