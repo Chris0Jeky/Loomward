@@ -16,6 +16,12 @@ pub(crate) fn watchdog() -> Sender<()> {
     let (done, wait) = bounded::<()>(0);
     std::thread::spawn(move || {
         if wait.recv_timeout(Duration::from_secs(300)) == Err(RecvTimeoutError::Timeout) {
+            // The report below is best effort (its signal handler is not async-signal-safe); this
+            // backstop aborts regardless, so a stuck report can never turn a hang back into a hang.
+            std::thread::spawn(|| {
+                std::thread::sleep(Duration::from_secs(30));
+                std::process::abort();
+            });
             // Straight to stderr: test output capture would swallow `eprintln!` from this thread.
             let mut report = format!("{name} hung for 5 minutes (#495); every thread follows\n");
             #[cfg(target_os = "linux")]
