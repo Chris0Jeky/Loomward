@@ -286,6 +286,15 @@ then fences later messages. The copy run follows the same pattern, with one addi
    `revoked`, `publish_withdrawn`, and the cleanup records (HIGH fix (b)).
 7. **Resume.** Resume is refused (`grant_revoked`). A new grant needs a new preview and a new approval.
 
+An identity change that ends a source or destination grant fences its copies under the same service
+mutation lock as revocation. It uses the same journal cause and receipt annotation, `grant_revoked`:
+before rename the run cancels; after rename it confirms and commits with the annotation.
+
+Cancel and Abandon request cooperative cancellation and wait up to 30 s for the worker to finish.
+If a source read is still stuck, they return `busy` with reason `pending_in_flight_step`, release the
+service mutation lock and keep the cancel-requested run registered. This is not a cancelled receipt:
+the run settles when the read returns, and `copy.status` reports its actual state.
+
 How revocation meets publish:
 
 - **Acknowledged before the rename step takes the lock**, whether before or after the publish intent: the step reads
@@ -514,7 +523,9 @@ re-hashed after it. Revocation follows section 5 (#526): each plan names its gra
 the journal, and every effect step reads the fence under the run's admission lock; H7 measured positive
 on NTFS. `copy.start` re-checks its grants and registers the run under the same lock a revocation
 holds, so a revoke either refuses the start or fences the live run. A revocation waits up to 30 s per
-running copy for its in-flight step, then joins it, while holding that lock (lab only; noted for C8). No resume yet: a stopped run exits by Abandon. Evidence:
+running copy for its in-flight step, then waits up to 30 s for worker completion while holding that
+lock (lab only; noted for C8). A worker still pending stays registered and fenced. Identity changes
+use this same path. No resume yet: a stopped run exits by Abandon. Evidence:
 `evidence/v3/copy-executor-lab.md`.
 
 **Gate evidence (what C8 must show, beside doc 45's bar and HUMAN_TODO q-39).**

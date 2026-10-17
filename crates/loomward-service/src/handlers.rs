@@ -691,6 +691,7 @@ impl Inner {
         if changed.is_err() {
             return;
         }
+        self.copies_fence(grant);
         let row = db::root_for_grant(&self.db(), grant);
         if let Ok(Some(row)) = row {
             self.freshness.remove(row);

@@ -372,6 +372,124 @@ mod lab_copy {
         );
     }
 
+    #[test]
+    fn identity_change_fences_a_running_copy_before_and_after_publish() {
+        use crate::copy::{Flow, Point};
+        for point in [
+            Point::StagingCreated,
+            Point::Identities(0),
+            Point::BeforePublish,
+            Point::AfterPublish,
+        ] {
+            let Some((lab, a, b)) = scanned() else { return };
+            let svc = &lab.svc;
+            let grant = lab_grant(svc);
+            let p = preview(svc, &a, &b);
+            let op = p["operation_id"].as_str().unwrap().to_owned();
+            let consent = json!({"operation_id": op, "digest": digest(&p)});
+            ok("copy.approve", call(svc, "copy.approve", consent.clone()));
+            let (reached, wait) = std::sync::mpsc::channel();
+            let (after, was_fenced) = std::sync::mpsc::channel();
+            *svc.inner.copies.hook.lock().unwrap() = Some(Arc::new(move |p, c| {
+                if p == point {
+                    reached.send(()).unwrap();
+                    let until = Instant::now() + Duration::from_secs(5);
+                    while !c.fenced() && Instant::now() < until {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    after.send(c.fenced()).unwrap();
+                }
+                Flow::Continue
+            }));
+            ok("copy.start", call(svc, "copy.start", consent));
+            wait.recv_timeout(Duration::from_secs(60)).unwrap();
+            let before = contents(&lab.path.join("b"));
+            let root = RootId::new(lab.root.clone()).unwrap();
+            svc.inner.identity_changed(grant, &root, false);
+            let fenced = was_fenced.recv_timeout(Duration::from_secs(10)).unwrap();
+            let s = settle_copy(svc, &op);
+            assert!(
+                fenced,
+                "identity change did not fence the worker at {point:?}"
+            );
+            assert_eq!(
+                s["state"],
+                if point == Point::AfterPublish {
+                    "committed"
+                } else {
+                    "cancelled"
+                },
+                "{point:?}: {s:?}"
+            );
+            assert_eq!(s["refusal"]["code"], "grant_revoked", "{s:?}");
+            assert_eq!(
+                contents(&lab.path.join("b")),
+                before,
+                "effects after identity change at {point:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn copy_cancel_times_out_a_hung_read_without_claiming_cancelled() {
+        use crate::copy::{Flow, Point};
+        let Some((lab, a, b)) = scanned() else { return };
+        let svc = &lab.svc;
+        let p = preview(svc, &a, &b);
+        let op = p["operation_id"].as_str().unwrap().to_owned();
+        let consent = json!({"operation_id": op, "digest": digest(&p)});
+        ok("copy.approve", call(svc, "copy.approve", consent.clone()));
+        let (reached, wait) = std::sync::mpsc::channel();
+        let (release, resume) = std::sync::mpsc::channel();
+        let resume = Mutex::new(resume);
+        let fired = std::sync::atomic::AtomicBool::new(false);
+        *svc.inner.copies.hook.lock().unwrap() = Some(Arc::new(move |p, _| {
+            if matches!(p, Point::Chunk(_))
+                && !fired.swap(true, std::sync::atomic::Ordering::SeqCst)
+            {
+                reached.send(()).unwrap();
+                resume
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(60))
+                    .unwrap();
+            }
+            Flow::Continue
+        }));
+        ok("copy.start", call(svc, "copy.start", consent));
+        wait.recv_timeout(Duration::from_secs(60)).unwrap();
+        let (done, response) = std::sync::mpsc::channel();
+        let (inner, operation) = (svc.inner.clone(), op.clone());
+        let canceller = std::thread::spawn(move || {
+            let _ = done.send(
+                inner.copy_cancel(&request("copy.cancel", json!({"operation_id": operation}))),
+            );
+        });
+        let bounded = response.recv_timeout(Duration::from_secs(35));
+        // Always release the worker before asserting, including against the unbounded implementation.
+        let mutation_free = svc.inner.mutation.try_lock().is_ok();
+        let (pending, _) = ok(
+            "copy.status",
+            call(svc, "copy.status", json!({"operation_id": op})),
+        );
+        release.send(()).unwrap();
+        canceller.join().unwrap();
+        let e = match bounded.expect("copy.cancel waited for the hung read") {
+            Err(e) => e,
+            Ok(_) => panic!("copy.cancel acknowledged an unfinished worker"),
+        };
+        assert_eq!(e.code, ErrorCode::Busy);
+        assert_eq!(reason(&e), Some("pending_in_flight_step"));
+        assert!(mutation_free, "timed-out copy.cancel still holds mutation");
+        assert_ne!(pending["state"], "cancelled");
+        assert_eq!(settle_copy(svc, &op)["state"], "cancelled");
+        assert!(!lab.path.join("b").join("a").exists());
+        ok(
+            "copy.cancel",
+            call(svc, "copy.cancel", json!({"operation_id": op})),
+        );
+    }
+
     /// #526 revocation wiring: revoking the lab root a copy uses fences it in the journal and cancels a
     /// waiting run (docs/47 section 5: blocked -> cancelling), reported `grant_revoked`; the Q1 default
     /// leaves the staging. A running run stops at its next effect step (the windows lab suite).
