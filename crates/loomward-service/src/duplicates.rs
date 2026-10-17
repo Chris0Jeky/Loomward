@@ -38,51 +38,68 @@ impl Inner {
         }
         let granted = granted?;
         let deadline = work.map_or_else(|| Instant::now() + Duration::from_secs(5), |w| w.deadline);
-        // #568: fence automatic starts through candidate selection and submission. Drain the
-        // old refresh first: it can publish candidates and holds the shared scan-worker budget.
+        // #568: fence automatic starts through candidate selection and submission.
         let claim = self.freshness.explicit(row);
-        if let Some(auto) = &claim.auto {
-            let _ = self.engine.scan_cancel(auto);
-            while self.engine.job_status(auto).is_ok_and(|j| {
-                matches!(
-                    j.state,
-                    JobState::Queued | JobState::Running | JobState::CancelRequested
+        let read_candidates = || {
+            let mut reader = self.catalog.reader().map_err(crate::catalog_error)?;
+            reader.set_deadline(deadline);
+            reader
+                .duplicate_candidates(
+                    row,
+                    request.budget.min_bytes.map_or(1, |n| n.get()),
+                    request.budget.max_candidates.get() as usize,
                 )
-            }) {
-                if Instant::now() >= deadline {
-                    return Err(fail(ErrorCode::Busy, "automatic refresh is still stopping"));
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-        }
-        let mut reader = self.catalog.reader().map_err(crate::catalog_error)?;
-        reader.set_deadline(deadline);
-        let candidates = reader
-            .duplicate_candidates(
-                row,
-                request.budget.min_bytes.map_or(1, |n| n.get()),
-                request.budget.max_candidates.get() as usize,
-            )
-            .map_err(crate::catalog_error)?;
+                .map_err(crate::catalog_error)
+        };
+        let mut candidates = read_candidates()?;
         #[cfg(test)]
         self.hooks
             .gate(Command::DuplicatesInspect, "candidates_ready");
-        let start = || {
+        let start = |candidates: &loomward_catalog::DuplicateCandidates| {
             self.engine.duplicates_start(
                 granted.clone(),
                 candidates.clone(),
                 request.budget.clone(),
             )
         };
-        let mut job = start();
-        // As at scan.start, wait out only the brief start/revoke fence; an owner job stays busy.
-        while matches!(
-            &job,
-            Err(loomward_engine::EngineError::Busy { detail: None, .. })
-        ) && Instant::now() < deadline
-        {
-            std::thread::sleep(Duration::from_millis(10));
-            job = start();
+        let mut job = start(&candidates);
+        let mut auto = claim.auto.clone();
+        while Instant::now() < deadline {
+            match &job {
+                // Scans and hashing can coexist; pre-empt only when the pool actually refused us.
+                Err(loomward_engine::EngineError::ResourceBudget { .. }) if auto.is_some() => {
+                    let auto = auto.take().unwrap();
+                    let active = || {
+                        self.engine.job_status(&auto).is_ok_and(|j| {
+                            matches!(
+                                j.state,
+                                JobState::Queued | JobState::Running | JobState::CancelRequested
+                            )
+                        })
+                    };
+                    if !active() {
+                        break;
+                    }
+                    let _ = self.engine.scan_cancel(&auto);
+                    while active() {
+                        if Instant::now() >= deadline {
+                            return Err(fail(
+                                ErrorCode::Busy,
+                                "automatic refresh is still stopping",
+                            ));
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    // The drained scan may have published a newer candidate generation.
+                    candidates = read_candidates()?;
+                }
+                // Wait out the brief start/revoke fence; an owner's job stays busy.
+                Err(loomward_engine::EngineError::Busy { detail: None, .. }) => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                _ => break,
+            }
+            job = start(&candidates);
         }
         let job = job?;
         drop(claim);

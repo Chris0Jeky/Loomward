@@ -550,3 +550,207 @@ open; live identity gaps can still require a full refresh on unrelated unresolve
 volume events. Synthetic fixtures remain in ignored `target/test-roots/`; raw
 receipts are already outside the worktree in `C:/lw/target/f3-gap/`. The worktree
 is not removal-ready until the driver preserves/commits the uncommitted diff.
+
+## 2026-10-17: refresh attempt recovery and conditional pre-emption (#583 items 1-3, #586)
+
+Sol lane `fresh-583`, branch `fix/583-586-refresh-attempts`, base
+`47279505bb983290d74cc9bdbfff1b15d1db9bea`, Windows 11 Home / KRASPYON.
+All Cargo commands use `--manifest-path C:/lw/wt/fresh-583/Cargo.toml`,
+`CARGO_TARGET_DIR=C:/lw/target/fresh-583`, `CARGO_BUILD_JOBS=3` and, for full
+suites, `RUST_TEST_THREADS=3`. Raw receipts are outside the worktree in
+`C:/lw/target/fresh-583/receipts/`. Only disposable synthetic lab roots are used.
+
+### Findings and changed behaviour
+
+1. **Claim TOCTOU refuted.** The existing explicit-claim mutex covers the check,
+   engine submission and automatic-job recording. A new gate immediately after
+   the check proves the mutex is held, and a concurrent explicit claimant sees
+   the submitted job. The corrected test passes on the original implementation
+   (`claim-baseline.log`, 1 passed). Deliberately dropping that mutex before the
+   gate makes the same test fail (`claim-mutant.log`, 1 failed); that mutation was
+   removed. The initial `red.log` also contains a test-harness error: the first
+   gate check read an arrival from fixture setup. Clearing old arrivals fixed
+   the test before the baseline/mutation comparison. No claim-fence repair was
+   needed.
+2. **Retry retirement and cancellation confirmed.** Three injected non-Busy
+   start errors leave attempts at 3 even after a new hint; a terminal automatic
+   cancellation leaves attempts at 1 (`red.log`). Cancelled automatic jobs now
+   return their attempt. Three unsuccessful attempts still exhaust the budget;
+   only a new filesystem hint received after a 30-second cooldown reopens one
+   attempt. Expiry alone does not schedule another pass. Repeated hints before
+   expiry do not extend or bypass the cooldown. Successful healthy full passes clear both the attempt
+   count and cooldown; retry eligibility never clears stale coverage.
+3. **Unnecessary duplicates cancellation confirmed.** Scans and duplicate jobs
+   have separate job-conflict kinds. A refresh normally reserves all currently
+   available scan workers, but increasing the cap while it runs leaves room for
+   hashing. The spare-worker test originally saw the refresh cancelled
+   (`red.log`). Inspection now attempts normal admission first and cancels the
+   recorded automatic refresh only after an actual worker-budget refusal.
+   Candidate selection is repeated after draining that refresh so its final
+   publications are included. The existing full-pool pre-emption, explicit
+   owner-job Busy, candidate-fence and expired-request tests remain in place.
+4. **Completion/accounting race confirmed.** A gate after engine submission can
+   let a full automatic pass complete before its job is recorded. Counting the
+   attempt afterwards overwrites the successful pass's reset (`completion-red.log`).
+   Attempts are now counted before submission; Busy starts return their attempt.
+   The completion gate test waits for the newly submitted job, rather than
+   inferring quiescence from any earlier completed foreground job.
+
+New tests stop only their fixture's background pump while retaining its native
+watch, use named gates/fault injection, and advance only the fixture's cooldown.
+They neither sleep through the 30-second cooldown nor weaken the live-watch
+quiescence assertion. The original #586 workspace failure remains historical
+negative evidence; a successful repetition is not proof of its precise cause.
+
+### Loaded reproduction and checkpoint fix
+
+The initial loaded repetition, before checkpoint serialization, reproduced #586:
+`load-1.log` has **312 passed, 2 failed, 1 ignored** in the service unit binary,
+plus the passing root-coverage integration test. The failures were the unchanged
+`f3_completed_foreground_job_does_not_mean_background_catalogue_is_quiescent`
+(`epoch=3 full=true auto=true attempts=3`, with completed full passes) and
+`copy_tests::lab_copy::sources_from_two_granted_roots_are_refused` (one of its
+two roots remained stale). The run was retained; the remaining initial load
+experiment was stopped, rather than counted as a clean five-run result.
+
+Temporary diagnostics in a further loaded service run found healthy watchers
+(`failed=false`) refusing completion checkpoints in **13-30 microseconds**, as
+well as search checkpoints being refused. These were immediate queue refusals,
+not the native checkpoint's two-second receive timeout. That diagnostic run
+passed 315 tests in total, with 1 ignored (`diagnostic-service.log`), illustrating
+why an isolated pass cannot dismiss the race. The diagnostics were removed.
+
+Search and completion previously submitted concurrently to the same watch's
+single-slot checkpoint queue. Immediate refusals made otherwise completed full
+passes ineligible to reset the attempt budget or clear stale coverage. Both
+callers now use one per-root checkpoint mutex, acquired after releasing the
+tracker mutex; native callbacks remain free to record hints. Missing watches
+still remain unsupported/stale, and the existing native timeout and failure
+checks remain intact.
+
+`f3_search_and_scan_completion_serialize_watch_checkpoints` gates a search inside
+the checkpoint path while an actual full scan finishes and waits for that same
+root's checkpoint. It failed before the mutex was acquired (`checkpoint-red.log`,
+1 failed), and the F3 subset passes afterwards (`f3-checkpoint-green.log`,
+**27 passed**). The fast-completion accounting test was also rerun with the
+corrected new-job selection: moving the increment back after submission fails
+(`completion-mutant.log`, 1 failed), and restoring the fix passes
+(`completion-green.log`, 1 passed). Neither test weakens the final stale/coverage
+assertions or replaces the live watcher with demo data.
+
+### Final verification and driver handoff
+
+Final source is unchanged across these checks (only this evidence appendix is
+written afterwards). Commands ran on Windows, from the assigned worktree, using
+these explicit Cargo settings and manifest:
+
+```powershell
+$env:CARGO_TARGET_DIR='C:/lw/target/fresh-583'
+$env:CARGO_BUILD_JOBS='3'
+$env:RUST_TEST_THREADS='3'
+cargo test --manifest-path C:/lw/wt/fresh-583/Cargo.toml -p loomward-service
+# The service command above ran twice.
+cargo fmt --manifest-path C:/lw/wt/fresh-583/Cargo.toml --all --check
+cargo build --manifest-path C:/lw/wt/fresh-583/Cargo.toml --workspace --all-targets
+cargo clippy --manifest-path C:/lw/wt/fresh-583/Cargo.toml --workspace --all-targets -- -D warnings
+cargo test --manifest-path C:/lw/wt/fresh-583/Cargo.toml --workspace --no-fail-fast
+git -C C:/lw/wt/fresh-583 diff --check
+```
+
+For the five consecutive repetitions, invoke both already-built service test
+executables below on each iteration. This avoids Cargo's target-directory lock
+serializing the service tests behind the parallel workspace build. Both service
+test targets run; the service has zero doctests.
+
+```powershell
+foreach ($run in 1..5) {
+    & C:/lw/target/fresh-583/debug/deps/loomward_service-0cd028a8b3f776ca.exe --test-threads=3
+    & C:/lw/target/fresh-583/debug/deps/root_coverage-24e3c38de7970d6b.exe --test-threads=3
+}
+```
+
+The sibling Cargo process ran the workspace build, then Clippy, then the full
+workspace tests. `final-workspace-timeline.log` and `final-load-runs.csv` retain
+UTC boundaries: the repetitions span **18:32:55-18:40:19**, while the workspace
+pipeline spans **18:31:30-18:44:11**. The first repetition overlaps compilation,
+Clippy and the start of workspace testing; the remaining four overlap the
+workspace tests. This is five repetitions under a parallel workspace workload,
+not a claim that compilation continued through every repetition.
+
+| Check | Final result | Receipt under `C:/lw/target/fresh-583/receipts/` |
+|---|---|---|
+| Service suite, twice | Each **316 passed, 0 failed, 1 ignored** (315 unit + 1 integration) | `service-final-1.log`, `service-final-2.log` |
+| Service suite, five consecutive repetitions | Each **316 passed, 0 failed, 1 ignored**; both binaries exit 0 on all five runs | `final-load-1.log` through `final-load-5.log`, `final-load-runs.csv` |
+| Formatting | Exit 0 | `final-fmt.log`, `final-workspace-exits.json` |
+| Parallel workspace build, all targets | Exit 0 | `final-parallel-build.log` |
+| Workspace Clippy, all targets, warnings denied | Exit 0, no warnings | `final-clippy.log` |
+| Full workspace tests, no fail-fast | **1,477 passed, 0 failed, 2 ignored**, 82 targets; exit 0 | `final-workspace.log`, `final-workspace-exits.json` |
+| Whitespace/diff check | Exit 0 after writing this appendix | `final-diff-check.log` |
+
+The existing ignored manual streaming-memory and copy-throughput probes were not
+changed or enabled. The long Windows staging-limit test creates 200,000 synthetic
+entries; it completed successfully in the full workspace run. No failed final
+check was skipped, weakened or relabelled as flaky.
+
+**Changed:** bounded retry reopening after a new hint/cooldown, cancellation
+refunds, attempt counting before submission, conditional duplicates pre-emption,
+and serialized service watch checkpoints. Six regression/gate tests added;
+claim TOCTOU refuted without changing the already-correct fence.
+
+**Verified:** the above Windows checks and the red/green/mutation evidence in
+this appendix. The original #586 symptom was reproduced before checkpoint
+serialization and did not recur in either final dedicated service run, any of
+the five loaded repetitions, or the final full workspace run.
+
+**NOT verified:** hosted CI, non-Windows execution, app/Tauri/browser behaviour,
+the two ignored manual probes, physical power-cut/restore, or personal-data
+workloads. No publication, push, merge or deployment was performed.
+
+**Residual risk:** genuine watch/I/O/start failures can still leave a root
+honestly stale. After three failed attempts, a new hint received after the
+30-second cooldown is required to reopen one automatic attempt. Checkpoints for
+one root now wait behind each other; the native timeout is unchanged.
+
+`HUMAN_TODO.md`, `AGENTS.md`, `.agent-harness/`, the implementation-status file
+and checkpoint JSON are unchanged; no owner decision or safety gate is opened.
+The diff is **left uncommitted** on `fix/583-586-refresh-attempts` at base HEAD
+`47279505bb983290d74cc9bdbfff1b15d1db9bea` for the driver. Raw receipts already
+live outside the worktree. The worktree is not removal-ready while its diff is
+uncommitted. No additional out-of-scope fix is pending from this lane.
+
+### PR #590 fix round 1: dead watchers and the single retry
+
+Retry reopening now lives only in `Tracker::record`, once an actual filesystem
+hint arrives after cooldown. `Tracked::dirty` cannot reopen it, so searches with
+failed watch checkpoints and internal dirty marking cannot grant more scans.
+Reopening sets attempts to 2 of 3, leaving exactly one attempt. A failed retry
+requires another cooldown and a new hint; successful healthy full scans still
+reset the budget normally.
+
+The new dead-watcher regression stops the native watcher and verifies checkpoint
+failure, runs the original three full refreshes, then performs searches across
+three expired cooldowns without any new jobs. The updated hint regression checks
+the one-attempt allowance, consumes it with an injected start failure, rejects
+another hint during cooldown, and finally proves recovery after another expiry
+and hint. Both tests failed before the production fix (2 failed), then passed
+(2 passed). Cooldowns use `expire_retry`; no cooldown sleeps were added.
+
+Watcher restart remains unchanged: docs/46 specifies stale coverage and refresh,
+but no bounded watcher restart policy. A dead watcher remains honestly stale;
+automatic refresh cannot spin solely because users search. `HUMAN_TODO.md` and
+all protected driver-owned files are unchanged. Changes are left uncommitted.
+
+Receipts for this round are under `C:/lw/target/fresh-583/receipts/review1-*`.
+Checks ran on Windows with `CARGO_TARGET_DIR=C:/lw/target/fresh-583`,
+`CARGO_BUILD_JOBS=3` and `RUST_TEST_THREADS=3`. Each Cargo command used
+`--manifest-path C:/lw/wt/fresh-583/Cargo.toml`:
+
+- `cargo test -p loomward-service`, twice: each **317 passed, 0 failed, 1 ignored**.
+- `cargo fmt --all --check`: exit 0 after correcting formatting.
+- `cargo clippy --workspace --all-targets -- -D warnings`: exit 0.
+- `cargo test --workspace --no-fail-fast`: **1,478 passed, 0 failed, 2 ignored**,
+  82 targets; exit 0, including the 200,000-entry staging-limit fixture.
+- `git -C C:/lw/wt/fresh-583 diff --check`: exit 0 after this note.
+
+Hosted CI, non-Windows execution and app/Tauri/browser behaviour were not tested.
+No commit, push, PR mutation or merge was performed in this fix round.

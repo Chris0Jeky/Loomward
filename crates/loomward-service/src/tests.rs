@@ -42,6 +42,8 @@ pub(crate) struct Hooks {
     pub personal_space_wait: Mutex<Option<Duration>>,
     /// #569: the next explicit scan.start that has just cancelled an automatic run fails on retry.
     pub fail_explicit_retry: std::sync::atomic::AtomicBool,
+    #[cfg(windows)]
+    pub fail_automatic_start: std::sync::atomic::AtomicBool,
 }
 
 /// What a personal space read answers in tests: wait on an explicit gate, or report fixed space.
@@ -4006,6 +4008,330 @@ fn f3_successful_full_scan_with_late_hints_restarts_refresh_budget() {
     lab.svc.inner.scan.gate.release();
     assert_eq!(settle(&lab.svc, &job)["coverage"], "complete");
     f3_wait_live(&lab.svc);
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_automatic_start_records_the_job_under_the_claim_lock() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    svc.inner.freshness.pause_pump();
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    svc.inner.freshness.ready_targeted_hint(1);
+    let held = (Command::ScanStart, "automatic_claim_checked");
+    svc.inner
+        .hooks
+        .arrived
+        .lock()
+        .unwrap()
+        .retain(|at| *at != held);
+    svc.inner.hooks.closed.lock().unwrap().push(held);
+    let (fenced, auto) = std::thread::scope(|s| {
+        let refreshing = s.spawn(|| crate::freshness::refresh(&svc.inner));
+        svc.inner.hooks.until("automatic claim checked", |h| {
+            h.arrived.lock().unwrap().contains(&held)
+        });
+        let fenced = !svc.inner.freshness.unclaimed_try(1);
+        let claiming = s.spawn(|| svc.inner.freshness.explicit(1));
+        svc.inner.hooks.open(held.0, held.1);
+        refreshing.join().unwrap();
+        (fenced, claiming.join().unwrap().auto.clone())
+    });
+    assert!(
+        fenced,
+        "claim lock was released between the check and automatic start"
+    );
+    let auto = auto.expect("explicit claim missed the automatic job");
+    assert_eq!(settle(svc, auto.as_str())["state"], "completed");
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_completed_automatic_start_preserves_the_reset_budget() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    svc.inner.freshness.pause_pump();
+    let list = serde_json::from_value(json!({"limit":50})).unwrap();
+    let before = svc.inner.engine.job_list(&list).unwrap();
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    svc.inner.freshness.ready_targeted_hint(1);
+    let held = (Command::ScanStart, "automatic_submitted");
+    svc.inner
+        .hooks
+        .arrived
+        .lock()
+        .unwrap()
+        .retain(|at| *at != held);
+    svc.inner.hooks.closed.lock().unwrap().push(held);
+    let state = std::thread::scope(|s| {
+        let refreshing = s.spawn(|| crate::freshness::refresh(&svc.inner));
+        svc.inner.hooks.until("automatic job submitted", |h| {
+            h.arrived.lock().unwrap().contains(&held)
+        });
+        let jobs = svc.inner.engine.job_list(&list).unwrap();
+        let latest = jobs
+            .jobs
+            .iter()
+            .find(|j| !before.jobs.iter().any(|old| old.job_id == j.job_id))
+            .unwrap();
+        let state = settle(svc, latest.job_id.as_str())["state"].clone();
+        svc.inner.hooks.open(held.0, held.1);
+        refreshing.join().unwrap();
+        state
+    });
+    assert_eq!(state, "completed");
+    assert_eq!(
+        svc.inner.freshness.attempts(1),
+        0,
+        "late start bookkeeping overwrote the successful pass's reset"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_search_and_scan_completion_serialize_watch_checkpoints() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    svc.inner.freshness.pause_pump();
+    svc.inner.scan.gate.arm();
+    let job = start(svc, &lab.root, "full");
+    svc.inner.scan.gate.wait_reached();
+    let held = (Command::ScanStart, "freshness_checkpoint_claimed");
+    let waiting = (Command::ScanStart, "freshness_checkpoint_waiting");
+    svc.inner
+        .hooks
+        .arrived
+        .lock()
+        .unwrap()
+        .retain(|at| *at != held && *at != waiting);
+    svc.inner.hooks.closed.lock().unwrap().push(held);
+    let fenced = std::thread::scope(|s| {
+        let searching = s.spawn(|| svc.inner.hit_freshness(1));
+        svc.inner.hooks.until("search checkpoint held", |h| {
+            h.arrived.lock().unwrap().contains(&held)
+        });
+        svc.inner.scan.gate.release();
+        svc.inner.hooks.until("completion checkpoint waiting", |h| {
+            h.arrived
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|at| **at == waiting)
+                .count()
+                == 2
+        });
+        let fenced = svc.inner.freshness.checkpoint_fenced(1);
+        svc.inner.hooks.open(held.0, held.1);
+        searching.join().unwrap();
+        fenced
+    });
+    assert_eq!(settle(svc, &job)["coverage"], "complete");
+    assert!(
+        fenced,
+        "search and completion can overfill the native checkpoint queue"
+    );
+    assert!(!svc.inner.freshness.stale(1));
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_dead_watcher_searches_never_reopen_refresh_budget() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    svc.inner.freshness.pause_pump();
+    svc.inner.freshness.stop_watch(1);
+    for attempt in 1..=3 {
+        assert_eq!(f3_hits(svc)["hits"][0]["freshness"]["state"], "stale");
+        svc.inner.freshness.ready_targeted_hint(1);
+        crate::freshness::refresh(&svc.inner);
+        let claim = svc.inner.freshness.explicit(1);
+        let job = claim.auto.as_ref().expect("missing initial refresh");
+        assert_eq!(settle(svc, job.as_str())["state"], "completed");
+        assert_eq!(svc.inner.freshness.attempts(1), attempt);
+        assert!(svc.inner.freshness.stale(1));
+    }
+    let list = serde_json::from_value(json!({"limit":50})).unwrap();
+    let jobs = svc.inner.engine.job_list(&list).unwrap().jobs.len();
+    for _ in 0..3 {
+        svc.inner.freshness.expire_retry(1);
+        assert_eq!(f3_hits(svc)["hits"][0]["freshness"]["state"], "stale");
+        svc.inner.freshness.ready_targeted_hint(1);
+        crate::freshness::refresh(&svc.inner);
+        assert_eq!(
+            svc.inner.freshness.attempts(1),
+            3,
+            "search against a dead watcher reopened the budget"
+        );
+        assert_eq!(svc.inner.engine.job_list(&list).unwrap().jobs.len(), jobs);
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_new_hint_reopens_failed_refresh_budget_only_after_backoff() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    svc.inner.freshness.pause_pump();
+    for _ in 0..3 {
+        svc.inner
+            .freshness
+            .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+        svc.inner.freshness.ready_targeted_hint(1);
+        svc.inner
+            .hooks
+            .fail_automatic_start
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        crate::freshness::refresh(&svc.inner);
+    }
+    assert_eq!(svc.inner.freshness.attempts(1), 3);
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    assert_eq!(svc.inner.freshness.attempts(1), 3, "hint bypassed backoff");
+    svc.inner.freshness.expire_retry(1);
+    svc.inner.freshness.ready_targeted_hint(1);
+    crate::freshness::refresh(&svc.inner);
+    assert_eq!(
+        svc.inner.freshness.attempts(1),
+        3,
+        "backoff expiry alone retried"
+    );
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    assert_eq!(
+        svc.inner.freshness.attempts(1),
+        2,
+        "new hint must reopen exactly one attempt"
+    );
+    assert!(
+        svc.inner.freshness.stale(1),
+        "a retry grant is not fresh evidence"
+    );
+    svc.inner.freshness.ready_targeted_hint(1);
+    svc.inner
+        .hooks
+        .fail_automatic_start
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    crate::freshness::refresh(&svc.inner);
+    assert_eq!(svc.inner.freshness.attempts(1), 3);
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    svc.inner.freshness.ready_targeted_hint(1);
+    crate::freshness::refresh(&svc.inner);
+    assert_eq!(svc.inner.freshness.attempts(1), 3, "retry bypassed backoff");
+    svc.inner.freshness.expire_retry(1);
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    svc.inner.freshness.ready_targeted_hint(1);
+    crate::freshness::refresh(&svc.inner);
+    let claim = svc.inner.freshness.explicit(1);
+    let job = claim.auto.as_ref().expect("new hint did not start refresh");
+    assert_eq!(settle(svc, job.as_str())["state"], "completed");
+    assert!(!svc.inner.freshness.stale(1));
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_owner_preemption_does_not_spend_refresh_attempt() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    svc.inner.freshness.pause_pump();
+    svc.inner.scan.gate.arm();
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    svc.inner.freshness.ready_targeted_hint(1);
+    crate::freshness::refresh(&svc.inner);
+    svc.inner.scan.gate.wait_reached();
+    let claim = svc.inner.freshness.explicit(1);
+    let job = claim.auto.as_ref().unwrap();
+    let before = svc.inner.freshness.attempts(1);
+    svc.inner.engine.scan_cancel(job).unwrap();
+    svc.inner.scan.gate.release();
+    assert_eq!(settle(svc, job.as_str())["state"], "cancelled");
+    crate::freshness::refresh(&svc.inner);
+    assert_eq!(before, 1);
+    assert_eq!(
+        svc.inner.freshness.attempts(1),
+        0,
+        "owner cancellation consumed an attempt"
+    );
+    assert!(svc.inner.freshness.stale(1));
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_duplicates_leave_refresh_running_when_a_worker_is_available() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    svc.inner.freshness.pause_pump();
+    svc.inner.scan.gate.arm();
+    svc.inner
+        .freshness
+        .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    svc.inner.freshness.ready_targeted_hint(1);
+    crate::freshness::refresh(&svc.inner);
+    svc.inner.scan.gate.wait_reached();
+    let auto = svc.inner.freshness.explicit(1).auto.clone().unwrap();
+    // The running refresh keeps its eight workers; raising the cap leaves one for hashing.
+    svc.inner
+        .engine
+        .budgets_set(
+            &serde_json::from_value(json!({"pool":"scan_enumerate","max_workers":9})).unwrap(),
+        )
+        .unwrap();
+    let (answer, state) = std::thread::scope(|s| {
+        let asking = s.spawn(|| {
+            call(
+                svc,
+                "duplicates.inspect",
+                json!({"root_id":lab.root,
+            "budget":{"max_candidates":200,"max_bytes":"1024","max_ms":5000}}),
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !asking.is_finished()
+            && svc.inner.engine.job_status(&auto).unwrap().state == JobState::Running
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let state = svc.inner.engine.job_status(&auto).unwrap().state;
+        svc.inner.scan.gate.release();
+        (asking.join().unwrap(), state)
+    });
+    let (job, _) = ok("duplicates.inspect", answer);
+    assert_eq!(
+        settle(svc, job["job"]["job_id"].as_str().unwrap())["state"],
+        "completed"
+    );
+    assert_eq!(settle(svc, auto.as_str())["state"], "completed");
+    assert_eq!(
+        state,
+        JobState::Running,
+        "inspection needlessly cancelled refresh"
+    );
 }
 
 /// #561: an explicit scan.start is never refused because an automatic watcher refresh holds the
