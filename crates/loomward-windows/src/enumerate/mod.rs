@@ -198,6 +198,18 @@ pub fn refused_attributes(attributes: u32) -> bool {
     attributes & (0x400 | 0x1000 | 0x40000 | 0x400000) != 0
 }
 
+/// A supplied identity must match the handle opened now. Every open path reports a mismatch as
+/// `IdentityChanged` (journal and watch alike), never `Refused` (#553).
+pub fn expected_identity_matches(
+    opened: OpenedIdentity,
+    expected: OpenedIdentity,
+) -> Result<(), SourceError> {
+    if opened.id != expected.id || opened.volume_serial != expected.volume_serial {
+        return Err(SourceError::IdentityChanged);
+    }
+    Ok(())
+}
+
 /// ID comparison keeps width; a missing verification never trusts a listed ID (#117 partial 2).
 pub fn validate_identity(
     listed: Option<FileIdObs>,

@@ -585,6 +585,55 @@ fn volumes_list_space_is_unknown_not_zero_when_the_personal_root_is_unobservable
     assert_eq!(volumes["volumes"][0]["free_bytes"], Value::Null);
 }
 
+/// #553: an unobservable first active root must not hide a second observable root on the same volume.
+#[cfg(windows)]
+#[test]
+fn volumes_list_observes_space_through_a_second_root_when_the_first_is_unobservable() {
+    let tmp = temp_root();
+    let Some((svc, folder)) = personal_grant_session(&tmp) else {
+        return;
+    };
+    *svc.inner.hooks.personal_space_wait.lock().unwrap() = Some(Duration::from_secs(30));
+    let volume_key: String = svc
+        .inner
+        .db()
+        .query_row("SELECT volume_key FROM main.volume", [], |r| r.get(0))
+        .unwrap();
+    // The second grant lives on the same real volume, so its identity matches the volume key.
+    let second = tmp.path().join("second-folder");
+    std::fs::create_dir_all(&second).unwrap();
+    svc.inner
+        .catalog
+        .writer()
+        .call(WriteCommand::RegisterRoot(RootObservation {
+            volume_key,
+            display_name: "Second".into(),
+            display_path: second.canonicalize().unwrap().display().to_string(),
+            root_file_id: Some(vec![3; 16]),
+            filesystem: Some("NTFS".into()),
+            origin: "owner_granted".into(),
+            granted_via: "cli_flag".into(),
+            observed_at_ns: 0,
+        }))
+        .unwrap();
+    // The first (lowest-id) root is now unobservable; the second must still answer.
+    std::fs::remove_dir(&folder).unwrap();
+    let (volumes, _) = ok("volumes.list", call(&svc, "volumes.list", json!({})));
+    assert_eq!(
+        volumes["volumes"].as_array().unwrap().len(),
+        1,
+        "{volumes:?}"
+    );
+    assert!(
+        !volumes["volumes"][0]["capacity_bytes"].is_null(),
+        "{volumes:?}"
+    );
+    assert!(
+        !volumes["volumes"][0]["free_bytes"].is_null(),
+        "{volumes:?}"
+    );
+}
+
 /// #519 review: one stalled personal volume degrades alone. `volumes.list` and the alerts view still
 /// answer, the healthy volume is observed, and changing grant roots never exhausts the space readers.
 #[cfg(windows)]

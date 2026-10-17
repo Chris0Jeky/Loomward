@@ -57,7 +57,7 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<Change>, SourceError> {
 #[cfg(windows)]
 mod native {
     use super::*;
-    use crate::enumerate::{open_watch_root, OpenedIdentity};
+    use crate::enumerate::{expected_identity_matches, open_watch_root, OpenedIdentity};
     use std::{
         fs::File,
         mem::zeroed,
@@ -130,10 +130,7 @@ mod native {
 
     fn validate_path(path: &Path, expected: OpenedIdentity) -> Result<(), SourceError> {
         let (_, _, identity) = open_watch_root(path)?;
-        if identity.id != expected.id || identity.volume_serial != expected.volume_serial {
-            return Err(SourceError::IdentityChanged);
-        }
-        Ok(())
+        expected_identity_matches(identity, expected)
     }
 
     struct PendingRead<'a> {
@@ -222,10 +219,8 @@ mod native {
             callback: impl Fn(Vec<Change>) + Send + 'static,
         ) -> Result<Self, SourceError> {
             let (pins, dir, identity) = open_watch_root(path)?;
-            if expected
-                .is_some_and(|e| e.id != identity.id || e.volume_serial != identity.volume_serial)
-            {
-                return Err(SourceError::Refused);
+            if let Some(expected) = expected {
+                expected_identity_matches(identity, expected)?;
             }
             let done = Arc::new(AtomicBool::new(false));
             let stopped = done.clone();

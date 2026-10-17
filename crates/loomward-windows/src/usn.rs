@@ -70,7 +70,7 @@ pub fn decode(bytes: &[u8]) -> Result<(i64, Vec<Record>), SourceError> {
 #[cfg(windows)]
 mod native {
     use super::*;
-    use crate::enumerate::{open_journal_root, OpenedIdentity};
+    use crate::enumerate::{expected_identity_matches, open_journal_root, OpenedIdentity};
     use std::{
         fs::File,
         mem::{size_of, zeroed},
@@ -90,9 +90,7 @@ mod native {
     impl Journal {
         pub fn open(path: &Path, expected: OpenedIdentity) -> Result<Self, SourceError> {
             let (pins, file, actual) = open_journal_root(path)?;
-            if actual.id != expected.id || actual.volume_serial != expected.volume_serial {
-                return Err(SourceError::IdentityChanged);
-            }
+            expected_identity_matches(actual, expected)?;
             Ok(Self { _pins: pins, file })
         }
         pub fn head(&self) -> Result<(Bookmark, i64), SourceError> {
