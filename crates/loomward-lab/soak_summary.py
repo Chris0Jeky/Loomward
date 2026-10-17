@@ -133,6 +133,9 @@ def evaluate(records, smoke=False):
         else:
             _check_wall(errors, end["unix_ms"], end["elapsed_s"], wall_prev)
     if wall_mode == "legacy":
+        if start and start.get("wall_clock") is True:
+            # The run declared wall-clock samples, so a receipt without them is damaged, not legacy.
+            errors.add("receipt declares wall_clock but its samples lack unix_ms")
         notes.append(LEGACY_NOTE)
     if not math.isfinite(duration) or duration < minimum:
         errors.add(f"duration below {minimum} seconds")

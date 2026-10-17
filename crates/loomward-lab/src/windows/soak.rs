@@ -357,7 +357,7 @@ fn run(root: &Path, out: &Path, duration: Duration, cycles: Option<u64>) -> io::
         &json!({"kind": "start", "schema_version": 1, "manifest": manifest,
         "requested_seconds": duration.as_secs_f64(), "pid": std::process::id(),
         "unix_seconds": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(io::Error::other)?.as_secs(),
-        "cadence_seconds": 5, "watch_mode": "native hint then explicit service refresh"}),
+        "cadence_seconds": 5, "wall_clock": true, "watch_mode": "native hint then explicit service refresh"}),
     )?;
     out.sync_all()?;
     let mut service = None;

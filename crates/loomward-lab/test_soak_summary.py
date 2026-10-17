@@ -112,6 +112,13 @@ class WallClockContinuityTests(unittest.TestCase):
         self.assertIn(WALL_GAP, result["errors"])
         self.assertNotIn(MONO_GAP, result["errors"])
 
+    def test_declared_wall_clock_receipt_cannot_fall_back_to_legacy(self):
+        records = fixture()
+        records[0]["wall_clock"] = True
+        result = evaluate(records, smoke=True)
+        self.assertEqual(result["status"], "FAIL")
+        self.assertIn("receipt declares wall_clock but its samples lack unix_ms", result["errors"])
+
     def test_small_backward_wall_step_is_an_ntp_correction_not_a_failure(self):
         records = with_wall_clock(fixture(), shift_from=245, shift_s=-1)
         self.assertNotIn(WALL_GAP, evaluate(records, smoke=True)["errors"])
