@@ -438,6 +438,25 @@ impl Sampler {
             - self.costs.wildcard_expansion_ms
             - self.costs.pdh_decode_ms)
             .max(0.0);
+        self.finish_sample(
+            current,
+            max_processes,
+            channels,
+            refresh_processes,
+            now,
+            own_read_at,
+        )
+    }
+
+    fn finish_sample(
+        &mut self,
+        mut current: Snapshot,
+        max_processes: usize,
+        channels: SampleChannels,
+        refresh_processes: bool,
+        now: Instant,
+        own_read_at: Option<Instant>,
+    ) -> Snapshot {
         let rates_started = Instant::now();
         let mut own = current
             .processes
@@ -1015,6 +1034,54 @@ mod tests {
             .unknowns
             .iter()
             .any(|u| u.reason == "requires_two_samples"));
+    }
+
+    #[test]
+    fn sampler_own_cpu_uses_and_retains_the_counter_read_instant() {
+        // #469: an expensive first walk and a cheaper second read make sample-start and
+        // counter-read gaps differ. Synthetic counters/instants, no sleeps or native collection.
+        let base = Instant::now();
+        let first_read = base + std::time::Duration::from_secs(300);
+        let next_start = base + std::time::Duration::from_secs(350);
+        let next_read = base + std::time::Duration::from_secs(400);
+        let fixture = |cpu_user_100ns| Snapshot {
+            logical_processor_count: Some(4),
+            processes: vec![Process {
+                pid: std::process::id(),
+                cpu_user_100ns: Some(cpu_user_100ns),
+                ..process()
+            }],
+            ..unsupported_snapshot()
+        };
+
+        for refresh_processes in [false, true] {
+            let mut sampler = Sampler::default();
+            sampler.finish_sample(
+                fixture(0),
+                0,
+                SampleChannels::ALL,
+                true,
+                base,
+                Some(first_read),
+            );
+            assert_eq!(sampler.own.as_ref().unwrap().0, first_read);
+            assert!(sampler.own_process().unwrap().rates.cpu_fraction.is_none());
+
+            let snapshot = sampler.finish_sample(
+                fixture(400_000_000),
+                0,
+                SampleChannels::ALL,
+                refresh_processes,
+                next_start,
+                Some(next_read),
+            );
+            // 40 CPU seconds / (100 read-to-read seconds * 4 logical cores).
+            let got = sampler.own_process().unwrap().rates.cpu_fraction.unwrap();
+            assert!((got - 0.1).abs() < 1e-12, "got {got}, expected 0.1");
+            assert_eq!(sampler.own.as_ref().unwrap().0, next_read);
+            assert_eq!(snapshot.sample_interval_seconds, Some(350.0));
+            assert!(snapshot.processes.is_empty());
+        }
     }
 
     #[test]
