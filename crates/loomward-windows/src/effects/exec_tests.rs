@@ -1619,13 +1619,20 @@ fn detached_worker_stops_writing_at_the_next_chunk_after_a_reopened_fence() {
     let _ = run(&lab.store, op, &control);
     let r = replay(&lab.store, op).unwrap();
     assert!(r.fenced);
-    let file = lab.dest().join(r.staging_tokens.last().unwrap()).join("f.bin");
+    let file = lab
+        .dest()
+        .join(r.staging_tokens.last().unwrap())
+        .join("f.bin");
     assert_eq!(
         fs::metadata(file).unwrap().len(),
         MIB,
         "chunks written after the reopened service's fence was acknowledged"
     );
-    assert_eq!(r.state, OpState::Copying, "the detached worker settled the run");
+    assert_eq!(
+        r.state,
+        OpState::Copying,
+        "the detached worker settled the run"
+    );
 }
 
 #[test]
@@ -1675,15 +1682,29 @@ fn detached_worker_check_and_create_exclude_fence(point: Point) {
         },
         move |token| target(token).exists(),
     );
-    // A fresh Control cannot see a rename that finished before its fence (#672 residual).
-    assert!(
-        matches!(ack, Ack::StoppedBeforePublish | Ack::Published),
-        "{ack:?}"
-    );
     assert!(replay(&lab.store, op).unwrap().fenced);
     assert_eq!(
         at_ack, after,
         "{point:?}: created after the reopened service's fence was acknowledged"
+    );
+    if point != Point::CheckedPublish {
+        assert_eq!(ack, Ack::StoppedBeforePublish);
+        return;
+    }
+    // The rename finished before the fence: a fresh Control never saw it, the destination says so.
+    assert!(at_ack, "the serialized rename precedes the fence");
+    assert_eq!(ack, Ack::Published);
+    let plan = lab.plan(op);
+    let outcome = cancel(&lab.store, op, &plan, &Control::new(true)).unwrap();
+    assert_eq!(outcome.state, OpState::Committed);
+    assert_eq!(
+        fs::read(
+            lab.dest()
+                .join(&plan.manifest.destination.folder_name)
+                .join("f.bin")
+        )
+        .unwrap(),
+        b"payload"
     );
 }
 

@@ -439,6 +439,9 @@ pub enum Ack {
     /// The step in flight did not return within the wait (stuck I/O); the fence is durable and every
     /// later step still reads it.
     PendingInFlightStep,
+    /// The run had a publish intent and the destination could not be observed after the fence, so
+    /// which side of the rename it ended on is unknown (invariant 4). The fence is durable; retry.
+    PublishUnobserved,
 }
 
 /// docs/47 section 5 revocation step 3 (assumption: 30 s, to be measured).
@@ -641,7 +644,11 @@ struct Cancellable<'a, R> {
     stopped: Option<Stop>,
 }
 impl<'a, R> Cancellable<'a, R> {
-    fn new(reader: &'a mut R, control: &'a Control, journal: &'a Journal<'a>) -> Result<Self, Stop> {
+    fn new(
+        reader: &'a mut R,
+        control: &'a Control,
+        journal: &'a Journal<'a>,
+    ) -> Result<Self, Stop> {
         let step = control.admit()?;
         control.check()?;
         journal.check_copying()?;
@@ -669,7 +676,11 @@ impl<R: Read> Read for Cancellable<'_, R> {
         }
         #[cfg(test)]
         crash::hit(&format!("write@{}", self.read));
-        self.step = Some(self.control.admit().map_err(|_| io::Error::other(Stopped))?);
+        self.step = Some(
+            self.control
+                .admit()
+                .map_err(|_| io::Error::other(Stopped))?,
+        );
         if let Err(stop) = self.journal.check_copying() {
             self.stopped = Some(stop);
             return Err(io::Error::other(Stopped));
@@ -744,10 +755,10 @@ impl Journal<'_> {
     /// A detached worker's Control is not the reopened service's Control: read the durable stop, and
     /// keep the database write lock until `effect` returns, so a fence appended by another store
     /// waits for the effect instead of landing between the check and it (#670, #672). Keep `effect` to
-    /// one bounded create or rename call: another store's fence waits up to its busy timeout, then fails
+    /// one bounded create, rename, metadata or removal call (chunk writes only check, see `Cancellable`): another store's fence waits up to its busy timeout, then fails
     /// unacknowledged.
     // ponytail: a call stuck in the OS also holds this store's mutex, so a same-store fence waits for it
-    // rather than answering `PendingInFlightStep`; split the lock from the connection if that bites.
+    // rather than answering `PendingInFlightStep`; split the lock from the connection (#672 item 3, open).
     fn while_in<T>(
         &self,
         state: OpState,
@@ -1565,7 +1576,7 @@ pub fn fence(
     control: &Control,
     cause: loomward_operations::FenceCause,
 ) -> Result<Ack, Fault> {
-    {
+    let r = {
         // One store lock across the read and the append: no record slips between them.
         let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
         control.fenced.store(true, Ordering::SeqCst);
@@ -1578,12 +1589,41 @@ pub fn fence(
         }
         s.append(op, r.epoch + 1, Record::Fenced { cause })
             .map_err(|e| Fault::Journal(format!("{e:?}")))?;
-    }
+        r
+    };
     Ok(match control.fence(FENCE_WAIT) {
         None => Ack::PendingInFlightStep,
         Some(true) => Ack::Published,
-        Some(false) => Ack::StoppedBeforePublish,
+        Some(false) if r.publish.is_none() => Ack::StoppedBeforePublish,
+        // A fresh Control (a reopened service) never saw a detached worker's rename. The rename step
+        // holds the journal's write lock across its check and the rename, so with the fence appended
+        // it has either finished or never will: the destination says which (#672).
+        Some(false) => published_on_disk(store, op, &r),
     })
+}
+
+fn published_on_disk(store: &Mutex<Store>, op: u64, r: &Replay) -> Ack {
+    let plan: Option<Plan> = store
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .plan(op)
+        .ok()
+        .flatten()
+        .and_then(|t| serde_json::from_str(&t).ok());
+    let (Some(plan), Some(final_name), Some(staging)) = (plan, &r.publish, r.staging) else {
+        return Ack::PublishUnobserved;
+    };
+    let disk = PathDisk::new(&plan, r);
+    if disk
+        .in_parent(final_name)
+        .is_some_and(|o| staging.matches(&o, r.staging_planned))
+    {
+        Ack::Published
+    } else if disk.observation_failed.get() {
+        Ack::PublishUnobserved
+    } else {
+        Ack::StoppedBeforePublish
+    }
 }
 
 /// Turn where `copy` stopped into the journal's terminal or waiting state.
