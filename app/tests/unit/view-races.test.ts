@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { LoomwardError } from '../../src/lib/transport/client';
 import { fallbackStep, onRefetchError, resolveTrail } from '../../src/views/explorer/refetch';
 import searchExample from '../../../contracts/v3/examples/commands/search.query.result.json';
+import learningStatus from '../../../contracts/v3/examples/commands/learning.status.result.json';
+import learningQueue from '../../../contracts/v3/examples/commands/learning.queue.result.json';
 
 /** Run the real instance-script functions/effect without a DOM or canvas. State is supplied by
  * the test; imports and rendering are excluded, so deferred replies control the interleaving. */
@@ -35,6 +37,7 @@ function viewScript(view: string, state: Record<string, unknown>, effectContaini
     loadStarts(recovery?: unknown, refreshOnly?: boolean): Promise<boolean>;
     effect(): void;
     reload(): void;
+    load(cursor?: string | null, restarted?: boolean): Promise<void>;
   };
 }
 
@@ -44,6 +47,67 @@ const deferred = <T>() => {
   const promise = new Promise<T>(r => { resolve = r; });
   return { promise, resolve };
 };
+
+function review(call: ReturnType<typeof vi.fn>) {
+  const state = {
+    session: { client: { call }, epoch: 0, handle: (e: Error) => e.message },
+    untrack, LoomwardError, alive: true, generation: 0,
+    status: learningStatus as typeof learningStatus | null,
+    queue: learningQueue as typeof learningQueue | null,
+    error: '', pending: null, selected: 'nd_old',
+  };
+  return { state, code: viewScript('review', state, 'session.epoch') };
+}
+
+const staleReview = () => new LoomwardError({ code: 'stale_generation', message: 'Catalogue or feedback changed during review.', retryable: true, detail: null });
+
+describe('Learning review refresh after concurrent feedback', () => {
+  it('restarts status and queue once from the top when feedback invalidates the queue', async () => {
+    const fresh = { ...learningStatus, human_events: 2, model_id: null, calibrated: false, autonomy_allowed: false };
+    let queues = 0;
+    const call = vi.fn(async (command: string) => {
+      if (command === 'learning.queue' && ++queues === 1) throw staleReview();
+      return { result: command === 'learning.status' ? fresh : learningQueue };
+    });
+    const { state, code } = review(call);
+    await code.load('old_cursor');
+    expect(state.status).toEqual(fresh);
+    expect(state.queue).toEqual(learningQueue);
+    expect(state.error).toBe('');
+    expect(state.selected).toBe('');
+    expect(call.mock.calls.map(args => args[0])).toEqual(['learning.status', 'learning.queue', 'learning.status', 'learning.queue']);
+    expect((call.mock.calls.at(-1) as unknown as [string, { cursor: string | null }])[1].cursor).toBeNull();
+  });
+
+  it.each(['stale_generation', 'internal_error'] as const)('keeps %s failures honest and bounds retries', async code => {
+    const failure = new LoomwardError({ code, message: 'Learning unavailable.', retryable: false, detail: null });
+    const call = vi.fn(async (command: string) => {
+      if (command === 'learning.queue') throw failure;
+      return { result: learningStatus };
+    });
+    const { state, code: view } = review(call);
+    await view.load();
+    expect(state.status).toBeNull();
+    expect(state.queue).toBeNull();
+    expect(state.error).toBe('Learning unavailable.');
+    expect(call).toHaveBeenCalledTimes(code === 'stale_generation' ? 4 : 2);
+  });
+
+  it.each(['superseded', 'unmounted'])('does not retry a stale reply after the request is %s', async mode => {
+    let reject!: (error: Error) => void;
+    const response = new Promise<never>((_, fail) => { reject = fail; });
+    const call = vi.fn(async (command: string) => command === 'learning.queue' ? response : { result: learningStatus });
+    const { state, code } = review(call);
+    const loading = code.load();
+    if (mode === 'unmounted') state.alive = false;
+    else state.generation++;
+    reject(staleReview());
+    await loading;
+    expect(call).toHaveBeenCalledTimes(2);
+    expect(state.status).toBe(learningStatus);
+    expect(state.error).toBe('');
+  });
+});
 
 describe('map slice installation', () => {
   it.each(['atlas', 'observatory'])('%s drops revoked hover information while refreshing a surviving selection', view => {

@@ -614,8 +614,12 @@ def live_personal_learning(page: Page, token: str) -> None:
     page.get_by_label('Human label').select_option('Archive')
     page.get_by_role('button', name='Record human label').click()
     expect(page.get_by_role('status').filter(has_text='Human feedback recorded, revision 1.')).to_be_visible()
+    # The receipt appears before record() finishes refreshing the revision-bound queue.
+    expect(page.get_by_role('button', name='Refit from human labels')).to_be_enabled()
     second = live_call(page, token, 'feedback.record', {'node_id': items['x.bin'], 'label': 'Media', 'retract': False, 'client_event_id': 'ce_personal_live_x'})
     check(second['ok'] and second['result']['data_class'] == 'human', 'personal learning: a second human label is recorded through HTTP')
+    page.get_by_role('button', name='Refresh review').click()
+    expect(page.locator('.counts')).to_contain_text('2 human events')
     page.get_by_role('button', name='Refit from human labels').click()
     expect(page.get_by_role('status').filter(has_text='Refit completed.')).to_be_visible(timeout=10000)
     expect(page.get_by_text('Personal candidate fitted;', exact=False)).to_be_visible()
