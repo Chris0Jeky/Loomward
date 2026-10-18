@@ -142,10 +142,17 @@ fn copy_old_worker_checks_durable_stop_before_preallocation() {
 
 #[test]
 fn copy_cancelled_worker_cannot_begin_preallocation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Mutex::new(Store::open(&tmp.path().join("state.db")).unwrap());
+    let journal = Journal {
+        store: &store,
+        op: 1,
+        epoch: 0,
+    };
     let control = Control::new(false);
     control.cancel();
     assert!(matches!(
-        Cancellable::new(&mut std::io::empty(), &control),
+        Cancellable::new(&mut std::io::empty(), &control, &journal),
         Err(Stop::Cancel)
     ));
 }
@@ -1547,6 +1554,41 @@ fn detached_worker_checks_durable_stop(point: Point) {
         ),
         _ => unreachable!(),
     }
+}
+
+/// #672: a reopened service fences between two chunks of a detached worker's write. The next chunk
+/// re-reads the durable stop, so at most the chunk already checked lands: here, none after the first.
+#[test]
+fn detached_worker_stops_writing_at_the_next_chunk_after_a_reopened_fence() {
+    const MIB: u64 = 1 << 20;
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f.bin"), vec![7u8; 3 * MIB as usize + 1]).unwrap();
+    let op = lab.start(&["f.bin"]);
+    let db = lab.tmp.path().join("state/state.db");
+    let fenced = AtomicBool::new(false);
+    let control = Control::new(false).with_hook(move |p, _| {
+        if matches!(p, Point::Chunk(n) if n >= MIB) && !fenced.swap(true, Ordering::SeqCst) {
+            let reopened = Mutex::new(Store::open(&db).unwrap());
+            fence(
+                &reopened,
+                op,
+                &Control::new(false),
+                loomward_operations::FenceCause::GrantRevoked,
+            )
+            .unwrap();
+        }
+        Flow::Continue
+    });
+    let _ = run(&lab.store, op, &control);
+    let r = replay(&lab.store, op).unwrap();
+    assert!(r.fenced);
+    let file = lab.dest().join(r.staging_tokens.last().unwrap()).join("f.bin");
+    assert_eq!(
+        fs::metadata(file).unwrap().len(),
+        MIB,
+        "chunks written after the reopened service's fence was acknowledged"
+    );
+    assert_eq!(r.state, OpState::Copying, "the detached worker settled the run");
 }
 
 #[test]

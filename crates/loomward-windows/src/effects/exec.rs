@@ -614,37 +614,63 @@ fn with_item(stop: Stop, item: u32) -> Stop {
     }
 }
 
-/// Reads the source in the writer's chunks, stopping at the next chunk once the owner cancels. The
-/// third field counts the bytes handed to the writer so far (a lane C6 mid-write kill point per chunk).
-/// The fourth is the effect step in progress (docs/47 section 5): taken at construction for the
-/// preallocation, then retaken before each chunk's read, so that chunk's write (and the final flush)
-/// runs under it; a fence stops the next chunk.
-struct Cancellable<'a, R>(
-    &'a mut R,
-    &'a Control,
-    u64,
-    Option<std::sync::MutexGuard<'a, ()>>,
-);
+/// Reads the source in the writer's chunks, stopping at the next chunk once the owner cancels or a
+/// fence lands. `step` is the effect step in progress (docs/47 section 5): taken at construction for
+/// the preallocation, then retaken before each chunk's read, so that chunk's write (and the final
+/// flush) runs under it; an in-memory fence stops the next chunk.
+///
+/// A detached worker's `Control` never sees a reopened service's fence, so each step also re-reads the
+/// durable stop (#672). That check is not held across the write: holding the store lock for a
+/// multi-GB file would stall every journal reader and writer. Residual window, bounded: a fence another
+/// store acknowledges just after a step's check is followed by at most that step's effect, either the
+/// preallocation (a size reservation, no data) or one chunk write (at most 1 MiB, `BLOCK`), and, after
+/// the last chunk, the flush of bytes already written. No further chunk starts.
+struct Cancellable<'a, R> {
+    reader: &'a mut R,
+    control: &'a Control,
+    journal: &'a Journal<'a>,
+    /// Bytes handed to the writer so far (a lane C6 mid-write kill point per chunk).
+    read: u64,
+    step: Option<std::sync::MutexGuard<'a, ()>>,
+    /// Why the last read stopped, when the journal said so: the writer only sees an `io::Error`.
+    stopped: Option<Stop>,
+}
 impl<'a, R> Cancellable<'a, R> {
-    fn new(reader: &'a mut R, control: &'a Control) -> Result<Self, Stop> {
+    fn new(reader: &'a mut R, control: &'a Control, journal: &'a Journal<'a>) -> Result<Self, Stop> {
         let step = control.admit()?;
         control.check()?;
-        Ok(Cancellable(reader, control, 0, Some(step)))
+        journal.check_copying()?;
+        Ok(Cancellable {
+            reader,
+            control,
+            journal,
+            read: 0,
+            step: Some(step),
+            stopped: None,
+        })
+    }
+    /// The stop behind a failed write: the journal's, else `or` of the I/O error.
+    fn stop(&mut self, e: &io::Error, or: impl FnOnce(&io::Error) -> Stop) -> Stop {
+        self.stopped.take().unwrap_or_else(|| or(e))
     }
 }
 impl<R: Read> Read for Cancellable<'_, R> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        self.3 = None;
+        self.step = None;
         // A test seam between chunk steps; a crash or fault here is not modelled.
-        let _ = self.1.at(Point::Chunk(self.2));
-        if self.1.cancel.load(Ordering::SeqCst) {
+        let _ = self.control.at(Point::Chunk(self.read));
+        if self.control.cancel.load(Ordering::SeqCst) {
             return Err(io::Error::other(Stopped));
         }
         #[cfg(test)]
-        crash::hit(&format!("write@{}", self.2));
-        self.3 = Some(self.1.admit().map_err(|_| io::Error::other(Stopped))?);
-        let n = self.0.read(buffer)?;
-        self.2 += n as u64;
+        crash::hit(&format!("write@{}", self.read));
+        self.step = Some(self.control.admit().map_err(|_| io::Error::other(Stopped))?);
+        if let Err(stop) = self.journal.check_copying() {
+            self.stopped = Some(stop);
+            return Err(io::Error::other(Stopped));
+        }
+        let n = self.reader.read(buffer)?;
+        self.read += n as u64;
         Ok(n)
     }
 }
@@ -1182,10 +1208,11 @@ impl Runner<'_, '_> {
             return Err(Stop::Refused(Refusal::SourceChanged, None));
         }
         self.control.at(Point::Writing(i as u32))?;
-        self.journal.check_copying()?;
-        let digest = file
-            .write_and_flush(&mut Cancellable::new(&mut source, self.control)?, item.size)
-            .map_err(|e| self.write_error(&e))?;
+        let digest = {
+            let mut reader = Cancellable::new(&mut source, self.control, &self.journal)?;
+            file.write_and_flush(&mut reader, item.size)
+                .map_err(|e| reader.stop(&e, |e| self.write_error(e)))?
+        };
         let mut streams = Vec::new();
         for (name, size) in &item.streams {
             self.control.at(Point::CreatingStream(i as u32))?;
@@ -1199,9 +1226,10 @@ impl Runner<'_, '_> {
             let mut reader = source
                 .stream_reader(&format!(":{name}:$DATA"))
                 .map_err(|_| Stop::Refused(Refusal::SourceChanged, None))?;
+            let mut reader = Cancellable::new(&mut reader, self.control, &self.journal)?;
             let d = stream
-                .write_and_flush(&mut Cancellable::new(&mut reader, self.control)?, *size)
-                .map_err(|e| self.write_error(&e))?;
+                .write_and_flush(&mut reader, *size)
+                .map_err(|e| reader.stop(&e, |e| self.write_error(e)))?;
             streams.push((name.clone(), d, *size));
         }
         source.finish().map_err(source_refusal)?;
