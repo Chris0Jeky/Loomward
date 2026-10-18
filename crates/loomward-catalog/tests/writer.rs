@@ -2688,7 +2688,7 @@ fn multilink_ignores_files_below_excluded_or_absent_ancestors() {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!((flag, sums.multi_link_entries), (0, 0));
+        assert_eq!((flag, sums.multi_link_entries), (0, Some(0)));
         assert_eq!(
             (sums.unique_objects, sums.unique_allocated_bytes),
             (Some(1), Some("100".into()))
@@ -2727,7 +2727,7 @@ fn multilink_ignores_files_below_excluded_or_absent_ancestors() {
                 .subtree
                 .unwrap()
                 .multi_link_entries,
-            3
+            Some(3)
         );
     }
 }
