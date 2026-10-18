@@ -34,21 +34,43 @@ fn out(result: Value, revs: Option<(i64, i64)>) -> Out {
 }
 
 /// At most [`lb::MAX_INPUT_BYTES`] of an owner-picked regular local file, read-only. Refuses
-/// network, device and verbatim namespaces, reserved device names, links, reparse points and cloud
-/// placeholders before opening anything (opening a placeholder would download it). The handle is
-/// dropped before this returns, so nothing holds the file while parsing. Returns the bytes and the
-/// file's modification time in Unix seconds (when the provider wrote it, not when Loomward read it).
-/// shortcut: path checks can race a swap and do not inspect parents; use anchored no-follow opens
+/// network, device and verbatim namespaces, reserved device names, stream-colon names, links,
+/// reparse points and cloud placeholders before opening anything (opening a placeholder would
+/// download it). The picked parent's ancestors are inspected root-first without following
+/// reparse points before canonicalising; a parent that does not resolve is unreadable.
+/// The handle is dropped before this returns, so nothing
+/// holds the file while parsing. Returns the bytes and the file's modification time in Unix
+/// seconds (when the provider wrote it, not when Loomward read it).
+/// shortcut: path checks can race a swap and do not pin the file; use anchored no-follow opens
 /// before expanding beyond owner-picked receipts. The handle metadata check follows links.
 pub(crate) fn read_receipt(path: &Path) -> Result<(Vec<u8>, u64), Why> {
     if paths::network_path(path) || paths::reserved_device(path) {
         return Err(Why::NotARegularFile);
     }
-    let meta = std::fs::symlink_metadata(path).map_err(|_| Why::Unreadable)?;
+    let name = path.file_name().map(|n| n.to_string_lossy());
+    if name.as_deref().is_none_or(|n| n.contains(':')) {
+        return Err(Why::NotARegularFile);
+    }
+    let dir = path.parent().ok_or(Why::NotARegularFile)?;
+    let folder = paths::prospective_dir(dir).map_err(|reason| match reason.as_str() {
+        "reparse_or_placeholder" | "not_a_directory" | "network_or_removable_unsupported" => {
+            Why::NotARegularFile
+        }
+        _ => Why::Unreadable,
+    })?;
+    let parent_meta = std::fs::symlink_metadata(&folder).map_err(|_| Why::Unreadable)?;
+    if paths::network_path(&folder) || !parent_meta.is_dir() {
+        return Err(Why::NotARegularFile);
+    }
+    let resolved = folder.join(path.file_name().ok_or(Why::NotARegularFile)?);
+    if paths::network_path(&resolved) || paths::reserved_device(&resolved) {
+        return Err(Why::NotARegularFile);
+    }
+    let meta = std::fs::symlink_metadata(&resolved).map_err(|_| Why::Unreadable)?;
     if !meta.is_file() || paths::unsafe_attributes(&meta) {
         return Err(Why::NotARegularFile);
     }
-    let file = std::fs::File::open(path).map_err(|_| Why::Unreadable)?;
+    let file = std::fs::File::open(&resolved).map_err(|_| Why::Unreadable)?;
     let meta = file.metadata().map_err(|_| Why::Unreadable)?;
     if !meta.is_file() || paths::unsafe_attributes(&meta) {
         return Err(Why::NotARegularFile);
