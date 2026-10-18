@@ -11,7 +11,7 @@ CREATE TABLE root_grant (
   filesystem TEXT CHECK (filesystem IS NULL OR length(filesystem) <= 32)) STRICT;
   -- identity_mode 'unverified' (#219): FAT, exFAT or unknown filesystem; metadata only, never acted on
 CREATE TABLE lab_root (                   -- synthetic state.db only; written by `loomward-lab generate --register`
-  id INTEGER PRIMARY KEY AUTOINCREMENT, volume_key TEXT NOT NULL, root_file_id BLOB NOT NULL,
+  id INTEGER PRIMARY KEY AUTOINCREMENT, volume_key TEXT NOT NULL, volume_guid TEXT, root_file_id BLOB NOT NULL,
   manifest_digest TEXT NOT NULL, seed TEXT NOT NULL, tier TEXT NOT NULL, registered_at_ns INTEGER NOT NULL,
   UNIQUE (volume_key, root_file_id)) STRICT;
 CREATE TABLE object_ref (                 -- durable reference, continuity-keyed (section 6.3)

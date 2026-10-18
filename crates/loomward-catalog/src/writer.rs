@@ -1158,11 +1158,12 @@ fn prepare_state(
             {
                 return Err(Error::Invalid("ReFS root needs 128-bit identity"));
             }
+            let tx = conn.transaction()?;
             let lab: Option<i64> = if o.origin == "lab_generated" {
                 Some(
-                    conn.query_row(
-                        "SELECT id FROM st.lab_root WHERE volume_key=?1 AND root_file_id=?2",
-                        params![o.volume_key, o.root_file_id],
+                    tx.query_row(
+                        "SELECT id FROM st.lab_root WHERE volume_key=?1 AND root_file_id=?2 AND volume_guid=?3",
+                        params![o.volume_key, o.root_file_id, o.volume_guid],
                         |r| r.get(0),
                     )
                     .optional()?
@@ -1171,7 +1172,6 @@ fn prepare_state(
             } else {
                 None
             };
-            let tx = conn.transaction()?;
             // #219: a root observed on a filesystem that cannot verify identity is granted
             // identity-unverified; the service confirmed a personal one with the owner first.
             let mode = if o.filesystem.as_deref().is_some_and(|fs| {

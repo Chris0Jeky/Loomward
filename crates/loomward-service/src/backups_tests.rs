@@ -341,6 +341,71 @@ fn the_reader_never_returns_more_than_the_budget() {
 }
 
 #[test]
+fn a_receipt_under_a_reparse_parent_is_refused_before_resolution() {
+    let tmp = temp_root();
+    let control = write(tmp.path(), "control.json", snapshots());
+    let target = tmp.path().join("target");
+    std::fs::create_dir_all(target.join("nested")).unwrap();
+    write(&target, "receipt.json", snapshots());
+    write(&target.join("nested"), "receipt.json", snapshots());
+    let link = tmp.path().join("linked-parent");
+    #[cfg(windows)]
+    {
+        // Local junctions need no symlink privilege and never contact a remote host.
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J", "linked-parent", "target"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "{made:?}");
+    }
+    #[cfg(not(windows))]
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let results = [
+        "receipt.json",
+        "nested/receipt.json",
+        "missing/receipt.json",
+    ]
+    .map(|relative| read_receipt(&link.join(relative)));
+    #[cfg(windows)]
+    std::fs::remove_dir(&link).unwrap();
+    #[cfg(not(windows))]
+    std::fs::remove_file(&link).unwrap();
+    for result in results {
+        assert_eq!(
+            result.unwrap_err(),
+            BackupImportRefusal::NotARegularFile,
+            "reparse ancestor must be refused even when the descendant is missing"
+        );
+    }
+    assert_eq!(read_receipt(&control).unwrap().0, snapshots().as_bytes());
+}
+
+#[test]
+fn a_stream_colon_receipt_is_refused_before_open() {
+    let tmp = temp_root();
+    let regular = write(tmp.path(), "regular.json", snapshots());
+    // An NTFS stream suffix is refused by name before anything is opened; the file on disk is
+    // untouched and still reads as a normal local receipt.
+    assert_eq!(
+        read_receipt(&tmp.path().join("regular.json:stream")).unwrap_err(),
+        BackupImportRefusal::NotARegularFile
+    );
+    #[cfg(not(windows))]
+    {
+        // A colon is a legal file name elsewhere: even a real stream-named file holding a valid
+        // receipt is refused without reading it.
+        let colon = write(tmp.path(), "colon.json:stream", snapshots());
+        assert_eq!(
+            read_receipt(&colon).unwrap_err(),
+            BackupImportRefusal::NotARegularFile
+        );
+        assert_eq!(std::fs::read(&colon).unwrap(), snapshots().as_bytes());
+    }
+    assert_eq!(read_receipt(&regular).unwrap().0, snapshots().as_bytes());
+}
+
+#[test]
 fn unrepresentable_receipt_times_refuse_without_replacing_evidence() {
     let tmp = temp_root();
     let svc = personal(tmp.path());

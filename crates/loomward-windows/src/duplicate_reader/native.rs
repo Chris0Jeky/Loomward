@@ -137,6 +137,8 @@ impl<F: FnMut(Event, usize)> Reader<F> {
         if expected.id != Some(FileIdObs::Id128(current.object.file_id))
             || expected.volume_serial.map(|s| s.to_string()).as_ref()
                 != Some(&current.object.volume_serial)
+            || expected.volume_guid
+                != Some(enumerate::volume_guid(pins.last().unwrap()).map_err(source)?)
         {
             return Err(Reason::ChangedDuringRead);
         }
@@ -456,6 +458,83 @@ mod tests {
     use super::*;
     use std::os::windows::io::FromRawHandle;
     use windows_sys::Win32::System::Pipes::CreateNamedPipeW;
+
+    fn guid_fixture() -> Option<(tempfile::TempDir, OpenedIdentity)> {
+        use crate::enumerate::DirSource;
+        let base = std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let temp = tempfile::tempdir_in(base).unwrap();
+        let source = enumerate::NativeSource::default();
+        if enumerate::running_elevated() {
+            assert!(matches!(
+                source.open_root(temp.path()),
+                Err(SourceError::Refused)
+            ));
+            return None;
+        }
+        let (_, expected) = source.open_root(temp.path()).unwrap();
+        assert!(expected.volume_guid.is_some());
+        Some((temp, expected))
+    }
+
+    #[test]
+    fn content_reader_rejects_cloned_volume_guid_before_descendant_reads() {
+        let Some((temp, expected)) = guid_fixture() else {
+            return;
+        };
+        for name in ["a", "b"] {
+            std::fs::write(temp.path().join(name), b"same").unwrap();
+        }
+        let entries: Vec<_> = ["a", "b"]
+            .into_iter()
+            .map(|name| Entry {
+                relative: name.into(),
+                expected: identity::observe(&temp.path().join(name)).unwrap(),
+            })
+            .collect();
+        let read = |expected: &OpenedIdentity| {
+            super::super::inspect(
+                temp.path(),
+                expected,
+                &entries,
+                Budget::test(),
+                Default::default(),
+            )
+        };
+        assert!(read(&expected).is_ok());
+        let changed = OpenedIdentity {
+            volume_guid: expected.volume_guid.map(|g| g ^ 1),
+            ..expected
+        };
+        assert_eq!(read(&changed).unwrap_err(), Reason::ChangedDuringRead);
+        let legacy = OpenedIdentity {
+            volume_guid: None,
+            ..expected
+        };
+        assert_eq!(read(&legacy).unwrap_err(), Reason::ChangedDuringRead);
+    }
+
+    #[test]
+    fn tree_reader_rejects_cloned_volume_guid_before_descendant_reads() {
+        let Some((temp, expected)) = guid_fixture() else {
+            return;
+        };
+        std::fs::write(temp.path().join("a"), b"same").unwrap();
+        let read = |expected: &OpenedIdentity| {
+            tree::read_tree(
+                temp.path(),
+                expected,
+                Budget::test(),
+                10,
+                Default::default(),
+            )
+        };
+        assert!(read(&expected).is_ok());
+        let changed = OpenedIdentity {
+            volume_guid: expected.volume_guid.map(|g| g ^ 1),
+            ..expected
+        };
+        assert_eq!(read(&changed).unwrap_err(), Reason::ChangedDuringRead);
+    }
 
     #[test]
     fn pending_content_read_is_cancelled_and_drained() {
