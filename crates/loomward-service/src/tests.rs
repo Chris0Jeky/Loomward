@@ -5173,12 +5173,46 @@ fn a_duplicates_job_started_past_its_deadline_reports_the_started_job() {
     );
 }
 
-/// #698: sends `req` once, holds its worker after the handler started the job and its caller
+/// #716: a completed forget keeps its receipt when the caller has already timed out.
+#[test]
+fn a_forget_started_past_its_deadline_reports_success_on_retry() {
+    let dir = temp_root();
+    let svc = open(dir.path(), DatasetClass::Synthetic);
+    let (root, _) = fixture(&svc, 3);
+    let root = svc.inner.root_id(root);
+    ok(
+        "roots.revoke",
+        call(
+            &svc,
+            "roots.revoke",
+            json!({"root_id": root, "purge_catalog": false}),
+        ),
+    );
+    let mut req = request("roots.forget", json!({"root_id": root}));
+    let first = past_deadline_once(&svc, &mut req, Command::RootsForget);
+    assert_eq!(err(first).code, ErrorCode::DeadlineExceeded);
+    let retry = svc.call(req.clone(), &CallContext::http());
+    let (forgotten, _) = ok("roots.forget", retry.clone());
+    assert_eq!(forgotten["root_id"], json!(root));
+    assert!(forgotten["forgotten_at"].is_string());
+    assert_eq!(svc.call(req, &CallContext::http()), retry);
+    assert_eq!(
+        svc.inner.hooks.runs.lock().unwrap()[&Command::RootsForget],
+        1
+    );
+    assert!(
+        ok("roots.list", call(&svc, "roots.list", json!({}))).0["roots"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// #698: sends `req` once, holds its worker after the handler finished and its caller
 /// before the wait, then runs the service clock (`Hooks::skew`) past the deadline. The caller
 /// therefore answers at its deadline and the worker finishes past it, on any host load; the
 /// generous real deadline leaves the handler's own work out of the race. The clock is reset
 /// before returning, so a retry with the same request_id waits on the real clock.
-#[cfg(windows)]
 fn past_deadline_once(
     svc: &Service,
     req: &mut RequestEnvelope,
