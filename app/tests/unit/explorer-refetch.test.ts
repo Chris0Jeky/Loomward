@@ -88,4 +88,32 @@ describe('resolveTrail after node IDs change', () => {
   it('does not pass off an unavailable catalogue as a missing folder', async () => {
     await expect(resolveTrail(saved, [root], async () => { throw boom('internal_error'); })).rejects.toMatchObject({ code: 'internal_error' });
   });
+
+  describe('bound to the granted root, not its name (#198)', () => {
+    const bound = [{ id: 'old-root', name: 'Root', root: 'rt_1' }, ...saved.slice(1)];
+    const twin = { id: 'twin-root', name: 'Root' };
+    const rootOf = async (id: string) => (id === root.id ? 'rt_1' : id === twin.id ? 'rt_2' : null);
+
+    it('picks the root with the saved root id among same-named roots', async () => {
+      const children = async (id: string) => page(id === root.id ? [docs] : []);
+      expect(await resolveTrail(bound, [twin, root], children, rootOf)).toEqual([{ ...root, root: 'rt_1' }, docs]);
+    });
+
+    it('does not restore a different root of the same name and sub-path when the original root is gone', async () => {
+      const children = async (id: string) => page(id === twin.id ? [docs] : id === docs.id ? [leaf] : []);
+      expect(await resolveTrail(bound, [twin], children, rootOf)).toEqual([]);
+    });
+
+    it('keeps a root that was renamed, and falls back to the name when the saved root was never bound', async () => {
+      const renamed = { id: root.id, name: 'Renamed' };
+      expect(await resolveTrail(bound, [renamed], async () => page([]), rootOf)).toEqual([{ ...renamed, root: 'rt_1' }]);
+      expect(await resolveTrail(saved, [root], async () => page([]), rootOf)).toEqual([root]);
+    });
+
+    it('skips a starting point the engine no longer knows, but surfaces any other failure', async () => {
+      const lookup = async (id: string) => { if (id === twin.id) throw boom('not_found'); return 'rt_1'; };
+      expect(await resolveTrail(bound, [twin, root], async () => page([]), lookup)).toEqual([{ ...root, root: 'rt_1' }]);
+      await expect(resolveTrail(bound, [root], async () => page([]), async () => { throw boom('internal_error'); })).rejects.toMatchObject({ code: 'internal_error' });
+    });
+  });
 });

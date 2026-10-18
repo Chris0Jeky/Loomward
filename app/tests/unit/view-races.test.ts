@@ -276,6 +276,7 @@ function explorer(call: ReturnType<typeof vi.fn>) {
     rows: [] as typeof searchExample.hits[number]['row'][], found: new Map(), seenIds: new Set(),
     searching: false, query: '', extension: '', minBytes: '', kind: 'any', basis: 'logical', sort: 'size_desc',
     next: null, total: null, error: '', busy: false,
+    notice: '', gone: null as { lost: string; now: string | null } | null,
   };
   return { state, code: viewScript('explorer', state, 'session.epoch') };
 }
@@ -328,7 +329,31 @@ describe('Explorer starting points after invalidation', () => {
     expect(state.searching).toBe(searching);
     expect(state.query).toBe('report');
     expect(state.extension).toBe('docx');
-    expect(call.mock.calls.at(-1)![0]).toBe(searching ? 'search.query' : 'tree.children');
+    expect(call.mock.calls.map(args => args[0]).filter(c => c !== 'node.inspect').at(-1)).toBe(searching ? 'search.query' : 'tree.children'); // the root binding read is background bookkeeping
+  });
+
+  it('does not tell the reader a different root of the same name was restored (#198)', async () => {
+    const twin = { id: 'root_twin', name: 'Synthetic A' };
+    const call = vi.fn(async (command: string, req: { node_id?: string }) => ({ result: command === 'tree.slice' ? roots(twin)
+      : command === 'node.inspect' ? { root_id: 'rt_2' } : { ...children, items: req.node_id === twin.id ? [{ node_id: 'child_t', name: 'Synthetic child', kind: 'dir' }] : [] } }));
+    const { state, code } = explorer(call);
+    const saved = [{ ...rootA, root: 'rt_1' }, { id: 'child_a', name: 'Synthetic child' }];
+    expect(await code.loadStarts({ lost: 'Synthetic child', saved, focus: null })).toBe(true);
+    expect(state.trail.map(c => c.id)).toEqual([twin.id]); // the first start, not a restored location
+    expect(state.notice).toBe('');
+    expect(state.gone).toEqual({ lost: 'Synthetic child', now: null });
+  });
+
+  it('restores the saved root by id even when another root shares its name (#198)', async () => {
+    const twin = { id: 'root_twin', name: 'Synthetic A' }, mine = { id: 'root_new', name: 'Synthetic A' };
+    const call = vi.fn(async (command: string, req: { node_id?: string }) => ({ result: command === 'tree.slice' ? roots(twin, mine)
+      : command === 'node.inspect' ? { root_id: req.node_id === mine.id ? 'rt_1' : 'rt_2' }
+      : { ...children, items: req.node_id === mine.id ? [{ node_id: 'child_n', name: 'Synthetic child', kind: 'dir' }] : [] } }));
+    const { state, code } = explorer(call);
+    const saved = [{ ...rootA, root: 'rt_1' }, { id: 'child_a', name: 'Synthetic child' }];
+    expect(await code.loadStarts({ lost: 'Synthetic child', saved, focus: null })).toBe(true);
+    expect(state.trail.map(c => c.id)).toEqual([mine.id, 'child_n']);
+    expect(state.notice).toContain('location was restored');
   });
 
   it('drops unavailable starting points when their refresh fails', async () => {

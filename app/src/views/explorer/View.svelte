@@ -141,6 +141,14 @@
     }
   }
 
+  /** Remember which granted root this trail starts in while its node ID is live; recovery follows the root, not its name (#198). Best effort. */
+  async function bindRoot(crumb: Crumb): Promise<void> {
+    try {
+      const { result } = await session.client!.call('node.inspect', { node_id: crumb.id });
+      if (typeof result?.root_id === 'string') crumb.root = result.root_id;
+    } catch { /* unbound: recovery falls back to the unique name */ }
+  }
+
   async function show(append = false, restarted = false, recovery?: Recovery): Promise<void> {
     if (!session.client || (!searching && !here)) return;
     if (!append) {
@@ -187,6 +195,7 @@
       next = page.next_cursor;
       budgetHit = page.budget_hit;
       if (!searching && here) seenIds.add(here.id);
+      if (!searching && trail[0] && !trail[0].root) void bindRoot(trail[0]);
       if (recovery) await restoreLocationFocus(recovery.focus, mine);
       if (hadFocus) {
         await tick();
@@ -277,7 +286,7 @@
       const resolved = recovery ? await resolveTrail(recovery.saved, fresh, async (node_id, cursor) => {
         ctl.signal.throwIfAborted();
         return (await c.call('tree.children', { node_id, cursor, sort: 'name_asc', basis, limit: PAGE }, { signal: ctl.signal })).result;
-      }) : [];
+      }, async (node_id) => (await c.call('node.inspect', { node_id }, { signal: ctl.signal })).result.root_id ?? null) : [];
       if (mine !== gen) return false;
       for (const crumb of resolved) seenIds.add(crumb.id);
       trail = resolved.length ? resolved : starts[0] ? [starts[0]] : [];
