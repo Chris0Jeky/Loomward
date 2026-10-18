@@ -6,12 +6,12 @@ import { Client } from '../../src/lib/transport/client';
 import { TransportError } from '../../src/lib/transport/transport';
 import { createMockTransport } from '../../src/lib/transport/mock';
 import { DUPLICATES_FIXTURE } from '../../src/lib/transport/mock-scan';
-import type { DuplicateReport, EventEnvelope, Job } from '../../src/lib/contracts.gen';
+import type { DuplicateReport, EventEnvelope, Job, SessionInfo } from '../../src/lib/contracts.gen';
 import type { Transport } from '../../src/lib/transport/transport';
 import { sanitizeDuplicatesReport, skippedNotice } from '../../src/views/duplicates/View.svelte';
 
 const job = (patch: Partial<Job> = {}): Job => ({ job_id: 'jb_fixture', kind: 'duplicates', root_id: 'rt_fixture', seq: 1, rev: 0, state: 'queued', created_at: '2026-10-01T00:00:00Z', started_at: null, finished_at: null, coverage: null, error: null, progress: null, ...patch });
-afterEach(() => { session.client = null; vi.useRealTimers(); });
+afterEach(() => { session.client = null; session.info = null; vi.useRealTimers(); });
 
 describe('duplicates jobs', () => {
   it('validates optional min_bytes as an exact unsigned byte count', async () => {
@@ -92,6 +92,45 @@ describe('duplicates jobs', () => {
     store.onEvent({ event: 'stream.hello', epoch: 'two' } as EventEnvelope); // the engine restarted: the old lifetime is gone
     answer();
     await syncing;
+    expect(store.book).toEqual({});
+  });
+  it('drops a refresh answer that was requested before the engine restarted and resolves last (stale sequence counters)', async () => {
+    const old = job({ job_id: 'jb_old', seq: 9, rev: 5, state: 'completed', duplicates: DUPLICATES_FIXTURE });
+    const fresh = job({ job_id: 'jb_new', seq: 1, rev: 0, state: 'running' });
+    const releases: Record<string, () => void> = {};
+    const call = vi.fn(async (r: { request_id: string; payload: { job_id: string } }) => {
+      await new Promise<void>((resolve) => { releases[r.payload.job_id] = resolve; });
+      return { protocol: 'loomward/3', request_id: r.request_id, ok: true, result: { job: r.payload.job_id === 'jb_old' ? old : fresh }, meta: {} };
+    });
+    session.client = new Client({ call } as unknown as Transport);
+    const store = new Duplicates();
+    store.onEvent({ event: 'stream.hello', epoch: 'one' } as EventEnvelope);
+    const stale = store.refresh(job({ job_id: 'jb_old' }));
+    await vi.waitFor(() => expect(releases.jb_old).toBeDefined());
+    store.onEvent({ event: 'stream.hello', epoch: 'two' } as EventEnvelope);
+    const next = store.refresh(job({ job_id: 'jb_new' }));
+    await vi.waitFor(() => expect(releases.jb_new).toBeDefined());
+    releases.jb_new!(); await next;
+    releases.jb_old!(); await stale;
+    expect(store.book.rt_fixture).toEqual(fresh);
+  });
+  it.each([['client', 'sync'], ['client', 'refresh'], ['session', 'sync'], ['session', 'refresh']] as const)('drops a %s %s answer after the client changed or the HTTP hello showed a new engine start', async (change, run) => {
+    let answer!: () => void;
+    const answered = new Promise<void>((resolve) => { answer = resolve; });
+    let asked = false;
+    const done = job({ rev: 3, state: 'completed', duplicates: DUPLICATES_FIXTURE });
+    session.info = { session_started_at: '2026-10-10T10:00:00Z' } as SessionInfo;
+    session.client = new Client({ call: async (r: { request_id: string }) => {
+      asked = true;
+      await answered;
+      return { protocol: 'loomward/3', request_id: r.request_id, ok: true, result: { jobs: [done], job: done }, meta: {} };
+    } } as unknown as Transport);
+    const store = new Duplicates();
+    const pending = run === 'sync' ? store.sync() : store.refresh(job());
+    await vi.waitFor(() => expect(asked).toBe(true));
+    if (change === 'client') session.client = new Client({ call: async () => { throw new Error('unused'); } } as unknown as Transport);
+    else session.info = { session_started_at: '2026-10-10T11:00:00Z' } as SessionInfo; // the engine restarted; its stream.hello has not arrived yet
+    answer(); await pending;
     expect(store.book).toEqual({});
   });
   it.each(['revoked', 'unchanged', 'missing'])('revalidates a retained report outside the newest 50 jobs: %s', async (outcome) => {

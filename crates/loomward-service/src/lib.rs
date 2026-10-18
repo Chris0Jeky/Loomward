@@ -944,6 +944,14 @@ impl Service {
             }
         }
         drop(queue);
+        // Tests hold the caller here and run its clock ahead (`Hooks::skew`, the clock
+        // `Inner::past` reads), so a mutation parked at a gate expires exactly there (#698).
+        #[cfg(test)]
+        let deadline = {
+            self.inner.hooks.gate(command, "mutate_wait");
+            let ahead = *self.inner.hooks.skew.lock().unwrap();
+            deadline.checked_sub(ahead).unwrap_or_else(Instant::now)
+        };
         self.inner.idem.wait(&id, deadline).unwrap_or_else(|| {
             ResponseEnvelope::error(
                 Some(id),
@@ -1033,7 +1041,7 @@ impl Inner {
         });
         // A saved simulation or a started owner job happened: retain its receipt even past the
         // deadline (#565/#568; the handlers bound their own pre-emption waits).
-        let out = if work.is_some_and(|work| Instant::now() >= work.deadline)
+        let out = if work.is_some_and(|work| self.past(work.deadline))
             && !matches!(command, Command::ScanStart | Command::DuplicatesInspect)
             && !(command == Command::PlacementSimulate
                 && request.payload.get("save").and_then(Value::as_bool) == Some(true))

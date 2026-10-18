@@ -117,6 +117,8 @@ times are set bottom-up after their children are verified.
 **Publish.** One `SetFileInformationByHandle(FileRenameInfo)` on the staging folder handle with
 `ReplaceIfExists = FALSE`, which returns an error when the target exists [W5]. Staging and final names share the
 same parent, so the rename is a same-directory name change on one volume and atomic from a reader's view.
+The implementation falls back on errors 87 or 123 to `NtSetInformationFile(FileRenameInformation)` with
+the same pinned-parent, no-replace buffer; it never falls back to resolving an absolute destination path.
 
 **Holding staged content from the final check to the receipt.** Staged children inherit the destination ACL, so
 another process in the same account could change a staged file between the final tree check and the rename. The
@@ -127,21 +129,37 @@ protocol closes that window in two parts: hold, then confirm.
    open for write (`staging_in_use`, resumable), and while it is held no one can open the file for write [W2]. The
    final content hash is taken through that held handle (non-cached), so the bytes verified are the bytes held. The
    holds stay open until the `committed` record (up to 200,000 handles; assumption, measured in C2).
-2. **Publish with holds, if H2 allows.** If H2 shows that held children opened with `FILE_SHARE_DELETE` do not block
-   renaming their ancestor, the rename is issued with every hold in place. If H2 shows they do, the holds are released
-   just before the rename and reacquired by ID straight after it. Content can change only in that gap, and step 3
-   then re-hashes every file.
+2. **Publish with default-stream holds.** The executor retains default-stream holds, releases all named-stream
+   holds just before the rename, and reopens the named streams relative to the retained default-stream handles straight after
+   it. This conservative path applies on every host, whether a held named stream blocks rename or not (H2).
+   Named-stream content can change in that gap, so step 3 always re-hashes every named stream.
 3. **Confirm after publish.** Under the holds, still held or reacquired, a post-publish confirmation checks four
    things:
    - the published tree's entries, names and IDs against the manifest, with no extras;
    - each item's preserved metadata (section 6), because share modes do not stop a holder of write-attributes
      access from changing times or attributes;
    - that the final folder's identity equals the staging identity;
-   - content, re-hashed, but only on the H2-negative path.
+   - named-stream content, always re-hashed; default-stream content remains under its original deny-write holds.
 
    Only then is `committed` journaled and a verified receipt issued. Any difference fails closed: nothing is
    recorded as verified or committed for the changed items, the run goes to `needs_attention`, and the receipt
    outcome is `published_unverified`. The published copy is kept, because a published copy is never removed.
+
+**H2 host facts, 2026-10-18 (#687).** H2 depends on where the staging tree lives, not only on the Windows
+build. On KRASPYON (Windows 11 Home 26100.9711, same session, same binary):
+
+- With the lab under the user-profile `%TEMP%`: Win32 `SetFileInformationByHandle(FileRenameInfo)` returns 123
+  even with no hold; native `NtSetInformationFile(FileRenameInformation)` returns `0xc0000022` (error 5) with a
+  named-stream hold and succeeds with only a default-stream hold. This matches the C5 measurement.
+- With the lab under a folder at the volume root (`TMP=C:\loomward-test-roots`, as the estate proof runs set it):
+  Win32 returns 87, and the native rename **succeeds** with a named-stream hold.
+
+Buffer layouts measured identical (size 24, parent offset 8, name length 16, name 20). The cause of the
+location difference is not isolated. `effects::tests::h2_relative_rename_host_probe` prints these facts;
+`h2_publish_after_named_hold_release_preserves_hashes_with_default_hold` asserts only what the executor relies on.
+Copy correctness never depends on a named-stream hold blocking the rename: named-stream holds are always released
+before publish and the streams re-hashed after it. A test that needs a guaranteed rename blocker must use one that
+blocks everywhere (an incompatible open without delete sharing), not a named-stream hold.
 
 **Staging removal.** Only on cancel, abandon or a redo after a failed item. Only inside the staging folder whose
 identity was journaled, and only for entries whose identity was journaled. Before touching any entry, cleanup checks
@@ -439,7 +457,7 @@ Checked at preview (P), at start or resume (S) and per item at open (I). "Resuma
 | `case_collision` | two names fold equal under the destination's rules (CompareStringOrdinal, ignore case) | P | no |
 | `name_unrepresentable` | reserved device name, trailing dot or space, component over 255 units [W13] | P | no |
 | `path_too_long` | final path over 32,767 units [W13] (over 259 is a warning: many apps and the shell cannot open it [W13]) | P | no |
-| `publish_in_use` | rename refused (access, sharing or lock violation) while another process holds a handle under staging (H2) | publish | yes, after 10 tries over 30 s |
+| `publish_in_use` | rename actually refused (access, sharing or lock violation) by an incompatible handle under staging (H2; not every stream hold blocks it) | publish | yes, after 10 tries over 30 s |
 | `verification_mismatch` | hash or metadata differs twice | I | no: `needs_attention` |
 | `grant_revoked` | a source grant revoked, or emergency stop (section 5) | P, S, then every cooperative boundary | no: cancels the run |
 | `elevated`, `approval_expired`, `digest_mismatch`, `manifest_limit` | authority checks; limit 200,000 entries per operation (assumption) | P, S | no |
@@ -485,7 +503,7 @@ volume (assumption, to be measured in C5).
 | Disk fills | preallocation fails | `insufficient_space`, staging kept | injected error, plus a small real volume if Q2 provides one |
 | Bit flip or torn write in staging | non-cached read-back hash | retry once, then `needs_attention` | real corruption: flip a byte through a second handle before verify |
 | Final name created by someone else | rename returns an error [W5] | `needs_attention`, staging kept | real race fixture |
-| Antivirus holds a staged file | rename refused (H2) | bounded retry, then `blocked` | real held-handle fixture |
+| Antivirus holds a staged file incompatibly with rename | actual rename refusal (H2) | bounded retry, then `blocked` | real held-handle fixture |
 | Journal write fails (`state.db` full or locked) | SQLite error before the effect | stop before the effect; no effect without its intent | injected |
 | Operator cancels | cancel flag at chunk boundaries | staging removed by identity | unit plus lab |
 | Bug writes outside staging | create-new relative to staging only; the C6 oracle snapshots the destination parent | test failure blocks the gate | C6 oracle |
@@ -599,9 +617,9 @@ serves the copy commands to synthetic sessions on registered lab roots only, and
 `copy_effect_gated`. Q1 stays open: by default (`loomward-copy-staging-removal` off) cancel and abandon
 journal `staging_left` and report the staging folder's name; identity-bound removal is the opt-in.
 Creation times are journaled (`planned`) before they are set, and recovery attaches only by journaled
-file ID with the original or planned creation time. Measured in C5: a held named-stream handle blocks the
-ancestor rename (H2 negative for streams), so stream holds are released for publish and the streams
-re-hashed after it. Revocation follows section 5 (#526): each plan names its grants, a revoke fences
+file ID with the original or planned creation time. C5 originally measured a held named stream blocking the
+ancestor rename; the later host observations differ (section 4, H2 note). Stream holds are always released
+for publish and the streams re-hashed after it. Revocation follows section 5 (#526): each plan names its grants, a revoke fences
 the journal, and every effect step reads the fence under the run's admission lock; H7 measured positive
 on NTFS. `copy.start` re-checks its grants and registers the run under the same lock a revocation
 holds, so a revoke either refuses the start or fences the live run. A revocation waits up to 30 s per
@@ -672,7 +690,8 @@ Recorded from the final review of #423 and deliberately not resolved in this des
   named stream on NTFS and ReFS.
 - **H2.** Renaming a folder fails while another process holds a handle on a file beneath it; which error code; and
   whether Loomward's own deny-write holds (`FILE_SHARE_READ | FILE_SHARE_DELETE`) on the children block its own
-  rename. That last answer picks the publish path in section 4.
+  rename. Record this as a host fact (section 4); the executor always releases named-stream holds and re-hashes
+  those streams after publish, regardless of the measured answer.
 - **H7.** A deny-write open fails while another process keeps a writable mapped section of the file after closing
   its handle, so a mapping cannot change held bytes.
 - **H3.** A `FILE_FLAG_NO_BUFFERING` read by ID after `FlushFileBuffers` returns the written bytes, including the
