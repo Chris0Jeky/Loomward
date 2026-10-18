@@ -428,6 +428,9 @@ pub struct Control {
     /// journaled staging by identity, and a first verification mismatch is redone.
     pub removal: bool,
     hook: Option<Hook>,
+    /// Exercise the production listing bounds with small real trees (#612).
+    #[cfg(test)]
+    staging_entry_limit: std::sync::atomic::AtomicUsize,
     /// Set before journaling a stop, so a failed append cannot leave admission open.
     fenced: AtomicBool,
     /// The per-run admission lock: every effect step holds it from its fence read until its one
@@ -460,6 +463,10 @@ impl Control {
             cancel: AtomicBool::new(false),
             removal,
             hook: None,
+            #[cfg(test)]
+            staging_entry_limit: std::sync::atomic::AtomicUsize::new(
+                loomward_operations::MAX_ITEMS as usize,
+            ),
             fenced: AtomicBool::new(false),
             admission: Mutex::new(()),
             renamed: AtomicBool::new(false),
@@ -1468,7 +1475,11 @@ impl Runner<'_, '_> {
             .iter()
             .map(|i| i.name.clone())
             .collect();
-        listing(&self.staging, &self.keys).is_ok_and(|got| got == want)
+        #[cfg(test)]
+        let limit = self.control.staging_entry_limit.load(Ordering::SeqCst);
+        #[cfg(not(test))]
+        let limit = loomward_operations::MAX_ITEMS as usize;
+        listing_with_limit(&self.staging, &self.keys, limit).is_ok_and(|got| got == want)
     }
 
     /// Preserved metadata of every entry, and no named stream or EA on any folder (#526).
@@ -1508,6 +1519,14 @@ fn listing(
     staging: &Staging<'_>,
     keys: &HashMap<String, ObjectKey>,
 ) -> io::Result<BTreeSet<String>> {
+    listing_with_limit(staging, keys, loomward_operations::MAX_ITEMS as usize)
+}
+
+fn listing_with_limit(
+    staging: &Staging<'_>,
+    keys: &HashMap<String, ObjectKey>,
+    limit: usize,
+) -> io::Result<BTreeSet<String>> {
     let mut out = BTreeSet::new();
     for prefix in std::iter::once("").chain(keys.keys().map(String::as_str)) {
         let path = if prefix.is_empty() {
@@ -1517,14 +1536,14 @@ fn listing(
             path.push((name, keys[prefix].clone()));
             path
         };
-        for name in staging.entries(&path)? {
+        for name in staging.entries_with_limit(&path, limit)? {
             let name = if prefix.is_empty() {
                 name
             } else {
                 format!("{prefix}/{name}")
             };
             out.insert(name);
-            if out.len() > loomward_operations::MAX_ITEMS as usize {
+            if out.len() > limit {
                 return Err(refused("too many staging entries"));
             }
         }
