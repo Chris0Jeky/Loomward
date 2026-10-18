@@ -624,7 +624,10 @@ user cancellation is `cancelled_by_user` and writes nothing. A save dialog that 
 `refused` and says why: `dialog_busy` (another dialog is open) or `dialog_unavailable` (no owner window yet, no start
 folder, or no dialog on the adapter). If the backend returns no path but cannot distinguish cancellation from
 an error (rfd on Windows), the outcome is `refused` / `dialog_no_selection`: no location was returned, and nothing
-was written. This never claims that the owner cancelled or that the dialog opened. A relative,
+was written. This never claims that the owner cancelled or that the dialog opened. On Windows, a chosen
+location in an elevated session is `refused` / `elevated_session` before inspecting the target or asking
+for replacement confirmation. Nothing is written; restart Loomward without administrator rights, then
+preview and save again. The native non-elevated handle guard remains in force. A relative,
 network, device or verbatim path, a device name, a stream name, a parent folder that is missing or resolves (through a junction or link) to a share, or an existing target
 that is not a regular file or is a link or reparse point is `unsupported_target`; an existing online-only cloud
 placeholder is `cloud_placeholder`; a write

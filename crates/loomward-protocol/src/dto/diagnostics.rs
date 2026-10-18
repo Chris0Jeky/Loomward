@@ -201,6 +201,8 @@ pub enum DiagnosticsSaveOutcome {
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosticsSaveRefusal {
     PreviewChanged,
+    /// Saving is refused while Loomward runs with an elevated Windows token.
+    ElevatedSession,
     UnsupportedTarget,
     /// An existing target that is a cloud placeholder (or other offline file): saving would recall it.
     CloudPlaceholder,
