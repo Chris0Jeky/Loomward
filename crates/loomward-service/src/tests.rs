@@ -70,6 +70,8 @@ pub(crate) struct Hooks {
     pub fail_watch_start: std::sync::atomic::AtomicBool,
     #[cfg(windows)]
     pub fail_freshness_checkpoint: std::sync::atomic::AtomicBool,
+    #[cfg(windows)]
+    pub before_freshness_finish: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 /// What a personal space read answers in tests: wait on an explicit gate, or report fixed space.
@@ -3508,6 +3510,37 @@ fn roots_list_keeps_active_roots_past_64_revoked_rows() {
     }
 }
 
+#[test]
+fn grants_list_caps_retained_and_forgotten_rows_without_negative_limit() {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    // More historical roots than either listing cap, plus a forgotten audit record.
+    svc.inner.db().execute_batch(
+        "WITH RECURSIVE n(id) AS (VALUES(1) UNION ALL SELECT id+1 FROM n WHERE id<301)
+         INSERT INTO st.root_grant(id,volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns,revoked_at_ns)
+         SELECT id,'fixture',zeroblob(16),'Synthetic history','fixture','fixture','revoked',0,1 FROM n;
+         INSERT INTO main.root(id,grant_id,state) SELECT id,id,'never_scanned' FROM st.root_grant;
+         INSERT INTO st.root_forgotten(grant_id,root_number,forgotten_at_ns) VALUES(1,1,2);"
+    ).unwrap();
+    assert_eq!(crate::db::grant_rows(&svc.inner.db()).unwrap().len(), 256);
+    assert!(crate::db::forgotten_grants(&svc.inner.db(), -1)
+        .unwrap()
+        .is_empty());
+    let (list, _) = ok("grants.list", call(&svc, "grants.list", json!({})));
+    assert_eq!(list["grants"].as_array().unwrap().len(), 256);
+    // Once fewer retained rows remain, only the remaining slots go to forgotten records.
+    svc.inner
+        .db()
+        .execute("DELETE FROM main.root WHERE id>255", [])
+        .unwrap();
+    let (list, _) = ok("grants.list", call(&svc, "grants.list", json!({})));
+    assert_eq!(list["grants"].as_array().unwrap().len(), 255);
+    assert_eq!(
+        list["grants"][254]["forgotten_at"],
+        crate::ts_ns(2).as_str()
+    );
+}
+
 /// #185 item 3: the contract lists at most 64 roots, so a 65th active grant is refused by name;
 /// re-granting an active root and granting after a revocation still work.
 #[test]
@@ -3746,6 +3779,61 @@ fn service_minted_root_id_round_trips_through_the_engine() {
     assert_eq!(root.root_id(), &id);
     assert_eq!(root.path().canonicalize().unwrap(), lab.path);
     assert_eq!(root.dataset_class(), DatasetClass::Synthetic);
+}
+
+#[cfg(windows)]
+#[test]
+fn scan_start_refuses_a_grant_revoked_after_root_mint() {
+    for cancel_fence in [false, true] {
+        let Some(lab) = lab() else { return };
+        let inner = &lab.svc.inner;
+        inner.freshness.pause_pump();
+        let row = inner.root_row(&lab.root).unwrap();
+        let stored = crate::db::roots(&inner.db(), Some(row)).unwrap().remove(0);
+        let id = RootId::new(&lab.root).unwrap();
+        inner.scan.bind(&id, stored.grant, stored.dir.unwrap());
+        let root = inner
+            .engine
+            .granted_root(
+                id,
+                stored.grant,
+                &loomward_engine::scan::CatalogRootIdentity {
+                    row,
+                    instance: inner.instance.clone(),
+                },
+            )
+            .unwrap();
+        if cancel_fence {
+            inner.revoke(stored.grant).unwrap();
+        } else {
+            // Pause revocation after its durable commit, before the engine cancellation fence.
+            inner
+                .catalog
+                .writer()
+                .call(WriteCommand::RevokeGrant {
+                    grant_id: stored.grant,
+                    revoked_at_ns: crate::now_ns(),
+                })
+                .unwrap();
+        }
+        for refresh in [false, true] {
+            let answer = if refresh {
+                inner.engine.scan_refresh(&root, None)
+            } else {
+                inner.engine.scan_start(&root, None)
+            };
+            if let Ok(job) = &answer {
+                settle(&lab.svc, job.job_id.as_str());
+            }
+            assert!(
+                matches!(
+                    answer,
+                    Err(loomward_engine::EngineError::PermissionDenied { .. })
+                ),
+                "revoked mint admitted native work (cancel fence={cancel_fence}, refresh={refresh}): {answer:?}"
+            );
+        }
+    }
 }
 
 /// Independent walk: (files, dirs below the root, logical bytes); reparse points are neither
@@ -4713,6 +4801,59 @@ fn f3_search_and_scan_completion_serialize_watch_checkpoints() {
         "search and completion can overfill the native checkpoint queue"
     );
     assert!(!svc.inner.freshness.stale(1));
+}
+
+#[cfg(windows)]
+fn search_checkpoint_failure_during_full_scan(new_hint: bool) {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    settle(svc, &start(svc, &lab.root, "full"));
+    f3_wait_live(svc);
+    svc.inner.freshness.pause_pump();
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let (arrived, waiting) = std::sync::mpsc::sync_channel(1);
+    let worker = barrier.clone();
+    *svc.inner.hooks.before_freshness_finish.lock().unwrap() = Some(Box::new(move || {
+        arrived.send(()).unwrap();
+        worker.wait();
+    }));
+    let job = start(svc, &lab.root, "full");
+    waiting.recv_timeout(Duration::from_secs(30)).unwrap();
+    let mut pages = Vec::new();
+    for _ in 0..3 {
+        svc.inner
+            .hooks
+            .fail_freshness_checkpoint
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        pages.push(f3_hits(svc));
+    }
+    if new_hint {
+        svc.inner
+            .freshness
+            .record(1, vec![loomward_windows::watch::Change::RootDirty]);
+    }
+    barrier.wait();
+    assert_eq!(settle(svc, &job)["coverage"], "complete");
+    for page in pages {
+        assert_eq!(page["hits"][0]["freshness"]["state"], "stale");
+    }
+    assert_eq!(
+        svc.inner.freshness.stale(1),
+        new_hint,
+        "only a real change may invalidate the completed scan"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_search_checkpoint_failure_does_not_burn_completed_scan_epoch() {
+    search_checkpoint_failure_during_full_scan(false);
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_search_checkpoint_failure_preserves_real_generation_change() {
+    search_checkpoint_failure_during_full_scan(true);
 }
 
 #[cfg(windows)]
