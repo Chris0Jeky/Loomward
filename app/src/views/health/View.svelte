@@ -146,7 +146,11 @@
       doneEl?.focus();
     } catch (e) {
       forgetUnknown = p.kind === 'forget' && (checkingForgottenRecord || e instanceof TransportError || e instanceof LoomwardError && e.code === 'deadline_exceeded');
-      if (!forgetUnknown) error = session.handle(e);
+      if (!forgetUnknown) {
+        // A definite answer is cached under its request id: a retry must start a new attempt, not replay it.
+        if (p.kind === 'forget') p.requestId = undefined;
+        error = session.handle(e);
+      }
     } finally {
       working = false;
     }

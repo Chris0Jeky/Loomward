@@ -99,6 +99,16 @@ describe('forget outcome recovery (#716)', () => {
     expect(state.forgetUnknown).toBe(false);
   });
 
+  it('starts a new attempt after a definite error instead of replaying its cached answer', async () => {
+    const call = vi.fn().mockRejectedValueOnce(new LoomwardError({ code: 'internal_error', message: 'store error', retryable: true, detail: null })).mockResolvedValue(completed);
+    const { state, code } = health(call);
+    await code.confirm();
+    expect(state.error).toBe('store error');
+    await code.confirm();
+    expect(state.session.client.nextRequestId).toHaveBeenCalledTimes(2);
+    expect(state.done).toContain('Forgotten at');
+  });
+
   it('recovers a completed forget from its anonymised record after receipt expiry or restart', async () => {
     const call = vi.fn().mockRejectedValueOnce(unknown)
       .mockRejectedValueOnce(new LoomwardError({ code: 'not_found', message: 'unknown root', retryable: false, detail: null }))
