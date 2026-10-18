@@ -201,25 +201,26 @@ pub(super) fn sample(
             Observation::Observed { value } => Some(value),
             _ => None,
         };
-        Some(SystemSample {
-            memory: SystemSampleMemory {
-                total_bytes: memory.and_then(|v| v.total_bytes).map(Bytes::from),
-                available_bytes: memory.and_then(|v| v.available_bytes).map(Bytes::from),
-                commit_bytes: memory.and_then(|v| v.commit_bytes).map(Bytes::from),
-                commit_limit_bytes: memory.and_then(|v| v.commit_limit_bytes).map(Bytes::from),
-                load_fraction: memory
-                    .and_then(|v| v.load_fraction)
-                    .and_then(|v| Fraction::new(v).ok()),
-            },
-            cpu: SystemSampleCpu {
-                logical_cpus: raw
-                    .logical_processor_count
-                    .filter(|v| *v > 0)
-                    .map(Count::from),
-                busy_fraction: raw
-                    .system_cpu_busy_fraction
-                    .and_then(|v| Fraction::new(v).ok()),
-            },
+        let cpus = raw.logical_processor_count.filter(|v| *v > 0);
+        // Nothing observed at all (an unsupported platform) stays an absent section, not a row of nulls.
+        (memory.is_some() || cpus.is_some() || raw.system_cpu_busy_fraction.is_some()).then(|| {
+            SystemSample {
+                memory: SystemSampleMemory {
+                    total_bytes: memory.and_then(|v| v.total_bytes).map(Bytes::from),
+                    available_bytes: memory.and_then(|v| v.available_bytes).map(Bytes::from),
+                    commit_bytes: memory.and_then(|v| v.commit_bytes).map(Bytes::from),
+                    commit_limit_bytes: memory.and_then(|v| v.commit_limit_bytes).map(Bytes::from),
+                    load_fraction: memory
+                        .and_then(|v| v.load_fraction)
+                        .and_then(|v| Fraction::new(v).ok()),
+                },
+                cpu: SystemSampleCpu {
+                    logical_cpus: cpus.map(Count::from),
+                    busy_fraction: raw
+                        .system_cpu_busy_fraction
+                        .and_then(|v| Fraction::new(v).ok()),
+                },
+            }
         })
     } else {
         None
