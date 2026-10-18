@@ -1,4 +1,5 @@
 import type { EventEnvelope, RequestEnvelope, ResponseEnvelope } from '../contracts.gen';
+import { LoomwardError } from './client';
 import { asEvent, ResumeTracker, TransportError, type Transport } from './transport';
 
 /** The two Tauri entry points this transport needs (`@tauri-apps/api/core`); injectable for tests. */
@@ -38,9 +39,19 @@ export async function createTauriTransport(api?: TauriApi, opts: TauriOptions = 
           // Busy rejects before dispatch: retrying these bytes cannot repeat a service call.
           if (typeof e !== 'string' || !e.startsWith('busy:')) throw e;
           await sleep(BACKOFF_START_MS);
-          return (await invoke('lw_call', bytes)) as ResponseEnvelope;
+          try {
+            return (await invoke('lw_call', bytes)) as ResponseEnvelope;
+          } catch (retryError) {
+            // Still busy after the single retry: the engine is overloaded, not unreachable,
+            // so surface a retryable engine error instead of a transport fault.
+            if (typeof retryError === 'string' && retryError.startsWith('busy:')) {
+              throw new LoomwardError({ code: 'busy', message: retryError, retryable: true, detail: null });
+            }
+            throw retryError;
+          }
         }
       } catch (e) {
+        if (e instanceof LoomwardError) throw e;
         throw new TransportError(`desktop engine not reachable: ${typeof e === 'string' ? e : e instanceof Error ? e.message : 'invoke failed'}`);
       }
     },
