@@ -3022,3 +3022,249 @@ fn slow_grant_open_allows_state_writes_and_rechecks_the_grant() {
         }
     }
 }
+/// h2-scan finding 1: a revocation that lands after coverage was computed but before it was
+/// published must not leave a complete sweep. `at` names the publication point; `scan` runs one
+/// engine scan job with its cancellation fence in the options.
+pub(super) fn revoke_at_publication(
+    at: &'static str,
+    scan: impl Fn(
+            &GrantedRoot,
+            Arc<dyn ScanSink>,
+            Arc<AtomicBool>,
+            ScanOptions,
+        ) -> EngineResult<ScanReport>
+        + Send
+        + Sync
+        + 'static,
+) {
+    use loomward_protocol::JobKind;
+    use std::sync::{mpsc, Mutex};
+    let e = Engine::open(EngineConfig::new("unused".into(), DatasetClass::Synthetic)).unwrap();
+    let sink = Arc::new(CompleteFinishes::default());
+    let root = root();
+    let root_id = root.root_id().clone();
+    let (reached, at_publication) = mpsc::channel();
+    let (go, wait) = mpsc::channel::<()>();
+    let wait = Arc::new(Mutex::new(wait));
+    let (done, outcome) = mpsc::channel();
+    let job_sink = sink.clone();
+    e.register_job_runner(
+        JobKind::Scan,
+        Arc::new(move |ctx, _| {
+            let (reached, wait) = (reached.clone(), wait.clone());
+            super::pipeline::BEFORE_PUBLISH.with_borrow_mut(|hook| {
+                *hook = Some(Box::new(move |point: &str| {
+                    if point == at {
+                        reached.send(()).unwrap();
+                        wait.lock()
+                            .unwrap()
+                            .recv_timeout(Duration::from_secs(5))
+                            .unwrap();
+                    }
+                }))
+            });
+            let options = ScanOptions {
+                workers: 1,
+                fence: Some(ctx.clone()),
+                ..Default::default()
+            };
+            let report = scan(&root, job_sink.clone(), ctx.cancel.clone(), options);
+            done.send(report.as_ref().map(|r| r.complete).ok()).unwrap();
+            Ok(loomward_protocol::CoverageState::Partial)
+        }),
+    );
+    e.job_submit(crate::jobs::JobSpec::new(
+        JobKind::Scan,
+        Some(root_id.clone()),
+    ))
+    .unwrap();
+    at_publication.recv_timeout(Duration::from_secs(5)).unwrap();
+    e.scan_cancel_root(&RootKey::Fixture(root_id.clone()), &root_id)
+        .unwrap();
+    go.send(()).unwrap();
+    let complete = outcome.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_ne!(
+        complete,
+        Some(true),
+        "{at}: a revoked scan reported complete"
+    );
+    assert!(
+        !sink.complete.load(Ordering::Acquire),
+        "{at}: a revoked root got a complete sweep"
+    );
+}
+/// A memory sink that remembers whether any finish authorised absence reconciliation.
+#[derive(Default)]
+struct CompleteFinishes {
+    memory: MemorySink,
+    complete: AtomicBool,
+}
+impl ScanSink for CompleteFinishes {
+    fn watch_dirty(&self, root: &RootId) -> EngineResult<()> {
+        self.memory.watch_dirty(root)
+    }
+    fn recover_interrupted(&self) -> EngineResult<()> {
+        self.memory.recover_interrupted()
+    }
+    fn begin_run(&self, root: &RootId, run: u64, scope: &RunScope) -> EngineResult<()> {
+        self.memory.begin_run(root, run, scope)
+    }
+    fn prepare_listing(
+        &self,
+        root: &RootId,
+        run: u64,
+        parent: Option<u64>,
+        name: &[u16],
+        identity: OpenedIdentity,
+    ) -> EngineResult<ListingTicket> {
+        self.memory
+            .prepare_listing(root, run, parent, name, identity)
+    }
+    fn refresh_listing(
+        &self,
+        root: &RootId,
+        run: u64,
+        ticket: ListingTicket,
+    ) -> EngineResult<ListingTicket> {
+        self.memory.refresh_listing(root, run, ticket)
+    }
+    fn consume(&self, root: &RootId, message: ScanMessage) -> EngineResult<()> {
+        self.memory.consume(root, message)
+    }
+    fn finish_run(
+        &self,
+        root: &RootId,
+        run: u64,
+        scope: &RunScope,
+        complete: bool,
+    ) -> EngineResult<()> {
+        self.complete.fetch_or(complete, Ordering::AcqRel);
+        self.memory.finish_run(root, run, scope, complete)
+    }
+    fn fence_root(&self, root: &RootId) -> EngineResult<()> {
+        self.memory.fence_root(root)
+    }
+}
+#[test]
+fn revocation_before_publication_never_publishes_complete_coverage() {
+    revoke_at_publication("run_scan", |root, sink, cancel, options| {
+        run_scan(
+            &Tree,
+            root,
+            1,
+            sink,
+            Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+            cancel,
+            options,
+        )
+    });
+}
+/// Delegates to [`Tree`] but opens its root as `root`, and any other path as `state`.
+struct OpenedAs {
+    root: OpenedIdentity,
+    state: Option<OpenedIdentity>,
+}
+impl DirSource for OpenedAs {
+    type Dir = u64;
+    fn strategy(&self) -> Strategy {
+        Tree.strategy()
+    }
+    fn open_root(&self, path: &std::path::Path) -> Result<(u64, OpenedIdentity), SourceError> {
+        if path == root().path() {
+            return Ok((1, self.root));
+        }
+        self.state.map(|id| (9, id)).ok_or(SourceError::Io(2))
+    }
+    fn open_child(
+        &self,
+        parent: &u64,
+        e: &RawEntry<'_>,
+    ) -> Result<(u64, OpenedIdentity), SourceError> {
+        Tree.open_child(parent, e)
+    }
+    fn list(&self, dir: &u64, sink: &mut dyn FnMut(RawEntry<'_>) -> Flow) -> ListOutcome {
+        Tree.list(dir, sink)
+    }
+}
+fn scan_opened_as(
+    source: OpenedAs,
+    options: ScanOptions,
+) -> (EngineResult<ScanReport>, Arc<MemorySink>) {
+    let sink = Arc::new(MemorySink::default());
+    let report = run_scan(
+        &source,
+        &root(),
+        1,
+        sink.clone(),
+        Arc::new(crate::budgets::ByteBudget::new(crate::budgets::SCAN_BYTES)),
+        Arc::new(AtomicBool::new(false)),
+        ScanOptions {
+            workers: 1,
+            ..options
+        },
+    );
+    (report, sink)
+}
+/// h2-scan finding 2: the opened root keeps the grant's IDs but its identity basis changed, so
+/// the IDs no longer bind what the grant bound (a verified root now unverified, or the reverse).
+#[test]
+fn identity_basis_change_is_root_identity_changed() {
+    for basis in [IdBasis::Unverified, IdBasis::PostOpen, IdBasis::None] {
+        let (report, sink) = scan_opened_as(
+            OpenedAs {
+                root: OpenedIdentity {
+                    basis,
+                    ..identity(1)
+                },
+                state: None,
+            },
+            ScanOptions::default(),
+        );
+        assert_eq!(
+            report.unwrap_err().to_body().message.as_str(),
+            "root_identity_changed",
+            "{basis:?}"
+        );
+        assert!(!sink.sweep_allowed(root().root_id()));
+    }
+}
+/// h2-scan finding 3: a state exclusion that cannot be identified fails closed instead of
+/// counting Loomward's own state as data.
+#[test]
+fn unidentifiable_state_exclusion_refuses_the_scan() {
+    let without_id = OpenedIdentity {
+        id: None,
+        basis: IdBasis::None,
+        ..identity(7)
+    };
+    for state in [None, Some(without_id)] {
+        let (report, sink) = scan_opened_as(
+            OpenedAs {
+                root: identity(1),
+                state,
+            },
+            ScanOptions {
+                excluded_path: Some("missing-state".into()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            report.unwrap_err().to_body().message.as_str(),
+            "state exclusion identity unavailable",
+            "{state:?}"
+        );
+        assert!(!sink.sweep_allowed(root().root_id()));
+    }
+    // A state directory elsewhere, with its own identity, still scans complete.
+    let (report, _) = scan_opened_as(
+        OpenedAs {
+            root: identity(1),
+            state: Some(identity(7)),
+        },
+        ScanOptions {
+            excluded_path: Some("elsewhere-state".into()),
+            ..Default::default()
+        },
+    );
+    assert!(report.unwrap().complete);
+}

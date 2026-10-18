@@ -37,6 +37,8 @@ pub struct ScanOptions {
     pub scope: RunScope,
     /// Loomward state path, opened metadata-only to obtain its exclusion identity.
     pub excluded_path: Option<PathBuf>,
+    /// The engine job's cancellation fence; a complete finish is published only under it.
+    pub(crate) fence: Option<crate::jobs::JobContext>,
 }
 impl Default for ScanOptions {
     fn default() -> Self {
@@ -47,6 +49,7 @@ impl Default for ScanOptions {
             max_listing_entries: 2_000_000,
             scope: RunScope::FullRoot,
             excluded_path: None,
+            fence: None,
         }
     }
 }
@@ -95,6 +98,21 @@ impl ScanReport {
 }
 /// `discovered` value while a sighted directory's slot is still being created.
 const PENDING: usize = usize::MAX;
+
+#[cfg(test)]
+thread_local! {
+    /// Test hook run on the scan thread where coverage is about to be published.
+    pub(super) static BEFORE_PUBLISH: std::cell::RefCell<Option<Box<dyn FnMut(&str)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+pub(super) fn before_publish(at: &str) {
+    let taken = BEFORE_PUBLISH.with_borrow_mut(Option::take);
+    if let Some(mut hook) = taken {
+        hook(at);
+        BEFORE_PUBLISH.with_borrow_mut(|slot| *slot = slot.take().or(Some(hook)));
+    }
+}
 
 #[cfg(test)]
 #[test]
@@ -1266,6 +1284,8 @@ pub fn run_scan<S: DirSource>(
         && !cancel.load(Ordering::Acquire)
         && worker_result.is_ok()
         && writer_result.is_ok();
+    #[cfg(test)]
+    before_publish("run_scan");
     let aggregation = Instant::now();
     let finish = sink.finish_run(root.root_id(), run, &options.scope, complete);
     aggregation_seconds += aggregation.elapsed().as_secs_f64();

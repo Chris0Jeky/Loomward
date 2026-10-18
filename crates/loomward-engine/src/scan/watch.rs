@@ -433,6 +433,8 @@ fn reconcile<S: DirSource>(
         }
         if state.clean() && settled {
             // finish_run owns the repair rollup and only now may finalise absence/generation.
+            #[cfg(test)]
+            super::pipeline::before_publish("reconcile");
             sink.begin_run(root.root_id(), run, &RunScope::FullRoot)?;
             sink.finish_run(root.root_id(), run, &RunScope::FullRoot, true)?;
             drop(state);
@@ -520,6 +522,24 @@ mod tests {
     use std::{collections::HashMap, path::PathBuf};
     type DirectoryRows = BTreeMap<Vec<u16>, (Option<FileIdObs>, u32, u64)>;
     type Rows = HashMap<FileIdObs, DirectoryRows>;
+    /// h2-scan finding 1: the watched reconcile's final publication takes the same fence.
+    #[test]
+    fn revocation_before_watched_publication_never_publishes_complete_coverage() {
+        use super::super::tests::{revoke_at_publication, Tree};
+        revoke_at_publication("reconcile", |root, sink, cancel, options| {
+            reconcile(
+                &Tree,
+                root,
+                1,
+                sink,
+                Arc::new(ByteBudget::new(crate::budgets::SCAN_BYTES)),
+                cancel,
+                options,
+                &Mutex::new(Dirty::default()),
+                || true,
+            )
+        });
+    }
     #[test]
     fn repair_reparent_does_not_hide_an_obsolete_run_or_unrelated_ticket() {
         use super::super::tests::{root, Tree};
