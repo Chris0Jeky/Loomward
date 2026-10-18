@@ -198,6 +198,7 @@ impl Registry {
             } else {
                 revise(&mut r.job)?;
                 r.job.duplicates = None;
+                events.redact_job(&r.job.job_id);
                 emit(events, &r.job);
             }
         }

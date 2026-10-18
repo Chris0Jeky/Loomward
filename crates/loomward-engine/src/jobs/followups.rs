@@ -521,6 +521,68 @@ fn cancel_preserves_a_reader_stop_and_duplicates_busy_names_the_work() {
 }
 
 #[test]
+fn evicted_duplicate_report_cannot_replay_after_root_revocation() {
+    let e = engine();
+    let stream = e.subscribe_events(None).unwrap();
+    let resume = crate::events::EventResume::from_last_event_id(&format!("{}.0", stream.epoch()));
+    let mut completed = Vec::new();
+    for n in 0..=MAX_DUPLICATE_REPORTS {
+        let job = e
+            .jobs
+            .submit(
+                JobSpec::new(
+                    JobKind::Duplicates,
+                    Some(RootId::new(format!("rt_fixture_{n}")).unwrap()),
+                ),
+                Arc::new(|ctx, _| {
+                    ctx.set_duplicates(report(None));
+                    Ok(CoverageState::Complete)
+                }),
+                e.events.clone(),
+                None,
+            )
+            .unwrap();
+        let done = terminal(&e, &job.job_id);
+        assert!(done.duplicates.is_some());
+        completed.push(done);
+    }
+    let first = &completed[0];
+    let evicted = e.job_status(&first.job_id).unwrap();
+    assert!(evicted.duplicates.is_none());
+    assert_eq!(evicted.state, first.state);
+    assert_eq!(evicted.rev.get(), first.rev.get() + 1);
+    let root = first.root_id.as_ref().unwrap();
+    e.scan_cancel_root(&crate::scan::RootKey::Fixture(root.clone()), root)
+        .unwrap();
+    assert_eq!(e.job_status(&first.job_id).unwrap(), evicted);
+
+    let mut replay = e.subscribe_events(resume).unwrap();
+    let mut saw_first_terminal = false;
+    let mut saw_other_report = false;
+    while let RecvOutcome::Event(event) = replay.recv_timeout(Duration::ZERO) {
+        assert_ne!(event.event, EventName::StreamLagged);
+        if event.event != EventName::JobState {
+            continue;
+        }
+        let job: Job = serde_json::from_value(event.data["job"].clone()).unwrap();
+        if job.job_id == first.job_id {
+            assert!(
+                job.duplicates.is_none(),
+                "evicted duplicate names replayed after root revocation"
+            );
+            saw_first_terminal |= job.state == JobState::Completed && job.rev == first.rev;
+        } else {
+            saw_other_report |= job.duplicates.is_some();
+        }
+    }
+    assert!(
+        saw_first_terminal,
+        "original terminal event was not replayed"
+    );
+    assert!(saw_other_report, "unrevoked roots lost their reports");
+}
+
+#[test]
 fn terminal_report_retention_caps_count_bytes_and_jobs_list_transport_size() {
     let e = engine();
     let mut large = report(None);
