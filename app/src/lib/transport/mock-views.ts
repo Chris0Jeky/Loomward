@@ -21,13 +21,17 @@ const str = (b: bigint): ByteCount => b.toString();
 const WATCH = 0.2;
 const PRESSURE = 0.1;
 
-interface VolumeSeed { id: string; name: string; fs: string; bus: Volume['device']['bus_type']; seek: boolean | null; capacity: bigint; freeFraction: number; declared: number | null; hint: number | null; removable: boolean }
+interface VolumeSeed { id: string; name: string; fs: string; bus: Volume['device']['bus_type']; seek: boolean | null; capacity: bigint; freeFraction: number; declared: number | null; hint: number | null; removable: boolean; exclusion?: PlacementPlan['excluded_volumes'][number]['reason'] }
 const VOLUMES: VolumeSeed[] = [
   { id: 'vo_c', name: 'C:', fs: 'NTFS', bus: 'nvme', seek: false, capacity: 2048n * GiB, freeFraction: 0.09, declared: null, hint: 1, removable: false },
   { id: 'vo_g', name: 'G:', fs: 'NTFS', bus: 'nvme', seek: false, capacity: 1024n * GiB, freeFraction: 0.58, declared: 2, hint: 1, removable: false },
   { id: 'vo_e', name: 'E:', fs: 'NTFS', bus: 'sata', seek: true, capacity: 2048n * GiB, freeFraction: 0.31, declared: null, hint: 5, removable: false },
   { id: 'vo_f', name: 'F:', fs: 'exFAT', bus: 'usb', seek: null, capacity: 256n * GiB, freeFraction: 0.7, declared: null, hint: null, removable: true },
 ];
+// Synthetic observations exercise every exclusion without inventing usable physics.
+for (const reason of ['offline', 'capacity_unknown', 'no_active_grant', 'physics_unusable'] as const) {
+  VOLUMES.push({ ...VOLUMES[1]!, id: `vo_${reason}`, name: `synthetic-${reason}`, exclusion: reason });
+}
 
 interface GroupSeed {
   id: string; name: string; gib: number; basis: CandidateGroup['estimate_basis']; reliefKnown: boolean; coverage: CandidateGroup['coverage'];
@@ -82,9 +86,11 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
       note: v.declared !== null ? 'Declared by the owner.' : v.hint !== null ? 'Device hint, not a measured speed.' : 'The device reports nothing usable; declare a tier to include this volume.',
     };
   };
+  const exclusion = (v: VolumeSeed) => v.exclusion ?? (tierInfo(v).tier === null ? 'tier_unknown' : null);
   const volumeRow = (v: VolumeSeed): Volume => ({
-    volume_id: v.id, display_name: v.name, mount_points: [`${v.name}\\`], filesystem: v.fs, label: null, online: true, read_only: false, removable: v.removable,
-    capacity_bytes: str(v.capacity), free_bytes: str(free(v)),
+    volume_id: v.id, display_name: v.name, mount_points: [`${v.name}\\`], filesystem: v.fs, label: null, online: v.exclusion !== 'offline', read_only: false, removable: v.removable,
+    capacity_bytes: v.exclusion === 'capacity_unknown' ? null : str(v.capacity),
+    free_bytes: v.exclusion === 'capacity_unknown' ? null : str(v.exclusion === 'physics_unusable' ? v.capacity + 1n : free(v)),
     device: { bus_type: v.bus, seek_penalty: v.seek, multiple_disks: v.bus === 'usb' ? null : false, basis: v.bus === 'usb' ? 'unavailable' : 'ioctl_storage_query_property' },
     tier: tierInfo(v), features: { file_ids_128: null, hard_links: null, sparse_files: null, compression: null, reparse_points: null, usn_journal: null }, // unknown, not invented
     observed_at: iso(),
@@ -92,12 +98,13 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
 
   const model = (): TierModel => ({
     volumes: volumes.map((v) => {
-      const frac = Number(free(v)) / Number(v.capacity);
+      const observed = volumeRow(v);
+      const frac = v.exclusion ? null : Number(free(v)) / Number(v.capacity);
       return {
-        volume_id: v.id, display_name: v.name, tier: tierInfo(v), online: true, writable: true,
-        capacity_bytes: str(v.capacity), free_bytes: str(free(v)), reserve_bytes: str(v.capacity / 50n), free_fraction: frac,
-        pressure: frac < PRESSURE ? 'pressure' : frac < WATCH ? 'watch' : 'ok',
-        source_eligible: tierInfo(v).tier !== null,
+        volume_id: v.id, display_name: v.name, tier: { ...tierInfo(v), ...(v.exclusion === 'no_active_grant' ? { note: 'No active grant; excluded from placement simulation.' } : {}) }, online: observed.online, writable: true,
+        capacity_bytes: observed.capacity_bytes, free_bytes: observed.free_bytes, reserve_bytes: str(v.capacity / 50n), free_fraction: frac,
+        pressure: frac === null ? 'unknown' : frac < PRESSURE ? 'pressure' : frac < WATCH ? 'watch' : 'ok',
+        source_eligible: exclusion(v) === null,
       };
     }),
     policy: {
@@ -117,11 +124,11 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
   });
 
   const excludedVolumes = (source: string): PlacementPlan['excluded_volumes'] =>
-    volumes.filter((v) => v.id !== source && tierInfo(v).tier === null).map((v) => ({ volume_id: v.id, reason: 'tier_unknown' }));
+    volumes.flatMap((v) => { const reason = exclusion(v); return v.id !== source && reason ? [{ volume_id: v.id, reason }] : []; });
   const placementState = () => JSON.stringify([catalogRev, declarationRev, [...revokedRoots], [...revokedGrants], [...forgottenRoots]]);
 
   const candidates = (p: Record<string, unknown>): PlacementCandidates => {
-    seed(p.source_volume_id);
+    if (exclusion(seed(p.source_volume_id))) fail('invalid_request', 'source volume is excluded');
     const min = typeof p.min_bytes === 'string' && /^\d{1,19}$/.test(p.min_bytes) ? BigInt(p.min_bytes) : fail('invalid_request', 'min_bytes');
     const groups = p.source_volume_id === 'vo_c' ? GROUPS.filter((g) => bytesOf(g) >= min).slice(0, Number(p.max_groups) || 200).map(candidate) : [];
     return { source_volume_id: String(p.source_volume_id), root_generations: [], groups, excluded_volumes: excludedVolumes(String(p.source_volume_id)), note: 'Candidates are non-overlapping folders on the source volume. Sizes are bytes by directory entry; relief is only known where every object was verified.' };
@@ -131,6 +138,7 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
   const simulate = async (raw: Record<string, unknown>): Promise<PlacementPlan> => {
     const p = raw as unknown as PlacementSimulateRequest;
     const source = seed(p.source_volume_id);
+    if (exclusion(source)) fail('invalid_request', 'source volume is excluded');
     const big = (v: unknown, what: string) => (typeof v === 'string' && /^\d{1,19}$/.test(v) ? BigInt(v) : fail('invalid_request', `${what} must be a byte string`));
     const goal = big(p.target_free_bytes, 'target_free_bytes');
     const budget = big(p.max_transfer_bytes, 'max_transfer_bytes');
@@ -141,12 +149,14 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
     const tier = tierInfo(source).tier;
     const excluded = excludedVolumes(source.id);
     if (tier === null) fail('invalid_request', 'source tier unknown');
-    const targets = volumes.filter((v) => v.id !== source.id && (tierInfo(v).tier ?? -1) >= tier);
+    const targets = volumes.filter((v) => v.id !== source.id && exclusion(v) === null && (tierInfo(v).tier ?? -1) >= tier);
 
     const assumptions: string[] = [];
     const preRejected: PlacementPlan['pre_rejected'] = [];
     const rejected: PlacementPlan['rejected'] = [];
     const eligible: { g: GroupSeed; relief: bigint; heat: number }[] = [];
+    const plannerGroups: unknown[] = [];
+    const snapshotTime = now().getTime();
     for (const g of source.id === 'vo_c' ? GROUPS : []) {
       const ov = overrides.get(g.id);
       const relief = g.reliefKnown ? bytesOf(g) : p.relief_policy === 'entry_allocation_whatif' && g.basis !== 'unknown' ? bytesOf(g) : null;
@@ -161,19 +171,22 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
       let basis: HeatBasis = 'unknown';
       if (ov && typeof ov.heat === 'number') { heat = ov.heat; basis = 'assumed'; assumptions.push(`${g.name}: heat assumed ${ov.heat} by the owner.`); }
       else if (p.heat_policy === 'mtime_proxy_whatif') {
-        const age = (now().getTime() - Date.parse(g.modified)) / 86_400_000;
-        heat = Math.max(0, Math.min(1, 1 - age / 365)); basis = 'mtime_proxy';
+        const age = (snapshotTime - Date.parse(g.modified)) / 86_400_000;
+        heat = age >= 30 ? 0.1 : age >= 7 ? 0.5 : 1; basis = 'mtime_proxy';
       }
       if (basis === 'mtime_proxy' && !assumptions.some((a) => a.startsWith('mtime proxy'))) assumptions.push('mtime proxy: modification age stands in for heat. It is not access heat.');
       const pinned = ov?.pinned !== undefined ? ov.pinned : g.pinned;
       const active = ov?.active !== undefined ? ov.active : g.active;
       const prot = ov?.protected !== undefined ? ov.protected : g.protected;
+      const days = ov?.days_since_move !== undefined ? ov.days_since_move : g.days;
+      // Digest the effective planner inputs, including clock-derived heat, not the clock itself.
+      plannerGroups.push([g.id, str(relief), heat, pinned, active, prot, days]);
       if (ov && (ov.pinned !== undefined || ov.active !== undefined || ov.protected !== undefined)) assumptions.push(`${g.name}: pinned ${pinned}, active ${active}, protected ${prot} by the owner's assumption.`);
       let reason: RejectReason | null = null;
       if (pinned !== false || active !== false || prot !== false) reason = 'pinned_active_protected_or_unspecified';
       else if (heat === null) reason = 'heat_unknown';
       else if (heat > 0.25) reason = 'not_cold';
-      else if (g.days === null || g.days < 7) reason = 'cooldown_or_history_unknown';
+      else if (days === null || days < 7) reason = 'cooldown_or_history_unknown';
       if (reason) rejected.push({ group_id: g.id, reason });
       else eligible.push({ g, relief, heat: heat! });
     }
@@ -235,8 +248,8 @@ export function createViewMock(now: () => Date, fail: Fail): ViewMock {
       const state = placementState();
       const inputs = JSON.stringify([
         p.source_volume_id, p.target_free_bytes, p.max_transfer_bytes, p.heat_policy, p.relief_policy, p.candidate_basis, p.max_groups, p.node_budget,
-        p.overrides.map(o => [o.group_id, o.heat, o.pinned, o.active, o.protected, o.days_since_move]),
-        state, excluded,
+        [...p.overrides].sort((a, b) => a.group_id < b.group_id ? -1 : a.group_id > b.group_id ? 1 : 0).map(o => [o.group_id, o.heat, o.pinned, o.active, o.protected, o.days_since_move]),
+        plannerGroups, state, excluded,
       ]);
       const digest = 'sha256:' + [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(inputs)))].map(b => b.toString(16).padStart(2, '0')).join('');
       if (state !== placementState()) fail('stale_generation', 'placement inputs changed before saving');
