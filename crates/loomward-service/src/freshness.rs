@@ -454,7 +454,7 @@ impl Inner {
         let _ = (grant, scope);
     }
 
-    pub(crate) fn freshness_finish(&self, grant: i64, scope: &RunScope, complete: bool) {
+    pub(crate) fn freshness_finish(&self, grant: i64, scope: &RunScope, settled: bool) {
         #[cfg(all(test, windows))]
         if let Some(hook) = self.hooks.before_freshness_finish.lock().unwrap().take() {
             hook();
@@ -472,16 +472,16 @@ impl Inner {
                     return;
                 };
                 let started = root.started.take();
-                // A timed-out checkpoint must not discard a completed full run's witness.
-                root.completed =
-                    started.filter(|_| complete && matches!(scope, RunScope::FullRoot));
+                // Coverage gaps do not make a settled traversal stale. Keep its witness even
+                // when the checkpoint times out; coverage remains the catalogue's own fact.
+                root.completed = started.filter(|_| settled && matches!(scope, RunScope::FullRoot));
             }
             if healthy {
                 self.freshness_settle(row, grant);
             }
         }
         #[cfg(not(windows))]
-        let _ = (grant, scope, complete);
+        let _ = (grant, scope, settled);
     }
 
     #[cfg(windows)]

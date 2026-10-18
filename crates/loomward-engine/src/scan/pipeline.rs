@@ -1089,7 +1089,7 @@ pub fn run_scan<S: DirSource>(
     });
     let mut enumeration_wall_seconds = 0.;
     let mut aggregation_seconds = 0.;
-    let (worker_result, writer_result) = std::thread::scope(|scope| {
+    let (worker_result, writer_result, reconciled) = std::thread::scope(|scope| {
         let write = scope.spawn(|| writer(root.root_id(), run, sink.as_ref(), rx, &failed));
         let mut result = Ok(());
         let mut reconciled = false;
@@ -1247,6 +1247,7 @@ pub fn run_scan<S: DirSource>(
                     detail: None,
                 })
             }),
+            reconciled,
         )
     });
     // A worker panic fails the run; recover only to finish it as incomplete, never to resume work.
@@ -1261,13 +1262,15 @@ pub fn run_scan<S: DirSource>(
         }
         totals
     });
-    let complete = slot.complete
+    let settled = reconciled
         && shared.duplicate_identity.load(Ordering::Relaxed) == 0
+        && !shared.limit_hit.load(Ordering::Acquire)
         && !cancel.load(Ordering::Acquire)
         && worker_result.is_ok()
         && writer_result.is_ok();
+    let complete = slot.complete && settled;
     let aggregation = Instant::now();
-    let finish = sink.finish_run(root.root_id(), run, &options.scope, complete);
+    let finish = sink.finish_traversal(root.root_id(), run, &options.scope, complete, settled);
     aggregation_seconds += aggregation.elapsed().as_secs_f64();
     let (persistence_seconds, staging_seconds) = writer_result?;
     if !cancel.load(Ordering::Acquire) {

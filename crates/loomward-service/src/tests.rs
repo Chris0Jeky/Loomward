@@ -4166,6 +4166,101 @@ fn f3_journal_wrap_dirties_scope_until_explicit_full_refresh() {
 
 #[cfg(windows)]
 #[test]
+fn f3_completed_partial_full_scan_is_current_without_claiming_complete_coverage() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    svc.inner.freshness.pause_pump();
+    struct Denied(std::path::PathBuf);
+    impl Drop for Denied {
+        fn drop(&mut self) {
+            assert!(std::process::Command::new("icacls")
+                .arg(&self.0)
+                .args(["/remove:d", "*S-1-1-0"])
+                .output()
+                .unwrap()
+                .status
+                .success());
+        }
+    }
+    let denied = Denied(lab.path.join("a"));
+    assert!(std::process::Command::new("icacls")
+        .arg(&denied.0)
+        .args(["/deny", "*S-1-1-0:(R)"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(std::fs::read_dir(&denied.0).is_err());
+    let job = settle(svc, &start(svc, &lab.root, "full"));
+    assert_eq!(job["state"], "completed");
+    assert_eq!(job["coverage"], "partial");
+    let page = f3_hits(svc);
+    assert_eq!(page["index_state"], "current", "{page:?}");
+    assert_eq!(page["partial"], true);
+    assert_eq!(page["roots"][0]["coverage"], "partial");
+    assert!(!page["hits"].as_array().unwrap().is_empty());
+    assert!(page["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|hit| { hit["freshness"]["state"] == "live" && hit["freshness"]["at"].is_null() }));
+    let (roots, _) = ok("roots.list", call(svc, "roots.list", json!({})));
+    assert_eq!(roots["roots"][0]["scan"]["coverage"], "partial");
+    assert_eq!(roots["roots"][0]["totals"]["complete"], false);
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_limited_full_scan_stays_stale_until_an_unlimited_pass() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    let claim = svc.inner.freshness.explicit(1);
+    let (started, _) = ok(
+        "scan.start",
+        call(
+            svc,
+            "scan.start",
+            json!({
+                "root_id": lab.root, "mode": "full", "budget": {"max_entries": 1}
+            }),
+        ),
+    );
+    let job = settle(svc, started["job"]["job_id"].as_str().unwrap());
+    assert_eq!(job["state"], "completed");
+    assert_eq!(job["coverage"], "partial");
+    assert_eq!(f3_hits(svc)["index_state"], "stale");
+    drop(claim);
+    assert_eq!(
+        settle(svc, &start(svc, &lab.root, "full"))["coverage"],
+        "complete"
+    );
+    assert_eq!(f3_wait_live(svc)["index_state"], "current");
+}
+
+#[cfg(windows)]
+#[test]
+fn f3_cancelled_full_scan_stays_stale_until_a_finished_pass() {
+    let Some(lab) = lab() else { return };
+    let svc = &lab.svc;
+    let claim = svc.inner.freshness.explicit(1);
+    svc.inner.scan.gate.arm();
+    let job = start(svc, &lab.root, "full");
+    svc.inner.scan.gate.wait_reached();
+    let cancelled = call(svc, "scan.cancel", json!({"job_id": job}));
+    svc.inner.scan.gate.release();
+    ok("scan.cancel", cancelled);
+    assert_eq!(settle(svc, &job)["state"], "cancelled");
+    assert_eq!(f3_hits(svc)["index_state"], "stale");
+    drop(claim);
+    assert_eq!(
+        settle(svc, &start(svc, &lab.root, "full"))["coverage"],
+        "complete"
+    );
+    assert_eq!(f3_wait_live(svc)["index_state"], "current");
+}
+
+#[cfg(windows)]
+#[test]
 fn f3_overflow_marks_hits_and_root_stale_until_full_refresh() {
     let Some(lab) = lab() else { return };
     settle(&lab.svc, &start(&lab.svc, &lab.root, "full"));
