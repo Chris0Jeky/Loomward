@@ -687,7 +687,9 @@ fn learning_queue_binds_both_revisions_and_filters() {
     let node = learning_node(&svc);
     let p = json!({"root_id":null,"limit":1,"cursor":null});
     let (page, _) = ok("learning.queue", call(&svc, "learning.queue", p.clone()));
-    assert!(page["model_id"].is_string());
+    let (status, _) = ok("learning.status", call(&svc, "learning.status", json!({})));
+    assert_eq!(status["model_id"], Value::Null);
+    assert_eq!(page["model_id"], status["model_id"]);
     assert_eq!(page["model_id"], page["items"][0]["suggestion"]["model_id"]);
     assert_eq!(page["items"][0]["suggestion"]["calibrated"], false);
     let cursor = page["next_cursor"].clone();
