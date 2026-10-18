@@ -3,6 +3,7 @@ import type { DiagnosticsPreviewResult, DiagnosticsSaveRefusal } from '../../lib
 /** Every save refusal in plain words. Nothing was written in any of them. */
 export const SAVE_REFUSAL_WORDS: Record<DiagnosticsSaveRefusal, string> = {
   preview_changed: 'The bundle changed since this preview, so nothing was saved. Preview again, then save.',
+  elevated_session: 'Loomward is running as administrator, so nothing was saved. Restart Loomward without administrator rights, then preview and save again.',
   unsupported_target: 'That location is not a plain local file (network, device, link or folder), so nothing was saved.',
   cloud_placeholder: 'That file is online-only in a cloud folder, so nothing was saved. Choose another file, or make it available offline first.',
   write_failed: 'The file could not be written (read-only, full, locked, or it appeared while saving). The chosen file was left as it was.',

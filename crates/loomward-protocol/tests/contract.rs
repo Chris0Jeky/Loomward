@@ -19,6 +19,19 @@ fn contracts() -> PathBuf {
 }
 
 #[test]
+fn diagnostics_elevated_session_refusal_roundtrips_through_schema_and_dto() {
+    let value = json!({
+        "outcome": "refused", "bytes_written": null, "refusal": "elevated_session"
+    });
+    let mut schema = Schema::load();
+    assert!(schema.errors("DiagnosticsSaveResult", &value).is_empty());
+    assert_eq!(
+        roundtrip("DiagnosticsSaveResult", &value).unwrap().unwrap(),
+        value
+    );
+}
+
+#[test]
 fn an_unsettled_search_row_has_required_nullable_sizes() {
     let mut row = read(&contracts().join("examples/commands/search.query.result.json"))["hits"][0]
         ["row"]
