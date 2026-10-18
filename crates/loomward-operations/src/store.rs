@@ -3,7 +3,9 @@
 use crate::journal::{Entry, Invalid, Record, Replay, Row};
 use crate::manifest::Admitted;
 use crate::recovery::{from_replay, Disk, Recovery};
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{
+    params, Connection, ErrorCode, OptionalExtension, Transaction, TransactionBehavior,
+};
 use std::{collections::HashMap, path::Path, time::Duration};
 
 /// Idempotent schema for the journal tables. Lane C5 folds it into the state.db migration.
@@ -129,21 +131,37 @@ impl Store {
         conn.busy_timeout(Duration::from_secs(5))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "FULL")?;
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let anchored: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='op_journal_head')",
-            [], |r| r.get(0),
-        )?;
-        tx.execute_batch(SCHEMA_SQL)?;
-        if !anchored {
-            // Trust legacy tails once, only when introducing the head table, never on later opens.
-            tx.execute_batch(
-                "INSERT INTO op_journal_head(op_id,seq,chain)
-                SELECT op_id,seq,chain FROM op_journal AS j
-                WHERE seq=(SELECT max(seq) FROM op_journal WHERE op_id=j.op_id)",
+        let current = {
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Deferred)?;
+            let current: bool = tx.query_row(
+                "SELECT count(*)=7 FROM sqlite_schema
+                 WHERE (type='table' AND name IN ('op_journal','op_journal_head','op_plan'))
+                    OR (type='trigger' AND name IN ('op_journal_no_replace','op_journal_no_update',
+                                                    'op_journal_no_delete','op_plan_no_update'))",
+                [],
+                |r| r.get(0),
             )?;
+            tx.commit()?;
+            current
+        };
+        if !current {
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            // Re-check under the write lock: another opener may have migrated since our read.
+            let anchored: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='op_journal_head')",
+                [], |r| r.get(0),
+            )?;
+            tx.execute_batch(SCHEMA_SQL)?;
+            if !anchored {
+                // Trust legacy tails once, only when introducing the head table, never on later opens.
+                tx.execute_batch(
+                    "INSERT INTO op_journal_head(op_id,seq,chain)
+                    SELECT op_id,seq,chain FROM op_journal AS j
+                    WHERE seq=(SELECT max(seq) FROM op_journal WHERE op_id=j.op_id)",
+                )?;
+            }
+            tx.commit()?;
         }
-        tx.commit()?;
         Ok(Store {
             conn,
             #[cfg(feature = "fault-injection")]
@@ -184,9 +202,18 @@ impl Store {
     }
 
     pub fn append(&mut self, op: u64, epoch: u64, record: Record) -> Result<u64, AppendError> {
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut retries = 0;
+        // Retry lock acquisition only; retrying a write or lost acknowledgement could duplicate it.
+        let tx = loop {
+            match Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate) {
+                Ok(tx) => break tx,
+                Err(e) if e.sqlite_error_code() == Some(ErrorCode::DatabaseBusy) && retries < 2 => {
+                    std::thread::sleep(Duration::from_millis(25 << retries));
+                    retries += 1;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        };
         let (seq, chain) = checked_tail(&tx, op)??;
         let mut replay = match self.cache.remove(&op) {
             Some(r) if r.seq == seq && r.chain.as_slice() == chain => r,
@@ -248,7 +275,7 @@ impl Store {
 
     /// The current fence epoch and state as the journal replays them (`Err` when it does not replay).
     pub fn replay(&self, op: u64) -> rusqlite::Result<Result<Replay, Invalid>> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Deferred)?;
         let replay = match checked_tail(&tx, op)? {
             Ok(_) => Replay::from_rows(op, &load(&tx, op)?),
             Err(e) => Err(e),
@@ -277,4 +304,82 @@ fn insert_head(conn: &Connection, op: u64, row: &Row) -> rusqlite::Result<()> {
         params![op as i64, row.seq as i64, row.chain],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::{Cell, RefCell};
+
+    fn started(path: &Path) -> Store {
+        let store = Store::open(path).unwrap();
+        let replay = Replay::new(1);
+        let row = replay.row_for(&Entry {
+            epoch: 1,
+            record: Record::Started {
+                digest: [1; 32],
+                items: 1,
+            },
+        });
+        insert_row(&store.conn, 1, &row).unwrap();
+        insert_head(&store.conn, 1, &row).unwrap();
+        store
+    }
+
+    fn intent() -> Record {
+        Record::StagingIntent {
+            token: "lw-staging-1".into(),
+        }
+    }
+
+    #[test]
+    fn append_retries_busy_before_storing_exactly_one_record() {
+        thread_local! {
+            static LOCKER: RefCell<Option<Connection>> = const { RefCell::new(None) };
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let mut store = started(&path);
+        let locker = Connection::open(&path).unwrap();
+        locker.execute_batch("BEGIN IMMEDIATE").unwrap();
+        LOCKER.set(Some(locker));
+        // Deterministically return BUSY once, releasing the real lock for the next attempt.
+        store
+            .conn
+            .busy_handler(Some(|_| {
+                LOCKER.take().unwrap().execute_batch("ROLLBACK").unwrap();
+                false
+            }))
+            .unwrap();
+        assert_eq!(store.append(1, 1, intent()).unwrap(), 2);
+        assert_eq!(store.rows(1).unwrap().len(), 2);
+        assert_eq!(store.replay(1).unwrap().unwrap().seq, 2);
+    }
+
+    #[test]
+    fn append_busy_retries_are_bounded_and_store_nothing() {
+        thread_local! {
+            static CALLS: Cell<usize> = const { Cell::new(0) };
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let mut store = started(&path);
+        let locker = Connection::open(&path).unwrap();
+        locker.execute_batch("BEGIN IMMEDIATE").unwrap();
+        store
+            .conn
+            .busy_handler(Some(|_| {
+                CALLS.set(CALLS.get() + 1);
+                false
+            }))
+            .unwrap();
+        assert!(matches!(store.append(1, 1, intent()),
+            Err(AppendError::Sql(rusqlite::Error::SqliteFailure(e, _)))
+                if e.code == rusqlite::ErrorCode::DatabaseBusy));
+        assert_eq!(CALLS.get(), 3, "initial attempt plus two retries");
+        assert_eq!(store.rows(1).unwrap().len(), 1);
+        assert_eq!(store.replay(1).unwrap().unwrap().seq, 1);
+        locker.execute_batch("ROLLBACK").unwrap();
+        assert_eq!(store.append(1, 1, intent()).unwrap(), 2);
+    }
 }

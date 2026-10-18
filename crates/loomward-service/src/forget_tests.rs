@@ -324,7 +324,7 @@ fn forgetting_removes_state_copy_sidecars_including_orphans() {
         "state.before-v0.db",
         "state.start-123.db",
     ] {
-        for suffix in ["-wal", "-shm"] {
+        for suffix in ["-wal", "-shm", "-journal"] {
             let mut bytes = PATH_A.as_bytes().to_vec();
             bytes.extend_from_slice(&utf16);
             std::fs::write(dir.path().join(format!("{stem}{suffix}")), bytes).unwrap();
@@ -337,7 +337,7 @@ fn forgetting_removes_state_copy_sidecars_including_orphans() {
         "state.before-v0.db",
         "state.start-123.db",
     ] {
-        for suffix in ["-wal", "-shm"] {
+        for suffix in ["-wal", "-shm", "-journal"] {
             assert!(!dir.path().join(format!("{stem}{suffix}")).exists());
         }
     }
@@ -653,7 +653,9 @@ fn preserved_catalogue_copies_are_swept_with_their_sidecars() {
         "catalog.corrupt-1.db",
         "catalog.corrupt-1.db-wal",
         "catalog.corrupt-1.db-shm",
+        "catalog.corrupt-1.db-journal",
         "catalog.before-v1-2.db",
+        "catalog.before-v1-2.db-journal",
     ] {
         std::fs::write(dir.path().join(name), PATH_A).unwrap();
     }
@@ -876,6 +878,41 @@ fn an_unrecognised_grant_copy_is_byte_checked_before_any_id_scrub() {
         ),
         1
     );
+}
+
+#[test]
+fn an_unknown_v2_copy_never_scrubs_a_grant_in_an_unproven_id_namespace() {
+    for path in [PATH_B, PATH_A] {
+        let dir = temp_root();
+        let svc = open(dir.path(), DatasetClass::Synthetic);
+        let (root, grant) = named(&svc, 1, NAME_A, PATH_A);
+        svc.inner.revoke(grant).unwrap();
+        let copy = dir.path().join("state.before-v2.db");
+        let db = rusqlite::Connection::open(&copy).unwrap();
+        // No object_ref table: v2 alone cannot establish that the grant IDs match live state.
+        db.execute_batch("PRAGMA user_version=2; CREATE TABLE root_grant(id INTEGER PRIMARY KEY,display_path TEXT,volume_key TEXT,root_file_id BLOB)").unwrap();
+        db.execute(
+            "INSERT INTO root_grant VALUES(?1,?2,'copy-volume',X'0102')",
+            rusqlite::params![grant, path],
+        )
+        .unwrap();
+        drop(db);
+        ok("roots.forget", forget(&svc, root, None));
+        if path == PATH_A {
+            assert!(
+                !copy.exists(),
+                "an unknown copy with forgotten bytes was retained"
+            );
+        } else {
+            assert!(copy.exists(), "an unrelated unknown copy was removed");
+            let db = rusqlite::Connection::open(&copy).unwrap();
+            let unchanged: bool = db.query_row("SELECT display_path=?1 AND volume_key='copy-volume' AND root_file_id=X'0102' FROM root_grant", [PATH_B], |r| r.get(0)).unwrap();
+            assert!(
+                unchanged,
+                "the unknown copy's grant ID was treated as live authority"
+            );
+        }
+    }
 }
 
 #[test]

@@ -70,6 +70,8 @@ with lease and dirty-state evidence (LW-076). No file/process effect is opened.
 The deterministic synthetic project lab in `tests/developer_clutter.rs` exercises
 the SQLite representation, including ordinary writer publication and aggregate
 calculation. Run `cargo test -p loomward-catalog --test developer_clutter`.
+The explicit 1M-row synthetic detector benchmark (including query plans and VM-step
+counts) is `cargo test -p loomward-catalog --test developer_clutter million_row_output_interiors_do_not_increase_detector_work -- --ignored --nocapture`.
 
 ## Writer
 

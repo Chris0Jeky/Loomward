@@ -223,6 +223,79 @@ mod lab_copy {
         assert!(path.join("b").join("a").join("deep").join("x.bin").exists());
     }
 
+    #[test]
+    fn restart_reports_unjournaled_copy_items_without_removing_them() {
+        use crate::copy::{Flow, Point};
+        use loomward_operations::Record;
+        let Some((lab, a, b)) = scanned() else { return };
+        let svc = &lab.svc;
+        let p = preview(svc, &a, &b);
+        let id = p["operation_id"].as_str().unwrap().to_owned();
+        let consent = json!({"operation_id": id, "digest": digest(&p)});
+        ok("copy.approve", call(svc, "copy.approve", consent.clone()));
+        *svc.inner.copies.hook.lock().unwrap() = Some(Arc::new(|p, _| {
+            if p == Point::StagingCreated {
+                Flow::Crash
+            } else {
+                Flow::Continue
+            }
+        }));
+        ok("copy.start", call(svc, "copy.start", consent));
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            ok(
+                "copy.status",
+                call(svc, "copy.status", json!({"operation_id": id})),
+            );
+            if svc.inner.copies.running.lock().unwrap().is_empty() {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let store = svc.inner.copies.store.as_ref().unwrap();
+        let mut journal = store.lock().unwrap();
+        let op = journal.operations().unwrap()[0];
+        let r = journal.replay(op).unwrap().unwrap();
+        journal
+            .append(
+                op,
+                r.epoch,
+                Record::CreateBatch {
+                    items: vec![(0, "orphan".into())],
+                },
+            )
+            .unwrap();
+        let leftover = lab
+            .path
+            .join("b")
+            .join(r.staging_tokens.last().unwrap())
+            .join("orphan");
+        std::fs::write(&leftover, b"").unwrap();
+        drop(journal);
+        let state = lab.path.parent().unwrap().join("state");
+        let Lab {
+            _tmp, path: _, svc, ..
+        } = lab;
+        drop(svc);
+        let svc = Service::open(Config {
+            state_dir: state,
+            dataset: DatasetClass::Synthetic,
+            allow_personal: false,
+            allow_identity_unverified: false,
+            grant_roots: vec![],
+        })
+        .unwrap();
+        let (status, _) = ok(
+            "copy.status",
+            call(&svc, "copy.status", json!({"operation_id": id})),
+        );
+        assert_eq!(status["state"], "needs_attention", "{status:?}");
+        assert_eq!(status["unjournaled_items"], json!(["orphan"]));
+        assert_eq!(status["unjournaled_item_count"], 1);
+        assert!(leftover.exists());
+    }
+
     /// #567: a lost acknowledgement at `committed` makes the executor return `Fault::Journal` for a copy
     /// that did commit (the journal is the truth, evidence/v3/copy-faults.md). The service reports the
     /// journal's state, never a failure.

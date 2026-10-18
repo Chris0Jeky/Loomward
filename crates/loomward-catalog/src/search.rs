@@ -182,8 +182,12 @@ const PLACE_SQL: &str = "WITH RECURSIVE a(id,parent_id,name,listing_state,depth)
     UNION ALL SELECT d.id,d.parent_id,d.name,d.listing_state,a.depth+1
     FROM dir d JOIN a ON d.id=a.parent_id WHERE a.depth<1025)
     SELECT id,parent_id,name,listing_state FROM a";
-/// Root-relative path and visibility of a folder, cached for the request.
-fn place<'a>(conn: &Connection, cache: &'a mut HashMap<i64, Place>, dir: i64) -> Result<&'a Place> {
+/// Root-relative path and visibility, or invalid ancestry (`None`), cached for the request.
+fn place<'a>(
+    conn: &Connection,
+    cache: &'a mut HashMap<i64, Option<Place>>,
+    dir: i64,
+) -> Result<&'a Place> {
     let mut chain = Vec::new();
     let mut at = Some(dir);
     if !cache.contains_key(&dir) {
@@ -191,11 +195,16 @@ fn place<'a>(conn: &Connection, cache: &'a mut HashMap<i64, Place>, dir: i64) ->
         let mut rows = stmt.query([dir])?;
         while let Some(row) = rows.next()? {
             let id = row.get(0)?;
-            if cache.contains_key(&id) {
+            if matches!(cache.get(&id), Some(Some(_))) {
                 at = None;
                 break;
             }
+            if cache.contains_key(&id) || chain.iter().any(|(seen, _, _, _)| *seen == id) {
+                break;
+            }
             if chain.len() > 1024 {
+                // Only this starting folder is known to be too deep; its ancestors may be valid.
+                cache.insert(dir, None);
                 return Err(Error::Invalid("directory identity cycle"));
             }
             let parent = row.get(1)?;
@@ -204,12 +213,16 @@ fn place<'a>(conn: &Connection, cache: &'a mut HashMap<i64, Place>, dir: i64) ->
             chain.push((id, parent, name, state == "absent_pending"));
             at = parent;
         }
-        if at.is_some() {
-            return Err(Error::Sql(rusqlite::Error::QueryReturnedNoRows));
+        if let Some(id) = at {
+            cache.insert(id, None);
+            for (id, _, _, _) in chain {
+                cache.insert(id, None);
+            }
+            return Err(Error::Invalid("directory identity cycle"));
         }
     }
     for (id, parent, name, hidden) in chain.into_iter().rev() {
-        let place = match parent.and_then(|p| cache.get(&p)) {
+        let place = match parent.and_then(|p| cache.get(&p)).and_then(Option::as_ref) {
             Some(p) => Place {
                 rel: if p.rel.is_empty() {
                     name
@@ -225,9 +238,11 @@ fn place<'a>(conn: &Connection, cache: &'a mut HashMap<i64, Place>, dir: i64) ->
                 hidden,
             },
         };
-        cache.insert(id, place);
+        cache.insert(id, Some(place));
     }
-    Ok(&cache[&dir])
+    cache[&dir]
+        .as_ref()
+        .ok_or(Error::Invalid("directory identity cycle"))
 }
 
 fn root_states(conn: &Connection, root: Option<i64>) -> Result<Vec<SearchRootState>> {
@@ -290,7 +305,7 @@ struct Walk<'r> {
     key: i64,
     size: Option<i64>,
     hits: Vec<(SearchHit, Position)>,
-    places: HashMap<i64, Place>,
+    places: HashMap<i64, Option<Place>>,
     skipped: bool,
     progress: Arc<AtomicBool>,
 }
@@ -675,6 +690,99 @@ mod tests {
             .unwrap();
         assert_eq!(stmt.get_status(rusqlite::StatementStatus::Run), 1);
     }
+    #[test]
+    fn an_over_depth_path_does_not_hide_valid_ancestors() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE dir(id INTEGER PRIMARY KEY,parent_id INTEGER,name TEXT,listing_state TEXT);
+             INSERT INTO dir VALUES (1,NULL,'root','complete');
+             WITH RECURSIVE ids(id) AS (VALUES(2) UNION ALL SELECT id+1 FROM ids WHERE id<1027)
+             INSERT INTO dir SELECT id,id-1,'folder','complete' FROM ids;",
+        )
+        .unwrap();
+        let mut cache = HashMap::new();
+        assert!(matches!(
+            place(&conn, &mut cache, 1027),
+            Err(Error::Invalid("directory identity cycle"))
+        ));
+        let ancestor = place(&conn, &mut cache, 2).unwrap();
+        assert_eq!(ancestor.rel, "folder");
+        assert_eq!(ancestor.root_name, "root");
+        assert!(!ancestor.hidden);
+    }
+
+    #[test]
+    fn cyclic_ancestry_is_negatively_cached_for_every_affected_folder() {
+        use std::sync::atomic::AtomicUsize;
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE dir(id INTEGER PRIMARY KEY,parent_id INTEGER,name TEXT,listing_state TEXT);
+             INSERT INTO dir VALUES (1,2,'cycle-a','complete'),(2,1,'cycle-b','complete'),
+                                    (3,1,'tail','complete'),(4,3,'another-tail','complete');",
+        )
+        .unwrap();
+        let steps = Arc::new(AtomicUsize::new(0));
+        let count = steps.clone();
+        conn.progress_handler(
+            1,
+            Some(move || {
+                count.fetch_add(1, Ordering::Relaxed);
+                false
+            }),
+        )
+        .unwrap();
+        let mut cache = HashMap::new();
+        assert!(matches!(
+            place(&conn, &mut cache, 3),
+            Err(Error::Invalid("directory identity cycle"))
+        ));
+        assert!(steps.swap(0, Ordering::Relaxed) > 0);
+        for dir in [1, 2, 3] {
+            assert!(matches!(
+                place(&conn, &mut cache, dir),
+                Err(Error::Invalid("directory identity cycle"))
+            ));
+            assert_eq!(
+                steps.load(Ordering::Relaxed),
+                0,
+                "folder {dir} was queried again"
+            );
+        }
+        // A new descendant inherits the cached failure after its own single lookup.
+        assert!(matches!(
+            place(&conn, &mut cache, 4),
+            Err(Error::Invalid("directory identity cycle"))
+        ));
+        assert!(steps.swap(0, Ordering::Relaxed) > 0);
+        assert!(matches!(
+            place(&conn, &mut cache, 4),
+            Err(Error::Invalid("directory identity cycle"))
+        ));
+        assert_eq!(steps.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn missing_ancestry_is_negatively_cached_for_every_affected_folder() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE dir(id INTEGER PRIMARY KEY,parent_id INTEGER,name TEXT,listing_state TEXT);
+             INSERT INTO dir VALUES (1,99,'missing-parent','complete'),(2,1,'tail','complete');",
+        )
+        .unwrap();
+        let mut cache = HashMap::new();
+        assert!(place(&conn, &mut cache, 2).is_err());
+        for dir in [1, 2, 99] {
+            assert!(matches!(cache.get(&dir), Some(None)));
+            assert!(place(&conn, &mut cache, dir).is_err());
+        }
+        assert_eq!(
+            conn.prepare_cached(PLACE_SQL)
+                .unwrap()
+                .get_status(rusqlite::StatementStatus::Run),
+            1
+        );
+    }
+
     #[test]
     fn short_texts_skip_the_passes_a_trigram_cannot_express() {
         let one = plan("a");

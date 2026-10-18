@@ -57,8 +57,8 @@ export class ObservatoryFeed {
 
   async read(lens: ProcessLens) {
     try { return await this.poll(lens); } catch (e) {
-      this.dueAt = 0; // the next good poll asks for the process part again ...
-      this.processTrends = null; // ... and the carried one is not shown in the meantime
+      this.dueAt = 0; // the next good poll asks for the process part again
+      this.processTrends = null;
       throw e;
     }
   }

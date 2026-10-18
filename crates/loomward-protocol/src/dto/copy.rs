@@ -140,6 +140,10 @@ pub struct CopyStatus {
     /// Staging folders intended but never identity-journaled: possibly empty leftovers, never adopted
     /// or removed by Loomward; names only.
     pub leftover_staging_folders: BoundedVec<BoundedStr<1, 255>, 0, 64>,
+    /// First 64 staging-relative manifest names observed without journaled identities; never removed.
+    pub unjournaled_items: BoundedVec<BoundedStr<1, 32768>, 0, 64>,
+    /// Total observed, including names beyond the bounded list.
+    pub unjournaled_item_count: Count,
     #[serde(deserialize_with = "crate::types::required_nullable")]
     pub refusal: Option<CopyRefusal>,
 }

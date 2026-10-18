@@ -6,6 +6,8 @@
   "items_verified": 2,
   "staging_folder": null,
   "leftover_staging_folders": [],
+  "unjournaled_items": [],
+  "unjournaled_item_count": 0,
   "refusal": {
     "code": "source_in_use",
     "node_id": "nd_s1_403"
