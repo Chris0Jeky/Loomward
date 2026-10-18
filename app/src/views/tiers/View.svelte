@@ -410,7 +410,7 @@
     {#if savedDetail?.summary.status === 'stale'}<p class="tag warn" role="note">Historical scenario: its inputs have changed. These figures describe the saved simulation.</p>{/if}
     <p class="simlabel">Simulation · executable: {String(p.proposals.some((x) => x.executable))} · filesystem_changed: {String(p.filesystem_changed)}</p>
     <dl class="kv">
-      <dt>Target free</dt><dd class="num">{formatBytes(p.target_free_bytes)} on {src ? vname(src.volume_id) : 'the source'}</dd>
+      <dt>Target free</dt><dd class="num">{formatBytes(p.target_free_bytes)} on {savedDetail ? vname(savedDetail.summary.source_volume_id) : src ? vname(src.volume_id) : 'the source'}</dd>
       <dt>Result</dt><dd><strong>{p.satisfied ? 'Target met in the simulation' : `Still ${formatBytes(p.shortfall_bytes)} short`}</strong>
         <span class="muted"> (was {formatBytes(p.baseline_shortfall_bytes)} short; improvement {formatBytes(p.shortfall_improvement_bytes)})</span></dd>
       <dt>Would move</dt><dd class="num">{formatBytes(p.transfer_bytes)} across {formatCount(p.proposals.length)} groups</dd>

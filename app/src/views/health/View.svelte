@@ -50,16 +50,12 @@
     const c = session.client;
     if (!c) return;
     const mine = ++ticket;
-    try {
-      const [r, g, h] = await Promise.all([c.call('roots.list', {}), c.call('grants.list', {}), c.call('health.get', {}), scans.sync()]);
-      if (mine !== ticket) return;
-      roots = r.result;
-      grants = g.result;
-      health = h.result;
-      error = '';
-    } catch (e) {
-      if (mine === ticket) error = session.handle(e);
-    }
+    const [r, g, h, s] = await Promise.allSettled([c.call('roots.list', {}), c.call('grants.list', {}), c.call('health.get', {}), scans.sync()]);
+    if (mine !== ticket) return;
+    roots = r.status === 'fulfilled' ? r.value.result : null;
+    grants = g.status === 'fulfilled' ? g.value.result : null;
+    health = h.status === 'fulfilled' ? h.value.result : null;
+    error = [r, g, h, s].filter(result => result.status === 'rejected').map(result => session.handle(result.reason)).join(' ');
   }
 
   onMount(() => () => picker.dismiss()); // clear outcomes on leaving, so a reply that finishes offscreen survives the return
@@ -248,7 +244,7 @@
     {#if session.info}
       <p class="muted small">Engine {session.info.engine_version} · protocol {session.info.protocol} · {session.info.adapter} adapter · {session.info.dataset_class} dataset · enumeration {session.info.enumeration_strategy.replaceAll('_', ' ')} · session started {formatTime(session.info.session_started_at)}</p>
     {/if}
-  {:else}<p class="muted">Loading</p>{/if}
+  {:else}<p class="muted">{error ? 'Health unknown: refresh failed.' : 'Loading'}</p>{/if}
 </section>
 
 <Diagnostics />
@@ -325,7 +321,7 @@
         </li>
       {/each}
     </ul>
-  {:else}<p class="muted">Loading</p>{/if}
+  {:else}<p class="muted">{error ? 'Roots unknown: refresh failed.' : 'Loading'}</p>{/if}
 </section>
 
 <section class="panel" aria-labelledby="h-grants">
@@ -349,7 +345,7 @@
         <li class="muted">No grants.</li>
       {/each}
     </ul>
-  {:else}<p class="muted">Loading</p>{/if}
+  {:else}<p class="muted">{error ? 'Grants unknown: refresh failed.' : 'Loading'}</p>{/if}
 </section>
 
 <section class="panel" aria-labelledby="h-caps">
