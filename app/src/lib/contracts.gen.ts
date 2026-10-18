@@ -451,6 +451,7 @@ export interface ScanProgress {
   strategy: EnumerationStrategy;
   examined: Count;
   indexed_files: Count;
+  /** Directories whose listing was read and indexed; a directory refused on open is catalogued by name but not counted here. */
   indexed_dirs: Count;
   skipped: Count;
   failed: Count;
@@ -461,7 +462,7 @@ export interface ScanProgress {
   entries_per_second: number;
   elapsed_ms: Count;
   limit_hit: boolean;
-  limit_reason?: "depth_limit";
+  limit_reason?: "depth_limit" | "directory_limit";
 }
 
 export interface Job {

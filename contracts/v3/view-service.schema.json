@@ -659,7 +659,7 @@
         "strategy": { "$ref": "#/$defs/EnumerationStrategy" },
         "examined": { "$ref": "#/$defs/Count" },
         "indexed_files": { "$ref": "#/$defs/Count" },
-        "indexed_dirs": { "$ref": "#/$defs/Count" },
+        "indexed_dirs": { "$ref": "#/$defs/Count", "$comment": "Directories whose listing was read and indexed; a directory refused on open is catalogued by name but not counted here." },
         "skipped": { "$ref": "#/$defs/Count" },
         "failed": { "$ref": "#/$defs/Count" },
         "logical_bytes": { "$ref": "#/$defs/ByteCount" },
@@ -669,7 +669,7 @@
         "entries_per_second": { "type": "number", "minimum": 0 },
         "elapsed_ms": { "$ref": "#/$defs/Count" },
         "limit_hit": { "type": "boolean" },
-        "limit_reason": { "enum": ["depth_limit"] }
+        "limit_reason": { "enum": ["depth_limit", "directory_limit"] }
       }
     },
     "Job": {

@@ -3839,6 +3839,7 @@ fn scan_start_publishes_a_lab_tree_matching_an_independent_walk_with_live_events
     assert_eq!(slice["aggregate_state"], "consistent", "{slice:?}");
     let (roots, _) = ok("roots.list", call(svc, "roots.list", json!({})));
     assert_eq!(roots["roots"][0]["scan"]["coverage"], "complete");
+    assert_eq!(roots["roots"][0]["scan"]["last_job_id"], json!(job));
     // Events: catalogue revisions arrive before the job's terminal state, each after its commit.
     let mut seen = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(10);
