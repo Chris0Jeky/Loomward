@@ -845,27 +845,44 @@ fn durable_stop_20k_lab() {
     tmp.close().unwrap();
 }
 
-/// H2 for named streams (measured here, C5): a held named-stream handle blocks renaming its ancestor
-/// folder even with delete sharing, while a held default stream does not. Hence the executor releases
-/// stream holds just before publish and re-hashes the streams after (docs/47 section 4, step 2).
+/// H2 is an OS measurement, not product behaviour (#687). The executor relies on publishing after
+/// named-stream holds are released, with default holds retained, then re-hashing the named streams.
 #[test]
-fn h2_named_stream_hold_blocks_publish_default_hold_does_not() {
+fn h2_publish_after_named_hold_release_preserves_hashes_with_default_hold() {
     let Some(lab) = Lab::new() else { return };
     let key = identity::observe(&lab.dest()).unwrap().object;
     let dest = Destination::open(&lab.dest(), &key).unwrap();
-    let mut stage = dest.stage("tok").unwrap();
-    let file = stage.create_file(&[], "f").unwrap();
-    file.write_and_flush(&mut &b"data"[..], 4).unwrap();
-    let stream = file.create_stream("note").unwrap();
-    stream.write_and_flush(&mut &b"n"[..], 1).unwrap();
-    let id = file.identity().unwrap();
-    drop((stream, file));
-    let held = stage.verify(&[], "f", &id).unwrap();
-    let stream_hold = held.verify_stream("note").unwrap();
-    assert_eq!(stage.publish("done").unwrap_err().raw_os_error(), Some(5));
-    drop(stream_hold);
-    stage.publish("done").unwrap();
-    assert_eq!(held.verify_stream("note").unwrap().size, 1);
+    // Always exercise the executor's release-before-publish path as well as the host measurement,
+    // including on hosts where the measurement itself successfully publishes the first staging tree.
+    for measure_held_publish in [true, false] {
+        let mut stage = dest.stage(&format!("tok-{measure_held_publish}")).unwrap();
+        let final_name = format!("done-{measure_held_publish}");
+        let file = stage.create_file(&[], "f").unwrap();
+        file.write_and_flush(&mut &b"data"[..], 4).unwrap();
+        let stream = file.create_stream("note").unwrap();
+        stream.write_and_flush(&mut &b"n"[..], 1).unwrap();
+        let id = file.identity().unwrap();
+        drop((stream, file));
+        let held = stage.verify(&[], "f", &id).unwrap();
+        let stream_hold = held.verify_stream("note").unwrap();
+        let stream_hash = (stream_hold.digest, stream_hold.size);
+        let published = if measure_held_publish {
+            let result = stage.publish(&final_name);
+            println!("H2 publish with named-stream and default-stream holds: {result:?}");
+            result.is_ok()
+        } else {
+            false
+        };
+        drop(stream_hold);
+        if !published {
+            // Product assertion: a default-stream hold alone must not block publish.
+            stage.publish(&final_name).unwrap();
+        }
+        let rehashed = stage.verify(&[], "f", &id).unwrap();
+        assert_eq!((rehashed.digest, rehashed.size), (held.digest, held.size));
+        let stream_rehashed = rehashed.verify_stream("note").unwrap();
+        assert_eq!((stream_rehashed.digest, stream_rehashed.size), stream_hash);
+    }
 }
 
 /// Regression (found by the C5 service lab run): a one-character final name was refused with
