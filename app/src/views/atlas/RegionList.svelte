@@ -42,11 +42,17 @@
         return { n, notes, open, size: sizeText(n, allocated) };
       });
   });
-  const rest = $derived.by(() => {
+  /** Bytes in the open node but not in a listed child: null when none, 'unknown' when any input size is unknown (never counted as 0). */
+  const rest = $derived.by((): string | null => {
     const total = parseBytes(slice?.nodes[0]?.size_bytes);
-    if (total === null) return null;
+    const allocated = slice?.basis === 'allocated';
+    if (total === null) return rows.length ? 'unknown' : null;
     let listed = 0n;
-    for (const r of rows) listed += parseBytes(r.n.size_bytes) ?? 0n; // a malformed size degrades to nothing listed, never a throw
+    for (const r of rows) {
+      const bytes = parseBytes(r.n.size_bytes);
+      if (bytes === null || sizeUnknown(r.n, allocated)) return 'unknown';
+      listed += bytes;
+    }
     return total > listed ? formatBytes(String(total - listed)) : null;
   });
 </script>

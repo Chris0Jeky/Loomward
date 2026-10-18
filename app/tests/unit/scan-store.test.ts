@@ -340,6 +340,38 @@ describe('settling and syncing keep what was known', () => {
   });
 });
 
+describe('the busy notice about an adopted scan does not outlive it', () => {
+  beforeEach(fresh);
+  afterEach(() => { session.client = null; });
+  const running = job('running', { job_id: 'jb_9', started_at: '2026-10-10T10:00:01Z' });
+  const ended = job('completed', { job_id: 'jb_9', started_at: '2026-10-10T10:00:01Z', finished_at: '2026-10-10T10:00:05Z', coverage: 'complete' });
+  const busy = (answer: Reply) => clientWith((c) => c === 'scan.start' ? { error: { code: 'busy', message: 'running', detail: { job_id: 'jb_9' } } } : answer).client;
+
+  it('says the scan is already running while it runs, then drops the notice when it ends', async () => {
+    session.client = busy({ job: running });
+    await scans.start('rt_a', 'full');
+    expect(scans.view('rt_a', 0)?.active).toBe(true);
+    expect(scans.problems.rt_a).toContain('already running');
+    scans.onEvent(ev('job.state', { job: ended }));
+    expect(scans.view('rt_a', 0)?.activity).toBe('completed');
+    expect(scans.problems.rt_a).toBeUndefined();
+  });
+
+  it('does not report a scan that was already over by the time it was looked up as running', async () => {
+    session.client = busy({ job: ended });
+    await scans.start('rt_a', 'full');
+    expect(scans.view('rt_a', 0)?.activity).toBe('completed');
+    expect(scans.problems.rt_a).toBeUndefined();
+  });
+
+  it('keeps a refusal that is not about a running scan', async () => {
+    session.client = clientWith((c) => c === 'scan.start' ? { error: { code: 'permission_denied', message: 'no grant' } } : null).client;
+    await scans.start('rt_a', 'full');
+    scans.onEvent(ev('job.state', { job: ended }));
+    expect(scans.problems.rt_a).toContain('grant');
+  });
+});
+
 describe('the shell resyncs on the events a scan produces', () => {
   const feed = (e: EventEnvelope) => (session as unknown as { onEvent(e: EventEnvelope): void }).onEvent(e);
   it.each(['tree.invalidated', 'roots.changed'] as const)('bumps the epoch on %s, which the Explorer and Atlas refetch on', (name) => {
