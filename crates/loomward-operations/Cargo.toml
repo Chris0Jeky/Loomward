@@ -20,3 +20,4 @@ sha2.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+rusqlite = { version = "0.38.0", features = ["hooks"] }
