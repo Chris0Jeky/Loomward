@@ -814,7 +814,9 @@ fn unique_totals(conn: &Connection, r: &Raw) -> Result<(Option<u64>, Option<Stri
 impl Reader {
     fn repair_committed(&mut self) -> Result<()> {
         let roots = {
-            let mut s=self.conn.prepare("SELECT DISTINCT d.root_id FROM dir d JOIN root r ON r.id=d.root_id WHERE d.agg_valid_rev<d.dirty_rev AND r.active_run IS NULL AND d.parent_id IS NULL")?;
+            // A restart repair that hit the tree-depth limit needs a rescan or explicit repair;
+            // retrying it before every read would deny reads of unrelated, healthy roots too.
+            let mut s=self.conn.prepare("SELECT DISTINCT d.root_id FROM dir d JOIN root r ON r.id=d.root_id WHERE d.agg_valid_rev<d.dirty_rev AND r.active_run IS NULL AND r.state!='repairing' AND d.parent_id IS NULL")?;
             let rows = s
                 .query_map([], |r| r.get::<_, i64>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
