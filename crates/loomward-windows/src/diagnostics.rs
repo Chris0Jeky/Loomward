@@ -42,6 +42,8 @@ fn component(name: &OsStr) -> io::Result<Vec<u16>> {
         || name == [46]
         || name == [46, 46]
         || name.iter().any(|c| matches!(*c, 0 | 47 | 58 | 92))
+        // Win32 strips a trailing dot or space; a native create would make a near-duplicate name.
+        || matches!(name.last(), Some(46 | 32))
     {
         return Err(io::ErrorKind::InvalidInput.into());
     }
@@ -58,6 +60,8 @@ fn component_names_are_single_children() {
         r"a\report.json",
         "report.json:stream",
         "nul\0name",
+        "report.json.",
+        "report.json ",
     ] {
         assert!(component(OsStr::new(name)).is_err(), "{name:?}");
     }

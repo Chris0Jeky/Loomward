@@ -2,7 +2,7 @@
 
 Lane: `diagexp-fix`, branch `fix/diagnostics-export-containment`. Base:
 `3ad18703c2f5c47aa676d99e932e69e09986b584`. Windows 11, KRASPYON, 2026-10-18.
-Synthetic disposable folders only. Changes are left uncommitted for the driver.
+Synthetic disposable folders only. Produced by a Sol lane; committed and published by the driver in PR #640.
 
 ## Reproduction
 
@@ -102,7 +102,7 @@ git -C C:/lw/wt/diagexp-fix diff --check
 - Service: **345 unit tests and 1 integration test passed, 0 failed, 1 existing manual probe
   ignored**; all **17 diagnostics tests** passed. Unit run: 48.09 s.
 - Formatting, scoped all-target/all-feature Clippy and whitespace checks: **PASS**, no warnings.
-- HEAD remains the base above; no commit, push, PR, merge or deployment was performed.
+- The lane made no commit, push, PR, merge or deployment; the driver committed it for PR #640. The lane's mutation runner lived in ignored lane state and is not in the repository; the committed mutations are in `crates/loomward-service/tests/diagnostics_mutations.py`.
 
 Raw local logs and the runner remain gitignored under `.loomward/diagnostics-containment/` and
 `.loomward/diagnostics-bundle/`. Ignored Python caches and local `target/test-roots/` fixtures
