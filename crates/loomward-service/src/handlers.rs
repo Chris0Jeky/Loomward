@@ -640,7 +640,19 @@ impl Inner {
                 "personal_session_requires_owner_grant",
             ),
         };
-        if root.origin != origin {
+        if root.origin != origin
+            || (self.dataset == DatasetClass::Synthetic
+                && !self
+                    .db()
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM st.lab_root l JOIN st.root_grant g
+                         ON l.volume_key=g.volume_key AND l.root_file_id=g.root_file_id
+                         AND l.volume_guid=g.volume_guid WHERE g.id=?1)",
+                        [root.grant],
+                        |r| r.get::<_, bool>(0),
+                    )
+                    .map_err(sql_error)?)
+        {
             return Err(with_reason(
                 fail(ErrorCode::PermissionDenied, message),
                 reason,

@@ -5642,6 +5642,72 @@ fn scan_start_is_refused_outside_registered_lab_roots() {
     );
 }
 
+fn session_gate_lab_guid_case(binding: &str) {
+    let tmp = temp_root();
+    let svc = open(tmp.path(), DatasetClass::Synthetic);
+    let (root, grant) = register(&svc, 1);
+    let guid = "00000000000000000000000000000001";
+    let conn = svc.inner.db();
+    conn.execute(
+        "UPDATE st.root_grant SET origin='lab_generated',volume_guid=?1 WHERE id=?2",
+        rusqlite::params![guid, grant],
+    )
+    .unwrap();
+    if binding != "missing" {
+        crate::db::insert_lab_root(&conn, "fixture", &[1; 16], guid, "digest", "seed", "S")
+            .unwrap();
+        let registered_guid = match binding {
+            "matching" => Some(guid),
+            "mismatched" => Some("00000000000000000000000000000002"),
+            "null" => None,
+            _ => unreachable!(),
+        };
+        conn.execute("UPDATE st.lab_root SET volume_guid=?1", [registered_guid])
+            .unwrap();
+    }
+    let row = crate::db::roots(&conn, Some(root)).unwrap().remove(0);
+    assert_eq!(row.grant_state, "active");
+    drop(conn);
+    let result = svc.inner.session_root_gate(&row);
+    if binding == "matching" {
+        result.unwrap();
+    } else {
+        let e = result.expect_err("an active lab grant needs a matching registration GUID");
+        assert_eq!(e.code, ErrorCode::PermissionDenied);
+        assert_eq!(reason(&e), Some("synthetic_session_requires_lab_root"));
+    }
+    let stored_guid: String = svc
+        .inner
+        .db()
+        .query_row(
+            "SELECT volume_guid FROM st.root_grant WHERE id=?1",
+            [grant],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored_guid, guid, "the gate must never adopt a GUID");
+}
+
+#[test]
+fn session_gate_lab_guid_null_is_refused() {
+    session_gate_lab_guid_case("null");
+}
+
+#[test]
+fn session_gate_lab_guid_mismatched_is_refused() {
+    session_gate_lab_guid_case("mismatched");
+}
+
+#[test]
+fn session_gate_lab_guid_missing_is_refused() {
+    session_gate_lab_guid_case("missing");
+}
+
+#[test]
+fn session_gate_lab_guid_matching_is_accepted() {
+    session_gate_lab_guid_case("matching");
+}
+
 /// A personal session scans only its own active owner grants: an unknown root, a lab root and
 /// a revoked grant are refused before the engine sees them.
 #[test]
