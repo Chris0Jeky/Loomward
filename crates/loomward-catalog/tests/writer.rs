@@ -2752,10 +2752,8 @@ fn refresh_root_adopts_legacy_null_guid_once_without_replacing_grant() {
         };
         let before = revision();
         observation.volume_guid = Some("0123456789abcdef0123456789abcdef".into());
+        // #669: a verified root at another path is fresh consent, never a refresh.
         for field in ["volume", "id", "guid", "path"] {
-            if field == "path" && filesystem == "NTFS" {
-                continue;
-            }
             let mut wrong = observation.clone();
             match field {
                 "volume" => wrong.volume_key = "different-volume".into(),

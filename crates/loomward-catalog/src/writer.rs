@@ -1182,9 +1182,9 @@ fn prepare_state(
                 "verified"
             };
             let grant = if let WriteCommand::RefreshRoot { grant_id, .. } = c {
-                // A recyclable unverified ID also needs the same stored path.
+                // A grant is consent for its stored path: a moved root is granted afresh (#669).
                 let stored_mode: String = tx.query_row(
-                    "SELECT identity_mode FROM st.root_grant WHERE id=?1 AND volume_key=?2 AND root_file_id=?3 AND state='active' AND (identity_mode='verified' OR display_path=?4) AND (volume_guid IS ?5 OR volume_guid IS NULL)",
+                    "SELECT identity_mode FROM st.root_grant WHERE id=?1 AND volume_key=?2 AND root_file_id=?3 AND state='active' AND display_path=?4 AND (volume_guid IS ?5 OR volume_guid IS NULL)",
                     params![grant_id,o.volume_key,o.root_file_id,o.display_path,o.volume_guid],
                     |r| r.get(0),
                 ).optional()?.ok_or(Error::NotFound)?;
