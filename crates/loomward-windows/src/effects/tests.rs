@@ -859,15 +859,11 @@ fn nested_parents_are_identity_bound() {
 fn source_fixture(
     temp: &tempfile::TempDir,
 ) -> (enumerate::OpenedIdentity, duplicate_reader::Entry) {
-    let root = identity::observe(temp.path()).unwrap();
-    let expected = enumerate::OpenedIdentity {
-        id: Some(enumerate::FileIdObs::Id128(root.object.file_id)),
-        basis: enumerate::IdBasis::PostOpen,
-        volume_guid: None,
-        volume_serial: Some(root.object.volume_serial.parse().unwrap()),
-        attributes: root.attributes,
-        reparse_tag: Some(0),
-    };
+    let (_, expected) = <enumerate::NativeSource as enumerate::DirSource>::open_root(
+        &enumerate::NativeSource::default(),
+        temp.path(),
+    )
+    .unwrap();
     let entry = duplicate_reader::Entry {
         relative: "source".into(),
         expected: identity::observe(&temp.path().join("source")).unwrap(),
