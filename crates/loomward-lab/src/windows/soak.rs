@@ -1,5 +1,7 @@
 use super::*;
-use loomward_protocol::{CallContext, DatasetClass, ResponseEnvelope, ViewService};
+use loomward_protocol::{
+    CallContext, DatasetClass, ErrorCode, RequestEnvelope, ResponseEnvelope, ViewService,
+};
 use loomward_service::{Config, Service};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -98,16 +100,45 @@ fn open(state: &Path, root: Option<&Path>) -> io::Result<Service> {
 }
 
 fn call(service: &Service, command: &str, payload: Value) -> io::Result<Value> {
+    call_with(command, payload, Duration::from_secs(30), |request| {
+        service.call(request, &CallContext::http())
+    })
+}
+
+fn call_with(
+    command: &str,
+    payload: Value,
+    timeout: Duration,
+    mut invoke: impl FnMut(RequestEnvelope) -> ResponseEnvelope,
+) -> io::Result<Value> {
     use std::sync::atomic::AtomicU64;
     static REQUEST: AtomicU64 = AtomicU64::new(1);
-    let request = serde_json::from_value(json!({
-        "protocol": "loomward/3", "request_id": format!("soak-{}", REQUEST.fetch_add(1, Ordering::Relaxed)),
-        "command": command, "payload": payload, "deadline_ms": 30000,
-    }))?;
-    match service.call(request, &CallContext::http()) {
-        ResponseEnvelope::Ok(reply) => Ok(json!(reply.result)),
-        ResponseEnvelope::Err(reply) => {
-            Err(io::Error::other(format!("{command}: {:?}", reply.error)))
+    let deadline = Instant::now() + timeout;
+    loop {
+        let request = serde_json::from_value(json!({
+            "protocol": "loomward/3", "request_id": format!("soak-{}", REQUEST.fetch_add(1, Ordering::Relaxed)),
+            "command": command, "payload": payload,
+            "deadline_ms": deadline.saturating_duration_since(Instant::now()).as_millis().max(1),
+        }))?;
+        match invoke(request) {
+            ResponseEnvelope::Ok(reply) => return Ok(json!(reply.result)),
+            ResponseEnvelope::Err(reply) => {
+                let error = format!("{command}: {:?}", reply.error);
+                // Aggregate repair can overlap a completed scan. Only this read may wait for it.
+                if command != "tree.slice"
+                    || reply.error.code != ErrorCode::PartialCoverage
+                    || !reply.error.retryable
+                {
+                    return Err(io::Error::other(error));
+                }
+                thread::sleep(
+                    Duration::from_millis(50)
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                );
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(io::ErrorKind::TimedOut, error));
+                }
+            }
         }
     }
 }
@@ -501,6 +532,92 @@ fn run(root: &Path, out: &Path, duration: Duration, cycles: Option<u64>) -> io::
 #[cfg(test)]
 mod tests {
     use super::*;
+    use loomward_protocol::ErrorBody;
+
+    #[test]
+    fn retryable_partial_coverage_settles_before_returning_the_slice() {
+        let expected = json!({"aggregate_state": "consistent", "nodes": []});
+        let mut calls = 0;
+        let mut request_ids = Vec::new();
+        let mut deadlines = Vec::new();
+        let result = call_with("tree.slice", json!({}), Duration::from_secs(1), |request| {
+            calls += 1;
+            assert!(!request_ids.contains(&request.request_id));
+            request_ids.push(request.request_id.clone());
+            deadlines.push(request.deadline_ms);
+            if calls <= 2 {
+                ResponseEnvelope::error(
+                    Some(request.request_id),
+                    ErrorBody::new(
+                        ErrorCode::PartialCoverage,
+                        "aggregates are being repaired",
+                        true,
+                    ),
+                    None,
+                )
+            } else {
+                ResponseEnvelope::ok(
+                    request.request_id,
+                    &expected,
+                    serde_json::from_value(json!({
+                        "served_at": "2026-10-18T00:00:00Z", "elapsed_ms": 0,
+                        "dataset_class": "synthetic", "budget_hit": false,
+                        "catalog_rev": null, "state_rev": null
+                    }))
+                    .unwrap(),
+                )
+            }
+        });
+        assert_eq!(result.unwrap(), expected);
+        assert_eq!(calls, 3);
+        assert!(
+            deadlines[0] > deadlines[2],
+            "retries share the original budget"
+        );
+    }
+
+    #[test]
+    fn partial_coverage_that_never_settles_fails_within_the_budget() {
+        for timeout in [Duration::ZERO, Duration::from_millis(100)] {
+            let error = call_with("tree.slice", json!({}), timeout, |request| {
+                ResponseEnvelope::error(
+                    Some(request.request_id),
+                    ErrorBody::new(
+                        ErrorCode::PartialCoverage,
+                        "aggregates are being repaired",
+                        true,
+                    ),
+                    None,
+                )
+            })
+            .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+            assert!(error.to_string().contains("PartialCoverage"), "{error}");
+        }
+    }
+
+    #[test]
+    fn other_errors_and_mutations_are_never_retried() {
+        for (command, code, retryable) in [
+            ("tree.slice", ErrorCode::PartialCoverage, false),
+            ("tree.slice", ErrorCode::InternalError, true),
+            ("scan.start", ErrorCode::PartialCoverage, true),
+        ] {
+            let mut calls = 0;
+            let error = call_with(command, json!({}), Duration::from_secs(1), |request| {
+                calls += 1;
+                ResponseEnvelope::error(
+                    Some(request.request_id),
+                    ErrorBody::new(code, "synthetic failure", retryable),
+                    None,
+                )
+            })
+            .unwrap_err();
+            assert_eq!(calls, 1, "{command}: {code:?}");
+            assert_eq!(error.kind(), io::ErrorKind::Other);
+            assert!(error.to_string().contains("synthetic failure"));
+        }
+    }
 
     #[test]
     fn soak_refuses_non_lab_and_ambiguous_roots() {
