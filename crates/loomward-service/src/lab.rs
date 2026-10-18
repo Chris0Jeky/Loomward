@@ -3,7 +3,7 @@
 //! already holds anything), records its native identity in the synthetic `state.db`, and a later
 //! grant must present a root with exactly that identity. A path alone never qualifies.
 
-use crate::{db, now_ns, paths};
+use crate::{db, paths};
 use loomward_catalog::Catalog;
 use loomward_protocol::RootGrantResultRefusal as Refusal;
 use std::path::Path;
@@ -27,6 +27,27 @@ pub fn identity(root: &Path) -> Result<(String, Vec<u8>), Refusal> {
         loomward_windows::identity::observe(root).map_err(|_| Refusal::IdentityUnavailable)?;
     let object = observed.object;
     identity_parts(object, false)
+}
+
+/// Read the GUID through the same guarded native open used when granting a root.
+pub(crate) fn volume_guid(root: &Path) -> Result<String, Refusal> {
+    #[cfg(windows)]
+    {
+        use loomward_engine::scan::source::DirSource;
+        let (_, identity) = loomward_windows::enumerate::NativeSource::default()
+            .with_identity_unverified()
+            .open_root(root)
+            .map_err(|_| Refusal::IdentityUnavailable)?;
+        Ok(format!(
+            "{:032x}",
+            identity.volume_guid.ok_or(Refusal::IdentityUnavailable)?
+        ))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = root;
+        Err(Refusal::IdentityUnavailable)
+    }
 }
 
 fn identity_parts(
@@ -93,6 +114,8 @@ pub fn register(
     });
     let (volume_key, file_id) = identity_parts(observed.object, true)
         .map_err(|r| format!("lab root refused: {}", crate::refusal_name(r)))?;
+    let volume_guid =
+        volume_guid(&root).map_err(|r| format!("lab root refused: {}", crate::refusal_name(r)))?;
     // Opening the catalogue creates or migrates the store and refuses a personal one.
     let _catalog =
         Catalog::open(&state_dir, "synthetic").map_err(|e| format!("state store: {e}"))?;
@@ -101,10 +124,10 @@ pub fn register(
         &conn,
         &volume_key,
         &file_id,
+        &volume_guid,
         manifest_digest,
         seed,
         tier,
-        now_ns(),
     )
     .map_err(|e| format!("lab registry: {e}"))
 }
@@ -175,6 +198,42 @@ mod tests {
             "ordinary empty root must register: {result:?}"
         );
     }
+    #[test]
+    fn legacy_registration_requires_explicit_empty_root_reregistration() {
+        if !crate::tests::native_identity_available() {
+            return;
+        }
+        let temp = crate::tests::temp_root();
+        let state = temp.path().join("state");
+        let root = temp.path().join("lab");
+        let digest = format!("sha256:{}", "00".repeat(32));
+        let first = register(&state, &root, "42", "S", &digest).unwrap();
+        let conn = db::open(&state).unwrap();
+        conn.execute("UPDATE st.lab_root SET volume_guid=NULL", [])
+            .unwrap();
+        std::fs::write(root.join("fixture.bin"), b"synthetic fixture").unwrap();
+        assert_eq!(
+            register(&state, &root, "42", "S", &digest).unwrap_err(),
+            "a lab root must be a new or empty directory"
+        );
+        let guid: Option<String> = conn
+            .query_row("SELECT volume_guid FROM st.lab_root", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(guid, None, "refusal must not adopt the GUID");
+        std::fs::remove_file(root.join("fixture.bin")).unwrap();
+        assert_eq!(register(&state, &root, "42", "S", &digest).unwrap(), first);
+        assert_eq!(
+            db::lab_root(
+                &conn,
+                &identity(&root).unwrap().0,
+                &identity(&root).unwrap().1,
+                &volume_guid(&root).unwrap()
+            )
+            .unwrap(),
+            Some(digest)
+        );
+    }
+
     #[test]
     fn review_lab_digests_are_canonical() {
         assert!(valid_digest(&format!("sha256:{}", "0a".repeat(32))));

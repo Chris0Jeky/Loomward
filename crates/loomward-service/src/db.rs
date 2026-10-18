@@ -210,10 +210,15 @@ pub fn root_for_grant(conn: &Connection, grant: i64) -> Sql<Option<i64>> {
     .optional()
 }
 
-pub fn lab_root(conn: &Connection, volume_key: &str, file_id: &[u8]) -> Sql<Option<String>> {
+pub fn lab_root(
+    conn: &Connection,
+    volume_key: &str,
+    file_id: &[u8],
+    volume_guid: &str,
+) -> Sql<Option<String>> {
     conn.query_row(
-        "SELECT manifest_digest FROM st.lab_root WHERE volume_key=?1 AND root_file_id=?2",
-        params![volume_key, file_id],
+        "SELECT manifest_digest FROM st.lab_root WHERE volume_key=?1 AND root_file_id=?2 AND volume_guid=?3",
+        params![volume_key, file_id, volume_guid],
         |r| r.get(0),
     )
     .optional()
@@ -343,14 +348,14 @@ pub fn insert_lab_root(
     conn: &Connection,
     volume_key: &str,
     file_id: &[u8],
+    volume_guid: &str,
     manifest_digest: &str,
     seed: &str,
     tier: &str,
-    at_ns: i64,
 ) -> Sql<i64> {
-    conn.execute(
-        "INSERT INTO st.lab_root(volume_key,root_file_id,manifest_digest,seed,tier,registered_at_ns) VALUES(?1,?2,?3,?4,?5,?6)",
-        params![volume_key, file_id, manifest_digest, seed, tier, at_ns],
-    )?;
-    Ok(conn.last_insert_rowid())
+    conn.query_row(
+        "INSERT INTO st.lab_root(volume_key,root_file_id,manifest_digest,seed,tier,registered_at_ns,volume_guid) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(volume_key,root_file_id) DO UPDATE SET manifest_digest=excluded.manifest_digest,seed=excluded.seed,tier=excluded.tier,registered_at_ns=excluded.registered_at_ns,volume_guid=excluded.volume_guid RETURNING id",
+        params![volume_key, file_id, manifest_digest, seed, tier, crate::now_ns(), volume_guid],
+        |r| r.get(0),
+    )
 }
