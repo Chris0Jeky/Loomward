@@ -392,6 +392,11 @@ timestamps refer to that enumeration too. Rates use the interval between process
 An engine thread count not observed on the current tick is null. Requests for channels outside
 the sampled lease union return `partial_coverage` (not sampled), distinct from hardware unavailable.
 
+A requested, sampled system section remains present even when CPU capacity is unknown.
+`system.cpu.logical_cpus` is required but nullable: a failed or zero native count maps to null,
+while known memory and CPU readings remain visible. Numeric counts keep their existing encoding;
+readers built against the earlier non-nullable v3 draft must accept null before consuming these samples.
+
 `TelemetrySample.trends` (LW-051) is read-only and projects the same requested channels.
 `trends` is a required field of every v3 `TelemetrySample`: a v3 reader may rely on it, and a
 sample without it is invalid. This was added in v3 before the contract shipped, so it is a
