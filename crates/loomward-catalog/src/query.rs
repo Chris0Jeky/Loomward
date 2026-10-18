@@ -118,7 +118,9 @@ impl Raw {
             "excluded".into()
         } else if self.state == "complete" && !self.totals.complete {
             "partial".into()
-        } else if matches!(self.key, NodeKey::File(_)) && self.state != "stale" {
+        } else if matches!(self.key, NodeKey::File(_))
+            && !matches!(self.state.as_str(), "stale" | "excluded")
+        {
             "complete".into()
         } else {
             self.state.clone()

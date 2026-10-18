@@ -2002,3 +2002,20 @@ including BeginRun, EndRun, revocation and identity change. Successful bulk EndR
 post-commit compaction when at least 1 MiB and 10% of pages are free. The rollback regressions,
 reader/concurrent-build integrity check, size/time measurements and remaining P14 miss are in
 [the follow-up evidence](../../evidence/v3/first-scan-bulk-load-148.md#follow-ups-386--17-october-2026).
+
+## Catalogue lens memory/honesty candidate (2026-10-18)
+
+The `fix/catalog-lens-memory-honesty` Sol lane reproduces all three findings on
+`3ad1870`: staged scratch grows with the whole listing, finalisation builds a
+directory heap graph, and retained files under placeholders report complete coverage.
+The candidate uses FILE-backed TEMP with a 16 MiB cache, a 128 MiB main cache
+(also bounds SQLite's separate sorter buffer), and file-backed postorder with
+1,024-ID batches. Retained files preserve inherited exclusion coverage.
+
+The [curated evidence](evidence/catalog-lens-memory-honesty.md) records red/green
+tests, one-million-row RSS comparisons, correctness assertions and limits.
+The earlier P4c rejection above remains historical evidence: ordinary P4 throughput
+parity is not qualified here, and this candidate reopens that memory/throughput trade.
+No transaction boundary or publication atomicity was relaxed; scratch SQLITE_FULL,
+overflow rollback and restart recovery are covered. Changes remain uncommitted for
+the driver; no safety gate, owner decision or global checkpoint changed.

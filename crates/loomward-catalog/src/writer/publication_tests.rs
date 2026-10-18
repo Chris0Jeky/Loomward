@@ -1,6 +1,30 @@
 use super::*;
 
 #[test]
+fn listing_scratch_is_file_backed_with_a_bounded_cache() {
+    let (_temp, conn) = first_scan_fixture("full", false);
+    assert_eq!(
+        conn.query_row("PRAGMA temp_store", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row("PRAGMA temp.cache_size", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        -16384
+    );
+    assert_eq!(
+        conn.query_row("PRAGMA main.cache_size", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        -131072
+    );
+    conn.execute_batch(
+        "SELECT count(*) FROM temp.root_grant; SELECT count(*) FROM temp.visible_dir",
+    )
+    .unwrap();
+}
+
+#[test]
 fn first_scan_byte_charge_is_bounded_and_run_local() {
     let (reply, _) = bounded(1);
     let mut p = Pending {
@@ -2061,4 +2085,122 @@ mod hardlink_regressions {
             Writer::start(crate::db::open_pair(temp.path(), "synthetic").unwrap()).unwrap();
         writer.call(WriteCommand::Barrier).unwrap();
     }
+}
+
+#[test]
+fn rollup_postorder_crosses_batches_and_ignores_cached_depths() {
+    let (_temp, conn) = first_scan_fixture("full", false);
+    conn.execute_batch("UPDATE dir SET own_files=2,own_logical=2,listing_state='complete' WHERE id=1;
+        INSERT INTO dir(id,root_id,parent_id,name,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run,own_files,own_logical)
+        VALUES(5000,1,1,'parent','path_observation','none',99,0,'complete',2,2,3,3),
+              (2,1,5000,'child','path_observation','none',0,0,'complete',2,2,7,7);
+        WITH RECURSIVE n(i) AS (VALUES(3) UNION ALL SELECT i+1 FROM n WHERE i<2050)
+        INSERT INTO dir(id,root_id,parent_id,name,id_quality,id_basis,depth,attrs,listing_state,born_run,seen_run,own_files,own_logical)
+        SELECT i,1,1,'leaf-'||i,'path_observation','none',99,0,'complete',2,2,1,1 FROM n;
+        UPDATE dir SET listing_state='excluded' WHERE id=3;
+        UPDATE dir SET listing_state='absent_pending' WHERE id=4;").unwrap();
+    let tx = conn.unchecked_transaction().unwrap();
+    let mut callbacks = 0;
+    // Bound VM work so a root-wide scan per directory fails deterministically.
+    conn.progress_handler(
+        1000,
+        Some(move || {
+            callbacks += 1;
+            callbacks > 10_000
+        }),
+    )
+    .unwrap();
+    rollup(&tx, 1, true).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT sub_files,sub_dirs,sub_logical,sub_complete FROM dir WHERE id=1",
+            [],
+            |r| Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, bool>(3)?
+            ))
+        )
+        .unwrap(),
+        (2058, 2048, 2058, false)
+    );
+    assert_eq!(
+        conn.query_row("SELECT depth FROM dir WHERE id=2", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        conn.query_row("SELECT sub_files FROM dir WHERE id=3", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row("SELECT depth FROM dir WHERE id=4", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        99
+    );
+
+    conn.execute("UPDATE dir SET own_logical=?1 WHERE id=2", [i64::MAX])
+        .unwrap();
+    let tx = conn.unchecked_transaction().unwrap();
+    assert!(rollup(&tx, 1, true).is_err());
+    tx.rollback().unwrap();
+    assert_eq!(
+        conn.query_row("SELECT sub_logical FROM dir WHERE id=1", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        2058
+    );
+}
+
+#[test]
+fn rollup_scratch_disk_full_is_atomic_and_restart_recovers() {
+    let (temp, conn) = first_scan_fixture("full", false);
+    conn.execute_batch(
+        "UPDATE dir SET own_files=7,own_logical=11,listing_state='complete' WHERE id=1;
+        PRAGMA temp.max_page_count=2;",
+    )
+    .unwrap();
+    let tx = conn.unchecked_transaction().unwrap();
+    let Err(Error::Sql(error)) = rollup(&tx, 1, true) else {
+        panic!("scratch should fill");
+    };
+    assert_eq!(
+        error.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DiskFull)
+    );
+    // SQLITE_FULL may already have rolled the transaction back.
+    drop(tx);
+    assert_eq!(
+        conn.query_row("SELECT sub_files FROM dir WHERE id=1", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    drop(conn);
+    let conn = crate::db::open_pair(temp.path(), "synthetic").unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT sub_files,sub_logical,sub_complete FROM dir WHERE id=1",
+            [],
+            |r| Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, bool>(2)?
+            ))
+        )
+        .unwrap(),
+        (7, 11, false)
+    );
+    assert_eq!(
+        conn.query_row("SELECT state FROM scan_run WHERE id=2", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        "failed"
+    );
 }

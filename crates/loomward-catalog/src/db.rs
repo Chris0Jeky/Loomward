@@ -299,8 +299,11 @@ pub(crate) fn open_pair_with(dir: &Path, dataset: &str, ranked: bool) -> Result<
     conn.busy_timeout(Duration::from_secs(5))?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
-    conn.pragma_update(None, "cache_size", -262144)?;
-    conn.pragma_update(None, "temp_store", "MEMORY")?;
+    // SQLite can allocate a sorter buffer as large as the main cache as well.
+    conn.pragma_update(None, "cache_size", -131072)?;
+    // Listing reconciliation and rollup scratch can be larger than the catalogue cache.
+    conn.pragma_update(None, "temp_store", "FILE")?;
+    conn.pragma_update(Some("temp"), "cache_size", -16384)?;
     conn.wal_hook(Some(|wal, pages| {
         crate::crashpoint::hit("post-commit");
         let threshold = if wal.name().to_bytes() == b"main" {
