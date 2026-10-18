@@ -129,11 +129,17 @@ struct PlanLookup {
     grants: Vec<i64>,
 }
 
-fn index_plan(conn: &Connection, op: u64, plan: &str) -> rusqlite::Result<()> {
+/// `backfill` keeps the first plan for a wire ID: old data may already hold a duplicate start, and a
+/// UNIQUE abort there would stop every later open of the journal.
+fn index_plan(conn: &Connection, op: u64, plan: &str, backfill: bool) -> rusqlite::Result<()> {
     // Old opaque/unreadable plans have no usable wire ID or grants, as before this index.
     let lookup = serde_json::from_str::<PlanLookup>(plan).unwrap_or_default();
     conn.execute(
-        "INSERT INTO op_plan_lookup(op_id,wire_id) VALUES(?1,?2)",
+        if backfill {
+            "INSERT INTO op_plan_lookup(op_id,wire_id) VALUES(?1,?2) ON CONFLICT(wire_id) DO NOTHING"
+        } else {
+            "INSERT INTO op_plan_lookup(op_id,wire_id) VALUES(?1,?2)"
+        },
         params![
             op as i64,
             (!lookup.operation_id.is_empty()).then_some(lookup.operation_id)
@@ -200,7 +206,12 @@ impl Store {
                 let mut plans = tx.prepare("SELECT op_id,plan FROM op_plan ORDER BY op_id")?;
                 let mut rows = plans.query([])?;
                 while let Some(row) = rows.next()? {
-                    index_plan(&tx, row.get::<_, i64>(0)? as u64, &row.get::<_, String>(1)?)?;
+                    index_plan(
+                        &tx,
+                        row.get::<_, i64>(0)? as u64,
+                        &row.get::<_, String>(1)?,
+                        true,
+                    )?;
                 }
             }
             tx.commit()?;
@@ -289,7 +300,7 @@ impl Store {
             "INSERT INTO op_plan(op_id,plan) VALUES(?1,?2)",
             params![op as i64, plan],
         )?;
-        index_plan(&tx, op, plan)?;
+        index_plan(&tx, op, plan, false)?;
         tx.commit()?;
         Ok(())
     }
@@ -454,6 +465,9 @@ mod tests {
             .unwrap();
         conn.execute("INSERT INTO op_plan VALUES(3,'{}')", [])
             .unwrap();
+        // A duplicate start left by the old start-once race: the backfill keeps the first and still opens.
+        conn.execute("INSERT INTO op_plan VALUES(4,?1)", [plan])
+            .unwrap();
         drop(conn);
         let store = Store::open(&path).unwrap();
         let wire: String = store
@@ -474,7 +488,8 @@ mod tests {
         assert_eq!(store.replay(1).unwrap().unwrap().seq, 1);
         assert_eq!(store.operation_by_wire_id("cp_legacy").unwrap(), Some(1));
         assert_eq!(store.operation_by_wire_id("").unwrap(), None);
-        assert_eq!(store.operations_for_grant(4).unwrap(), vec![1]);
+        // The duplicate keeps no wire ID (first wins) but stays grant-indexed, so a revoke fences it.
+        assert_eq!(store.operations_for_grant(4).unwrap(), vec![1, 4]);
         let grants: i64 = store
             .conn
             .query_row(
