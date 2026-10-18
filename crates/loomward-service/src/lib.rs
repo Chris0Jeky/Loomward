@@ -205,11 +205,12 @@ impl Service {
         }
         let destination = paths::prospective_dir(&config.state_dir)?;
         let sqlite_destination = loomward_catalog::sqlite_dir(&destination);
-        paths::validate_roots(&config.grant_roots, Some(&destination))?;
+        // Grant the canonical spellings the rules approved, never the caller's raw text (#710).
+        let roots = paths::validate_roots(&config.grant_roots, Some(&destination))?;
         Catalog::validate_stores(&destination, class_name(config.dataset))
             .map_err(|e| format!("state store: {e}"))?;
-        let mut protected = config.grant_roots.clone();
-        for root in &config.grant_roots {
+        let mut protected = roots.clone();
+        for root in &roots {
             let (volume, file_id) = lab::identity(root).map_err(refusal_name)?;
             if config.dataset == DatasetClass::Synthetic {
                 if file_id.len() != 16 {
@@ -296,7 +297,7 @@ impl Service {
                 .map_err(|e| format!("learning store: {e}"))?,
         );
         if static_dir.is_some() {
-            let mut protected = config.grant_roots.clone();
+            let mut protected = roots.clone();
             protected
                 .extend(db::active_root_paths(&conn).map_err(|e| format!("state store: {e}"))?);
             paths::validate_static_dir(static_dir, &protected, Some(&state_dir))?;
@@ -341,7 +342,7 @@ impl Service {
                 .set_scan_sink(inner.scan.clone())
                 .map_err(|e| format!("engine refused the scan writer: {e}"))?;
         }
-        for (i, root) in config.grant_roots.iter().enumerate() {
+        for (i, root) in roots.iter().enumerate() {
             inner
                 .grant(root, "cli_flag", config.allow_identity_unverified)
                 .map_err(|r| {

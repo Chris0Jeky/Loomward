@@ -6967,6 +6967,35 @@ fn a_live_scanned_ntfs_grant_can_be_labelled_and_collected() {
     label_and_collect_live(&svc, &root, "synthetic-note.txt");
 }
 
+/// #710: a library caller may spell a root with a trailing separator. The grant must store the
+/// canonical spelling, or a later open with the canonical form cannot reuse the verified grant.
+#[cfg(windows)]
+#[test]
+fn open_stores_the_canonical_spelling_of_a_non_canonical_root() {
+    let tmp = temp_root();
+    let folder = tmp.path().join("owner-folder");
+    std::fs::create_dir_all(&folder).unwrap();
+    let canonical = folder.canonicalize().unwrap();
+    let spelled = std::path::PathBuf::from(format!("{}\\", folder.display()));
+    let svc = Service::open(Config {
+        state_dir: tmp.path().join("state"),
+        dataset: DatasetClass::Personal,
+        allow_personal: true,
+        allow_identity_unverified: false,
+        grant_roots: vec![spelled],
+    })
+    .unwrap();
+    // Compare text: `PathBuf` equality ignores a trailing separator, which is the very difference.
+    let stored: Vec<String> = crate::db::active_root_paths(&svc.inner.db())
+        .unwrap()
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    let expected = canonical.to_string_lossy();
+    let expected = expected.strip_prefix(r"\\?\").unwrap_or(&expected);
+    assert_eq!(stored, vec![expected.to_owned()]);
+}
+
 #[cfg(test)]
 #[path = "backups_tests.rs"]
 mod backups_tests;
