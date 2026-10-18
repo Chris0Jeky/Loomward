@@ -45,12 +45,6 @@ fn identity_parts(
     Ok((format!("vsn_{}", object.volume_serial), id))
 }
 
-fn lab_identity(root: &Path) -> Result<(String, Vec<u8>), Refusal> {
-    let observed =
-        loomward_windows::identity::observe(root).map_err(|_| Refusal::IdentityUnavailable)?;
-    identity_parts(observed.object, true)
-}
-
 /// Creates `root` (which must not exist, or be an empty directory) and registers it as a lab root
 /// in the synthetic store under `state_dir`. Returns the registry row id. `loomward-lab generate
 /// --register` is the intended caller; it fills the directory afterwards.
@@ -71,24 +65,34 @@ pub fn register(
         .ancestors()
         .find(|p| p.is_dir())
         .ok_or("lab parent unavailable")?;
-    lab_identity(ancestor).map_err(|r| format!("lab root refused: {}", crate::refusal_name(r)))?;
+    let (_ancestor_pins, observed) = loomward_windows::identity::pin_directory(ancestor)
+        .map_err(|_| "cannot pin the lab parent")?;
+    identity_parts(observed.object, true)
+        .map_err(|r| format!("lab root refused: {}", crate::refusal_name(r)))?;
     if root.exists() {
         paths::check_root(&root, Some(&state_dir), &[], false)
             .map_err(|r| format!("lab root refused: {}", crate::refusal_name(r)))?;
     }
-    if root.exists()
-        && std::fs::read_dir(&root)
-            .map_err(|_| "the lab root cannot be read")?
-            .next()
-            .is_some()
+    std::fs::create_dir_all(&root).map_err(|_| "cannot create the lab root")?;
+    let (_root_pins, observed) =
+        loomward_windows::identity::pin_directory(&root).map_err(|_| "cannot pin the lab root")?;
+    let root = paths::check_root(&root, Some(&state_dir), &[], false)
+        .map_err(|r| format!("lab root refused: {}", crate::refusal_name(r)))?;
+    if std::fs::read_dir(&root)
+        .map_err(|_| "the lab root cannot be read")?
+        .next()
+        .is_some()
     {
         return Err("a lab root must be a new or empty directory".into());
     }
-    std::fs::create_dir_all(&root).map_err(|_| "cannot create the lab root")?;
-    let root = paths::check_root(&root, Some(&state_dir), &[], false)
+    #[cfg(test)]
+    AFTER_EMPTY.with(|hook| {
+        if let Some(hook) = hook.take() {
+            hook();
+        }
+    });
+    let (volume_key, file_id) = identity_parts(observed.object, true)
         .map_err(|r| format!("lab root refused: {}", crate::refusal_name(r)))?;
-    let (volume_key, file_id) =
-        lab_identity(&root).map_err(|r| format!("lab root refused: {}", crate::refusal_name(r)))?;
     // Opening the catalogue creates or migrates the store and refuses a personal one.
     let _catalog =
         Catalog::open(&state_dir, "synthetic").map_err(|e| format!("state store: {e}"))?;
@@ -106,8 +110,71 @@ pub fn register(
 }
 
 #[cfg(test)]
+thread_local! {
+    static AFTER_EMPTY: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = Default::default();
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn registration_pins_empty_root_against_personal_replacement() {
+        if loomward_windows::enumerate::running_elevated() {
+            eprintln!(
+                "skipped: elevated token; native identity reads refuse elevation (invariant 2)"
+            );
+            return;
+        }
+        let temp = crate::tests::temp_root();
+        let root = temp.path().join("lab");
+        let personal = temp.path().join("personal-fixture");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&personal).unwrap();
+        std::fs::write(personal.join("synthetic-data.bin"), b"fixture").unwrap();
+        let personal_id = identity(&personal).unwrap();
+        let replaced = std::rc::Rc::new(std::cell::Cell::new(false));
+        let did_replace = replaced.clone();
+        let target = root.clone();
+        AFTER_EMPTY.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                if std::fs::rename(&target, target.with_extension("old")).is_ok() {
+                    std::fs::rename(&personal, &target).unwrap();
+                    did_replace.set(true);
+                }
+            }))
+        });
+        let state = temp.path().join("state");
+        let result = register(
+            &state,
+            &root,
+            "42",
+            "S",
+            &format!("sha256:{}", "00".repeat(32)),
+        );
+        if result.is_ok() {
+            let conn = db::open(&state).unwrap();
+            let registered: (String, Vec<u8>) = conn
+                .query_row(
+                    "SELECT volume_key,root_file_id FROM st.lab_root",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_ne!(
+                registered, personal_id,
+                "personal identity registered as synthetic"
+            );
+        }
+        assert!(
+            !replaced.get(),
+            "empty root was replaceable during registration"
+        );
+        assert!(
+            result.is_ok(),
+            "ordinary empty root must register: {result:?}"
+        );
+    }
     #[test]
     fn review_lab_digests_are_canonical() {
         assert!(valid_digest(&format!("sha256:{}", "0a".repeat(32))));

@@ -78,17 +78,19 @@ pub(crate) fn forget_backups(dir: &std::path::Path, path: Option<&str>) -> Resul
         let copy_name = name
             .strip_suffix("-wal")
             .or_else(|| name.strip_suffix("-shm"))
+            .or_else(|| name.strip_suffix("-journal"))
             .unwrap_or(&name);
         let migration = copy_name.starts_with("state.before-v") && copy_name.ends_with(".db");
         let sidecar = copy_name != name;
-        // A migration WAL may hold committed rows: let its copy checkpoint it before removal.
+        // Let SQLite settle migration journals and WALs before removing their sidecars.
         if migration && sidecar && file.with_file_name(copy_name).exists() {
             continue;
         }
         let archive_stem = name
             .strip_suffix(".db")
             .or_else(|| name.strip_suffix(".db-wal"))
-            .or_else(|| name.strip_suffix(".db-shm"));
+            .or_else(|| name.strip_suffix(".db-shm"))
+            .or_else(|| name.strip_suffix(".db-journal"));
         let archived = archive_stem.is_some_and(|stem| {
             stem.strip_prefix("catalog.corrupt-")
                 .or_else(|| stem.strip_prefix("catalog.before-v1-"))
@@ -98,7 +100,7 @@ pub(crate) fn forget_backups(dir: &std::path::Path, path: Option<&str>) -> Resul
             match scrub_copy(&file, &loomward_catalog::sqlite_dir(dir).join("state.db")) {
                 Ok((known, _pin)) => {
                     // SQLite is closed; keep the copy pinned while clearing even stale sidecars.
-                    for extension in ["db-wal", "db-shm"] {
+                    for extension in ["db-wal", "db-shm", "db-journal"] {
                         if let Err(e) = std::fs::remove_file(file.with_extension(extension)) {
                             if e.kind() != std::io::ErrorKind::NotFound {
                                 failed.get_or_insert_with(|| backup_scrub_error("migration"));
@@ -247,7 +249,7 @@ fn scrub_copy(
             "DELETE FROM main.object_ref WHERE id IN (SELECT id FROM gone); DROP TABLE gone",
         )?;
     }
-    if has("root_grant", "display_path")? {
+    if known {
         tx.execute_batch("UPDATE main.root_grant SET display_path='forgotten',volume_key='forgotten',root_file_id=zeroblob(8) WHERE id IN (SELECT grant_id FROM live.root_forgotten)")?;
         let uncleared: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM main.root_grant WHERE id IN (SELECT grant_id FROM live.root_forgotten)
@@ -406,7 +408,7 @@ impl Inner {
         }
         let handled = match command {
             SessionHello => self.hello(ctx),
-            HealthGet => self.health(),
+            HealthGet => self.health(work),
             AppsList | DesktopContexts => self.metadata_page(req, command, work, metadata_cursor),
             RootsList => self.roots_list(work),
             RootsRequestGrant => self.request_grant(ctx),
@@ -555,11 +557,12 @@ impl Inner {
             ScanStartRequestMode::Full => self.engine.scan_start(&granted, r.budget.clone()),
             ScanStartRequestMode::Refresh => self.engine.scan_refresh(&granted, r.budget.clone()),
         };
-        // #561: automatic watcher work never refuses the owner's scan. Fence new automatic
-        // starts, then pre-empt the running one: this full pass covers its scope, and freshness
-        // stays stale until this pass completes. The brief start/revoke fence (busy without a job)
+        // Automatic work never refuses the owner's scan: fence all automatic starts, pre-empt
+        // this root's automatic job or automatic jobs filling the shared pool. Other roots stay
+        // stale until their own full pass completes. The brief start/revoke fence (busy without a job)
         // is waited out; a revoke then answers permission_denied. An explicit scan stays busy.
         let claim = self.freshness.explicit(row);
+        let automatic = self.freshness.automatic_jobs();
         let active = |id| {
             self.engine.job_status(id).is_ok_and(|j| {
                 use loomward_protocol::JobState::*;
@@ -571,14 +574,31 @@ impl Inner {
             |w| w.deadline,
         );
         let mut job = start();
-        while let Err(loomward_engine::EngineError::Busy { detail, .. }) = &job {
-            let holder = detail.as_ref().and_then(|d| d.get("job_id")?.as_str());
-            match &claim.auto {
-                _ if detail.is_none() => {}
-                // Once the automatic job is terminal, the retry below starts the scan.
-                Some(auto) if holder == Some(auto.as_str()) => {
-                    if active(auto) {
-                        let _ = self.engine.scan_cancel(auto);
+        loop {
+            match &job {
+                Err(loomward_engine::EngineError::ResourceBudget { .. }) => {
+                    let mut stopping = false;
+                    for auto in &automatic {
+                        if active(auto) {
+                            let _ = self.engine.scan_cancel(auto);
+                            stopping = true;
+                        }
+                    }
+                    if !stopping {
+                        break;
+                    }
+                }
+                Err(loomward_engine::EngineError::Busy { detail, .. }) => {
+                    let holder = detail.as_ref().and_then(|d| d.get("job_id")?.as_str());
+                    match &claim.auto {
+                        _ if detail.is_none() => {}
+                        // Once the automatic job is terminal, the retry below starts the scan.
+                        Some(auto) if holder == Some(auto.as_str()) => {
+                            if active(auto) {
+                                let _ = self.engine.scan_cancel(auto);
+                            }
+                        }
+                        _ => break,
                     }
                 }
                 _ => break,
@@ -715,7 +735,7 @@ impl Inner {
 
     /// `Health.engine` is read now from the process itself (#163), never a retained telemetry
     /// sample under a fresh `observed_at`. Unknown stays `null`.
-    pub(crate) fn health(&self) -> Handled {
+    pub(crate) fn health(&self, work: Option<&crate::ReadWork>) -> Handled {
         let own = match loomward_telemetry::own_usage() {
             loomward_telemetry::Observation::Observed { value } => Some(value),
             _ => None,
@@ -725,7 +745,10 @@ impl Inner {
                 .ok()
                 .map(|m| m.len().to_string())
         };
-        let (files, dirs) = db::counts(&self.db()).map_err(sql_error)?;
+        let (files, dirs) = self
+            .read_reader(work)?
+            .entry_counts()
+            .map_err(catalog_error)?;
         let jobs = self.engine.job_list(&decode_exact(json!({"limit": 50}))?);
         #[cfg(test)]
         let jobs = if self
@@ -1059,7 +1082,7 @@ impl Inner {
             )
         })?;
         let _dialog = self.dialog_turn()?;
-        let Some(picked) = dialogs.pick_folder() else {
+        let Some(picked) = dialogs.try_pick_folder()? else {
             return Ok(out(
                 json!({"outcome": "cancelled_by_user", "root": null, "refusal": null}),
                 None,

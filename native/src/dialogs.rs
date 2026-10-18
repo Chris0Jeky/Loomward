@@ -197,6 +197,17 @@ impl NativeDialogs for DesktopDialogs {
         self.pick_folder_with(|picker| picker.pick_folder())
     }
 
+    fn try_pick_folder(&self) -> Result<Option<PathBuf>, ErrorBody> {
+        if !self.picker.lock().is_ok_and(|picker| picker.is_some()) {
+            return Err(ErrorBody::new(
+                ErrorCode::CapabilityUnavailable,
+                "The Windows folder picker is unavailable: no owner window or usable USERPROFILE start folder.",
+                false,
+            ));
+        }
+        Ok(self.pick_folder())
+    }
+
     /// Never opens in a synthetic session either: an owner-picked receipt is personal data. The
     /// path goes to the service in-process and never crosses IPC.
     fn pick_file(&self, title: &str) -> Option<PathBuf> {

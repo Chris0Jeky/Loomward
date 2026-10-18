@@ -212,7 +212,7 @@ impl Inner {
             .ok_or_else(|| fail(ErrorCode::InternalError, "session info unreadable"))?;
         let host = loomward_telemetry::host();
         let health = self
-            .health()
+            .health(None)
             .ok()
             .and_then(|o| serde_json::from_value::<Health>(o.result).ok())
             .map(|h| {

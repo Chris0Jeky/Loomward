@@ -95,7 +95,7 @@ class FakeEngine:
         self.diagnostics_answers: list[dict] | None = None  # set: hello offers diagnostics_save, diagnostics.save pops these
         self.diagnostics_calls: list[dict] = []
         self.roots: list[dict] = []  # roots.list
-        self.grant_mode = 'granted'  # roots.request_grant: granted, cancelled, refused, busy, deadline (the root lands before the reply) or deadline_late (after it)
+        self.grant_mode = 'granted'  # deadline lands before the reply; deadline_late is delivered explicitly by the test
         self.grant_delay = 0.0
         self.grant_calls: list[dict] = []
         self.trend_mode: str | None = None
@@ -174,7 +174,6 @@ class FakeEngine:
                 self.land('E:\\Picked At The Deadline')
                 return ('deadline_exceeded', 'the dialog outlived the deadline')
             if self.grant_mode == 'deadline_late':
-                threading.Timer(0.8, self.land, ['E:\\Picked After The Deadline']).start()
                 return ('deadline_exceeded', 'the dialog outlived the deadline')
             self.land('E:\\Picked Folder')
             return {'outcome': 'granted', 'root': self.roots[-1], 'refusal': None}
@@ -802,7 +801,7 @@ def check_tiers_assumption_refresh(page: Page, engine: FakeEngine) -> None:
         ok(len(engine.simulate_overrides) == 3 and all(o == expected for o in engine.simulate_overrides),
            f'Tiers sends only current assumptions and all simulations succeed: {expected}')
 
-    release = None
+    gate = None
     try:
         page.get_by_label('Assumed heat for group-a').select_option('0.9')
         page.get_by_label('Assumed heat for group-b').select_option('0.1')
@@ -822,25 +821,43 @@ def check_tiers_assumption_refresh(page: Page, engine: FakeEngine) -> None:
         expect(page.get_by_label('Assumed heat for group-a')).to_have_value('')
         simulate([])  # Even an ID shared across sources must lose the old assumption.
 
-        # Release an older source's response after the new candidates have been installed.
-        arrived, release = threading.Event(), threading.Event()
-        engine.candidate_gate = (arrived, release)
+        # Chromium can report ERR_ABORTED after a streamed fetch body was fully decoded (#644).
+        # Hold the complete old reply at fetch delivery, rather than waiting for requestfinished.
+        gate = page.evaluate_handle("""() => {
+            const fetch = window.fetch;
+            let arrive, release;
+            const arrived = new Promise(resolve => arrive = resolve);
+            const released = new Promise(resolve => release = resolve);
+            const restore = () => { window.fetch = fetch; };
+            window.fetch = async (...args) => {
+                const req = JSON.parse(args[1]?.body ?? '{}');
+                if (req.command !== 'placement.candidates' || req.payload.source_volume_id !== 'vo_x')
+                    return fetch(...args);
+                restore();
+                const response = await fetch(...args);
+                const body = await response.text();
+                arrive(JSON.parse(body));
+                await released;
+                return new Response(body, response);
+            };
+            return { arrived, release, restore };
+        }""")
         page.get_by_role('button', name=re.compile(r'^Use as source\s*:\s*X:$')).click()
-        wait_until(page, arrived.is_set)
+        stale = gate.evaluate('g => g.arrived')
+        assert stale['ok'] and stale['result']['source_volume_id'] == 'vo_x'
+        assert [g['group_id'] for g in stale['result']['groups']] == ['cg_a', 'cg_b']
         page.get_by_role('button', name=re.compile(r'^Use as source\s*:\s*Other$')).click()
         expect(page.get_by_label('Assumed heat for group-a')).to_be_visible()
         page.get_by_label('Assumed heat for group-a').select_option('0.5')
-        with page.expect_request_finished(lambda r: r.method == 'POST' and
-                                          r.post_data_json.get('command') == 'placement.candidates' and
-                                          r.post_data_json['payload']['source_volume_id'] == 'vo_x'):
-            release.set()
+        gate.evaluate('g => g.release()')
         page.evaluate('() => new Promise(requestAnimationFrame)')
         expect(page.get_by_label('Assumed heat for group-b')).to_have_count(0)
         expect(page.get_by_label('Assumed heat for group-a')).to_have_value('0.5')
         simulate([{'group_id': 'cg_a', 'heat': 0.5}])
     finally:
-        if release:
-            release.set()
+        if gate:
+            gate.evaluate('g => { g.restore(); g.release(); }')
+            gate.dispose()
         engine.placement_groups = {}
         engine.tier_volumes = None
         engine.saved_source = 'vo_x'
@@ -1580,6 +1597,17 @@ def check_add_folder(page: Page, engine: FakeEngine) -> None:
     expect(table).to_contain_text('Picked Folder')
     ok(status.inner_text() == '' and cards.filter(has_text='just added').count() == 0, 'leaving Health and coming back does not repeat "Added" or the just-added tag')
 
+    # A reply completed while another view was open is still a new receipt on returning.
+    fresh()
+    add.click()
+    expect(status).to_contain_text('Waiting for you')
+    page.evaluate("location.hash = '#/explorer'")
+    expect(page.get_by_role('heading', name='Explorer', level=1)).to_be_visible()
+    wait_until(page, lambda: len(engine.roots) == 1)
+    page.evaluate("location.hash = '#/health'")
+    expect(status).to_contain_text('Added E:\\Picked Folder')
+    expect(cards.filter(has_text='Picked Folder')).to_contain_text('just added')
+
     # cancelled: quiet and neutral, no root
     engine.grant_mode, engine.grant_delay = 'cancelled', 0.0
     fresh()
@@ -1599,7 +1627,7 @@ def check_add_folder(page: Page, engine: FakeEngine) -> None:
     engine.grant_mode = 'busy'
     fresh()
     add.click()
-    expect(status).to_have_text('A Windows folder dialog is still open. Choose a folder there and it will appear below.')
+    expect(status).to_have_text('A Windows folder dialog may still be open. Check it, then refresh the folder list.')
     expect(add).to_be_focused()
 
     # deadline, the grant landed: the roots are read again and the new one is reported; the dialog is not reopened
@@ -1614,6 +1642,8 @@ def check_add_folder(page: Page, engine: FakeEngine) -> None:
     fresh()
     add.click()
     expect(status).to_contain_text('No folder was added yet')
+    expect(table).to_contain_text('No roots granted')
+    engine.land('E:\\Picked After The Deadline')
     expect(table).to_contain_text('Picked After The Deadline', timeout=5000)
     expect(status).to_contain_text('Added E:\\Picked After The Deadline')  # the late grant is worded as added, not left at the deadline text
     ok(len(engine.grant_calls) == 1, 'a grant that lands after the deadline shows up from roots.changed without a second request')

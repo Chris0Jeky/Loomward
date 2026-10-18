@@ -28,6 +28,10 @@ pub enum SaveDialog {
 pub trait NativeDialogs: Send + Sync {
     /// Rust-side folder picker; the chosen path never crosses IPC.
     fn pick_folder(&self) -> Option<PathBuf>;
+    /// Adapters can distinguish an unavailable picker from an owner cancellation, in-process.
+    fn try_pick_folder(&self) -> Result<Option<PathBuf>, crate::ErrorBody> {
+        Ok(self.pick_folder())
+    }
     /// Rust-side open-file dialog for a backup receipt; the chosen path never crosses IPC. `title`
     /// names what to pick. An adapter without one never opens a dialog.
     fn pick_file(&self, title: &str) -> Option<PathBuf> {
