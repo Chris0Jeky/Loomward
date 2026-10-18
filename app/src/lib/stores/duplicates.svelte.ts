@@ -11,7 +11,22 @@ export class Duplicates {
   private epoch: string | null = null;
   /** Bumped when the engine restarts: an answer requested before that belongs to the previous lifetime and is dropped (as Explorer's generation does). */
   private generation = 0;
+  private sessionStartedAt: string | null = null;
 
+  /** The HTTP hello can show a restart before the stream's hello arrives (as the scan store does). */
+  private alignEpoch(): void {
+    const startedAt = session.info?.session_started_at;
+    if (startedAt && this.sessionStartedAt !== startedAt) {
+      if (this.sessionStartedAt !== null) { this.book = {}; this.generation++; this.epoch = null; }
+      this.sessionStartedAt = startedAt;
+    }
+  }
+  /** Captured at dispatch: false once the engine lifetime or the client it asked has gone. */
+  private capture(): () => boolean {
+    this.alignEpoch();
+    const generation = this.generation, client = session.client;
+    return () => { this.alignEpoch(); return generation === this.generation && client === session.client; };
+  }
   apply(job: Job): void {
     if (job.kind !== 'duplicates' || !job.root_id) return;
     const old = this.book[job.root_id];
@@ -20,6 +35,7 @@ export class Duplicates {
     this.book = { ...this.book, [job.root_id]: job };
   }
   onEvent(event: EventEnvelope): void {
+    this.alignEpoch();
     if (this.epoch !== null && this.epoch !== event.epoch) { this.book = {}; this.generation++; }
     this.epoch = event.epoch;
     if (event.event === 'job.state') this.apply((event.data as unknown as JobResult).job);
@@ -27,32 +43,31 @@ export class Duplicates {
   async sync(): Promise<void> {
     const c = session.client;
     if (!c) return;
-    const generation = this.generation;
+    const current = this.capture();
     this.book = Object.fromEntries(Object.entries(this.book).map(([root, job]) => [root, { ...job, duplicates: undefined }]));
     const { result } = await c.call('jobs.list', { kinds: ['duplicates'], limit: 50 });
-    if (generation !== this.generation) return;
+    if (!current()) return;
     for (const job of result.jobs) this.apply(job);
     for (const job of Object.values(this.book)) {
-      if (generation !== this.generation) return;
+      if (!current()) return;
       if (isActive(job.state) || !result.jobs.some(listed => listed.job_id === job.job_id)) await this.refresh(job);
     }
   }
   async refresh(job: Job): Promise<void> {
     if (!session.client) return;
-    const generation = this.generation;
+    const current = this.capture();
     try {
       const { result } = await session.client.call('jobs.get', { job_id: job.job_id });
-      if (generation === this.generation) this.apply(result.job);
+      if (current()) this.apply(result.job);
     } catch (e) {
       const message = session.handle(e); // a transport fault is still a fault; the problem text only for this lifetime
-      if (generation === this.generation) this.problem = message;
+      if (current()) this.problem = message;
     }
   }
   async start(rootId: string): Promise<void> {
     if (!session.client || this.pending) return;
     this.pending = true; this.problem = '';
-    const generation = this.generation; // answers from a previous engine lifetime are dropped, as in sync()
-    const current = () => generation === this.generation;
+    const current = this.capture(); // answers from a previous engine lifetime or client are dropped, as in sync()
     try {
       const { result } = await session.client.call('duplicates.inspect', { root_id: rootId, budget: { max_candidates: 200, max_bytes: '67108864', max_ms: 10000 } });
       if (current()) this.apply(result.job);
@@ -74,13 +89,13 @@ export class Duplicates {
     const job = this.book[rootId];
     if (!session.client || !job || this.pending || !isActive(job.state)) return;
     this.pending = true; this.problem = '';
-    const generation = this.generation;
+    const current = this.capture();
     try {
       const { result } = await session.client.call('duplicates.cancel', { job_id: job.job_id });
-      if (generation === this.generation) this.apply(result.job);
+      if (current()) this.apply(result.job);
     } catch (e) {
       const message = session.handle(e);
-      if (generation === this.generation) this.problem = message;
+      if (current()) this.problem = message;
     } finally { this.pending = false; }
   }
 }

@@ -81,7 +81,7 @@ impl Store {
             [dir.join("state.db").to_string_lossy().as_ref()],
         )
         .map_err(internal)?;
-        db.execute_batch("PRAGMA foreign_keys=ON;PRAGMA st.synchronous=FULL;
+        db.execute_batch("PRAGMA foreign_keys=ON;PRAGMA st.synchronous=FULL;PRAGMA st.secure_delete=ON;
             CREATE TABLE IF NOT EXISTS st.learning_receipt(client_event_id TEXT PRIMARY KEY, result_json TEXT NOT NULL) STRICT;
             CREATE TABLE IF NOT EXISTS st.learning_node(node_id TEXT PRIMARY KEY, object_ref_id INTEGER NOT NULL REFERENCES object_ref(id)) STRICT;
             CREATE TABLE IF NOT EXISTS st.learning_redacted(event_id TEXT PRIMARY KEY) STRICT;
@@ -628,6 +628,21 @@ mod tests {
         assert_eq!(files.len(), 2);
         assert!(files.iter().all(|f| !f.starts_with(r"\\")), "{files:?}");
     }
+    /// #391: revocation redaction rewrites and deletes rows in `state.db`, so this connection must
+    /// zero the cells it frees, as the catalogue's own connections do.
+    #[test]
+    fn learning_store_connection_zeroes_freed_state_cells() {
+        let (dir, _engine) = fixture();
+        let store = Store::open(&dir.path().canonicalize().unwrap()).unwrap();
+        let secure: i64 = store
+            .db
+            .lock()
+            .unwrap()
+            .query_row("PRAGMA st.secure_delete", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(secure, 1, "the learning store must set st.secure_delete");
+    }
+
     #[test]
     fn learning_refit_status_failure_announces_committed_candidate() {
         let _serial = REFIT_TEST_LOCK.lock().unwrap();
