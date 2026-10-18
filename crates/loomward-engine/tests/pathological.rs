@@ -64,12 +64,7 @@ fn lab(profile: Profile) -> Option<Lab> {
         );
         return None;
     }
-    let base = std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("pathological-fixtures");
-    fs::create_dir_all(&base).unwrap();
-    let temp = tempfile::tempdir_in(base.canonicalize().unwrap()).unwrap();
+    let temp = tempfile::tempdir_in(loomward_service::paths::test_roots_base()).unwrap();
     let state = temp.path().join("state");
     let path = temp.path().join("tree");
     loomward_service::lab::register(
