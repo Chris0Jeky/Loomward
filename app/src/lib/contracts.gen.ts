@@ -2069,6 +2069,10 @@ export interface CopyStatus {
   /** Names (never paths) of staging folders that were intended but never identity-journaled (a crash between intent and identity): possibly empty leftovers Loomward never adopts or removes; reported for the owner (docs/47 section 5). */
   leftover_staging_folders: string[];
   refusal: CopyRefusal | null;
+  /** First 64 staging-relative manifest names observed without journaled identities; never adopted or removed. */
+  unjournaled_items: string[];
+  /** Total observed, including names beyond the bounded list. */
+  unjournaled_item_count: Count;
 }
 
 /** An Ask turn (LW-118), held in memory for this session only. */

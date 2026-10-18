@@ -129,7 +129,11 @@ ID tie-break. The synthetic smoke queue is bounded to 10,000 eligible files; ref
 the latest unretracted human labels for at most 10,000 resolved objects, newest event first. Human history and durable replay receipts remain intact; older objects fall outside this explicit training window.
 Feedback changed during a refit is `stale_generation`; retry explicitly. Cancellation is available
 through `jobs.cancel` for any retained job kind; `scan.cancel` remains scan-only. Cancellation
-acknowledges immediately and completion remains a separate job state. Refit cancellation and candidate commit are serialized: cancellation before commit rolls back without `learning.updated`; after commit the job completes. The Learning view warns when human history exceeds fitted examples; this is a conservative freshness warning, not an exact stale flag.
+does not join the worker; completion remains a separate job state. Refit cancellation and candidate
+commit are serialized: cancellation may wait for an in-flight durable commit. Cancellation before
+commit rolls back without `learning.updated`; a successful commit wins and the job completes.
+The Learning view warns when human history exceeds fitted examples; this is a conservative freshness
+warning, not an exact stale flag.
 
 ### Placement reads and stored scenarios
 
@@ -244,7 +248,7 @@ Rules:
   SHOULD page from slices (which are snapshots) during scans and use cursors once the scan finishes.
 - A page that stops on its work budget returns the items found so far, `budget_hit: true`, and a cursor that
   resumes the scan after the last examined row (not the last returned row).
-- `search.query` (LW-113, owner-local and grant-scoped; no MCP or Ask exposure before LW-067) reads a name index
+- `search.query` (LW-113; client principals require an owner-issued LW-067 grant through the LW-069 shared adapter) reads a name index
   that every catalogue commit keeps exact in the same transaction. Hits come in tiers, each tier folders first and
   then files in index-key order: `exact` (the whole name, or the name up to a dot), `prefix`, `token` (after a
   separator), `substring`, then for several words `token` (every word at a word start) and `substring` (every word
@@ -659,6 +663,11 @@ A refusal's `node_id` names the refused entry's catalogue node when the catalogu
 same native file ID; it is null for an operation-wide refusal and for an entry the catalogue does not hold under
 that identity, never a guessed node. v1 always creates one new folder inside the destination parent
 (" (2)", " (3)" when the name is taken) and never writes into an existing folder (docs/47 Q3 open).
+
+Recovery records detected journal/disk damage as `needs_attention` wherever the journal permits that
+transition; otherwise status reports the observed attention state without inventing a journal edge.
+`unjournaled_items` reports the first 64 staging-relative manifest names observed without journaled
+identities, with the full total in `unjournaled_item_count`. These entries are never adopted or removed.
 
 ## Lazy meaning threads
 

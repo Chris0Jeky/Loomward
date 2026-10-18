@@ -6,5 +6,7 @@
   "items_verified": 1,
   "staging_folder": "~lw-staging-7-18f2a",
   "leftover_staging_folders": [],
+  "unjournaled_items": [],
+  "unjournaled_item_count": 0,
   "refusal": null
 }

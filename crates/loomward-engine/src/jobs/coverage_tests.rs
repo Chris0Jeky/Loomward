@@ -267,6 +267,7 @@ fn a_cancelled_duplicates_job_whose_runner_errors_clears_retained_names_and_keep
 #[test]
 fn a_scan_whose_actual_strategy_is_both_publishes_final_progress() {
     let e = engine();
+    let mut stream = e.subscribe_events(None).unwrap();
     e.register_job_runner(
         JobKind::Scan,
         Arc::new(|ctx, _| {
@@ -285,4 +286,29 @@ fn a_scan_whose_actual_strategy_is_both_publishes_final_progress() {
         done.progress.is_some(),
         "final progress missing for strategy Both"
     );
+    assert_eq!(done.rev.get(), 3);
+    assert_eq!(
+        done.progress.as_ref().unwrap().strategy,
+        EnumerationStrategy::FileIdBothDirectoryInfo
+    );
+    let mut progress_events = 0;
+    let mut progress_jobs = Vec::new();
+    while let RecvOutcome::Event(event) = stream.recv_timeout(Duration::ZERO) {
+        if event.event == EventName::ScanProgress {
+            assert_eq!(event.data["job_id"], serde_json::json!(job.job_id));
+            assert_eq!(
+                event.data["progress"],
+                serde_json::to_value(&done.progress).unwrap()
+            );
+            progress_events += 1;
+        } else if event.event == EventName::JobState && !event.data["job"]["progress"].is_null() {
+            progress_jobs.push(serde_json::from_value::<Job>(event.data["job"].clone()).unwrap());
+        }
+    }
+    assert_eq!(progress_events, 1);
+    assert_eq!(progress_jobs.len(), 2);
+    assert_eq!(progress_jobs[0].state, JobState::Running);
+    assert_eq!(progress_jobs[0].rev.get(), 2);
+    assert_eq!(progress_jobs[0].progress, done.progress);
+    assert_eq!(progress_jobs[1], done);
 }

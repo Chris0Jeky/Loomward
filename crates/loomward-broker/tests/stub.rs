@@ -142,6 +142,72 @@ fn round() -> ChatRequest {
 const T: Duration = Duration::from_secs(20);
 
 #[test]
+fn complete_framed_responses_do_not_wait_for_connection_close() {
+    let body = json!({"choices": [{"message": {"content": "ok"}}]}).to_string();
+    for reply in [
+        response("200 OK", &body),
+        format!(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{body}\r\n0\r\n\r\n",
+            body.len()
+        )
+        .into_bytes(),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+        let (release, held) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            read_request(&mut stream);
+            stream.write_all(&reply).unwrap();
+            let _ = held.recv_timeout(Duration::from_secs(5));
+        });
+        let result = loomward_broker::call(&BrokerRequest {
+            endpoint,
+            model: "synthetic-model".into(),
+            limits: Limits {
+                connect_ms: 1000,
+                first_byte_ms: 1000,
+                stall_ms: 100,
+            },
+            deadline_ms: 2000,
+            request: round(),
+        });
+        let _ = release.send(());
+        server.join().unwrap();
+        assert_eq!(result.unwrap(), text("ok"));
+    }
+}
+
+#[test]
+fn malformed_chunked_completions_fail_over_loopback() {
+    let body = json!({"choices": [{"message": {"content": "ok"}}]}).to_string();
+    let mut stub = Stub::start(
+        [
+            ("XX", "0\r\n"),
+            ("XX", "0\r\n\r\n"),
+            ("\r\n", "0\r\n"),
+            ("\r\n", "0\r\nX-Trace: synthetic\r\n"),
+            ("\r\n", "0\r\ninvalid-trailer\r\n\r\n"),
+        ]
+        .into_iter()
+        .map(|(separator, terminal)| Some(format!(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{body}{separator}{terminal}",
+            body.len()
+        ).into_bytes()))
+        .collect(),
+    );
+    let p = provider(&stub.url(), "synthetic-model");
+    for _ in 0..5 {
+        let error = p.complete(&round(), T).unwrap_err();
+        assert_eq!(
+            (error.kind, error.dispatched),
+            (ErrorKind::InvalidReply, true)
+        );
+    }
+    assert_eq!(stub.seen().len(), 5);
+}
+
+#[test]
 fn the_broker_meets_the_provider_contract_over_loopback() {
     contract(&|script: Vec<Upstream>| {
         let [only] = <[Upstream; 1]>::try_from(script).unwrap();
