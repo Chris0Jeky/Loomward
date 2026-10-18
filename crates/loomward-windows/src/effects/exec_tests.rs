@@ -1399,6 +1399,35 @@ fn a_staging_entry_is_gone_only_while_its_staging_and_parent_resolve() {
     assert!(gone(), "removed from the journaled staging");
 }
 
+/// #672 review: a missing final name does not prove the rename never happened. Published, crashed
+/// before `committed`, then the owner renamed the output away: a fresh Control cannot see either side.
+#[test]
+fn a_fresh_fence_after_a_published_copy_was_renamed_away_is_unobserved() {
+    let Some(lab) = Lab::new() else { return };
+    fs::write(lab.src().join("f"), b"payload").unwrap();
+    let op = lab.start(&["f"]);
+    let crash = Control::new(false).with_hook(|p, _| {
+        if p == Point::AfterPublish {
+            Flow::Crash
+        } else {
+            Flow::Continue
+        }
+    });
+    assert!(matches!(run(&lab.store, op, &crash), Err(Fault::Crashed)));
+    let published = lab
+        .dest()
+        .join(lab.plan(op).manifest.destination.folder_name);
+    fs::rename(&published, lab.dest().join("renamed by the owner")).unwrap();
+    let ack = fence(
+        &lab.store,
+        op,
+        &Control::new(false),
+        loomward_operations::FenceCause::GrantRevoked,
+    )
+    .unwrap();
+    assert_eq!(ack, Ack::PublishUnobserved);
+}
+
 #[test]
 fn admitted_step_rechecks_epoch_even_when_control_is_fenced() {
     let Some(lab) = Lab::new() else { return };

@@ -1615,15 +1615,18 @@ fn published_on_disk(store: &Mutex<Store>, op: u64, r: &Replay) -> Ack {
         return Ack::PublishUnobserved;
     };
     let disk = PathDisk::new(&plan, r);
-    if disk
-        .in_parent(final_name)
-        .is_some_and(|o| staging.matches(&o, r.staging_planned))
-    {
+    let at = |name: &str| {
+        disk.in_parent(name)
+            .is_some_and(|o| staging.matches(&o, r.staging_planned))
+    };
+    if at(final_name) {
         Ack::Published
-    } else if disk.observation_failed.get() {
-        Ack::PublishUnobserved
-    } else {
+    } else if r.staging_tokens.last().is_some_and(|t| at(t)) && !disk.observation_failed.get() {
+        // Only the staging folder still under its own name proves the rename never ran: a missing
+        // final name alone does not (the owner may have renamed a published copy).
         Ack::StoppedBeforePublish
+    } else {
+        Ack::PublishUnobserved
     }
 }
 
