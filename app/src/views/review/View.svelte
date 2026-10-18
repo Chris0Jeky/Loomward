@@ -25,7 +25,7 @@
   const personal = $derived(status?.dataset_class === 'personal');
   const active = $derived(job !== null && ['queued', 'running', 'cancel_requested'].includes(job.state));
 
-  async function load(cursor: string | null = null): Promise<void> {
+  async function load(cursor: string | null = null, restarted = false): Promise<void> {
     const client = session.client;
     if (!client) return;
     const mine = ++generation;
@@ -35,7 +35,11 @@
       status = s.result; queue = q.result; error = '';
       if (!pending) selected = '';
     } catch (e) {
-      if (alive && mine === generation) { status = null; queue = null; error = session.handle(e); }
+      if (!alive || mine !== generation) return;
+      status = null; queue = null;
+      // A concurrent label or root change invalidates the queue's revision-bound snapshot.
+      if (e instanceof LoomwardError && e.code === 'stale_generation' && !restarted) return await load(null, true);
+      error = session.handle(e);
     }
   }
   async function record(retract = false): Promise<void> {
