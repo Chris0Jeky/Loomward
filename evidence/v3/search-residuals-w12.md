@@ -2,7 +2,7 @@
 
 Windows 11, KRASPYON, 2026-10-18. Worktree `C:/lw/wt/w12-search`, branch
 `fix/442-search-residuals`, starting HEAD `415979e173cd6ffc832aad85814f9b5c09448aa3`.
-Changes are uncommitted for the driver. Synthetic temporary databases only.
+Committed by the driver in #692. Synthetic temporary databases only.
 
 ## Reconciliation
 
