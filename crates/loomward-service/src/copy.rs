@@ -506,15 +506,19 @@ impl Inner {
                 return;
             };
             // Blocked/recovered operations may have no resident worker, but still need fencing.
-            let ops = store.lock().unwrap().operations().unwrap_or_default();
+            // A failed index read must not fence nothing: fall back to every journaled operation
+            // (the plan filter below keeps only this grant's), and always include live workers.
+            let indexed = store.lock().unwrap().operations_for_grant(grant);
+            let mut ops = match indexed {
+                Ok(ops) => ops,
+                Err(_) => store.lock().unwrap().operations().unwrap_or_default(),
+            };
+            ops.extend(self.copies.running.lock().unwrap().keys().copied());
+            ops.sort_unstable();
+            ops.dedup();
             for op in ops {
-                let plan: Option<exec::Plan> = store
-                    .lock()
-                    .unwrap()
-                    .plan(op)
-                    .ok()
-                    .flatten()
-                    .and_then(|p| serde_json::from_str(&p).ok());
+                let plan = store.lock().unwrap().plan(op).ok().flatten();
+                let plan: Option<exec::Plan> = plan.and_then(|p| serde_json::from_str(&p).ok());
                 let Some(plan) = plan.filter(|p| p.grants.contains(&grant)) else {
                     continue;
                 };
@@ -853,18 +857,13 @@ impl Inner {
         }
         #[cfg(windows)]
         {
-            use loomward_windows::effects::exec;
-            let store = self.copies_store()?.lock().unwrap();
-            for op in store.operations().map_err(crate::sql_error)? {
-                let plan = store
-                    .plan(op)
-                    .map_err(crate::sql_error)?
-                    .and_then(|p| serde_json::from_str::<exec::Plan>(&p).ok());
-                if plan.is_some_and(|p| p.operation_id == id) {
-                    return Ok(Some(op));
-                }
-            }
+            self.copies_store()?
+                .lock()
+                .unwrap()
+                .operation_by_wire_id(id)
+                .map_err(crate::sql_error)
         }
+        #[cfg(not(windows))]
         Ok(None)
     }
 
