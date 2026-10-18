@@ -1572,13 +1572,12 @@ fn detached_worker_check_and_publish_exclude_a_reopened_fence() {
 /// #670: a reopened service fences on its own store and `Control` while the detached worker sits
 /// between its durable stop check and the create call. The fence must not be acknowledged while
 /// the create can still follow: once acknowledged, that create (or the staging folder's creation, or
-/// the publish rename, #672) either already happened or never will. Writes are not covered here.
+/// the publish rename, #672) either already happened or never will.
 fn detached_worker_check_and_create_exclude_fence(point: Point) {
     let Some(lab) = Lab::new() else { return };
     fs::write(lab.src().join("f.bin"), b"payload").unwrap();
     fs::write(lab.src().join("f.bin:note"), b"stream").unwrap();
     let op = lab.start(&["f.bin"]);
-    let db = lab.tmp.path().join("state/state.db");
     let dest = lab.dest();
     let final_name = lab.plan(op).manifest.destination.folder_name;
     let target = move |token: &str| match point {
@@ -1587,53 +1586,98 @@ fn detached_worker_check_and_create_exclude_fence(point: Point) {
         Point::CheckedStaging => dest.join(token),
         _ => dest.join(&final_name),
     };
-    let fencer = std::sync::Arc::new(Mutex::new(None));
-    let slot = fencer.clone();
-    let landed = Mutex::new(None::<std::sync::mpsc::Receiver<()>>);
-    let control = Control::new(false).with_hook(move |p, _| {
-        if p != point {
-            // Past the window: park until the fence has landed, so the run cannot finish first.
-            if let Some(rx) = landed.lock().unwrap().take() {
-                let _ = rx.recv_timeout(Duration::from_secs(30));
-            }
-        } else {
-            let (db, target) = (db.clone(), target.clone());
-            let (tx, rx) = std::sync::mpsc::channel();
-            *slot.lock().unwrap() = Some(std::thread::spawn(move || {
-                let reopened = Mutex::new(Store::open(&db).unwrap());
-                let ack = fence(
-                    &reopened,
-                    op,
-                    &Control::new(false),
-                    loomward_operations::FenceCause::GrantRevoked,
-                )
-                .unwrap();
-                let token = replay(&reopened, op).unwrap().staging_tokens.pop().unwrap();
-                // Sample before releasing the parked worker, so its create cannot win the race.
-                let existed = target(&token).exists();
-                let _ = tx.send(());
-                (ack, existed, target(&token))
-            }));
-            // Give an unserialized fence ample time to land inside the window.
-            if rx.recv_timeout(Duration::from_millis(500)).is_err() {
-                *landed.lock().unwrap() = Some(rx);
-            }
-        }
-        Flow::Continue
-    });
-    let _ = run(&lab.store, op, &control);
-    let fencer = fencer.lock().unwrap().take().expect("seam reached");
-    let (ack, existed_at_ack, path) = fencer.join().unwrap();
+    let (ack, at_ack, after) = fence_inside(
+        &lab,
+        op,
+        point,
+        false,
+        |control| {
+            let _ = run(&lab.store, op, control);
+        },
+        move |token| target(token).exists(),
+    );
     // A fresh Control cannot see a rename that finished before its fence (#672 residual).
     assert!(
         matches!(ack, Ack::StoppedBeforePublish | Ack::Published),
         "{ack:?}"
     );
     assert!(replay(&lab.store, op).unwrap().fenced);
-    assert!(
-        existed_at_ack || !path.exists(),
+    assert_eq!(
+        at_ack, after,
         "{point:?}: created after the reopened service's fence was acknowledged"
     );
+}
+
+/// Whether another connection can take the journal's write lock right now, without waiting.
+fn write_lock_free(db: &Path) -> bool {
+    let probe = rusqlite::Connection::open(db).unwrap();
+    probe.busy_timeout(Duration::ZERO).unwrap();
+    let free = probe.execute_batch("BEGIN IMMEDIATE").is_ok();
+    if free {
+        probe.execute_batch("ROLLBACK").unwrap();
+    }
+    free
+}
+
+/// A reopened service (its own store and `Control`) fences `op` while `drive`'s hook sits at `point`,
+/// inside a step's window between its durable stop check and its effect. No timing window decides
+/// the order: the fencer first probes the journal's write lock without waiting. Held (the step is
+/// serialized), it releases the worker at once, and its fence lands only after the step returns.
+/// Free (a regression), it fences and samples before releasing the worker, so the effect follows the
+/// acknowledgement. Later hook points park until the fence has landed, so the run cannot finish
+/// first. Returns the acknowledgement and `observe(token)` at the acknowledgement and after `drive`.
+fn fence_inside<T: std::fmt::Debug + Send + 'static>(
+    lab: &Lab,
+    op: u64,
+    point: Point,
+    removal: bool,
+    drive: impl FnOnce(&Control),
+    observe: impl Fn(&str) -> T + Clone + Send + Sync + 'static,
+) -> (Ack, T, T) {
+    use std::sync::mpsc::{channel, Receiver};
+    let db = lab.tmp.path().join("state/state.db");
+    let fencer = std::sync::Arc::new(Mutex::new(None));
+    let slot = fencer.clone();
+    let landed = Mutex::new(None::<Receiver<()>>);
+    let look = observe.clone();
+    let control = Control::new(removal).with_hook(move |p, _| {
+        if p != point {
+            if let Some(rx) = landed.lock().unwrap().take() {
+                rx.recv_timeout(Duration::from_secs(120))
+                    .expect("fence landed");
+            }
+            return Flow::Continue;
+        }
+        let (db, look) = (db.clone(), look.clone());
+        let (go, wait) = channel();
+        let (land, landing) = channel();
+        *slot.lock().unwrap() = Some(std::thread::spawn(move || {
+            if !write_lock_free(&db) {
+                let _ = go.send(());
+            }
+            let reopened = Mutex::new(Store::open(&db).unwrap());
+            let ack = fence(
+                &reopened,
+                op,
+                &Control::new(false),
+                loomward_operations::FenceCause::GrantRevoked,
+            )
+            .unwrap();
+            let token = replay(&reopened, op).unwrap().staging_tokens.pop().unwrap();
+            let seen = look(&token);
+            let _ = go.send(());
+            let _ = land.send(());
+            (ack, seen, token)
+        }));
+        wait.recv_timeout(Duration::from_secs(120))
+            .expect("fencer probed the lock");
+        *landed.lock().unwrap() = Some(landing);
+        Flow::Continue
+    });
+    drive(&control);
+    let fencer = fencer.lock().unwrap().take().expect("seam reached");
+    let (ack, at_ack, token) = fencer.join().unwrap();
+    (ack, at_ack, observe(&token))
 }
 
 #[test]
