@@ -120,6 +120,12 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn registration_pins_empty_root_against_personal_replacement() {
+        if loomward_windows::enumerate::running_elevated() {
+            eprintln!(
+                "skipped: elevated token; native identity reads refuse elevation (invariant 2)"
+            );
+            return;
+        }
         let temp = crate::tests::temp_root();
         let root = temp.path().join("lab");
         let personal = temp.path().join("personal-fixture");
