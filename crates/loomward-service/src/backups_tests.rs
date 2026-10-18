@@ -1,7 +1,9 @@
 //! Backups stage 1: the open-file dialog's path stays in Rust, at most 256 KiB is read, only
 //! normalised evidence is stored, and every refusal names its rule. Synthetic receipts only.
 use super::*;
-use crate::backups::{open_receipt, read_receipt, CHECK_TITLE, MAX_AGE_SECONDS, SNAPSHOTS_TITLE};
+#[cfg(windows)]
+use crate::backups::open_receipt;
+use crate::backups::{read_receipt, CHECK_TITLE, MAX_AGE_SECONDS, SNAPSHOTS_TITLE};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
