@@ -228,14 +228,21 @@ impl NativeDialogs for DesktopDialogs {
     }
 
     /// Personal sessions only (the picker never opens in a synthetic one); Cancel is the default.
-    fn confirm_identity_unverified(&self) -> bool {
+    fn confirm_identity_unverified(&self, folder: &Path, filesystem: &str) -> bool {
         if self.dataset != DatasetClass::Personal {
             return false;
         }
         let Ok(_active) = self.active.try_lock() else {
             return false;
         };
-        (self.ask)(UNVERIFIED_TITLE, UNVERIFIED_TEXT)
+        (self.ask)(
+            UNVERIFIED_TITLE,
+            &format!(
+                "{} ({}): {UNVERIFIED_TEXT}",
+                visible(&folder.to_string_lossy()),
+                visible(filesystem)
+            ),
+        )
     }
 
     /// Refuses a summary of another dataset class without asking.
@@ -433,14 +440,23 @@ mod tests {
                     .push((title.to_owned(), text.to_owned()));
                 accept
             });
-            assert_eq!(dialogs.confirm_identity_unverified(), expected, "{class:?}");
+            assert_eq!(
+                dialogs.confirm_identity_unverified(Path::new("synthetic-folder"), "exFAT"),
+                expected,
+                "{class:?}"
+            );
             let asked = asked.lock().unwrap();
             if class == DatasetClass::Personal {
                 assert_eq!(
                     *asked,
-                    [(UNVERIFIED_TITLE.to_owned(), UNVERIFIED_TEXT.to_owned())]
+                    [(
+                        UNVERIFIED_TITLE.to_owned(),
+                        format!("synthetic-folder (exFAT): {UNVERIFIED_TEXT}")
+                    )]
                 );
                 assert!(!UNVERIFIED_TEXT.contains('\n'));
+                assert!(asked[0].1.contains("synthetic-folder"));
+                assert!(asked[0].1.contains("exFAT"));
             } else {
                 assert!(asked.is_empty());
             }

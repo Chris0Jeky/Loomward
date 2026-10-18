@@ -1118,7 +1118,7 @@ fn prepare_state(
         {
             Ok(None)
         }
-        WriteCommand::RegisterRoot(o) => {
+        WriteCommand::RegisterRoot(o) | WriteCommand::RefreshRoot { observation: o, .. } => {
             let dataset: String = conn.query_row(
                 "SELECT value FROM st.meta WHERE key='dataset_class'",
                 [],
@@ -1181,9 +1181,28 @@ fn prepare_state(
             } else {
                 "verified"
             };
-            tx.execute("INSERT INTO st.root_grant(volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns,lab_root_id,identity_mode) VALUES (?1,?2,?3,?4,?5,'active',?6,?7,?8)",params![o.volume_key,o.root_file_id,o.display_path,o.origin,o.granted_via,o.observed_at_ns,lab,mode])?;
-            let grant = tx.last_insert_rowid();
-            state_revision(&tx)?;
+            let grant = if let WriteCommand::RefreshRoot { grant_id, .. } = c {
+                // A recyclable unverified ID also needs the same stored path.
+                let stored_mode: String = tx.query_row(
+                    "SELECT identity_mode FROM st.root_grant WHERE id=?1 AND volume_key=?2 AND root_file_id=?3 AND state='active' AND (identity_mode='verified' OR display_path=?4)",
+                    params![grant_id,o.volume_key,o.root_file_id,o.display_path],
+                    |r| r.get(0),
+                ).optional()?.ok_or(Error::NotFound)?;
+                if o.filesystem.is_some() && stored_mode != mode {
+                    return Err(Error::Invalid(
+                        "root identity mode changed; revoke and grant again",
+                    ));
+                }
+                if tx.execute("UPDATE st.root_grant SET filesystem=?2 WHERE id=?1 AND state='active' AND ?2 IS NOT NULL AND filesystem IS NOT ?2", params![grant_id,o.filesystem])? > 0 {
+                    state_revision(&tx)?;
+                }
+                *grant_id
+            } else {
+                tx.execute("INSERT INTO st.root_grant(volume_key,root_file_id,display_path,origin,granted_via,state,granted_at_ns,lab_root_id,identity_mode,filesystem) VALUES (?1,?2,?3,?4,?5,'active',?6,?7,?8,?9)",params![o.volume_key,o.root_file_id,o.display_path,o.origin,o.granted_via,o.observed_at_ns,lab,mode,o.filesystem])?;
+                let grant = tx.last_insert_rowid();
+                state_revision(&tx)?;
+                grant
+            };
             tx.commit()?;
             Ok(Some(Prepared::Id(grant)))
         }
@@ -1618,7 +1637,7 @@ fn apply(
     prepared: Option<Prepared>,
 ) -> Result<WriteReply> {
     match c {
-        WriteCommand::RegisterRoot(o) => {
+        WriteCommand::RegisterRoot(o) | WriteCommand::RefreshRoot { observation: o, .. } => {
             let grant = match prepared {
                 Some(Prepared::Id(id)) => id,
                 _ => return Err(Error::Invalid("grant not committed")),

@@ -442,7 +442,7 @@ fn v4_state_store_grants_migrate_as_identity_verified() {
 /// `backup_evidence`, keeping their rows, and the table refuses anything but a JSON document.
 #[test]
 fn v6_v5_and_v4_state_stores_reach_v7_with_backup_evidence_and_the_forget_record() {
-    assert_eq!(SCHEMA_VERSION, 8);
+    assert_eq!(SCHEMA_VERSION, 9);
     for (from, downgrade) in [
         // v6 (backups applied): only forget's step runs, and the evidence already there stays.
         (

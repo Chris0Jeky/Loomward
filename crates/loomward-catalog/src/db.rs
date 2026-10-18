@@ -147,6 +147,9 @@ fn migrate(path: &Path, schema: &str, version: i64, dataset: &str, precious: boo
         if precious && version < 8 {
             tx.execute_batch(include_str!("client-grant.sql"))?;
         }
+        if precious && !tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('root_grant') WHERE name='filesystem')", [], |r| r.get::<_, bool>(0))? {
+            tx.execute_batch("ALTER TABLE root_grant ADD COLUMN filesystem TEXT CHECK (filesystem IS NULL OR length(filesystem) <= 32)")?;
+        }
         if !precious && !tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('dir') WHERE name='listing_outcome')", [], |r| r.get::<_, bool>(0))? {
             tx.execute_batch("ALTER TABLE dir ADD COLUMN listing_outcome TEXT CHECK (listing_outcome IN ('complete','partial','denied','excluded','cancelled','unscanned','stale'))")?;
         }
@@ -199,16 +202,18 @@ pub(crate) fn derive_root(
     grant: i64,
     observation: Option<&crate::RootObservation>,
 ) -> Result<(i64, i64)> {
-    let (key, id, path, state, mode): (String, Vec<u8>, String, String, String) = conn.query_row(
-        "SELECT volume_key,root_file_id,display_path,state,identity_mode FROM st.root_grant WHERE id=?1",
+    let (key, id, path, state, mode, stored_filesystem): (String, Vec<u8>, String, String, String, Option<String>) = conn.query_row(
+        "SELECT volume_key,root_file_id,display_path,state,identity_mode,filesystem FROM st.root_grant WHERE id=?1",
         [grant],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
     )?;
     if state != "active" {
         return Err(Error::NotFound);
     }
     let name = observation.map_or(path.as_str(), |o| o.display_name.as_str());
-    let filesystem = observation.and_then(|o| o.filesystem.as_deref());
+    let filesystem = observation
+        .and_then(|o| o.filesystem.as_deref())
+        .or(stored_filesystem.as_deref());
     let at = observation.map_or(0, |o| o.observed_at_ns);
     conn.execute("INSERT INTO volume(volume_key,display_name,filesystem,identity_json,capabilities_json,device_json,online,observed_at_ns) VALUES(?1,?2,?3,'{}','{}','{}',1,?4) ON CONFLICT(volume_key) DO UPDATE SET filesystem=coalesce(excluded.filesystem,volume.filesystem)",rusqlite::params![key,name,filesystem,at])?;
     let volume: i64 = conn.query_row("SELECT id FROM volume WHERE volume_key=?1", [key], |r| {
@@ -325,6 +330,14 @@ pub(crate) fn open_pair_with(dir: &Path, dataset: &str, ranked: bool) -> Result<
     conn.execute_batch(
         "PRAGMA st.synchronous=FULL;PRAGMA st.foreign_keys=ON;PRAGMA st.secure_delete=ON",
     )?;
+    if cv >= 2 {
+        // Also retries an interrupted migration's backfill; NULL stays unknown without an observation.
+        let tx = conn.transaction()?;
+        if tx.execute("UPDATE st.root_grant AS g SET filesystem=(SELECT v.filesystem FROM main.root r JOIN main.volume v ON v.id=r.volume_id WHERE r.grant_id=g.id) WHERE g.filesystem IS NULL AND EXISTS(SELECT 1 FROM main.root r JOIN main.volume v ON v.id=r.volume_id WHERE r.grant_id=g.id AND v.filesystem IS NOT NULL)", [])? > 0 {
+            tx.execute("UPDATE st.revision SET state_rev=state_rev+1", [])?;
+        }
+        tx.commit()?;
+    }
     reconcile_references(&mut conn)?;
     let instance: String =
         conn.query_row("SELECT value FROM meta WHERE key='instance_id'", [], |r| {
