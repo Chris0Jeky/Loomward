@@ -7,15 +7,17 @@ use std::{
     io,
     mem::{size_of, zeroed},
     net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
-    os::windows::{ffi::OsStrExt, io::AsRawHandle, process::CommandExt},
+    os::windows::{ffi::OsStrExt, fs::MetadataExt, io::AsRawHandle, process::CommandExt},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     ptr::{null, null_mut},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
 use windows_sys::Win32::{
     Foundation::*,
+    Globalization::{CompareStringOrdinal, CSTR_EQUAL},
     Security::{
         Authorization::{
             ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
@@ -28,6 +30,7 @@ use windows_sys::Win32::{
     },
     System::{
         Com::CoTaskMemFree,
+        Console::*,
         JobObjects::*,
         Registry::{RegCloseKey, RegOpenKeyExW, HKEY_CURRENT_USER, KEY_READ},
         SystemServices::SE_GROUP_ENABLED,
@@ -38,8 +41,54 @@ use windows_sys::Win32::{
 /// The one profile the owner authorised (agent-hq decision loomward-teacher-sandbox-path, (c)).
 pub(super) const PROFILE: &str = "Loomward.L15b.Measure";
 /// HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS).
+#[cfg(test)]
 const ALREADY_EXISTS: i32 = 0x800700B7_u32 as i32;
 const MAPPINGS: &str = r"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppContainer\Mappings";
+const ROOT_PREFIX: &str = "loomward-teacher-sandbox-";
+const ROOT_MARKER: &str = ".loomward-l15b-root";
+const ROOT_MARKER_BYTES: &[u8] = b"Loomward disposable teacher sandbox v1\n";
+
+// Keep console interrupts from bypassing cleanup during the bounded measurement.
+unsafe extern "system" fn measurement_console_control(event: u32) -> i32 {
+    i32::from(matches!(event, CTRL_C_EVENT | CTRL_BREAK_EVENT))
+}
+struct ConsoleGuard;
+impl ConsoleGuard {
+    fn install() -> io::Result<Self> {
+        unsafe { checked(SetConsoleCtrlHandler(Some(measurement_console_control), 1))? };
+        Ok(Self)
+    }
+}
+impl Drop for ConsoleGuard {
+    fn drop(&mut self) {
+        unsafe { SetConsoleCtrlHandler(Some(measurement_console_control), 0) };
+    }
+}
+
+// Recovery must never remove a profile or a marked root still used by another invocation.
+struct MeasurementLock(Handle);
+impl MeasurementLock {
+    fn acquire(name: &str) -> io::Result<Self> {
+        let handle = unsafe { CreateMutexW(null(), 0, wide(name).as_ptr()) };
+        if handle.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let handle = Handle(handle);
+        match unsafe { WaitForSingleObject(handle.0, 0) } {
+            WAIT_OBJECT_0 | WAIT_ABANDONED => Ok(Self(handle)),
+            WAIT_TIMEOUT => Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "another sandbox measurement or recovery is active",
+            )),
+            _ => Err(io::Error::last_os_error()),
+        }
+    }
+}
+impl Drop for MeasurementLock {
+    fn drop(&mut self) {
+        unsafe { ReleaseMutex(self.0 .0) };
+    }
+}
 
 fn wide(value: impl AsRef<OsStr>) -> Vec<u16> {
     value.as_ref().encode_wide().chain(Some(0)).collect()
@@ -149,11 +198,15 @@ fn identity() -> io::Result<Value> {
 }
 
 // Both ACL operations address only directories created by this invocation.
-fn directory_acl(path: &Path, owner: &str, container: Option<&str>) -> io::Result<()> {
+fn directory_sddl(owner: &str, container: Option<&str>) -> String {
     let grant = container
         .map(|sid| format!("(A;OICI;FA;;;{sid})"))
         .unwrap_or_default();
-    let sddl = format!("D:P(A;OICI;FA;;;{owner})(A;OICI;FA;;;SY){grant}S:(ML;OICI;NW;;;LW)");
+    let integrity = if container.is_some() { "LW" } else { "ME" };
+    format!("D:P(A;OICI;FA;;;{owner})(A;OICI;FA;;;SY){grant}S:(ML;OICI;NW;;;{integrity})")
+}
+fn directory_acl(path: &Path, owner: &str, container: Option<&str>) -> io::Result<()> {
+    let sddl = directory_sddl(owner, container);
     unsafe {
         let mut descriptor = null_mut();
         checked(ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -189,6 +242,44 @@ fn write_json(path: &Path, value: &impl Serialize) -> io::Result<()> {
 fn read_json(path: &Path) -> io::Result<Value> {
     Ok(serde_json::from_slice(&fs::read(path)?)?)
 }
+fn short_path(path: &Path) -> Option<String> {
+    let path = wide(path);
+    let len = unsafe { GetShortPathNameW(path.as_ptr(), null_mut(), 0) };
+    if len == 0 {
+        return None;
+    }
+    let mut buf = vec![0u16; len as usize];
+    let written = unsafe { GetShortPathNameW(path.as_ptr(), buf.as_mut_ptr(), len) };
+    (written > 0 && written < len).then(|| String::from_utf16_lossy(&buf[..written as usize]))
+}
+
+fn redact_path(text: &str, path: &str, replacement: &str) -> String {
+    let text: Vec<_> = text.encode_utf16().collect();
+    let path: Vec<_> = path.encode_utf16().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < text.len() {
+        if !path.is_empty()
+            && i + path.len() <= text.len()
+            && unsafe {
+                CompareStringOrdinal(
+                    text[i..].as_ptr(),
+                    path.len() as i32,
+                    path.as_ptr(),
+                    path.len() as i32,
+                    1,
+                )
+            } == CSTR_EQUAL
+        {
+            out.extend(replacement.encode_utf16());
+            i += path.len();
+        } else {
+            out.push(text[i]);
+            i += 1;
+        }
+    }
+    String::from_utf16_lossy(&out)
+}
 fn public_log(path: &Path, root: &Path) -> Value {
     let mut text = match fs::read_to_string(path) {
         Ok(text) => text,
@@ -206,11 +297,18 @@ fn public_log(path: &Path, root: &Path) -> Value {
             "<system-root>",
         ),
     ] {
-        if !path.is_empty() {
-            text = text
-                .replace(&path, replacement)
-                .replace(&path.replace('\\', "/"), replacement)
-                .replace(&path.replace('\\', "\\\\"), replacement);
+        for alias in [Some(path.clone()), short_path(Path::new(&path))]
+            .into_iter()
+            .flatten()
+            .filter(|p| !p.is_empty())
+        {
+            for spelling in [
+                alias.clone(),
+                alias.replace('\\', "/"),
+                alias.replace('\\', "\\\\"),
+            ] {
+                text = redact_path(&text, &spelling, replacement);
+            }
         }
     }
     Value::String(text)
@@ -593,6 +691,8 @@ fn measure(root: &Path, registered: Option<&str>) -> io::Result<Value> {
     fs::write(&canary, "LOOMWARD_SYNTHETIC_CANARY")?;
     fs::write(&allowed, "LOOMWARD_SYNTHETIC_CANARY")?;
     fs::create_dir(lab.join("home"))?;
+    let control_exe = root.join("teacher_sandbox.exe");
+    fs::copy(std::env::current_exe()?, &control_exe)?;
     let exe = lab.join("teacher_sandbox.exe");
     fs::copy(std::env::current_exe()?, &exe)?;
     let system_root = PathBuf::from(
@@ -606,17 +706,17 @@ fn measure(root: &Path, registered: Option<&str>) -> io::Result<Value> {
     let endpoints = vec!["1.1.1.1:443".parse().unwrap(), api, listener.local_addr()?];
     let controls: Vec<_> = endpoints.iter().map(|addr| json!({"endpoint": addr.to_string(), "result": outcome(TcpStream::connect_timeout(addr, Duration::from_secs(4)))})).collect();
     let launch_control = launch(Launch {
-        exe: &exe,
+        exe: &control_exe,
         args: vec!["--child".into(), "-".into()],
-        lab: &lab,
+        lab: root,
         tag: "control",
         container: null_mut(),
         internet: false,
         job: None,
         stdin: "",
     })?;
-    let control_identity = read_json(&lab.join("control.stdout")).unwrap_or(Value::Null);
-    let control_stderr = public_log(&lab.join("control.stderr"), root);
+    let control_identity = read_json(&root.join("control.stdout")).unwrap_or(Value::Null);
+    let control_stderr = public_log(&root.join("control.stderr"), root);
     if launch_control["create_process"]["ok"] != true
         || launch_control["exit_code"] != 0
         || control_identity["appcontainer"] != false
@@ -705,56 +805,6 @@ fn measure(root: &Path, registered: Option<&str>) -> io::Result<Value> {
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn deletion_proof_needs_every_indicator_absent() {
-        let absent = json!({"mapping_key": "absent", "packages_folder_exists": false, "folder_lookup_hresult": "0x80070002"});
-        assert!(profile_absent(&absent));
-        for (key, value) in [
-            ("mapping_key", json!("present")),
-            ("mapping_key", json!({"error_code": 5})),
-            ("packages_folder_exists", json!(true)),
-            ("folder_lookup_hresult", json!("0x00000000")),
-        ] {
-            let mut state = absent.clone();
-            state[key] = value;
-            assert!(!profile_absent(&state), "{key}");
-        }
-    }
-
-    #[test]
-    fn native_capability_builder_sets_only_the_explicit_sid() {
-        let empty = security_capabilities(null_mut(), None);
-        assert_eq!(empty.CapabilityCount, 0);
-        assert!(empty.Capabilities.is_null());
-        assert_eq!(empty.Reserved, 0);
-        let mut buf = [0usize; 9];
-        let mut bytes = size_of_val(&buf) as u32;
-        unsafe {
-            checked(CreateWellKnownSid(
-                WinCapabilityInternetClientSid,
-                null_mut(),
-                buf.as_mut_ptr().cast(),
-                &mut bytes,
-            ))
-            .unwrap();
-        }
-        let mut capability = SID_AND_ATTRIBUTES {
-            Sid: buf.as_mut_ptr().cast(),
-            Attributes: SE_GROUP_ENABLED as u32,
-        };
-        assert_eq!(sid_text(capability.Sid).unwrap(), "S-1-15-3-1");
-        let pointer = &mut capability as *mut _;
-        let internet = security_capabilities(null_mut(), Some(&mut capability));
-        assert_eq!(internet.CapabilityCount, 1);
-        assert_eq!(internet.Capabilities, pointer);
-        assert_eq!(internet.Reserved, 0);
-    }
-}
-
 /// Read-only view of one profile's registration: derived SID, folder lookup, mapping key, folder.
 fn profile_state(name: &str) -> io::Result<Value> {
     let mut sid = null_mut();
@@ -799,20 +849,70 @@ fn profile_absent(state: &Value) -> bool {
         && state["packages_folder_exists"] == false
         && state["folder_lookup_hresult"] == "0x80070002"
 }
+fn sweep_roots(profile: &Path) -> io::Result<Value> {
+    let profile = fs::canonicalize(profile)?;
+    let mut removed = 0;
+    let mut unverified = 0;
+    let mut errors = Vec::new();
+    for entry in fs::read_dir(&profile)? {
+        let entry = entry?;
+        if !entry.file_name().to_string_lossy().starts_with(ROOT_PREFIX) {
+            continue;
+        }
+        let path = entry.path();
+        let root = fs::symlink_metadata(&path)?;
+        let marker_path = path.join(ROOT_MARKER);
+        let marked = root.is_dir()
+            && root.file_attributes() & 0x400 == 0
+            && fs::canonicalize(&path)?.parent() == Some(profile.as_path())
+            && fs::symlink_metadata(&marker_path).is_ok_and(|m| {
+                m.is_file()
+                    && m.file_attributes() & 0x400 == 0
+                    && m.len() == ROOT_MARKER_BYTES.len() as u64
+            })
+            && fs::read(&marker_path).is_ok_and(|bytes| bytes == ROOT_MARKER_BYTES);
+        if !marked {
+            unverified += 1;
+            continue;
+        }
+        match fs::remove_dir_all(&path) {
+            Ok(()) => removed += 1,
+            Err(e) => errors.push(outcome::<()>(Err(e))),
+        }
+    }
+    Ok(json!({"removed": removed, "unverified": unverified, "errors": errors}))
+}
 fn delete_profile() -> io::Result<Value> {
     let hr = unsafe { DeleteAppContainerProfile(wide(PROFILE).as_ptr()) };
     let after = profile_state(PROFILE)?;
+    let profile =
+        std::env::var_os("USERPROFILE").ok_or_else(|| io::Error::other("USERPROFILE missing"))?;
+    let roots = sweep_roots(Path::new(&profile))?;
     Ok(
-        json!({"delete_hresult": format!("0x{:08x}", hr as u32), "deleted": profile_absent(&after), "after": after}),
+        json!({"delete_hresult": format!("0x{:08x}", hr as u32), "deleted": profile_absent(&after), "after": after, "roots": roots}),
     )
+}
+
+fn cleanup_created_profile(
+    create_hr: i32,
+    delete: impl FnOnce() -> io::Result<Value>,
+) -> io::Result<Value> {
+    if create_hr < 0 {
+        Ok(
+            json!({"skipped": "profile creation did not succeed; ownership not established", "deleted": false}),
+        )
+    } else {
+        delete()
+    }
 }
 
 fn measure_in_temp_root(registered: Option<&str>) -> io::Result<Value> {
     let profile =
         std::env::var_os("USERPROFILE").ok_or_else(|| io::Error::other("USERPROFILE missing"))?;
     let root = tempfile::Builder::new()
-        .prefix("loomward-teacher-sandbox-")
+        .prefix(ROOT_PREFIX)
         .tempdir_in(profile)?;
+    fs::write(root.path().join(ROOT_MARKER), ROOT_MARKER_BYTES)?;
     let result = measure(root.path(), registered);
     let removed_path = root.path().to_path_buf();
     let cleanup = root.close();
@@ -855,13 +955,8 @@ fn measure_registered() -> io::Result<Value> {
     } else {
         std::panic::catch_unwind(|| measure_in_temp_root(Some(PROFILE)))
     };
-    // Deletion runs on every path out of creation, except when another invocation created the
-    // profile after our absence check (ERROR_ALREADY_EXISTS): that profile is not ours to delete.
-    let deletion = if create_hr == ALREADY_EXISTS {
-        Ok(json!({"skipped": "profile created by another invocation", "deleted": false}))
-    } else {
-        delete_profile()
-    };
+    // A failed create never establishes ownership, whatever HRESULT it returns.
+    let deletion = cleanup_created_profile(create_hr, delete_profile);
     let mut receipt = match measured {
         Ok(Ok(value)) => value,
         Ok(Err(e)) => json!({"measurement_error": outcome::<()>(Err(e))}),
@@ -894,6 +989,21 @@ pub(super) fn run(role: Role) -> io::Result<()> {
     if token_value::<TOKEN_ELEVATION>(TokenElevation)?.TokenIsElevated != 0 {
         return Err(io::Error::other("refusing elevated token"));
     }
+    let _lock = if matches!(
+        &role,
+        Role::Run(_) | Role::RunRegistered(_) | Role::DeleteProfile
+    ) {
+        Some(MeasurementLock::acquire(
+            "Local\\Loomward.L15b.Measure.Lifecycle",
+        )?)
+    } else {
+        None
+    };
+    let _console = if matches!(&role, Role::Run(_) | Role::RunRegistered(_)) {
+        Some(ConsoleGuard::install()?)
+    } else {
+        None
+    };
     match role {
         Role::Probe(config) => probe(&config),
         Role::Child(path, linger) => {
@@ -916,10 +1026,214 @@ pub(super) fn run(role: Role) -> io::Result<()> {
         Role::DeleteProfile => {
             let deletion = delete_profile()?;
             println!("{deletion}");
-            if deletion["deleted"] != true {
-                return Err(io::Error::other("profile still present"));
+            if deletion["deleted"] != true
+                || deletion["roots"]["unverified"] != 0
+                || deletion["roots"]["errors"] != json!([])
+            {
+                return Err(io::Error::other(
+                    "profile or disposable-root recovery incomplete; see receipt",
+                ));
             }
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deletion_proof_needs_every_indicator_absent() {
+        let absent = json!({"mapping_key": "absent", "packages_folder_exists": false, "folder_lookup_hresult": "0x80070002"});
+        assert!(profile_absent(&absent));
+        for (key, value) in [
+            ("mapping_key", json!("present")),
+            ("mapping_key", json!({"error_code": 5})),
+            ("packages_folder_exists", json!(true)),
+            ("folder_lookup_hresult", json!("0x00000000")),
+        ] {
+            let mut state = absent.clone();
+            state[key] = value;
+            assert!(!profile_absent(&state), "{key}");
+        }
+    }
+
+    #[test]
+    fn failed_creation_never_deletes_a_profile_owned_by_another_run() {
+        for hr in [ALREADY_EXISTS, 0x80070005_u32 as i32, i32::MIN] {
+            let result = cleanup_created_profile(hr, || {
+                panic!("failed creation must not delete a profile: {hr:#x}")
+            })
+            .unwrap();
+            assert_eq!(result["deleted"], false);
+        }
+        let result = cleanup_created_profile(0, || Ok(json!({"deleted": true}))).unwrap();
+        assert_eq!(result["deleted"], true);
+    }
+
+    #[test]
+    fn only_the_container_lab_inherits_low_integrity() {
+        let owner = "S-1-5-21-100-200-300-1001";
+        assert!(!directory_sddl(owner, None).contains(";;;LW)"));
+        assert!(directory_sddl(owner, Some("S-1-15-2-100")).contains("S:(ML;OICI;NW;;;LW)"));
+    }
+
+    #[test]
+    fn log_redaction_handles_case_separators_and_native_short_paths() {
+        let root = tempfile::Builder::new()
+            .prefix("loomward-synthetic-redaction-")
+            .tempdir()
+            .unwrap();
+        let path = root.path().join("synthetic.log");
+        let long = root.path().to_str().unwrap();
+        fs::write(
+            &path,
+            format!(
+                "!{}!{}!{}!",
+                long.to_uppercase(),
+                long.to_lowercase().replace('\\', "/"),
+                long.to_uppercase().replace('\\', "\\\\")
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            public_log(&path, root.path()),
+            json!("!<lab-root>!<lab-root>!<lab-root>!")
+        );
+        let alias = short_path(root.path()).expect("native short-path lookup");
+        fs::write(&path, alias.to_uppercase().replace('\\', "\\\\")).unwrap();
+        assert_eq!(public_log(&path, root.path()), json!("<lab-root>"));
+        assert_eq!(
+            redact_path(
+                "c:\\SYNTH~1\\ångström",
+                "C:\\synth~1\\ÅNGSTRÖM",
+                "<synthetic>"
+            ),
+            "<synthetic>"
+        );
+    }
+
+    #[test]
+    fn missing_and_non_utf8_logs_remain_explicit_errors() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("synthetic.log");
+        assert_eq!(public_log(&path, root.path())["read_error"]["ok"], false);
+        fs::write(&path, [0xff, 0xfe]).unwrap();
+        let error = public_log(&path, root.path());
+        assert_eq!(error["read_error"]["ok"], false);
+        assert_eq!(error["read_error"]["kind"], "InvalidData");
+    }
+
+    #[test]
+    fn child_report_is_published_without_a_partial_file() {
+        let root = tempfile::tempdir().unwrap();
+        let report = root.path().join("synthetic.json");
+        run(Role::Child(report.clone(), false)).unwrap();
+        assert!(read_json(&report).unwrap()["appcontainer"].is_boolean());
+        assert!(!report.with_extension("partial").exists());
+    }
+
+    #[test]
+    fn console_guard_handles_only_interrupt_and_break() {
+        for event in [CTRL_C_EVENT, CTRL_BREAK_EVENT] {
+            assert_eq!(unsafe { measurement_console_control(event) }, 1);
+        }
+        for event in [CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT, 99] {
+            assert_eq!(unsafe { measurement_console_control(event) }, 0);
+        }
+        let _guard = ConsoleGuard::install().unwrap();
+    }
+
+    #[test]
+    fn recovery_and_measurement_cannot_hold_the_same_lock_concurrently() {
+        let name = format!("Local\\Loomward.L15b.SyntheticTest.{}", std::process::id());
+        let held = MeasurementLock::acquire(&name).unwrap();
+        let other_name = name.clone();
+        let blocked = thread::spawn(move || match MeasurementLock::acquire(&other_name) {
+            Ok(_) => false,
+            Err(e) => e.kind() == io::ErrorKind::WouldBlock,
+        })
+        .join()
+        .unwrap();
+        assert!(blocked);
+        drop(held);
+        let _next = MeasurementLock::acquire(&name).unwrap();
+    }
+
+    #[test]
+    fn recovery_sweeps_only_marked_roots_and_reports_legacy_roots() {
+        let profile = tempfile::tempdir().unwrap();
+        let marked = profile.path().join("loomward-teacher-sandbox-synthetic");
+        fs::create_dir(&marked).unwrap();
+        fs::write(marked.join(ROOT_MARKER), ROOT_MARKER_BYTES).unwrap();
+        fs::write(marked.join("synthetic.txt"), "synthetic").unwrap();
+        let legacy = profile.path().join("loomward-teacher-sandbox-legacy");
+        fs::create_dir(&legacy).unwrap();
+        let unrelated = profile.path().join("synthetic-unrelated");
+        fs::create_dir(&unrelated).unwrap();
+        let forged = profile.path().join("loomward-teacher-sandbox-unknown");
+        fs::create_dir(&forged).unwrap();
+        fs::write(forged.join(ROOT_MARKER), "not our marker").unwrap();
+        let report = sweep_roots(profile.path()).unwrap();
+        assert_eq!(report["removed"], 1);
+        assert_eq!(report["unverified"], 2);
+        assert_eq!(report["errors"], json!([]));
+        assert!(!marked.exists());
+        assert!(legacy.exists());
+        assert!(unrelated.exists());
+        assert!(forged.exists());
+    }
+
+    #[test]
+    fn recovery_never_follows_a_root_or_marker_reparse_point() {
+        use loomward_lab::pathological::{generate, Profile};
+        let profile = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let tree = generate(outside.path(), Profile::JunctionCycle).unwrap();
+        fs::write(outside.path().join(ROOT_MARKER), ROOT_MARKER_BYTES).unwrap();
+        let linked = profile.path().join("loomward-teacher-sandbox-linked");
+        fs::rename(outside.path().join("cycle"), &linked).unwrap();
+        let report = sweep_roots(profile.path()).unwrap();
+        assert_eq!(report["removed"], 0);
+        assert_eq!(report["unverified"], 1);
+        assert!(outside.path().join(ROOT_MARKER).exists());
+        let marked = profile.path().join("loomward-teacher-sandbox-marker-link");
+        fs::create_dir(&marked).unwrap();
+        fs::rename(&linked, marked.join(ROOT_MARKER)).unwrap();
+        let report = sweep_roots(profile.path()).unwrap();
+        assert_eq!(report["removed"], 0);
+        assert_eq!(report["unverified"], 1);
+        fs::rename(marked.join(ROOT_MARKER), outside.path().join("cycle")).unwrap();
+        drop(tree);
+    }
+
+    #[test]
+    fn native_capability_builder_sets_only_the_explicit_sid() {
+        let empty = security_capabilities(null_mut(), None);
+        assert_eq!(empty.CapabilityCount, 0);
+        assert!(empty.Capabilities.is_null());
+        assert_eq!(empty.Reserved, 0);
+        let mut buf = [0usize; 9];
+        let mut bytes = size_of_val(&buf) as u32;
+        unsafe {
+            checked(CreateWellKnownSid(
+                WinCapabilityInternetClientSid,
+                null_mut(),
+                buf.as_mut_ptr().cast(),
+                &mut bytes,
+            ))
+            .unwrap();
+        }
+        let mut capability = SID_AND_ATTRIBUTES {
+            Sid: buf.as_mut_ptr().cast(),
+            Attributes: SE_GROUP_ENABLED as u32,
+        };
+        assert_eq!(sid_text(capability.Sid).unwrap(), "S-1-15-3-1");
+        let pointer = &mut capability as *mut _;
+        let internet = security_capabilities(null_mut(), Some(&mut capability));
+        assert_eq!(internet.CapabilityCount, 1);
+        assert_eq!(internet.Capabilities, pointer);
+        assert_eq!(internet.Reserved, 0);
     }
 }

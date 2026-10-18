@@ -4,7 +4,7 @@
 //! A client principal (`ask:<class>`, `mcp:<name>`) is set by the in-process adapter that hosts
 //! it, never by a payload. It reaches two reads only, `search.query` and `node.inspect`, and only
 //! under a live owner-issued grant loaded from `state.db` on every call, so a revocation holds
-//! from the next call on. The grant names catalogue roots and optional fields: rows outside the
+//! from the next call on. The grant names durable root grants and optional fields: rows outside the
 //! roots are absent from results, root states and the generation (the catalogue applies the scope
 //! before anything is counted), and fields outside the grant are removed, not nulled. The grant's
 //! row id is its epoch: cursors bind the client and the epoch, so a cursor dies with a revocation
@@ -24,6 +24,25 @@ use serde_json::{Map, Value};
 
 type Handled = Result<Out, ErrorBody>;
 
+/// Legacy grants have no catalogue-instance witness, so their original mapping cannot be proven
+/// after recovery. Invalidate them atomically with the format marker before serving any client.
+pub(crate) fn migrate(conn: &mut rusqlite::Connection) -> rusqlite::Result<()> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let versioned: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('client_grant','st') WHERE name='durable_roots')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !versioned {
+        tx.execute_batch("ALTER TABLE st.client_grant ADD COLUMN durable_roots INTEGER NOT NULL DEFAULT 0 CHECK(durable_roots IN (0,1))")?;
+    }
+    tx.execute(
+        "UPDATE st.client_grant SET revoked_at_ns=?1 WHERE durable_roots=0 AND revoked_at_ns IS NULL",
+        [now_ns()],
+    )?;
+    tx.commit()
+}
+
 /// The optional fields a grant may disclose. Name, kind, extension, coverage, match and the
 /// node reference are always part of a hit.
 pub const CLIENT_FIELDS: [&str; 4] = ["path", "size", "modified", "attributes"];
@@ -34,7 +53,7 @@ pub(crate) struct ClientGrant {
     pub client: String,
     /// The `client_grant` row id: a new grant is a new epoch.
     pub epoch: i64,
-    /// Granted roots whose own root grant is still active.
+    /// Current catalogue IDs resolved from the still-active durable root grants.
     pub roots: Vec<i64>,
     pub fields: Vec<String>,
 }
@@ -125,17 +144,17 @@ impl Inner {
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_error)?;
+        let mut grants = Vec::with_capacity(rows.len());
         for row in &rows {
-            let active: bool = tx
+            let grant: Option<i64> = tx
                 .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM st.root_grant WHERE id=?1 AND state='active')",
+                    "SELECT r.grant_id FROM main.root r JOIN st.root_grant g ON g.id=r.grant_id WHERE r.id=?1 AND g.state='active'",
                     [row],
                     |r| r.get(0),
                 )
+                .optional()
                 .map_err(sql_error)?;
-            if !active {
-                return Err(fail(ErrorCode::NotFound, "unknown root"));
-            }
+            grants.push(grant.ok_or_else(|| fail(ErrorCode::NotFound, "unknown root"))?);
         }
         let now = now_ns();
         tx.execute(
@@ -144,10 +163,10 @@ impl Inner {
         )
         .map_err(sql_error)?;
         tx.execute(
-            "INSERT INTO st.client_grant(client,roots_json,fields_json,created_at_ns,expires_at_ns) VALUES(?1,?2,?3,?4,?5)",
+            "INSERT INTO st.client_grant(client,roots_json,fields_json,created_at_ns,expires_at_ns,durable_roots) VALUES(?1,?2,?3,?4,?5,1)",
             rusqlite::params![
                 client,
-                Value::from(rows).to_string(),
+                Value::from(grants).to_string(),
                 Value::from(fields).to_string(),
                 now,
                 expires_at_ns
@@ -186,7 +205,7 @@ impl Inner {
         let conn = self.db();
         let row: Option<(i64, String, String)> = conn
             .query_row(
-                "SELECT id,roots_json,fields_json FROM st.client_grant WHERE client=?1 AND revoked_at_ns IS NULL AND (expires_at_ns IS NULL OR expires_at_ns>?2)",
+                "SELECT id,roots_json,fields_json FROM st.client_grant WHERE client=?1 AND durable_roots=1 AND revoked_at_ns IS NULL AND (expires_at_ns IS NULL OR expires_at_ns>?2)",
                 rusqlite::params![client, now_ns()],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
@@ -199,7 +218,7 @@ impl Inner {
             ));
         };
         let roots = conn
-            .prepare("SELECT id FROM st.root_grant WHERE state='active' AND id IN (SELECT value FROM json_each(?1)) ORDER BY id")
+            .prepare("SELECT r.id FROM main.root r JOIN st.root_grant g ON g.id=r.grant_id WHERE g.state='active' AND g.id IN (SELECT value FROM json_each(?1)) ORDER BY r.id")
             .and_then(|mut s| {
                 s.query_map([roots], |r| r.get(0))?
                     .collect::<rusqlite::Result<Vec<i64>>>()

@@ -99,6 +99,13 @@ impl Disk for EmptyDisk {
     }
 }
 
+/// SQLite's lock is not fair: a thread that re-takes the write lock back to back (each append is an
+/// fsync'd `BEGIN IMMEDIATE`) can starve the other store's busy handler past its 5 s timeout on a slow
+/// disk (hosted Windows runners did). A short pause between appends keeps them interleaved, not starved.
+fn yield_lock() {
+    thread::sleep(std::time::Duration::from_millis(2));
+}
+
 /// The stored rows form one linear chain (seq 1..=n, no gap, duplicate or reorder) and the journal replays,
 /// which checks the hash chain and the head anchor. Returns the row count.
 fn assert_linear(store: &Store, op: u64) -> usize {
@@ -114,6 +121,26 @@ fn assert_linear(store: &Store, op: u64) -> usize {
         panic!("journal does not replay: {e:?}");
     }
     rows.len()
+}
+
+/// An existing journal is readable in WAL mode even while another connection holds the write lock.
+#[test]
+fn an_existing_store_opens_without_waiting_for_the_writer() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let mut writer = Store::open(&path).unwrap();
+    let op = writer.start(1, admitted()).unwrap();
+    let locker = Connection::open(&path).unwrap();
+    locker.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let reader = Store::open(&path).expect("opening an existing schema needs no write lock");
+    assert_eq!(assert_linear(&reader, op), 1);
+    assert_eq!(reader.synchronous().unwrap(), 2);
+    let mut conn = Connection::open(&path).unwrap();
+    conn.set_transaction_behavior(rusqlite::TransactionBehavior::Immediate);
+    let adopted =
+        Store::new(conn).expect("schema checks must be deferred even on an adopted connection");
+    assert_eq!(assert_linear(&adopted, op), 1);
+    locker.execute_batch("ROLLBACK").unwrap();
 }
 
 /// A reader opened while a writer appends to the same operation sees a consistent journal at every
@@ -132,6 +159,7 @@ fn a_second_store_reads_a_consistent_journal_while_the_first_appends() {
             writer
                 .append(op, 1, batch())
                 .expect("the writer's append succeeds while a reader is open");
+            yield_lock();
         }
     });
     let reader = Store::open(&path).unwrap();
@@ -166,12 +194,14 @@ fn two_stores_appending_to_one_operation_make_one_linear_chain() {
         go.wait();
         for _ in 0..EACH {
             first.append(op, 1, batch()).expect("first store append");
+            yield_lock();
         }
     });
     let b = thread::spawn(move || {
         go_b.wait();
         for _ in 0..EACH {
             second.append(op, 1, batch()).expect("second store append");
+            yield_lock();
         }
     });
     a.join().unwrap();

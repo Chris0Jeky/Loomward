@@ -1,48 +1,10 @@
 use loomward_shell::{known_folders::*, shortcuts::*};
 use std::{cell::Cell, path::PathBuf};
 
-fn put32(b: &mut [u8], at: usize, n: u32) {
-    b[at..at + 4].copy_from_slice(&n.to_le_bytes());
-}
-fn header(flags: u32) -> Vec<u8> {
-    let mut b = vec![0; 76];
-    put32(&mut b, 0, 76);
-    b[4..20].copy_from_slice(&[1, 20, 2, 0, 0, 0, 0, 0, 192, 0, 0, 0, 0, 0, 0, 70]);
-    put32(&mut b, 20, flags);
-    put32(&mut b, 24, 32);
-    b
-}
-fn finish(mut b: Vec<u8>) -> Vec<u8> {
-    b.extend([0; 4]);
-    b
-}
-fn string(b: &mut Vec<u8>, s: &str) {
-    let u: Vec<u16> = s.encode_utf16().collect();
-    b.extend((u.len() as u16).to_le_bytes());
-    for c in u {
-        b.extend(c.to_le_bytes());
-    }
-}
-fn local_info() -> Vec<u8> {
-    let mut b = vec![0; 28];
-    put32(&mut b, 4, 28);
-    put32(&mut b, 8, 1);
-    put32(&mut b, 12, 28);
-    b.extend(18u32.to_le_bytes());
-    b.extend(3u32.to_le_bytes());
-    b.extend(123u32.to_le_bytes());
-    b.extend(16u32.to_le_bytes());
-    b.extend(b"V\0");
-    let at = b.len();
-    put32(&mut b, 16, at as u32);
-    b.extend(b"Q:\\fixture\0");
-    let at = b.len();
-    put32(&mut b, 24, at as u32);
-    b.extend(b"\\doc.txt\0");
-    let size = b.len();
-    put32(&mut b, 0, size as u32);
-    b
-}
+#[path = "support/shortcuts.rs"]
+mod fixtures;
+use fixtures::*;
+
 fn local() -> Shortcut {
     let mut b = header(2);
     b.extend(local_info());
@@ -224,6 +186,38 @@ fn network_link_info_is_never_probed() {
     assert_eq!(health(&s, &p), Health::NetworkUnreachableUnknown);
     assert_eq!(p.calls.get(), 0);
 }
+#[test]
+fn network_name_offset_selects_the_documented_layout() {
+    for unicode in [false, true] {
+        let mut b = header(2);
+        b.extend(network_info(unicode));
+        let network = parse(&finish(b))
+            .unwrap()
+            .link_info
+            .unwrap()
+            .network
+            .unwrap();
+        assert_eq!(
+            network.share,
+            if unicode {
+                Text::Unicode("\\\\server.invalid\\共有".into())
+            } else {
+                Text::Ansi(b"\\\\server.invalid\\share".to_vec())
+            }
+        );
+        assert_eq!(network.device.unwrap().as_str(), Some("Z:"));
+        assert_eq!(network.provider_type, Some(0x20000));
+    }
+    // NetNameOffset > 0x14 requires Unicode offsets; 21..27 overlaps that header.
+    for offset in 21..=27 {
+        let mut info = network_info(false);
+        put32(&mut info, 28 + 8, offset);
+        let mut b = header(2);
+        b.extend(info);
+        assert!(parse(&finish(b)).is_err(), "NetNameOffset {offset}");
+    }
+}
+
 #[test]
 fn environment_known_folder_tracker_and_unknown_blocks_stay_data() {
     let mut b = header(0x200);
@@ -441,6 +435,27 @@ fn unpaired_surrogates_preserve_raw_units() {
 }
 
 #[test]
+fn seed_corpus_reaches_all_optional_parser_branches() {
+    let parsed: Vec<_> = seeds("synthetic name")
+        .iter()
+        .map(|bytes| parse(bytes).unwrap())
+        .collect();
+    assert!(parsed.iter().any(|s| s.id_list.is_some()));
+    assert!(parsed.iter().any(|s| s.environment_target.is_some()));
+    assert!(parsed.iter().any(|s| s.known_folder.is_some()));
+    assert!(parsed.iter().any(|s| s.tracker.is_some()));
+    for unicode in [false, true] {
+        assert!(parsed
+            .iter()
+            .any(|s| s.link_info.as_ref().is_some_and(|info| {
+                info.network
+                    .as_ref()
+                    .is_some_and(|network| matches!(&network.share, Text::Unicode(_)) == unicode)
+            })));
+    }
+}
+
+#[test]
 fn random_and_mutated_links_never_panic() {
     let mut state = 0x248_044_045u64;
     let mut random = || {
@@ -449,11 +464,7 @@ fn random_and_mutated_links_never_panic() {
         state ^= state << 17;
         state
     };
-    let mut local = header(2);
-    local.extend(local_info());
-    let mut text = header(0x84);
-    string(&mut text, "synthetic name");
-    let seeds = [finish(header(0)), finish(local), finish(text)];
+    let seeds = seeds("synthetic name");
     for index in 0..12_000 {
         let mut bytes = if index % 2 == 0 {
             seeds[index % seeds.len()].clone()
@@ -609,6 +620,16 @@ fn non_windows_probe_and_reader_stubs_stay_unknown_and_unsupported() {
     let err = read(std::path::Path::new("Q:\\fixture\\doc.txt")).unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
 }
+#[test]
+fn pins_checks_volume_before_opening_the_drive_root() {
+    let source = include_str!("../src/shortcuts.rs");
+    let pins = source.split("fn pins(").nth(1).unwrap();
+    let pins = pins.split("fn attributes(").next().unwrap();
+    assert!(
+        pins.find("volume(drive, None)").unwrap() < pins.find("open_readonly_directory(").unwrap()
+    );
+}
+
 #[test]
 fn source_has_no_execution_com_initialisation_or_library_loading() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

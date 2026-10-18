@@ -213,7 +213,9 @@ commit: `Measure the unregistered teacher AppContainer launch gate`.
 
 `evidence/v3/teacher-sandbox.json` is the machine receipt exactly as `--run` emits it. The diagnostics, blocked questions and context written by hand during the spike live in `evidence/v3/teacher-sandbox-annotations.json`, so a rerun cannot silently drop them.
 
-The receipt's `cleanup.ok` and `root_removed` cover only the run's own temporary root: the example does not enumerate other `loomward-teacher-sandbox-*` directories. After the spike the driver listed the user temp folder for that prefix and found none remaining (10 October 2026); that check is manual and outside the receipt.
+The historical receipt's `cleanup.ok` and `root_removed` cover only the run's own temporary root.
+After the spike the driver listed the user temp folder for that prefix and found none remaining
+(10 October 2026); that check is outside the receipt. Recovery added for #293 is described below.
 
 ## Registered profile measurement (11 October 2026)
 
@@ -228,7 +230,7 @@ measurement only. It leaves no profile registered for later use, and it qualifie
 `--run-registered <out.json>` checks that `Loomward.L15b.Measure` is absent, calls
 `CreateAppContainerProfile` for exactly that moniker with no capabilities, runs the same
 measurement as `--run` under the registered SID, then calls `DeleteAppContainerProfile` on every
-path out of creation (measurement error, panic or success) and re-reads the registration.
+path after successful creation (measurement error, panic or success) and re-reads the registration.
 `--delete-profile` is the manual recovery for an interrupted run. The receipt is
 [teacher-sandbox-registered.json](../../evidence/v3/teacher-sandbox-registered.json); hand-written
 context is in [teacher-sandbox-registered-annotations.json](../../evidence/v3/teacher-sandbox-registered-annotations.json).
@@ -252,6 +254,27 @@ Changes from the 10 October run, all inside the example: the real Documents list
 the synthetic directories and a `%SystemRoot%` listing; `cmd.exe` canaries, an in-container DNS
 lookup and the profile lifecycle were added; the child report is written then renamed, and log read
 errors are kept in the receipt (both from #176).
+
+### Interruption and recovery follow-ups (#293)
+
+Measurements install a scoped console handler which handles Ctrl+C and Ctrl+Break until the
+measurement and cleanup return. Console close, shutdown, forced termination and power loss can
+still interrupt cleanup; the handler does not claim to make those cases safe. Measurement and
+`--delete-profile` recovery share a named lifecycle mutex, so recovery refuses while another
+invocation is active. A failed profile create never authorises deletion, regardless of HRESULT.
+
+New roots carry `.loomward-l15b-root` with a fixed disposable-lab marker. `--delete-profile` also
+sweeps immediate `loomward-teacher-sandbox-*` children of the user profile that have that exact
+marker, a plain root directory and a plain marker file. Root and marker reparse points are
+refused. The receipt records aggregate removed and unverified counts and explicit cleanup errors,
+without paths. Recovery exits unsuccessfully if roots remain unverified or cleanup fails. Older
+unmarked roots are retained for inspection: a name prefix alone does not establish ownership.
+
+The ordinary control executable and stdio now live in the medium-integrity root. Only the granted
+container lab inherits low integrity. Log redaction uses Windows ordinal case-insensitive matching
+for the long and native short-path aliases, including slash and JSON-escaped spellings. Read and
+UTF-8 errors remain explicit. These are offline code/test changes, not a new confinement
+measurement; the historical receipts above are unchanged.
 
 ### What a registered launch needed
 

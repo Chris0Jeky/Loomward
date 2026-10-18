@@ -477,8 +477,8 @@ enum PublicationCrash {
     BeforeFence(fn(&Connection)),
 }
 /// Test seam (#356): holds the writer after a publication's precious staging has committed and
-/// before its catalogue transaction begins, so a test can act inside that window. Only commands
-/// that stage reference intents pause; the gate is one-shot.
+/// before its catalogue transaction begins, so a test can act inside that window. Reference-staging
+/// commands and listing-led batches (including StageChunk) pause; the gate is one-shot.
 #[cfg(any(test, feature = "test-hooks"))]
 #[derive(Default)]
 pub struct PublicationWindow {
@@ -488,7 +488,7 @@ pub struct PublicationWindow {
 }
 #[cfg(any(test, feature = "test-hooks"))]
 impl PublicationWindow {
-    /// The next reference-staging publication pauses inside the window.
+    /// The next reference-staging command or listing-led batch pauses inside the window.
     pub fn arm(&self) {
         *self.state.lock().expect("window lock") = (true, false);
     }
@@ -619,6 +619,10 @@ fn serve(
     let mut vacuum_pending = cut_pending;
     let mut retry_delay = Duration::from_millis(500);
     let mut next_retry = Instant::now() + retry_delay;
+    // A store that has just opted into the ranked token index is backfilled here, one bounded
+    // round per transaction, only while no command is waiting (#520).
+    let mut backfill = crate::search::backfilling(&conn).unwrap_or(false);
+    let mut backfill_after = Instant::now();
     loop {
         let first = loop {
             if cut_pending && Instant::now() >= next_retry {
@@ -626,13 +630,32 @@ fn serve(
                 retry_delay = (retry_delay * 2).min(Duration::from_secs(30));
                 next_retry = Instant::now() + retry_delay;
             }
+            if backfill && pending.is_none() && Instant::now() >= backfill_after {
+                match rx.try_recv() {
+                    Ok(p) => pending = Some(p),
+                    Err(crossbeam_channel::TryRecvError::Empty) => {
+                        // A failed round (a lock held elsewhere) rolls back and is retried a second later.
+                        match backfill_step(&mut conn) {
+                            Ok(more) => backfill = more,
+                            Err(_) => backfill_after = Instant::now() + Duration::from_secs(1),
+                        }
+                        continue;
+                    }
+                    Err(crossbeam_channel::TryRecvError::Disconnected) => {}
+                }
+            }
             if let Some(p) = pending.take() {
                 break Some(p);
             }
-            if !cut_pending {
+            if !cut_pending && !backfill {
                 break rx.recv().ok();
             }
-            match rx.recv_timeout(next_retry.saturating_duration_since(Instant::now())) {
+            let wake = match (cut_pending, backfill) {
+                (true, true) => next_retry.min(backfill_after),
+                (true, false) => next_retry,
+                _ => backfill_after,
+            };
+            match rx.recv_timeout(wake.saturating_duration_since(Instant::now())) {
                 Ok(p) => break Some(p),
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
                 Err(_) => break None,
@@ -998,6 +1021,13 @@ pub(crate) fn wal_cut(conn: &Connection, wait: Duration, vacuum: &mut bool) -> b
             .is_ok();
     }
     done
+}
+/// One backfill round in its own transaction. Whether keys remain.
+fn backfill_step(conn: &mut Connection) -> Result<bool> {
+    let tx = conn.transaction()?;
+    let more = crate::search::backfill_round(&tx)?;
+    tx.commit()?;
+    Ok(more)
 }
 fn end_checkpoint(conn: &Connection, compact_bulk: bool) -> rusqlite::Result<[i64; 3]> {
     let timeout = conn.query_row("PRAGMA busy_timeout", [], |r| r.get::<_, u32>(0))?;
@@ -1920,7 +1950,7 @@ fn publish(
     };
     let mut noid = 0i64;
     let mut members_changed = false;
-    let mut moved = Vec::new();
+    let mut revealed = Vec::new();
     let mut chunks = conn.prepare_cached(
         "SELECT entries FROM stage_entry WHERE run_id=?1 AND dir_id=?2 ORDER BY seq",
     )?;
@@ -2077,13 +2107,16 @@ fn publish(
                 }
             }
             let id = if let Some((id, parent, name, utf16, state, _)) = old_dir {
+                // Restoring a hidden branch can expose descendants at depths changed by an ancestor move.
+                if parent != Some(dir) || state == "absent_pending" {
+                    revealed.push(id);
+                }
                 if parent != Some(dir) {
                     let parent = parent.ok_or(Error::Invalid("cannot reparent root"))?;
                     let cycle:bool=conn.query_row(&format!("WITH RECURSIVE a(id) AS (SELECT ?1 UNION ALL SELECT d.parent_id FROM {d} d JOIN a ON d.id=a.id WHERE d.parent_id IS NOT NULL) SELECT EXISTS(SELECT 1 FROM a WHERE id=?2)"),params![dir,id],|r|r.get(0))?;
                     if cycle {
                         return Err(Error::Invalid("directory identity cycle"));
                     }
-                    moved.push(id);
                     ctx.dirty(parent, run);
                     ctx.parents.insert(id, Some(dir));
                     ctx.dirty(id, run);
@@ -2159,12 +2192,12 @@ fn publish(
     }
     conn.execute(&format!("UPDATE {d} SET listing_state=?2,seen_run=?3,listing_rev=listing_rev+?4,own_files=?5,own_logical=?6,own_allocated=?7,own_alloc_unknown=?8,own_noid=?9,own_newest_ft=?10,own_skipped=?11,own_errors=?12,listing_outcome=?13 WHERE id=?1"),params![dir,if complete{"complete"}else{"incomplete"},run,i64::from(members_changed),own.files as i64,own.logical as i64,own.allocated as i64,own.allocation_unknown as i64,noid,own.newest_ft,skipped as i64,errors as i64,coverage])?;
     ctx.dirty(dir, run);
-    if !moved.is_empty() {
+    if !revealed.is_empty() {
         let destination = ctx.chain_length(conn, t, dir, &mut HashMap::new())?;
         // Later moves in this listing can flatten an earlier move's subtree.
-        for id in moved {
+        for id in revealed {
             let too_deep: bool = conn.prepare_cached(
-                &format!("WITH RECURSIVE subtree(id,height) AS (SELECT ?1,0 UNION ALL SELECT d.id,s.height+1 FROM {d} d JOIN subtree s ON d.parent_id=s.id WHERE s.height<?2) SELECT EXISTS(SELECT 1 FROM subtree WHERE height=?2)"),
+                &format!("WITH RECURSIVE subtree(id,height) AS (SELECT ?1,0 UNION ALL SELECT d.id,s.height+1 FROM {d} d JOIN subtree s ON d.parent_id=s.id WHERE s.height<?2 AND d.listing_state!='absent_pending') SELECT EXISTS(SELECT 1 FROM subtree WHERE height=?2)"),
             )?.query_row(params![id, MAX_DIRECTORY_CHAIN_LENGTH as i64 - destination as i64], |r| r.get(0))?;
             if too_deep {
                 return Err(Error::Invalid("tree depth limit"));
@@ -2243,6 +2276,9 @@ fn swap_bulk(conn: &Connection, root: i64) -> Result<()> {
         return Err(Error::Invalid("bulk root gained live rows"));
     }
     conn.execute("DELETE FROM dir WHERE id=?1", [root_dir])?;
+    // The build's rows are new token keys (IDs are never reused): index them in one pass below
+    // instead of queueing each through the insert triggers and reading it back (#520).
+    let token_triggers = crate::search::suspend_insert_triggers(conn)?;
     conn.execute(
         "INSERT INTO dir SELECT * FROM bulk_dir WHERE root_id=?1 ORDER BY id",
         [root],
@@ -2283,6 +2319,22 @@ fn swap_bulk(conn: &Connection, root: i64) -> Result<()> {
     )?;
     for (_, sql) in deferred {
         conn.execute_batch(&sql)?;
+    }
+    if !token_triggers.is_empty() {
+        crate::search::index_new_tokens(
+            conn,
+            "SELECT id,name FROM bulk_dir WHERE root_id=?1 AND parent_id IS NOT NULL ORDER BY id",
+            root,
+        )?;
+        crate::search::index_new_tokens(
+            conn,
+            &format!(
+                "SELECT id+{},name FROM {source} ORDER BY id",
+                crate::search::FILE_KEY
+            ),
+            root,
+        )?;
+        crate::search::restore_insert_triggers(conn, &token_triggers)?;
     }
     if alone {
         crate::db::bulk_tables(conn, true)?;

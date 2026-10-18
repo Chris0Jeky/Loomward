@@ -178,6 +178,7 @@ export type EmptyRequest = Record<string, never>;
 export interface Capabilities {
   observation: {
     metadata_scan: boolean;
+    duplicate_content_read: boolean;
     process_observation: boolean;
     gpu_observation: boolean;
     disk_io_observation: boolean;
@@ -1953,11 +1954,11 @@ export type CopyOperationId = string;
 export type CopyState = "draft" | "refused" | "approved" | "expired" | "preparing" | "copying" | "staged" | "blocked" | "needs_attention" | "publishing" | "committed" | "cancelling" | "cancelled";
 
 /** docs/47 section 7. Codes with a P or S entry are refused before any write handle exists. */
-export type CopyRefusalCode = "identity_unverified" | "cloud_placeholder" | "reparse_point" | "unsupported_attribute" | "extended_attributes" | "alternate_streams_unsupported" | "too_many_streams" | "special_file" | "source_changed" | "staging_name_taken" | "staging_in_use" | "changed_after_verification" | "source_in_use" | "access_denied" | "insufficient_space" | "destination_inside_source" | "destination_cloud_synced" | "destination_unsupported_volume" | "destination_protected" | "case_collision" | "name_unrepresentable" | "path_too_long" | "publish_in_use" | "verification_mismatch" | "grant_revoked" | "elevated" | "approval_expired" | "digest_mismatch" | "manifest_limit";
+export type CopyRefusalCode = "identity_unverified" | "cloud_placeholder" | "reparse_point" | "unsupported_attribute" | "extended_attributes" | "alternate_streams_unsupported" | "too_many_streams" | "special_file" | "source_changed" | "staging_name_taken" | "staging_in_use" | "changed_after_verification" | "source_in_use" | "access_denied" | "insufficient_space" | "destination_inside_source" | "destination_cloud_synced" | "destination_unsupported_volume" | "destination_protected" | "destination_changed" | "case_collision" | "name_unrepresentable" | "path_too_long" | "publish_in_use" | "verification_mismatch" | "grant_revoked" | "elevated" | "approval_expired" | "digest_mismatch" | "manifest_limit";
 
 export interface CopyRefusal {
   code: CopyRefusalCode;
-  /** null: operation-wide. */
+  /** The refused entry's catalogue node, matched by its source path and native file ID. null: an operation-wide refusal, or an entry the catalogue does not hold under that identity (never a guessed node). */
   node_id: NodeId | null;
 }
 
@@ -2129,6 +2130,62 @@ export interface AskTurnRecord {
   rounds: AskRound[];
 }
 
+export interface DeveloperClutterRequest {
+  root_id: RootId;
+  limit: number;
+}
+
+export type DeveloperClutterProvider = "cargo" | "npm" | "python" | "dotnet" | "gradle";
+
+/** A reading of the conventional directory name, never of its contents. */
+export type DeveloperClutterKind = "build_output" | "dependency_install" | "environment" | "bytecode_cache" | "build_cache";
+
+/** Regeneration cost is measured by LW-087; until then every candidate says unknown. */
+export type RegenerationCost = "unknown";
+
+/** Observed bytes are not reclaimable bytes: the directory may hold unique source or datasets, and a shared store or hard links make summed sizes differ from what a removal would free. Advice only. */
+export interface DeveloperClutterCandidate {
+  node_id: NodeId;
+  name: string;
+  anchor_node_id: NodeId;
+  anchor_name: string;
+  provider: DeveloperClutterProvider;
+  kind: DeveloperClutterKind;
+  /** Observed logical bytes under the directory; null is unknown (partial, stale or unscanned), never zero. */
+  logical_bytes: NullableBytes;
+  /** null when any allocation under it is unknown. */
+  allocated_bytes: NullableBytes;
+  coverage: CoverageState;
+  regeneration_cost: RegenerationCost;
+  regeneration_hint: string;
+  reason: string;
+  uncertainty: string;
+}
+
+export type ClutterTopic = "regeneration_cost" | "model_host_lifecycle" | "stale_worktrees";
+
+/** A part of LW-119 that no provider supplies yet (LW-087, LW-086, LW-076): said so, never filled with a value. */
+export interface ClutterNotAssessed {
+  topic: ClutterTopic;
+  note: string;
+}
+
+/** Developer-clutter advice (LW-119) from recorded names only. Never a delete action or a disposability claim; no file or process effect. */
+export interface DeveloperClutterReport {
+  root_id: RootId;
+  generation: NullableGeneration;
+  rules_version: number;
+  /** The root is mid-scan, stale or not fully covered, or a candidate size is not fully known: projects may be missing and sizes may be lower bounds. */
+  partial: boolean;
+  truncated: boolean;
+  /** The detector reached its work budget: candidates is then empty and says nothing about the root. */
+  budget_hit: boolean;
+  budget_note: string | null;
+  /** Largest known logical size first, then unknown sizes. */
+  candidates: DeveloperClutterCandidate[];
+  not_assessed: ClutterNotAssessed[];
+}
+
 // ---- commands (commands.json)
 
 export interface CommandMap {
@@ -2155,6 +2212,7 @@ export interface CommandMap {
   "threads.meaning": { request: MeaningRequest; result: MeaningResult };
   "search.query": { request: SearchRequest; result: SearchPage };
   "stats.breakdown": { request: BreakdownRequest; result: Breakdown };
+  "clutter.developer": { request: DeveloperClutterRequest; result: DeveloperClutterReport };
   "taxonomy.get": { request: EmptyRequest; result: Taxonomy };
   "feedback.record": { request: FeedbackRequest; result: FeedbackResult };
   "learning.status": { request: EmptyRequest; result: LearningStatus };
@@ -2231,6 +2289,7 @@ export const COMMANDS = {
   "threads.meaning": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "search.query": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "stats.breakdown": { adapters: ["tauri", "http"], wave: 2, events: [] },
+  "clutter.developer": { adapters: ["tauri", "http"], wave: 2, events: [] },
   "taxonomy.get": { adapters: ["tauri", "http"], wave: 3, events: [] },
   "feedback.record": { adapters: ["tauri", "http"], wave: 3, events: ["learning.updated"] },
   "learning.status": { adapters: ["tauri", "http"], wave: 3, events: [] },

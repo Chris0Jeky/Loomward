@@ -612,12 +612,15 @@ fn kill(case: Case, n: usize, labels: &[String], tally: &mut Tally) {
 
 /// Labels the default mode kills at first and last under both Q1 policies, not only at their class's
 /// first label: the effect-before-journal gaps (an object on disk whose identity is not yet journaled)
-/// and the folder metadata sets that change journaled identities' creation times one by one.
-const GAPS: [&str; 4] = [
+/// and the folder metadata sets that change journaled identities' creation times one by one. Also the
+/// window before `committed` (#526, docs/47 section 5): the confirmation passed, the record not yet
+/// appended. It shares CP-13 with `renamed`, whose earlier kill would otherwise be the class's only one.
+const GAPS: [&str; 5] = [
     "staging folder made",
     "created item",
     "directory metadata set",
     "staging metadata set",
+    "before committed",
 ];
 
 /// Default: each scenario killed once per crash-point class it reaches, plus the first and last of each
@@ -629,6 +632,7 @@ fn crash_matrix_every_point_recovers_and_abandons_under_the_oracle() {
     }
     let mut tally = Tally::default();
     let mut lines = Vec::new();
+    let mut window = 0;
     for scenario in Scenario::ALL {
         let policies: &[bool] = match (full(), scenario) {
             (true, _) => &[false, true],
@@ -656,6 +660,7 @@ fn crash_matrix_every_point_recovers_and_abandons_under_the_oracle() {
                 .filter(|&n| full() || gap(n) || (classes && seen.insert(class(&labels[n - 1]))))
                 .collect();
             for &n in &picks {
+                window += usize::from(labels[n - 1] == "before committed");
                 kill(case, n, &labels, &mut tally);
             }
             lines.push(format!(
@@ -669,6 +674,7 @@ fn crash_matrix_every_point_recovers_and_abandons_under_the_oracle() {
     for cp in REQUIRED {
         assert!(tally.by_class.contains_key(cp), "{cp} never killed");
     }
+    assert!(window > 0, "the window before committed was never killed");
 }
 
 /// Random kills: a seeded random tree, scenario and Q1 policy per tree, then kills at random

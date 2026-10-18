@@ -121,3 +121,85 @@ test red before the rewrite), the plan pin, and `rewritten_detector_matches_the_
 (16 seeded random trees of 300 directories with random manifests, shields, stale runs, flags and reparse
 attributes, caps 3 and 200: rows, order, anchors and providers identical between v1 and now). The five
 pre-existing tests are unchanged and pass.
+
+## #515 follow-up: current-main audit and 1M-row lab (2026-10-18)
+
+Starting HEAD `4babf6710c6425086520a8697d495dd15dff2d12`, branch `fix/515-clutter-join`.
+`origin/main` was refreshed to `cfbcdce1b55cea0b88804a0acfb936fd794d1139`; its detector SQL and
+detector tests are identical to starting HEAD. Issue #515 was still open with no comments.
+The join rewrite and EXPLAIN plan regression were **already fixed by** `b55afd8`, merged in
+[PR #558](https://github.com/Chris0Jeky/Loomward/pull/558) as `26e95b7` on 2026-10-17.
+No production SQL, caller, schema, rule or capability changes are needed here.
+
+This follow-up expands the existing wide lab to 3,000 child directories and 51,000 dependency
+directories (still 50,000 parent files), retaining every prior assertion. V1 exhausts the
+30,000,000-step cap in 773.7 ms; current SQL returns the five expected candidates in 875,700
+steps / 48.1 ms, and the real reader answers within its 2,000,000-step guard. The existing
+random-tree differential test still checks 32 old/new result sets. A new explicit test hides
+the candidate itself by excluded flags, reparse attributes and excluded listing state, proving
+that the same candidate is returned before and after each shield is applied and removed.
+
+The explicit benchmark extends that lab to exactly **1,000,000 combined file and directory
+rows**, filling only the already-matched `node_modules` interior. It checks unchanged query
+results and VM-step counts across that growth, all five real-reader candidates, complete
+coverage and no truncation. It prints both query plans. It is opt-in to keep a million-row
+fixture out of every ordinary crate run; no existing test was ignored or weakened.
+
+Initial lab: 160,512 file/directory rows. Added 839,488 interior files in 111.95 s; complete
+benchmark including initial construction: 141.79 s. At 1M rows, three current-query runs each
+spent **875,700 VM steps**, exactly the pre-growth cost, in **34.924 / 27.298 / 27.569 ms**.
+The real reader returned all five candidates in **37.619 ms**, complete and untruncated.
+The populated EXPLAIN plan still has only two `SCAN t` operations on the recursive CTE;
+all base-table accesses are indexed `SEARCH` operations, without an automatic index:
+
+```text
+SEARCH d USING INTEGER PRIMARY KEY (rowid=?)
+SEARCH c USING INDEX dir_by_allocated (parent_id=?)
+SEARCH f USING INDEX file_by_allocated (dir_id=?)
+SCAN t
+SEARCH p USING INTEGER PRIMARY KEY (rowid=?)
+SEARCH d USING INDEX dir_by_allocated (parent_id=?)
+SEARCH c USING INDEX dir_by_allocated (parent_id=?)
+SEARCH f USING INDEX file_by_allocated (dir_id=?)
+SCAN t
+SEARCH f USING INTEGER PRIMARY KEY (rowid=?)
+SEARCH d USING INTEGER PRIMARY KEY (rowid=?)
+USE TEMP B-TREE FOR ORDER BY
+```
+
+V1 still plans `SCAN d`, `SCAN rules`, an `AUTOMATIC COVERING INDEX` on the safe-tree CTE,
+and a second recursive `covered` traversal. No million-row v1 execution was necessary:
+the smaller wide lab already exhausts its 30M-step cap. Raw synthetic benchmark output is
+local only, `.loomward/clutter-515-bench.log`; this section is the curated measurement.
+
+Platform: KRASPYON, Windows 11, rustc 1.97.1, debug test profile;
+`CARGO_BUILD_JOBS=4`, inherited `CARGO_TARGET_DIR=C:/lw/target/lane-clutter-515`.
+All commands run from `C:/lw/wt/clutter-515`; cargo commands below use
+`--manifest-path C:/lw/wt/clutter-515/Cargo.toml`.
+
+Final verification:
+
+- `cargo test --manifest-path C:/lw/wt/clutter-515/Cargo.toml -p loomward-catalog --test developer_clutter -- --nocapture`:
+  9 passed, 0 failed, 1 opt-in benchmark ignored (run explicitly below).
+- `cargo test --manifest-path C:/lw/wt/clutter-515/Cargo.toml -p loomward-catalog --test developer_clutter million_row_output_interiors_do_not_increase_detector_work -- --ignored --nocapture`:
+  1 passed, 0 failed, 9 filtered out; 141.79 s, results above.
+- `cargo test --manifest-path C:/lw/wt/clutter-515/Cargo.toml -p loomward-catalog -- --test-threads=4`:
+  266 passed, 0 failed, 1 opt-in benchmark ignored; all executed test binaries and doc tests passed.
+- `cargo fmt --manifest-path C:/lw/wt/clutter-515/Cargo.toml --all --check`: passed.
+- `cargo clippy --manifest-path C:/lw/wt/clutter-515/Cargo.toml -p loomward-catalog --all-targets -- -D warnings`:
+  passed, zero warnings.
+- `git -C C:/lw/wt/clutter-515 diff --check`: passed.
+
+The unchanged detector's baseline was 8/8 passing before these test additions; v1's negative
+performance control remains in the wide test. There is no new production behavior requiring
+a new implementation red/green cycle. An initial compile of the new benchmark used unsupported
+`usize` SQLite decoding; corrected to `i64` before the successful runs. Raw full-crate output is
+local only, `.loomward/clutter-515-catalog-tests.log`. No workspace suite, app checks, hosted CI,
+commit, push or PR was performed: the lane leaves these changes uncommitted for the driver.
+
+The `.sln` anchor concern remains an owner/product choice in #515: it is an explicitly
+documented version-1 rule, and the existing provider matrix covers it. This lane does not
+silently change that rule. `HUMAN_TODO.md` q-34 is answered; no owner decision or human-action
+entry was changed. The pre-existing ceiling for huge manifest-parent directories remains;
+1M total rows with pruned output interiors do not establish that every 1M-row shape will fit
+the work budget. No personal inventory, cold-cache or service/UI benchmark was run.

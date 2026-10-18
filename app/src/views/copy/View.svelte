@@ -30,7 +30,7 @@
   const expired = $derived(!!copy.approval && Date.parse(copy.approval.expires_at) <= now);
   const resuming = $derived(!!copy.status && ['blocked', 'needs_attention'].includes(copy.status.state));
   const phase = $derived(copy.uncertain ? 'Outcome unknown' : copy.status?.state.replaceAll('_', ' ') ?? (copy.gated ? 'Copying is not enabled yet' : copy.approval ? 'Approval ready' : copy.preview ? 'Review preview' : 'Select destination'));
-  const nodeName = (id: string | null) => id === null ? 'Whole operation' : copy.items.find(i => i.node_id === id)?.name ?? id;
+  const nodeName = (id: string | null) => id === null ? 'Whole operation' : copy.items.find(i => i.node_id === id)?.name ?? 'An entry inside the selection';
 
   async function deselect(nodeId: string): Promise<void> {
     copy.select(copy.items.filter(i => i.node_id !== nodeId));

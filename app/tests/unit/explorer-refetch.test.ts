@@ -4,7 +4,7 @@
 // node the user just clicked, keeps today's error behaviour.
 import { describe, expect, it } from 'vitest';
 import { LoomwardError } from '../../src/lib/transport/client';
-import { fallbackStep, onRefetchError } from '../../src/views/explorer/refetch';
+import { fallbackStep, onRefetchError, resolveTrail } from '../../src/views/explorer/refetch';
 
 const boom = (code: 'not_found' | 'stale_generation' | 'invalid_request' | 'internal_error', detail: Record<string, unknown> | null = null) =>
   new LoomwardError({ code, message: `fake engine: ${code}`, retryable: false, detail });
@@ -38,5 +38,54 @@ describe('onRefetchError', () => {
     expect(second).toEqual({ keep: trail.slice(0, 1), lost: 'Old' });
     const top = fallbackStep(second.keep, second.lost);
     expect(top).toEqual({ keep: [], lost: 'Old' }); // nothing left: reload the starting points
+  });
+});
+
+describe('resolveTrail after node IDs change', () => {
+  const saved = [{ id: 'old-root', name: 'Root' }, { id: 'old-docs', name: 'Docs' }, { id: 'old-leaf', name: 'Old' }];
+  const root = { id: 'new-root', name: 'Root' };
+  const docs = { id: 'new-docs', name: 'Docs' };
+  const leaf = { id: 'new-leaf', name: 'Old' };
+  const page = (folders: typeof saved, next_cursor: string | null = null) => ({
+    items: folders.map(({ id, name }) => ({ node_id: id, name, kind: 'dir' as const })), next_cursor,
+  });
+
+  it('keeps the deepest existing path with fresh IDs instead of the first starting point', async () => {
+    const children = async (id: string) => page(id === root.id ? [docs] : []);
+    expect(await resolveTrail(saved, [{ id: 'other', name: 'Other' }, root], children)).toEqual([root, docs]);
+  });
+
+  it('retains the whole path when only its IDs changed', async () => {
+    const children = async (id: string) => page(id === root.id ? [docs] : id === docs.id ? [leaf] : []);
+    expect(await resolveTrail(saved, [root], children)).toEqual([root, docs, leaf]);
+  });
+
+  it('finds ancestors beyond the first page and ignores same-named files', async () => {
+    const calls: (string | null)[] = [];
+    const children = async (id: string, cursor: string | null) => {
+      if (id !== root.id) return page([]);
+      calls.push(cursor);
+      return cursor ? page([docs]) : { items: [{ node_id: 'file', name: 'Docs', kind: 'file' as const }], next_cursor: 'next' };
+    };
+    expect(await resolveTrail(saved, [root], children)).toEqual([root, docs]);
+    expect(calls).toEqual([null, 'next']);
+  });
+
+  it('does not guess when the starting point disappeared or its name is ambiguous', async () => {
+    const children = async () => { throw new Error('must not list an unrelated root'); };
+    expect(await resolveTrail(saved, [], children)).toEqual([]);
+    expect(await resolveTrail(saved, [root, { ...root, id: 'another' }], children)).toEqual([]);
+  });
+
+  it('keeps the listed ancestor if a matching child vanishes during recovery', async () => {
+    const children = async (id: string) => {
+      if (id === root.id) return page([docs]);
+      throw boom('not_found');
+    };
+    expect(await resolveTrail(saved, [root], children)).toEqual([root]);
+  });
+
+  it('does not pass off an unavailable catalogue as a missing folder', async () => {
+    await expect(resolveTrail(saved, [root], async () => { throw boom('internal_error'); })).rejects.toMatchObject({ code: 'internal_error' });
   });
 });
