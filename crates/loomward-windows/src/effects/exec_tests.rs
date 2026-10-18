@@ -2264,3 +2264,140 @@ fn copy_plan_preserves_source_volume_guid_binding() {
     let legacy: Plan = serde_json::from_value(legacy).unwrap();
     assert_eq!(legacy.root_identity().volume_guid, None);
 }
+
+/// Hold `file` for `ms` on its own thread, then release it: a transient lock that clears by itself.
+fn release_after(file: fs::File, ms: u64) {
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(ms));
+        drop(file);
+    });
+}
+
+/// Open `folder` for reading without FILE_SHARE_READ: listing it is a sharing violation (32) on any
+/// volume until the handle closes, while its ancestors still rename (delete sharing kept).
+fn deny_listing(folder: &Path) -> fs::File {
+    use std::os::windows::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .read(true)
+        .share_mode(2 | 4) // FILE_SHARE_WRITE | FILE_SHARE_DELETE, no FILE_SHARE_READ
+        .custom_flags(0x0200_0000) // FILE_FLAG_BACKUP_SEMANTICS: open a directory
+        .open(folder)
+        .unwrap()
+}
+
+/// Muse bug hunt (copy-exec): an indexer or AV holding a staged folder while the pre-publish tree check
+/// lists it is a transient read failure, not a change. It is retried like the rename (bounded, 3 s
+/// apart), so a lock that clears lets the copy commit; one still held when the owner cancels leaves the
+/// run `blocked` (`staging_in_use`, resumable), never `changed_after_verification` (invariant 4).
+#[test]
+fn a_transient_lock_at_the_pre_publish_check_is_retried_not_a_change() {
+    for released in [true, false] {
+        let Some(lab) = Lab::new() else { return };
+        fs::create_dir_all(lab.src().join("top/sub")).unwrap();
+        fs::write(lab.src().join("top/f.txt"), b"data").unwrap();
+        let op = lab.start(&["top"]);
+        let dest = lab.dest();
+        let seen = AtomicBool::new(false);
+        let blocker: std::sync::Arc<Mutex<Option<fs::File>>> = Default::default();
+        let held = blocker.clone();
+        // After every item is verified. Folder metadata steps open "sub" for attributes only,
+        // which no sharing mode denies, so the blocked listing is met first by the final tree check.
+        let (blocked, wait) = std::sync::mpsc::channel::<()>();
+        let blocked = Mutex::new(blocked);
+        let control = Control::new(false).with_hook(move |p, _| {
+            if matches!(p, Point::Verified(_)) && !seen.swap(true, Ordering::SeqCst) {
+                let staging = fs::read_dir(&dest).unwrap().next().unwrap().unwrap().path();
+                let folder = deny_listing(&staging.join("sub"));
+                if released {
+                    release_after(folder, 300);
+                } else {
+                    *held.lock().unwrap() = Some(folder);
+                    blocked.lock().unwrap().send(()).unwrap();
+                }
+            }
+            Flow::Continue
+        });
+        // A cancel before the check would stop the run first: cancel inside the first 3 s retry wait.
+        let outcome = std::thread::scope(|s| {
+            let worker = s.spawn(|| run(&lab.store, op, &control).unwrap());
+            if !released {
+                wait.recv().unwrap();
+                std::thread::sleep(Duration::from_millis(1500));
+                control.cancel();
+            }
+            worker.join().unwrap()
+        });
+        drop(blocker.lock().unwrap().take());
+        if released {
+            assert_eq!(outcome.state, OpState::Committed, "{outcome:?}");
+            assert_eq!(fs::read(lab.dest().join("top/f.txt")).unwrap(), b"data");
+        } else {
+            assert_eq!(outcome.state, OpState::Blocked, "{outcome:?}");
+            assert_eq!(outcome.refusal, Some((Refusal::StagingInUse, None)));
+            assert!(!lab.dest().join("top").exists(), "never published");
+        }
+    }
+}
+
+/// Muse bug hunt (copy-exec): after the rename, a byte-range lock on a named stream fails its re-hash
+/// with ERROR_LOCK_VIOLATION (33). That is retried, so a lock that clears commits; one still held when
+/// the owner cancels leaves the run `publishing` for recovery to confirm (as `confirm` does for an
+/// unverifiable read), never `changed_after_verification`, and the published copy is untouched.
+#[test]
+fn a_transient_lock_after_the_rename_is_retried_not_a_change() {
+    use std::os::windows::io::AsRawHandle;
+    for released in [true, false] {
+        let Some(mut lab) = Lab::new() else { return };
+        fs::create_dir(lab.src().join("top")).unwrap();
+        fs::write(lab.src().join("top/f.txt"), b"data").unwrap();
+        fs::write(lab.src().join("top/f.txt:note"), b"kept").unwrap();
+        let op = lab.start(&["top"]);
+        let note = lab.dest().join("top").join("f.txt:note");
+        let blocker: std::sync::Arc<Mutex<Option<fs::File>>> = Default::default();
+        let held = blocker.clone();
+        let control = Control::new(false).with_hook(move |p, c| {
+            if p == Point::AfterPublish {
+                use std::os::windows::fs::OpenOptionsExt;
+                let stream = fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .share_mode(1 | 2 | 4)
+                    .open(&note)
+                    .unwrap();
+                // SAFETY: a live handle owned by `stream`; locks its whole first 4 GiB exclusively.
+                let locked = unsafe {
+                    windows_sys::Win32::Storage::FileSystem::LockFile(
+                        stream.as_raw_handle(),
+                        0,
+                        0,
+                        u32::MAX,
+                        0,
+                    )
+                };
+                assert_ne!(locked, 0, "lock the named stream");
+                if released {
+                    release_after(stream, 300);
+                } else {
+                    *held.lock().unwrap() = Some(stream);
+                    c.cancel();
+                }
+            }
+            Flow::Continue
+        });
+        let outcome = run(&lab.store, op, &control).unwrap();
+        drop(blocker.lock().unwrap().take());
+        if released {
+            assert_eq!(outcome.state, OpState::Committed, "{outcome:?}");
+        } else {
+            assert_eq!(outcome.state, OpState::Publishing, "{outcome:?}");
+            assert_eq!(outcome.refusal, None);
+            lab.reopen();
+            let r = recover(&lab.store, op, &Control::new(false)).unwrap();
+            assert_eq!(r.state, OpState::Committed, "{r:?}");
+        }
+        assert_eq!(
+            fs::read(lab.dest().join("top/f.txt:note")).unwrap(),
+            b"kept"
+        );
+    }
+}

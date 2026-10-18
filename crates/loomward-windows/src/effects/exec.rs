@@ -565,8 +565,16 @@ enum Stop {
     Cancel,
     /// Another control changed the journal: observe its decision without settling it again.
     Superseded,
+    /// Published, but the post-publish check could not read the tree now: stay `publishing` for
+    /// recovery to confirm, as `confirm` does for an unverifiable read.
+    Unconfirmed,
     Crashed,
     Journal(String),
+}
+
+/// A sharing, lock or access failure another process can clear: retried, never a finding about the copy.
+fn transient(e: &io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(5 | 32 | 33))
 }
 
 fn oid(key: &ObjectKey) -> ObjectId {
@@ -1395,11 +1403,7 @@ impl Runner<'_, '_> {
     /// Final tree check, publish without replace, post-publish confirmation, `committed`.
     fn publish(&mut self) -> Result<(), Stop> {
         self.control.check()?;
-        if !self.shape_matches() || !self.metadata_matches() {
-            let stop = Stop::Attention(Some(Refusal::ChangedAfterVerification));
-            self.refuse(&stop)?;
-            return Err(stop);
-        }
+        self.recheck(false)?;
         self.journal.log(Record::Transition {
             to: OpState::Staged,
             code: None,
@@ -1431,13 +1435,13 @@ impl Runner<'_, '_> {
                 // Bounded retries (section 7). The owner's cancel or a shutdown ends the wait at once
                 // and leaves the run blocked with its intent kept; a fence is read by the next step.
                 Err(e)
-                    if matches!(e.raw_os_error(), Some(5 | 32))
+                    if transient(&e)
                         && tries + 1 < PUBLISH_TRIES
                         && self.control.pause(PUBLISH_WAIT) =>
                 {
                     tries += 1;
                 }
-                Err(e) if matches!(e.raw_os_error(), Some(5 | 32)) => {
+                Err(e) if transient(&e) => {
                     self.journal.log(Record::Transition {
                         to: OpState::Blocked,
                         code: Some(Refusal::PublishInUse),
@@ -1457,11 +1461,7 @@ impl Runner<'_, '_> {
         // Default-stream holds stayed in place through the rename (H2 positive), so that content is
         // unchanged; named streams were released for the rename and are re-hashed now; tree shape and
         // preserved metadata are rechecked (write-attributes access is not denied by a hold).
-        if !self.shape_matches() || !self.metadata_matches() || !self.streams_match() {
-            let stop = Stop::Attention(Some(Refusal::ChangedAfterVerification));
-            self.refuse(&stop)?;
-            return Err(stop);
-        }
+        self.recheck(true)?;
         self.journal.log(Record::Committed)?;
         self.holds.clear();
         self.stream_holds.clear();
@@ -1471,27 +1471,32 @@ impl Runner<'_, '_> {
     /// After the rename: every held file still carries exactly its verified named streams (the full
     /// list, so an added stream is caught) with the verified digests, and no extended attributes (a
     /// hold does not deny FILE_WRITE_EA). The re-hash handles are kept until `committed`.
-    fn streams_match(&mut self) -> bool {
+    fn streams_match(&mut self) -> io::Result<bool> {
         let mut rehashed = Vec::new();
-        let ok = self.holds.iter().all(|(held, streams)| {
+        let mut ok = true;
+        for (held, streams) in &self.holds {
             let mut want: Vec<(String, u64)> =
                 streams.iter().map(|(n, _, s)| (n.clone(), *s)).collect();
             want.sort();
-            exact_streams(held, &want)
-                && streams.iter().all(|(name, digest, size)| {
-                    held.verify_stream(name).is_ok_and(|s| {
-                        let same = s.digest == *digest && s.size == *size;
-                        rehashed.push(s);
-                        same
-                    })
-                })
-        });
+            if !exact_streams(held, &want)? {
+                ok = false;
+                break;
+            }
+            for (name, digest, size) in streams {
+                let s = held.verify_stream(name)?;
+                ok &= s.digest == *digest && s.size == *size;
+                rehashed.push(s);
+            }
+            if !ok {
+                break;
+            }
+        }
         self.stream_holds = rehashed;
-        ok
+        Ok(ok)
     }
 
     /// Exactly the manifest's names under identity-pinned folders, nothing more.
-    fn shape_matches(&self) -> bool {
+    fn shape_matches(&self) -> io::Result<bool> {
         let want: BTreeSet<String> = self
             .plan
             .manifest
@@ -1499,38 +1504,72 @@ impl Runner<'_, '_> {
             .iter()
             .map(|i| i.name.clone())
             .collect();
-        listing(&self.staging, &self.keys).is_ok_and(|got| got == want)
+        Ok(listing(&self.staging, &self.keys)? == want)
     }
 
     /// Preserved metadata of every entry, and no named stream or EA on any folder (#526).
-    fn metadata_matches(&self) -> bool {
-        self.plan
+    fn metadata_matches(&self) -> io::Result<bool> {
+        for (i, item) in self.plan.manifest.items.iter().enumerate() {
+            let key = match item.kind {
+                Kind::Directory => self.keys.get(&item.name),
+                Kind::File => self.files.get(&i),
+            };
+            let Some(key) = key else { return Ok(false) };
+            let Ok((path, name)) = path_of(&item.name, &self.keys) else {
+                return Ok(false);
+            };
+            if self.staging.metadata(&path, name, key)? != preserved(item)
+                || (item.kind == Kind::Directory && !self.staging.folder_plain(&path, name, key)?)
+            {
+                return Ok(false);
+            }
+        }
+        let root = self.staging.own_metadata()?;
+        Ok(self
+            .plan
             .manifest
-            .items
-            .iter()
-            .enumerate()
-            .all(|(i, item)| {
-                let key = match item.kind {
-                    Kind::Directory => self.keys.get(&item.name),
-                    Kind::File => self.files.get(&i),
-                };
-                let Some(key) = key else { return false };
-                path_of(&item.name, &self.keys).is_ok_and(|(path, name)| {
-                    self.staging
-                        .metadata(&path, name, key)
-                        .is_ok_and(|m| m == preserved(item))
-                        && (item.kind == Kind::File
-                            || self.staging.folder_plain(&path, name, key).is_ok_and(|p| p))
-                })
-            })
-            && self.staging.own_metadata().is_ok_and(|m| {
-                self.plan
-                    .manifest
-                    .root
-                    .as_ref()
-                    .is_none_or(|r| m == preserved(r))
-            })
-            && self.staging.own_plain().is_ok_and(|p| p)
+            .root
+            .as_ref()
+            .is_none_or(|r| root == preserved(r))
+            && self.staging.own_plain()?)
+    }
+
+    fn tree_matches(&mut self, renamed: bool) -> io::Result<bool> {
+        Ok(self.shape_matches()?
+            && self.metadata_matches()?
+            && (!renamed || self.streams_match()?))
+    }
+
+    /// The final tree check before (`renamed` false) or after the rename. `changed_after_verification`
+    /// only for a read that succeeded and differs, or an object gone or replaced. A sharing, lock or
+    /// access failure is retried on the publish policy (section 7); still failing, the run waits
+    /// `blocked` with its cause before the rename, or stays `publishing` after it. Any other read
+    /// failure is an honest unknown: `needs_attention` with no code, or `publishing` after the rename.
+    fn recheck(&mut self, renamed: bool) -> Result<(), Stop> {
+        let mut tries = 0;
+        loop {
+            let read = self.tree_matches(renamed);
+            let cause = match &read {
+                Ok(true) => return Ok(()),
+                Ok(false) => Unconfirmed::Changed,
+                Err(e) => unverifiable(e),
+            };
+            let stop = match cause {
+                Unconfirmed::Changed => Stop::Attention(Some(Refusal::ChangedAfterVerification)),
+                _ if read.as_ref().is_err_and(transient)
+                    && tries + 1 < PUBLISH_TRIES
+                    && self.control.pause(PUBLISH_WAIT) =>
+                {
+                    tries += 1;
+                    continue;
+                }
+                _ if renamed => return Err(Stop::Unconfirmed),
+                Unconfirmed::Unverifiable(Some(code)) => Stop::Refused(code, None),
+                Unconfirmed::Unverifiable(None) => Stop::Attention(None),
+            };
+            self.refuse(&stop)?;
+            return Err(stop);
+        }
     }
 }
 
@@ -1649,7 +1688,7 @@ fn finish(
         Err(Stop::Journal(e)) => return Err(Fault::Journal(e)),
         Err(Stop::Cancel) => return cancel(store, op, plan, control),
         // Keep the journaled refusal or the newer control's decision; staging stays untouched.
-        Err(Stop::Refused(..) | Stop::Attention(_) | Stop::Superseded) => {}
+        Err(Stop::Refused(..) | Stop::Attention(_) | Stop::Superseded | Stop::Unconfirmed) => {}
     }
     status(store, op)
 }
@@ -2120,7 +2159,7 @@ fn confirm(
                 let held = published
                     .verify(&path, name, &key)
                     .map_err(|e| unverifiable(&e))?;
-                check(exact_streams(&held, &item.streams))?;
+                check(exact_streams(&held, &item.streams).map_err(|e| unverifiable(&e))?)?;
                 let (relative, expected) = &plan.sources[i];
                 let mut source = Source::open(
                     &plan.source_root,
@@ -2209,14 +2248,12 @@ mod tests;
 mod crash_tests;
 
 /// The held file's named streams are exactly `want` (bare names, sorted) and it has no EAs.
-fn exact_streams(held: &VerifiedFile, want: &[(String, u64)]) -> bool {
-    let Ok(found) = held.streams() else {
-        return false;
-    };
-    let mut found: Vec<(String, u64)> = found
+fn exact_streams(held: &VerifiedFile, want: &[(String, u64)]) -> io::Result<bool> {
+    let mut found: Vec<(String, u64)> = held
+        .streams()?
         .into_iter()
         .map(|(n, s)| (bare(&n).to_string(), s))
         .collect();
     found.sort();
-    found == want && held.ea_size().is_ok_and(|n| n == 0)
+    Ok(found == want && held.ea_size()? == 0)
 }
