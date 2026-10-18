@@ -121,7 +121,9 @@ events are excluded and counted in `learning.status.unresolved_human_events`.
 
 `learning.refit` produces a persisted **candidate**, without promotion (LW-027). Status and queue
 use the latest candidate for advice only; `calibrated` and `autonomy_allowed` remain false. Scores
-are **relative scores, not probabilities**. New fits record the highest human-feedback row ID observed at commit and use that
+are **relative scores, not probabilities**. When no current fitted candidate exists, status,
+queue and every queue suggestion return `model_id: null`; the cold student abstains with
+`no_training_examples`. New fits record the highest human-feedback row ID observed at commit and use that
 monotonic counter for freshness, independent of the wall clock. Older stored candidates retain
 their timestamp guard until explicitly refitted; no feature history is removed by this change.
 Queue order is descending review priority with a node
