@@ -305,6 +305,14 @@ pub enum Point {
     AfterPublish,
     /// Before the item's preallocation and first write (lane C6 fault seam).
     Writing(u32),
+    /// Before an item's create step, after the batch intent is durable.
+    Creating(u32),
+    /// Before a named stream's create step.
+    CreatingStream(u32),
+    /// Between an item create step's durable stop check and its create call (#670).
+    Checked(u32),
+    /// Between a named stream create step's durable stop check and its create call (#670).
+    CheckedStream(u32),
     /// After the item cancellation check, before the potentially blocking source open.
     OpeningSource(u32),
     /// Inside a stream's chunk loop, between effect steps: the bytes handed to the writer so far.
@@ -685,6 +693,26 @@ impl Journal<'_> {
     fn replay(&self) -> Result<Replay, Stop> {
         replay(self.store, self.op).map_err(|e| Stop::Journal(format!("{e:?}")))
     }
+
+    fn check_copying(&self) -> Result<(), Stop> {
+        self.while_copying(|| Ok(()))
+    }
+
+    /// A detached worker's Control is not the reopened service's Control: read the durable stop, and
+    /// keep the database write lock until `effect` returns, so a fence appended by another store
+    /// waits for the effect instead of landing between the check and it (#670). Keep `effect` to one
+    /// bounded create call: another store's fence waits up to its busy timeout, then fails unacknowledged.
+    // ponytail: a create stuck in the OS also holds this store's mutex, so a same-store fence waits for it
+    // rather than answering `PendingInFlightStep`; split the lock from the connection if that bites.
+    fn while_copying<T>(&self, effect: impl FnOnce() -> Result<T, Stop>) -> Result<T, Stop> {
+        self.store
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .while_current(self.op, OpState::Copying, self.epoch, effect)
+            .map_err(|e| Stop::Journal(e.to_string()))?
+            .map_err(|e| Stop::Journal(format!("{e:?}")))?
+            .unwrap_or(Err(Stop::Superseded))
+    }
 }
 
 fn replay(store: &Mutex<Store>, op: u64) -> Result<Replay, Fault> {
@@ -698,6 +726,15 @@ fn replay(store: &Mutex<Store>, op: u64) -> Result<Replay, Fault> {
 
 /// The operation's status as its journal replays (the receipt fields the service reports).
 pub fn status(store: &Mutex<Store>, op: u64) -> Result<Outcome, Fault> {
+    status_observing(store, op, false)
+}
+
+/// Status with no resident worker: re-observe interrupted runs without changing their journal.
+pub fn status_idle(store: &Mutex<Store>, op: u64) -> Result<Outcome, Fault> {
+    status_observing(store, op, true)
+}
+
+fn status_observing(store: &Mutex<Store>, op: u64, idle: bool) -> Result<Outcome, Fault> {
     let r = replay(store, op)?;
     let rows = store
         .lock()
@@ -709,7 +746,9 @@ pub fn status(store: &Mutex<Store>, op: u64) -> Result<Outcome, Fault> {
     // Recovery cannot journal needs_attention from every state (e.g. preparing).
     // Re-observe those waiting states, and recorded attention, so later status reads keep the damage visible.
     if !state.is_terminal()
-        && (state == OpState::NeedsAttention || !state.can_transition(OpState::NeedsAttention))
+        && (idle
+            || state == OpState::NeedsAttention
+            || !state.can_transition(OpState::NeedsAttention))
     {
         let plan = store
             .lock()
@@ -719,10 +758,12 @@ pub fn status(store: &Mutex<Store>, op: u64) -> Result<Outcome, Fault> {
             .and_then(|p| serde_json::from_str::<Plan>(&p).ok());
         if let Some(plan) = plan {
             let disk = PathDisk::new(&plan, &r);
-            if matches!(
-                loomward_operations::recover(op, &rows, &disk).decision,
-                Decision::NeedsAttention(_)
-            ) {
+            let decision = loomward_operations::recover(op, &rows, &disk).decision;
+            if matches!(decision, Decision::NeedsAttention(_))
+                || (idle
+                    && (disk.observation_failed.get()
+                        || matches!(decision, Decision::Confirm { .. })))
+            {
                 state = OpState::NeedsAttention;
             }
             if state == OpState::NeedsAttention {
@@ -911,6 +952,7 @@ impl Runner<'_, '_> {
         let mut failure = None;
         for &i in batch {
             let item = self.item(i).clone();
+            self.control.at(Point::Creating(i as u32))?;
             let step = match self.control.admit() {
                 Ok(step) => step,
                 Err(stop) => {
@@ -919,17 +961,20 @@ impl Runner<'_, '_> {
                 }
             };
             let made = path_of(&item.name, &self.keys).and_then(|(path, name)| {
-                match item.kind {
-                    Kind::Directory => self
-                        .staging
-                        .create_directory(&path, name)
-                        .map(|key| (key, None)),
-                    Kind::File => self.staging.create_file(&path, name).and_then(|f| {
-                        let key = f.identity()?;
-                        Ok((key, Some(f)))
-                    }),
-                }
-                .map_err(|e| io_refusal(&e))
+                self.journal.while_copying(|| {
+                    self.control.at(Point::Checked(i as u32))?;
+                    match item.kind {
+                        Kind::Directory => self
+                            .staging
+                            .create_directory(&path, name)
+                            .map(|key| (key, None)),
+                        Kind::File => self.staging.create_file(&path, name).and_then(|f| {
+                            let key = f.identity()?;
+                            Ok((key, Some(f)))
+                        }),
+                    }
+                    .map_err(|e| io_refusal(&e))
+                })
             });
             drop(step);
             match made {
@@ -1117,21 +1162,19 @@ impl Runner<'_, '_> {
             return Err(Stop::Refused(Refusal::SourceChanged, None));
         }
         self.control.at(Point::Writing(i as u32))?;
-        // A detached worker's Control is not the reopened service's Control: read the durable stop.
-        let head = self.journal.replay()?;
-        if head.state != OpState::Copying
-            || (head.epoch != self.journal.epoch && !self.control.fenced())
-        {
-            return Err(Stop::Superseded);
-        }
+        self.journal.check_copying()?;
         let digest = file
             .write_and_flush(&mut Cancellable::new(&mut source, self.control)?, item.size)
             .map_err(|e| self.write_error(&e))?;
         let mut streams = Vec::new();
         for (name, size) in &item.streams {
+            self.control.at(Point::CreatingStream(i as u32))?;
             let stream = {
                 let _step = self.control.admit()?;
-                file.create_stream(name).map_err(|e| io_refusal(&e))?
+                self.journal.while_copying(|| {
+                    self.control.at(Point::CheckedStream(i as u32))?;
+                    file.create_stream(name).map_err(|e| io_refusal(&e))
+                })?
             };
             let mut reader = source
                 .stream_reader(&format!(":{name}:$DATA"))
@@ -1490,10 +1533,12 @@ fn finish(
         Err(Stop::Crashed) => return Err(Fault::Crashed),
         // A fenced run's advancing records carry the old epoch and are refused (section 5, rule 6):
         // the fence, not the journal, stopped it. Cancel, withdrawing any publish intent.
-        Err(Stop::Journal(_)) if control.fenced() => return cancel(store, op, plan, control),
+        Err(Stop::Journal(_) | Stop::Superseded) if control.fenced() => {
+            return cancel(store, op, plan, control)
+        }
         Err(Stop::Journal(e)) => return Err(Fault::Journal(e)),
         Err(Stop::Cancel) => return cancel(store, op, plan, control),
-        // The journal already carries the refusal or the newer control's decision.
+        // Keep the journaled refusal or the newer control's decision; staging stays untouched.
         Err(Stop::Refused(..) | Stop::Attention(_) | Stop::Superseded) => {}
     }
     status(store, op)
@@ -1520,10 +1565,14 @@ pub fn cancel(
     if let Some(final_name) = &r.publish {
         // A rename may already have happened: never withdraw, never clean a published copy.
         let disk = PathDisk::new(plan, &r);
-        if let Some(s) = r.staging.filter(|s| {
+        let published = r.staging.filter(|s| {
             disk.in_parent(final_name)
                 .is_some_and(|o| s.matches(&o, r.staging_planned))
-        }) {
+        });
+        if disk.observation_failed.get() {
+            return status_idle(store, op);
+        }
+        if let Some(s) = published {
             // Published but not yet committed: abandon settles it by confirming now (a read). It is
             // committed, or recorded needs_attention with its cause; the copy is never touched.
             return if r.state == OpState::Publishing {
@@ -1677,23 +1726,47 @@ fn clean(store: &Mutex<Store>, op: u64, plan: &Plan, control: &Control) -> Resul
 /// propose. Every removal re-checks by journaled ID before acting.
 struct PathDisk {
     parent: PathBuf,
+    parent_key: ObjectKey,
     staging: Option<(String, ObjectId, Option<i64>)>,
+    observation_failed: std::cell::Cell<bool>,
 }
 impl PathDisk {
     fn new(plan: &Plan, r: &Replay) -> Self {
-        PathDisk {
+        let disk = PathDisk {
             parent: plan.destination.clone(),
+            parent_key: plan.destination_key.clone(),
+            observation_failed: std::cell::Cell::new(false),
             staging: r
                 .staging
                 .zip(r.staging_tokens.last().cloned())
                 .map(|(id, t)| (t, id, r.staging_planned)),
+        };
+        // A missing/replaced parent (e.g. a detached volume) says nothing about its children.
+        if !disk.parent_available() {
+            disk.observation_failed.set(true);
+        }
+        disk
+    }
+
+    fn parent_available(&self) -> bool {
+        identity::observe(&self.parent).is_ok_and(|o| o.object == self.parent_key)
+    }
+
+    fn observe(&self, path: &Path) -> Option<identity::ObservedIdentity> {
+        match identity::observe(path) {
+            Ok(observed) => Some(observed),
+            Err(error) => {
+                if error.kind() != io::ErrorKind::NotFound || !self.parent_available() {
+                    self.observation_failed.set(true);
+                }
+                None
+            }
         }
     }
 }
 impl Disk for PathDisk {
     fn in_parent(&self, name: &str) -> Option<ObjectId> {
-        identity::observe(&self.parent.join(name))
-            .ok()
+        self.observe(&self.parent.join(name))
             .map(|o| oid(&o.object))
     }
     fn in_staging(&self, staging: ObjectId, name: &str) -> Option<Observed> {
@@ -1708,7 +1781,7 @@ impl Disk for PathDisk {
         let path = name
             .split('/')
             .fold(self.parent.join(token), |p, c| p.join(c));
-        identity::observe(&path).ok().map(|o| Observed {
+        self.observe(&path).map(|o| Observed {
             id: oid(&o.object),
             links: o.link_count,
         })
@@ -1758,6 +1831,11 @@ pub fn recover(store: &Mutex<Store>, op: u64, control: &Control) -> Result<Outco
         .unwrap_or_else(|e| e.into_inner())
         .recover(op, &disk)
         .map_err(|e| Fault::Journal(e.to_string()))?;
+    if disk.observation_failed.get() {
+        let mut outcome = status_idle(store, op)?;
+        outcome.state = OpState::NeedsAttention;
+        return Ok(outcome);
+    }
     match recovery.decision {
         Decision::Reconfirm => {
             log(Record::Transition {
@@ -1776,14 +1854,26 @@ pub fn recover(store: &Mutex<Store>, op: u64, control: &Control) -> Result<Outco
             staging,
             final_name,
         } => confirm(store, op, &plan, &r, staging, &final_name, false),
-        Decision::NeedsAttention(_) => {
-            if r.state.can_transition(OpState::NeedsAttention) {
+        Decision::NeedsAttention(attention) => {
+            // Disk's Option cannot distinguish absence from a failed observation. Persist only
+            // observed damage; an unavailable destination or entry must be retried on a later open.
+            if matches!(
+                attention,
+                loomward_operations::Attention::StagingMismatch
+                    | loomward_operations::Attention::Unjournaled(_)
+                    | loomward_operations::Attention::EntryMismatch(_)
+            ) && !disk.observation_failed.get()
+                && r.state.can_transition(OpState::NeedsAttention)
+            {
                 log(Record::Transition {
                     to: OpState::NeedsAttention,
                     code: None,
                 })?;
             }
-            status(store, op)
+            let mut outcome = status(store, op)?;
+            // Report the failed check now even when it must not become a durable damage finding.
+            outcome.state = OpState::NeedsAttention;
+            Ok(outcome)
         }
         Decision::Settled | Decision::Resume(_) => status(store, op),
     }

@@ -319,6 +319,131 @@ mod lab_copy {
         assert!(leftover.exists());
     }
 
+    #[test]
+    fn restart_status_reports_unreadable_staged_copy_attention_without_journaling() {
+        restart_unreadable_copy(false);
+    }
+
+    #[test]
+    fn restart_status_reports_unreadable_published_copy_attention_without_journaling() {
+        restart_unreadable_copy(true);
+    }
+
+    fn restart_unreadable_copy(published: bool) {
+        use crate::copy::{Flow, Point};
+        let Some((lab, a, b)) = scanned() else { return };
+        let svc = &lab.svc;
+        let p = preview(svc, &a, &b);
+        let id = p["operation_id"].as_str().unwrap().to_owned();
+        let consent = json!({"operation_id": id, "digest": digest(&p)});
+        ok("copy.approve", call(svc, "copy.approve", consent.clone()));
+        *svc.inner.copies.hook.lock().unwrap() = Some(Arc::new(move |p, _| {
+            if p == if published {
+                Point::AfterPublish
+            } else {
+                Point::Verified(0)
+            } {
+                Flow::Crash
+            } else {
+                Flow::Continue
+            }
+        }));
+        ok("copy.start", call(svc, "copy.start", consent));
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            ok(
+                "copy.status",
+                call(svc, "copy.status", json!({"operation_id": id})),
+            );
+            if svc.inner.copies.running.lock().unwrap().is_empty() {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let store = svc.inner.copies.store.as_ref().unwrap();
+        let journal = store.lock().unwrap();
+        let op = journal.operations().unwrap()[0];
+        let r = journal.replay(op).unwrap().unwrap();
+        let before = journal.rows(op).unwrap();
+        let blocked = if published {
+            lab.path.join("b/a")
+        } else {
+            let item = r
+                .items
+                .iter()
+                .find(|i| i.verified && i.name.as_deref().is_some_and(|n| n.ends_with(".bin")))
+                .unwrap();
+            lab.path
+                .join("b")
+                .join(r.staging_tokens.last().unwrap())
+                .join(item.name.as_ref().unwrap())
+        };
+        drop(journal);
+        let state = lab.path.parent().unwrap().join("state");
+        let Lab { _tmp, svc, .. } = lab;
+        drop(svc);
+        struct DenyRead(PathBuf);
+        impl Drop for DenyRead {
+            fn drop(&mut self) {
+                let _ = std::process::Command::new("icacls")
+                    .arg(&self.0)
+                    .args(["/remove:d", "*S-1-1-0"])
+                    .output();
+            }
+        }
+        assert!(std::process::Command::new("icacls")
+            .arg(&blocked)
+            .args(["/deny", "*S-1-1-0:(R)"])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        let denied = DenyRead(blocked.clone());
+        assert!(loomward_windows::identity::observe(&blocked).is_err());
+        let reopen = || {
+            Service::open(Config {
+                state_dir: state.clone(),
+                dataset: DatasetClass::Synthetic,
+                allow_personal: false,
+                allow_identity_unverified: false,
+                grant_roots: vec![],
+            })
+            .unwrap()
+        };
+        let svc = reopen();
+        for _ in 0..2 {
+            let (status, _) = ok(
+                "copy.status",
+                call(&svc, "copy.status", json!({"operation_id": id})),
+            );
+            assert_eq!(status["state"], "needs_attention", "{status:?}");
+            assert_eq!(
+                svc.inner
+                    .copies
+                    .store
+                    .as_ref()
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .rows(op)
+                    .unwrap(),
+                before
+            );
+        }
+        drop(svc);
+        drop(denied);
+        let svc = reopen();
+        let (status, _) = ok(
+            "copy.status",
+            call(&svc, "copy.status", json!({"operation_id": id})),
+        );
+        assert_eq!(
+            status["state"],
+            if published { "committed" } else { "copying" }
+        );
+    }
+
     /// #567: a lost acknowledgement at `committed` makes the executor return `Fault::Journal` for a copy
     /// that did commit (the journal is the truth, evidence/v3/copy-faults.md). The service reports the
     /// journal's state, never a failure.
