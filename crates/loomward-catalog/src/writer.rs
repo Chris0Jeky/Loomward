@@ -978,6 +978,15 @@ pub(crate) fn scrub_pending(conn: &Connection) -> Result<bool> {
 /// slow reader or writer never holds the committed receipt; the caller retries until the rewrite is
 /// done and both logs are cut. Whether all of it was done.
 pub(crate) fn wal_cut(conn: &Connection, wait: Duration, vacuum: &mut bool) -> bool {
+    // A state half can commit before its catalogue purge fails. A different forget's rewrite
+    // must not clear that durable health marker while the forgotten rows still exist.
+    if !conn.query_row(
+        "SELECT NOT EXISTS(SELECT 1 FROM main.root r JOIN st.root_forgotten f ON f.grant_id=r.grant_id)",
+        [],
+        |r| r.get::<_, bool>(0),
+    ).unwrap_or(false) {
+        return false;
+    }
     let Ok(timeout) = conn.query_row("PRAGMA busy_timeout", [], |r| r.get::<_, u32>(0)) else {
         return false;
     };
@@ -1861,6 +1870,10 @@ fn apply(
         }
         WriteCommand::Repair { root_id } => {
             rollup(conn, *root_id, false)?;
+            conn.execute(
+                "UPDATE root SET state='partial' WHERE id=?1 AND state='repairing'",
+                [root_id],
+            )?;
             Ok(WriteReply::Done)
         }
         WriteCommand::ObjectReference { .. } | WriteCommand::ReconcileReference { .. } => {
@@ -3101,9 +3114,16 @@ mod tests {
     #[test]
     fn rewrite_uses_file_temp_store_and_restores_writer_views_even_on_failure() {
         use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
-        for fail in [false, true] {
+        for (temp_store, fail) in [0, 1, 2]
+            .into_iter()
+            .flat_map(|mode| [false, true].map(|fail| (mode, fail)))
+        {
             let temp = tempfile::tempdir().unwrap();
             let conn = crate::db::open_pair(temp.path(), "synthetic").unwrap();
+            if temp_store != 1 {
+                conn.pragma_update(None, "temp_store", temp_store).unwrap();
+                crate::db::grant_view(&conn).unwrap();
+            }
             let mode = Arc::new(Mutex::new(String::new()));
             let observed = mode.clone();
             conn.authorizer(Some(move |context: AuthContext<'_>| {
@@ -3127,7 +3147,7 @@ mod tests {
             assert_eq!(
                 conn.query_row("PRAGMA temp_store", [], |r| r.get::<_, i64>(0))
                     .unwrap(),
-                1
+                temp_store
             );
             conn.execute_batch(
                 "SELECT count(*) FROM temp.root_grant; SELECT count(*) FROM temp.visible_dir",
