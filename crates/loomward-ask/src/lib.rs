@@ -350,8 +350,12 @@ impl Provider for BrokerProvider {
                 .read_to_end(&mut out);
             out
         });
-        let wrote = stdin.write_all(&body).is_ok();
-        drop(stdin);
+        // A broker that never drains stdin must not hold this thread past `kill_at`: the write runs
+        // aside and the deadline loop below owns the child.
+        let (wrote_tx, wrote_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = wrote_tx.send(stdin.write_all(&body).is_ok());
+        });
         // The broker enforces its own deadline; the job is killed shortly after it.
         let kill_at = started + deadline + Duration::from_secs(2);
         loop {
@@ -363,6 +367,9 @@ impl Provider for BrokerProvider {
                 _ => {
                     let _ = child.kill();
                     let _ = child.wait();
+                    // A write still blocked (a grandchild may hold the pipe open) did not finish:
+                    // that thread is left to end when the pipe closes, never joined here.
+                    let wrote = wrote_rx.try_recv().unwrap_or(false);
                     // Whatever the broker sent is unknown: never auto-retried.
                     return Err(ProviderError::new(
                         ErrorKind::Timeout,
@@ -372,6 +379,7 @@ impl Provider for BrokerProvider {
                 }
             }
         }
+        let wrote = wrote_rx.recv().unwrap_or(false);
         let out = reader.join().unwrap_or_default();
         let line = out.split(|b| *b == b'\n').next().unwrap_or_default();
         serde_json::from_slice::<BrokerReply>(line)
@@ -388,6 +396,49 @@ mod tests {
             base_url: url.into(),
             model: model.into(),
         }
+    }
+
+    /// A broker stand-in that never reads stdin, only sleeps.
+    fn deaf_broker(dir: &std::path::Path) -> PathBuf {
+        #[cfg(windows)]
+        let (name, body) = (
+            "deaf.cmd",
+            "@%SystemRoot%\\System32\\ping.exe -n 60 127.0.0.1 >nul\r\n",
+        );
+        #[cfg(not(windows))]
+        let (name, body) = ("deaf.sh", "#!/bin/sh\nexec sleep 60\n");
+        let path = dir.join(name);
+        std::fs::write(&path, body).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        path
+    }
+
+    #[test]
+    fn a_broker_that_never_reads_stdin_is_killed_at_the_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = open(
+            &profile("http://127.0.0.1:11434/v1", "m"),
+            deaf_broker(dir.path()),
+            None,
+        )
+        .unwrap();
+        // Far more than any pipe buffer holds, so write_all blocks.
+        let req = ChatRequest {
+            messages: vec![Message::User {
+                content: "q".repeat(200 * 1024),
+            }],
+            tools: vec![],
+        };
+        let t = Instant::now();
+        let e = p.complete(&req, Duration::from_millis(300)).unwrap_err();
+        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+        assert_eq!(e.kind, ErrorKind::Timeout, "{}", e.message);
+        // The body never reached a reader, so nothing provably left the machine.
+        assert!(!e.dispatched);
     }
 
     #[test]
